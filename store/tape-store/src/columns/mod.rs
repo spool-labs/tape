@@ -1,11 +1,13 @@
 //! Column family definitions for tape-store
 //!
-//! This module defines 12 column families:
+//! This module defines 14 column families:
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
 //! - `tape`: Tape metadata (Pubkey -> TapeInfo)
-//! - `track`: Track metadata (Pubkey -> TrackInfo)
+//! - `track`: Canonical compressed-track catalog (Pubkey -> PackedTrack)
+//! - `track_lookup`: Tape-local ordered index ((tape, track_number, key) -> ())
+//! - `track_data`: Local track payload data (Pubkey -> TrackData)
 //! - `object_info`: Object metadata (Pubkey -> ObjectInfo)
 //!
 //! ## Sync Columns
@@ -30,6 +32,8 @@ pub mod spool;
 pub mod sync_cursor;
 pub mod tape;
 pub mod track;
+pub mod track_lookup;
+pub mod track_data;
 
 // Re-export all column types
 pub use event_log::EventLogCol;
@@ -43,12 +47,16 @@ pub use spool::{
 pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
+pub use track_lookup::TrackLookupCol;
+pub use track_data::TrackDataCol;
 
-/// List of all column family names in the store (12 total)
+/// List of all column family names in the store (13 total)
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
     "tape",
     "track",
+    "track_lookup",
+    "track_data",
     "object_info",
     "sync_cursor",
     "gc",

@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Tape info
     let tape_info = TapeInfo {
         end_epoch: EpochNumber(200),
+        next_track_number: tape_core::types::TrackNumber(0),
     };
     store.put_tape(tape_address, tape_info)?;
     println!("Stored tape info");

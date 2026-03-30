@@ -33,11 +33,13 @@ impl EndpointFailover {
     }
 
     /// Get the current endpoint URL
+    #[cfg(any(test, feature = "metrics"))]
     pub fn current_endpoint(&self) -> &str {
         &self.endpoints[self.current]
     }
 
     /// Get the index of the current endpoint
+    #[cfg(any(test, feature = "metrics"))]
     pub fn current_index(&self) -> usize {
         self.current
     }
@@ -87,11 +89,13 @@ impl EndpointFailover {
     }
 
     /// Get the number of endpoints that have been tried
+    #[cfg(test)]
     pub fn tried_count(&self) -> usize {
         self.tried.len()
     }
 
     /// Get the total number of available endpoints
+    #[cfg(test)]
     pub fn total_endpoints(&self) -> usize {
         self.endpoints.len()
     }

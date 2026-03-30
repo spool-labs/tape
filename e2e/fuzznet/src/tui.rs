@@ -18,7 +18,7 @@ use ratatui::{Frame, Terminal};
 use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 
-use crate::app::{node_color, Command, PollSnapshot, TrackSnapshot, TrackStatus, NODE_EVENT_HISTORY_EPOCHS};
+use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
 use crate::sparkline::{render_braille_sparkline, render_node_sparkline};
 
 const GROUP_COLS: usize = 7;
@@ -518,8 +518,6 @@ fn render_tapes(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     };
 
     let mut lines: Vec<Line> = vec![Line::from(line1), Line::from(line2)];
-    let track_rows = render_track_grid(inner.width as usize, &snap.tracks);
-    lines.extend(track_rows);
 
     let max_rows = inner.height as usize;
     if lines.len() > max_rows {
@@ -529,44 +527,6 @@ fn render_tapes(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
 
     let p = Paragraph::new(lines);
     frame.render_widget(p, inner);
-}
-
-fn render_track_grid(width: usize, tracks: &[TrackSnapshot]) -> Vec<Line<'static>> {
-    if width == 0 {
-        return Vec::new();
-    }
-
-    if tracks.is_empty() {
-        return vec![Line::styled(
-            " no tracks",
-            Style::default().fg(Color::DarkGray),
-        )];
-    }
-
-    let mut rows: Vec<Line<'static>> = Vec::new();
-    let mut current: Vec<Span> = Vec::new();
-    for track in tracks {
-        let (glyph, color) = track_glyph(track);
-        current.push(Span::styled(glyph, Style::default().fg(color)));
-        if current.len() == width {
-            rows.push(Line::from(std::mem::take(&mut current)));
-        }
-    }
-    if !current.is_empty() {
-        rows.push(Line::from(current));
-    }
-
-    rows
-}
-
-fn track_glyph(track: &TrackSnapshot) -> (String, Color) {
-    match track.status {
-        TrackStatus::Registered => ("◻".to_string(), Color::DarkGray),
-        TrackStatus::Certified => ("◼".to_string(), Color::Green),
-        TrackStatus::Expired => ("◻".to_string(), Color::Yellow),
-        TrackStatus::Failed => ("✗".to_string(), Color::Red),
-        TrackStatus::Unknown => ("?".to_string(), Color::DarkGray),
-    }
 }
 
 fn render_spark(

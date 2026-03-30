@@ -1,30 +1,37 @@
+use core::mem::size_of;
+
 use tape_core::prelude::*;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::track::blob::BlobInfo;
+use tape_core::track::data::TrackDataSlice;
+use tape_core::track::types::{CompressedTrackProof, TrackKind};
 use tape_crypto::Hash;
 use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use tape_solana::*;
 
+pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct RegisterTrack {
+pub struct TrackWrite {
     pub key: Hash,
-    pub root: Hash,            // Merkle root of original data
-    pub commitment: Hash,      // Erasure coding commitment
-    pub size: [u8; 8],         // Size in bytes (including parity data)
-    pub profile: [u8; 16],     // Packed EncodingProfile
-    pub stripe_size: [u8; 8],  // Stripe size in bytes
-    pub stripe_count: [u8; 8], // Number of stripes
-    pub leaves: [Hash; SPOOL_GROUP_SIZE], // Per-slice commitment leaf hashes
+    pub kind: [u8; 8],
+
+    // Followed by variable-length payload bytes, interpreted according to kind:
+    // - Raw: arbitrary bytes up to TRACK_WRITE_MAX_BYTES
+    // - Blob: exactly size_of::<BlobInfo>() bytes
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct DeleteTrack {}
+pub struct DeleteTrack {
+    pub track: CompressedTrackProof,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CertifyTrack {
+    pub track: CompressedTrackProof,
     pub epoch: [u8; 8],
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
@@ -33,6 +40,7 @@ pub struct CertifyTrack {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct InvalidateTrack {
+    pub track: CompressedTrackProof,
     pub epoch: [u8; 8],
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
@@ -40,27 +48,17 @@ pub struct InvalidateTrack {
 }
 
 
-pub fn build_register_track_ix(
+pub fn build_track_write_blob_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
-    storage_units: StorageUnits,
-    root: Hash,         // Data merkle root
-    commitment: Hash,   // Erasure coding root
     key: Hash,          // Track identifier (e.g., file path hash)
-    profile: EncodingProfile, // Encoding profile (type + params)
-    stripe_size: u64,   // Stripe size in bytes
-    stripe_count: u64,  // Number of stripes
-    leaves: [Hash; SPOOL_GROUP_SIZE], // Per-slice commitment leaf hashes
+    blob: BlobInfo,
 ) -> Instruction {
-    assert!(stripe_size > 0, "stripe_size must be non-zero");
-    assert!(stripe_count > 0, "stripe_count must be non-zero");
+    assert!(blob.stripe_size > 0, "stripe_size must be non-zero");
+    assert!(blob.stripe_count > 0, "stripe_count must be non-zero");
 
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(authority);
-    let (track_address, _) = track_pda(authority, key);
-
-    let size = storage_units.pack();
-    let profile = profile.pack();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -70,61 +68,61 @@ pub fn build_register_track_ix(
 
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(tape_address, false),
-            AccountMeta::new(track_address, false),
-
-            AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: RegisterTrack {
-            key,
-            root,
-            commitment,
-            size,
-            profile,
-            stripe_size: stripe_size.to_le_bytes(),
-            stripe_count: stripe_count.to_le_bytes(),
-            leaves,
-        }.to_bytes(),
+        data: make_blob(key, blob),
+    }
+}
+
+pub fn build_track_write_raw_ix(
+    fee_payer: Pubkey,
+    authority: Pubkey,
+    key: Hash,
+    raw: &[u8],
+) -> Instruction {
+    let (epoch_address, _) = epoch_pda();
+    let (tape_address, _) = tape_pda(authority);
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+
+            AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(tape_address, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+        ],
+        data: make_raw(key, raw),
     }
 }
 
 pub fn build_delete_track_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
-    id: Hash
+    track: CompressedTrackProof,
 ) -> Instruction {
-
-    let (tape_address, _) = tape_pda(authority);
-    let (track_address, _) = track_pda(authority, id);
-
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(tape_address, false),
-            AccountMeta::new(track_address, false),
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new(track.state.tape, false),
         ],
-        data: DeleteTrack {}.to_bytes(),
+        data: DeleteTrack { track }.to_bytes(),
     }
 }
 
 pub fn build_certify_track_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
-    id: Hash,
+    track: CompressedTrackProof,
     epoch: EpochNumber,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
 ) -> Instruction {
-
     let (epoch_address, _) = epoch_pda();
     let (system_address, _) = system_pda();
-    let (tape_address, _) = tape_pda(authority);
-    let (track_address, _) = track_pda(authority, id);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -132,12 +130,12 @@ pub fn build_certify_track_ix(
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
 
-            AccountMeta::new(system_address, false),
-            AccountMeta::new(epoch_address, false),
-            AccountMeta::new(tape_address, false),
-            AccountMeta::new(track_address, false),
+            AccountMeta::new_readonly(system_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(track.state.tape, false),
         ],
         data: CertifyTrack {
+            track,
             epoch: epoch.pack(),
             bitmap,
             signature,
@@ -149,8 +147,7 @@ pub fn build_invalidate_track_ix(
     fee_payer: Pubkey,
     system_address: Pubkey,
     epoch_address: Pubkey,
-    tape_address: Pubkey,
-    track_address: Pubkey,
+    track: CompressedTrackProof,
     epoch: EpochNumber,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
@@ -163,14 +160,110 @@ pub fn build_invalidate_track_ix(
 
             AccountMeta::new_readonly(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new_readonly(tape_address, false),
-            AccountMeta::new(track_address, false),
+            AccountMeta::new(track.state.tape, false),
         ],
         data: InvalidateTrack {
+            track,
             epoch: epoch.pack(),
             bitmap,
             signature,
             computed_root,
         }.to_bytes(),
     }
+}
+
+#[inline(always)]
+fn split_track_write_data(data: &[u8]) -> Result<(TrackWrite, &[u8]), ProgramError> {
+    if data.len() < size_of::<TrackWrite>() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let (header, value) = data.split_at(size_of::<TrackWrite>());
+    let header = read_instruction_pod::<TrackWrite>(header)?;
+
+    Ok((header, value))
+}
+
+#[inline(always)]
+pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, TrackDataSlice<'_>), ProgramError> {
+    let (header, value) = split_track_write_data(data)?;
+
+    let kind = TrackKind::try_from(u64::from_le_bytes(header.kind))
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+
+    let value = match kind {
+        TrackKind::Raw => {
+            if value.len() > TRACK_WRITE_MAX_BYTES {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+
+            TrackDataSlice::Raw(value)
+        }
+        TrackKind::Blob => {
+            if value.len() != size_of::<BlobInfo>() {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+
+            let blob = read_instruction_pod::<BlobInfo>(value)?;
+
+            TrackDataSlice::Blob(blob)
+        }
+    };
+
+    Ok((header, value))
+}
+
+#[inline(always)]
+pub fn parse_delete_track(data: &[u8]) -> Result<DeleteTrack, ProgramError> {
+    read_instruction_pod::<DeleteTrack>(data)
+}
+
+#[inline(always)]
+pub fn parse_certify_track(data: &[u8]) -> Result<CertifyTrack, ProgramError> {
+    read_instruction_pod::<CertifyTrack>(data)
+}
+
+#[inline(always)]
+pub fn parse_invalidate_track(data: &[u8]) -> Result<InvalidateTrack, ProgramError> {
+    read_instruction_pod::<InvalidateTrack>(data)
+}
+
+#[inline(always)]
+fn read_instruction_pod<T>(data: &[u8]) -> Result<T, ProgramError>
+where
+    T: bytemuck::Pod + bytemuck::Zeroable,
+{
+    if data.len() != size_of::<T>() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let mut value = T::zeroed();
+    bytemuck::bytes_of_mut(&mut value).copy_from_slice(data);
+    Ok(value)
+}
+
+#[inline(always)]
+fn make_raw(key: Hash, raw: &[u8]) -> Vec<u8> {
+    assert!(raw.len() <= TRACK_WRITE_MAX_BYTES, "raw write exceeds max bytes");
+
+    let mut data = TrackWrite {
+        key,
+        kind: (TrackKind::Raw as u64).to_le_bytes(),
+    }
+    .to_bytes();
+
+    data.extend_from_slice(raw);
+    data
+}
+
+#[inline(always)]
+fn make_blob(key: Hash, blob: BlobInfo) -> Vec<u8> {
+    let mut data = TrackWrite {
+        key,
+        kind: (TrackKind::Blob as u64).to_le_bytes(),
+    }
+    .to_bytes();
+
+    data.extend_from_slice(bytemuck::bytes_of(&blob));
+    data
 }

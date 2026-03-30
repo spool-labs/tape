@@ -27,8 +27,14 @@ use tape_core::types::NodeId;
 pub trait Api: Send + Sync {
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError>;
     async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, ApiError>;
-    async fn get_metadata(&self, node: NodeId, req: &GetMetadataReq) -> Result<GetMetadataRes, ApiError>;
-    async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, ApiError>;
+    async fn get_track(&self, node: NodeId, req: &GetTrackReq) -> Result<GetTrackRes, ApiError>;
+    async fn get_track_by_number(&self, node: NodeId, req: &GetTrackByNumberReq) -> Result<GetTrackByNumberRes, ApiError>;
+    async fn find_track(&self, node: NodeId, req: &FindTrackReq) -> Result<FindTrackRes, ApiError>;
+    async fn list_tracks_by_tape(&self, node: NodeId, req: &ListTracksByTapeReq) -> Result<ListTracksByTapeRes, ApiError>;
+    async fn get_track_data(&self, node: NodeId, req: &GetTrackDataReq) -> Result<GetTrackDataRes, ApiError>;
+    async fn get_track_proof(&self, node: NodeId, req: &GetTrackProofReq) -> Result<GetTrackProofRes, ApiError>;
+    async fn sync_slices(&self, node: NodeId, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError>;
+    async fn sync_tracks(&self, node: NodeId, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError>;
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError>;
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError>;
     async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, ApiError>;

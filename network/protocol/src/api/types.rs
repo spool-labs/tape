@@ -6,8 +6,12 @@ use tape_core::{
     erasure::MEMBER_COUNT,
 };
 use tape_core::spooler::SpoolIndex;
-use tape_core::types::{EpochNumber, NodeId};
+use tape_core::track::data::TrackData;
+use tape_core::track::types::{PackedTrack, PackedTrackProof};
+use tape_core::types::{EpochNumber, NodeId, TrackNumber};
 use wincode_derive::{SchemaRead, SchemaWrite};
+
+use crate::api::ops::FindTrackVersion;
 
 /// Bitmap bytes needed to represent `MEMBER_COUNT` committee members.
 pub const COMMITTEE_BITMAP_BYTES: usize = (MEMBER_COUNT + 7) / 8;
@@ -105,34 +109,95 @@ impl SlicePayload {
     }
 }
 
-/// Request for spool synchronization.
+/// Request for slice synchronization.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SyncSpoolRequest {
+pub struct SyncSlicesRequest {
     pub spool_index: u16,
     /// Last track address received, or empty to start from the beginning.
     pub cursor: Option<[u8; 32]>,
     pub limit: u32,
 }
 
-/// Response from spool synchronization.
+/// Response from slice synchronization.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SyncSpoolResponse {
-    pub entries: Vec<SyncSpoolEntry>,
+pub struct SyncSlicesResponse {
+    pub entries: Vec<SyncSliceEntry>,
     /// Next cursor for pagination, or None if no more entries.
     pub next_cursor: Option<[u8; 32]>,
 }
 
 /// A single slice entry in a sync response.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SyncSpoolEntry {
+pub struct SyncSliceEntry {
     pub track_address: [u8; 32],
     pub slice_data: Vec<u8>,
+}
+
+/// Request for track-data synchronization.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncTracksRequest {
+    pub spool_index: u16,
+    /// Last track address received, or empty to start from the beginning.
+    pub cursor: Option<[u8; 32]>,
+    pub limit: u32,
+}
+
+/// Response from track-data synchronization.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncTracksResponse {
+    pub entries: Vec<SyncTrackEntry>,
+    /// Next cursor for pagination, or None if no more entries.
+    pub next_cursor: Option<[u8; 32]>,
+}
+
+/// A single track-data entry in a sync response.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncTrackEntry {
+    pub track_address: [u8; 32],
+    pub data: TrackData,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct TrackResponse {
+    pub track: PackedTrack,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct FindTrackRequest {
+    pub key: Hash,
+    pub version: FindTrackVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ListTracksByTapeRequest {
+    pub cursor: Option<TrackNumber>,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ListTracksByTapeResponse {
+    pub tracks: Vec<PackedTrack>,
+    pub next_cursor: Option<TrackNumber>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct TrackDataResponse {
+    pub data: TrackData,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct TrackProofResponse {
+    pub proof: PackedTrackProof,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::MERKLE_HEIGHT;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::track::blob::BlobInfo;
+    use tape_core::types::StorageUnits;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
     #[test]
@@ -212,26 +277,26 @@ mod tests {
     }
 
     #[test]
-    fn sync_spool_request() {
-        let req = SyncSpoolRequest {
+    fn sync_slices_request() {
+        let req = SyncSlicesRequest {
             spool_index: 42,
             cursor: Some([0xAA; 32]),
             limit: 100,
         };
         let bytes = wincode::serialize(&req).unwrap();
-        let decoded: SyncSpoolRequest = wincode::deserialize(&bytes).unwrap();
+        let decoded: SyncSlicesRequest = wincode::deserialize(&bytes).unwrap();
         assert_eq!(req, decoded);
     }
 
     #[test]
-    fn sync_spool_response() {
-        let resp = SyncSpoolResponse {
+    fn sync_slices_response() {
+        let resp = SyncSlicesResponse {
             entries: vec![
-                SyncSpoolEntry {
+                SyncSliceEntry {
                     track_address: [0x11; 32],
                     slice_data: vec![1, 2, 3],
                 },
-                SyncSpoolEntry {
+                SyncSliceEntry {
                     track_address: [0x22; 32],
                     slice_data: vec![4, 5, 6],
                 },
@@ -239,18 +304,51 @@ mod tests {
             next_cursor: Some([0x22; 32]),
         };
         let bytes = wincode::serialize(&resp).unwrap();
-        let decoded: SyncSpoolResponse = wincode::deserialize(&bytes).unwrap();
+        let decoded: SyncSlicesResponse = wincode::deserialize(&bytes).unwrap();
         assert_eq!(resp, decoded);
     }
 
     #[test]
-    fn sync_spool_empty() {
-        let resp = SyncSpoolResponse {
+    fn sync_slices_empty() {
+        let resp = SyncSlicesResponse {
             entries: vec![],
             next_cursor: None,
         };
         let bytes = wincode::serialize(&resp).unwrap();
-        let decoded: SyncSpoolResponse = wincode::deserialize(&bytes).unwrap();
+        let decoded: SyncSlicesResponse = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn sync_tracks_response() {
+        let resp = SyncTracksResponse {
+            entries: vec![SyncTrackEntry {
+                track_address: [0x11; 32],
+                data: TrackData::Raw(vec![1, 2, 3]),
+            }],
+            next_cursor: Some([0x11; 32]),
+        };
+        let bytes = wincode::serialize(&resp).unwrap();
+        let decoded: SyncTracksResponse = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn track_data_response_blob_roundtrip() {
+        let resp = TrackDataResponse {
+            data: TrackData::Blob(BlobInfo {
+                size: StorageUnits::from_bytes(2048),
+                root: Hash::from([0x44; 32]),
+                commitment: Hash::from([0x55; 32]),
+                profile: EncodingProfile::basic_default(),
+                stripe_size: 256,
+                stripe_count: 8,
+                leaves: [Hash::from([0x66; 32]); SPOOL_GROUP_SIZE],
+            }),
+        };
+
+        let bytes = wincode::serialize(&resp).unwrap();
+        let decoded: TrackDataResponse = wincode::deserialize(&bytes).unwrap();
         assert_eq!(resp, decoded);
     }
 

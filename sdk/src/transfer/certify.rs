@@ -23,8 +23,8 @@ use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{EpochNumber, NodeId};
-use tape_crypto::Hash;
 use tape_retry::{retry, RetryConfig};
 use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
 
@@ -397,13 +397,13 @@ impl CertificationCollector {
     pub fn build_certify_instruction(
         fee_payer: Pubkey,
         authority: Pubkey,
-        track_key: Hash,
+        track: CompressedTrackProof,
         collected: &CollectedSignatures,
     ) -> solana_sdk::instruction::Instruction {
         build_certify_track_ix(
             fee_payer,
             authority,
-            track_key,
+            track,
             EpochNumber(collected.epoch),
             collected.bitmap,
             collected.aggregated_signature,

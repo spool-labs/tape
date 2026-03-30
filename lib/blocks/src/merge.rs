@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 ///
 /// This function matches events to instructions based on their order
 /// in the transaction. Some instructions require events (AdvanceEpoch,
-/// CertifyTrack, SyncEpoch, RegisterTrack, DeleteTrack, InvalidateTrack,
+/// CertifyTrack, SyncEpoch, TrackWrite, DeleteTrack, InvalidateTrack,
 /// ReserveTape, DestroyTape, RegisterNode, JoinNetwork).
 ///
 /// # Arguments
@@ -52,29 +52,24 @@ pub fn merge(
                 ParsedInstruction::SyncEpoch { event }
             }
 
-            RawInstruction::RegisterTrack {
-                owner,
-                track,
+            RawInstruction::TrackWrite {
+                authority,
                 key,
-                root,
-                commitment,
-                size,
+                value,
             } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::TrackRegistered(e)) => e,
+                    Some(TapedriveEvent::TrackWritten(e)) => e,
                     _ => {
                         return Err(ParseError::EventMismatch(
-                            "expected TrackRegistered event",
+                            "expected TrackWritten event",
                         ))
                     }
                 };
-                ParsedInstruction::RegisterTrack {
-                    owner,
-                    track,
+                ParsedInstruction::TrackWrite {
+                    authority,
+                    track: event.track,
                     key,
-                    root,
-                    commitment,
-                    size,
+                    value,
                     event,
                 }
             }
@@ -205,7 +200,7 @@ mod tests {
     use solana_sdk::pubkey::Pubkey;
     use tape_api::event::{
         EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed, TapeReserved,
-        TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+        TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
     };
     use tape_core::prelude::*;
     use tape_crypto::Hash;
@@ -310,18 +305,13 @@ mod tests {
             phase: 1, // Syncing
         };
 
-        let register_event = TrackRegistered {
+        let register_event = TrackWritten {
+            epoch: EpochNumber(2),
             track: track1,
             tape: Pubkey::new_unique(),
-            key: Hash::default(),
-            size: StorageUnits::mb(100),
-            commitment: Hash::default(),
-            epoch: EpochNumber(2),
-            profile: tape_core::encoding::EncodingProfile::clay_default(),
             spool_group: 0u64.to_le_bytes(),
-            stripe_size: 0u64.to_le_bytes(),
-            stripe_count: 0u64.to_le_bytes(),
-            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+            track_number: TrackNumber(0),
+            track_hash: Hash::default(),
         };
 
         let certify_event = TrackCertified {
@@ -333,20 +323,25 @@ mod tests {
 
         let instructions = vec![
             RawInstruction::AdvanceEpoch,
-            RawInstruction::RegisterTrack {
-                owner,
-                track: track1,
+            RawInstruction::TrackWrite {
+                authority: owner,
                 key: Hash::default(),
-                root: Hash::default(),
-                commitment: Hash::default(),
-                size: StorageUnits::mb(100),
+                value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                    size: StorageUnits::mb(100),
+                    root: Hash::default(),
+                    commitment: Hash::default(),
+                    profile: EncodingProfile::default(),
+                    stripe_size: 64,
+                    stripe_count: 1,
+                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                }),
             },
             RawInstruction::CertifyTrack { track: track2 },
         ];
 
         let events = vec![
             TapedriveEvent::EpochAdvanced(epoch_event),
-            TapedriveEvent::TrackRegistered(register_event),
+            TapedriveEvent::TrackWritten(register_event),
             TapedriveEvent::TrackCertified(certify_event),
         ];
 
@@ -362,13 +357,13 @@ mod tests {
             _ => panic!("Expected AdvanceEpoch"),
         }
 
-        // Check RegisterTrack
+        // Check TrackWrite
         match &merged[1] {
-            ParsedInstruction::RegisterTrack { track, event, .. } => {
+            ParsedInstruction::TrackWrite { track, event, .. } => {
                 assert_eq!(*track, track1);
                 assert_eq!(event.epoch, EpochNumber(2));
             }
-            _ => panic!("Expected RegisterTrack"),
+            _ => panic!("Expected TrackWrite"),
         }
 
         // Check CertifyTrack
@@ -400,13 +395,18 @@ mod tests {
 
     fn required_events_missing_cases() -> Vec<RawInstruction> {
         vec![
-            RawInstruction::RegisterTrack {
-                owner: Pubkey::new_unique(),
-                track: Pubkey::new_unique(),
+            RawInstruction::TrackWrite {
+                authority: Pubkey::new_unique(),
                 key: Hash::default(),
-                root: Hash::default(),
-                commitment: Hash::default(),
-                size: StorageUnits::mb(1_024),
+                value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                    size: StorageUnits::mb(1_024),
+                    root: Hash::default(),
+                    commitment: Hash::default(),
+                    profile: EncodingProfile::default(),
+                    stripe_size: 64,
+                    stripe_count: 1,
+                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                }),
             },
             RawInstruction::DeleteTrack {
                 owner: Pubkey::new_unique(),
@@ -475,26 +475,26 @@ mod tests {
 
         vec![
             (
-                RawInstruction::RegisterTrack {
-                    owner: Pubkey::new_unique(),
-                    track: register_track,
+                RawInstruction::TrackWrite {
+                    authority: Pubkey::new_unique(),
                     key: Hash::default(),
-                    root: Hash::default(),
-                    commitment: Hash::default(),
-                    size: StorageUnits::mb(1_024),
+                    value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                        size: StorageUnits::mb(1_024),
+                        root: Hash::default(),
+                        commitment: Hash::default(),
+                        profile: EncodingProfile::default(),
+                        stripe_size: 64,
+                        stripe_count: 1,
+                        leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                    }),
                 },
-                TapedriveEvent::TrackRegistered(TrackRegistered {
+                TapedriveEvent::TrackWritten(TrackWritten {
+                    epoch: EpochNumber(2),
                     track: register_track,
                     tape: register_tape,
-                    key: Hash::default(),
-                    size: StorageUnits::mb(1_024),
-                    commitment: Hash::default(),
-                    epoch: EpochNumber(2),
-                    profile: tape_core::encoding::EncodingProfile::basic_default(),
                     spool_group: 0u64.to_le_bytes(),
-                    stripe_size: 0u64.to_le_bytes(),
-                    stripe_count: 0u64.to_le_bytes(),
-                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                    track_number: TrackNumber(0),
+                    track_hash: Hash::default(),
                 }),
             ),
             (
@@ -578,7 +578,7 @@ mod tests {
             assert_eq!(merged.len(), 1);
 
             match &merged[0] {
-                ParsedInstruction::RegisterTrack { .. }
+                ParsedInstruction::TrackWrite { .. }
                 | ParsedInstruction::DeleteTrack { .. }
                 | ParsedInstruction::InvalidateTrack { .. }
                 | ParsedInstruction::ReserveTape { .. }

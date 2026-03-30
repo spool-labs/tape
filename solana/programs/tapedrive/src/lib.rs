@@ -5,7 +5,6 @@ pub mod blacklist;
 pub mod epoch;
 pub mod error;
 pub mod node;
-pub mod snapshot;
 pub mod staking;
 pub mod tape;
 pub mod track;
@@ -14,7 +13,6 @@ use archive::*;
 use blacklist::*;
 use epoch::*;
 use node::*;
-use snapshot::*;
 use staking::*;
 use tape::*;
 use track::*;
@@ -83,15 +81,16 @@ pub fn process_instruction(
             TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
 
             // Track
-            TapeInstruction::RegisterTrack => process_register_track(accounts, data)?,
+            TapeInstruction::TrackWrite => process_track_write(accounts, data)?,
             TapeInstruction::DeleteTrack => process_delete_track(accounts, data)?,
             TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,        // CU 1_400_000
             TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,  // CU 1_400_000
 
-            // Snapshot
-            TapeInstruction::ReserveSnapshotTape => process_reserve_snapshot_tape(accounts, data)?,
-            TapeInstruction::RegisterSnapshot => process_register_snapshot(accounts, data)?,    // CU   700_000
-            TapeInstruction::CertifySnapshot => process_certify_snapshot(accounts, data)?,      // CU 1_400_000
+            // Snapshot program logic is temporarily excluded while the
+            // snapshot refactor catches up with the compressed-track path.
+            TapeInstruction::ReserveSnapshotTape
+            | TapeInstruction::RegisterSnapshot
+            | TapeInstruction::CertifySnapshot => return Err(ProgramError::InvalidInstructionData),
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

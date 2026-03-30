@@ -1,11 +1,8 @@
 //! Value types for tape-store columns
 
-use crate::types::Pubkey;
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
-use tape_core::encoding::EncodingProfile;
-use tape_core::spooler::SpoolGroup;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -14,58 +11,9 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 pub struct TapeInfo {
     /// Epoch when the tape expires
     pub end_epoch: EpochNumber,
-}
 
-/// Metadata about a track (individual blob)
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct TrackInfo {
-    /// Address of the tape this track belongs to
-    pub tape_address: Pubkey,
-    /// Spool group this track's slices are distributed across (0..SPOOL_GROUP_COUNT-1)
-    pub spool_group: SpoolGroup,
-    /// Original unencoded data size in bytes
-    pub original_size: u64,
-    /// Stripe size in bytes (from encoding)
-    pub stripe_size: u64,
-    /// Number of stripes
-    pub stripe_count: u64,
-    /// Encoding type discriminant (EncodingType as u64)
-    pub encoding_type: u64,
-    /// Encoding params (e.g., ClayParams packed as u64)
-    pub encoding_params: u64,
-    /// Per-slice commitment leaf hashes (SPOOL_GROUP_SIZE entries)
-    pub commitment: Vec<Hash>,
-}
-
-impl TrackInfo {
-    /// Get the encoding profile (type + params).
-    pub fn profile(&self) -> EncodingProfile {
-        EncodingProfile {
-            encoding: self.encoding_type,
-            params: self.encoding_params,
-        }
-    }
-
-    /// Set the encoding profile (type + params).
-    pub fn set_profile(&mut self, profile: EncodingProfile) {
-        self.encoding_type = profile.encoding;
-        self.encoding_params = profile.params;
-    }
-
-    /// Recompute the commitment root from stored leaf hashes.
-    pub fn commitment_root(&self) -> Hash {
-        tape_crypto::merkle::root_from_leaf_hashes::<
-            { tape_core::erasure::COMMITMENT_TREE_HEIGHT },
-        >(&self.commitment)
-    }
-
-    /// Verify a single slice against its stored leaf hash.
-    pub fn verify_slice(&self, position: usize, data: &[u8]) -> bool {
-        if position >= self.commitment.len() {
-            return false;
-        }
-        tape_crypto::merkle::hash_leaf(data) == self.commitment[position]
-    }
+    /// Next monotonic track number expected for this tape.
+    pub next_track_number: TrackNumber,
 }
 
 /// Proof data needed to submit an on-chain track invalidation
@@ -78,7 +26,7 @@ pub struct InvalidationProof {
 
 /// Snapshot chunk encoding metadata (stored during build, consumed during registration).
 ///
-/// This is intentionally separate from `TrackInfo`: snapshots are built before
+/// This is intentionally separate from the compressed-track catalog: snapshots are built before
 /// on-chain registration creates any track state, and we only store local slices
 /// (not all group slices). Persisting this metadata lets `RegisterSnapshot` resume
 /// after crashes without re-running full snapshot encoding.
@@ -126,6 +74,7 @@ mod tests {
     fn test_tape_info_roundtrip() {
         let info = TapeInfo {
             end_epoch: EpochNumber(200),
+            next_track_number: TrackNumber(0),
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -134,66 +83,47 @@ mod tests {
     }
 
     #[test]
-    fn test_track_info_roundtrip() {
-        let info = TrackInfo {
-            tape_address: Pubkey([1u8; 32]),
-            spool_group: SpoolGroup(3),
-            original_size: 1024 * 1024,
-            stripe_size: 10 * 1024 * 1024,
+    fn test_packed_track_roundtrip() {
+        let info: PackedTrack = [1u8; core::mem::size_of::<CompressedTrack>()];
+
+        let bytes = wincode::serialize(&info).unwrap();
+        let decoded: PackedTrack = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn test_track_blob_data_roundtrip() {
+        let info = BlobInfo {
+            size: StorageUnits(512),
+            root: Hash::from([2u8; 32]),
+            commitment: Hash::from([3u8; 32]),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: 64,
+            stripe_count: 2,
+            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+        };
+
+        let bytes = wincode::serialize(&info).unwrap();
+        let decoded: BlobInfo = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn test_track_blob_commitment_root() {
+        let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
+        let info = BlobInfo {
+            size: StorageUnits(1024),
+            root: Hash::default(),
+            commitment: tape_crypto::merkle::root_from_leaf_hashes::<
+                { tape_core::erasure::COMMITMENT_TREE_HEIGHT },
+            >(&leaves),
+            profile: EncodingProfile::clay_default(),
+            stripe_size: 128,
             stripe_count: 1,
-            encoding_type: 2, // Clay
-            encoding_params: 0x100714, // n=20, k=7, d=16 packed
-            commitment: vec![Hash::default(); 20],
+            leaves,
         };
 
-        let bytes = wincode::serialize(&info).unwrap();
-        let decoded: TrackInfo = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(info, decoded);
-    }
-
-    #[test]
-    fn test_track_info_basic_encoding() {
-        let info = TrackInfo {
-            tape_address: Pubkey([2u8; 32]),
-            spool_group: SpoolGroup(0),
-            original_size: 512,
-            stripe_size: 0,
-            stripe_count: 0,
-            encoding_type: 1, // Basic
-            encoding_params: 0,
-            commitment: vec![],
-        };
-
-        let bytes = wincode::serialize(&info).unwrap();
-        let decoded: TrackInfo = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(info, decoded);
-    }
-
-    #[test]
-    fn test_track_info_profile_helpers() {
-        use tape_core::encoding::{EncodingProfile, EncodingType, ClayParams};
-
-        let mut info = TrackInfo {
-            tape_address: Pubkey([3u8; 32]),
-            spool_group: SpoolGroup(1),
-            original_size: 1024,
-            stripe_size: 0,
-            stripe_count: 0,
-            encoding_type: 0,
-            encoding_params: 0,
-            commitment: vec![],
-        };
-
-        // Set profile
-        let profile = EncodingProfile::clay(ClayParams::new(20, 7, 16));
-        info.set_profile(profile);
-
-        // Get profile and verify
-        let retrieved = info.profile();
-        assert_eq!(retrieved.encoding_type(), Some(EncodingType::Clay));
-        assert_eq!(retrieved.clay_params().n(), 20);
-        assert_eq!(retrieved.clay_params().k(), 7);
-        assert_eq!(retrieved.clay_params().d(), 16);
+        assert_eq!(info.commitment_root(), info.commitment);
     }
 
     #[test]

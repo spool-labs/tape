@@ -1,26 +1,27 @@
 use tape_solana::*;
 use tape_api::prelude::*;
-use tape_api::event::TrackRegistered;
-use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT};
-use tape_core::encoding::EncodingProfile;
+use tape_api::event::TrackWritten;
+use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::spooler::SpoolGroup;
+use tape_core::track::TRACK_TREE_HEIGHT;
+use tape_core::track::blob::BlobInfo;
+use tape_core::track::store::TrackStore;
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_crypto::Hash;
-use tape_crypto::merkle::root_from_leaf_hashes;
 use crate::error::*;
 
-pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = RegisterTrack::try_from_bytes(data)?;
+pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let (args, payload) = parse_track_write(data)?;
+    let meta = payload
+        .meta()
+        .ok_or(TapeError::InvalidCommitment)?;
     let [
         fee_payer_info,
         authority_info,
 
         epoch_info,
         tape_info,
-        track_info,
-
-        system_program_info,
         slot_hashes_info,
-        rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -32,99 +33,66 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     authority_info
         .is_signer()?;
 
-    system_program_info
-        .is_program(&system_program::ID)?;
-    rent_info
-        .is_sysvar(&sysvar::rent::ID)?;
-
     let epoch = epoch_info
         .is_epoch()?
         .as_account::<Epoch>(&tapedrive::ID)?;
 
     let (tape_address, _) = tape_pda(*authority_info.key);
-    let (track_address, _) = track_pda(*authority_info.key, args.key);
 
     let tape = tape_info
         .is_writable()?
         .has_address(&tape_address)?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    track_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&track_address)?;
-
     if tape.expiry_epoch <= current_epoch(epoch) {
         return Err(TapeError::TapeExpired.into());
     }
 
-    let total_units = StorageUnits::unpack(args.size);
-
-    create_program_account::<Track>(
-        track_info,
-        system_program_info,
-        fee_payer_info,
-        &tapedrive::ID,
-        &[TRACK, authority_info.key.as_ref(), args.key.as_ref()],
-    )?;
-
-    let track_number = tape.track_count;
-    let tape_number  = tape.id.into();
-    let seed = slot_hash_seed(slot_hashes_info)?;
-    let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
-        .wrapping_add(tape_number)
-        .wrapping_add(track_number);
-
-    let spool_group = SpoolGroup(mixed % SPOOL_GROUP_COUNT as u64);
-    tape.track_count = tape.track_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    let track = track_info.as_account_mut::<Track>(&tapedrive::ID)?;
-
-    track.id   = track_number.into();
-    track.tape = tape_address;
-    track.key  = args.key;
-    track.size = total_units;
-    track.data = TrackData::new(
-        current_epoch(epoch),
-        args.commitment,
-        spool_group,
+    let track_number = tape.tracks.next_number();
+    let spool_group = get_spool_group(
+        tape.id,
+        track_number,
+        slot_hash_seed(slot_hashes_info)?,
     );
-    let profile = EncodingProfile::unpack(args.profile);
-    track.data.profile = profile;
 
-    // Verify leaf hashes produce the commitment root
-    let computed_root = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&args.leaves);
-    if computed_root != args.commitment {
-        return Err(TapeError::InvalidCommitment.into());
-    }
-
-    let new_used = tape.used
-         .checked_add(total_units)
-         .ok_or(ProgramError::ArithmeticOverflow)?;
-
-     if new_used > tape.capacity { 
-         return Err(TapeError::NoSpace.into()); 
-     }
-
-    tape.used = new_used;
-
-    TrackRegistered {
-        track: *track_info.key,
+    let track = CompressedTrack {
         tape: tape_address,
         key: args.key,
-        size: total_units,
-        commitment: args.commitment,
+        track_number,
+        kind: meta.kind as u64,
+        state: meta.initial_state as u64,
+        size: meta.size,
+        spool_group,
+        value_hash: meta.value_hash,
+    };
+    let track_address = track_pda(track.tape, track.track_number).0;
+    let track_hash = track.get_hash();
+
+    tape.write_track(&track)?;
+
+    TrackWritten {
         epoch: current_epoch(epoch),
-        profile,
+        track: track_address,
+        tape: tape_address,
         spool_group: spool_group.0.to_le_bytes(),
-        stripe_size: args.stripe_size,
-        stripe_count: args.stripe_count,
-        leaves: args.leaves,
+        track_number,
+        track_hash,
     }.log();
 
     Ok(())
+}
+
+fn get_spool_group(
+    tape_id: TapeNumber,
+    track_number: TrackNumber,
+    seed: Hash,
+) -> SpoolGroup {
+    let tape_number: u64 = tape_id.into();
+    let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
+        .wrapping_add(tape_number)
+        .wrapping_add(track_number.0);
+
+    SpoolGroup(mixed % SPOOL_GROUP_COUNT as u64)
 }
 
 fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
@@ -170,23 +138,25 @@ mod tests {
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         // Compute valid commitment from leaves
         let commitment = tape_crypto::merkle::root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let blob = BlobInfo {
+            size: storage_units,
+            root: data_root,
+            commitment,
+            profile,
+            stripe_size: 1024,
+            stripe_count: 1,
+            leaves,
+        };
 
-        let instruction = build_register_track_ix(
+        let instruction = build_track_write_blob_ix(
             fee_payer,
             authority,
-            storage_units,
-            data_root,
-            commitment,
             bucket_hash,
-            profile,
-            1024,
-            1,
-            leaves,
+            blob,
         );
 
         let (epoch_address, _) = epoch_pda();
         let (tape_address, _) = tape_pda(authority);
-        let (track_address, _) = track_pda(authority, bucket_hash);
 
         // Setup existing accounts
 
@@ -197,7 +167,11 @@ mod tests {
             capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
-            track_count: 100,
+            tracks: TrackStore {
+                tree: tape_crypto::merkle::MerkleTree::new(),
+                next_number: TrackNumber(0),
+                live_count: 0,
+            },
             ..Tape::zeroed()
         };
 
@@ -207,19 +181,22 @@ mod tests {
 
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
-            empty(track_address),
-
-            system_program(),
             slot_hashes_account(),
-            rent_sysvar(),
         ];
 
-        // Build expected track data with profile.
-        // seed=0 (zeroed slot hash), mixed = tape.id(1) + track_count(100) = 101,
-        // spool_group = 101 % 50 = 1
-        let mut expected_data = TrackData::new(
-            EpochNumber(0), commitment, SpoolGroup(1));
-        expected_data.profile = profile;
+        let mut expected_tree = tape_crypto::merkle::MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        let track = CompressedTrack {
+            tape: tape_address,
+            key: bucket_hash,
+            track_number: TrackNumber(0),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Registered as u64,
+            size: storage_units,
+            spool_group: SpoolGroup(1),
+            value_hash: blob.get_hash(),
+        };
+        let track_hash = track.get_hash();
+        expected_tree.add_leaf_hash(track_hash).unwrap();
 
         let env = test_env();
         env.process_instruction(
@@ -227,15 +204,6 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&track_address).data(
-                    Track {
-                        id: TrackNumber(100),
-                        tape: tape_address,
-                        key: bucket_hash,
-                        size: storage_units,
-                        data: expected_data,
-                    }.pack().as_ref()
-                ).build(),
                 Check::account(&tape_address).data(
                     Tape {
                         id: tape.id,
@@ -244,7 +212,11 @@ mod tests {
                         used: storage_units,
                         active_epoch: tape.active_epoch,
                         expiry_epoch: tape.expiry_epoch,
-                        track_count: 101,
+                        tracks: TrackStore {
+                            tree: expected_tree,
+                            next_number: TrackNumber(1),
+                            live_count: 1,
+                        },
                         ..Tape::zeroed()
                     }.pack().as_ref()
                 ).build(),

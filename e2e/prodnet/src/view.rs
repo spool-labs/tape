@@ -19,6 +19,7 @@ pub struct NodeView {
     pub local_id: usize,
     pub node_id: Option<u64>,
     pub authority: String,
+    pub node_address: String,
     pub address: Option<String>,
     pub healthy: bool,
     pub metrics_available: bool,
@@ -39,7 +40,7 @@ pub struct UploadView {
     pub size_bytes: u64,
     pub cert_status: String,
     pub tape_address: String,
-    pub track_address: String,
+    pub track_address: Option<String>,
     pub last_error: Option<String>,
 }
 

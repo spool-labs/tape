@@ -48,8 +48,23 @@ struct Cli {
     stake_amount: u64,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(8 * 1024 * 1024)
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(error) => {
+            eprintln!("build tokio runtime failed: {error:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

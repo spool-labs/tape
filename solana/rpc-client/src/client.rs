@@ -1,6 +1,5 @@
 use rpc_solana::{RpcConfig, SolanaRpc};
-use solana_transaction_status::UiConfirmedBlock;
-use rpc::{Rpc, RpcError};
+use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError, UiConfirmedBlock};
 
 #[cfg(feature = "metrics")]
 use std::sync::Arc;
@@ -84,6 +83,14 @@ impl<R: Rpc> RpcClient<R> {
     /// Get block by slot number.
     pub async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
         self.rpc.get_block(slot).await
+    }
+
+    /// Get a confirmed transaction by signature.
+    pub async fn get_transaction(
+        &self,
+        signature: &rpc::Signature,
+    ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError> {
+        self.rpc.get_transaction(signature).await
     }
 }
 

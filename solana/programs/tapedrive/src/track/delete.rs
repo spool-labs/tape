@@ -1,17 +1,17 @@
 use tape_api::prelude::*;
 use tape_api::event::TrackDeleted;
+use tape_core::track::TRACK_TREE_HEIGHT;
+use tape_core::track::store::TrackStore;
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
+use crate::error::*;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = DeleteTrack::try_from_bytes(data)?;
+    let args = parse_delete_track(data)?;
     let [
         fee_payer_info,
         authority_info,
 
         tape_info,
-        track_info,
-
-        system_program_info,
-        rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -23,52 +23,33 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     authority_info
         .is_signer()?;
 
-    system_program_info.is_program(&system_program::ID)?;
-    rent_info.is_sysvar(&sysvar::rent::ID)?;
-
     let tape = tape_info
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    let track = track_info
-        .is_writable()?
-        .as_account_mut::<Track>(&tapedrive::ID)?;
-
     let (tape_address, _) = tape_pda(tape.authority);
-    let (track_address, _) = track_pda(tape.authority, track.key);
+
+    let proof = args.track;
+    let track_address = track_pda(proof.state.tape, proof.state.track_number).0;
 
     if tape.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if tape_address != *tape_info.key {
+    if tape_address != *tape_info.key || proof.state.tape != *tape_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if track_address != *track_info.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    if track.tape != tape_address {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    tape.used = tape.used
-        .checked_sub(track.size)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    tape.track_count = tape.track_count
-        .checked_sub(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let size = proof.state.size;
+    tape.delete_track(&proof)
+        .map_err(|_| TapeError::BadProof)?;
 
     TrackDeleted {
-        track: *track_info.key,
+        track: track_address,
         tape: tape_address,
-        key: track.key,
-        size: track.size,
+        key: proof.state.key,
+        size,
     }.log();
-
-    close_account(track_info, fee_payer_info)?;
 
     Ok(())
 }
@@ -78,7 +59,6 @@ mod tests {
     use super::*;
     use tape_crypto::Hash;
     use tape_test::*;
-    use tape_core::spooler::SpoolGroup;
 
     #[test]
     fn test_delete_track() {
@@ -87,41 +67,56 @@ mod tests {
         let bucket_hash = Hash::new_unique();
 
         let (tape_address, _) = tape_pda(authority);
-        let (track_address, _) = track_pda(authority, bucket_hash);
-
-        let track = Track {
-            id: TrackNumber(100),
+        let track_number = TrackNumber(0);
+        let size = StorageUnits::mb(250);
+        let track = CompressedTrack {
             tape: tape_address,
             key: bucket_hash,
-            size: StorageUnits::mb(250),
-            data: TrackData::new(
-                EpochNumber(10),
-                Hash::new_unique(),
-                SpoolGroup(0),
-            ),
+            track_number,
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size,
+            spool_group: SpoolGroup(7),
+            value_hash: Hash::new_unique(),
         };
+        let track_hash = track.get_hash();
+        let mut track_tree = tape_crypto::merkle::MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        track_tree.add_leaf_hash(track_hash).unwrap();
+        let proof: [Hash; TRACK_TREE_HEIGHT] =
+            tape_crypto::merkle::create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
+                &[track_hash],
+                track_number.0 as usize,
+            )
+            .try_into()
+            .unwrap();
+        let mut expected_tree = track_tree;
+        expected_tree.remove_leaf_hash(track_number.0, &proof, track_hash).unwrap();
 
         let tape = Tape {
             authority: authority,
             capacity: StorageUnits::mb(1000),
-            used: StorageUnits::mb(250),
+            used: size,
             active_epoch: EpochNumber(15),
             expiry_epoch: EpochNumber(100),
-            track_count: 1,
+            tracks: TrackStore {
+                tree: track_tree,
+                next_number: TrackNumber(1),
+                live_count: 1,
+            },
             ..Tape::zeroed()
         };
 
-        let instruction = build_delete_track_ix(fee_payer, authority, bucket_hash);
+        let instruction = build_delete_track_ix(
+            fee_payer,
+            authority,
+            CompressedTrackProof { state: track, proof },
+        );
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
 
             pda(tape_address, tape.pack(), tapedrive::ID),
-            pda(track_address, track.pack(), tapedrive::ID),
-
-            system_program(),
-            rent_sysvar(),
         ];
 
         let env = test_env();
@@ -130,17 +125,14 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&fee_payer)
-                    .lamports(1_000_000_000 + rent(Track::get_size()))
-                    .build(),
-                Check::account(&track_address)
-                    .lamports(0)
-                    .closed()
-                    .build(),
                 Check::account(&tape_address).data(
                     Tape {
                         used: StorageUnits(0),
-                        track_count: 0,
+                        tracks: TrackStore {
+                            tree: expected_tree,
+                            next_number: TrackNumber(1),
+                            live_count: 0,
+                        },
                         ..tape
                     }.pack().as_ref()
                 ).build(),

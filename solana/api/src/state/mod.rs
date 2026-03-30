@@ -8,7 +8,6 @@ mod snapshot;
 mod stake;
 mod system;
 mod tape;
-mod track;
 mod treasury;
 
 pub use archive::*;
@@ -20,7 +19,6 @@ pub use snapshot::*;
 pub use stake::*;
 pub use system::*;
 pub use tape::*;
-pub use track::*;
 pub use treasury::*;
 
 use tape_solana::*;
@@ -43,7 +41,6 @@ pub enum AccountType {
     Stake,
 
     Tape,
-    Track,
 
     SnapshotState,
 }

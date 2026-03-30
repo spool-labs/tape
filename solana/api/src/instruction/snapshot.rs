@@ -3,8 +3,13 @@
 //! Instructions for registering and managing epoch snapshot tracks.
 
 use tape_core::prelude::*;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+use tape_core::track::data::TrackMeta;
+use tape_core::track::types::{TrackKind, TrackState};
 use tape_crypto::Hash;
+use tape_crypto::hash::hash;
+use tape_crypto::merkle::root_from_leaf_hashes;
+use crate::errors::TapeError;
 use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use tape_solana::*;
@@ -45,6 +50,16 @@ pub struct RegisterSnapshot {
     pub leaves: [Hash; SPOOL_GROUP_SIZE],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SnapshotTrackPayload {
+    pub commitment: Hash,
+    pub profile: [u8; 16],
+    pub stripe_size: [u8; 8],
+    pub stripe_count: [u8; 8],
+    pub leaves: [Hash; SPOOL_GROUP_SIZE],
+}
+
 /// Instruction data for CertifySnapshot.
 ///
 /// Certifies a snapshot track with an aggregate BLS signature.
@@ -62,6 +77,32 @@ pub struct CertifySnapshot {
 
     /// Aggregated BLS signature.
     pub signature: BlsSignature,
+}
+
+pub fn get_snapshot_track_payload(
+    args: &RegisterSnapshot,
+) -> Result<TrackMeta, ProgramError> {
+    let computed_root = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&args.leaves);
+    if computed_root != args.commitment {
+        return Err(TapeError::InvalidCommitment.into());
+    }
+
+    let stripe_size = u64::from_le_bytes(args.stripe_size);
+    let stripe_count = u64::from_le_bytes(args.stripe_count);
+    let payload = SnapshotTrackPayload {
+        commitment: args.commitment,
+        profile: args.profile,
+        stripe_size: args.stripe_size,
+        stripe_count: args.stripe_count,
+        leaves: args.leaves,
+    };
+
+    Ok(TrackMeta {
+        kind: TrackKind::Blob,
+        size: StorageUnits::from_bytes(stripe_size.saturating_mul(stripe_count)),
+        initial_state: TrackState::Registered,
+        value_hash: hash(bytemuck::bytes_of(&payload)),
+    })
 }
 
 /// Build a RegisterSnapshot instruction.
@@ -83,7 +124,6 @@ pub fn build_register_snapshot_ix(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(system_address);
-    let (track_address, _) = snapshot_pda(epoch_number, commitment);
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
@@ -94,10 +134,7 @@ pub fn build_register_snapshot_ix(
             AccountMeta::new_readonly(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(tape_address, false),
-            AccountMeta::new(track_address, false),
-            AccountMeta::new(snapshot_state_address, false),
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new_readonly(snapshot_state_address, false),
         ],
         data: RegisterSnapshot {
             epoch: epoch_number.pack(),

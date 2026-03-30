@@ -86,6 +86,7 @@ mod tests {
         assert_eq!(NodeStatus::default(), NodeStatus::Standby);
     }
 
+    #[cfg(feature = "wincode")]
     #[test]
     fn spool_state_roundtrip() {
         let states = vec![
@@ -113,6 +114,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "wincode")]
     #[test]
     fn node_status_roundtrip() {
         let statuses = vec![

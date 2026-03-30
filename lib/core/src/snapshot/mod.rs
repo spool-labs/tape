@@ -6,21 +6,67 @@
 //! replaying all Solana blocks from genesis.
 
 mod types;
-pub use types::{ReplayableEvent, SnapshotEntry, SnapshotLog};
+pub use types::{ReplayTrack, ReplayableEvent, SnapshotEntry, SnapshotLog};
 
 #[cfg(test)]
 mod tests {
+    use solana_program::pubkey::Pubkey;
+
     use super::*;
+    use crate::encoding::EncodingProfile;
+    use crate::erasure::SPOOL_GROUP_SIZE;
+    use crate::spooler::SpoolGroup;
+    use crate::track::blob::BlobInfo;
+    use crate::track::types::{CompressedTrack, TrackKind, TrackState};
     use crate::types::{EpochNumber, NodeId, SlotNumber};
     use tape_crypto::hash::Hash;
+
+    fn raw_replay_track() -> ReplayTrack {
+        ReplayTrack {
+            state: CompressedTrack {
+                tape: Pubkey::new_from_array([1u8; 32]),
+                key: Hash::default(),
+                track_number: 0u64.into(),
+                kind: TrackKind::Raw as u64,
+                state: TrackState::Certified as u64,
+                size: 1u64.into(),
+                spool_group: SpoolGroup::from(0),
+                value_hash: Hash::default(),
+            },
+            epoch: EpochNumber(10),
+            blob: None,
+        }
+    }
+
+    fn blob_replay_track() -> ReplayTrack {
+        ReplayTrack {
+            state: CompressedTrack {
+                tape: Pubkey::new_from_array([2u8; 32]),
+                key: Hash::from([3u8; 32]),
+                track_number: 1u64.into(),
+                kind: TrackKind::Blob as u64,
+                state: TrackState::Registered as u64,
+                size: 1024u64.into(),
+                spool_group: SpoolGroup::from(1),
+                value_hash: Hash::from([4u8; 32]),
+            },
+            epoch: EpochNumber(11),
+            blob: Some(BlobInfo {
+                size: 1024u64.into(),
+                root: Hash::from([5u8; 32]),
+                commitment: Hash::from([6u8; 32]),
+                profile: EncodingProfile::basic_default(),
+                stripe_size: 128,
+                stripe_count: 4,
+                leaves: [Hash::from([7u8; 32]); SPOOL_GROUP_SIZE],
+            }),
+        }
+    }
 
     #[test]
     fn test_replayable_event_variants() {
         let events = vec![
-            ReplayableEvent::RegisterTrack {
-                track: [1u8; 32],
-                event_data: vec![0u8; 808],
-            },
+            ReplayableEvent::Track(raw_replay_track()),
             ReplayableEvent::CertifyTrack {
                 track: [2u8; 32],
                 epoch: EpochNumber(10),
@@ -82,10 +128,10 @@ mod tests {
                 SnapshotEntry {
                     slot: SlotNumber(150),
                     events: vec![
-                        ReplayableEvent::RegisterTrack {
-                            track: [1u8; 32],
-                            event_data: vec![0u8; 808],
-                        },
+                        ReplayableEvent::Track(ReplayTrack {
+                            epoch: EpochNumber(42),
+                            ..raw_replay_track()
+                        }),
                         ReplayableEvent::CertifyTrack {
                             track: [1u8; 32],
                             epoch: EpochNumber(42),
@@ -116,10 +162,14 @@ mod tests {
                         old_epoch: EpochNumber(41),
                         new_epoch: EpochNumber(42),
                     },
-                    ReplayableEvent::RegisterTrack {
-                        track: [0xAB; 32],
-                        event_data: vec![1, 2, 3, 4],
-                    },
+                    ReplayableEvent::Track(ReplayTrack {
+                        state: CompressedTrack {
+                            tape: Pubkey::new_from_array([0xAB; 32]),
+                            ..raw_replay_track().state
+                        },
+                        epoch: EpochNumber(42),
+                        ..raw_replay_track()
+                    }),
                     ReplayableEvent::SyncEpoch {
                         node: [0xCD; 32],
                         node_id: NodeId(7),
@@ -139,10 +189,8 @@ mod tests {
     #[test]
     fn test_replayable_event_wincode_roundtrip() {
         let events = vec![
-            ReplayableEvent::RegisterTrack {
-                track: [1u8; 32],
-                event_data: vec![0u8; 100],
-            },
+            ReplayableEvent::Track(raw_replay_track()),
+            ReplayableEvent::Track(blob_replay_track()),
             ReplayableEvent::CertifyTrack {
                 track: [2u8; 32],
                 epoch: EpochNumber(10),
@@ -157,5 +205,14 @@ mod tests {
             let recovered: ReplayableEvent = wincode::deserialize(&bytes).expect("deserialize");
             assert_eq!(&recovered, event);
         }
+    }
+
+    #[cfg(feature = "wincode")]
+    #[test]
+    fn test_replay_track_with_blob_wincode_roundtrip() {
+        let track = blob_replay_track();
+        let bytes = wincode::serialize(&track).expect("serialize");
+        let recovered: ReplayTrack = wincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(recovered, track);
     }
 }

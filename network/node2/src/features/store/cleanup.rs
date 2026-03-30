@@ -1,7 +1,7 @@
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
 use tape_store::types::Pubkey;
 use tape_store::TapeStore;
 
@@ -16,6 +16,7 @@ pub fn delete_track_local<Db: Store>(
     }
 
     store.delete_track(track).map_err(store_error)?;
+    store.delete_track_data(track).map_err(store_error)?;
     store.delete_object_info(track).map_err(store_error)
 }
 
@@ -36,9 +37,10 @@ pub fn delete_tape_local<Db: Store>(
         }
 
         for (track, info) in &tracks {
-            if info.tape_address == tape {
+            if info.tape == tape.into() {
                 cleanup_track_slices(store, *track, info.spool_group)?;
                 store.delete_track(*track).map_err(store_error)?;
+                store.delete_track_data(*track).map_err(store_error)?;
                 store.delete_object_info(*track).map_err(store_error)?;
             }
         }

@@ -305,5 +305,4 @@ mod tests {
         assert_eq!(member.preferences, preferences);
         assert_eq!(member.weight, 0);
     }
-
 }

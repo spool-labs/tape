@@ -10,7 +10,8 @@ use store::Store;
 use tape_crypto::Pubkey;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::types::TrackData;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -38,12 +39,25 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotResponsible)?;
 
-    let track_info = state
+    let track = state
         .context
         .store
         .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+    if !track.is_blob() {
+        return Err(RouteError::BadRequest("raw tracks do not support repair".into()));
+    }
+
+    let track_data = state
+        .context
+        .store
+        .get_track_data(track_key)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotFound)?;
+    let TrackData::Blob(blob) = track_data else {
+        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
+    };
 
     let helper_slice = state
         .context
@@ -53,7 +67,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or(RouteError::NotFound)?;
 
     let output = extract_repair_data(
-        &track_info,
+        &blob,
         &request.stripes, 
         &helper_slice
     ).map_err(|error| RouteError::BadRequest(error.to_string()))?;
@@ -68,4 +82,3 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
 }
-

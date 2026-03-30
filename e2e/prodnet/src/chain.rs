@@ -14,8 +14,7 @@ use tape_api::errors::{ProgramError, TapeError, is_account_state_pending_error};
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_advance_pool_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
-    build_initialize_mint_ix, build_join_network_ix, build_reserve_snapshot_tape_ix,
-    build_stake_with_pool_ix,
+    build_initialize_mint_ix, build_join_network_ix, build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;
@@ -172,28 +171,6 @@ impl ChainManager {
                 Err(e) if is_already_initialized(&e) => info!("archive/epoch already initialized"),
                 Err(e) => return Err(e).context("initialize archive/epoch"),
             }
-        }
-
-        match self.rpc.get_snapshot_state().await {
-            Ok(_) => info!("snapshot tape already reserved"),
-            Err(RpcError::AccountNotFound(_)) => {
-                info!("reserving snapshot tape");
-                let result = self
-                    .rpc
-                    .send_instructions(
-                        &self.admin,
-                        vec![build_reserve_snapshot_tape_ix(admin_pub)],
-                    )
-                    .await;
-                match result {
-                    Ok(_) => info!("snapshot tape reserved"),
-                    Err(e) if is_already_initialized(&e) => {
-                        info!("snapshot tape already reserved")
-                    }
-                    Err(e) => return Err(e).context("reserve snapshot tape"),
-                }
-            }
-            Err(e) => return Err(e).context("get_snapshot_state"),
         }
 
         info!("chain initialization complete");

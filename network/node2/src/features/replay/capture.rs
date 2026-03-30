@@ -1,19 +1,29 @@
-use tape_blocks::ParsedInstruction;
-use tape_core::snapshot::ReplayableEvent;
+use tape_blocks::{ParseError, ParsedInstruction};
+use tape_core::snapshot::{ReplayTrack, ReplayableEvent};
+use tape_core::spooler::SpoolGroup;
+use tape_core::track::data::TrackData;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::EpochNumber;
+use tape_store::types::Pubkey as StorePubkey;
 
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::replay::types::ReplayBatch;
+use crate::features::replay::types::{RawTrack, ReplayBatch};
 
 pub struct CapturedEvent {
     pub epoch: EpochNumber,
     pub event: ReplayableEvent,
 }
 
+struct CapturedTrackWrite {
+    event: CapturedEvent,
+    raw_track: Option<RawTrack>,
+}
+
 pub struct CaptureOutput {
     pub next_epoch: EpochNumber,
     pub events: Vec<CapturedEvent>,
+    pub raw_tracks: Vec<RawTrack>,
 }
 
 impl CaptureOutput {
@@ -21,6 +31,7 @@ impl CaptureOutput {
         ReplayBatch {
             slot,
             events: self.events.into_iter().map(|entry| entry.event).collect(),
+            raw_tracks: self.raw_tracks,
         }
     }
 }
@@ -31,105 +42,174 @@ pub fn capture_block(
 ) -> Result<CaptureOutput, NodeError> {
     let mut current_epoch = initial_epoch;
     let mut events = Vec::new();
+    let mut raw_tracks = Vec::new();
 
     for instruction in &block.instructions {
         let Some(captured) = capture_instruction(&mut current_epoch, instruction)? else {
             continue;
         };
-        events.push(captured);
+        if let Some(raw_track) = captured.raw_track {
+            raw_tracks.push(raw_track);
+        }
+        events.push(captured.event);
     }
 
     Ok(CaptureOutput {
         next_epoch: current_epoch,
         events,
+        raw_tracks,
     })
 }
 
 fn capture_instruction(
     current_epoch: &mut EpochNumber,
     instruction: &ParsedInstruction,
-) -> Result<Option<CapturedEvent>, NodeError> {
+) -> Result<Option<CapturedTrackWrite>, NodeError> {
     let captured = match instruction {
         ParsedInstruction::AdvanceEpoch { event } => {
             *current_epoch = event.new_epoch;
 
-            CapturedEvent {
-                epoch: event.new_epoch,
-                event: ReplayableEvent::AdvanceEpoch {
-                    old_epoch: event.old_epoch,
-                    new_epoch: event.new_epoch,
+            CapturedTrackWrite {
+                event: CapturedEvent {
+                    epoch: event.new_epoch,
+                    event: ReplayableEvent::AdvanceEpoch {
+                        old_epoch: event.old_epoch,
+                        new_epoch: event.new_epoch,
+                    },
+                },
+                raw_track: None,
+            }
+        },
+        ParsedInstruction::SyncEpoch { event } => CapturedTrackWrite {
+            event: CapturedEvent {
+                epoch: *current_epoch,
+                event: ReplayableEvent::SyncEpoch {
+                    node: event.node.to_bytes(),
+                    node_id: event.id,
+                    epoch: event.epoch,
+                    spools_hash: event.spools_hash,
+                },
+            },
+            raw_track: None,
+        },
+        ParsedInstruction::TrackWrite {
+            track,
+            key,
+            value,
+            event,
+            ..
+        } => {
+            let meta = value
+                .meta()
+                .ok_or_else(|| ParseError::Deserialization("invalid track payload".into()))?;
+
+            let spool_group = SpoolGroup::unpack(event.spool_group);
+
+            CapturedTrackWrite {
+                event: CapturedEvent {
+                    epoch: *current_epoch,
+                    event: ReplayableEvent::Track(ReplayTrack {
+                        state: CompressedTrack {
+                            tape: event.tape,
+                            key: *key,
+                            track_number: event.track_number,
+                            kind: meta.kind as u64,
+                            state: meta.initial_state as u64,
+                            size: meta.size,
+                            spool_group,
+                            value_hash: meta.value_hash,
+                        },
+                        epoch: event.epoch,
+                        blob: match value {
+                            TrackData::Raw(_) => None,
+                            TrackData::Blob(blob) => Some(*blob),
+                        },
+                    }),
+                },
+                raw_track: match value {
+                    TrackData::Raw(bytes) => Some(RawTrack {
+                        track: StorePubkey::from(*track),
+                        spool_group,
+                        data: bytes.clone(),
+                    }),
+                    TrackData::Blob(_) => None,
                 },
             }
-        }
-        ParsedInstruction::SyncEpoch { event } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::SyncEpoch {
-                node: event.node.to_bytes(),
-                node_id: event.id,
-                epoch: event.epoch,
-                spools_hash: event.spools_hash,
-            },
         },
-        ParsedInstruction::RegisterTrack { track, event, .. } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::RegisterTrack {
-                track: track.to_bytes(),
-                event_data: bytemuck::bytes_of(event).to_vec(),
-            },
-        },
-        ParsedInstruction::DeleteTrack { track, .. } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::DeleteTrack {
-                track: track.to_bytes(),
+        ParsedInstruction::DeleteTrack { track, .. } => CapturedTrackWrite {
+            event: CapturedEvent {
                 epoch: *current_epoch,
+                event: ReplayableEvent::DeleteTrack {
+                    track: track.to_bytes(),
+                    epoch: *current_epoch,
+                },
             },
+            raw_track: None,
         },
-        ParsedInstruction::CertifyTrack { track, event } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::CertifyTrack {
-                track: track.to_bytes(),
-                epoch: event.epoch,
-            },
-        },
-        ParsedInstruction::InvalidateTrack { track, event } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::InvalidateTrack {
-                track: track.to_bytes(),
-                epoch: event.epoch,
-            },
-        },
-        ParsedInstruction::ReserveTape { tape, event, .. } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::ReserveTape {
-                tape: tape.to_bytes(),
-                authority: event.authority.to_bytes(),
-                active_epoch: event.active_epoch,
-                expiry_epoch: event.expiry_epoch,
-            },
-        },
-        ParsedInstruction::DestroyTape { tape, .. } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::DestroyTape {
-                tape: tape.to_bytes(),
+        ParsedInstruction::CertifyTrack { track, event } => CapturedTrackWrite {
+            event: CapturedEvent {
                 epoch: *current_epoch,
+                event: ReplayableEvent::CertifyTrack {
+                    track: track.to_bytes(),
+                    epoch: event.epoch,
+                },
             },
+            raw_track: None,
+        },
+        ParsedInstruction::InvalidateTrack { track, event } => CapturedTrackWrite {
+            event: CapturedEvent {
+                epoch: *current_epoch,
+                event: ReplayableEvent::InvalidateTrack {
+                    track: track.to_bytes(),
+                    epoch: event.epoch,
+                },
+            },
+            raw_track: None,
+        },
+        ParsedInstruction::ReserveTape { tape, event, .. } => CapturedTrackWrite {
+            event: CapturedEvent {
+                epoch: *current_epoch,
+                event: ReplayableEvent::ReserveTape {
+                    tape: tape.to_bytes(),
+                    authority: event.authority.to_bytes(),
+                    active_epoch: event.active_epoch,
+                    expiry_epoch: event.expiry_epoch,
+                },
+            },
+            raw_track: None,
+        },
+        ParsedInstruction::DestroyTape { tape, .. } => CapturedTrackWrite {
+            event: CapturedEvent {
+                epoch: *current_epoch,
+                event: ReplayableEvent::DestroyTape {
+                    tape: tape.to_bytes(),
+                    epoch: *current_epoch,
+                },
+            },
+            raw_track: None,
         },
         ParsedInstruction::RegisterNode {
             authority,
             node,
             ..
-        } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::RegisterNode {
-                authority: authority.to_bytes(),
-                node: node.to_bytes(),
+        } => CapturedTrackWrite {
+            event: CapturedEvent {
+                epoch: *current_epoch,
+                event: ReplayableEvent::RegisterNode {
+                    authority: authority.to_bytes(),
+                    node: node.to_bytes(),
+                },
             },
+            raw_track: None,
         },
-        ParsedInstruction::JoinNetwork { node, .. } => CapturedEvent {
-            epoch: *current_epoch,
-            event: ReplayableEvent::JoinNetwork {
-                node: node.to_bytes(),
+        ParsedInstruction::JoinNetwork { node, .. } => CapturedTrackWrite {
+            event: CapturedEvent {
+                epoch: *current_epoch,
+                event: ReplayableEvent::JoinNetwork {
+                    node: node.to_bytes(),
+                },
             },
+            raw_track: None,
         },
         ParsedInstruction::AdvancePool { .. } => return Ok(None),
     };
@@ -140,39 +220,58 @@ fn capture_instruction(
 #[cfg(test)]
 mod tests {
     use solana_sdk::pubkey::Pubkey;
-    use tape_api::event::{
-        EpochAdvanced, TapeReserved, TrackCertified, TrackRegistered,
-    };
+    use tape_api::event::{EpochAdvanced, TapeReserved, TrackCertified, TrackWritten};
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::snapshot::ReplayableEvent;
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
+    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::data::TrackData;
+    use tape_core::track::types::{TrackKind, TrackState};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::Hash;
 
     use super::capture_block;
     use crate::features::block::ingestor::ParsedBlock;
 
-    fn register_track_instruction(track: Pubkey, tape: Pubkey, epoch: EpochNumber) -> ParsedInstruction {
-        ParsedInstruction::RegisterTrack {
-            owner: Pubkey::new_unique(),
+    fn blob_track_write_instruction(track: Pubkey, tape: Pubkey, epoch: EpochNumber) -> ParsedInstruction {
+        ParsedInstruction::TrackWrite {
+            authority: Pubkey::new_unique(),
             track,
             key: Hash::new_unique(),
-            root: Hash::new_unique(),
-            commitment: Hash::new_unique(),
-            size: StorageUnits::mb(1),
-            event: TrackRegistered {
+            value: TrackData::Blob(BlobInfo {
+                size: StorageUnits::mb(1),
+                root: Hash::new_unique(),
+                commitment: Hash::new_unique(),
+                profile: EncodingProfile::default(),
+                stripe_size: 64,
+                stripe_count: 2,
+                leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+            }),
+            event: TrackWritten {
+                epoch,
                 track,
                 tape,
-                key: Hash::new_unique(),
-                size: StorageUnits::mb(1),
-                commitment: Hash::new_unique(),
-                epoch,
-                profile: EncodingProfile::default(),
+                track_number: TrackNumber(7),
                 spool_group: 3u64.to_le_bytes(),
-                stripe_size: 64u64.to_le_bytes(),
-                stripe_count: 2u64.to_le_bytes(),
-                leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                track_hash: Hash::new_unique(),
+            },
+        }
+    }
+
+    fn raw_track_write_instruction(track: Pubkey, tape: Pubkey, epoch: EpochNumber) -> ParsedInstruction {
+        ParsedInstruction::TrackWrite {
+            authority: Pubkey::new_unique(),
+            track,
+            key: Hash::new_unique(),
+            value: TrackData::Raw(vec![0xAB; 4 * 1024]),
+            event: TrackWritten {
+                epoch,
+                track,
+                tape,
+                track_number: TrackNumber(8),
+                spool_group: 4u64.to_le_bytes(),
+                track_hash: Hash::new_unique(),
             },
         }
     }
@@ -227,7 +326,7 @@ mod tests {
         let block = ParsedBlock {
             slot: SlotNumber(42),
             instructions: vec![
-                register_track_instruction(track, tape, EpochNumber(7)),
+                blob_track_write_instruction(track, tape, EpochNumber(7)),
                 certify_track_instruction(track, EpochNumber(8)),
                 reserve_tape_instruction(tape, EpochNumber(7), EpochNumber(12)),
             ],
@@ -237,10 +336,8 @@ mod tests {
         let batch = captured.into_batch(block.slot);
 
         assert_eq!(batch.events.len(), 3);
-        assert!(matches!(
-            batch.events[0],
-            ReplayableEvent::RegisterTrack { .. }
-        ));
+        assert!(batch.raw_tracks.is_empty());
+        assert!(matches!(batch.events[0], ReplayableEvent::Track(_)));
         assert!(matches!(
             batch.events[1],
             ReplayableEvent::CertifyTrack { .. }
@@ -258,7 +355,7 @@ mod tests {
         let block = ParsedBlock {
             slot: SlotNumber(100),
             instructions: vec![
-                register_track_instruction(track, tape, EpochNumber(4)),
+                blob_track_write_instruction(track, tape, EpochNumber(4)),
                 advance_epoch_instruction(EpochNumber(4), EpochNumber(5)),
                 reserve_tape_instruction(tape, EpochNumber(5), EpochNumber(10)),
             ],
@@ -278,5 +375,35 @@ mod tests {
                 new_epoch: EpochNumber(5),
             }
         ));
+    }
+
+    #[test]
+    fn captures_raw_track_write() {
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+        let block = ParsedBlock {
+            slot: SlotNumber(5),
+            instructions: vec![raw_track_write_instruction(track, tape, EpochNumber(9))],
+        };
+
+        let captured = capture_block(EpochNumber(9), &block).unwrap();
+        assert_eq!(captured.events.len(), 1);
+        assert_eq!(captured.raw_tracks.len(), 1);
+
+        match &captured.events[0].event {
+            ReplayableEvent::Track(track) => {
+                assert_eq!(track.state.tape, tape);
+                assert_eq!(track.state.track_number, TrackNumber(8));
+                assert_eq!(u64::from(track.state.spool_group), 4);
+                assert_eq!(track.state.kind, TrackKind::Raw as u64);
+                assert_eq!(track.state.state, TrackState::Certified as u64);
+                assert!(track.blob.is_none());
+            }
+            _ => panic!("expected ReplayableEvent::Track"),
+        }
+
+        assert_eq!(captured.raw_tracks[0].track, track.into());
+        assert_eq!(u64::from(captured.raw_tracks[0].spool_group), 4);
+        assert_eq!(captured.raw_tracks[0].data, vec![0xAB; 4 * 1024]);
     }
 }

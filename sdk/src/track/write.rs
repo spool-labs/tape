@@ -1,24 +1,30 @@
-use rpc::{Rpc, RpcError};
+use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use std::collections::HashSet;
 use rpc_client::parse_tape_error;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
 use solana_sdk::signature::Signer;
 use tape_api::compute::CERTIFY_TRACK_CU;
 use tape_api::errors::TapeError;
-use tape_api::instruction::{build_certify_track_ix, build_register_track_ix};
-use tape_api::program::tapedrive::track_pda;
-use tape_api::state::Track;
+use tape_api::instruction::{
+    build_certify_track_ix, build_track_write_blob_ix, build_track_write_raw_ix,
+};
 use tape_core::bft::min_correct;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
+use tape_core::track::blob::BlobInfo;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Hash;
 use tape_protocol::Api;
-use tape_protocol::api::GetMetadataReq;
-use tape_retry::RetryConfig;
+use tape_protocol::api::GetTrackDataReq;
+use tape_retry::{RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
+use tape_blocks::{parse_event_data, TapedriveEvent};
+use tape_api::event::TrackWritten;
+use thiserror::Error;
 
 use crate::codec::encoder::BlobEncoder;
 use crate::error::UploadError;
@@ -29,6 +35,24 @@ use crate::track::{bootstrap_network_state, queries};
 use crate::transfer::certify::CertificationCollector;
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 
+// The program accepts up to 10 KiB for raw TrackWrite payloads, but an SDK
+// end-user write must fit inside a single Solana transaction packet.
+//
+// Fixed overhead for the SDK's raw TrackWrite transaction shape:
+// - 1 byte signatures len + 2 signatures (128 bytes)
+// - 3 byte message header
+// - 1 byte account-keys len + 6 account keys (192 bytes)
+// - 32 byte recent blockhash
+// - 1 byte instruction vec len
+// - 1 byte program-id index
+// - 1 byte account-index len + 5 account indices
+// - 2 byte instruction-data len prefix
+// - 40 byte TrackWrite header (Hash + kind)
+//
+// 1232 - (1 + 128 + 3 + 1 + 192 + 32 + 1 + 1 + 1 + 5 + 2 + 40) = 825
+pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
+
+#[derive(Clone)]
 pub struct UploadPlan {
     pub slices: Vec<SliceWithProof>,
     pub root_hash: Hash,
@@ -40,9 +64,19 @@ pub struct UploadPlan {
     pub leaves: [Hash; SPOOL_GROUP_SIZE],
 }
 
-pub struct RegisteredTrack {
+#[derive(Clone)]
+pub struct WrittenTrack {
     pub address: Pubkey,
-    pub track: Track,
+    pub track: CompressedTrack,
+}
+
+#[derive(Debug, Error)]
+enum TrackCompletionError {
+    #[error(transparent)]
+    Client(#[from] TapedriveError),
+
+    #[error("track not certified yet")]
+    NotCertifiedYet,
 }
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
@@ -52,12 +86,65 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         tape_key: &TapeKey,
         key: Hash,
         data: &[u8],
-    ) -> Result<Track, TapedriveError> {
+    ) -> Result<CompressedTrack, TapedriveError> {
         write_track(self, tape_key, key, data).await
+    }
+
+    /// Write raw bytes to an existing tape.
+    pub async fn write_raw(
+        &self,
+        tape_key: &TapeKey,
+        key: Hash,
+        raw: &[u8],
+    ) -> Result<CompressedTrack, TapedriveError> {
+        if raw.len() > SDK_INLINE_RAW_MAX_BYTES {
+            return Err(TapedriveError::InvalidArgument(format!(
+                "raw inline write exceeds SDK limit of {SDK_INLINE_RAW_MAX_BYTES} bytes; use write_track() or write_blob()"
+            )));
+        }
+
+        let written = submit_raw(self, tape_key, key, raw).await?;
+        wait_for_visibility(self, written.address, written.track.spool_group).await?;
+        Ok(written.track)
+    }
+
+    /// Register a blob track and return the upload plan needed to land its slices.
+    pub async fn write_blob(
+        &self,
+        tape_key: &TapeKey,
+        key: Hash,
+        data: &[u8],
+    ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+        submit_blob(self, tape_key, key, data).await
+    }
+
+    /// Upload blob slices for a previously written blob track.
+    pub async fn upload(
+        &self,
+        written: &WrittenTrack,
+        plan: &UploadPlan,
+    ) -> Result<(), TapedriveError> {
+        wait_for_visibility(self, written.address, written.track.spool_group).await?;
+        upload_once(
+            self,
+            written.address,
+            written.track.spool_group,
+            plan.slices.clone(),
+        )
+        .await
+    }
+
+    /// Collect signatures and submit the certify instruction for a written track.
+    pub async fn certify(
+        &self,
+        tape_key: &TapeKey,
+        written: &WrittenTrack,
+    ) -> Result<(), TapedriveError> {
+        certify_once(self, tape_key, written.address, written.track.spool_group).await
     }
 }
 
-pub fn prepare_upload_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
+fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
     let profile = EncodingProfile::clay_default();
     let mut encoder = BlobEncoder::with_profile(profile);
     let (slices, merkle_root, leaves) = encoder
@@ -76,52 +163,95 @@ pub fn prepare_upload_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
     })
 }
 
-pub async fn register_or_resume_track<Blockchain: Rpc, Cluster: Api>(
+async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
     key: Hash,
-    plan: &UploadPlan,
-) -> Result<RegisteredTrack, TapedriveError> {
+    raw: &[u8],
+) -> Result<WrittenTrack, TapedriveError> {
     let payer = client.payer()?;
-    let (track_address, _) = track_pda(tape_key.pubkey(), key);
+    let write_ix = build_track_write_raw_ix(
+        payer.pubkey(),
+        tape_key.pubkey(),
+        key,
+        raw,
+    );
 
-    let track = match client.rpc().get_track_by_address(&track_address).await {
-        Ok(track) => track,
-        Err(RpcError::AccountNotFound(_)) => {
-            let register_ix = build_register_track_ix(
-                payer.pubkey(),
-                tape_key.pubkey(),
-                plan.storage_units,
-                plan.root_hash,
-                plan.commitment_hash,
-                key,
-                plan.profile,
-                plan.stripe_size as u64,
-                plan.stripe_count as u64,
-                plan.leaves,
-            );
+    let signature = client
+        .rpc()
+        .send_instructions_with_signers(
+            payer,
+            vec![write_ix],
+            &[tape_key.as_keypair()],
+        )
+        .await?;
 
-            client
-                .rpc()
-                .send_instructions_with_signers(
-                    payer,
-                    vec![register_ix],
-                    &[tape_key.as_keypair()],
-                )
-                .await?;
+    let written = fetch_track_written_event(client, &signature).await?;
+    let track_address: Pubkey = written.track.into();
+    let track = queries::retry_fetch_track_by_number(
+        client,
+        &written.tape,
+        written.track_number,
+    )
+    .await?;
 
-            queries::retry_fetch_track(client, &track_address).await?
-        }
-        Err(error) => return Err(TapedriveError::Rpc(error)),
-    };
-
-    Ok(RegisteredTrack {
+    Ok(WrittenTrack {
         address: track_address,
         track,
     })
 }
 
-pub async fn upload_registered_track<Blockchain: Rpc, Cluster: Api>(
+async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &TapeKey,
+    key: Hash,
+    data: &[u8],
+) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+    let plan = prepare_plan(data)?;
+    let payer = client.payer()?;
+    let write_ix = build_track_write_blob_ix(
+        payer.pubkey(),
+        tape_key.pubkey(),
+        key,
+        BlobInfo {
+            size: plan.storage_units,
+            root: plan.root_hash,
+            commitment: plan.commitment_hash,
+            profile: plan.profile,
+            stripe_size: plan.stripe_size as u64,
+            stripe_count: plan.stripe_count as u64,
+            leaves: plan.leaves,
+        },
+    );
+
+    let signature = client
+        .rpc()
+        .send_instructions_with_signers(
+            payer,
+            vec![write_ix],
+            &[tape_key.as_keypair()],
+        )
+        .await?;
+
+    let written = fetch_track_written_event(client, &signature).await?;
+    let track_address: Pubkey = written.track.into();
+    let track = queries::retry_fetch_track_by_number(
+        client,
+        &written.tape,
+        written.track_number,
+    )
+    .await?;
+
+    Ok((
+        WrittenTrack {
+            address: track_address,
+            track,
+        },
+        plan,
+    ))
+}
+
+async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track_address: Pubkey,
     spool_group: SpoolGroup,
@@ -137,7 +267,7 @@ pub async fn upload_registered_track<Blockchain: Rpc, Cluster: Api>(
         .map_err(TapedriveError::Upload)
 }
 
-pub async fn wait_for_track_visibility<Blockchain: Rpc, Cluster: Api>(
+async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track_address: Pubkey,
     spool_group: SpoolGroup,
@@ -162,8 +292,8 @@ pub async fn wait_for_track_visibility<Blockchain: Rpc, Cluster: Api>(
                         continue;
                     }
 
-                    let req = GetMetadataReq { track };
-                    if api.get_metadata(*node_id, &req).await.is_ok() {
+                    let req = GetTrackDataReq { track };
+                    if api.get_track_data(*node_id, &req).await.is_ok() {
                         visible += 1;
                     }
                 }
@@ -184,7 +314,21 @@ pub async fn wait_for_track_visibility<Blockchain: Rpc, Cluster: Api>(
     Ok(())
 }
 
-pub fn should_retry_certification(err: &TapedriveError) -> bool {
+fn should_retry_upload(err: &TapedriveError) -> bool {
+    match err {
+        TapedriveError::Upload(UploadError::EpochChanged { .. })
+        | TapedriveError::Upload(UploadError::InsufficientQuorum { .. })
+        | TapedriveError::Upload(UploadError::InsufficientSlices { .. })
+        | TapedriveError::Upload(UploadError::NoNodesAvailable)
+        | TapedriveError::Upload(UploadError::Semaphore)
+        | TapedriveError::Upload(UploadError::Network(_))
+        | TapedriveError::Network(_) => true,
+        TapedriveError::Upload(UploadError::Peer(err)) => err.is_retryable(),
+        _ => false,
+    }
+}
+
+fn should_retry_certification(err: &TapedriveError) -> bool {
     match err {
         TapedriveError::Certification(_) => true,
         TapedriveError::Rpc(rpc) => {
@@ -195,62 +339,94 @@ pub fn should_retry_certification(err: &TapedriveError) -> bool {
     }
 }
 
-pub async fn certify_registered_track<Blockchain: Rpc, Cluster: Api>(
+fn should_retry_track_completion(err: &TrackCompletionError) -> bool {
+    match err {
+        TrackCompletionError::NotCertifiedYet => true,
+        TrackCompletionError::Client(TapedriveError::NotFound) => true,
+        TrackCompletionError::Client(TapedriveError::Peer(err)) => err.is_retryable(),
+        _ => false,
+    }
+}
+
+async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
     track_address: Pubkey,
     spool_group: SpoolGroup,
 ) -> Result<(), TapedriveError> {
     let payer = client.payer()?;
-    tape_retry::retry_if(
-        RetryConfig::infinite(),
+    let system = client.rpc().get_system().await?;
+
+    let collector = CertificationCollector::with_defaults();
+    let collected = collector
+        .collect_signatures(
+            client.api.as_ref(),
+            &track_address,
+            spool_group,
+            &system,
+        )
+        .await
+        .map_err(TapedriveError::Certification)?;
+    let proof = queries::query_track_proof(client, &track_address).await?;
+
+    let compute_ix =
+        ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_CU);
+
+    let certify_ix = build_certify_track_ix(
+        payer.pubkey(),
+        tape_key.pubkey(),
+        proof,
+        EpochNumber(collected.epoch),
+        collected.bitmap,
+        collected.aggregated_signature,
+    );
+
+    match client
+        .rpc()
+        .send_instructions_with_signers(
+            payer,
+            vec![compute_ix, certify_ix],
+            &[tape_key.as_keypair()],
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(err) => match parse_tape_error(&err) {
+            Some(TapeError::AlreadyCertified) => Ok(()),
+            _ => Err(TapedriveError::Rpc(err)),
+        },
+    }
+}
+
+async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape: &Pubkey,
+    track_number: tape_core::types::TrackNumber,
+) -> Result<CompressedTrack, TapedriveError> {
+    let result = tape_retry::retry_if(
+        RetryConfig::ten(),
         None,
         || async {
-            let system = client.rpc().get_system().await?;
-
-            let collector = CertificationCollector::with_defaults();
-            let collected = collector
-                .collect_signatures(
-                    client.api.as_ref(),
-                    &track_address,
-                    spool_group,
-                    &system,
-                )
+            let track = queries::query_track_by_number(client, tape, track_number)
                 .await
-                .map_err(TapedriveError::Certification)?;
-
-            let compute_ix =
-                ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_CU);
-
-            let certify_ix = build_certify_track_ix(
-                payer.pubkey(),
-                tape_key.pubkey(),
-                key,
-                EpochNumber(collected.epoch),
-                collected.bitmap,
-                collected.aggregated_signature,
-            );
-
-            match client
-                .rpc()
-                .send_instructions_with_signers(
-                    payer,
-                    vec![compute_ix, certify_ix],
-                    &[tape_key.as_keypair()],
-                )
-                .await
-            {
-                Ok(_) => Ok(()),
-                Err(err) => match parse_tape_error(&err) {
-                    Some(TapeError::AlreadyCertified) => Ok(()),
-                    _ => Err(TapedriveError::Rpc(err)),
-                },
+                .map_err(TrackCompletionError::from)?;
+            if track.is_certified() {
+                Ok(track)
+            } else {
+                Err(TrackCompletionError::NotCertifiedYet)
             }
         },
-        should_retry_certification,
+        should_retry_track_completion,
     )
-    .await
+    .await;
+
+    match result {
+        Ok(track) => Ok(track),
+        Err(TrackCompletionError::Client(err)) => Err(err),
+        Err(TrackCompletionError::NotCertifiedYet) => Err(TapedriveError::Upload(
+            UploadError::Network("track never became visible as certified".into()),
+        )),
+    }
 }
 
 pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
@@ -258,59 +434,77 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     tape_key: &TapeKey,
     key: Hash,
     data: &[u8],
-) -> Result<Track, TapedriveError> {
-    let plan = prepare_upload_plan(data)?;
-    let registered = register_or_resume_track(client, tape_key, key, &plan).await?;
-
-    if registered.track.data.is_certified() {
-        return Ok(registered.track);
+) -> Result<CompressedTrack, TapedriveError> {
+    if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
+        return client.write_raw(tape_key, key, data).await;
     }
 
-    wait_for_track_visibility(
-        client,
-        registered.address,
-        registered.track.data.spool_group(),
+    let (written, plan) = client.write_blob(tape_key, key, data).await?;
+
+    tape_retry::retry_if(
+        RetryConfig::ten(),
+        None,
+        || client.upload(&written, &plan),
+        should_retry_upload,
     )
     .await?;
 
-    const MAX_EPOCH_RETRIES: u32 = 3;
-    let mut epoch_attempts = 0u32;
+    tape_retry::retry_if(
+        RetryConfig::ten(),
+        None,
+        || client.certify(tape_key, &written),
+        should_retry_certification,
+    )
+    .await?;
 
-    loop {
-        match upload_registered_track(
-            client,
-            registered.address,
-            registered.track.data.spool_group(),
-            plan.slices.clone(),
-        )
-        .await
+    wait_for_certified_track(client, &tape_key.address(), written.track.track_number).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SDK_INLINE_RAW_MAX_BYTES;
+    use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
+
+    #[test]
+    fn sdk_inline_raw_limit_is_below_program_limit() {
+        assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 825);
+        assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
+    }
+}
+
+async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    signature: &Signature,
+) -> Result<TrackWritten, TapedriveError> {
+    let transaction = tape_retry::retry(
+        RetryConfig::ten(),
+        None,
+        || async { client.rpc().get_transaction(signature).await },
+    )
+    .await
+    .map_err(TapedriveError::Rpc)?;
+
+    extract_track_written_event(&transaction)
+}
+
+fn extract_track_written_event(
+    transaction: &EncodedConfirmedTransactionWithStatusMeta,
+) -> Result<TrackWritten, TapedriveError> {
+    let logs = transaction
+        .transaction
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.log_messages.as_ref().map(|logs| logs))
+        .ok_or_else(|| TapedriveError::InvalidArgument("transaction missing log messages".into()))?;
+
+    for log in logs {
+        match parse_event_data(log)
+            .map_err(|error| TapedriveError::InvalidArgument(format!("parse event: {error}")))?
         {
-            Ok(()) => break,
-            Err(TapedriveError::Upload(UploadError::EpochChanged { not_responsible })) => {
-                epoch_attempts += 1;
-                if epoch_attempts >= MAX_EPOCH_RETRIES {
-                    return Err(TapedriveError::Upload(UploadError::EpochChanged {
-                        not_responsible,
-                    }));
-                }
-                tracing::warn!(
-                    attempt = epoch_attempts,
-                    not_responsible,
-                    "epoch changed during upload, re-bootstrapping"
-                );
-            }
-            Err(e) => return Err(e),
+            Some(TapedriveEvent::TrackWritten(event)) => return Ok(event),
+            _ => {}
         }
     }
 
-    certify_registered_track(
-        client,
-        tape_key,
-        key,
-        registered.address,
-        registered.track.data.spool_group(),
-    )
-    .await?;
-
-    queries::get_track(client, &registered.address).await
+    Err(TapedriveError::NotFound)
 }

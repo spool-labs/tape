@@ -76,6 +76,11 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
+            // Raw tracks have no slice semantics and should never enter repair.
+            if !track_info.is_blob() {
+                continue;
+            }
+
             match track_requirement(ctx.store.as_ref(), *track_addr) {
                 Ok(TrackRequirement::Required) => {}
                 Ok(TrackRequirement::NotRequired) => continue,
@@ -129,10 +134,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_api::state::{CompressedTrack, TrackKind, TrackState};
     use tape_core::encoding::EncodingProfile;
-    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_crypto::Hash;
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::{ObjectInfo, Pubkey, TrackInfo};
+    use tape_store::types::{ObjectInfo, Pubkey};
 
     use crate::context::test_utils::test_context;
 
@@ -142,16 +149,17 @@ mod tests {
         Pubkey([n; 32])
     }
 
-    fn track(group: SpoolGroup) -> TrackInfo {
-        TrackInfo {
-            tape_address: Pubkey([0; 32]),
+    fn track(group: SpoolGroup) -> CompressedTrack {
+        let _profile = EncodingProfile::clay_default();
+        CompressedTrack {
+            tape: Pubkey([0; 32]),
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(1024),
             spool_group: group,
-            original_size: 1024,
-            stripe_size: 512,
-            stripe_count: 2,
-            encoding_type: EncodingProfile::clay_default().encoding as u64,
-            encoding_params: EncodingProfile::clay_default().params,
-            commitment: vec![],
+            value_hash: Hash::new_unique(),
         }
     }
 

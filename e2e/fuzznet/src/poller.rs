@@ -1,11 +1,9 @@
 use std::sync::Arc;
-use std::collections::HashMap;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use tape_api::state::Track;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::system::EpochPhase;
 use peer_http::HttpApi;
@@ -17,9 +15,7 @@ use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
 
-use crate::app::{
-    NodeSnapshot, PollSnapshot, TrackSnapshot, TrackStatus,
-};
+use crate::app::{NodeSnapshot, PollSnapshot};
 use crate::log_layer::LogHistogram;
 
 /// Shared snapshot handle created in main and passed to both poller and TUI.
@@ -130,17 +126,10 @@ struct PollerState {
     uploads_last_retry_error: Option<String>,
     uploads_next_retry_in_ms: Option<u64>,
     uploads_retry_in_progress: bool,
-    track_next_refresh: Instant,
     chart_next_update: Instant,
-    track_pending: u64,
-    track_certified: u64,
-    track_expired: u64,
-    track_failed: u64,
-    tracks: Vec<TrackSnapshot>,
 }
 
 const HISTORY_CAP: usize = 200;
-const TRACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const CHART_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
 
 fn push_capped(buf: &mut Vec<u64>, val: u64) {
@@ -190,13 +179,7 @@ async fn poller_task(
         uploads_last_retry_error: None,
         uploads_next_retry_in_ms: None,
         uploads_retry_in_progress: false,
-        track_next_refresh: Instant::now(),
         chart_next_update: Instant::now() + CHART_UPDATE_INTERVAL,
-        track_pending: 0,
-        track_certified: 0,
-        track_expired: 0,
-        track_failed: 0,
-        tracks: Vec::new(),
     };
 
     let mut interval = time::interval(Duration::from_secs(1));
@@ -297,44 +280,6 @@ async fn poll_once(
         None => (String::new(), None),
     };
     let now = Instant::now();
-
-    if now >= state.track_next_refresh {
-        match state.rpc.get_all_tapes().await {
-            Ok(tapes) => {
-                let tape_expiry = tapes
-                    .into_iter()
-                    .map(|(pubkey, tape)| (pubkey, tape.expiry_epoch.as_u64()))
-                    .collect::<HashMap<_, _>>();
-
-                match state.rpc.get_all_tracks().await {
-                    Ok(tracks) => {
-                        let (
-                            track_snapshots,
-                            track_pending,
-                            track_certified,
-                            track_expired,
-                            track_failed,
-                        ) = classify_tracks(epoch, tracks, tape_expiry);
-                        state.tracks = track_snapshots;
-                        state.track_pending = track_pending;
-                        state.track_certified = track_certified;
-                        state.track_expired = track_expired;
-                        state.track_failed = track_failed;
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "failed to refresh track status from chain"
-                        );
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, "failed to refresh tape accounts from chain");
-            }
-        }
-        state.track_next_refresh = now + TRACK_POLL_INTERVAL;
-    }
 
     let mut spool_owners = [0u8; SPOOL_COUNT];
     let mut committee_prev_size = 0;
@@ -537,10 +482,10 @@ async fn poll_once(
         stake_fuzz_enabled: state.stake_fuzz_enabled,
         stake_fuzz_succeeded: state.stake_fuzz_succeeded,
         stake_fuzz_failed: state.stake_fuzz_failed,
-        uploads_pending: state.track_pending,
-        uploads_certified: state.track_certified,
-        uploads_expired: state.track_expired,
-        uploads_failed: state.track_failed,
+        uploads_pending: state.uploads_pending,
+        uploads_certified: state.uploads_certified,
+        uploads_expired: state.uploads_expired,
+        uploads_failed: state.uploads_failed,
         uploads_retries: state.uploads_retries,
         uploads_running: state.uploads_running,
         uploads_waiting_retry: state.uploads_waiting_retry,
@@ -548,60 +493,7 @@ async fn poll_once(
         uploads_last_retry_error: state.uploads_last_retry_error.clone(),
         uploads_next_retry_in_ms: state.uploads_next_retry_in_ms,
         uploads_retry_in_progress: state.uploads_retry_in_progress,
-        tracks: state.tracks.clone(),
     };
 
     snapshot.store(Arc::new(snap));
-}
-
-fn classify_tracks(
-    epoch: u64,
-    tracks: Vec<(solana_sdk::pubkey::Pubkey, Track)>,
-    tape_expiry: HashMap<solana_sdk::pubkey::Pubkey, u64>,
-) -> (
-    Vec<TrackSnapshot>,
-    u64,
-    u64,
-    u64,
-    u64,
-) {
-    let mut ordered = tracks;
-    ordered.sort_by_key(|(_, track)| track.id.as_u64());
-
-    let mut pending = 0u64;
-    let mut certified = 0u64;
-    let mut expired = 0u64;
-    let mut failed = 0u64;
-
-    let result = ordered
-        .into_iter()
-        .map(|(_, track)| {
-            let status = if track.data.is_invalidated() {
-                failed += 1;
-                TrackStatus::Failed
-            } else if track.data.is_certified() {
-                match tape_expiry.get(&track.tape) {
-                    Some(expiry_epoch) if epoch >= *expiry_epoch => {
-                        expired += 1;
-                        TrackStatus::Expired
-                    }
-                    Some(_) => {
-                        certified += 1;
-                        TrackStatus::Certified
-                    }
-                    None => TrackStatus::Unknown,
-                }
-            } else if track.data.is_registered() {
-                pending += 1;
-                TrackStatus::Registered
-            } else {
-                TrackStatus::Unknown
-            };
-            TrackSnapshot {
-                status,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    (result, pending, certified, expired, failed)
 }

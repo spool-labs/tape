@@ -18,7 +18,10 @@ pub enum TaskDone {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncResult {
-    Done { synced: usize },
+    Done {
+        synced_tracks: usize,
+        synced_slices: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

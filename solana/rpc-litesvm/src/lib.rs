@@ -22,7 +22,11 @@ use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
-use solana_transaction_status::UiConfirmedBlock;
+use solana_transaction_status::{
+    ConfirmedTransactionWithStatusMeta, EncodedConfirmedTransactionWithStatusMeta,
+    TransactionWithStatusMeta, UiConfirmedBlock, UiTransactionEncoding,
+    VersionedTransactionWithStatusMeta,
+};
 use tokio::task::JoinHandle;
 
 struct Inner {
@@ -291,6 +295,49 @@ impl Rpc for LiteSvmRpc {
 
         data.to_ui_confirmed_block()
             .map_err(|e| RpcError::Internal(format!("failed to encode block: {e}")))
+    }
+
+    async fn get_transaction(
+        &self,
+        signature: &Signature,
+    ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+
+        let Some(slot) = inner.tx_slot_index.get(signature).copied() else {
+            return Err(RpcError::TransactionNotFound(*signature));
+        };
+
+        let Some(slot_data) = inner.slots.get(&slot) else {
+            return Err(RpcError::TransactionNotFound(*signature));
+        };
+
+        let Some(recorded) = slot_data
+            .transactions
+            .iter()
+            .find(|recorded| recorded.tx.signatures.first() == Some(signature))
+        else {
+            return Err(RpcError::TransactionNotFound(*signature));
+        };
+
+        let tx_with_meta = TransactionWithStatusMeta::Complete(VersionedTransactionWithStatusMeta {
+            transaction: recorded.tx.clone(),
+            meta: convert::tx_result_to_status_meta(
+                &recorded.result,
+                recorded.pre_balances.clone(),
+                recorded.post_balances.clone(),
+            ),
+        });
+
+        ConfirmedTransactionWithStatusMeta {
+            slot,
+            tx_with_meta,
+            block_time: None,
+        }
+        .encode(UiTransactionEncoding::Json, Some(0))
+        .map_err(|e| RpcError::Internal(format!("failed to encode transaction: {e}")))
     }
 
     async fn get_block_height(&self) -> Result<u64, RpcError> {

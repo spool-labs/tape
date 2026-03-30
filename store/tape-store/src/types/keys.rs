@@ -5,10 +5,13 @@
 //! - UnitKey: empty (0 bytes)
 //! - SpoolIndexKey: spool_id BE (2 bytes)
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
+//! - TrackLookupKey: (tape, track_number BE, key) (72 bytes)
 
 use crate::types::Pubkey;
 use serde::{Deserialize, Serialize};
 use std::mem::MaybeUninit;
+use tape_core::types::TrackNumber;
+use tape_crypto::Hash;
 use wincode::{
     io::{Reader, Writer},
     ReadResult, SchemaRead, SchemaWrite, WriteResult,
@@ -147,6 +150,77 @@ impl SliceKey {
     /// Create prefix bytes for spool-based iteration
     pub fn spool_prefix(spool_id: u16) -> [u8; 2] {
         spool_id.to_be_bytes()
+    }
+}
+
+/// Key for tape-local ordered track lookup (72 bytes).
+///
+/// Format: [tape 32 bytes][track_number BE 8 bytes][key 32 bytes]
+///
+/// Tape-first ordering enables efficient prefix iteration by tape, while
+/// track_number ordering enables ordered tape scans for list/proof generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TrackLookupKey {
+    pub tape: Pubkey,
+    pub track_number: TrackNumber,
+    pub key: Hash,
+}
+
+impl TrackLookupKey {
+    pub const SIZE: usize = 72;
+
+    pub fn new(tape: Pubkey, track_number: TrackNumber, key: Hash) -> Self {
+        Self {
+            tape,
+            track_number,
+            key,
+        }
+    }
+
+    /// Create prefix bytes for tape-based iteration.
+    pub fn tape_prefix(tape: Pubkey) -> [u8; 32] {
+        tape.0
+    }
+
+    /// Create a start key that sorts immediately after all entries for the
+    /// given track number under the tape.
+    pub fn after_track_number(tape: Pubkey, track_number: TrackNumber) -> Self {
+        Self {
+            tape,
+            track_number,
+            key: Hash([u8::MAX; 32]),
+        }
+    }
+}
+
+impl SchemaWrite for TrackLookupKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.tape.0)?;
+        writer.write_exact(&src.track_number.0.to_be_bytes())?;
+        writer.write_exact(&src.key.0)?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for TrackLookupKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<TrackLookupKey>) -> ReadResult<()> {
+        let tape: [u8; 32] = unsafe { reader.get_t()? };
+        let track_number: [u8; 8] = unsafe { reader.get_t()? };
+        let key: [u8; 32] = unsafe { reader.get_t()? };
+        dst.write(TrackLookupKey {
+            tape: Pubkey(tape),
+            track_number: TrackNumber(u64::from_be_bytes(track_number)),
+            key: Hash(key),
+        });
+        Ok(())
     }
 }
 
@@ -326,6 +400,43 @@ mod tests {
         let key = SliceKey::new(42, Pubkey([0xAB; 32]));
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: SliceKey = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(key, decoded);
+    }
+
+    #[test]
+    fn test_track_lookup_key_size() {
+        let key = TrackLookupKey::new(
+            Pubkey([0xAA; 32]),
+            TrackNumber(42),
+            Hash([0xBB; 32]),
+        );
+        let bytes = wincode::serialize(&key).unwrap();
+        assert_eq!(bytes.len(), TrackLookupKey::SIZE);
+    }
+
+    #[test]
+    fn test_track_lookup_key_ordering() {
+        let key1 = TrackLookupKey::new(Pubkey([1u8; 32]), TrackNumber(1), Hash([0u8; 32]));
+        let key2 = TrackLookupKey::new(Pubkey([1u8; 32]), TrackNumber(2), Hash([0u8; 32]));
+        let key3 = TrackLookupKey::new(Pubkey([2u8; 32]), TrackNumber(0), Hash([0u8; 32]));
+
+        let bytes1 = wincode::serialize(&key1).unwrap();
+        let bytes2 = wincode::serialize(&key2).unwrap();
+        let bytes3 = wincode::serialize(&key3).unwrap();
+
+        assert!(bytes1 < bytes2);
+        assert!(bytes2 < bytes3);
+    }
+
+    #[test]
+    fn test_track_lookup_key_roundtrip() {
+        let key = TrackLookupKey::new(
+            Pubkey([0xCD; 32]),
+            TrackNumber(77),
+            Hash([0xEF; 32]),
+        );
+        let bytes = wincode::serialize(&key).unwrap();
+        let decoded: TrackLookupKey = wincode::deserialize(&bytes).unwrap();
         assert_eq!(key, decoded);
     }
 }

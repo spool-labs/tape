@@ -313,6 +313,7 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
                     .unwrap_or_else(|| "-".into()),
             ),
             Cell::from(short_pubkey(&node.authority)),
+            Cell::from(node.node_address.clone()),
         ])
     });
 
@@ -328,7 +329,8 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
         Constraint::Length(10),
         Constraint::Length(10),
         Constraint::Length(8),
-        Constraint::Min(12),
+        Constraint::Length(12),
+        Constraint::Min(44),
     ];
 
     let table = Table::new(
@@ -338,7 +340,7 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
     .header(
         Row::new(vec![
             "",
-            "Node",
+            "Id",
             "Port",
             "Address",
             "Health",
@@ -349,6 +351,7 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
             "Disk",
             "Stake",
             "Authority",
+            "Node",
         ])
         .style(Style::default().fg(Color::DarkGray)),
     );
@@ -403,8 +406,8 @@ fn render_upload_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
         Constraint::Length(14),
         Constraint::Length(8),
         Constraint::Length(7),
-        Constraint::Length(14),
-        Constraint::Min(14),
+        Constraint::Length(44),
+        Constraint::Min(44),
     ];
 
     let table = Table::new(rows, widths).header(
@@ -420,8 +423,8 @@ fn upload_row(upload: &UploadView) -> Row<'static> {
         Cell::from(short_pubkey(&upload.tape_id)),
         Cell::from(format_bytes(upload.size_bytes)),
         Cell::from(upload.cert_status.clone()).style(cert_style(&upload.cert_status)),
-        Cell::from(short_pubkey(&upload.tape_address)),
-        Cell::from(short_pubkey(&upload.track_address)),
+        Cell::from(upload.tape_address.clone()),
+        Cell::from(upload.track_address.clone().unwrap_or_else(|| "-".into())),
     ])
 }
 

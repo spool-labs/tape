@@ -2,10 +2,13 @@
 
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::SpoolIndex;
-use tape_core::types::{EpochNumber, NodeId};
+use tape_core::track::data::TrackData;
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
+use tape_core::types::{EpochNumber, NodeId, TrackNumber};
 use tape_crypto::Hash;
-use crate::api::types::{ InconsistencyProof, NodeStats, SlicePayload, SnapshotSignatureSubmission, SyncSpoolEntry, };
+use crate::api::types::{ InconsistencyProof, NodeStats, SlicePayload, SnapshotSignatureSubmission, SyncSliceEntry, SyncTrackEntry, };
 use tape_crypto::Pubkey;
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::ApiError;
 
@@ -31,25 +34,100 @@ pub struct GetSliceRes {
 }
 
 #[derive(Clone, Debug)]
-pub struct GetMetadataReq {
+pub struct GetTrackReq {
     pub track: Pubkey,
 }
 
 #[derive(Clone, Debug)]
-pub struct GetMetadataRes {
-    pub data: Vec<u8>,
+pub struct GetTrackRes {
+    pub track: CompressedTrack,
 }
 
 #[derive(Clone, Debug)]
-pub struct SyncReq {
+pub struct GetTrackByNumberReq {
+    pub tape: Pubkey,
+    pub track_number: TrackNumber,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetTrackByNumberRes {
+    pub track: CompressedTrack,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub enum FindTrackVersion {
+    Latest,
+    Number(TrackNumber),
+}
+
+#[derive(Clone, Debug)]
+pub struct FindTrackReq {
+    pub tape: Pubkey,
+    pub key: Hash,
+    pub version: FindTrackVersion,
+}
+
+#[derive(Clone, Debug)]
+pub struct FindTrackRes {
+    pub track: CompressedTrack,
+}
+
+#[derive(Clone, Debug)]
+pub struct ListTracksByTapeReq {
+    pub tape: Pubkey,
+    pub cursor: Option<TrackNumber>,
+    pub limit: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ListTracksByTapeRes {
+    pub tracks: Vec<CompressedTrack>,
+    pub next_cursor: Option<TrackNumber>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetTrackDataReq {
+    pub track: Pubkey,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetTrackDataRes {
+    pub data: TrackData,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetTrackProofReq {
+    pub track: Pubkey,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetTrackProofRes {
+    pub proof: CompressedTrackProof,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncSlicesReq {
     pub spool_index: u16,
     pub cursor: Option<[u8; 32]>,
     pub limit: u32,
 }
 
 #[derive(Clone, Debug)]
-pub struct SyncRes {
-    pub entries: Vec<SyncSpoolEntry>,
+pub struct SyncSlicesRes {
+    pub entries: Vec<SyncSliceEntry>,
+    pub next_cursor: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncTracksReq {
+    pub spool_index: u16,
+    pub cursor: Option<[u8; 32]>,
+    pub limit: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncTracksRes {
+    pub entries: Vec<SyncTrackEntry>,
     pub next_cursor: Option<[u8; 32]>,
 }
 
@@ -130,8 +208,14 @@ pub struct GetStatsRes {
 pub enum PeerReq {
     PutSlice(PutSliceReq),
     GetSlice(GetSliceReq),
-    GetMetadata(GetMetadataReq),
-    Sync(SyncReq),
+    GetTrack(GetTrackReq),
+    GetTrackByNumber(GetTrackByNumberReq),
+    FindTrack(FindTrackReq),
+    ListTracksByTape(ListTracksByTapeReq),
+    GetTrackData(GetTrackDataReq),
+    GetTrackProof(GetTrackProofReq),
+    SyncSlices(SyncSlicesReq),
+    SyncTracks(SyncTracksReq),
     Repair(RepairReq),
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
@@ -144,8 +228,14 @@ pub enum PeerReq {
 pub enum PeerRes {
     PutSlice(Result<PutSliceRes, ApiError>),
     GetSlice(Result<GetSliceRes, ApiError>),
-    GetMetadata(Result<GetMetadataRes, ApiError>),
-    Sync(Result<SyncRes, ApiError>),
+    GetTrack(Result<GetTrackRes, ApiError>),
+    GetTrackByNumber(Result<GetTrackByNumberRes, ApiError>),
+    FindTrack(Result<FindTrackRes, ApiError>),
+    ListTracksByTape(Result<ListTracksByTapeRes, ApiError>),
+    GetTrackData(Result<GetTrackDataRes, ApiError>),
+    GetTrackProof(Result<GetTrackProofRes, ApiError>),
+    SyncSlices(Result<SyncSlicesRes, ApiError>),
+    SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),

@@ -12,14 +12,15 @@ use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_core::bft::is_supermajority;
 use tape_core::cert::InvalidateMessage;
 use tape_core::erasure::{SPOOL_GROUP_SIZE, group_for_spool};
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::EpochNumber;
 use tape_crypto::Pubkey;
 use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, BlsInconsistencyResponse, InconsistencyProof, InconsistencyRequest,
 };
-use tape_store::ops::TrackOps;
-use tape_store::types::{Pubkey as StorePubkey, TrackInfo};
+use tape_store::ops::{TrackDataOps, TrackOps};
+use tape_store::types::{Pubkey as StorePubkey, TrackData};
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
@@ -46,14 +47,31 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+    if !track_info.is_blob() {
+        return Err(RouteError::BadRequest("raw tracks cannot be invalidated".into()));
+    }
 
-    if track_info.commitment_root() == request.proof.observed_root {
+    let track_data = state
+        .context
+        .store
+        .get_track_data(track_key)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotFound)?;
+    let TrackData::Blob(blob) = track_data else {
+        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
+    };
+
+    if blob.commitment_root() == request.proof.observed_root {
         return Err(RouteError::BadRequest("roots match, no inconsistency".into()));
     }
 
-    verify_inconsistency_proof(&state, &track_info, track, epoch, &request.proof)?;
+    verify_inconsistency_proof(&state, &track_info, epoch, &request.proof)?;
 
-    let message = InvalidateMessage::new(epoch, track.to_bytes(), request.proof.observed_root.into());
+    let message = InvalidateMessage::new(
+        epoch,
+        track_info.get_hash().into(),
+        request.proof.observed_root.into(),
+    );
     let signature = state
         .context
         .bls_sign(&message.to_bytes())
@@ -77,8 +95,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
-    track_info: &TrackInfo,
-    track: Pubkey,
+    track_info: &CompressedTrack,
     epoch: EpochNumber,
     proof: &InconsistencyProof,
 ) -> Result<(), RouteError> {
@@ -119,7 +136,11 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ));
     }
 
-    let message = InvalidateMessage::new(epoch, track.to_bytes(), proof.observed_root.into());
+    let message = InvalidateMessage::new(
+        epoch,
+        track_info.get_hash().into(),
+        proof.observed_root.into(),
+    );
     proof
         .signature
         .verify_aggregate(message.to_bytes(), &signer_pubkeys)

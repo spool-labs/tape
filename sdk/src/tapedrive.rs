@@ -7,7 +7,7 @@ use solana_sdk::signature::Keypair;
 
 use rpc::{Rpc};
 use rpc_client::RpcClient;
-use tape_api::state::Track;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::StorageUnits;
 use tape_crypto::Hash;
 use peer_http::HttpApi;
@@ -103,7 +103,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         key: Hash,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, Track), TapedriveError> {
+    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
         let tape_key = TapeKey::generate();
         let capacity = StorageUnits::from_bytes(data.len() as u64);
         let reserve_capacity = capacity + StorageUnits::mb(1);

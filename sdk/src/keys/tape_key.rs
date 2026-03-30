@@ -5,9 +5,7 @@ use std::path::Path;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
-use tape_api::program::tapedrive::{tape_pda, track_pda};
-use tape_crypto::Hash;
-
+use tape_api::program::tapedrive::tape_pda;
 use crate::keys::helpers::{load_solana_keypair, HelperError};
 
 /// A key that controls a tape on the Tapedrive network.
@@ -66,11 +64,6 @@ impl TapeKey {
         tape_pda(self.keypair.pubkey()).0
     }
 
-    /// Derive the on-chain address of a track under this tape.
-    pub fn track_address(&self, track_key: &Hash) -> Pubkey {
-        track_pda(self.keypair.pubkey(), *track_key).0
-    }
-
     /// The underlying public key (the authority). Rarely needed directly.
     pub fn pubkey(&self) -> Pubkey {
         self.keypair.pubkey()
@@ -108,12 +101,4 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    #[test]
-    fn track_address() {
-        let key = TapeKey::generate();
-        let hash = Hash::default();
-        let addr1 = key.track_address(&hash);
-        let addr2 = key.track_address(&hash);
-        assert_eq!(addr1, addr2);
-    }
 }

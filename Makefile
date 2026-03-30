@@ -42,3 +42,6 @@ run-prodnet:
 		--rpc-url $(PRODNET_RPC_URL) \
 		--api-port $(PRODNET_API_PORT) \
 		--init-nodes $(PRODNET_NODES)
+
+run-devnet:
+	cargo run -p tape-e2e-fuzznet --bin fuzznet

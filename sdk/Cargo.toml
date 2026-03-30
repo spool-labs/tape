@@ -15,6 +15,7 @@ metrics = ["tape-metrics/metrics"]
 [dependencies]
 # Internal crates
 tape-api = { path = "../solana/api" }
+tape-blocks = { path = "../lib/blocks" }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-slicer = { workspace = true }
@@ -54,6 +55,7 @@ thiserror = { workspace = true }
 
 # Random
 rand = { workspace = true }
+bytemuck = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
@@ -64,4 +66,3 @@ rpc-litesvm = { path = "../solana/rpc-litesvm" }
 peer-memory = { path = "../network/peer-memory" }
 axum = { workspace = true }
 serial_test = "3.1"
-bytemuck = { workspace = true }

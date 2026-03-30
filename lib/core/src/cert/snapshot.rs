@@ -174,7 +174,7 @@ mod tests {
         let commitment = [0xAA; 32];
 
         let snapshot_msg = SnapshotMessage::new(epoch, commitment);
-        let certify_msg = CertifyMessage::new(epoch, [0u8; 32], commitment);
+        let certify_msg = CertifyMessage::new(epoch, commitment);
 
         // Domain tags differ
         assert_ne!(&snapshot_msg.to_bytes()[0..8], &certify_msg.to_bytes()[0..8]);

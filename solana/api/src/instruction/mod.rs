@@ -116,7 +116,7 @@ pub enum TapeInstruction {
     MergeTape,
 
     // Track
-    RegisterTrack = 0xA0,
+    TrackWrite = 0xA0,
     DeleteTrack,
     CertifyTrack,
     InvalidateTrack,
@@ -188,7 +188,7 @@ tape_solana::instruction!(TapeInstruction, SplitTapeByEpoch);
 tape_solana::instruction!(TapeInstruction, SplitTapeBySize);
 tape_solana::instruction!(TapeInstruction, MergeTape);
 
-tape_solana::instruction!(TapeInstruction, RegisterTrack);
+tape_solana::instruction!(TapeInstruction, TrackWrite);
 tape_solana::instruction!(TapeInstruction, DeleteTrack);
 tape_solana::instruction!(TapeInstruction, CertifyTrack);
 tape_solana::instruction!(TapeInstruction, InvalidateTrack);

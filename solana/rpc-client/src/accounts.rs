@@ -4,15 +4,13 @@ use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_sdk::pubkey::Pubkey;
 use rpc::{Rpc, RpcError};
 
-use tape_api::state::{AccountType, Archive, Epoch, History, Node, SnapshotState, Stake, System, Tape, Track};
+use tape_api::state::{AccountType, Archive, Epoch, History, Node, SnapshotState, Stake, System, Tape};
 use tape_api::program::tapedrive::{
     self, SYSTEM_ADDRESS, EPOCH_ADDRESS, ARCHIVE_ADDRESS, SNAPSHOT_STATE_ADDRESS,
-    node_pda, stake_pda, tape_pda, track_pda, history_pda,
+    history_pda, node_pda, stake_pda, tape_pda,
 };
 
-// Import tape-core types for ID lookups
-use tape_core::types::{NodeId, TapeNumber, TrackNumber};
-use tape_crypto::Hash;
+use tape_core::types::{NodeId, TapeNumber};
 
 impl<R: Rpc> RpcClient<R> {
     // ========================================================================
@@ -201,39 +199,6 @@ impl<R: Rpc> RpcClient<R> {
         result
     }
 
-    /// Fetch a Track account
-    ///
-    /// # Arguments
-    /// * `authority` - The authority public key of the track
-    /// * `hash` - The hash of the track
-    pub async fn get_track(
-        &self,
-        authority: &Pubkey,
-        hash: &Hash,
-    ) -> Result<Track, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = self.metrics.as_ref().map(|m| m.start_operation());
-
-        let result = async {
-            let (address, _bump) = track_pda(*authority, *hash);
-            let account = self.rpc().get_account(&address).await?;
-            Track::unpack_with_discriminator(&account.data)
-                .map(|t| *t)
-                .map_err(|e| RpcError::Deserialization(e.to_string()))
-        }
-        .await;
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = &self.metrics {
-            if let Some(timer) = &timer {
-                let status = if result.is_ok() { "success" } else { "error" };
-                metrics.record_account_fetch("track", status, timer);
-            }
-        }
-
-        result
-    }
-
     /// Fetch a History account for a node
     ///
     /// # Arguments
@@ -336,47 +301,9 @@ impl<R: Rpc> RpcClient<R> {
             .collect()
     }
 
-    /// Find all Track accounts registered in the system
-    ///
-    /// WARNING: This is an expensive operation that fetches all track accounts.
-    /// Use sparingly, especially on mainnet.
-    pub async fn get_all_tracks(&self) -> Result<Vec<(Pubkey, Track)>, RpcError> {
-        let config = RpcProgramAccountsConfig {
-            filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                0, // Offset 0 is the discriminator
-                vec![AccountType::Track as u8],
-            ))]),
-            account_config: solana_client::rpc_config::RpcAccountInfoConfig {
-                encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
-                    commitment: self.rpc().commitment(),
-                }),
-                data_slice: None,
-                min_context_slot: None,
-            },
-            with_context: None,
-            sort_results: None,
-        };
-
-        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
-
-        accounts
-            .into_iter()
-            .map(|(pubkey, account)| {
-                let track = Track::unpack_with_discriminator(&account.data)
-                    .map(|t| *t)
-                    .map_err(|e| RpcError::Deserialization(e.to_string()))?;
-                Ok((pubkey, track))
-            })
-            .collect()
-    }
-
     // ========================================================================
     // ID-based Lookups
     // ========================================================================
-    // These methods find accounts by their unique ID field using getProgramAccounts
-    // with memcmp filters. More expensive than direct PDA lookup but necessary
-    // when only the ID is known.
 
     /// Find a Node account by its NodeId.
     ///
@@ -485,20 +412,6 @@ impl<R: Rpc> RpcClient<R> {
             .unwrap_or(Err(RpcError::Internal(format!("Tape not found with number {}", tape_number))))
     }
 
-    /// Fetch a Track account by its PDA address directly.
-    ///
-    /// This is useful when you already know the track address (e.g., from the CLI
-    /// track_id argument) and need to read the on-chain data (profile, spool_group).
-    ///
-    /// # Arguments
-    /// * `address` - The track PDA address
-    pub async fn get_track_by_address(&self, address: &Pubkey) -> Result<Track, RpcError> {
-        let account = self.rpc().get_account(address).await?;
-        Track::unpack_with_discriminator(&account.data)
-            .map(|t| *t)
-            .map_err(|e| RpcError::Deserialization(e.to_string()))
-    }
-
     /// Fetch a Tape account by its PDA address directly.
     ///
     /// This is useful when you already know the tape address (e.g., from
@@ -513,103 +426,4 @@ impl<R: Rpc> RpcClient<R> {
             .map_err(|e| RpcError::Deserialization(e.to_string()))
     }
 
-    /// Find all Track accounts belonging to a tape.
-    ///
-    /// Uses getProgramAccounts with memcmp filters on the discriminator and
-    /// tape address field.
-    ///
-    /// # Arguments
-    /// * `tape_address` - The tape PDA address (not the authority)
-    ///
-    /// # Returns
-    /// A vector of (track_address, Track) pairs.
-    pub async fn get_tracks_by_tape(&self, tape_address: &Pubkey) -> Result<Vec<(Pubkey, Track)>, RpcError> {
-        // Track layout: [discriminator:8][id:8][tape:32][...]
-        let config = RpcProgramAccountsConfig {
-            filters: Some(vec![
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                    0,
-                    vec![AccountType::Track as u8],
-                )),
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                    16, // offset past discriminator (8) + id (8)
-                    tape_address.to_bytes().to_vec(),
-                )),
-            ]),
-            account_config: solana_client::rpc_config::RpcAccountInfoConfig {
-                encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
-                    commitment: self.rpc().commitment(),
-                }),
-                data_slice: None,
-                min_context_slot: None,
-            },
-            with_context: None,
-            sort_results: None,
-        };
-
-        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
-
-        accounts
-            .into_iter()
-            .map(|(pubkey, account)| {
-                let track = Track::unpack_with_discriminator(&account.data)
-                    .map(|t| *t)
-                    .map_err(|e| RpcError::Deserialization(e.to_string()))?;
-                Ok((pubkey, track))
-            })
-            .collect()
-    }
-
-    /// Find a Track account by its TrackNumber.
-    ///
-    /// Uses getProgramAccounts with a memcmp filter on the id field.
-    ///
-    /// # Arguments
-    /// * `track_number` - The unique TrackNumber assigned when the track was created
-    ///
-    /// # Returns
-    /// The Track account address and data, or an error if not found.
-    pub async fn get_track_by_number(&self, track_number: TrackNumber) -> Result<(Pubkey, Track), RpcError> {
-        // Account layout: [discriminator (8 bytes)][id (8 bytes)]...
-        let id_bytes = track_number.as_u64().to_le_bytes();
-
-        let config = RpcProgramAccountsConfig {
-            filters: Some(vec![
-                // Filter by discriminator at offset 0
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                    0,
-                    vec![AccountType::Track as u8],
-                )),
-                // Filter by TrackNumber at offset 8 (after 8-byte discriminator)
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                    8,
-                    id_bytes.to_vec(),
-                )),
-            ]),
-            account_config: solana_client::rpc_config::RpcAccountInfoConfig {
-                encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
-                    commitment: self.rpc().commitment(),
-                }),
-                data_slice: None,
-                min_context_slot: None,
-            },
-            with_context: None,
-            sort_results: None,
-        };
-
-        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
-
-        accounts
-            .into_iter()
-            .next()
-            .map(|(pubkey, account)| {
-                let track = Track::unpack_with_discriminator(&account.data)
-                    .map(|t| *t)
-                    .map_err(|e| RpcError::Deserialization(e.to_string()))?;
-                Ok((pubkey, track))
-            })
-            .unwrap_or(Err(RpcError::Internal(format!("Track not found with number {}", track_number))))
-    }
 }

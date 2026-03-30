@@ -5,6 +5,7 @@
 //! convert their internal errors into these types.
 
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signature;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -29,6 +30,10 @@ pub enum RpcError {
     /// Account does not exist at the given address
     #[error("Account not found: {0}")]
     AccountNotFound(Pubkey),
+
+    /// Transaction does not exist for the given signature
+    #[error("Transaction not found: {0}")]
+    TransactionNotFound(Signature),
 
     /// Failed to deserialize account data
     #[error("Deserialization failed: {0}")]
@@ -58,6 +63,7 @@ impl RpcError {
 
             // Non-retriable errors
             RpcError::AccountNotFound(_) => false,
+            RpcError::TransactionNotFound(_) => false,
             RpcError::Deserialization(_) => false,
             RpcError::Transaction(_) => false,
             RpcError::AllEndpointsFailed { .. } => false,
@@ -80,6 +86,7 @@ impl RpcError {
             RpcError::Timeout(_) => "timeout",
             RpcError::Request(_) => "rpc_error",
             RpcError::AccountNotFound(_) => "not_found",
+            RpcError::TransactionNotFound(_) => "not_found",
             RpcError::Deserialization(_) => "deser_error",
             RpcError::Transaction(_) => "tx_error",
             RpcError::BlockhashExpired => "blockhash_expired",

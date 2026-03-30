@@ -11,8 +11,8 @@ use tape_protocol::api::ops::RepairReq;
 use tape_protocol::api::types::StripeSubChunkRequest;
 use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{Pubkey, SpoolState, TrackInfo};
+use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::types::{BlobInfo, Pubkey, SpoolState, TrackData};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -158,6 +158,27 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             };
 
+            if !track_info.is_blob() {
+                warn!(spool, track = %track, "non-blob track in repair queue");
+                continue;
+            }
+
+            let track_data = match ctx.store.get_track_data(track) {
+                Ok(Some(TrackData::Blob(info))) => info,
+                Ok(Some(TrackData::Raw(_))) => {
+                    warn!(spool, track = %track, "blob track has raw track_data, keeping queued");
+                    continue;
+                }
+                Ok(None) => {
+                    warn!(spool, track = %track, "track_data missing, keeping queued");
+                    continue;
+                }
+                Err(error) => {
+                    warn!(spool, track = %track, %error, "get_track_data failed");
+                    continue;
+                }
+            };
+
             // Only repair certified tracks.
             match track_requirement(ctx.store.as_ref(), track) {
                 Ok(TrackRequirement::Required) => {}
@@ -171,7 +192,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             }
 
-            match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_info, token).await {
+            match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_data, token).await {
                 Ok(data) => {
                     let repaired_len = data.len() as u64;
                     if let Err(error) = ctx.store.put_slice(spool, track, data) {
@@ -250,12 +271,12 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     spool: SpoolIndex,
     peers: &GroupPeers,
     track: Pubkey,
-    track_info: &TrackInfo,
+    track_data: &BlobInfo,
     token: &CancellationToken,
 ) -> Result<Vec<u8>, ()> {
 
-    let profile = track_info.profile();
-    if !profile.is_clay() || track_info.stripe_size == 0 || track_info.stripe_count == 0 {
+    let profile = track_data.profile;
+    if !profile.is_clay() || track_data.stripe_size == 0 || track_data.stripe_count == 0 {
         return Err(());
     }
 
@@ -280,7 +301,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
     let slicer = Slicer::with_profile(
         ClayCoder::from_params(profile.clay_params()),
-        track_info.stripe_size as usize,
+        track_data.stripe_size as usize,
         true,
         profile,
     );
@@ -289,8 +310,8 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         .repair_plan_from_params(
             lost,
             &available,
-            track_info.original_size as usize,
-            track_info.stripe_size as usize,
+            track_data.size.0 as usize,
+            track_data.stripe_size as usize,
         )
         .map_err(|_| ())?;
 
@@ -299,14 +320,14 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ).await?;
 
     let metadata = SliceMetadata::with_profile(
-        track_info.original_size as usize,
-        track_info.stripe_size as usize,
+        track_data.size.0 as usize,
+        track_data.stripe_size as usize,
         profile,
     )
     .to_bytes();
 
     let repaired = slicer.repair(&plan, &helper_data, &metadata).map_err(|_| ())?;
-    if !track_info.verify_slice(position, &repaired) {
+    if !track_data.verify_slice(position, &repaired) {
         return Err(());
     }
 
@@ -457,11 +478,11 @@ fn per_helper_reqs(
 /// Extract sub-chunk data from a local slice to serve a repair request.
 /// Called by the HTTP handler when a peer asks for repair data.
 pub fn extract_repair_data(
-    track_info: &TrackInfo,
+    track_info: &BlobInfo,
     stripes: &[StripeSubChunkRequest],
     slice_data: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let profile = track_info.profile();
+    let profile = track_info.profile;
     if !profile.is_clay() {
         return Err("repair only supported for clay tracks".into());
     }
@@ -519,8 +540,10 @@ pub fn extract_repair_data(
 mod tests {
     use super::*;
     use peer_memory::MemoryApi;
+    use tape_api::state::{CompressedTrack, TrackKind, TrackState};
     use tape_core::encoding::EncodingProfile;
-    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_crypto::Hash;
     use tape_protocol::api::ops::{PeerReq, PeerRes, RepairRes};
     use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
     use tape_store::ops::ObjectInfoOps;
@@ -534,23 +557,25 @@ mod tests {
         Pubkey([n; 32])
     }
 
-    fn clay_track(size: u64, slices: &[Vec<u8>]) -> TrackInfo {
+    fn clay_track(size: u64, slices: &[Vec<u8>]) -> CompressedTrack {
         let profile = EncodingProfile::clay_default();
         let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
-        let commitment = slices
+        let _commitment: Vec<_> = slices
             .iter()
             .map(|s| tape_crypto::merkle::hash_leaf(s))
             .collect();
-        TrackInfo {
-            tape_address: Pubkey([0; 32]),
+        let _stripe_count = size.div_ceil(stripe_size);
+        let _ = profile;
+        CompressedTrack {
+            tape: Pubkey([0; 32]),
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(size),
             spool_group: SpoolGroup::of(SPOOL),
-            original_size: size,
-            stripe_size,
-            stripe_count: size.div_ceil(stripe_size),
-            encoding_type: profile.encoding as u64,
-            encoding_params: profile.params,
-            commitment,
+            value_hash: Hash::new_unique(),
         }
     }
 

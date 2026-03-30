@@ -114,6 +114,9 @@ pub enum TapedriveError {
     #[error("network error: {0}")]
     Network(#[from] PeerManagerError),
 
+    #[error("peer error: {0}")]
+    Peer(#[from] ApiError),
+
     #[error("encoding error: {0}")]
     Encoding(String),
 

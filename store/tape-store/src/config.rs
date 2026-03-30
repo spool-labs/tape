@@ -18,12 +18,14 @@ use rocksdb;
 /// Returns a vector of `ColumnFamilyDescriptor` instances, one for each column family
 /// in the tape-store. Each CF is configured based on its access patterns and data characteristics.
 ///
-/// # Column Family Configurations (12 total)
+/// # Column Family Configurations (14 total)
 ///
 /// ## Metadata Columns
 /// - `meta` - String keys, arbitrary values (BlockBased)
 /// - `tape` - 32-byte Pubkey keys (PlainTable)
-/// - `track` - 32-byte Pubkey keys (PlainTable)
+/// - `track` - 32-byte Pubkey keys, packed compressed-track values (PlainTable)
+/// - `track_lookup` - 72-byte ordered tape track index with 32-byte tape prefix (BlockBased)
+/// - `track_data` - 32-byte Pubkey keys, local track payload values (PlainTable)
 /// - `object_info` - 32-byte Pubkey keys (PlainTable)
 ///
 /// ## Sync Columns
@@ -50,8 +52,20 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_plain_table(32)
             .build(),
 
-        // Track - 32-byte Pubkey keys, TrackInfo values
+        // Track - 32-byte Pubkey keys, PackedTrack values
         ColumnFamilyConfig::new("track")
+            .with_plain_table(32)
+            .build(),
+
+        // Track lookup - ordered by (tape, track_number, key)
+        // 32-byte tape prefix for efficient per-tape scans
+        ColumnFamilyConfig::new("track_lookup")
+            .with_block_based()
+            .with_prefix_extractor(32)
+            .build(),
+
+        // Track data - 32-byte Pubkey keys, local payload values
+        ColumnFamilyConfig::new("track_data")
             .with_plain_table(32)
             .build(),
 
@@ -166,7 +180,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 12);
+        assert_eq!(configs.len(), 14);
     }
 
     #[test]
@@ -178,6 +192,8 @@ mod tests {
             "meta",
             "tape",
             "track",
+            "track_lookup",
+            "track_data",
             "object_info",
             "sync_cursor",
             "gc",

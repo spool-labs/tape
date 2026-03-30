@@ -1,8 +1,10 @@
 use tape_core::erasure::slice_for_spool;
 use tape_core::spooler::SpoolIndex;
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_e2e_simnet::TestNode;
-use tape_store::types::TrackInfo;
+use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::types::TrackData;
+use tape_core::track::blob::BlobInfo;
+use tape_core::track::types::CompressedTrack;
 
 /// Verify all slices in Active spools match their track commitments.
 /// Logs errors for any integrity violations found.
@@ -33,14 +35,35 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
                     }
                 };
 
-                if let Err(e) = validate_slice_entry(*spool_id, &track_info, slice_data) {
+                let blob_info = match store.get_track_data(*track_addr).expect("read track data")
+                {
+                    Some(TrackData::Blob(blob)) => blob,
+                    Some(TrackData::Raw(_)) => {
+                        tracing::error!(
+                            node = i,
+                            spool = %spool_id,
+                            track = ?track_addr,
+                            spool_group = %track_info.spool_group,
+                            "raw track should not have stored slices"
+                        );
+                        total_failures += 1;
+                        total_checked += 1;
+                        continue;
+                    }
+                    None => {
+                        skipped_no_track += 1;
+                        continue;
+                    }
+                };
+
+                if let Err(e) = validate_slice_entry(*spool_id, &track_info, &blob_info, slice_data) {
                     tracing::error!(
                         node = i,
                         spool = %spool_id,
                         track = ?track_addr,
                         spool_group = %track_info.spool_group,
                         slice_len = slice_data.len(),
-                        original_size = track_info.original_size,
+                        original_size = blob_info.size.0,
                         error = %e,
                         "spool integrity violation"
                     );
@@ -69,26 +92,27 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
 
 fn validate_slice_entry(
     spool: SpoolIndex,
-    track_info: &TrackInfo,
+    track_info: &CompressedTrack,
+    blob_info: &BlobInfo,
     data: &[u8],
 ) -> Result<(), String> {
     let slice_index = slice_for_spool(track_info.spool_group, spool)
         .ok_or_else(|| "track not mapped to this spool group".to_string())?;
 
-    if track_info.original_size > 0 && data.is_empty() {
+    if blob_info.size.0 > 0 && data.is_empty() {
         return Err("empty slice for non-empty track".to_string());
     }
 
-    let expected_max = track_info
+    let expected_max = blob_info
         .stripe_size
-        .checked_mul(track_info.stripe_count)
+        .checked_mul(blob_info.stripe_count)
         .ok_or_else(|| "invalid stripe dimensions".to_string())?;
 
     if expected_max > 0 && data.len() as u64 > expected_max {
         return Err("slice exceeds expected decoded size".to_string());
     }
 
-    if !track_info.verify_slice(slice_index, data) {
+    if !blob_info.verify_slice(slice_index, data) {
         return Err("slice does not match commitment".to_string());
     }
 

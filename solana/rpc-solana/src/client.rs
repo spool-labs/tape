@@ -5,14 +5,16 @@ use crate::failover::EndpointFailover;
 use async_trait::async_trait;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig};
+use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcTransactionConfig};
 use solana_sdk::account::Account;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
-use solana_transaction_status::{UiConfirmedBlock, UiTransactionEncoding};
+use solana_transaction_status::{
+    EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock, UiTransactionEncoding,
+};
 use std::sync::Arc;
 use rpc::{Rpc, RpcError};
 use tokio::sync::RwLock;
@@ -104,6 +106,7 @@ impl SolanaRpc {
 
         let new_endpoint = failover.next_endpoint()?;
         let new_endpoint_str = new_endpoint.to_string();
+        #[cfg(feature = "metrics")]
         let current_index = failover.current_index();
 
         #[cfg(feature = "metrics")]
@@ -381,6 +384,68 @@ impl Rpc for SolanaRpc {
                 }
                 Err(_elapsed) => {
                     self.handle_timeout("getBlock", &mut backoff).await?;
+                }
+            }
+        }
+    }
+
+    async fn get_transaction(
+        &self,
+        signature: &Signature,
+    ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let signature = *signature;
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+        let commitment = self.config.commitment;
+
+        loop {
+            let config = RpcTransactionConfig {
+                encoding: Some(UiTransactionEncoding::Json),
+                commitment: Some(CommitmentConfig { commitment }),
+                max_supported_transaction_version: Some(0),
+            };
+
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_transaction_with_config(&signature, config),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(transaction)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getTransaction",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(transaction);
+                }
+                Ok(Err(e)) => {
+                    let err_str = e.to_string();
+                    let rpc_err = if err_str.contains("not found")
+                        || err_str.contains("Transaction version not supported")
+                    {
+                        RpcError::TransactionNotFound(signature)
+                    } else {
+                        Self::convert_error(e, None)
+                    };
+                    self.handle_error("getTransaction", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getTransaction", &mut backoff).await?;
                 }
             }
         }

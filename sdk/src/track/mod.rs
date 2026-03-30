@@ -14,6 +14,12 @@ pub mod write;
 pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
 ) -> Result<arc_swap::Guard<Arc<ProtocolState>>, TapedriveError> {
+    let state = client.state();
+    if !state.committee.is_empty() {
+        return Ok(state);
+    }
+    drop(state);
+
     let state = client
         .peer_manager
         .bootstrap(&client.rpc)

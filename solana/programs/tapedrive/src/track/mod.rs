@@ -1,9 +1,9 @@
-pub mod register;
+pub mod write;
 pub mod delete;
 pub mod certify;
 pub mod invalidate;
 
-pub use register::*;
+pub use write::*;
 pub use delete::*;
 pub use certify::*;
 pub use invalidate::*;

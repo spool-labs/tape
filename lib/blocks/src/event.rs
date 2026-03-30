@@ -2,7 +2,8 @@
 
 use tape_api::event::{
     EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+    SnapshotRegistered, TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted,
+    TrackInvalidated, TrackWritten,
 };
 
 use crate::error::ParseError;
@@ -15,10 +16,11 @@ use crate::error::ParseError;
 #[derive(Debug, Clone)]
 pub enum TapedriveEvent {
     EpochAdvanced(EpochAdvanced),
-    TrackRegistered(TrackRegistered),
+    SnapshotRegistered(SnapshotRegistered),
     TrackCertified(TrackCertified),
     TrackDeleted(TrackDeleted),
     TrackInvalidated(TrackInvalidated),
+    TrackWritten(TrackWritten),
     TapeReserved(TapeReserved),
     TapeDestroyed(TapeDestroyed),
     NodeRegistered(NodeRegistered),
@@ -56,10 +58,10 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::EpochAdvanced(*event)))
         }
-        EventType::TrackRegistered => {
-            let event = bytemuck::try_from_bytes::<TrackRegistered>(event_data)
+        EventType::SnapshotRegistered => {
+            let event = bytemuck::try_from_bytes::<SnapshotRegistered>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::TrackRegistered(*event)))
+            Ok(Some(TapedriveEvent::SnapshotRegistered(*event)))
         }
         EventType::TrackCertified => {
             let event = bytemuck::try_from_bytes::<TrackCertified>(event_data)
@@ -75,6 +77,11 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
             let event = bytemuck::try_from_bytes::<TrackInvalidated>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::TrackInvalidated(*event)))
+        }
+        EventType::TrackWritten => {
+            let event = bytemuck::try_from_bytes::<TrackWritten>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::TrackWritten(*event)))
         }
         EventType::TapeReserved => {
             let event = bytemuck::try_from_bytes::<TapeReserved>(event_data)
@@ -174,35 +181,29 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_track_registered_event() {
-        use tape_core::encoding::EncodingProfile;
+    fn test_parse_track_written_event() {
         let track = solana_sdk::pubkey::Pubkey::new_unique();
         let tape = solana_sdk::pubkey::Pubkey::new_unique();
-        let event = TrackRegistered {
+        let event = TrackWritten {
+            epoch: EpochNumber(3),
             track,
             tape,
-            key: Hash::default(),
-            size: StorageUnits::mb(500),
-            commitment: Hash::default(),
-            epoch: EpochNumber(3),
-            profile: EncodingProfile::clay_default(),
             spool_group: 5u64.to_le_bytes(),
-            stripe_size: 0u64.to_le_bytes(),
-            stripe_count: 0u64.to_le_bytes(),
-            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+            track_number: TrackNumber(7),
+            track_hash: Hash::default(),
         };
 
-        let log = encode_event(EventType::TrackRegistered, &event);
+        let log = encode_event(EventType::TrackWritten, &event);
         let parsed = parse_event_data(&log).unwrap().unwrap();
 
         match parsed {
-            TapedriveEvent::TrackRegistered(e) => {
+            TapedriveEvent::TrackWritten(e) => {
                 assert_eq!(e.track, track);
                 assert_eq!(e.tape, tape);
                 assert_eq!(e.epoch, EpochNumber(3));
-                assert_eq!(e.size, StorageUnits::mb(500));
+                assert_eq!(e.track_number, TrackNumber(7));
             }
-            _ => panic!("Expected TrackRegistered event"),
+            _ => panic!("Expected TrackWritten event"),
         }
     }
 

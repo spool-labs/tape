@@ -32,16 +32,21 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
     let track_key: StorePubkey = track.into();
 
-    let track_info = state
+    let track = state
         .context
         .store
         .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+    if !track.is_blob() {
+        return Err(RouteError::BadRequest(
+            "raw tracks do not require certification".into(),
+        ));
+    }
 
     let protocol = state.context.state();
     let has_local_slice = protocol
-        .group_peers(track_info.spool_group)
+        .group_peers(track.spool_group)
         .into_iter()
         .filter(|(_, node_id)| *node_id == state.context.node_id())
         .any(|(spool_id, _)| {
@@ -56,7 +61,7 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::NotFound);
     }
 
-    let message = CertifyMessage::new(epoch, track.to_bytes(), track_info.commitment_root().into());
+    let message = CertifyMessage::new(epoch, track.get_hash().into());
 
     let signature = state
         .context

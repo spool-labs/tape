@@ -4,10 +4,11 @@ use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced, TapeDestroyed,
-    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
-use tape_core::prelude::*;
+use tape_api::program::tapedrive::track_pda;
+use tape_core::track::data::{TrackData, TrackDataSlice};
 use tape_crypto::Hash;
 
 use crate::error::ParseError;
@@ -24,13 +25,10 @@ pub enum RawInstruction {
     AdvancePool {
         node: Pubkey,
     },
-    RegisterTrack {
-        owner: Pubkey,
-        track: Pubkey,
+    TrackWrite {
+        authority: Pubkey,
         key: Hash,
-        root: Hash,
-        commitment: Hash,
-        size: StorageUnits,
+        value: TrackData,
     },
     DeleteTrack {
         owner: Pubkey,
@@ -78,14 +76,12 @@ pub enum ParsedInstruction {
     },
 
     // Track management
-    RegisterTrack {
-        owner: Pubkey,
+    TrackWrite {
+        authority: Pubkey,
         track: Pubkey,
         key: Hash,
-        root: Hash,
-        commitment: Hash,
-        size: StorageUnits,
-        event: TrackRegistered,
+        value: TrackData,
+        event: TrackWritten,
     },
     DeleteTrack {
         owner: Pubkey,
@@ -179,34 +175,43 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::SyncEpoch => Ok(Some(RawInstruction::SyncEpoch)),
 
-        TapeInstruction::RegisterTrack => {
-            let owner = get_account(0)?;
-            let track = get_account(4)?;
-            let args = ix::RegisterTrack::try_from_bytes(&ix_data[1..])
+        TapeInstruction::TrackWrite => {
+            let authority = get_account(1)?;
+            let (header, payload) = ix::parse_track_write(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
-            Ok(Some(RawInstruction::RegisterTrack {
-                owner,
-                track,
-                key: args.key,
-                root: args.root,
-                commitment: args.commitment,
-                size: StorageUnits::unpack(args.size),
+            let value = match payload {
+                TrackDataSlice::Raw(bytes) => TrackData::Raw(bytes.to_vec()),
+                TrackDataSlice::Blob(blob) => TrackData::Blob(blob),
+            };
+            value
+                .meta()
+                .ok_or(ParseError::Deserialization("invalid track commitment".to_string()))?;
+            Ok(Some(RawInstruction::TrackWrite {
+                authority,
+                key: header.key,
+                value,
             }))
         }
 
         TapeInstruction::DeleteTrack => {
-            let owner = get_account(0)?;
-            let track = get_account(3)?;
+            let owner = get_account(1)?;
+            let args = ix::parse_delete_track(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
+            let track = track_pda(args.track.state.tape, args.track.state.track_number).0;
             Ok(Some(RawInstruction::DeleteTrack { owner, track }))
         }
 
         TapeInstruction::CertifyTrack => {
-            let track = get_account(5)?;
+            let args = ix::parse_certify_track(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
+            let track = track_pda(args.track.state.tape, args.track.state.track_number).0;
             Ok(Some(RawInstruction::CertifyTrack { track }))
         }
 
         TapeInstruction::InvalidateTrack => {
-            let track = get_account(4)?;
+            let args = ix::parse_invalidate_track(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
+            let track = track_pda(args.track.state.tape, args.track.state.track_number).0;
             Ok(Some(RawInstruction::InvalidateTrack { track }))
         }
 

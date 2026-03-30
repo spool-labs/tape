@@ -13,7 +13,7 @@ use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
-use solana_transaction_status::UiConfirmedBlock;
+use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock};
 
 use crate::error::RpcError;
 
@@ -51,6 +51,12 @@ pub trait Rpc: Send + Sync {
 
     /// Get a confirmed block by slot number
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError>;
+
+    /// Get a confirmed transaction by signature.
+    async fn get_transaction(
+        &self,
+        signature: &Signature,
+    ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError>;
 
     /// Get the current block height
     async fn get_block_height(&self) -> Result<u64, RpcError>;

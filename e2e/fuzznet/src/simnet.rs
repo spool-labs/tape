@@ -16,7 +16,7 @@ use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::{
     build_advance_pool_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
     build_initialize_mint_ix, build_join_network_ix, build_register_node_ix,
-    build_reserve_snapshot_tape_ix, build_stake_with_pool_ix,
+    build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;
@@ -445,15 +445,6 @@ async fn init_chain(chain: &ChainFixture) -> Result<Keypair> {
         .await
         .context("initialize archive/epoch")?;
 
-    chain
-        .send_instructions_and_advance(
-            &admin,
-            vec![build_reserve_snapshot_tape_ix(admin_pub)],
-            SLOT_BUMP,
-        )
-        .await
-        .context("reserve snapshot tape")?;
-
     Ok(admin)
 }
 
@@ -835,54 +826,22 @@ async fn upload_random_blob(
     let upload_id = tape_key.pubkey();
     let capacity = StorageUnits::from_bytes(data.len() as u64);
     let reserve_capacity = capacity + StorageUnits::mb(1); // 1 MB headroom
-    let mut is_reserved = false;
+    let mut expiry_epoch = None;
 
     for attempt in 0..=UPLOAD_MAX_RETRIES {
         let _ = tx.send(UploadResult::AttemptStarted { upload_id });
-        if !is_reserved {
-            match sdk.reserve(&tape_key, reserve_capacity, UPLOAD_EPOCHS).await {
-                Ok(_) => {
-                    is_reserved = true;
-                }
-                Err(error) if !is_retriable_upload_error(&error) => {
-                    return Err(anyhow::Error::from(error))
-                        .context("upload failed with non-retriable error");
-                }
-                Err(error) if attempt == UPLOAD_MAX_RETRIES => {
-                    return Err(anyhow::Error::from(error))
-                        .context(format!("upload exhausted after {} attempts", attempt + 1));
-                }
-                Err(error) => {
-                    let delay = upload_retry_delay(attempt);
-                    let _ = tx.send(UploadResult::Retrying {
-                        upload_id,
-                        error: format!("{error:#}"),
-                        next_retry_in_ms: delay.as_millis() as u64,
-                    });
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        delay_ms = delay.as_millis(),
-                        error = %error,
-                        "upload failed, retrying"
-                    );
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-            }
-        }
-
-        match sdk.write_track(&tape_key, key, &data).await {
-            Ok(track) => {
-                let expiry = track.data.registered_epoch.0 + UPLOAD_EPOCHS;
-                return Ok(expiry);
+        match sdk.reserve(&tape_key, reserve_capacity, UPLOAD_EPOCHS).await {
+            Ok(tape) => {
+                expiry_epoch = Some(tape.expiry_epoch.as_u64());
+                break;
             }
             Err(error) if !is_retriable_upload_error(&error) => {
                 return Err(anyhow::Error::from(error))
-                    .context("upload failed with non-retriable error");
+                    .context("reserve failed with non-retriable error");
             }
             Err(error) if attempt == UPLOAD_MAX_RETRIES => {
                 return Err(anyhow::Error::from(error))
-                    .context(format!("upload exhausted after {} attempts", attempt + 1));
+                    .context(format!("reserve exhausted after {} attempts", attempt + 1));
             }
             Err(error) => {
                 let delay = upload_retry_delay(attempt);
@@ -891,13 +850,18 @@ async fn upload_random_blob(
                     error: format!("{error:#}"),
                     next_retry_in_ms: delay.as_millis() as u64,
                 });
-                tracing::warn!(attempt = attempt + 1, delay_ms = delay.as_millis(), error = %error, "upload failed, retrying");
+                tracing::warn!(attempt = attempt + 1, delay_ms = delay.as_millis(), error = %error, "reserve failed, retrying");
                 tokio::time::sleep(delay).await;
             }
         }
     }
 
-    unreachable!()
+    let _ = tx.send(UploadResult::AttemptStarted { upload_id });
+    sdk.write_track(&tape_key, key, &data)
+        .await
+        .map_err(anyhow::Error::from)
+        .context("write track")?;
+    Ok(expiry_epoch.expect("reserve succeeds before write"))
 }
 
 fn is_retriable_upload_error(error: &TapedriveError) -> bool {

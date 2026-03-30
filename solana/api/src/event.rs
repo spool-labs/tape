@@ -5,7 +5,7 @@ use tape_core::bls::BlsPubkey;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::system::NodePreferences;
-use tape_core::types::{EpochNumber, NodeId, StorageUnits};
+use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
 use tape_crypto::Hash;
 
 /// Discriminator for event types.
@@ -16,10 +16,11 @@ pub enum EventType {
     Unknown = 0,
 
     // Track events (0x10 range)
-    TrackRegistered = 0x10,
+    SnapshotRegistered = 0x10,
     TrackCertified = 0x11,
     TrackDeleted = 0x12,
     TrackInvalidated = 0x13,
+    TrackWritten = 0x14,
 
     // Tape events (0x20 range)
     TapeReserved = 0x20,
@@ -43,11 +44,11 @@ pub enum EventType {
     CommissionClaimed = 0x60,
 }
 
-/// Emitted when a new track is registered on-chain.
+/// Emitted when a new snapshot track is registered on-chain.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct TrackRegistered {
-    /// Track account address
+pub struct SnapshotRegistered {
+    /// Snapshot track account address
     pub track: Pubkey,
     /// Parent tape address
     pub tape: Pubkey,
@@ -71,7 +72,7 @@ pub struct TrackRegistered {
     pub leaves: [Hash; SPOOL_GROUP_SIZE],
 }
 
-tape_solana::event!(EventType, TrackRegistered);
+tape_solana::event!(EventType, SnapshotRegistered);
 
 /// Emitted when a track achieves certification quorum.
 #[repr(C)]
@@ -116,6 +117,20 @@ pub struct TrackInvalidated {
 }
 
 tape_solana::event!(EventType, TrackInvalidated);
+
+/// Emitted when a new track write is committed into the tape tree.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TrackWritten {
+    pub epoch: EpochNumber,
+    pub track: Pubkey,
+    pub tape: Pubkey,
+    pub track_number: TrackNumber,
+    pub spool_group: [u8; 8],
+    pub track_hash: Hash,
+}
+
+tape_solana::event!(EventType, TrackWritten);
 
 /// Emitted when storage capacity is reserved.
 #[repr(C)]
@@ -321,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_event_type_values() {
-        assert_eq!(EventType::TrackRegistered as u8, 0x10);
+        assert_eq!(EventType::SnapshotRegistered as u8, 0x10);
         assert_eq!(EventType::TrackCertified as u8, 0x11);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
@@ -333,7 +348,7 @@ mod tests {
     #[test]
     fn test_event_sizes() {
         // Verify events fit within Solana's 1024-byte log limit
-        assert!(TrackRegistered::size_of() < 1024);
+        assert!(SnapshotRegistered::size_of() < 1024);
         assert!(TrackCertified::size_of() < 1024);
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);

@@ -100,6 +100,21 @@ impl<const N: usize> MerkleTree<N> {
     }
 
     #[inline]
+    pub fn is_zeroed(&self) -> bool {
+        let zero = Hash::default();
+        self.next_index == 0
+            && self.root == zero
+            && self.filled_subtrees.iter().all(|hash| *hash == zero)
+    }
+
+    #[inline]
+    pub fn ensure_initialized(&mut self) {
+        if self.is_zeroed() {
+            *self = Self::default();
+        }
+    }
+
+    #[inline]
     pub fn root(&self) -> Hash {
         self.root
     }
@@ -145,6 +160,20 @@ impl<const N: usize> MerkleTree<N> {
     where
         P: Into<Hash> + Copy,
     {
+        self.update_leaf_hash(index, proof, hash_leaf(old_leaf), hash_leaf(new_leaf))
+    }
+
+    /// Replaces a pre-hashed leaf in the tree with a new pre-hashed leaf using the provided proof.
+    pub fn update_leaf_hash<P>(
+        &mut self,
+        index: u64,
+        proof: &[P],
+        old_leaf_hash: Hash,
+        new_leaf_hash: Hash,
+    ) -> Result<(), MerkleError>
+    where
+        P: Into<Hash> + Copy,
+    {
         if index >= self.next_index {
             return Err(MerkleError::InvalidProof);
         }
@@ -159,10 +188,7 @@ impl<const N: usize> MerkleTree<N> {
 
         self.check_length(&proof)?;
 
-        let original_leaf_hash = hash_leaf(old_leaf);
-        let new_leaf_hash = hash_leaf(new_leaf);
-
-        let original_path = compute_path(&proof, original_leaf_hash, index, N);
+        let original_path = compute_path(&proof, old_leaf_hash, index, N);
         let new_path = compute_path(&proof, new_leaf_hash, index, N);
 
         if *original_path.last().unwrap() != self.root {
@@ -188,7 +214,20 @@ impl<const N: usize> MerkleTree<N> {
     where
         P: Into<Hash> + Copy,
     {
-        self.update_leaf(index, proof, old_leaf, &[])
+        self.remove_leaf_hash(index, proof, hash_leaf(old_leaf))
+    }
+
+    /// Removes a pre-hashed leaf by replacing it with an empty leaf.
+    pub fn remove_leaf_hash<P>(
+        &mut self,
+        index: u64,
+        proof: &[P],
+        old_leaf_hash: Hash,
+    ) -> Result<(), MerkleError>
+    where
+        P: Into<Hash> + Copy,
+    {
+        self.update_leaf_hash(index, proof, old_leaf_hash, hash_leaf(&[]))
     }
 
     /// Verifies that a leaf is contained in the tree using the provided proof.
@@ -224,6 +263,36 @@ impl<const N: usize> MerkleTree<N> {
     where
         P: Into<Hash> + Copy,
     {
+        self.verify_leaf_hash(index, proof, hash_leaf(leaf))
+    }
+
+    /// Verifies that a pre-hashed leaf is contained in the tree using the provided proof.
+    pub fn verify_hash<P>(
+        &self,
+        index: u64,
+        proof: &[P],
+        leaf_hash: Hash,
+    ) -> Result<bool, MerkleError>
+    where
+        P: Into<Hash> + Copy,
+    {
+        self.verify_leaf_hash(index, proof, leaf_hash)
+    }
+
+    /// Verifies that a pre-hashed leaf is contained in the tree using the provided proof.
+    fn verify_leaf_hash<P>(
+        &self,
+        index: u64,
+        proof: &[P],
+        leaf_hash: Hash,
+    ) -> Result<bool, MerkleError>
+    where
+        P: Into<Hash> + Copy,
+    {
+        if index >= self.next_index {
+            return Err(MerkleError::InvalidProof);
+        }
+
         let proof: Vec<Hash> = proof
             .iter()
             .map(|p| (*p).into())
@@ -231,7 +300,8 @@ impl<const N: usize> MerkleTree<N> {
 
         self.check_length(&proof)?;
 
-        Ok(verify_proof(leaf, &self.root, &proof, index, N))
+        let path = compute_path(&proof, leaf_hash, index, N);
+        Ok(*path.last().unwrap() == self.root)
     }
 
     /// Returns a Merkle proof for a specific leaf in the tree.
@@ -263,6 +333,14 @@ pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
         tree.add_leaf_hash(*h).expect("tree capacity");
     }
     tree.root()
+}
+
+/// Create a Merkle proof from pre-hashed leaf values.
+pub fn create_proof_from_leaf_hashes<const N: usize>(
+    hashes: &[Hash],
+    index: usize,
+) -> Vec<Hash> {
+    create_merkle_proof_hashes(hashes, index, N)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,10 +381,22 @@ pub fn create_merkle_proof<T: AsRef<[u8]>>(
     index: usize, 
     height: usize
 ) -> Vec<Hash> {
+    let hashes: Vec<Hash> = leaves
+        .iter()
+        .map(|leaf| hash_leaf(leaf.as_ref()))
+        .collect();
 
-    assert!(!leaves.is_empty(), "cannot create proof for empty leaf set");
-    assert!(index < leaves.len(), "index out of bounds");
-    assert!(leaves.len() <= 1usize << height, "too many leaves for given height");
+    create_merkle_proof_hashes(&hashes, index, height)
+}
+
+fn create_merkle_proof_hashes(
+    hashes: &[Hash],
+    index: usize,
+    height: usize,
+) -> Vec<Hash> {
+    assert!(!hashes.is_empty(), "cannot create proof for empty leaf set");
+    assert!(index < hashes.len(), "index out of bounds");
+    assert!(hashes.len() <= 1usize << height, "too many leaves for given height");
     assert!(height <= MAX_MERKLE_TREE_HEIGHT, "height exceeds maximum supported");
 
     let empty: Vec<Hash> = (0..height)
@@ -314,10 +404,7 @@ pub fn create_merkle_proof<T: AsRef<[u8]>>(
         .collect();
 
     let mut layers = Vec::with_capacity(height);
-    let mut current_layer: Vec<Hash> = leaves
-        .iter()
-        .map(|leaf| hash_leaf(leaf.as_ref()))
-        .collect();
+    let mut current_layer: Vec<Hash> = hashes.to_vec();
 
     for i in 0..height {
         if current_layer.len() % 2 != 0 {
@@ -594,6 +681,128 @@ mod tests {
         let root = root_from_leaf_hashes::<5>(&hashes);
 
         assert_eq!(tree.root(), root);
+    }
+
+    #[test]
+    fn create_proof_from_leaf_hashes_matches_create_proof() {
+        let data = [
+            b"hello".to_vec(),
+            b"world".to_vec(),
+            b"data".to_vec(),
+            b"test".to_vec(),
+        ];
+
+        let raw_proof = create_merkle_proof(&data, 2, 2);
+        let hashes: Vec<Hash> = data.iter().map(|leaf| hash_leaf(leaf)).collect();
+        let hash_proof = create_proof_from_leaf_hashes::<2>(&hashes, 2);
+
+        assert_eq!(raw_proof, hash_proof);
+    }
+
+    #[test]
+    fn zeroed_tree_can_be_initialized() {
+        let mut tree = MerkleTree::<3> {
+            root: Hash::default(),
+            filled_subtrees: [Hash::default(); 3],
+            next_index: 0,
+        };
+
+        assert!(tree.is_zeroed());
+
+        tree.ensure_initialized();
+
+        assert_eq!(tree, MerkleTree::<3>::new());
+        assert!(!tree.is_zeroed());
+    }
+
+    #[test]
+    fn verify_hash_matches_verify() {
+        let data = [
+            b"hello".to_vec(),
+            b"world".to_vec(),
+            b"data".to_vec(),
+            b"test".to_vec(),
+        ];
+
+        let mut tree = MerkleTree::<2>::new();
+        for d in &data {
+            tree.add_leaf(d).unwrap();
+        }
+
+        let index = 2;
+        let proof = tree.create_proof(&data, index).unwrap();
+        let leaf_hash = hash_leaf(&data[index]);
+
+        assert!(tree.verify(index as u64, &proof, &data[index]).unwrap());
+        assert!(tree.verify_hash(index as u64, &proof, leaf_hash).unwrap());
+        assert_eq!(
+            tree.verify_hash(data.len() as u64, &proof, leaf_hash),
+            Err(MerkleError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn update_leaf_hash_matches_update_leaf() {
+        let data = [
+            b"hello".to_vec(),
+            b"world".to_vec(),
+            b"data".to_vec(),
+            b"test".to_vec(),
+        ];
+
+        let mut raw_tree = MerkleTree::<2>::new();
+        let mut hash_tree = MerkleTree::<2>::new();
+        for d in &data {
+            raw_tree.add_leaf(d).unwrap();
+            hash_tree.add_leaf(d).unwrap();
+        }
+
+        let index = 1;
+        let proof = raw_tree.create_proof(&data, index).unwrap();
+        let new_leaf = b"updated";
+
+        raw_tree
+            .update_leaf(index as u64, &proof, &data[index], new_leaf)
+            .unwrap();
+        hash_tree
+            .update_leaf_hash(
+                index as u64,
+                &proof,
+                hash_leaf(&data[index]),
+                hash_leaf(new_leaf),
+            )
+            .unwrap();
+
+        assert_eq!(raw_tree, hash_tree);
+    }
+
+    #[test]
+    fn remove_leaf_hash_matches_remove_leaf() {
+        let data = [
+            b"hello".to_vec(),
+            b"world".to_vec(),
+            b"data".to_vec(),
+            b"test".to_vec(),
+        ];
+
+        let mut raw_tree = MerkleTree::<2>::new();
+        let mut hash_tree = MerkleTree::<2>::new();
+        for d in &data {
+            raw_tree.add_leaf(d).unwrap();
+            hash_tree.add_leaf(d).unwrap();
+        }
+
+        let index = 3;
+        let proof = raw_tree.create_proof(&data, index).unwrap();
+
+        raw_tree
+            .remove_leaf(index as u64, &proof, &data[index])
+            .unwrap();
+        hash_tree
+            .remove_leaf_hash(index as u64, &proof, hash_leaf(&data[index]))
+            .unwrap();
+
+        assert_eq!(raw_tree, hash_tree);
     }
 
     // NOTE: This is used for calculating EMPTY_ROOTS.

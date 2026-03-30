@@ -12,8 +12,9 @@ use tape_crypto::Pubkey;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, SlicePayload};
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
+use tape_store::types::TrackData;
 use tracing::{debug, trace};
 
 use crate::features::http::error::RouteError;
@@ -79,12 +80,25 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let payload: SlicePayload = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 
-    let track_info = state
+    let track = state
         .context
         .store
         .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+    if !track.is_blob() {
+        return Err(RouteError::BadRequest("raw tracks do not accept slices".into()));
+    }
+
+    let track_data = state
+        .context
+        .store
+        .get_track_data(track_key)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotFound)?;
+    let TrackData::Blob(blob) = track_data else {
+        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
+    };
 
     if hash_leaf(&payload.data) != payload.leaf_hash {
         return Err(RouteError::BadRequest("leaf hash mismatch".into()));
@@ -94,7 +108,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if !verify_proof(
         &payload.data,
-        &track_info.commitment_root(),
+        &blob.commitment,
         &payload.merkle_proof,
         leaf_pos as u64,
         COMMITMENT_TREE_HEIGHT,

@@ -6,6 +6,11 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
+#[cfg(feature = "wincode")]
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "wincode")]
+use wincode_derive::{SchemaRead, SchemaWrite};
+
 
 /// Encoding type for erasure-coded track data.
 ///
@@ -31,6 +36,7 @@ pub enum EncodingType {
 /// This is a 16-byte Pod struct suitable for on-chain storage.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct EncodingProfile {
 
     /// Encoding type discriminant (EncodingType as u64).

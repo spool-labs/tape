@@ -10,8 +10,8 @@ use tape_protocol::Api;
 use tape_protocol::api::ops::GetSliceReq;
 use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::Pubkey;
+use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::types::{Pubkey, TrackData};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -142,6 +142,27 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             };
 
+            if !track_info.is_blob() {
+                warn!(spool, track = %track_addr, "non-blob track in recovery queue");
+                continue;
+            }
+
+            let track_data = match ctx.store.get_track_data(track_addr) {
+                Ok(Some(TrackData::Blob(info))) => info,
+                Ok(Some(TrackData::Raw(_))) => {
+                    warn!(spool, track = %track_addr, "blob track has raw track_data, keeping queued");
+                    continue;
+                }
+                Ok(None) => {
+                    warn!(spool, track = %track_addr, "track_data missing, keeping queued");
+                    continue;
+                }
+                Err(error) => {
+                    warn!(spool, track = %track_addr, %error, "get_track_data failed");
+                    continue;
+                }
+            };
+
             match track_requirement(ctx.store.as_ref(), track_addr) {
                 Ok(TrackRequirement::Required) => {}
                 Ok(TrackRequirement::NotRequired) => {
@@ -155,14 +176,14 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             }
 
-            let profile = track_info.profile();
-            if !profile.is_clay() || track_info.stripe_size == 0 {
+            let profile = track_data.profile;
+            if !profile.is_clay() || track_data.stripe_size == 0 {
                 continue;
             }
 
             let mut slicer = Slicer::with_profile(
                 ClayCoder::from_params(profile.clay_params()),
-                track_info.stripe_size as usize,
+                track_data.stripe_size as usize,
                 true,
                 profile,
             );
@@ -185,7 +206,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     }
                 };
 
-            if !track_info.verify_slice(position, &recovered) {
+            if !track_data.verify_slice(position, &recovered) {
                 continue;
             }
 
@@ -408,12 +429,14 @@ fn reconstruct(
 mod tests {
     use super::*;
     use peer_memory::MemoryApi;
+    use tape_api::state::{CompressedTrack, TrackKind, TrackState};
     use tape_core::encoding::EncodingProfile;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::{EpochNumber, NodeId, SlotNumber};
+    use tape_core::types::{EpochNumber, NodeId, SlotNumber, StorageUnits, TrackNumber};
+    use tape_crypto::Hash;
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus, TrackInfo};
+    use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus};
 
     use crate::context::test_utils::{test_context, test_context_with_api};
 
@@ -423,23 +446,25 @@ mod tests {
         Pubkey([n; 32])
     }
 
-    fn clay_track(size: u64, slices: &[Vec<u8>]) -> TrackInfo {
+    fn clay_track(size: u64, slices: &[Vec<u8>]) -> CompressedTrack {
         let profile = EncodingProfile::clay_default();
         let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
-        let commitment = slices
+        let _commitment: Vec<_> = slices
             .iter()
             .map(|s| tape_crypto::merkle::hash_leaf(s))
             .collect();
-        TrackInfo {
-            tape_address: Pubkey([0; 32]),
+        let _stripe_count = size.div_ceil(stripe_size);
+        let _ = profile;
+        CompressedTrack {
+            tape: Pubkey([0; 32]),
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(size),
             spool_group: SpoolGroup::of(SPOOL),
-            original_size: size,
-            stripe_size,
-            stripe_count: size.div_ceil(stripe_size),
-            encoding_type: profile.encoding as u64,
-            encoding_params: profile.params,
-            commitment,
+            value_hash: Hash::new_unique(),
         }
     }
 

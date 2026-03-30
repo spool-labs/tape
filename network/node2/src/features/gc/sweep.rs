@@ -102,7 +102,7 @@ async fn sweep_orphan_tracks<Db: Store>(
         }
 
         for (track, info) in &tracks {
-            if store.get_tape(info.tape_address).map_err(store_error)?.is_none() {
+            if store.get_tape(info.tape.into()).map_err(store_error)?.is_none() {
                 delete_track_local(store, *track)?;
                 continue;
             }
@@ -233,13 +233,15 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
+    use tape_api::state::{CompressedTrack, TrackKind, TrackState};
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_crypto::Hash;
     use tape_store::ops::{
         ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
     };
-    use tape_store::types::{ObjectInfo, Pubkey, TapeInfo, TrackInfo};
+    use tape_store::types::{ObjectInfo, Pubkey, TapeInfo};
     use tape_store::TapeStore;
 
     use super::sweep_epoch;
@@ -267,16 +269,16 @@ mod tests {
         }
     }
 
-    fn track_info(tape: Pubkey, spool_group: SpoolGroup) -> TrackInfo {
-        TrackInfo {
-            tape_address: tape,
+    fn track_info(tape: Pubkey, spool_group: SpoolGroup) -> CompressedTrack {
+        CompressedTrack {
+            tape,
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(1024),
             spool_group,
-            original_size: 1024,
-            stripe_size: 64,
-            stripe_count: 2,
-            encoding_type: 0,
-            encoding_params: 0,
-            commitment: Vec::new(),
+            value_hash: Hash::new_unique(),
         }
     }
 
@@ -297,6 +299,7 @@ mod tests {
                 tape,
                 TapeInfo {
                     end_epoch: EpochNumber(2),
+                    next_track_number: TrackNumber(0),
                 },
             )
             .unwrap();
@@ -354,6 +357,7 @@ mod tests {
                 tape,
                 TapeInfo {
                     end_epoch: EpochNumber(10),
+                    next_track_number: TrackNumber(0),
                 },
             )
             .unwrap();
@@ -395,6 +399,7 @@ mod tests {
                 tape,
                 TapeInfo {
                     end_epoch: EpochNumber(10),
+                    next_track_number: TrackNumber(0),
                 },
             )
             .unwrap();
@@ -431,6 +436,7 @@ mod tests {
                 tape,
                 TapeInfo {
                     end_epoch: EpochNumber(1),
+                    next_track_number: TrackNumber(0),
                 },
             )
             .unwrap();
@@ -464,7 +470,7 @@ mod tests {
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(5)))
             .unwrap();
         store
-            .put_tape(tape, TapeInfo { end_epoch: EpochNumber(20) })
+            .put_tape(tape, TapeInfo { end_epoch: EpochNumber(20), next_track_number: TrackNumber(0) })
             .unwrap();
 
         // Stale uncertified: registered epoch 2, current epoch 5 -> age 3 >= threshold 2

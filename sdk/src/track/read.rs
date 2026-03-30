@@ -4,7 +4,10 @@ use rpc::Rpc;
 use solana_sdk::pubkey::Pubkey;
 use tape_core::erasure::group_start;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::track::data::TrackData;
 use tape_core::types::NodeId;
+use tape_crypto::hash::hash;
+use tape_protocol::api::{ApiError, GetTrackDataReq};
 use tape_protocol::Api;
 
 use crate::codec::decoder::BlobDecoder;
@@ -42,9 +45,32 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: &Pubkey,
 ) -> Result<Vec<u8>, TapedriveError> {
-    let onchain = client.rpc().get_track_by_address(track).await?;
-    let spool_group = onchain.data.spool_group();
-    let k = onchain.data.profile.k() as usize;
+    let track_info = client.get_track(track).await?;
+    let track_data = fetch_track_data(client, *track, track_info.spool_group).await?;
+
+    if track_info.is_raw() {
+        let TrackData::Raw(bytes) = track_data else {
+            return Err(TapedriveError::InvalidArgument(
+                "expected raw track data".into(),
+            ));
+        };
+        if hash(&bytes) != track_info.value_hash {
+            return Err(TapedriveError::CommitmentMismatch);
+        }
+        return Ok(bytes);
+    }
+
+    let TrackData::Blob(blob) = track_data else {
+        return Err(TapedriveError::InvalidArgument(
+            "expected blob track data".into(),
+        ));
+    };
+    if blob.get_hash() != track_info.value_hash {
+        return Err(TapedriveError::CommitmentMismatch);
+    }
+
+    let spool_group = track_info.spool_group;
+    let k = blob.profile.k() as usize;
 
     let state = bootstrap_network_state(client).await?;
     let slice_to_node: HashMap<SpoolIndex, NodeId> =
@@ -60,7 +86,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         .await
         .map_err(ClientError::Download)?;
 
-    let mut decoder = BlobDecoder::with_profile(onchain.data.profile);
+    let mut decoder = BlobDecoder::with_profile(blob.profile);
     let data = decoder
         .decode(localize_slices(spool_group, slices))
         .map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string())))?;
@@ -73,13 +99,63 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     track: &Pubkey,
     data: &[u8],
 ) -> Result<bool, TapedriveError> {
-    let onchain = client.rpc().get_track_by_address(track).await?;
+    let track_info = client.get_track(track).await?;
 
-    let mut encoder = BlobEncoder::with_profile(onchain.data.profile);
+    if track_info.is_raw() {
+        return Ok(hash(data) == track_info.value_hash);
+    }
+
+    let TrackData::Blob(blob) = fetch_track_data(client, *track, track_info.spool_group).await? else {
+        return Err(TapedriveError::InvalidArgument(
+            "expected blob track data".into(),
+        ));
+    };
+    if blob.get_hash() != track_info.value_hash {
+        return Err(TapedriveError::CommitmentMismatch);
+    }
+
+    let mut encoder = BlobEncoder::with_profile(blob.profile);
     let (_, root) = encoder
         .encode_with_root(data.to_vec())
         .map_err(|e| TapedriveError::Encoding(e.to_string()))?;
 
     let computed: Hash = root.into();
-    Ok(computed == onchain.data.commitment_hash)
+    Ok(computed == blob.commitment)
+}
+
+async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    track: Pubkey,
+    spool_group: SpoolGroup,
+) -> Result<TrackData, TapedriveError> {
+    let state = bootstrap_network_state(client).await?;
+    let mut peers = Vec::new();
+    let mut saw_not_found = false;
+    let mut last_error = None;
+    let track = track.into();
+
+    for (_, node_id) in state.group_peers(spool_group) {
+        if peers.contains(&node_id) {
+            continue;
+        }
+        peers.push(node_id);
+
+        let req = GetTrackDataReq { track };
+        match client.api.get_track_data(node_id, &req).await {
+            Ok(res) => return Ok(res.data),
+            Err(ApiError::NotFound) => saw_not_found = true,
+            Err(ApiError::NotResponsible) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    if let Some(error) = last_error {
+        Err(TapedriveError::Peer(error))
+    } else if saw_not_found {
+        Err(TapedriveError::NotFound)
+    } else {
+        Err(TapedriveError::Peer(ApiError::Other(
+            "no responsible peer returned track data".into(),
+        )))
+    }
 }

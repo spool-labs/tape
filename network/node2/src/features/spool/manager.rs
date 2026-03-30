@@ -665,7 +665,10 @@ mod tests {
                         spool: 5,
                         epoch: EPOCH,
                     },
-                    TaskResult::Sync(SyncResult::Done { synced: 3 }),
+                    TaskResult::Sync(SyncResult::Done {
+                        synced_tracks: 0,
+                        synced_slices: 3,
+                    }),
                 ),
                 EPOCH,
             )

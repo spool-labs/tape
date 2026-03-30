@@ -5,6 +5,7 @@ use futures::future::join_all;
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use solana_sdk::pubkey::Pubkey;
+use tape_api::program::tapedrive::node_pda;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::system::EpochPhase;
 use tape_core::types::SlotNumber;
@@ -129,6 +130,7 @@ impl Observer {
         let scrape_fut = self.scrape_node(node.port);
         let chain_fut = self.rpc.get_node(&node.authority);
         let (scrape, onchain) = tokio::join!(scrape_fut, chain_fut);
+        let node_address = node_pda(node.authority).0.to_string();
 
         let (node_id, pool_stake) = match onchain {
             Ok(onchain_node) => {
@@ -143,6 +145,7 @@ impl Observer {
                     local_id: node.id,
                     node_id: Some(onchain_node.id.0),
                     authority: node.authority.to_string(),
+                    node_address,
                     address,
                     healthy: scrape.healthy,
                     metrics_available: scrape.metrics_available,
@@ -157,6 +160,7 @@ impl Observer {
             local_id: node.id,
             node_id,
             authority: node.authority.to_string(),
+            node_address,
             address: None,
             healthy: scrape.healthy,
             metrics_available: scrape.metrics_available,

@@ -4,17 +4,19 @@
 //!
 //! This crate provides typed column families and helper methods for storing:
 //! - Tape info: Storage allocation metadata
-//! - Track info: Blob metadata with spool allocation and commitments
+//! - Track info: Canonical compressed-track catalog
+//! - Track data: Locally stored track payloads
 //! - Object info: Tracked object status (blacklisted, invalid, valid)
 //! - Slice data: Raw erasure-coded data
 //! - Spool state: Spool status, sync progress, pending repair/recovery
 //!
-//! # Column Families (11 total)
+//! # Column Families (13 total)
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata
 //! - `tape`: Tape metadata
 //! - `track`: Track metadata
+//! - `track_data`: Track payload data
 //! - `object_info`: Object metadata
 //!
 //! ## Sync Columns
@@ -131,21 +133,24 @@ mod tests {
     use super::*;
     use crate::ops::*;
     use crate::types::*;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_crypto::Hash;
 
     #[test]
-    fn test_track_info_roundtrip() {
+    fn test_track_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
         let address = Pubkey::new_unique();
 
-        let info = TrackInfo {
-            tape_address: Pubkey::new_unique(),
+        let info = CompressedTrack {
+            tape: Pubkey::new_unique(),
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(1024 * 1024),
             spool_group: SpoolGroup(3),
-            original_size: 1024 * 1024,
-            stripe_size: 0,
-            stripe_count: 0,
-            encoding_type: 2, // Clay
-            encoding_params: 0,
-            commitment: vec![],
+            value_hash: Hash::new_unique(),
         };
 
         store.put_track(address, info.clone()).unwrap();
@@ -160,6 +165,7 @@ mod tests {
 
         let info = TapeInfo {
             end_epoch: EpochNumber(200),
+            next_track_number: TrackNumber(0),
         };
 
         store.put_tape(address, info.clone()).unwrap();
@@ -271,15 +277,15 @@ mod tests {
         {
             let store = TapeStore::open_primary(&path).unwrap();
             let track = Pubkey::new_unique();
-            let info = TrackInfo {
-                tape_address: Pubkey::new_unique(),
+            let info = CompressedTrack {
+                tape: Pubkey::new_unique(),
+                key: Hash::new_unique(),
+                track_number: TrackNumber(0),
+                kind: TrackKind::Blob as u64,
+                state: TrackState::Certified as u64,
+                size: StorageUnits::from_bytes(1024),
                 spool_group: SpoolGroup(3),
-                original_size: 1024,
-                stripe_size: 0,
-                stripe_count: 0,
-                encoding_type: 1, // Basic
-                encoding_params: 0,
-                commitment: vec![],
+                value_hash: Hash::new_unique(),
             };
             store.put_track(track, info).unwrap();
             store.inner().inner().flush().unwrap();
@@ -310,15 +316,15 @@ mod tests {
         {
             let store = TapeStore::open_primary(&primary_path).unwrap();
             let track = Pubkey::new_unique();
-            let info = TrackInfo {
-                tape_address: Pubkey::new_unique(),
+            let info = CompressedTrack {
+                tape: Pubkey::new_unique(),
+                key: Hash::new_unique(),
+                track_number: TrackNumber(0),
+                kind: TrackKind::Blob as u64,
+                state: TrackState::Certified as u64,
+                size: StorageUnits::from_bytes(512),
                 spool_group: SpoolGroup(0),
-                original_size: 512,
-                stripe_size: 0,
-                stripe_count: 0,
-                encoding_type: 1, // Basic
-                encoding_params: 0,
-                commitment: vec![],
+                value_hash: Hash::new_unique(),
             };
             store.put_track(track, info).unwrap();
             store.inner().inner().flush().unwrap();

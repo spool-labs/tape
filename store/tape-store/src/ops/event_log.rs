@@ -127,8 +127,14 @@ impl<S: Store> EventLogOps for TapeStore<S> {
 
 #[cfg(test)]
 mod tests {
+    use solana_program::pubkey::Pubkey;
+
     use super::*;
     use store_memory::MemoryStore;
+    use tape_core::snapshot::ReplayTrack;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::hash::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -156,10 +162,20 @@ mod tests {
             .append_event(
                 epoch,
                 SlotNumber(150),
-                &ReplayableEvent::RegisterTrack {
-                    track: [1u8; 32],
-                    event_data: vec![0u8; 100],
-                },
+                &ReplayableEvent::Track(ReplayTrack {
+                    state: CompressedTrack {
+                        tape: Pubkey::new_from_array([2u8; 32]),
+                        key: Hash::default(),
+                        track_number: TrackNumber(1),
+                        kind: TrackKind::Raw as u64,
+                        state: TrackState::Certified as u64,
+                        size: StorageUnits(100),
+                        spool_group: SpoolGroup::from(7),
+                        value_hash: Hash::default(),
+                    },
+                    epoch,
+                    blob: None,
+                }),
             )
             .unwrap();
 

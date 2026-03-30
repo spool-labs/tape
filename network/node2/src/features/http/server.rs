@@ -70,8 +70,20 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::METADATA_PATH,
-                get(handlers::metadata::get_metadata::<Db, Cluster, Blockchain>),
+                api_routes::TRACK_PATH,
+                get(handlers::track::get_track::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::TRACK_DATA_PATH,
+                get(handlers::track::get_track_data::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::TRACK_PROOF_PATH,
+                get(handlers::track::get_track_proof::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::TAPE_TRACK_PATH,
+                get(handlers::track::get_track_by_number::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::SIGN_PATH,
@@ -104,8 +116,20 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         let peer_post_routes = Router::new()
             .route(
-                api_routes::SYNC_SPOOL_PATH,
-                post(handlers::sync::sync_spool::<Db, Cluster, Blockchain>),
+                api_routes::TAPE_FIND_TRACK_PATH,
+                post(handlers::track::find_track::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::TAPE_LIST_TRACKS_PATH,
+                post(handlers::track::list_tracks_by_tape::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SYNC_SLICES_PATH,
+                post(handlers::sync::sync_slices::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SYNC_TRACKS_PATH,
+                post(handlers::sync::sync_tracks::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::REPAIR_PATH,

@@ -28,20 +28,6 @@ pub struct NodeSnapshot {
     pub sync_bw_history: Vec<u64>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum TrackStatus {
-    Registered,
-    Certified,
-    Expired,
-    Failed,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct TrackSnapshot {
-    pub status: TrackStatus,
-}
-
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct PollSnapshot {
@@ -87,7 +73,6 @@ pub struct PollSnapshot {
     pub uploads_last_retry_error: Option<String>,
     pub uploads_next_retry_in_ms: Option<u64>,
     pub uploads_retry_in_progress: bool,
-    pub tracks: Vec<TrackSnapshot>,
 }
 
 impl Default for PollSnapshot {
@@ -135,7 +120,6 @@ impl Default for PollSnapshot {
             uploads_last_retry_error: None,
             uploads_next_retry_in_ms: None,
             uploads_retry_in_progress: false,
-            tracks: Vec::new(),
         }
     }
 }

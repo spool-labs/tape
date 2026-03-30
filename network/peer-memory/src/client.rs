@@ -2,10 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tape_protocol::api::{
-    Api, ApiError, CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq,
-    GetMetadataRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq,
-    GetStatsRes, InvalidateReq, InvalidateRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes,
-    PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
+    Api, ApiError, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes, GetHealthReq,
+    GetHealthRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq,
+    GetStatsRes, GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes,
+    GetTrackProofReq, GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
+    ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, PutSnapshotReq,
+    PutSnapshotRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncTracksReq,
+    SyncTracksRes,
 };
 use tape_core::types::NodeId;
 
@@ -25,8 +28,14 @@ impl MemoryApi {
         Self::new(|_, req| match req {
             PeerReq::PutSlice(_) => PeerRes::PutSlice(Err(not_impl())),
             PeerReq::GetSlice(_) => PeerRes::GetSlice(Err(not_impl())),
-            PeerReq::GetMetadata(_) => PeerRes::GetMetadata(Err(not_impl())),
-            PeerReq::Sync(_) => PeerRes::Sync(Err(not_impl())),
+            PeerReq::GetTrack(_) => PeerRes::GetTrack(Err(not_impl())),
+            PeerReq::GetTrackByNumber(_) => PeerRes::GetTrackByNumber(Err(not_impl())),
+            PeerReq::FindTrack(_) => PeerRes::FindTrack(Err(not_impl())),
+            PeerReq::ListTracksByTape(_) => PeerRes::ListTracksByTape(Err(not_impl())),
+            PeerReq::GetTrackData(_) => PeerRes::GetTrackData(Err(not_impl())),
+            PeerReq::GetTrackProof(_) => PeerRes::GetTrackProof(Err(not_impl())),
+            PeerReq::SyncSlices(_) => PeerRes::SyncSlices(Err(not_impl())),
+            PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(not_impl())),
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
@@ -62,12 +71,36 @@ impl Api for MemoryApi {
         dispatch!(self, node, GetSliceReq { track: req.track, spool: req.spool }, GetSlice)
     }
 
-    async fn get_metadata(&self, node: NodeId, req: &GetMetadataReq) -> Result<GetMetadataRes, ApiError> {
-        dispatch!(self, node, GetMetadataReq { track: req.track }, GetMetadata)
+    async fn get_track(&self, node: NodeId, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
+        dispatch!(self, node, GetTrackReq { track: req.track }, GetTrack)
     }
 
-    async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, ApiError> {
-        dispatch!(self, node, SyncReq { spool_index: req.spool_index, cursor: req.cursor, limit: req.limit }, Sync)
+    async fn get_track_by_number(&self, node: NodeId, req: &GetTrackByNumberReq) -> Result<GetTrackByNumberRes, ApiError> {
+        dispatch!(self, node, GetTrackByNumberReq { tape: req.tape, track_number: req.track_number }, GetTrackByNumber)
+    }
+
+    async fn find_track(&self, node: NodeId, req: &FindTrackReq) -> Result<FindTrackRes, ApiError> {
+        dispatch!(self, node, FindTrackReq { tape: req.tape, key: req.key, version: req.version.clone() }, FindTrack)
+    }
+
+    async fn list_tracks_by_tape(&self, node: NodeId, req: &ListTracksByTapeReq) -> Result<ListTracksByTapeRes, ApiError> {
+        dispatch!(self, node, ListTracksByTapeReq { tape: req.tape, cursor: req.cursor, limit: req.limit }, ListTracksByTape)
+    }
+
+    async fn get_track_data(&self, node: NodeId, req: &GetTrackDataReq) -> Result<GetTrackDataRes, ApiError> {
+        dispatch!(self, node, GetTrackDataReq { track: req.track }, GetTrackData)
+    }
+
+    async fn get_track_proof(&self, node: NodeId, req: &GetTrackProofReq) -> Result<GetTrackProofRes, ApiError> {
+        dispatch!(self, node, GetTrackProofReq { track: req.track }, GetTrackProof)
+    }
+
+    async fn sync_slices(&self, node: NodeId, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
+        dispatch!(self, node, SyncSlicesReq { spool_index: req.spool_index, cursor: req.cursor, limit: req.limit }, SyncSlices)
+    }
+
+    async fn sync_tracks(&self, node: NodeId, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
+        dispatch!(self, node, SyncTracksReq { spool_index: req.spool_index, cursor: req.cursor, limit: req.limit }, SyncTracks)
     }
 
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError> {

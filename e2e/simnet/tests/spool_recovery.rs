@@ -68,18 +68,19 @@ async fn spool_recovery_inner() {
     let key = hash::hash(b"spool-recovery-test");
     let data: Vec<u8> = (0..10_240).map(|i| (i % 256) as u8).collect();
 
-    let (tape_key, track) = scenario
+    let (_tape_key, track_address, track) = scenario
         .upload(harness.admin(), key, &data, 4)
         .await
         .expect("upload blob");
 
-    // Verify track was certified
-    let zero = [0u8; 32];
-    assert_ne!(track.data.commitment_hash.as_ref(), &zero);
+    assert!(track.is_blob(), "uploaded track should be a blob track");
+    assert!(
+        track.is_certified(),
+        "uploaded blob track should be certified"
+    );
 
     // Verify all slices are stored
-    let spool_group = track.data.spool_group();
-    let track_address = tape_key.track_address(&key);
+    let spool_group = track.spool_group;
     let slice_count = scenario
         .count_slices(&track_address, spool_group)
         .expect("count slices");

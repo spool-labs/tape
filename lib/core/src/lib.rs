@@ -5,6 +5,7 @@ pub mod bls;
 pub mod cert;
 pub mod encoding;
 pub mod erasure;
+pub mod track;
 pub mod spooler;
 pub mod staking;
 pub mod system;

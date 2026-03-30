@@ -21,8 +21,10 @@ pub use codec::encoder::{BlobEncoder, SliceMerkleProof};
 
 pub use transfer::downloader::ParallelDownloader;
 pub use transfer::uploader::{DistributedUploader, SliceWithProof};
+pub use track::write::{SDK_INLINE_RAW_MAX_BYTES, UploadPlan, WrittenTrack};
 
 pub use error::{ClientError, DownloadError, TapedriveError, UploadError};
+pub use tape_protocol::api::FindTrackVersion;
 
 pub use transfer::certify::{
     CertificationCollector, CertificationConfig, CertificationError, CollectedSignatures,

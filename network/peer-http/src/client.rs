@@ -4,13 +4,18 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tape_protocol::api::{
     self, Api, ApiError, BlsInconsistencyResponse, BlsSignResponse, CertifyReq, CertifyRes,
-    CONTENT_TYPE_JSON, BINARY_CONTENT, GetHealthReq, GetHealthRes, GetMetadataReq,
-    GetMetadataRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq,
-    GetStatsRes, InconsistencyRequest, InvalidateReq, InvalidateRes, PutSliceReq, PutSliceRes,
-    PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRequest, RepairRes, SyncReq, SyncRes,
-    SyncSpoolRequest, SyncSpoolResponse,
+    CONTENT_TYPE_JSON, BINARY_CONTENT, FindTrackReq, FindTrackRes, FindTrackRequest,
+    GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes,
+    GetStatsReq, GetStatsRes, GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq,
+    GetTrackDataRes, GetTrackProofReq, GetTrackProofRes, GetTrackReq, GetTrackRes, InconsistencyRequest, InvalidateReq,
+    InvalidateRes, ListTracksByTapeReq, ListTracksByTapeRequest, ListTracksByTapeRes,
+    ListTracksByTapeResponse, PutSliceReq, PutSliceRes, PutSnapshotReq, PutSnapshotRes,
+    RepairReq, RepairRequest, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncSlicesRequest,
+    SyncSlicesResponse, SyncTracksReq, SyncTracksRes, SyncTracksRequest, SyncTracksResponse,
+    TrackDataResponse, TrackProofResponse, TrackResponse,
 };
 use peer_manager::PeerManager;
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::Hash;
@@ -219,14 +224,10 @@ impl Api for HttpApi {
         })
     }
 
-    async fn get_metadata(
-        &self,
-        node: NodeId,
-        req: &GetMetadataReq,
-    ) -> Result<GetMetadataRes, ApiError> {
+    async fn get_track(&self, node: NodeId, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::metadata_url(&track_id));
+        let url = format!("{base}{}", api::track_url(&track_id));
 
         let start = Instant::now();
         let resp = self
@@ -236,19 +237,189 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_metadata", &resp, start, 0);
+        self.record("get_track", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_metadata", bytes.len() as u64);
-        Ok(GetMetadataRes {
-            data: bytes.to_vec(),
+        self.record_rx("get_track", bytes.len() as u64);
+        let wire: TrackResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+        Ok(GetTrackRes {
+            track: CompressedTrack::unpack(wire.track),
         })
     }
 
-    async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, ApiError> {
+    async fn get_track_by_number(
+        &self,
+        node: NodeId,
+        req: &GetTrackByNumberReq,
+    ) -> Result<GetTrackByNumberRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", api::SYNC_SPOOL_PATH);
-        let wire_req = SyncSpoolRequest {
+        let tape_id = req.tape.to_string();
+        let url = format!("{base}{}", api::tape_track_url(&tape_id, req.track_number.0));
+
+        let start = Instant::now();
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("get_track_by_number", &resp, start, 0);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("get_track_by_number", bytes.len() as u64);
+        let wire: TrackResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+        Ok(GetTrackByNumberRes {
+            track: CompressedTrack::unpack(wire.track),
+        })
+    }
+
+    async fn find_track(&self, node: NodeId, req: &FindTrackReq) -> Result<FindTrackRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let tape_id = req.tape.to_string();
+        let url = format!("{base}{}", api::find_track_url(&tape_id));
+        let wire_req = FindTrackRequest {
+            key: req.key,
+            version: req.version.clone(),
+        };
+        let body =
+            wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        let bytes_sent = body.len() as u64;
+        let start = Instant::now();
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("find_track", &resp, start, bytes_sent);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("find_track", bytes.len() as u64);
+        let wire: TrackResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+        Ok(FindTrackRes {
+            track: CompressedTrack::unpack(wire.track),
+        })
+    }
+
+    async fn list_tracks_by_tape(
+        &self,
+        node: NodeId,
+        req: &ListTracksByTapeReq,
+    ) -> Result<ListTracksByTapeRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let tape_id = req.tape.to_string();
+        let url = format!("{base}{}", api::list_tracks_by_tape_url(&tape_id));
+        let wire_req = ListTracksByTapeRequest {
+            cursor: req.cursor,
+            limit: req.limit,
+        };
+        let body =
+            wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        let bytes_sent = body.len() as u64;
+        let start = Instant::now();
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("list_tracks_by_tape", &resp, start, bytes_sent);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("list_tracks_by_tape", bytes.len() as u64);
+        let wire: ListTracksByTapeResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(ListTracksByTapeRes {
+            tracks: wire
+                .tracks
+                .into_iter()
+                .map(CompressedTrack::unpack)
+                .collect(),
+            next_cursor: wire.next_cursor,
+        })
+    }
+
+    async fn get_track_data(
+        &self,
+        node: NodeId,
+        req: &GetTrackDataReq,
+    ) -> Result<GetTrackDataRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", api::track_data_url(&track_id));
+
+        let start = Instant::now();
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("get_track_data", &resp, start, 0);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("get_track_data", bytes.len() as u64);
+        let wire: TrackDataResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(GetTrackDataRes { data: wire.data })
+    }
+
+    async fn get_track_proof(
+        &self,
+        node: NodeId,
+        req: &GetTrackProofReq,
+    ) -> Result<GetTrackProofRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", api::track_proof_url(&track_id));
+
+        let start = Instant::now();
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("get_track_proof", &resp, start, 0);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("get_track_proof", bytes.len() as u64);
+        let wire: TrackProofResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(GetTrackProofRes {
+            proof: CompressedTrackProof::unpack(wire.proof),
+        })
+    }
+
+    async fn sync_slices(&self, node: NodeId, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let url = format!("{base}{}", api::SYNC_SLICES_PATH);
+        let wire_req = SyncSlicesRequest {
             spool_index: req.spool_index,
             cursor: req.cursor,
             limit: req.limit,
@@ -268,15 +439,52 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("sync", &resp, start, bytes_sent);
+        self.record("sync_slices", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("sync", bytes.len() as u64);
-        let wire_res: SyncSpoolResponse =
+        self.record_rx("sync_slices", bytes.len() as u64);
+        let wire_res: SyncSlicesResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
 
-        Ok(SyncRes {
+        Ok(SyncSlicesRes {
+            entries: wire_res.entries,
+            next_cursor: wire_res.next_cursor,
+        })
+    }
+
+    async fn sync_tracks(&self, node: NodeId, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let url = format!("{base}{}", api::SYNC_TRACKS_PATH);
+        let wire_req = SyncTracksRequest {
+            spool_index: req.spool_index,
+            cursor: req.cursor,
+            limit: req.limit,
+        };
+        let body =
+            wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        let bytes_sent = body.len() as u64;
+        let start = Instant::now();
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("sync_tracks", &resp, start, bytes_sent);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("sync_tracks", bytes.len() as u64);
+        let wire_res: SyncTracksResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(SyncTracksRes {
             entries: wire_res.entries,
             next_cursor: wire_res.next_cursor,
         })

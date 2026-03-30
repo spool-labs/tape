@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
+use tape_api::program::tapedrive::track_pda;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
-use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SPOOL_GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::SpoolGroup;
-use tape_api::state::Track;
+use tape_core::track::types::CompressedTrack;
 use tape_sdk::{TapeKey, Tapedrive};
 use tape_store::ops::{SliceOps, SpoolOps};
 use tape_store::types::Pubkey as StorePubkey;
@@ -26,13 +27,14 @@ impl SimnetScenario<'_> {
         key: tape_crypto::Hash,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, Track)> {
+    ) -> Result<(TapeKey, Pubkey, CompressedTrack)> {
         let sdk = self.sdk(keypair);
         let (tape_key, track) = sdk
             .write(key, data, epochs)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok((tape_key, track))
+        let track_address = track_pda(track.tape, track.track_number).0;
+        Ok((tape_key, track_address, track))
     }
 
     /// Download and reconstruct a blob from its track address.

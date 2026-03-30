@@ -5,6 +5,8 @@
 //! be replayed through block processor handlers to reconstruct state without
 //! replaying all Solana blocks from genesis.
 
+use crate::track::blob::BlobInfo;
+use crate::track::types::CompressedTrack;
 use crate::types::{EpochNumber, NodeId, SlotNumber};
 use tape_crypto::hash::Hash;
 
@@ -20,13 +22,8 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub enum ReplayableEvent {
-    /// Track was registered. `event_data` stores the raw Pod bytes of
-    /// `TrackRegistered` (808 bytes). During replay, parse with
-    /// `bytemuck::try_from_bytes::<TrackRegistered>`.
-    RegisterTrack {
-        track: [u8; 32],
-        event_data: Vec<u8>,
-    },
+    /// Track was written.
+    Track(ReplayTrack),
 
     /// Track was certified.
     CertifyTrack {
@@ -84,6 +81,15 @@ pub enum ReplayableEvent {
     JoinNetwork {
         node: [u8; 32],
     },
+}
+
+/// Replayable track metadata for the track-write flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
+pub struct ReplayTrack {
+    pub state: CompressedTrack,
+    pub epoch: EpochNumber,
+    pub blob: Option<BlobInfo>,
 }
 
 /// A single slot's events within a snapshot.

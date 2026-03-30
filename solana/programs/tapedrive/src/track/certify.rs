@@ -2,11 +2,15 @@ use tape_solana::*;
 use tape_api::prelude::*;
 use tape_api::event::TrackCertified;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::track::TRACK_TREE_HEIGHT;
+use tape_core::track::store::TrackStore;
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
 use tape_crypto::bls12254::min_sig::*;
+
 use crate::error::*;
 
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = CertifyTrack::try_from_bytes(data)?;
+    let args = parse_certify_track(data)?;
     let [
         fee_payer_info,
         authority_info,
@@ -14,7 +18,6 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         system_info,
         epoch_info,
         tape_info,
-        track_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -35,29 +38,42 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .as_account::<Epoch>(&tapedrive::ID)?;
 
     let tape = tape_info
-        .as_account::<Tape>(&tapedrive::ID)?;
-
-    let track = track_info
         .is_writable()?
-        .as_account_mut::<Track>(&tapedrive::ID)?;
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     let (tape_address, _) = tape_pda(tape.authority);
-    let (track_address, _) = track_pda(tape.authority, track.key);
 
-    if tape_address != *tape_info.key {
+    let proof = args.track;
+    let track = proof.state;
+
+    let track_address = track_pda(track.tape, track.track_number).0;
+
+    if tape.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if track_address != *track_info.key {
+    if tape_address != *tape_info.key || track.tape != *tape_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if track.tape != tape_address {
-        return Err(ProgramError::InvalidAccountData);
+    let old_track_hash = tape.tracks
+        .verify(&proof)
+        .map_err(|_| TapeError::BadProof)?;
+
+    if !track.is_blob() {
+        return Err(TapeError::UnexpectedState.into());
     }
 
-    if !track.data.is_registered() {
-        return Err(ProgramError::InvalidAccountData);
+    if track.is_invalidated() {
+        return Err(TapeError::AlreadyInvalidated.into());
+    }
+
+    if track.is_certified() {
+        return Err(TapeError::AlreadyCertified.into());
+    }
+
+    if !track.is_registered() {
+        return Err(TapeError::UnexpectedState.into());
     }
 
     let cert_epoch = EpochNumber::unpack(args.epoch);
@@ -65,8 +81,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .committee_at(cert_epoch, current_epoch(epoch))
         .ok_or(TapeError::BadEpochId)?;
 
-    let group = track.data.spool_group();
-    let weight = spools.group_weight(group, &args.bitmap);
+    let weight = spools.group_weight(track.spool_group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
@@ -90,13 +105,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let decompressed_sig = G1Point::try_from(&args.signature.0)
         .map_err(|_| TapeError::BadSignature)?;
 
-    // Build certification message with domain separation and epoch binding
-    // Must match the format used by storage nodes when signing
-    let certify_message = CertifyMessage::new(
-        cert_epoch,
-        track_address.to_bytes(),
-        track.data.commitment_hash.0,
-    );
+    let certify_message = CertifyMessage::new(cert_epoch, old_track_hash.0);
     let message = certify_message.to_bytes();
 
     verify_aggregate(
@@ -105,15 +114,16 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
 
+    let mut updated_track = track;
+    updated_track.state = TrackState::Certified as u64;
+    tape.update_track(&proof, &updated_track)
+        .map_err(|_| TapeError::BadProof)?;
+
     let signer_count = indices.len() as u64;
 
-    track.data.set_certified(
-        current_epoch(epoch),
-    );
-
     TrackCertified {
-        track: *track_info.key,
-        epoch: current_epoch(epoch),
+        track: track_address,
+        epoch: cert_epoch,
         signer_count: signer_count.to_le_bytes(),
         signer_weight: weight.to_le_bytes(),
     }.log();
@@ -127,7 +137,6 @@ mod tests {
     use tape_crypto::Hash;
     use tape_test::*;
     use tape_spooler::dhondt_allocate;
-    use tape_core::spooler::SpoolGroup;
 
     #[test]
     fn test_certify_track() {
@@ -136,13 +145,11 @@ mod tests {
         let bucket_hash = Hash::new_unique();
 
         let (tape_address, _) = tape_pda(authority);
-        let (track_address, _) = track_pda(authority, bucket_hash);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
         const SIGNERS: usize = 75;
 
-        // Generate keypairs
         let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..MEMBER_COUNT)
             .map(|_| {
                 let sk = BlsPrivateKey::from_random();
@@ -151,47 +158,64 @@ mod tests {
             })
             .collect();
 
-        // Build on-chain committee and spools (this may reorder members)
         let mut system = System::zeroed();
         system.committee = Committee::from_members(
-            // Will be reordered to stake order
             &committee
                 .iter()
                 .enumerate()
                 .map(|(i, (_, pk))| CommitteeMember {
                     id: NodeId::from(i as u64),
-                    stake: TAPE(1_000 * (i * i) as u64), // non-linear stake distribution
+                    stake: TAPE(1_000 * (i * i) as u64),
                     key: *pk,
                     ..CommitteeMember::zeroed()
                 })
                 .collect::<Vec<_>>(),
         );
 
-        // Allocate spools based on stake
         let stakes = system.committee.active_stakes();
-        let seat_counts = dhondt_allocate(
-            &stakes,
-            SPOOL_COUNT as u16
-        ).unwrap();
+        let seat_counts = dhondt_allocate(&stakes, SPOOL_COUNT as u16).unwrap();
         system.spools = SpoolAssignment::try_from_counts(&seat_counts)
             .expect("spools from counts");
 
-        // Accounts/state
-        let tape = Tape {
-            authority: authority,
-            ..Tape::zeroed()
-        };
-
-        let commitment_hash = Hash::new_unique();
-        let track = Track {
+        let track_number = TrackNumber(0);
+        let spool_group = SpoolGroup(0);
+        let track = CompressedTrack {
             tape: tape_address,
             key: bucket_hash,
-            data: TrackData {
-                commitment_hash,
-                spool_group: SpoolGroup(0), // test uses group 0 (spools 0-19)
-                ..TrackData::zeroed()
+            track_number,
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Registered as u64,
+            size: StorageUnits::mb(250),
+            spool_group,
+            value_hash: Hash::new_unique(),
+        };
+        let old_track_hash = track.get_hash();
+        let mut track_tree = tape_crypto::merkle::MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        track_tree.add_leaf_hash(old_track_hash).unwrap();
+        let proof: [Hash; TRACK_TREE_HEIGHT] =
+            tape_crypto::merkle::create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
+                &[old_track_hash],
+                track_number.0 as usize,
+            )
+            .try_into()
+            .unwrap();
+
+        let mut expected_tree = track_tree;
+        let mut updated_track = track;
+        updated_track.state = TrackState::Certified as u64;
+        let new_track_hash = updated_track.get_hash();
+        expected_tree
+            .update_leaf_hash(track_number.0, &proof, old_track_hash, new_track_hash)
+            .unwrap();
+
+        let tape = Tape {
+            authority,
+            tracks: TrackStore {
+                tree: track_tree,
+                next_number: TrackNumber(1),
+                live_count: 1,
             },
-            ..Track::zeroed()
+            ..Tape::zeroed()
         };
 
         let epoch = Epoch {
@@ -200,22 +224,17 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        // Build bitmap and aggregate signature using the on-chain committee order
         let committee_size = system.committee.size();
         assert!(SIGNERS <= committee_size);
 
-        // Choose the first SIGNERS in the on-chain order. If the committee is sorted by stake,
-        // this picks the highest-stake members, which helps pass the seat-weighted supermajority.
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
 
-        // Build certification message with domain separation and epoch binding
-        let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), commitment_hash.0);
+        let certify_message = CertifyMessage::new(epoch.id, old_track_hash.0);
         let message = certify_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
             .map(|&i| {
-                // Find the SK whose PK matches the on-chain member at index i
                 let member_pk = system.committee
                     .member_at(i)
                     .expect("member at index").key;
@@ -230,9 +249,14 @@ mod tests {
 
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 
-        // Instruction and accounts
         let instruction = build_certify_track_ix(
-            fee_payer, authority, bucket_hash, epoch.id, bitmap, agg_sig);
+            fee_payer,
+            authority,
+            CompressedTrackProof { state: track, proof },
+            epoch.id,
+            bitmap,
+            agg_sig,
+        );
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -241,7 +265,6 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
-            pda(track_address, track.pack(), tapedrive::ID),
         ];
 
         let env = test_env();
@@ -250,21 +273,16 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&track_address).data(
-                    Track {
-                        data: TrackData {
-                            state: TrackState {
-                                phase: TrackPhase::Certified.into(),
-                                certified_epoch: EpochNumber(42),
-                            },
-                            ..track.data
+                Check::account(&tape_address).data(
+                    Tape {
+                        tracks: TrackStore {
+                            tree: expected_tree,
+                            next_number: TrackNumber(1),
+                            live_count: 1,
                         },
-                        ..track
-                    }
-                    .pack()
-                    .as_ref(),
-                )
-                .build(),
+                        ..tape
+                    }.pack().as_ref()
+                ).build(),
             ],
         );
     }

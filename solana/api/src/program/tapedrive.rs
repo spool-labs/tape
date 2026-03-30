@@ -1,6 +1,6 @@
 use solana_program::pubkey::Pubkey;
 use const_crypto::ed25519;
-use tape_core::{prelude::Bitmap, types::EpochNumber};
+use tape_core::{prelude::Bitmap, types::{EpochNumber, TrackNumber}};
 use tape_crypto::Hash;
 use super::token::MINT_ADDRESS;
 
@@ -173,8 +173,8 @@ pub fn tape_pda(authority: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
-pub fn track_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[TRACK, authority.as_ref(), hash.as_ref()], &id())
+pub fn track_pda(tape: Pubkey, track_number: TrackNumber) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[TRACK, tape.as_ref(), &track_number.pack()], &id())
 }
 
 #[inline(always)]

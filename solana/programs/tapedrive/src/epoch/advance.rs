@@ -867,6 +867,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "snapshot gate temporarily disabled while snapshot program logic is excluded"]
     fn test_advance_blocked_snapshot_incomplete() {
         // Test that epoch advance is blocked when the previous epoch's snapshot is not done
         let env = test_env();

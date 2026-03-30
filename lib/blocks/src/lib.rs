@@ -37,6 +37,6 @@ mod merge;
 // Re-export main types and functions
 pub use block::{parse, parse_and_merge, ParsedBlock, ParsedTransaction};
 pub use error::ParseError;
-pub use event::TapedriveEvent;
+pub use event::{parse_event_data, TapedriveEvent};
 pub use instruction::{ParsedInstruction, RawInstruction};
 pub use merge::merge;

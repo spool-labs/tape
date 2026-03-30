@@ -188,7 +188,7 @@ impl TapeError {
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",
             Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
             Self::AlreadyInvalidated => "Track already invalidated",
-            Self::AlreadyCertified => "Snapshot track already certified",
+            Self::AlreadyCertified => "Track already certified",
         }
     }
 }
