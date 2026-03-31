@@ -23,6 +23,10 @@ pub enum RpcError {
     #[error("Request timeout after {0:?}")]
     Timeout(Duration),
 
+    /// Block exists at the requested slot but is not yet available from the RPC node
+    #[error("Block not available yet")]
+    BlockNotAvailable,
+
     /// All configured endpoints have been exhausted
     #[error("All endpoints exhausted after {attempts} attempts")]
     AllEndpointsFailed { attempts: u32 },
@@ -58,6 +62,7 @@ impl RpcError {
         match self {
             // Retriable errors
             RpcError::Timeout(_) => true,
+            RpcError::BlockNotAvailable => true,
             RpcError::BlockhashExpired => true,
             RpcError::Request(msg) => is_retriable_message(msg),
 
@@ -75,8 +80,15 @@ impl RpcError {
     pub fn should_failover(&self) -> bool {
         match self {
             RpcError::Timeout(_) => true,
+            RpcError::BlockNotAvailable => false,
             RpcError::Request(msg) => is_endpoint_error_message(msg),
-            _ => false,
+            RpcError::AccountNotFound(_) => false,
+            RpcError::TransactionNotFound(_) => false,
+            RpcError::Deserialization(_) => false,
+            RpcError::Transaction(_) => false,
+            RpcError::BlockhashExpired => false,
+            RpcError::AllEndpointsFailed { .. } => false,
+            RpcError::Internal(_) => false,
         }
     }
 
@@ -84,6 +96,7 @@ impl RpcError {
     pub fn category(&self) -> &'static str {
         match self {
             RpcError::Timeout(_) => "timeout",
+            RpcError::BlockNotAvailable => "block_not_available",
             RpcError::Request(_) => "rpc_error",
             RpcError::AccountNotFound(_) => "not_found",
             RpcError::TransactionNotFound(_) => "not_found",
@@ -99,7 +112,15 @@ impl RpcError {
     pub fn is_skipped_slot(&self) -> bool {
         match self {
             RpcError::Request(msg) => is_skipped_slot_message(msg),
-            _ => false,
+            RpcError::Timeout(_) => false,
+            RpcError::BlockNotAvailable => false,
+            RpcError::AccountNotFound(_) => false,
+            RpcError::TransactionNotFound(_) => false,
+            RpcError::Deserialization(_) => false,
+            RpcError::Transaction(_) => false,
+            RpcError::BlockhashExpired => false,
+            RpcError::AllEndpointsFailed { .. } => false,
+            RpcError::Internal(_) => false,
         }
     }
 }
@@ -145,6 +166,7 @@ mod tests {
     #[test]
     fn test_error_categories() {
         assert_eq!(RpcError::Timeout(Duration::from_secs(1)).category(), "timeout");
+        assert_eq!(RpcError::BlockNotAvailable.category(), "block_not_available");
         assert_eq!(
             RpcError::AccountNotFound(Pubkey::default()).category(),
             "not_found"
@@ -158,6 +180,7 @@ mod tests {
     #[test]
     fn test_retriable_classification() {
         assert!(RpcError::Timeout(Duration::from_secs(1)).is_retriable());
+        assert!(RpcError::BlockNotAvailable.is_retriable());
         assert!(RpcError::BlockhashExpired.is_retriable());
         assert!(!RpcError::AccountNotFound(Pubkey::default()).is_retriable());
         assert!(!RpcError::Deserialization("test".to_string()).is_retriable());
@@ -166,6 +189,7 @@ mod tests {
     #[test]
     fn test_failover_classification() {
         assert!(RpcError::Timeout(Duration::from_secs(1)).should_failover());
+        assert!(!RpcError::BlockNotAvailable.should_failover());
         assert!(!RpcError::BlockhashExpired.should_failover());
         assert!(!RpcError::AccountNotFound(Pubkey::default()).should_failover());
     }
@@ -181,6 +205,7 @@ mod tests {
     fn test_skipped_slot() {
         assert!(RpcError::Request("SlotSkipped: slot 10 was skipped or not produced".to_string()).is_skipped_slot());
         assert!(RpcError::Request("slot was skipped".to_string()).is_skipped_slot());
+        assert!(!RpcError::BlockNotAvailable.is_skipped_slot());
         assert!(!RpcError::Request("connection reset".to_string()).is_skipped_slot());
         assert!(!RpcError::Timeout(Duration::from_secs(1)).is_skipped_slot());
     }

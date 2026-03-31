@@ -257,6 +257,22 @@ impl SolanaRpc {
         RpcError::Request(err_str)
     }
 
+    fn normalize_get_block_error(error: RpcError) -> RpcError {
+        if let RpcError::Request(message) = error {
+            if Self::is_block_not_available_message(&message) {
+                return RpcError::BlockNotAvailable;
+            }
+
+            return RpcError::Request(message);
+        }
+
+        error
+    }
+
+    fn is_block_not_available_message(message: &str) -> bool {
+        message.contains("invalid type: null") && message.contains("UiConfirmedBlock")
+    }
+
 }
 
 // ============================================================================
@@ -379,8 +395,8 @@ impl Rpc for SolanaRpc {
                     return Ok(block);
                 }
                 Ok(Err(e)) => {
-                    let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getBlock", rpc_err, &mut backoff).await?;
+                    let rpc_error = Self::normalize_get_block_error(Self::convert_error(e, None));
+                    self.handle_error("getBlock", rpc_error, &mut backoff).await?;
                 }
                 Err(_elapsed) => {
                     self.handle_timeout("getBlock", &mut backoff).await?;
@@ -796,5 +812,29 @@ mod tests {
             client.commitment(),
             solana_sdk::commitment_config::CommitmentLevel::Finalized
         );
+    }
+
+    #[test]
+    fn test_normalize_get_block_error_maps_null_block_to_block_not_available() {
+        let error = RpcError::Request(
+            "RPC request failed: invalid type: null, expected struct UiConfirmedBlock"
+                .to_string(),
+        );
+
+        let normalized = SolanaRpc::normalize_get_block_error(error);
+
+        assert!(matches!(normalized, RpcError::BlockNotAvailable));
+    }
+
+    #[test]
+    fn test_normalize_get_block_error_leaves_other_request_errors_unchanged() {
+        let error = RpcError::Request("connection reset".to_string());
+
+        let normalized = SolanaRpc::normalize_get_block_error(error);
+
+        match normalized {
+            RpcError::Request(message) => assert_eq!(message, "connection reset"),
+            other => panic!("expected request error, got {other:?}"),
+        }
     }
 }

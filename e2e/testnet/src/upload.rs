@@ -22,7 +22,7 @@ const MAX_UPLOAD_HISTORY: usize = 16;
 const DEFAULT_UPLOAD_EPOCHS: u64 = 4;
 const MIN_RAW_UPLOAD_BYTES: usize = 64;
 const MIN_BLOB_UPLOAD_BYTES: usize = 1024 * 1024;
-const MAX_BLOB_UPLOAD_BYTES: usize = 500 * 1024 * 1024;
+const MAX_BLOB_UPLOAD_BYTES: usize = 28 * 1024 * 1024;
 
 struct UploadResult {
     certified: bool,
