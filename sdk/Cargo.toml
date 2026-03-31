@@ -46,6 +46,8 @@ futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
+wincode.workspace = true
+wincode-derive.workspace = true
 
 # Concurrency
 arc-swap.workspace = true

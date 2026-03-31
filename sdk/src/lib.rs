@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod error;
+pub mod file;
 pub mod keys;
 pub mod staking;
 pub mod tapedrive;
@@ -24,6 +25,8 @@ pub use transfer::uploader::{DistributedUploader, SliceWithProof};
 pub use track::write::{SDK_INLINE_RAW_MAX_BYTES, UploadPlan, WrittenTrack};
 
 pub use error::{ClientError, DownloadError, TapedriveError, UploadError};
+pub use file::error::FileError;
+pub use file::receipt::FileReceipt;
 pub use tape_protocol::api::FindTrackVersion;
 
 pub use transfer::certify::{
