@@ -1,5 +1,9 @@
 //! Protocol request/response types for the node API.
 
+use core::mem::size_of;
+
+use wincode::containers::{Pod, Vec as WincodeVec};
+use wincode::len::BincodeLen;
 use tape_crypto::Hash;
 use tape_core::{
     bls::BlsSignature,
@@ -11,10 +15,16 @@ use tape_core::track::types::{PackedTrack, PackedTrackProof};
 use tape_core::types::{EpochNumber, NodeId, TrackNumber};
 use wincode_derive::{SchemaRead, SchemaWrite};
 
+use crate::api::MERKLE_HEIGHT;
 use crate::api::ops::FindTrackVersion;
 
 /// Bitmap bytes needed to represent `MEMBER_COUNT` committee members.
 pub const COMMITTEE_BITMAP_BYTES: usize = (MEMBER_COUNT + 7) / 8;
+pub const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
+pub const SLICE_BODY_LIMIT: usize =
+    size_of::<u64>() + SLICE_BYTES_LIMIT + Hash::LEN + size_of::<u64>() + (MERKLE_HEIGHT * Hash::LEN);
+
+type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -94,6 +104,7 @@ pub struct NodeStats {
 /// Payload for slice upload requests.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SlicePayload {
+    #[wincode(with = "SliceBytes")]
     pub data: Vec<u8>,
     pub leaf_hash: Hash,
     pub merkle_proof: Vec<Hash>,
@@ -130,6 +141,7 @@ pub struct SyncSlicesResponse {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSliceEntry {
     pub track_address: [u8; 32],
+    #[wincode(with = "SliceBytes")]
     pub slice_data: Vec<u8>,
 }
 
@@ -193,7 +205,6 @@ pub struct TrackProofResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::MERKLE_HEIGHT;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::track::blob::BlobInfo;
@@ -219,6 +230,50 @@ mod tests {
     fn payload_truncated() {
         let result: Result<SlicePayload, _> = wincode::deserialize(&[0u8; 10]);
         assert!(result.is_err());
+    }
+
+    // Validates that slice payloads larger than the default wincode vector cap still roundtrip.
+    #[test]
+    fn payload_large() {
+        let payload = SlicePayload::new(
+            vec![0xAB; (4 * 1024 * 1024) + 1],
+            Hash::from([0x11; 32]),
+            vec![Hash::from([0x22; 32]); MERKLE_HEIGHT],
+        );
+
+        let bytes = wincode::serialize(&payload).unwrap();
+        let decoded: SlicePayload = wincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(decoded, payload);
+    }
+
+    // Validates that slice payloads above the configured cap are rejected on decode.
+    #[test]
+    fn payload_limit() {
+        let payload = SlicePayload::new(
+            vec![0xAB; SLICE_BYTES_LIMIT + 1],
+            Hash::from([0x11; 32]),
+            vec![Hash::from([0x22; 32]); MERKLE_HEIGHT],
+        );
+
+        let bytes = wincode::serialize(&payload).unwrap();
+        let result: Result<SlicePayload, _> = wincode::deserialize(&bytes);
+
+        assert!(result.is_err());
+    }
+
+    // Validates that the declared body limit matches the wire encoding.
+    #[test]
+    fn payload_size() {
+        let payload = SlicePayload::new(
+            vec![0xAB; SLICE_BYTES_LIMIT],
+            Hash::from([0x11; 32]),
+            vec![Hash::from([0x22; 32]); MERKLE_HEIGHT],
+        );
+
+        let bytes = wincode::serialize(&payload).unwrap();
+
+        assert_eq!(bytes.len(), SLICE_BODY_LIMIT);
     }
 
     #[test]

@@ -25,7 +25,8 @@ pub use keys::{EpochKey, EventLogKey, SliceKey, SpoolIndexKey, TrackLookupKey, U
 
 // Re-export value types
 pub use values::{
-    InvalidationProof, SnapshotCertResult, SnapshotChunkMeta, SnapshotPartialSignature, TapeInfo,
+    InvalidationProof, SliceValue, SnapshotCertResult, SnapshotChunkMeta,
+    SnapshotPartialSignature, TapeInfo,
 };
 pub use tape_core::track::blob::BlobInfo;
 pub use tape_core::track::data::TrackData;

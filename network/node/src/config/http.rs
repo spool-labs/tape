@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Deserializer};
+use tape_protocol::api::SLICE_BODY_LIMIT;
 
 /// Network advertisement settings.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -79,7 +80,7 @@ fn default_concurrency() -> usize {
 }
 
 fn default_slice_max_bytes() -> usize {
-    10 * 1024 * 1024
+    SLICE_BODY_LIMIT
 }
 
 fn default_peer_max_bytes() -> usize {

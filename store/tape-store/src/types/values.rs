@@ -4,7 +4,13 @@ use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
 use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::Hash;
+use wincode::containers::{Pod, Vec as WincodeVec};
+use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
+
+const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
+
+type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
 
 /// Metadata about a tape (storage allocation)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
@@ -65,6 +71,10 @@ pub struct SnapshotPartialSignature {
     /// Snapshot target epoch for this signature.
     pub epoch: u64,
 }
+
+/// Stored slice bytes with a widened decode limit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
 
 #[cfg(test)]
 mod tests {

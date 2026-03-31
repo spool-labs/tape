@@ -2,7 +2,7 @@
 
 use crate::columns::SliceCol;
 use crate::error::{Result, TapeStoreError};
-use crate::types::{Pubkey, SliceKey};
+use crate::types::{Pubkey, SliceKey, SliceValue};
 use crate::TapeStore;
 use store::{Column, Store};
 
@@ -51,12 +51,13 @@ pub trait SliceOps {
 impl<S: Store> SliceOps for TapeStore<S> {
     fn get_slice(&self, spool_id: u16, track_address: Pubkey) -> Result<Option<Vec<u8>>> {
         let key = SliceKey::new(spool_id, track_address);
-        Ok(self.get::<SliceCol>(&key)?)
+        Ok(self.get::<SliceCol>(&key)?.map(|value| value.0))
     }
 
     fn put_slice(&self, spool_id: u16, track_address: Pubkey, data: Vec<u8>) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
-        self.put::<SliceCol>(&key, &data)?;
+        let value = SliceValue(data);
+        self.put::<SliceCol>(&key, &value)?;
         Ok(())
     }
 
@@ -85,9 +86,9 @@ impl<S: Store> SliceOps for TapeStore<S> {
         for (key_bytes, value_bytes) in iter {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            let data: Vec<u8> = wincode::deserialize(&value_bytes)
+            let data: SliceValue = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-            results.push((key.track_address, data));
+            results.push((key.track_address, data.0));
         }
         Ok(results)
     }
@@ -126,9 +127,9 @@ impl<S: Store> SliceOps for TapeStore<S> {
             if after_track.is_some() && Some(key.track_address) == after_track {
                 continue;
             }
-            let data: Vec<u8> = wincode::deserialize(&value_bytes)
+            let data: SliceValue = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-            results.push((key.track_address, data));
+            results.push((key.track_address, data.0));
             if results.len() >= limit {
                 break;
             }
@@ -205,6 +206,20 @@ mod tests {
         store
             .put_slice(spool_id, track, data.clone())
             .unwrap();
+
+        let retrieved = store.get_slice(spool_id, track).unwrap().unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    // Validates that stored slices larger than the default wincode vector cap still roundtrip.
+    #[test]
+    fn slice_large() {
+        let store = test_store();
+        let spool_id = 42;
+        let track = Pubkey::new_unique();
+        let data = vec![0xAB; (4 * 1024 * 1024) + 1];
+
+        store.put_slice(spool_id, track, data.clone()).unwrap();
 
         let retrieved = store.get_slice(spool_id, track).unwrap().unwrap();
         assert_eq!(retrieved, data);
