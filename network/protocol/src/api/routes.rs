@@ -1,5 +1,7 @@
 //! Route constants and URL builders for the node API.
 
+use tape_core::types::TrackNumber;
+
 pub const API_V1: &str = "/v1";
 
 // Routes
@@ -47,8 +49,8 @@ pub fn track_proof_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/proof")
 }
 
-pub fn tape_track_url(tape_id: &str, track_number: u64) -> String {
-    format!("/v1/tapes/{tape_id}/tracks/{track_number}")
+pub fn tape_track_url(tape_id: &str, track_number: TrackNumber) -> String {
+    format!("/v1/tapes/{tape_id}/tracks/{}", track_number.0)
 }
 
 pub fn find_track_url(tape_id: &str) -> String {
@@ -89,7 +91,7 @@ mod tests {
         assert_eq!(track_url("abc"), "/v1/tracks/abc");
         assert_eq!(track_data_url("abc"), "/v1/tracks/abc/data");
         assert_eq!(track_proof_url("abc"), "/v1/tracks/abc/proof");
-        assert_eq!(tape_track_url("def", 7), "/v1/tapes/def/tracks/7");
+        assert_eq!(tape_track_url("def", TrackNumber(7)), "/v1/tapes/def/tracks/7");
         assert_eq!(find_track_url("def"), "/v1/tapes/def/tracks/find");
         assert_eq!(list_tracks_by_tape_url("def"), "/v1/tapes/def/tracks/list");
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");

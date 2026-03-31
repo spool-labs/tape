@@ -8715,7 +8715,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-e2e-fuzznet"
+name = "tape-e2e-devnet"
 version = "0.3.0"
 dependencies = [
  "anyhow",
@@ -8732,7 +8732,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-e2e-simnet",
- "tape-node2",
+ "tape-node",
  "tape-protocol",
  "tape-sdk",
  "tape-store",
@@ -8743,7 +8743,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-e2e-prodnet"
+name = "tape-e2e-simnet"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "peer-http",
+ "peer-manager",
+ "rand 0.8.5",
+ "reqwest",
+ "rpc",
+ "rpc-client",
+ "rpc-litesvm",
+ "solana-sdk",
+ "store-memory",
+ "tape-api",
+ "tape-chain-harness",
+ "tape-core",
+ "tape-crypto",
+ "tape-node",
+ "tape-protocol",
+ "tape-sdk",
+ "tape-store",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tape-e2e-testnet"
 version = "0.3.0"
 dependencies = [
  "anyhow",
@@ -8766,39 +8794,12 @@ dependencies = [
  "tape-api",
  "tape-core",
  "tape-crypto",
+ "tape-node",
  "tape-protocol",
  "tape-retry",
  "tape-sdk",
  "tokio",
  "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "tape-e2e-simnet"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "peer-http",
- "peer-manager",
- "rand 0.8.5",
- "reqwest",
- "rpc",
- "rpc-client",
- "rpc-litesvm",
- "solana-sdk",
- "store-memory",
- "tape-api",
- "tape-chain-harness",
- "tape-core",
- "tape-crypto",
- "tape-node2",
- "tape-protocol",
- "tape-sdk",
- "tape-store",
- "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -8811,7 +8812,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-node2"
+name = "tape-node"
 version = "0.3.0"
 dependencies = [
  "anyhow",

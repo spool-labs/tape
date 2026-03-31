@@ -51,7 +51,7 @@ pub fn init_log() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("tape_e2e_simnet=trace,tape_node2=trace")),
+                .unwrap_or_else(|_| EnvFilter::new("tape_e2e_simnet=trace,tape_node=trace")),
         )
         .with_ansi(false)
         .with_writer(move || FileOut {

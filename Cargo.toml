@@ -23,7 +23,7 @@ members = [
   "solana/rpc-client",
   "solana/rpc-litesvm",
   "lib/metrics",
-  "network/node2",
+  "network/node",
   "network/peer-manager",
   "network/peer-memory",
   "network/peer-http",
@@ -31,8 +31,8 @@ members = [
   "network/protocol",
   "lib/retry",
   "e2e/simnet",
-  "e2e/fuzznet",
-  "e2e/prodnet",
+  "e2e/devnet",
+  "e2e/testnet",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
@@ -52,7 +52,7 @@ default-members = [
   "store/store-rocks",
   "store/tape-store",
   "lib/metrics",
-  "network/node2",
+  "network/node",
   "network/peer-manager",
   "network/peer-memory",
   "network/peer-http",
@@ -93,7 +93,7 @@ tape-sdk = { version = "0.3.0", path = "./sdk" }
 tape-test = { version = "0.3.0", path = "./test" }
 tape-chain-harness = { version = "0.3.0", path = "./test/harness" }
 tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
-tape-node2 = { version = "0.3.0", path = "./network/node2" }
+tape-node = { version = "0.3.0", path = "./network/node" }
 peer-manager = { version = "0.3.0", path = "./network/peer-manager" }
 peer-memory = { version = "0.3.0", path = "./network/peer-memory" }
 peer-http = { version = "0.3.0", path = "./network/peer-http" }

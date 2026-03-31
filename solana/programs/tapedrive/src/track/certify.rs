@@ -2,9 +2,7 @@ use tape_solana::*;
 use tape_api::prelude::*;
 use tape_api::event::TrackCertified;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::track::TRACK_TREE_HEIGHT;
-use tape_core::track::store::TrackStore;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
+use tape_core::track::types::TrackState;
 use tape_crypto::bls12254::min_sig::*;
 
 use crate::error::*;
@@ -134,6 +132,10 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_core::track::store::TrackStore;
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
+    use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
     use tape_test::*;
     use tape_spooler::dhondt_allocate;
@@ -190,15 +192,15 @@ mod tests {
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
-        let mut track_tree = tape_crypto::merkle::MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        let mut track_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
         track_tree.add_leaf_hash(old_track_hash).unwrap();
-        let proof: [Hash; TRACK_TREE_HEIGHT] =
-            tape_crypto::merkle::create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
+        let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
                 &[old_track_hash],
                 track_number.0 as usize,
             )
+            .expect("track proof is valid")
             .try_into()
-            .unwrap();
+            .expect("proof has correct length");
 
         let mut expected_tree = track_tree;
         let mut updated_track = track;

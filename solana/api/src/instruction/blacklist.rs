@@ -4,7 +4,6 @@ use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use tape_core::prelude::*;
 use tape_crypto::Hash;
-use core::mem::size_of;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -21,21 +20,7 @@ pub struct RemoveFromBlacklist {
 
 #[inline(always)]
 pub fn parse_add_to_blacklist(data: &[u8]) -> Result<AddToBlacklist, ProgramError> {
-    read_instruction_pod::<AddToBlacklist>(data)
-}
-
-#[inline(always)]
-fn read_instruction_pod<T>(data: &[u8]) -> Result<T, ProgramError>
-where
-    T: bytemuck::Pod + bytemuck::Zeroable,
-{
-    if data.len() != size_of::<T>() {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-
-    let mut value = T::zeroed();
-    bytemuck::bytes_of_mut(&mut value).copy_from_slice(data);
-    Ok(value)
+    super::read_instruction_pod::<AddToBlacklist>(data)
 }
 
 pub fn build_add_to_blacklist_ix(

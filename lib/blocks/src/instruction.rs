@@ -7,7 +7,8 @@ use tape_api::event::{
     TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::{track_pda, ID as TAPE_DRIVE_PROGRAM_ID};
+use bs58::decode as bs58_decode;
 use tape_core::track::data::{TrackData, TrackDataSlice};
 use tape_crypto::Hash;
 
@@ -137,12 +138,12 @@ pub fn parse_raw_instruction(
         .map_err(|_| ParseError::InvalidPubkey)?;
 
     // Only process tapedrive program instructions
-    if program_id != tape_api::program::tapedrive::ID {
+    if program_id != TAPE_DRIVE_PROGRAM_ID {
         return Ok(None);
     }
 
     // Decode instruction data
-    let ix_data = bs58::decode(&ix.data)
+    let ix_data = bs58_decode(&ix.data)
         .into_vec()
         .map_err(|_| ParseError::InvalidData)?;
 

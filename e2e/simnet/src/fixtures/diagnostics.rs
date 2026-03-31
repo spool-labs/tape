@@ -95,7 +95,7 @@ impl SimnetScenario<'_> {
 
         let lines: Vec<_> = raw
             .lines()
-            .filter(|line| line.contains("tape_node2"))
+            .filter(|line| line.contains("tape_node"))
             .filter(|line| line.contains(name))
             .collect();
 

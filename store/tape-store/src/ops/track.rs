@@ -1,6 +1,5 @@
 //! Canonical compressed-track catalog operations.
 
-use tape_api::program::tapedrive::track_pda;
 use tape_core::track::types::{CompressedTrack, PackedTrack};
 use crate::columns::{TrackCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
@@ -164,6 +163,9 @@ mod key {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_api::program::tapedrive::track_pda;
+    use tape_core::types::StorageUnits;
+    use tape_crypto::Hash;
     use crate::types::SpoolGroup;
     use store_memory::MemoryStore;
 
@@ -174,13 +176,13 @@ mod tests {
     fn make_track_info() -> CompressedTrack {
         CompressedTrack {
             tape: Pubkey::new_unique().into(),
-            key: tape_crypto::Hash::new_unique(),
-            track_number: tape_core::types::TrackNumber(0),
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
             kind: 0,
             state: 1,
-            size: tape_core::types::StorageUnits(1024 * 1024),
+            size: StorageUnits(1024 * 1024),
             spool_group: SpoolGroup(3),
-            value_hash: tape_crypto::Hash::new_unique(),
+            value_hash: Hash::new_unique(),
         }
     }
 

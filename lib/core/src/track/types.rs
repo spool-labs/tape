@@ -1,3 +1,5 @@
+//! Track protocol types and merkle proofs.
+
 use core::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
@@ -12,9 +14,9 @@ use crate::track::{TRACK_LEAF_V1, TRACK_TREE_HEIGHT};
 use crate::types::{StorageUnits, TrackNumber};
 
 #[cfg(feature = "wincode")]
-use core::mem::MaybeUninit;
-#[cfg(feature = "wincode")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wincode")]
+use core::mem::MaybeUninit;
 #[cfg(feature = "wincode")]
 use wincode::{
     io::{Reader, Writer},
@@ -48,6 +50,33 @@ pub struct CompressedTrack {
     pub size: StorageUnits,
     pub spool_group: SpoolGroup,
     pub value_hash: Hash,
+}
+
+#[cfg(feature = "wincode")]
+impl SchemaWrite for CompressedTrack {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(size_of::<Self>())
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.pack())?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "wincode")]
+impl<'de> SchemaRead<'de> for CompressedTrack {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        // SAFETY: `PackedTrack` is a byte-aligned repr-specified representation for
+        // `CompressedTrack`, and `reader.get_t()` only reads exactly that size.
+        let packed: PackedTrack = unsafe { reader.get_t()? };
+        dst.write(Self::unpack(packed));
+        Ok(())
+    }
 }
 
 #[repr(C)]
@@ -113,31 +142,6 @@ impl CompressedTrack {
         let mut value = Self::zeroed();
         bytemuck::bytes_of_mut(&mut value).copy_from_slice(&data);
         value
-    }
-}
-
-#[cfg(feature = "wincode")]
-impl SchemaWrite for CompressedTrack {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(size_of::<Self>())
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&src.pack())?;
-        Ok(())
-    }
-}
-
-#[cfg(feature = "wincode")]
-impl<'de> SchemaRead<'de> for CompressedTrack {
-    type Dst = Self;
-
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        let packed: PackedTrack = unsafe { reader.get_t()? };
-        dst.write(Self::unpack(packed));
-        Ok(())
     }
 }
 

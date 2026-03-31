@@ -16,10 +16,6 @@ pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
 pub struct TrackWrite {
     pub key: Hash,
     pub kind: [u8; 8],
-
-    // Followed by variable-length payload bytes, interpreted according to kind:
-    // - Raw: arbitrary bytes up to TRACK_WRITE_MAX_BYTES
-    // - Blob: exactly size_of::<BlobInfo>() bytes
 }
 
 #[repr(C)]
@@ -53,14 +49,19 @@ pub fn build_track_write_blob_ix(
     authority: Pubkey,
     key: Hash,          // Track identifier (e.g., file path hash)
     blob: BlobInfo,
-) -> Instruction {
-    assert!(blob.stripe_size > 0, "stripe_size must be non-zero");
-    assert!(blob.stripe_count > 0, "stripe_count must be non-zero");
+) -> Result<Instruction, ProgramError> {
+    if blob.stripe_size == 0 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    if blob.stripe_count == 0 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
 
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(authority);
 
-    Instruction {
+    Ok(Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
@@ -71,7 +72,7 @@ pub fn build_track_write_blob_ix(
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: make_blob(key, blob),
-    }
+    })
 }
 
 pub fn build_track_write_raw_ix(
@@ -79,11 +80,11 @@ pub fn build_track_write_raw_ix(
     authority: Pubkey,
     key: Hash,
     raw: &[u8],
-) -> Instruction {
+) -> Result<Instruction, ProgramError> {
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(authority);
 
-    Instruction {
+    Ok(Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
@@ -93,8 +94,8 @@ pub fn build_track_write_raw_ix(
             AccountMeta::new(tape_address, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
-        data: make_raw(key, raw),
-    }
+        data: make_raw(key, raw)?,
+    })
 }
 
 pub fn build_delete_track_ix(
@@ -179,7 +180,7 @@ fn split_track_write_data(data: &[u8]) -> Result<(TrackWrite, &[u8]), ProgramErr
     }
 
     let (header, value) = data.split_at(size_of::<TrackWrite>());
-    let header = read_instruction_pod::<TrackWrite>(header)?;
+    let header = super::read_instruction_pod::<TrackWrite>(header)?;
 
     Ok((header, value))
 }
@@ -204,7 +205,7 @@ pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, TrackDataSlice<'_>)
                 return Err(ProgramError::InvalidInstructionData);
             }
 
-            let blob = read_instruction_pod::<BlobInfo>(value)?;
+            let blob = super::read_instruction_pod::<BlobInfo>(value)?;
 
             TrackDataSlice::Blob(blob)
         }
@@ -215,36 +216,24 @@ pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, TrackDataSlice<'_>)
 
 #[inline(always)]
 pub fn parse_delete_track(data: &[u8]) -> Result<DeleteTrack, ProgramError> {
-    read_instruction_pod::<DeleteTrack>(data)
+    super::read_instruction_pod::<DeleteTrack>(data)
 }
 
 #[inline(always)]
 pub fn parse_certify_track(data: &[u8]) -> Result<CertifyTrack, ProgramError> {
-    read_instruction_pod::<CertifyTrack>(data)
+    super::read_instruction_pod::<CertifyTrack>(data)
 }
 
 #[inline(always)]
 pub fn parse_invalidate_track(data: &[u8]) -> Result<InvalidateTrack, ProgramError> {
-    read_instruction_pod::<InvalidateTrack>(data)
+    super::read_instruction_pod::<InvalidateTrack>(data)
 }
 
 #[inline(always)]
-fn read_instruction_pod<T>(data: &[u8]) -> Result<T, ProgramError>
-where
-    T: bytemuck::Pod + bytemuck::Zeroable,
-{
-    if data.len() != size_of::<T>() {
+fn make_raw(key: Hash, raw: &[u8]) -> Result<Vec<u8>, ProgramError> {
+    if raw.len() > TRACK_WRITE_MAX_BYTES {
         return Err(ProgramError::InvalidInstructionData);
     }
-
-    let mut value = T::zeroed();
-    bytemuck::bytes_of_mut(&mut value).copy_from_slice(data);
-    Ok(value)
-}
-
-#[inline(always)]
-fn make_raw(key: Hash, raw: &[u8]) -> Vec<u8> {
-    assert!(raw.len() <= TRACK_WRITE_MAX_BYTES, "raw write exceeds max bytes");
 
     let mut data = TrackWrite {
         key,
@@ -253,7 +242,7 @@ fn make_raw(key: Hash, raw: &[u8]) -> Vec<u8> {
     .to_bytes();
 
     data.extend_from_slice(raw);
-    data
+    Ok(data)
 }
 
 #[inline(always)]

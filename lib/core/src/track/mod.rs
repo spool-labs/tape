@@ -1,3 +1,5 @@
+//! Track domain types and storage metadata.
+
 pub mod blob;
 pub mod data;
 pub mod store;

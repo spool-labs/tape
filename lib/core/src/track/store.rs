@@ -1,3 +1,5 @@
+//! Persistent track index metadata for each tape.
+
 use bytemuck::{Pod, Zeroable};
 use tape_crypto::Hash;
 use tape_crypto::merkle::{MerkleError, MerkleTree};

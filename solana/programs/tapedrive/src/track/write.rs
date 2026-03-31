@@ -1,12 +1,9 @@
 use tape_solana::*;
-use tape_api::prelude::*;
 use tape_api::event::TrackWritten;
+use tape_api::prelude::*;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::spooler::SpoolGroup;
-use tape_core::track::TRACK_TREE_HEIGHT;
-use tape_core::track::blob::BlobInfo;
-use tape_core::track::store::TrackStore;
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::track::types::CompressedTrack;
 use tape_crypto::Hash;
 use crate::error::*;
 
@@ -53,7 +50,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         tape.id,
         track_number,
         slot_hash_seed(slot_hashes_info)?,
-    );
+    )?;
 
     let track = CompressedTrack {
         tape: tape_address,
@@ -86,13 +83,17 @@ fn get_spool_group(
     tape_id: TapeNumber,
     track_number: TrackNumber,
     seed: Hash,
-) -> SpoolGroup {
+) -> Result<SpoolGroup, ProgramError> {
     let tape_number: u64 = tape_id.into();
-    let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
+    let mixed = u64::from_le_bytes(
+        seed.0[..8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    )
         .wrapping_add(tape_number)
         .wrapping_add(track_number.0);
 
-    SpoolGroup(mixed % SPOOL_GROUP_COUNT as u64)
+    Ok(SpoolGroup(mixed % SPOOL_GROUP_COUNT as u64))
 }
 
 fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
@@ -109,12 +110,18 @@ fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::store::TrackStore;
+    use tape_core::track::types::{TrackKind, TrackState};
+    use solana_sdk::account::Account;
+    use tape_crypto::merkle::{MerkleTree, root_from_leaf_hashes};
     use tape_test::*;
 
-    fn slot_hashes_account() -> (Pubkey, solana_sdk::account::Account) {
+    fn slot_hashes_account() -> (Pubkey, Account) {
         let mut data = vec![0u8; 48];
         data[0] = 1; // count = 1
-        (sysvar::slot_hashes::ID, solana_sdk::account::Account {
+        (sysvar::slot_hashes::ID, Account {
             lamports: 1,
             data,
             owner: sysvar::ID,
@@ -137,7 +144,7 @@ mod tests {
 
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         // Compute valid commitment from leaves
-        let commitment = tape_crypto::merkle::root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: storage_units,
             root: data_root,
@@ -153,7 +160,8 @@ mod tests {
             authority,
             bucket_hash,
             blob,
-        );
+        )
+        .expect("valid blob write instruction");
 
         let (epoch_address, _) = epoch_pda();
         let (tape_address, _) = tape_pda(authority);
@@ -168,7 +176,7 @@ mod tests {
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
             tracks: TrackStore {
-                tree: tape_crypto::merkle::MerkleTree::new(),
+                tree: MerkleTree::<TRACK_TREE_HEIGHT>::new(),
                 next_number: TrackNumber(0),
                 live_count: 0,
             },
@@ -184,7 +192,7 @@ mod tests {
             slot_hashes_account(),
         ];
 
-        let mut expected_tree = tape_crypto::merkle::MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        let mut expected_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
         let track = CompressedTrack {
             tape: tape_address,
             key: bucket_hash,

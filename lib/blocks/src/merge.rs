@@ -203,6 +203,8 @@ mod tests {
         TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
     };
     use tape_core::prelude::*;
+    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::data::TrackData;
     use tape_crypto::Hash;
 
     #[test]
@@ -326,7 +328,7 @@ mod tests {
             RawInstruction::TrackWrite {
                 authority: owner,
                 key: Hash::default(),
-                value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                value: TrackData::Blob(BlobInfo {
                     size: StorageUnits::mb(100),
                     root: Hash::default(),
                     commitment: Hash::default(),
@@ -398,7 +400,7 @@ mod tests {
             RawInstruction::TrackWrite {
                 authority: Pubkey::new_unique(),
                 key: Hash::default(),
-                value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                value: TrackData::Blob(BlobInfo {
                     size: StorageUnits::mb(1_024),
                     root: Hash::default(),
                     commitment: Hash::default(),
@@ -478,7 +480,7 @@ mod tests {
                 RawInstruction::TrackWrite {
                     authority: Pubkey::new_unique(),
                     key: Hash::default(),
-                    value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                    value: TrackData::Blob(BlobInfo {
                         size: StorageUnits::mb(1_024),
                         root: Hash::default(),
                         commitment: Hash::default(),

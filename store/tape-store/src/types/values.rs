@@ -69,6 +69,9 @@ pub struct SnapshotPartialSignature {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_crypto::merkle::root_from_leaf_hashes;
+    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::types::StorageUnits;
 
     #[test]
     fn test_tape_info_roundtrip() {
@@ -114,9 +117,7 @@ mod tests {
         let info = BlobInfo {
             size: StorageUnits(1024),
             root: Hash::default(),
-            commitment: tape_crypto::merkle::root_from_leaf_hashes::<
-                { tape_core::erasure::COMMITMENT_TREE_HEIGHT },
-            >(&leaves),
+            commitment: root_from_leaf_hashes::<{ COMMITMENT_TREE_HEIGHT }>(&leaves),
             profile: EncodingProfile::clay_default(),
             stripe_size: 128,
             stripe_count: 1,

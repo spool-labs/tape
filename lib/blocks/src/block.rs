@@ -1,12 +1,12 @@
 //! Block-level parsing.
 
 use std::collections::BTreeMap;
-
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::{
     option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
     UiConfirmedBlock, UiInstruction, UiMessage, UiTransactionStatusMeta,
 };
+use tape_api::program::tapedrive::ID as TAPE_DRIVE_PROGRAM_ID;
 
 use crate::error::ParseError;
 use crate::event::{parse_event_data, TapedriveEvent};
@@ -180,7 +180,7 @@ fn parse_log_messages(meta: &UiTransactionStatusMeta) -> Result<Vec<TapedriveEve
         }
 
         // Only parse events from tapedrive program
-        let is_tapedrive = program_stack.last() == Some(&tape_api::program::tapedrive::ID);
+        let is_tapedrive = program_stack.last() == Some(&TAPE_DRIVE_PROGRAM_ID);
 
         if is_tapedrive && is_program_data(log) {
             if let Some(event) = parse_event_data(log)? {
@@ -228,18 +228,26 @@ fn is_failed_transaction(tx: &EncodedTransactionWithStatusMeta) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::encode as base64_encode;
+    use bs58::encode as bs58_encode;
     use solana_sdk::instruction::Instruction;
     use solana_sdk::message::MessageHeader;
     use solana_sdk::pubkey::Pubkey;
+    use solana_sdk::hash::Hash as SolanaHash;
+    use solana_sdk::sysvar;
     use solana_transaction_status::{
         EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
         UiInnerInstructions, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
     };
     use tape_api::event::{EpochAdvanced, EventType, NodeSynced, TrackWritten};
     use tape_api::instruction::build_track_write_raw_ix;
+    use tape_api::program::tapedrive::ID as TestTapeDriveId;
     use tape_api::program::tapedrive::{epoch_pda, tape_pda};
-    use tape_core::types::EpochNumber;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
+    use tape_core::types::{EpochNumber, NodeId};
     use tape_crypto::Hash;
 
     #[test]
@@ -272,15 +280,15 @@ mod tests {
         let tx1 = ParsedTransaction {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Pubkey::new_unique(),
-                key: tape_crypto::Hash::default(),
-                value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                key: Hash::default(),
+                value: TrackData::Blob(BlobInfo {
                     size: 1_024u64.into(),
-                    root: tape_crypto::Hash::default(),
-                    commitment: tape_crypto::Hash::default(),
-                    profile: tape_core::encoding::EncodingProfile::default(),
+                    root: Hash::default(),
+                    commitment: Hash::default(),
+                    profile: EncodingProfile::default(),
                     stripe_size: 64,
                     stripe_count: 1,
-                    leaves: [tape_crypto::Hash::default(); tape_core::erasure::SPOOL_GROUP_SIZE],
+                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
                 }),
             }],
             events: vec![],
@@ -292,21 +300,21 @@ mod tests {
             tape: Pubkey::new_unique(),
             spool_group: 0u64.to_le_bytes(),
             track_number: 0u64.into(),
-            track_hash: tape_crypto::Hash::default(),
+            track_hash: Hash::default(),
         };
 
         let tx2 = ParsedTransaction {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Pubkey::new_unique(),
-                key: tape_crypto::Hash::default(),
-                value: tape_core::track::data::TrackData::Blob(tape_core::track::blob::BlobInfo {
+                key: Hash::default(),
+                value: TrackData::Blob(BlobInfo {
                     size: 1_024u64.into(),
-                    root: tape_crypto::Hash::default(),
-                    commitment: tape_crypto::Hash::default(),
-                    profile: tape_core::encoding::EncodingProfile::default(),
+                    root: Hash::default(),
+                    commitment: Hash::default(),
+                    profile: EncodingProfile::default(),
                     stripe_size: 64,
                     stripe_count: 1,
-                    leaves: [tape_crypto::Hash::default(); tape_core::erasure::SPOOL_GROUP_SIZE],
+                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
                 }),
             }],
             events: vec![TapedriveEvent::TrackWritten(track_event)],
@@ -341,14 +349,14 @@ mod tests {
                     total_stake: [0; 8],
                     storage_price: [0; 8],
                     storage_capacity: 1.into(),
-                    nonce: tape_crypto::Hash::default(),
+                    nonce: Hash::default(),
                     phase: 1, // Syncing
                 }),
                 TapedriveEvent::NodeSynced(NodeSynced {
                     node: Pubkey::new_unique(),
-                    id: tape_core::types::NodeId::new(1),
+                    id: NodeId::new(1),
                     epoch: 1u64.into(),
-                    spools_hash: tape_crypto::Hash::default(),
+                    spools_hash: Hash::default(),
                     phase: 1, // Syncing
                 }),
             ],
@@ -363,7 +371,7 @@ mod tests {
                 total_stake: [0; 8],
                 storage_price: [0; 8],
                 storage_capacity: 1.into(),
-                nonce: tape_crypto::Hash::default(),
+                    nonce: Hash::default(),
                 phase: 1, // Syncing
             })],
         };
@@ -387,7 +395,7 @@ mod tests {
         let mut data = vec![event_type as u8];
         data.extend_from_slice(&[0u8; 7]);
         data.extend_from_slice(bytemuck::bytes_of(event));
-        format!("Program data: {}", base64::encode(&data))
+        format!("Program data: {}", base64_encode(&data))
     }
 
     fn compile_ui_instruction(ix: &Instruction, account_keys: &[Pubkey]) -> UiCompiledInstruction {
@@ -410,7 +418,7 @@ mod tests {
         UiCompiledInstruction {
             program_id_index,
             accounts,
-            data: bs58::encode(&ix.data).into_string(),
+            data: bs58_encode(&ix.data).into_string(),
             stack_height: None,
         }
     }
@@ -423,7 +431,7 @@ mod tests {
                 num_readonly_unsigned_accounts: 0,
             },
             account_keys: account_keys.iter().map(ToString::to_string).collect(),
-            recent_blockhash: solana_sdk::hash::Hash::new_unique().to_string(),
+            recent_blockhash: SolanaHash::new_unique().to_string(),
             instructions,
             address_table_lookups: None,
         }
@@ -435,9 +443,9 @@ mod tests {
         let authority = Pubkey::new_unique();
         let epoch = epoch_pda().0;
         let tape = tape_pda(authority).0;
-        let slot_hashes = solana_sdk::sysvar::slot_hashes::ID;
+        let slot_hashes = sysvar::slot_hashes::ID;
         let other_program = Pubkey::new_unique();
-        let tapedrive_program = tape_api::program::tapedrive::ID;
+        let tapedrive_program = TestTapeDriveId;
         let account_keys = vec![
             other_program,
             fee_payer,
@@ -450,8 +458,10 @@ mod tests {
 
         let inner_key = Hash::new_unique();
         let outer_key = Hash::new_unique();
-        let inner_ix = build_track_write_raw_ix(fee_payer, authority, inner_key, b"inner raw");
-        let outer_ix = build_track_write_raw_ix(fee_payer, authority, outer_key, b"outer raw");
+        let inner_ix = build_track_write_raw_ix(fee_payer, authority, inner_key, b"inner raw")
+            .expect("valid inner track write instruction");
+        let outer_ix = build_track_write_raw_ix(fee_payer, authority, outer_key, b"outer raw")
+            .expect("valid outer track write instruction");
 
         let tx = EncodedTransactionWithStatusMeta {
             transaction: EncodedTransaction::Json(UiTransaction {

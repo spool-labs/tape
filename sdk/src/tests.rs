@@ -38,6 +38,26 @@ struct Fixture {
     data: Arc<Mutex<HashMap<CryptoPubkey, TrackData>>>,
 }
 
+fn unexpected_error() -> ApiError {
+    ApiError::Other("unexpected".into())
+}
+
+fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
+    match request {
+        PeerReq::SyncSlices(_) => PeerRes::SyncSlices(Err(unexpected_error())),
+        PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(unexpected_error())),
+        PeerReq::Repair(_) => PeerRes::Repair(Err(unexpected_error())),
+        PeerReq::Certify(_) => PeerRes::Certify(Err(unexpected_error())),
+        PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(unexpected_error())),
+        PeerReq::PutSnapshot(_) => PeerRes::PutSnapshot(Err(unexpected_error())),
+        PeerReq::GetSnapshot(_) => PeerRes::GetSnapshot(Err(unexpected_error())),
+        PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(unexpected_error())),
+        PeerReq::GetStats(_) => PeerRes::GetStats(Err(unexpected_error())),
+        PeerReq::PutSlice(_) => PeerRes::PutSlice(Err(unexpected_error())),
+        PeerReq::GetSlice(_) => PeerRes::GetSlice(Err(unexpected_error())),
+    }
+}
+
 impl Fixture {
     fn insert_track(&self, track: CompressedTrack, data: TrackData) -> Pubkey {
         let address = track_pda(track.tape, track.track_number).0;
@@ -139,7 +159,17 @@ fn setup() -> Fixture {
                 Some(proof) => PeerRes::GetTrackProof(Ok(GetTrackProofRes { proof })),
                 None => PeerRes::GetTrackProof(Err(ApiError::NotFound)),
             },
-            _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
+            PeerReq::SyncSlices(_) => unexpected_peer_response(&req),
+            PeerReq::SyncTracks(_) => unexpected_peer_response(&req),
+            PeerReq::Repair(_) => unexpected_peer_response(&req),
+            PeerReq::Certify(_) => unexpected_peer_response(&req),
+            PeerReq::Invalidate(_) => unexpected_peer_response(&req),
+            PeerReq::PutSnapshot(_) => unexpected_peer_response(&req),
+            PeerReq::GetSnapshot(_) => unexpected_peer_response(&req),
+            PeerReq::GetHealth(_) => unexpected_peer_response(&req),
+            PeerReq::GetStats(_) => unexpected_peer_response(&req),
+            PeerReq::PutSlice(_) => unexpected_peer_response(&req),
+            PeerReq::GetSlice(_) => unexpected_peer_response(&req),
         }
     }));
 

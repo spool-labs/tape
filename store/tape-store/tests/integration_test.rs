@@ -86,7 +86,7 @@ fn all_column_families() {
     // Tape info
     let tape_info = TapeInfo {
         end_epoch: EpochNumber(150),
-        next_track_number: tape_core::types::TrackNumber(0),
+        next_track_number: TrackNumber(0),
     };
     store.put_tape(tape_address, tape_info).unwrap();
 
@@ -399,7 +399,7 @@ fn tape_info_operations() {
     let tape = Pubkey::new_unique();
     let info = TapeInfo {
         end_epoch: EpochNumber(200),
-        next_track_number: tape_core::types::TrackNumber(0),
+        next_track_number: TrackNumber(0),
     };
 
     store.put_tape(tape, info.clone()).unwrap();

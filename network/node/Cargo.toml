@@ -1,0 +1,64 @@
+[package]
+name = "tape-node"
+version.workspace = true
+edition.workspace = true
+description = "Tapedrive storage node runtime (v2)"
+
+[[bin]]
+name = "tape-node"
+path = "src/bin/node/main.rs"
+
+[dependencies]
+# Workspace crates
+tape-api = { workspace = true, features = ["wincode"] }
+tape-core = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-sdk = { workspace = true }
+tape-store = { workspace = true }
+tape-blocks = { workspace = true }
+store = { workspace = true }
+store-rocks = { workspace = true }
+tape-protocol = { workspace = true }
+peer-manager = { workspace = true }
+peer-http = { workspace = true }
+peer-tls = { workspace = true }
+rpc = { workspace = true }
+rpc-client = { workspace = true }
+rpc-solana = { workspace = true }
+tape-retry = { workspace = true }
+tape-metrics = { workspace = true, optional = true }
+
+# External
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+solana-sdk = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+dirs = { workspace = true }
+axum = { workspace = true }
+tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
+tower-http = { version = "0.6", features = ["trace"] }
+bytemuck = { workspace = true }
+tape-slicer = { workspace = true }
+wincode = { workspace = true }
+rlimit = "0.10"
+
+[dev-dependencies]
+anyhow = { workspace = true }
+rpc-litesvm = { workspace = true }
+peer-memory = { workspace = true }
+store-memory = { workspace = true }
+tape-chain-harness = { workspace = true }
+
+[features]
+default = []
+metrics = [
+    "tape-metrics/metrics",
+    "rpc-client/metrics",
+    "store/metrics",
+    "store-rocks/metrics",
+]

@@ -14,9 +14,9 @@ use store_memory::MemoryStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::SlotNumber;
 use tape_core::types::network::NetworkAddress;
-use tape_node2::config::node::NodeConfig;
-use tape_node2::context::{NodeContext, NodeContextBuilder};
-use tape_node2::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
+use tape_node::config::node::NodeConfig;
+use tape_node::context::{NodeContext, NodeContextBuilder};
+use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
 use tape_store::{TapeStore, ops::MetaOps};
 use tokio::time::Duration;
 
@@ -180,7 +180,7 @@ impl TestNode {
                 self.runtime = Some(
                     start_with_context(context, config)
                         .await
-                        .context("start supervised node2 runtime")?,
+                        .context("start supervised node runtime")?,
                 );
                 Ok(())
             }
@@ -192,7 +192,7 @@ impl TestNode {
             runtime
                 .shutdown(self.test_config.stop_timeout)
                 .await
-                .context("shutdown node2 runtime")?;
+                .context("shutdown node runtime")?;
         }
 
         Ok(())
@@ -221,8 +221,8 @@ impl TestNode {
             api,
         )
         .build()
-        .await
-        .context("build node2 context")?;
+            .await
+            .context("build node context")?;
 
         Ok(context)
     }

@@ -1,11 +1,15 @@
+//! Blob payload metadata and commitment encoding.
+
 use core::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
 use tape_crypto::Hash;
 use tape_crypto::hash::hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
+use tape_crypto::merkle::hash_leaf;
 
 use crate::encoding::EncodingProfile;
+use crate::spooler::SpoolIndex;
 use crate::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use crate::types::StorageUnits;
 
@@ -63,12 +67,13 @@ impl BlobInfo {
     }
 
     /// Verify a single slice against its stored leaf hash.
-    pub fn verify_slice(&self, position: usize, data: &[u8]) -> bool {
+    pub fn verify_slice(&self, position: SpoolIndex, data: &[u8]) -> bool {
+        let position = position as usize;
         if position >= self.leaves.len() {
             return false;
         }
 
-        tape_crypto::merkle::hash_leaf(data) == self.leaves[position]
+        hash_leaf(data) == self.leaves[position]
     }
 
     /// Compute the canonical value hash for this blob payload.
@@ -96,6 +101,8 @@ impl<'de> SchemaRead<'de> for BlobInfo {
     type Dst = Self;
 
     fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        // SAFETY: The serialized representation is exactly `PackedBlobInfo` bytes for this
+        // pod-compatible type.
         let packed: PackedBlobInfo = unsafe { reader.get_t()? };
         dst.write(Self::unpack(packed));
         Ok(())

@@ -19,13 +19,6 @@ use rand::CryptoRng;
 #[cfg(not(target_os = "solana"))]
 use serde::{Deserialize, Serialize};
 
-#[cfg(all(feature = "wincode", not(target_os = "solana")))]
-use core::mem::MaybeUninit;
-#[cfg(all(feature = "wincode", not(target_os = "solana")))]
-use wincode::{
-    io::{Reader, Writer},
-    ReadResult, SchemaRead, SchemaWrite, WriteResult,
-};
 
 use super::consts::{ED25519_PUBKEY_LEN, ED25519_SIG_LEN};
 #[cfg(not(target_os = "solana"))]
@@ -143,34 +136,6 @@ impl TryFrom<&solana_program::pubkey::Pubkey> for PublicKey {
     }
 }
 
-// Wincode SchemaWrite and SchemaRead for PublicKey
-
-#[cfg(all(feature = "wincode", not(target_os = "solana")))]
-impl SchemaWrite for PublicKey {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(32)
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(src.as_bytes())?;
-        Ok(())
-    }
-}
-
-#[cfg(all(feature = "wincode", not(target_os = "solana")))]
-impl<'de> SchemaRead<'de> for PublicKey {
-    type Dst = Self;
-
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<PublicKey>) -> ReadResult<()> {
-        let bytes: [u8; 32] = unsafe { reader.get_t()? };
-        let pk = PublicKey::from_bytes(bytes).map_err(|_| wincode::io::ReadError::ReadSizeLimit(32))?;
-        dst.write(pk);
-        Ok(())
-    }
-}
-
 /// Ed25519 signature wrapper around `ed25519_consensus::Signature`.
 /// Only available off-chain (uses ed25519-consensus).
 #[cfg(not(target_os = "solana"))]
@@ -197,34 +162,6 @@ impl Signature {
     /// Verify this signature on a message with the given public key.
     pub fn verify(&self, msg: &[u8], pk: &PublicKey) -> Result<(), SignatureError> {
         pk.verify(msg, self)
-    }
-}
-
-// Wincode SchemaWrite and SchemaRead for Signature
-
-#[cfg(all(feature = "wincode", not(target_os = "solana")))]
-impl SchemaWrite for Signature {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(64)
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&src.to_bytes())?;
-        Ok(())
-    }
-}
-
-#[cfg(all(feature = "wincode", not(target_os = "solana")))]
-impl<'de> SchemaRead<'de> for Signature {
-    type Dst = Self;
-
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Signature>) -> ReadResult<()> {
-        let bytes: [u8; 64] = unsafe { reader.get_t()? };
-        let sig = Signature::from_bytes(bytes).map_err(|_| wincode::io::ReadError::ReadSizeLimit(64))?;
-        dst.write(sig);
-        Ok(())
     }
 }
 
@@ -353,38 +290,4 @@ mod tests {
         assert!(keypair.public_key().verify(message, &recovered).is_ok());
     }
 
-    #[cfg(feature = "wincode")]
-    mod wincode_tests {
-        use super::*;
-
-        #[test]
-        fn test_wincode_roundtrip_public_key() {
-            let mut rng = rand::thread_rng();
-            let keypair = Keypair::new(&mut rng);
-            let public_key = *keypair.public_key();
-
-            // Serialize
-            let pk_bytes = wincode::serialize(&public_key).expect("serialize should succeed");
-
-            // Deserialize
-            let recovered: PublicKey = wincode::deserialize(&pk_bytes).expect("deserialize should succeed");
-
-            assert_eq!(public_key, recovered);
-        }
-
-        #[test]
-        fn test_wincode_roundtrip_signature() {
-            let mut rng = rand::thread_rng();
-            let keypair = Keypair::new(&mut rng);
-            let signature = keypair.sign(b"test");
-
-            // Serialize
-            let sig_bytes = wincode::serialize(&signature).expect("serialize should succeed");
-
-            // Deserialize
-            let recovered: Signature = wincode::deserialize(&sig_bytes).expect("deserialize should succeed");
-
-            assert_eq!(signature, recovered);
-        }
-    }
 }

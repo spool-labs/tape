@@ -1,8 +1,5 @@
 use tape_solana::*;
 use tape_api::prelude::*;
-use tape_core::track::TRACK_TREE_HEIGHT;
-use tape_core::track::store::TrackStore;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
 use crate::error::*;
 
 pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -55,6 +52,9 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 mod tests {
     use super::*;
     use tape_crypto::Hash;
+    use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_core::track::store::TrackStore;
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
     use tape_test::*;
 
     #[test]
@@ -86,8 +86,9 @@ mod tests {
                 &[track_hash],
                 track_number.0 as usize,
             )
+            .expect("track proof is valid")
             .try_into()
-            .unwrap();
+            .expect("proof has correct length");
 
         // Instruction
         let instruction = build_add_to_blacklist_ix(

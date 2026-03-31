@@ -75,7 +75,11 @@ mod tests {
 
         let leaf = blacklist_entry(blob_hash, units);
         let leaves = [leaf];
-        let proof = node.blacklist.state.create_proof(&leaves, 0).unwrap();
+        let proof = node
+            .blacklist
+            .state
+            .create_proof(&leaves, 0)
+            .expect("valid proof for single blacklist entry");
         let proof = vec_to_fixed::<BLACKLIST_SIZE>(proof);
 
         // Test the merkle proof is valid

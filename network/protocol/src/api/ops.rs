@@ -107,7 +107,7 @@ pub struct GetTrackProofRes {
 
 #[derive(Clone, Debug)]
 pub struct SyncSlicesReq {
-    pub spool_index: u16,
+    pub spool_index: SpoolIndex,
     pub cursor: Option<[u8; 32]>,
     pub limit: u32,
 }
@@ -120,7 +120,7 @@ pub struct SyncSlicesRes {
 
 #[derive(Clone, Debug)]
 pub struct SyncTracksReq {
-    pub spool_index: u16,
+    pub spool_index: SpoolIndex,
     pub cursor: Option<[u8; 32]>,
     pub limit: u32,
 }

@@ -231,9 +231,10 @@ impl BlobEncoder {
         let slice_data_refs: Vec<&[u8]> = chunks.iter().map(|s| s.as_slice()).collect();
 
         // Generate proofs first while we still have refs
-        let proofs: Vec<Vec<Hash>> = (0..chunks.len())
+        let proofs: Result<Vec<Vec<Hash>>, _> = (0..chunks.len())
             .map(|idx| create_merkle_proof(&slice_data_refs, idx, MERKLE_HEIGHT))
             .collect();
+        let proofs = proofs.map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
 
         // Generate proof for each slice
         let mut output = Vec::with_capacity(chunks.len());

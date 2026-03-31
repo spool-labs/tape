@@ -54,7 +54,7 @@ pub fn spool_for_slice(group: SpoolGroup, slice_in_group: usize) -> SpoolIndex {
 
 /// Get the slice index within a group for a spool, if the spool belongs to the group.
 #[inline]
-pub fn slice_for_spool(group: SpoolGroup, spool: SpoolIndex) -> Option<usize> {
+pub fn slice_for_spool(group: SpoolGroup, spool: SpoolIndex) -> Option<SpoolIndex> {
     group.slice_of(spool)
 }
 

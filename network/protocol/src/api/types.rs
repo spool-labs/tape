@@ -112,7 +112,7 @@ impl SlicePayload {
 /// Request for slice synchronization.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesRequest {
-    pub spool_index: u16,
+    pub spool_index: SpoolIndex,
     /// Last track address received, or empty to start from the beginning.
     pub cursor: Option<[u8; 32]>,
     pub limit: u32,
@@ -136,7 +136,7 @@ pub struct SyncSliceEntry {
 /// Request for track-data synchronization.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncTracksRequest {
-    pub spool_index: u16,
+    pub spool_index: SpoolIndex,
     /// Last track address received, or empty to start from the beginning.
     pub cursor: Option<[u8; 32]>,
     pub limit: u32,

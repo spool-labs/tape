@@ -37,7 +37,7 @@ impl Retryable for ApiError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::ConnectionFailed(_) | Self::Timeout => true,
-            Self::ServerError { status, .. } => matches!(status, 429 | 502 | 503 | 504),
+            Self::ServerError { status, .. } => matches!(status, 408 | 429 | 500 | 502 | 503 | 504),
             Self::NotFound
             | Self::NotResponsible
             | Self::NotInCommittee

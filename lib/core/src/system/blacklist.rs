@@ -160,7 +160,10 @@ mod tests {
         // Build leaf and proof for index 0
         let leaf = blacklist_entry(blob_hash, units);
         let leaves = [leaf];
-        let proof = bl.state.create_proof(&leaves, 0).unwrap();
+        let proof = bl
+            .state
+            .create_proof(&leaves, 0)
+            .expect("valid proof for single blacklist entry");
 
         // Contains
         assert!(bl.contains(0, &proof, blob_hash, units));

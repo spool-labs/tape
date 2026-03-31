@@ -1,8 +1,5 @@
 use tape_api::prelude::*;
 use tape_api::event::TrackDeleted;
-use tape_core::track::TRACK_TREE_HEIGHT;
-use tape_core::track::store::TrackStore;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
 use crate::error::*;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -57,6 +54,10 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_core::track::store::TrackStore;
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
+    use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
     use tape_test::*;
 
@@ -80,15 +81,15 @@ mod tests {
             value_hash: Hash::new_unique(),
         };
         let track_hash = track.get_hash();
-        let mut track_tree = tape_crypto::merkle::MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        let mut track_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
         track_tree.add_leaf_hash(track_hash).unwrap();
-        let proof: [Hash; TRACK_TREE_HEIGHT] =
-            tape_crypto::merkle::create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
+        let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
                 &[track_hash],
                 track_number.0 as usize,
             )
+            .expect("track proof is valid")
             .try_into()
-            .unwrap();
+            .expect("proof has correct length");
         let mut expected_tree = track_tree;
         expected_tree.remove_leaf_hash(track_number.0, &proof, track_hash).unwrap();
 

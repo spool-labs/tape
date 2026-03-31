@@ -150,29 +150,29 @@ impl<const N: usize> MerkleTree<N> {
     }
 
     /// Replaces a leaf in the tree with a new leaf using the provided proof.
-    pub fn update_leaf<P>(
+    pub fn update_leaf<ProofElement>(
         &mut self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         old_leaf: &[u8],
         new_leaf: &[u8],
     ) -> Result<(), MerkleError>
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
         self.update_leaf_hash(index, proof, hash_leaf(old_leaf), hash_leaf(new_leaf))
     }
 
     /// Replaces a pre-hashed leaf in the tree with a new pre-hashed leaf using the provided proof.
-    pub fn update_leaf_hash<P>(
+    pub fn update_leaf_hash<ProofElement>(
         &mut self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         old_leaf_hash: Hash,
         new_leaf_hash: Hash,
     ) -> Result<(), MerkleError>
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
         if index >= self.next_index {
             return Err(MerkleError::InvalidProof);
@@ -191,7 +191,10 @@ impl<const N: usize> MerkleTree<N> {
         let original_path = compute_path(&proof, old_leaf_hash, index, N);
         let new_path = compute_path(&proof, new_leaf_hash, index, N);
 
-        if *original_path.last().unwrap() != self.root {
+        let original_root = original_path
+            .last()
+            .ok_or(MerkleError::InvalidProof)?;
+        if *original_root != self.root {
             return Err(MerkleError::InvalidProof);
         }
 
@@ -200,45 +203,47 @@ impl<const N: usize> MerkleTree<N> {
                 self.filled_subtrees[i] = new_path[i];
             }
         }
-        self.root = *new_path.last().unwrap();
+        self.root = *new_path
+            .last()
+            .ok_or(MerkleError::InvalidProof)?;
         Ok(())
     }
 
     /// Removes a leaf by replacing it with an empty leaf.
-    pub fn remove_leaf<P>(
+    pub fn remove_leaf<ProofElement>(
         &mut self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         old_leaf: &[u8],
     ) -> Result<(), MerkleError>
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
         self.remove_leaf_hash(index, proof, hash_leaf(old_leaf))
     }
 
     /// Removes a pre-hashed leaf by replacing it with an empty leaf.
-    pub fn remove_leaf_hash<P>(
+    pub fn remove_leaf_hash<ProofElement>(
         &mut self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         old_leaf_hash: Hash,
     ) -> Result<(), MerkleError>
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
         self.update_leaf_hash(index, proof, old_leaf_hash, hash_leaf(&[]))
     }
 
     /// Verifies that a leaf is contained in the tree using the provided proof.
-    pub fn contains<P>(
+    pub fn contains<ProofElement>(
         &self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         leaf: &[u8],
     ) -> bool
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
 
         let proof: Vec<Hash> = proof
@@ -254,40 +259,40 @@ impl<const N: usize> MerkleTree<N> {
     }
 
     /// Verifies that a leaf is contained in the tree using the provided proof.
-    pub fn verify<P>(
+    pub fn verify<ProofElement>(
         &self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         leaf: &[u8],
     ) -> Result<bool, MerkleError>
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
         self.verify_leaf_hash(index, proof, hash_leaf(leaf))
     }
 
     /// Verifies that a pre-hashed leaf is contained in the tree using the provided proof.
-    pub fn verify_hash<P>(
+    pub fn verify_hash<ProofElement>(
         &self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         leaf_hash: Hash,
     ) -> Result<bool, MerkleError>
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
         self.verify_leaf_hash(index, proof, leaf_hash)
     }
 
     /// Verifies that a pre-hashed leaf is contained in the tree using the provided proof.
-    fn verify_leaf_hash<P>(
+    fn verify_leaf_hash<ProofElement>(
         &self,
         index: u64,
-        proof: &[P],
+        proof: &[ProofElement],
         leaf_hash: Hash,
     ) -> Result<bool, MerkleError>
     where
-        P: Into<Hash> + Copy,
+        ProofElement: Into<Hash> + Copy,
     {
         if index >= self.next_index {
             return Err(MerkleError::InvalidProof);
@@ -301,7 +306,8 @@ impl<const N: usize> MerkleTree<N> {
         self.check_length(&proof)?;
 
         let path = compute_path(&proof, leaf_hash, index, N);
-        Ok(*path.last().unwrap() == self.root)
+        let root = *path.last().ok_or(MerkleError::InvalidProof)?;
+        Ok(root == self.root)
     }
 
     /// Returns a Merkle proof for a specific leaf in the tree.
@@ -313,7 +319,7 @@ impl<const N: usize> MerkleTree<N> {
             return Err(MerkleError::InvalidIndex);
         }
 
-        Ok(create_merkle_proof(leaves, index, N))
+        create_merkle_proof(leaves, index, N)
     }
 
     fn check_length(&self, proof: &[Hash]) -> Result<(), MerkleError> {
@@ -339,7 +345,7 @@ pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
 pub fn create_proof_from_leaf_hashes<const N: usize>(
     hashes: &[Hash],
     index: usize,
-) -> Vec<Hash> {
+) -> Result<Vec<Hash>, MerkleError> {
     create_merkle_proof_hashes(hashes, index, N)
 }
 
@@ -377,10 +383,10 @@ pub fn compute_path(proof: &[Hash], leaf: Hash, index: u64, height: usize) -> Ve
 }
 
 pub fn create_merkle_proof<T: AsRef<[u8]>>(
-    leaves: &[T], 
+    leaves: &[T],
     index: usize, 
-    height: usize
-) -> Vec<Hash> {
+    height: usize,
+) -> Result<Vec<Hash>, MerkleError> {
     let hashes: Vec<Hash> = leaves
         .iter()
         .map(|leaf| hash_leaf(leaf.as_ref()))
@@ -393,11 +399,19 @@ fn create_merkle_proof_hashes(
     hashes: &[Hash],
     index: usize,
     height: usize,
-) -> Vec<Hash> {
-    assert!(!hashes.is_empty(), "cannot create proof for empty leaf set");
-    assert!(index < hashes.len(), "index out of bounds");
-    assert!(hashes.len() <= 1usize << height, "too many leaves for given height");
-    assert!(height <= MAX_MERKLE_TREE_HEIGHT, "height exceeds maximum supported");
+) -> Result<Vec<Hash>, MerkleError> {
+    if hashes.is_empty() {
+        return Err(MerkleError::InvalidProof);
+    }
+    if index >= hashes.len() {
+        return Err(MerkleError::InvalidProof);
+    }
+    if hashes.len() > (1usize << height) {
+        return Err(MerkleError::InvalidProof);
+    }
+    if height > MAX_MERKLE_TREE_HEIGHT {
+        return Err(MerkleError::InvalidProof);
+    }
 
     let empty: Vec<Hash> = (0..height)
         .map(|i| EMPTY_ROOTS[i].into())
@@ -434,7 +448,7 @@ fn create_merkle_proof_hashes(
         layer_index += 1;
     }
 
-    proof
+    Ok(proof)
 }
 
 pub fn verify_proof(
@@ -511,16 +525,16 @@ mod tests {
         }
 
         // proof and verify all leaves
-        let proof = tree.create_proof(&data, 0).unwrap();
+        let proof = tree.create_proof(&data, 0).expect("valid proof");
         assert!(tree.verify(0, &proof, &data[0]).unwrap());
         
-        let proof = tree.create_proof(&data, 1).unwrap();
+        let proof = tree.create_proof(&data, 1).expect("valid proof");
         assert!(tree.verify(1, &proof, &data[1]).unwrap());
         
-        let proof = tree.create_proof(&data, 2).unwrap();
+        let proof = tree.create_proof(&data, 2).expect("valid proof");
         assert!(tree.verify(2, &proof, &data[2]).unwrap());
         
-        let proof = tree.create_proof(&data, 3).unwrap();
+        let proof = tree.create_proof(&data, 3).expect("valid proof");
         assert!(tree.verify(3, &proof, &data[3]).unwrap());
     }
 
@@ -692,9 +706,10 @@ mod tests {
             b"test".to_vec(),
         ];
 
-        let raw_proof = create_merkle_proof(&data, 2, 2);
+        let raw_proof = create_merkle_proof(&data, 2, 2).expect("valid raw proof");
         let hashes: Vec<Hash> = data.iter().map(|leaf| hash_leaf(leaf)).collect();
-        let hash_proof = create_proof_from_leaf_hashes::<2>(&hashes, 2);
+        let hash_proof = create_proof_from_leaf_hashes::<2>(&hashes, 2)
+            .expect("valid hashed proof");
 
         assert_eq!(raw_proof, hash_proof);
     }
@@ -730,7 +745,7 @@ mod tests {
         }
 
         let index = 2;
-        let proof = tree.create_proof(&data, index).unwrap();
+        let proof = tree.create_proof(&data, index).expect("valid proof");
         let leaf_hash = hash_leaf(&data[index]);
 
         assert!(tree.verify(index as u64, &proof, &data[index]).unwrap());
@@ -758,7 +773,7 @@ mod tests {
         }
 
         let index = 1;
-        let proof = raw_tree.create_proof(&data, index).unwrap();
+        let proof = raw_tree.create_proof(&data, index).expect("valid proof");
         let new_leaf = b"updated";
 
         raw_tree
@@ -793,7 +808,7 @@ mod tests {
         }
 
         let index = 3;
-        let proof = raw_tree.create_proof(&data, index).unwrap();
+        let proof = raw_tree.create_proof(&data, index).expect("valid proof");
 
         raw_tree
             .remove_leaf(index as u64, &proof, &data[index])

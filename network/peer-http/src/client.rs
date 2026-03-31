@@ -256,7 +256,7 @@ impl Api for HttpApi {
     ) -> Result<GetTrackByNumberRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", api::tape_track_url(&tape_id, req.track_number.0));
+        let url = format!("{base}{}", api::tape_track_url(&tape_id, req.track_number));
 
         let start = Instant::now();
         let resp = self

@@ -38,13 +38,21 @@ impl SpoolGroup {
 
     /// Slice position within this group for a spool, if the spool belongs to this group.
     #[inline]
-    pub fn slice_of(&self, spool: SpoolIndex) -> Option<usize> {
-        assert!((spool as usize) < SPOOL_COUNT);
-        assert!((self.0 as usize) < SPOOL_GROUP_COUNT);
-        if SpoolGroup::of(spool) != *self {
+    pub fn slice_of(&self, spool: SpoolIndex) -> Option<SpoolIndex> {
+        let spool = spool as usize;
+
+        // Out of bounds.
+        if spool >= SPOOL_COUNT || self.0 >= SPOOL_GROUP_COUNT as u64 {
             return None;
         }
-        Some(spool as usize % SPOOL_GROUP_SIZE)
+
+        // Not in this group.
+        if spool / SPOOL_GROUP_SIZE != self.0 as usize {
+            return None;
+        }
+
+        // Slice position within the group.
+        Some((spool % SPOOL_GROUP_SIZE) as SpoolIndex)
     }
 
     /// Check if a spool belongs to this group.

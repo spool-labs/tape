@@ -1,3 +1,5 @@
+//! Track payload containers and metadata derivation.
+
 use tape_crypto::Hash;
 use tape_crypto::hash::hash;
 
@@ -41,12 +43,12 @@ impl TrackData {
 
 /// Lightweight track payload view for instruction parsing and metadata derivation.
 #[derive(Clone, Copy, Debug)]
-pub enum TrackDataSlice<'a> {
-    Raw(&'a [u8]),
+pub enum TrackDataSlice<'slice> {
+    Raw(&'slice [u8]),
     Blob(BlobInfo),
 }
 
-impl<'a> TrackDataSlice<'a> {
+impl<'slice> TrackDataSlice<'slice> {
     #[inline(always)]
     pub fn size(self) -> StorageUnits {
         match self {

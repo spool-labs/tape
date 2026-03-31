@@ -1,15 +1,19 @@
-use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use std::collections::HashSet;
-use rpc_client::parse_tape_error;
+use thiserror::Error;
+
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signature;
-use solana_sdk::signature::Signer;
+use solana_sdk::signature::{Signature, Signer};
+
+use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
+use rpc_client::parse_tape_error;
 use tape_api::compute::CERTIFY_TRACK_CU;
 use tape_api::errors::TapeError;
-use tape_api::instruction::{
-    build_certify_track_ix, build_track_write_blob_ix, build_track_write_raw_ix,
+use tape_api::event::TrackWritten;
+use tape_api::instruction::{ 
+    build_certify_track_ix, build_track_write_blob_ix, build_track_write_raw_ix 
 };
+use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
@@ -22,9 +26,6 @@ use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
 use tape_retry::{RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
-use tape_blocks::{parse_event_data, TapedriveEvent};
-use tape_api::event::TrackWritten;
-use thiserror::Error;
 
 use crate::codec::encoder::BlobEncoder;
 use crate::error::UploadError;
@@ -35,21 +36,9 @@ use crate::track::{bootstrap_network_state, queries};
 use crate::transfer::certify::CertificationCollector;
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 
-// The program accepts up to 10 KiB for raw TrackWrite payloads, but an SDK
-// end-user write must fit inside a single Solana transaction packet.
-//
-// Fixed overhead for the SDK's raw TrackWrite transaction shape:
-// - 1 byte signatures len + 2 signatures (128 bytes)
-// - 3 byte message header
-// - 1 byte account-keys len + 6 account keys (192 bytes)
-// - 32 byte recent blockhash
-// - 1 byte instruction vec len
-// - 1 byte program-id index
-// - 1 byte account-index len + 5 account indices
-// - 2 byte instruction-data len prefix
-// - 40 byte TrackWrite header (Hash + kind)
-//
-// 1232 - (1 + 128 + 3 + 1 + 192 + 32 + 1 + 1 + 1 + 5 + 2 + 40) = 825
+// The program accepts up to 10 KiB for raw TrackWrite payloads, but an SDK end-user write must fit
+// inside a single Solana transaction packet. This can be adjusted in the future if 4k transactions
+// become widely supported.
 pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
 
 #[derive(Clone)]
@@ -175,7 +164,8 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
         tape_key.pubkey(),
         key,
         raw,
-    );
+    )
+    .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
     let signature = client
         .rpc()
@@ -222,7 +212,8 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
             stripe_count: plan.stripe_count as u64,
             leaves: plan.leaves,
         },
-    );
+    )
+    .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
     let signature = client
         .rpc()
@@ -498,11 +489,10 @@ fn extract_track_written_event(
         .ok_or_else(|| TapedriveError::InvalidArgument("transaction missing log messages".into()))?;
 
     for log in logs {
-        match parse_event_data(log)
+        if let Some(TapedriveEvent::TrackWritten(event)) = parse_event_data(log)
             .map_err(|error| TapedriveError::InvalidArgument(format!("parse event: {error}")))?
         {
-            Some(TapedriveEvent::TrackWritten(event)) => return Ok(event),
-            _ => {}
+            return Ok(event);
         }
     }
 

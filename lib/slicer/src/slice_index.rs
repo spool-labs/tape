@@ -1,9 +1,7 @@
 use super::SPOOL_GROUP_SIZE;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::mem::MaybeUninit;
 use std::ops::Deref;
-use wincode::{SchemaRead, SchemaWrite};
 
 /// Index of a slice within a blob's erasure-coded output.
 /// Valid range: 0 to SPOOL_GROUP_SIZE-1.
@@ -11,7 +9,7 @@ use wincode::{SchemaRead, SchemaWrite};
 /// Each blob is encoded into SPOOL_GROUP_SIZE slices. The slice at index N
 /// for any blob is stored in spool N on the network.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, SchemaWrite)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct SliceIndex(usize);
 
 impl SliceIndex {
@@ -66,28 +64,9 @@ impl<'de> Deserialize<'de> for SliceIndex {
     }
 }
 
-impl<'de> SchemaRead<'de> for SliceIndex {
-    type Dst = Self;
-
-    fn read(
-        reader: &mut impl wincode::io::Reader<'de>,
-        dst: &mut MaybeUninit<Self::Dst>,
-    ) -> wincode::ReadResult<()> {
-        unsafe {
-            reader.copy_into_t(dst)?;
-            if dst.assume_init_ref().0 >= SPOOL_GROUP_SIZE {
-                Err(wincode::ReadError::Custom("slice index out of bounds"))
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wincode;
 
     #[test]
     fn infallible_new() {
@@ -116,22 +95,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn wincode_roundtrip_ok() {
-        let vals = [0, SPOOL_GROUP_SIZE - 1];
-        for v in vals {
-            let b = wincode::serialize(&SliceIndex(v)).unwrap();
-            let _idx: SliceIndex = wincode::deserialize(&b).unwrap();
-        }
-    }
-
-    #[test]
-    fn wincode_fail() {
-        let vals = [SPOOL_GROUP_SIZE, SPOOL_GROUP_SIZE + 1, usize::MAX];
-        for v in vals {
-            let b = wincode::serialize(&SliceIndex(v)).unwrap();
-            let res: Result<SliceIndex, _> = wincode::deserialize(&b);
-            assert!(res.is_err());
-        }
-    }
 }
