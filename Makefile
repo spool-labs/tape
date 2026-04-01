@@ -24,8 +24,6 @@ TESTNET_NODE_BINARY ?= target/release/tape-node
 TESTNET_ADMIN_KEYPAIR ?= $(TESTNET_DATA_DIR)/admin.json
 TESTNET_FILE_SIZE_BYTES ?= 1073741824
 TESTNET_UPLOAD_EPOCHS ?= 4
-TESTNET_FILE_CHUNK_CONCURRENCY ?= 1
-TESTNET_UPLOAD_TIMING ?= 1
 
 .PHONY: programs node testnet reset run-solana run-testnet run-testnet-samply run-testnet-upload-file run-devnet
 
@@ -63,7 +61,7 @@ run-testnet-samply:
 		--init-nodes $(TESTNET_NODES)
 
 run-testnet-upload-file:
-	TAPE_FILE_CHUNK_CONCURRENCY=$(TESTNET_FILE_CHUNK_CONCURRENCY) TAPE_UPLOAD_TIMING=$(TESTNET_UPLOAD_TIMING) cargo run --release -p tape-e2e-testnet --bin upload-file -- \
+	cargo run --release -p tape-e2e-testnet --bin upload-file -- \
 		--rpc-url $(TESTNET_RPC_URL) \
 		--admin-keypair $(TESTNET_ADMIN_KEYPAIR) \
 		--size-bytes $(TESTNET_FILE_SIZE_BYTES) \

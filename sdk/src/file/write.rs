@@ -3,8 +3,6 @@
 //! Splits data into chunks, writes each as a track, then writes a manifest
 //! track last. Always writes a manifest, even for single-chunk files.
 
-use std::time::Instant;
-
 use futures::stream::{self, StreamExt};
 
 use rpc::Rpc;
@@ -241,20 +239,7 @@ async fn upload_chunks<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<(), TapedriveError> {
     let upload_futures: Vec<_> = pending_chunks
         .iter()
-        .map(|pending_chunk| async move {
-            let upload_phase_start = Instant::now();
-            client.upload(&pending_chunk.written, &pending_chunk.plan).await?;
-            let upload_phase_elapsed = upload_phase_start.elapsed();
-
-            eprintln!(
-                "slice upload phase: track_number={} size_bytes={} elapsed={:.2?}",
-                pending_chunk.written.track.track_number.0,
-                pending_chunk.entry.size,
-                upload_phase_elapsed,
-            );
-
-            Ok::<_, TapedriveError>(())
-        })
+        .map(|pending_chunk| async move { client.upload(&pending_chunk.written, &pending_chunk.plan).await })
         .collect();
 
     let results: Vec<Result<_, TapedriveError>> = stream::iter(upload_futures)
@@ -293,17 +278,7 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     manifest_bytes: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
     let (written, plan) = client.write_blob(tape_key, key, manifest_bytes).await?;
-    let upload_phase_start = Instant::now();
     client.upload(&written, &plan).await?;
-    let upload_phase_elapsed = upload_phase_start.elapsed();
-
-    eprintln!(
-        "slice upload phase: track_number={} size_bytes={} elapsed={:.2?}",
-        written.track.track_number.0,
-        manifest_bytes.len(),
-        upload_phase_elapsed,
-    );
-
     client.certify(tape_key, &written).await?;
     Ok(written)
 }

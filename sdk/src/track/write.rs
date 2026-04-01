@@ -1,6 +1,4 @@
 use std::collections::HashSet;
-use std::env;
-use std::time::Instant;
 use thiserror::Error;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -42,7 +40,6 @@ use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 // inside a single Solana transaction packet. This can be adjusted in the future if 4k transactions
 // become widely supported.
 pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
-const UPLOAD_TIMING_ENV: &str = "TAPE_UPLOAD_TIMING";
 
 #[derive(Clone)]
 pub struct UploadPlan {
@@ -134,13 +131,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ) -> Result<(), TapedriveError> {
         certify_once(self, tape_key, written.address, written.track.spool_group).await
     }
-}
-
-fn upload_timing_enabled() -> bool {
-    env::var(UPLOAD_TIMING_ENV)
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
 }
 
 fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
@@ -445,8 +435,6 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     }
 
     let (written, plan) = client.write_blob(tape_key, key, data).await?;
-
-    let upload_phase_start = Instant::now();
     tape_retry::retry_if(
         RetryConfig::ten(),
         None,
@@ -454,15 +442,6 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         should_retry_upload,
     )
     .await?;
-    let upload_phase_elapsed = upload_phase_start.elapsed();
-    if upload_timing_enabled() {
-        eprintln!(
-            "slice upload phase: track_number={} size_bytes={} elapsed={:.2?}",
-            written.track.track_number.0,
-            data.len(),
-            upload_phase_elapsed,
-        );
-    }
 
     tape_retry::retry_if(
         RetryConfig::ten(),
