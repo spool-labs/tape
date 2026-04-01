@@ -2,12 +2,12 @@ use std::fmt::Display;
 
 use axum::extract::State;
 use axum::Json;
+use tracing::debug;
+
 use rpc::Rpc;
 use store::Store;
-use tape_protocol::Api;
-use tape_protocol::api::NodeStats;
+use tape_protocol::{Api, api::NodeStats};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
-use tracing::debug;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -62,6 +62,11 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .actual_size_bytes()
         .map_err(store_error)?;
+    let free_disk_bytes = store
+        .inner()
+        .inner()
+        .available_disk_bytes()
+        .map_err(store_error)?;
 
     let stats = NodeStats {
         last_processed_slot,
@@ -74,6 +79,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .map_err(store_error)? as u64,
         slice_payload_bytes,
         store_disk_bytes,
+        free_disk_bytes,
+        reclaim_pending: state.context.is_reclaim_pending(),
         slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,
         bytes_downloaded: metrics.bytes_downloaded,

@@ -1,7 +1,10 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
 use solana_sdk::signature::{Keypair, Signature};
 use solana_sdk::signer::Signer;
+use tokio::sync::watch::Receiver;
 
 use peer_manager::{PeerManager, PeerManagerError};
 use peer_http::HttpApi;
@@ -18,9 +21,7 @@ use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
 use tape_crypto::bls12254::BLSError;
 use tape_protocol::{Api, ProtocolState};
-use tape_store::TapeStore;
-use tape_store::ops::MetaOps;
-use tape_store::types::NodeStatus;
+use tape_store::{TapeStore, ops::MetaOps, types::NodeStatus};
 
 use crate::config::node::NodeConfig;
 use crate::core::error::NodeError;
@@ -42,6 +43,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     node_address: Pubkey,
     keypair: Arc<Keypair>,
     bls_keypair: Arc<BlsPrivateKey>,
+    reclaim_pending: AtomicBool,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
@@ -91,7 +93,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.set_state(state)
     }
 
-    pub fn subscribe_state(&self) -> tokio::sync::watch::Receiver<Arc<ProtocolState>> {
+    pub fn subscribe_state(&self) -> Receiver<Arc<ProtocolState>> {
         self.state.subscribe()
     }
 
@@ -120,6 +122,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
             None => HashSet::new(),
         }
     }
+
+    pub fn is_reclaim_pending(&self) -> bool {
+        self.reclaim_pending.load(Ordering::Relaxed)
+    }
+
+    pub fn set_reclaim_pending(&self, is_pending: bool) {
+        self.reclaim_pending.store(is_pending, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -127,13 +137,14 @@ pub mod test_utils {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use solana_sdk::signature::Keypair;
+
+    use peer_manager::PeerManager;
     use peer_memory::MemoryApi;
     use rpc_litesvm::LiteSvmRpc;
-    use solana_sdk::signature::Keypair;
     use tape_api::program::tapedrive::node_pda;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::{NodeId, SlotNumber};
-    use peer_manager::PeerManager;
     use store_memory::MemoryStore;
     use tape_store::TapeStore;
 
@@ -173,6 +184,7 @@ pub mod test_utils {
             peer_manager,
             api: Arc::new(api),
             metrics: NodeMetrics::default(),
+            reclaim_pending: AtomicBool::new(false),
         })
     }
 
@@ -250,6 +262,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             peer_manager: self.peer_manager,
             api: self.api,
             metrics: NodeMetrics::default(),
+            reclaim_pending: AtomicBool::new(false),
         }))
     }
 }

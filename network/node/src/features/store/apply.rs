@@ -39,7 +39,7 @@ pub fn apply_event<Db: Store>(
             set_certified(store, StorePubkey(*track), *epoch)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
-            delete_track_local(store, StorePubkey(*track))?;
+            let _ = delete_track_local(store, StorePubkey(*track))?;
         }
         ReplayableEvent::InvalidateTrack { track, epoch } => {
             invalidate_track(store, StorePubkey(*track), *epoch, slot)?;
@@ -58,7 +58,7 @@ pub fn apply_event<Db: Store>(
                 .map_err(store_error)?;
         }
         ReplayableEvent::DestroyTape { tape, .. } => {
-            delete_tape_local(store, StorePubkey(*tape), DELETE_TAPE_BATCH_SIZE)?;
+            let _ = delete_tape_local(store, StorePubkey(*tape), DELETE_TAPE_BATCH_SIZE)?;
         }
         ReplayableEvent::AdvanceEpoch { .. }
         | ReplayableEvent::SyncEpoch { .. }
@@ -216,7 +216,7 @@ fn invalidate_track<Db: Store>(
     slot: SlotNumber,
 ) -> Result<(), NodeError> {
     if let Some(mut info) = store.get_track(track).map_err(store_error)? {
-        cleanup_track_slices(store, track, info.spool_group)?;
+        let _ = cleanup_track_slices(store, track, info.spool_group)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
     }

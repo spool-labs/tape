@@ -57,4 +57,19 @@ pub trait Store: Send + Sync {
     fn actual_size_bytes(&self) -> Result<u64> {
         Ok(0)
     }
+
+    /// Best-effort free disk space available to the backend.
+    ///
+    /// Backends without a filesystem can return `None`.
+    fn available_disk_bytes(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    /// Best-effort background space reclamation.
+    ///
+    /// Persistent stores can use this to compact tombstoned data and release
+    /// backend space. Backends that do not support reclamation should no-op.
+    fn reclaim_space(&self) -> Result<()> {
+        Ok(())
+    }
 }

@@ -1,19 +1,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::select;
+use tokio::task::spawn_blocking;
+use tokio::time::{interval, MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
+
 use rpc::Rpc;
 use store::Store;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_store::ops::MetaOps;
-use tape_store::TapeStore;
-use tokio::time::{interval, MissedTickBehavior};
-use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tape_store::{TapeStore, ops::MetaOps};
 
 use crate::config::store::GcConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
+use crate::core::types::ServiceName;
 use crate::features::gc::sweep::sweep_epoch;
 
 pub struct GcManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -22,7 +25,7 @@ pub struct GcManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     cancel: CancellationToken,
 }
 
-impl<Db: Store, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, Blockchain> {
+impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: GcConfig,
@@ -51,22 +54,22 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, Blockchain
         let mut state_rx = self.context.subscribe_state();
         let mut observed_epoch = state_rx.borrow().epoch;
 
-        catch_up_epochs(self.context.store.as_ref(), &self.config, observed_epoch).await?;
+        catch_up_epochs(&self.context, &self.config, observed_epoch).await?;
 
         let mut ticker = interval(Duration::from_secs(self.config.interval_secs));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         ticker.tick().await;
 
         loop {
-            tokio::select! {
+            select! {
                 _ = self.cancel.cancelled() => return Ok(()),
                 _ = ticker.tick() => {
                     let current_epoch = self.context.state().epoch;
 
                     if next_pending_epoch(self.context.store.as_ref(), current_epoch)?.is_some() {
-                        catch_up_epochs(self.context.store.as_ref(), &self.config, current_epoch).await?;
+                        catch_up_epochs(&self.context, &self.config, current_epoch).await?;
                     } else {
-                        run_epoch_sweep(self.context.store.as_ref(), &self.config, current_epoch).await?;
+                        run_epoch_sweep(&self.context, &self.config, current_epoch).await?;
                     }
 
                     observed_epoch = current_epoch;
@@ -78,7 +81,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, Blockchain
 
                     let current_epoch = state_rx.borrow().epoch;
                     if current_epoch > observed_epoch {
-                        catch_up_epochs(self.context.store.as_ref(), &self.config, current_epoch).await?;
+                        catch_up_epochs(&self.context, &self.config, current_epoch).await?;
                         observed_epoch = current_epoch;
                     }
                 }
@@ -88,29 +91,51 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, Blockchain
 }
 
 /// Run any epoch sweeps still owed according to the persisted GC progress markers.
-async fn catch_up_epochs<Db: Store>(
-    store: &TapeStore<Db>,
+async fn catch_up_epochs<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &GcConfig,
     target_epoch: EpochNumber,
 ) -> Result<(), NodeError> {
+    let store = context.store.as_ref();
 
     while let Some(epoch) = next_pending_epoch(store, target_epoch)? {
-        run_epoch_sweep(store, config, epoch).await?;
+        run_epoch_sweep(context, config, epoch).await?;
     }
 
     Ok(())
 }
 
-async fn run_epoch_sweep<Db: Store>(
-    store: &TapeStore<Db>,
+async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &GcConfig,
     epoch: EpochNumber,
 ) -> Result<(), NodeError> {
+    let store = context.store.as_ref();
     store
         .set_gc_started_epoch(epoch)
         .map_err(|error| NodeError::Store(format!("set_gc_started_epoch: {error}")))?;
 
-    sweep_epoch(store, config, epoch).await?;
+    let sweep_stats = sweep_epoch(store, config, epoch).await?;
+
+    if should_reclaim(config, sweep_stats.slices_deleted) {
+        context.set_reclaim_pending(true);
+        let store = context.store.clone();
+        let reclaim_result = spawn_blocking(move || store.inner().inner().reclaim_space()).await;
+        context.set_reclaim_pending(false);
+
+        match reclaim_result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                warn!(epoch = epoch.0, error = %error, "gc reclaim failed");
+            }
+            Err(source) => {
+                return Err(NodeError::ServiceJoin {
+                    service: ServiceName::GcManager,
+                    source,
+                });
+            }
+        }
+    }
 
     store
         .set_gc_completed_epoch(epoch)
@@ -142,15 +167,19 @@ fn next_pending_epoch<Db: Store>(
     }
 }
 
+fn should_reclaim(config: &GcConfig, deleted_slices: usize) -> bool {
+    deleted_slices >= config.reclaim_min_deleted_slices
+}
+
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
     use tape_core::types::EpochNumber;
-    use tape_store::ops::MetaOps;
-    use tape_store::TapeStore;
+    use tape_store::{TapeStore, ops::MetaOps};
 
     use super::{next_pending_epoch, run_epoch_sweep};
     use crate::config::store::GcConfig;
+    use crate::context::test_utils::test_context;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -162,6 +191,7 @@ mod tests {
             interval_secs: 60,
             track_batch: 2,
             slice_batch: 2,
+            reclaim_min_deleted_slices: 20,
         }
     }
 
@@ -203,12 +233,12 @@ mod tests {
 
     #[tokio::test]
     async fn marks_complete() {
-        let store = test_store();
+        let context = test_context();
         let config = test_config();
 
-        run_epoch_sweep(&store, &config, EpochNumber(3)).await.unwrap();
+        run_epoch_sweep(&context, &config, EpochNumber(3)).await.unwrap();
 
-        assert_eq!(store.get_gc_started_epoch().unwrap(), Some(EpochNumber(3)));
-        assert_eq!(store.get_gc_completed_epoch().unwrap(), Some(EpochNumber(3)));
+        assert_eq!(context.store.get_gc_started_epoch().unwrap(), Some(EpochNumber(3)));
+        assert_eq!(context.store.get_gc_completed_epoch().unwrap(), Some(EpochNumber(3)));
     }
 }

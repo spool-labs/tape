@@ -1,41 +1,54 @@
+use tokio::task::yield_now;
+
 use store::Store;
 use tape_core::types::EpochNumber;
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
-use tape_store::types::{ObjectInfo, Pubkey};
-use tape_store::TapeStore;
-use tokio::task::yield_now;
+use tape_store::{
+    TapeStore,
+    ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+    types::{ObjectInfo, Pubkey},
+};
 
 use crate::config::store::GcConfig;
 use crate::core::error::NodeError;
 use crate::features::store::cleanup::{
-    cleanup_track_slices, delete_tape_local, delete_track_local,
+    cleanup_track_slices, delete_tape_local, delete_track_local, CleanupStats,
 };
 
 const UNCERTIFIED_RETENTION_EPOCHS: u64 = 2;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GcSweepStats {
+    pub tapes_deleted: usize,
+    pub tracks_deleted: usize,
+    pub slices_deleted: usize,
+}
 
 pub async fn sweep_epoch<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,
-) -> Result<(), NodeError> {
-    sweep_expired_tapes(store, config, current_epoch).await?;
-    sweep_uncertified_tracks(store, config, current_epoch).await?;
-    sweep_orphan_tracks(store, config).await?;
-    sweep_orphan_slices(store, config).await?;
+) -> Result<GcSweepStats, NodeError> {
+    let mut stats = GcSweepStats::default();
+
+    stats += sweep_expired_tapes(store, config, current_epoch).await?;
+    stats += sweep_uncertified_tracks(store, config, current_epoch).await?;
+    stats += sweep_orphan_tracks(store, config).await?;
+    stats += sweep_orphan_slices(store, config).await?;
     sweep_stale_recoveries(store).await?;
 
-    Ok(())
+    Ok(stats)
 }
 
 async fn sweep_expired_tapes<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,
-) -> Result<(), NodeError> {
+) -> Result<GcSweepStats, NodeError> {
+    let mut stats = GcSweepStats::default();
     let tapes = store.iter_all_tapes().map_err(store_error)?;
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
         if info.end_epoch <= current_epoch {
-            delete_tape_local(store, tape, track_batch(config))?;
+            stats += delete_tape_local(store, tape, track_batch(config))?.into();
         }
 
         if should_yield(index) {
@@ -43,14 +56,15 @@ async fn sweep_expired_tapes<Db: Store>(
         }
     }
 
-    Ok(())
+    Ok(stats)
 }
 
 async fn sweep_uncertified_tracks<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,
-) -> Result<(), NodeError> {
+) -> Result<GcSweepStats, NodeError> {
+    let mut stats = GcSweepStats::default();
     let mut cursor = None;
     let retention = UNCERTIFIED_RETENTION_EPOCHS;
 
@@ -73,8 +87,8 @@ async fn sweep_uncertified_tracks<Db: Store>(
             }) = object
             {
                 if current_epoch.saturating_sub(registered_epoch).as_u64() >= retention {
-                    cleanup_track_slices(store, *track, info.spool_group)?;
-                    delete_track_local(store, *track)?;
+                    stats.slices_deleted += cleanup_track_slices(store, *track, info.spool_group)?;
+                    stats += delete_track_local(store, *track)?.into();
                 }
             }
         }
@@ -83,13 +97,14 @@ async fn sweep_uncertified_tracks<Db: Store>(
         yield_now().await;
     }
 
-    Ok(())
+    Ok(stats)
 }
 
 async fn sweep_orphan_tracks<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
-) -> Result<(), NodeError> {
+) -> Result<GcSweepStats, NodeError> {
+    let mut stats = GcSweepStats::default();
     let mut cursor = None;
 
     loop {
@@ -103,14 +118,14 @@ async fn sweep_orphan_tracks<Db: Store>(
 
         for (track, info) in &tracks {
             if store.get_tape(info.tape.into()).map_err(store_error)?.is_none() {
-                delete_track_local(store, *track)?;
+                stats += delete_track_local(store, *track)?.into();
                 continue;
             }
 
             match store.get_object_info(*track).map_err(store_error)? {
                 Some(ObjectInfo::Valid { .. }) => {}
                 Some(ObjectInfo::Invalid { .. }) | Some(ObjectInfo::Blacklisted) | None => {
-                    cleanup_track_slices(store, *track, info.spool_group)?;
+                    stats.slices_deleted += cleanup_track_slices(store, *track, info.spool_group)?;
                 }
             }
         }
@@ -119,13 +134,14 @@ async fn sweep_orphan_tracks<Db: Store>(
         yield_now().await;
     }
 
-    Ok(())
+    Ok(stats)
 }
 
 async fn sweep_orphan_slices<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
-) -> Result<(), NodeError> {
+) -> Result<GcSweepStats, NodeError> {
+    let mut stats = GcSweepStats::default();
     let spools = store.iter_all_spools().map_err(store_error)?;
     for (index, (spool_id, _)) in spools.into_iter().enumerate() {
         let mut cursor = None;
@@ -142,6 +158,7 @@ async fn sweep_orphan_slices<Db: Store>(
             for (track, _) in &slices {
                 if should_delete_slice(store, spool_id, *track)? {
                     store.delete_slice(spool_id, *track).map_err(store_error)?;
+                    stats.slices_deleted += 1;
                 }
             }
 
@@ -154,7 +171,7 @@ async fn sweep_orphan_slices<Db: Store>(
         }
     }
 
-    Ok(())
+    Ok(stats)
 }
 
 async fn sweep_stale_recoveries<Db: Store>(store: &TapeStore<Db>) -> Result<(), NodeError> {
@@ -230,6 +247,24 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
     NodeError::Store(error.to_string())
 }
 
+impl core::ops::AddAssign for GcSweepStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.tapes_deleted += rhs.tapes_deleted;
+        self.tracks_deleted += rhs.tracks_deleted;
+        self.slices_deleted += rhs.slices_deleted;
+    }
+}
+
+impl From<CleanupStats> for GcSweepStats {
+    fn from(value: CleanupStats) -> Self {
+        Self {
+            tapes_deleted: value.tapes_deleted,
+            tracks_deleted: value.tracks_deleted,
+            slices_deleted: value.slices_deleted,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
@@ -238,11 +273,11 @@ mod tests {
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::Hash;
-    use tape_store::ops::{
-        ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
+    use tape_store::{
+        TapeStore,
+        ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+        types::{ObjectInfo, Pubkey, TapeInfo},
     };
-    use tape_store::types::{ObjectInfo, Pubkey, TapeInfo};
-    use tape_store::TapeStore;
 
     use super::sweep_epoch;
     use crate::config::store::GcConfig;
@@ -257,6 +292,7 @@ mod tests {
             interval_secs: 60,
             track_batch: 2,
             slice_batch: 2,
+            reclaim_min_deleted_slices: 20,
         }
     }
 

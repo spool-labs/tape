@@ -45,6 +45,9 @@ pub struct GcConfig {
     /// Slice-iteration batch size per sweep.
     #[serde(default = "default_slice_batch")]
     pub slice_batch: usize,
+    /// Minimum deleted slices in a sweep before reclaim is triggered.
+    #[serde(default = "default_reclaim_min_deleted_slices")]
+    pub reclaim_min_deleted_slices: usize,
 }
 
 impl Default for GcConfig {
@@ -54,6 +57,7 @@ impl Default for GcConfig {
             interval_secs: default_interval_secs(),
             track_batch: default_track_batch(),
             slice_batch: default_slice_batch(),
+            reclaim_min_deleted_slices: default_reclaim_min_deleted_slices(),
         }
     }
 }
@@ -80,4 +84,8 @@ fn default_track_batch() -> usize {
 
 fn default_slice_batch() -> usize {
     256
+}
+
+fn default_reclaim_min_deleted_slices() -> usize {
+    20
 }

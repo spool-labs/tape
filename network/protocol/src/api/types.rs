@@ -95,6 +95,10 @@ pub struct NodeStats {
     pub slice_payload_bytes: u64,
     /// Actual backend store size including DB overhead and metadata.
     pub store_disk_bytes: u64,
+    /// Free filesystem bytes available to the store path, when supported.
+    pub free_disk_bytes: Option<u64>,
+    /// Whether background reclaim is pending or in progress.
+    pub reclaim_pending: bool,
     pub slices_stored: u64,
     pub bytes_uploaded: u64,
     pub bytes_downloaded: u64,

@@ -426,6 +426,14 @@ impl Store for MemoryStore {
     fn actual_size_bytes(&self) -> Result<u64> {
         Ok(self.total_size_bytes() as u64)
     }
+
+    fn available_disk_bytes(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    fn reclaim_space(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

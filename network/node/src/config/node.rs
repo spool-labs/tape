@@ -255,6 +255,7 @@ store:
     interval_secs: 30
     track_batch: 64
     slice_batch: 32
+    reclaim_min_deleted_slices: 40
 recovery:
   max_workers: 42
   sync_batch: 99
@@ -299,6 +300,7 @@ tls:
         assert_eq!(config.store.gc.interval_secs, 30);
         assert_eq!(config.store.gc.track_batch, 64);
         assert_eq!(config.store.gc.slice_batch, 32);
+        assert_eq!(config.store.gc.reclaim_min_deleted_slices, 40);
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.sync_batch, 99);
         assert_eq!(config.recovery.scan_batch, 77);
