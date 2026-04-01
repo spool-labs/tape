@@ -19,6 +19,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
+/// Calculate the token cost of reserving a tape with the given parameters.
 pub fn reservation_cost(
     price_per_unit: Coin<TAPE>,
     capacity: StorageUnits,
@@ -28,6 +29,8 @@ pub fn reservation_cost(
         .ok_or_else(|| TapedriveError::InvalidArgument("tape reservation cost overflow".to_string()))
 }
 
+/// Calculate the remaining epochs until a tape expires, given the current epoch, tape activation
+/// epoch, and tape expiry epoch.
 pub fn remaining_epochs(
     current: EpochNumber,
     active: EpochNumber,

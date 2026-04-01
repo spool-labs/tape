@@ -5,7 +5,7 @@ use futures::future::join_all;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use tape_sdk::load_solana_keypair;
+use tape_sdk::keys::helpers::load_solana_keypair;
 use tracing::info;
 
 use crate::chain::ChainManager;

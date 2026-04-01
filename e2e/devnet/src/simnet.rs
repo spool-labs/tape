@@ -19,14 +19,18 @@ use tape_api::instruction::{
     build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::node_pda;
+use tape_api::utils::to_name;
 use tape_core::types::coin::TAPE;
 use tape_core::types::StorageUnits;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::tls::pick_bind;
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
+use tape_crypto::hash::hash;
 use tape_protocol::api::HEALTH_PATH;
-use tape_sdk::{TapeKey, Tapedrive, TapedriveError};
+use tape_sdk::error::TapedriveError;
+use tape_sdk::keys::tape_key::TapeKey;
+use tape_sdk::tapedrive::Tapedrive;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -35,6 +39,7 @@ use crate::app::Command;
 use crate::log_layer::LogHistogram;
 use crate::poller::{PollerHandle, PollerUpdate, SnapshotHandle};
 use crate::stake_fuzzer::StakeFuzzer;
+use crate::verify::verify_spool_integrity;
 
 const SLOT_BUMP: u64 = 1;
 const CU_HIGH: u32 = 1_400_000;
@@ -335,7 +340,7 @@ async fn async_run(
 
                 // Spool integrity check on epoch change
                 if epoch != state.prev_epoch && epoch > 0 {
-                    crate::verify::verify_spool_integrity(&state.nodes);
+                    verify_spool_integrity(&state.nodes);
                 }
 
                 // Stake fuzzing
@@ -496,7 +501,7 @@ impl SimnetState {
         // Register node
         let name = {
             let s = format!("sim-node-{id}");
-            tape_api::utils::to_name(s)
+            to_name(s)
         };
         let network_address: NetworkAddress = node.network_address();
         let network_tls = node.authority();
@@ -627,7 +632,7 @@ impl SimnetState {
 
         let name = {
             let s = format!("sim-node-{id}");
-            tape_api::utils::to_name(s)
+            to_name(s)
         };
         let network_address: NetworkAddress = node.network_address();
         let network_tls = node.authority();
@@ -818,7 +823,7 @@ async fn upload_random_blob(
         let size = (rng.next_u32() as usize % (1024 * 1024 - 1024)) + 1024; // 1KB..1MB
         let mut data = vec![0u8; size];
         rng.fill_bytes(&mut data);
-        let key = tape_crypto::hash::hash(&data[..32.min(data.len())]);
+        let key = hash(&data[..32.min(data.len())]);
         (key, data)
     };
 

@@ -4,7 +4,8 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;
-use tape_sdk::{StakeKey, Tapedrive};
+use tape_sdk::keys::stake_key::StakeKey;
+use tape_sdk::tapedrive::Tapedrive;
 
 enum DelegationPhase {
     Idle,

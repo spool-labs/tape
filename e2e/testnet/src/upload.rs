@@ -9,17 +9,20 @@ use rand::RngCore;
 use rpc_solana::RpcConfig;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
+use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 use tape_retry::{Backoff, RetryConfig};
-use tape_sdk::{
-    SDK_INLINE_RAW_MAX_BYTES, TapeKey, Tapedrive, TapedriveError, load_solana_keypair,
-};
+use tape_sdk::error::TapedriveError;
+use tape_sdk::keys::helpers::load_solana_keypair;
+use tape_sdk::keys::tape_key::TapeKey;
+use tape_sdk::tapedrive::Tapedrive;
 use tracing::{error, info, warn};
 
 use crate::view::UploadView;
 
 const MAX_UPLOAD_HISTORY: usize = 16;
 const DEFAULT_UPLOAD_EPOCHS: u64 = 4;
+const MAX_RAW_UPLOAD_BYTES: usize = 825;
 const MIN_RAW_UPLOAD_BYTES: usize = 64;
 const MIN_BLOB_UPLOAD_BYTES: usize = 1024 * 1024;
 const MAX_BLOB_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
@@ -126,7 +129,7 @@ impl UploadManager {
 fn random_blob(force_raw: bool) -> (Hash, Vec<u8>) {
     let mut rng = rand::thread_rng();
     let size = if force_raw {
-        let span = SDK_INLINE_RAW_MAX_BYTES - MIN_RAW_UPLOAD_BYTES + 1;
+        let span = MAX_RAW_UPLOAD_BYTES - MIN_RAW_UPLOAD_BYTES + 1;
         (rng.next_u32() as usize % span) + MIN_RAW_UPLOAD_BYTES
     } else {
         let span = MAX_BLOB_UPLOAD_BYTES - MIN_BLOB_UPLOAD_BYTES + 1;
@@ -134,7 +137,7 @@ fn random_blob(force_raw: bool) -> (Hash, Vec<u8>) {
     };
     let mut data = vec![0u8; size];
     rng.fill_bytes(&mut data);
-    let key = tape_crypto::hash::hash(&data[..32.min(data.len())]);
+    let key = hash(&data[..32.min(data.len())]);
     (key, data)
 }
 

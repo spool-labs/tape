@@ -6,7 +6,11 @@ use clap::Parser;
 use rpc_solana::RpcConfig;
 use tape_core::types::StorageUnits;
 use tape_crypto::hash::hashv;
-use tape_sdk::{TapeKey, Tapedrive, load_solana_keypair};
+use tape_sdk::keys::helpers::load_solana_keypair;
+use tape_sdk::keys::tape_key::TapeKey;
+use tape_sdk::stream::manifest::CHUNK_SIZE;
+use tape_sdk::tapedrive::Tapedrive;
+use tokio::io::AsyncReadExt;
 
 const DEFAULT_FILE_SIZE_BYTES: usize = 1 << 30;
 const RESERVE_HEADROOM_BYTES: u64 = 1 << 20;
@@ -47,21 +51,18 @@ async fn main() -> Result<()> {
     let sdk = Tapedrive::new(rpc, &admin);
 
     let tape_key = TapeKey::generate();
-    let chunk_count = cli.size_bytes.div_ceil(tape_sdk::file::manifest::CHUNK_SIZE);
-    let reserve_capacity = StorageUnits::from_bytes(cli.size_bytes as u64 + RESERVE_HEADROOM_BYTES);
+    let size = StorageUnits::from_bytes(cli.size_bytes as u64);
+    let chunk_count = size.to_bytes().div_ceil(CHUNK_SIZE as u64);
+    let reserve_capacity = size + StorageUnits::from_bytes(RESERVE_HEADROOM_BYTES);
 
-    println!("allocating file buffer");
+    println!("preparing upload stream");
     println!("  size_bytes: {}", cli.size_bytes);
     println!("  chunk_count: {}", chunk_count);
     println!("  tape_address: {}", tape_key.address());
 
-    let alloc_start = Instant::now();
-    let data = vec![cli.fill_byte; cli.size_bytes];
-    println!("buffer ready in {:.2?}", alloc_start.elapsed());
-
     let key = hashv(&[
         b"testnet-upload-file",
-        &(cli.size_bytes as u64).to_le_bytes(),
+        &size.pack(),
         &[cli.fill_byte],
     ]);
 
@@ -74,7 +75,8 @@ async fn main() -> Result<()> {
 
     println!("uploading file");
     let upload_start = Instant::now();
-    let receipt = sdk.write_file(&tape_key, key, &data)
+    let data = tokio::io::repeat(cli.fill_byte).take(size.to_bytes());
+    let receipt = sdk.write_stream(&tape_key, key, size, data)
         .await
         .context("write file")?;
     println!("upload completed in {:.2?}", upload_start.elapsed());

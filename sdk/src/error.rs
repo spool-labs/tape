@@ -138,6 +138,6 @@ pub enum TapedriveError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("file error: {0}")]
-    File(String),
+    #[error("stream error: {0}")]
+    Stream(String),
 }

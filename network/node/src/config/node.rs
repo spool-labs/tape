@@ -6,7 +6,7 @@ use solana_sdk::signature::Keypair;
 use tape_core::bls::BlsPrivateKey;
 use tape_api::consts::NAME_LENGTH;
 use tape_core::types::BasisPoints;
-use tape_sdk::{load_bls_keypair, load_solana_keypair};
+use tape_sdk::keys::helpers::{load_bls_keypair, load_solana_keypair};
 
 use crate::core::error::NodeError;
 use super::{

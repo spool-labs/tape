@@ -29,7 +29,7 @@ use tape_protocol::api::{
 };
 use tape_protocol::ProtocolState;
 
-use crate::Tapedrive;
+use tape_sdk::tapedrive::Tapedrive;
 
 struct Fixture {
     rpc: LiteSvmRpc,

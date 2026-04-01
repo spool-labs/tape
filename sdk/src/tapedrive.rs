@@ -13,10 +13,15 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::StorageUnits;
 use tape_crypto::Hash;
 use tape_protocol::{Api, ProtocolState};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::TapedriveError;
-use crate::file::{read::read_file, receipt::FileReceipt, write::write_file};
 use crate::keys::tape_key::TapeKey;
+use crate::stream::{
+    read::{read_bytes, read_into},
+    receipt::StreamReceipt,
+    write::{write_bytes, write_stream},
+};
 
 /// High-level client for the Tapedrive storage network.
 ///
@@ -117,30 +122,47 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         Ok((tape_key, track))
     }
 
-    /// Write a file to an existing tape, chunking automatically if needed.
+    /// Write in-memory bytes to an existing tape as a logical stream.
     ///
-    /// Always writes a manifest track as the last track. For files that fit
-    /// in a single chunk, one data track + one manifest track are written.
-    ///
-    /// Returns a [`FileReceipt`] whose `manifest` field is the file's handle.
-    pub async fn write_file(
+    /// Always writes a manifest track as the last track. For streams that fit
+    /// in a single chunk, one data track and one manifest track are written.
+    pub async fn write_bytes(
         &self,
         tape_key: &TapeKey,
         key: Hash,
         data: &[u8],
-    ) -> Result<FileReceipt, TapedriveError> {
-        write_file(self, tape_key, key, data).await
+    ) -> Result<StreamReceipt, TapedriveError> {
+        write_bytes(self, tape_key, key, data).await
     }
 
-    /// Read a file by its manifest track address.
+    /// Write a byte stream from an async reader into an existing tape.
     ///
-    /// Reads the manifest, fetches all chunks in parallel, and reassembles
-    /// the original data.
-    pub async fn read_file(
+    /// The reader must yield exactly `size` bytes.
+    pub async fn write_stream<Reader: AsyncRead + Unpin>(
+        &self,
+        tape_key: &TapeKey,
+        key: Hash,
+        size: StorageUnits,
+        reader: Reader,
+    ) -> Result<StreamReceipt, TapedriveError> {
+        write_stream(self, tape_key, key, size, reader).await
+    }
+
+    /// Read a stored stream by its manifest track address into memory.
+    pub async fn read_bytes(
         &self,
         manifest: &Pubkey,
     ) -> Result<Vec<u8>, TapedriveError> {
-        read_file(self, manifest).await
+        read_bytes(self, manifest).await
+    }
+
+    /// Read a stored stream by its manifest track address into an async sink.
+    pub async fn read_into<Writer: AsyncWrite + Unpin>(
+        &self,
+        manifest: &Pubkey,
+        writer: Writer,
+    ) -> Result<(), TapedriveError> {
+        read_into(self, manifest, writer).await
     }
 }
 

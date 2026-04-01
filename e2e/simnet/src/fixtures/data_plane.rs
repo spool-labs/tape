@@ -7,7 +7,9 @@ use solana_sdk::signer::keypair::Keypair;
 use tape_core::erasure::{SPOOL_GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrack;
-use tape_sdk::{TapeKey, Tapedrive};
+use tape_crypto::Hash;
+use tape_sdk::keys::tape_key::TapeKey;
+use tape_sdk::tapedrive::Tapedrive;
 use tape_store::ops::{SliceOps, SpoolOps};
 use tape_store::types::Pubkey as StorePubkey;
 
@@ -24,7 +26,7 @@ impl SimnetScenario<'_> {
     pub async fn upload(
         &self,
         keypair: &Keypair,
-        key: tape_crypto::Hash,
+        key: Hash,
         data: &[u8],
         epochs: u64,
     ) -> Result<(TapeKey, Pubkey, CompressedTrack)> {
