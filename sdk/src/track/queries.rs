@@ -188,7 +188,18 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
     for node in peers {
         let req = GetTrackProofReq { track };
         match client.api.get_track_proof(node, &req).await {
-            Ok(res) => return Ok(res.proof),
+            Ok(res) => {
+                let tape_address: Pubkey = res.proof.state.tape.into();
+                let tape = client
+                    .rpc()
+                    .get_tape_by_address(&tape_address)
+                    .await
+                    .map_err(TapedriveError::Rpc)?;
+                if tape.tracks.verify(&res.proof).is_ok() {
+                    return Ok(res.proof);
+                }
+                last_error = Some(ApiError::Other("stale track proof".into()));
+            }
             Err(ApiError::NotFound) => saw_not_found = true,
             Err(error) => last_error = Some(error),
         }

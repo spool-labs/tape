@@ -32,6 +32,10 @@ impl BasisPoints {
 impl StorageUnits {
     /// 1 MB in bytes — billing granularity.
     pub const MB: u64 = 1024 * 1024;
+    /// 1 GB in bytes.
+    pub const GB: u64 = 1024 * Self::MB;
+    /// 1 TB in bytes.
+    pub const TB: u64 = 1024 * Self::GB;
 
     /// Create from byte count (identity — StorageUnits stores bytes).
     #[inline]
@@ -49,6 +53,18 @@ impl StorageUnits {
     #[inline]
     pub fn mb(megabytes: u64) -> Self {
         Self(megabytes.saturating_mul(Self::MB))
+    }
+
+    /// Construct from gigabytes.
+    #[inline]
+    pub fn gb(gigabytes: u64) -> Self {
+        Self(gigabytes.saturating_mul(Self::GB))
+    }
+
+    /// Construct from terabytes.
+    #[inline]
+    pub fn tb(terabytes: u64) -> Self {
+        Self(terabytes.saturating_mul(Self::TB))
     }
 
     /// Convert to MB (ceiling). Used for billing granularity.
@@ -112,6 +128,14 @@ mod tests {
         let storage_mb = StorageUnits::mb(5);
         assert_eq!(storage_mb.0, 5 * StorageUnits::MB);
         assert_eq!(storage_mb.to_mb(), 5);
+
+        let storage_gb = StorageUnits::gb(2);
+        assert_eq!(storage_gb.0, 2 * StorageUnits::GB);
+        assert_eq!(storage_gb.to_mb(), 2 * 1024);
+
+        let storage_tb = StorageUnits::tb(3);
+        assert_eq!(storage_tb.0, 3 * StorageUnits::TB);
+        assert_eq!(storage_tb.to_mb(), 3 * 1024 * 1024);
 
         // Ceiling division
         let partial = StorageUnits::from_bytes(StorageUnits::MB + 1);

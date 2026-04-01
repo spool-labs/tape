@@ -3,6 +3,8 @@
 //! Splits data into chunks, writes each as a track, then writes a manifest
 //! track last. Always writes a manifest, even for single-chunk files.
 
+use std::env;
+
 use futures::stream::{self, StreamExt};
 use tokio::sync::Semaphore;
 
@@ -25,6 +27,7 @@ use super::receipt::FileReceipt;
 
 /// Maximum concurrent chunk uploads.
 const CHUNK_CONCURRENCY: usize = 4;
+const CHUNK_CONCURRENCY_ENV: &str = "TAPE_FILE_CHUNK_CONCURRENCY";
 
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: u64 = 1 << TRACK_TREE_HEIGHT;
@@ -32,6 +35,14 @@ const MAX_TRACKS: u64 = 1 << TRACK_TREE_HEIGHT;
 /// Derive a deterministic key for a chunk from the file key and chunk index.
 fn chunk_key(file_key: Hash, index: usize) -> Hash {
     hashv(&[file_key.as_ref(), &(index as u64).to_le_bytes()])
+}
+
+fn chunk_concurrency() -> usize {
+    env::var(CHUNK_CONCURRENCY_ENV)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(CHUNK_CONCURRENCY)
 }
 
 /// Validate file-level input before any track writes begin
@@ -170,7 +181,8 @@ async fn upload_chunks<Blockchain: Rpc, Cluster: Api>(
     total_len: usize,
 ) -> Result<Vec<ChunkEntry>, TapedriveError> {
     let chunk_count = data_chunks.len();
-    let semaphore = Semaphore::new(CHUNK_CONCURRENCY);
+    let concurrency = chunk_concurrency();
+    let semaphore = Semaphore::new(concurrency);
 
     let chunk_futures: Vec<_> = data_chunks
         .iter()
@@ -189,7 +201,7 @@ async fn upload_chunks<Blockchain: Rpc, Cluster: Api>(
         .collect();
 
     let results: Vec<Result<_, TapedriveError>> = stream::iter(chunk_futures)
-        .buffer_unordered(CHUNK_CONCURRENCY)
+        .buffer_unordered(concurrency)
         .collect()
         .await;
 

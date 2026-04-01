@@ -10,6 +10,10 @@ doctest = false
 name = "testnet"
 path = "src/bin/testnet/main.rs"
 
+[[bin]]
+name = "upload-file"
+path = "src/bin/upload-file/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 tokio.workspace = true

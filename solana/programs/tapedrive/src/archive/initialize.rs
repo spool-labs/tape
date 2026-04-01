@@ -103,7 +103,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     epoch.last_epoch = 0;
 
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
-    archive.storage_capacity = StorageUnits::mb(1000); // 1Gb
+    archive.storage_capacity = StorageUnits::tb(100);
     archive.storage_price = TAPE::from("0.0001");  // 1 TAPE per 1Mb
     archive.schedule = EpochSchedule::new_at(epoch.id);
 
