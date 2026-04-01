@@ -198,7 +198,7 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
                 if tape.tracks.verify(&res.proof).is_ok() {
                     return Ok(res.proof);
                 }
-                last_error = Some(ApiError::Other("stale track proof".into()));
+                last_error = Some(ApiError::StaleTrackProof);
             }
             Err(ApiError::NotFound) => saw_not_found = true,
             Err(error) => last_error = Some(error),

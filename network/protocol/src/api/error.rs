@@ -29,6 +29,9 @@ pub enum ApiError {
     #[error("not in committee")]
     NotInCommittee,
 
+    #[error("stale track proof")]
+    StaleTrackProof,
+
     #[error("peer error: {0}")]
     Other(String),
 }
@@ -36,7 +39,7 @@ pub enum ApiError {
 impl Retryable for ApiError {
     fn is_retryable(&self) -> bool {
         match self {
-            Self::ConnectionFailed(_) | Self::Timeout => true,
+            Self::ConnectionFailed(_) | Self::Timeout | Self::StaleTrackProof => true,
             Self::ServerError { status, .. } => matches!(status, 408 | 429 | 500 | 502 | 503 | 504),
             Self::NotFound
             | Self::NotResponsible
@@ -45,5 +48,18 @@ impl Retryable for ApiError {
             | Self::Serialization(_)
             | Self::Other(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_retry::Retryable;
+
+    use super::ApiError;
+
+    // A stale proof is a transient view mismatch and should be retried.
+    #[test]
+    fn stale_track_proof_is_retryable() {
+        assert!(ApiError::StaleTrackProof.is_retryable());
     }
 }

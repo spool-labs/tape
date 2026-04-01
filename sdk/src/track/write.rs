@@ -332,6 +332,7 @@ fn should_retry_upload(err: &TapedriveError) -> bool {
 fn should_retry_certification(err: &TapedriveError) -> bool {
     match err {
         TapedriveError::Certification(_) => true,
+        TapedriveError::Peer(err) => err.is_retryable(),
         TapedriveError::Rpc(rpc) => {
             matches!(
                 parse_tape_error(rpc),
@@ -476,13 +477,27 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
 
 #[cfg(test)]
 mod tests {
+    use tape_protocol::api::ApiError;
+
+    use crate::error::TapedriveError;
+
     use super::SDK_INLINE_RAW_MAX_BYTES;
+    use super::should_retry_certification;
     use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
 
+    // The SDK inline write limit must always remain below the program limit.
     #[test]
     fn sdk_inline_raw_limit_is_below_program_limit() {
         assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 825);
         assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
+    }
+
+    // Certification should retry when proof visibility lags behind peer state.
+    #[test]
+    fn certification_retries_stale_track_proof() {
+        assert!(should_retry_certification(&TapedriveError::Peer(
+            ApiError::StaleTrackProof,
+        )));
     }
 }
 
