@@ -6,7 +6,7 @@
 use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolIndex;
-use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
+use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, root_from_leaf_hashes};
 use tape_crypto::Hash;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, MERKLE_HEIGHT,
@@ -223,31 +223,30 @@ impl BlobEncoder {
     ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
         let chunks = self.encode_internal(&data)?;
 
-        // Build Merkle tree from slices
-        let tree = build_blob_merkle_tree(&chunks);
-        let root = tree.root();
+        // Hash each slice once, then reuse the hashes for the root, proofs,
+        // and per-slice leaf hash stored in the upload payload.
+        let leaf_hashes: Vec<Hash> = chunks.iter().map(|chunk| hash_leaf(chunk)).collect();
+        let root = root_from_leaf_hashes::<MERKLE_HEIGHT>(&leaf_hashes);
 
-        // Collect slice data for proof generation (need owned copy for lifetime)
-        let slice_data_refs: Vec<&[u8]> = chunks.iter().map(|s| s.as_slice()).collect();
-
-        // Generate proofs first while we still have refs
-        let proofs: Result<Vec<Vec<Hash>>, _> = (0..chunks.len())
-            .map(|idx| create_merkle_proof(&slice_data_refs, idx, MERKLE_HEIGHT))
+        let proofs: Result<Vec<Vec<Hash>>, _> = (0..leaf_hashes.len())
+            .map(|idx| create_proof_from_leaf_hashes::<MERKLE_HEIGHT>(&leaf_hashes, idx))
             .collect();
         let proofs = proofs.map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
 
         // Generate proof for each slice
         let mut output = Vec::with_capacity(chunks.len());
-        for (idx, (chunk, proof_vec)) in chunks.into_iter().zip(proofs).enumerate() {
+        for (idx, ((chunk, leaf_hash), proof_vec)) in chunks
+            .into_iter()
+            .zip(leaf_hashes.into_iter())
+            .zip(proofs)
+            .enumerate()
+        {
 
             // Convert Vec<Hash> to fixed-size array
             let mut proof_arr = [Hash::default(); MERKLE_HEIGHT];
             for (i, h) in proof_vec.into_iter().enumerate() {
                 proof_arr[i] = h;
             }
-
-            // Compute leaf hash for this slice
-            let leaf_hash = hash_leaf(&chunk);
 
             output.push(SliceWithProof::new(
                 idx as SpoolIndex,

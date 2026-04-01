@@ -44,6 +44,12 @@ fn unexpected_error() -> ApiError {
 
 fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
     match request {
+        PeerReq::GetTrack(_) => PeerRes::GetTrack(Err(unexpected_error())),
+        PeerReq::GetTrackByNumber(_) => PeerRes::GetTrackByNumber(Err(unexpected_error())),
+        PeerReq::FindTrack(_) => PeerRes::FindTrack(Err(unexpected_error())),
+        PeerReq::ListTracksByTape(_) => PeerRes::ListTracksByTape(Err(unexpected_error())),
+        PeerReq::GetTrackData(_) => PeerRes::GetTrackData(Err(unexpected_error())),
+        PeerReq::GetTrackProof(_) => PeerRes::GetTrackProof(Err(unexpected_error())),
         PeerReq::SyncSlices(_) => PeerRes::SyncSlices(Err(unexpected_error())),
         PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(unexpected_error())),
         PeerReq::Repair(_) => PeerRes::Repair(Err(unexpected_error())),
