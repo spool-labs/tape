@@ -85,6 +85,7 @@
 
 mod accounts;
 mod client;
+mod snapshot;
 mod transactions;
 
 use tape_api::errors::{ProgramError, TapeError};
@@ -109,6 +110,7 @@ pub use client::RpcClient;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rpc::RpcError;
     use tape_api::errors::TapeError;
 
     #[test]

@@ -2,7 +2,8 @@
 
 use tape_api::event::{
     EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
+    SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified, TapeDestroyed,
+    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
 
 use crate::error::ParseError;
@@ -14,6 +15,9 @@ use crate::error::ParseError;
 /// during historical catch-up.
 #[derive(Debug, Clone)]
 pub enum TapedriveEvent {
+    SnapshotInitialized(SnapshotEpochInitialized),
+    SnapshotCertified(SnapshotGroupCertified),
+    SnapshotFinalized(SnapshotEpochFinalized),
     EpochAdvanced(EpochAdvanced),
     TrackCertified(TrackCertified),
     TrackDeleted(TrackDeleted),
@@ -51,6 +55,21 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
     let event_data = &data[8..];
 
     match event_type {
+        EventType::SnapshotEpochInitialized => {
+            let event = bytemuck::try_from_bytes::<SnapshotEpochInitialized>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::SnapshotInitialized(*event)))
+        }
+        EventType::SnapshotGroupCertified => {
+            let event = bytemuck::try_from_bytes::<SnapshotGroupCertified>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::SnapshotCertified(*event)))
+        }
+        EventType::SnapshotEpochFinalized => {
+            let event = bytemuck::try_from_bytes::<SnapshotEpochFinalized>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::SnapshotFinalized(*event)))
+        }
         EventType::EpochAdvanced => {
             let event = bytemuck::try_from_bytes::<EpochAdvanced>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
@@ -115,6 +134,9 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
 mod tests {
     use super::*;
     use tape_core::prelude::*;
+    use tape_api::event::{SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified};
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::types::TrackNumber;
     use tape_crypto::Hash;
 
     fn encode_event<T: bytemuck::Pod>(event_type: EventType, event: &T) -> String {
@@ -197,6 +219,71 @@ mod tests {
                 assert_eq!(e.track_number, TrackNumber(7));
             }
             _ => panic!("Expected TrackWritten event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snapshot_group_certified_event() {
+        let track = solana_sdk::pubkey::Pubkey::new_unique();
+        let tape = solana_sdk::pubkey::Pubkey::new_unique();
+        let event = SnapshotGroupCertified {
+            epoch: EpochNumber(11),
+            group: SpoolGroup(4),
+            tape,
+            track,
+            track_number: TrackNumber(8),
+            commitment: Hash::from([0x33; 32]),
+            signer_count: [5; 8],
+            signer_weight: [9; 8],
+        };
+
+        let log = encode_event(EventType::SnapshotGroupCertified, &event);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::SnapshotCertified(decoded) => {
+                assert_eq!(decoded.epoch, event.epoch);
+                assert_eq!(decoded.group, event.group);
+                assert_eq!(decoded.track, event.track);
+                assert_eq!(decoded.track_number, event.track_number);
+                assert_eq!(decoded.commitment, event.commitment);
+            }
+            _ => panic!("Expected SnapshotCertified event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snapshot_epoch_events() {
+        let init = SnapshotEpochInitialized {
+            epoch: EpochNumber(20),
+            parent_epoch: EpochNumber(19),
+            tape: solana_sdk::pubkey::Pubkey::new_unique(),
+        };
+        let finalized = SnapshotEpochFinalized {
+            epoch: EpochNumber(20),
+            parent_epoch: EpochNumber(19),
+            tail_epoch: EpochNumber(20),
+        };
+
+        let init_log = encode_event(EventType::SnapshotEpochInitialized, &init);
+        let finalized_log = encode_event(EventType::SnapshotEpochFinalized, &finalized);
+
+        match parse_event_data(&init_log).unwrap().unwrap() {
+            TapedriveEvent::SnapshotInitialized(decoded) => {
+                assert_eq!(decoded.epoch, init.epoch);
+                assert_eq!(decoded.parent_epoch, init.parent_epoch);
+                assert_eq!(decoded.tape, init.tape);
+            }
+            _ => panic!("Expected SnapshotInitialized event"),
+        }
+
+        match parse_event_data(&finalized_log).unwrap().unwrap() {
+            TapedriveEvent::SnapshotFinalized(decoded) => {
+                assert_eq!(decoded.epoch, finalized.epoch);
+                assert_eq!(decoded.parent_epoch, finalized.parent_epoch);
+                assert_eq!(decoded.tail_epoch, finalized.tail_epoch);
+            }
+            _ => panic!("Expected SnapshotFinalized event"),
         }
     }
 

@@ -44,3 +44,6 @@ tracing = { version = "0.1", optional = true }
 [features]
 default = []
 metrics = ["tape-metrics/metrics", "rpc-solana/metrics"]
+
+[dev-dependencies]
+rpc-litesvm = { path = "../rpc-litesvm" }

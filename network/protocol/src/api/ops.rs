@@ -2,11 +2,15 @@
 
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::SpoolIndex;
+use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::{EpochNumber, NodeId, TrackNumber};
 use tape_crypto::Hash;
-use crate::api::types::{InconsistencyProof, NodeStats, SlicePayload, SyncSliceEntry, SyncTrackEntry};
+use crate::api::types::{
+    InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
+    SyncTrackEntry,
+};
 use tape_crypto::Pubkey;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -135,7 +139,7 @@ pub struct SyncTracksRes {
 pub struct RepairReq {
     pub track: Pubkey,
     pub helper_spool: SpoolIndex,
-    pub stripes: Vec<crate::api::types::StripeSubChunkRequest>,
+    pub stripes: Vec<StripeSubChunkRequest>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +154,22 @@ pub struct CertifyReq {
 
 #[derive(Clone, Debug)]
 pub struct CertifyRes {
+    pub signature: BlsSignature,
+    pub node_id: NodeId,
+    pub epoch: EpochNumber,
+}
+
+#[derive(Clone, Debug)]
+pub struct SignSnapshotReq {
+    pub snapshot_epoch: EpochNumber,
+    pub signing_epoch: EpochNumber,
+    pub group: SpoolGroup,
+    pub commitment: Hash,
+    pub parent_epoch: EpochNumber,
+}
+
+#[derive(Clone, Debug)]
+pub struct SignSnapshotRes {
     pub signature: BlsSignature,
     pub node_id: NodeId,
     pub epoch: EpochNumber,
@@ -198,6 +218,7 @@ pub enum PeerReq {
     SyncTracks(SyncTracksReq),
     Repair(RepairReq),
     Certify(CertifyReq),
+    SignSnapshot(SignSnapshotReq),
     Invalidate(InvalidateReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
@@ -216,6 +237,7 @@ pub enum PeerRes {
     SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
+    SignSnapshot(Result<SignSnapshotRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),

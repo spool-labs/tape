@@ -256,6 +256,7 @@ where
         ServiceName::SnapshotManager,
         SnapshotManager::new(
             context.clone(),
+            receivers.snapshot,
             cancel.clone(),
         )
         .run(),

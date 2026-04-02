@@ -7,7 +7,7 @@ use tape_protocol::api::{
     GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
     GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
     ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes,
-    SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
+    SignSnapshotReq, SignSnapshotRes, SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
 };
 use tape_core::types::NodeId;
 
@@ -37,6 +37,7 @@ impl MemoryApi {
             PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(not_impl())),
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
+            PeerReq::SignSnapshot(_) => PeerRes::SignSnapshot(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
@@ -108,6 +109,25 @@ impl Api for MemoryApi {
         dispatch!(self, node, CertifyReq { track: req.track }, Certify)
     }
 
+    async fn sign_snapshot(
+        &self,
+        node: NodeId,
+        req: &SignSnapshotReq,
+    ) -> Result<SignSnapshotRes, ApiError> {
+        dispatch!(
+            self,
+            node,
+            SignSnapshotReq {
+                snapshot_epoch: req.snapshot_epoch,
+                signing_epoch: req.signing_epoch,
+                group: req.group,
+                commitment: req.commitment,
+                parent_epoch: req.parent_epoch,
+            },
+            SignSnapshot
+        )
+    }
+
     async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
         dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
     }
@@ -124,6 +144,15 @@ impl Api for MemoryApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::bls::BlsPrivateKey;
+    use tape_core::bls::BlsSignature;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::types::EpochNumber;
+    use tape_crypto::Hash;
+
+    fn snapshot_signature(message: &[u8]) -> BlsSignature {
+        BlsPrivateKey::from_random().sign(message).unwrap()
+    }
 
     #[tokio::test]
     async fn noop_returns_error() {
@@ -134,8 +163,16 @@ mod tests {
 
     #[tokio::test]
     async fn custom_handler() {
-        let client = MemoryApi::new(|node, req| match req {
+        let signature = snapshot_signature(b"custom-handler");
+        let client = MemoryApi::new(move |node, req| match req {
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Ok(GetHealthRes { ok: node.0 == 1 })),
+            PeerReq::SignSnapshot(req) => PeerRes::SignSnapshot(Ok(
+                SignSnapshotRes {
+                    signature: signature.clone(),
+                    node_id: node,
+                    epoch: req.signing_epoch,
+                },
+            )),
             _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
         });
 
@@ -144,5 +181,44 @@ mod tests {
 
         let res = client.get_health(NodeId(2), &GetHealthReq).await.unwrap();
         assert!(!res.ok);
+    }
+
+    #[tokio::test]
+    async fn snapshot_sign_dispatch() {
+        let signature = snapshot_signature(b"snapshot-sign");
+        let client = MemoryApi::new(move |node, req| match req {
+            PeerReq::SignSnapshot(req) => {
+                assert_eq!(node, NodeId(7));
+                assert_eq!(req.snapshot_epoch, EpochNumber(10));
+                assert_eq!(req.signing_epoch, EpochNumber(11));
+                assert_eq!(req.group, SpoolGroup(4));
+                assert_eq!(req.commitment, Hash::from([0xAB; 32]));
+                assert_eq!(req.parent_epoch, EpochNumber(9));
+                PeerRes::SignSnapshot(Ok(SignSnapshotRes {
+                    signature: signature.clone(),
+                    node_id: node,
+                    epoch: req.signing_epoch,
+                }))
+            }
+            _ => PeerRes::SignSnapshot(Err(ApiError::Other("unexpected".into()))),
+        });
+
+        let response = client
+            .sign_snapshot(
+                NodeId(7),
+                &SignSnapshotReq {
+                    snapshot_epoch: EpochNumber(10),
+                    signing_epoch: EpochNumber(11),
+                    group: SpoolGroup(4),
+                    commitment: Hash::from([0xAB; 32]),
+                    parent_epoch: EpochNumber(9),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.node_id, NodeId(7));
+        assert_eq!(response.epoch, EpochNumber(11));
+        assert_eq!(response.signature, signature);
     }
 }

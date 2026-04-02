@@ -247,7 +247,7 @@ mod tests {
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
-    use tape_core::types::{EpochNumber, NodeId};
+    use tape_core::types::{EpochNumber, NodeId, StorageUnits, StripeCount};
     use tape_crypto::Hash;
 
     #[test]
@@ -286,8 +286,8 @@ mod tests {
                     root: Hash::default(),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
-                    stripe_size: 64,
-                    stripe_count: 1,
+                    stripe_size: StorageUnits::from_bytes(64),
+                    stripe_count: StripeCount(1),
                     leaves: [Hash::default(); SPOOL_GROUP_SIZE],
                 }),
             }],
@@ -312,8 +312,8 @@ mod tests {
                     root: Hash::default(),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
-                    stripe_size: 64,
-                    stripe_count: 1,
+                    stripe_size: StorageUnits::from_bytes(64),
+                    stripe_count: StripeCount(1),
                     leaves: [Hash::default(); SPOOL_GROUP_SIZE],
                 }),
             }],

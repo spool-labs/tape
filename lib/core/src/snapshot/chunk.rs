@@ -6,11 +6,17 @@ use crate::encoding::EncodingProfile;
 use crate::spooler::SpoolGroup;
 use crate::types::{EpochNumber, StorageUnits, StripeCount};
 
+#[cfg(feature = "wincode")]
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "wincode")]
+use wincode_derive::{SchemaRead, SchemaWrite};
+
 pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
 pub const SNAPSHOT_CHUNK_VALUE_V1: &[u8; 24] = b"SNAPSHOT_CHUNK_VALUE_V1\0";
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct SnapshotChunkMeta {
     pub commitment: Hash,
     pub profile: EncodingProfile,

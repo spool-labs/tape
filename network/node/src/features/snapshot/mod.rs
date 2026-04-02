@@ -1,1 +1,10 @@
+pub mod bootstrap;
+pub mod build;
+pub mod certify;
+pub mod discovery;
+pub mod download;
+pub mod finalize;
 pub mod manager;
+pub mod observe;
+pub mod signing;
+pub mod types;

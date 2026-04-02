@@ -82,7 +82,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
 
     let (snapshot_state_address, _) = snapshot_state_pda();
     let snapshot_state = SnapshotState {
-        latest_epoch: previous_epoch(spec.epoch),
+        tail_epoch: previous_epoch(spec.epoch),
         ..SnapshotState::zeroed()
     };
 

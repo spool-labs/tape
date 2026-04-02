@@ -136,6 +136,7 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::Hash;
+    use tape_crypto::Pubkey as CryptoPubkey;
 
     #[test]
     fn test_track_roundtrip() {
@@ -143,7 +144,7 @@ mod tests {
         let address = Pubkey::new_unique();
 
         let info = CompressedTrack {
-            tape: Pubkey::new_unique(),
+            tape: CryptoPubkey::new_unique(),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Blob as u64,
@@ -278,7 +279,7 @@ mod tests {
             let store = TapeStore::open_primary(&path).unwrap();
             let track = Pubkey::new_unique();
             let info = CompressedTrack {
-                tape: Pubkey::new_unique(),
+                tape: CryptoPubkey::new_unique(),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Blob as u64,
@@ -317,7 +318,7 @@ mod tests {
             let store = TapeStore::open_primary(&primary_path).unwrap();
             let track = Pubkey::new_unique();
             let info = CompressedTrack {
-                tape: Pubkey::new_unique(),
+                tape: CryptoPubkey::new_unique(),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Blob as u64,

@@ -16,3 +16,7 @@ async-trait.workspace = true
 reqwest = { workspace = true }
 wincode = { workspace = true }
 prometheus = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }

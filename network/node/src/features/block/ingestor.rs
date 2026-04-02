@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_blocks::ParsedInstruction;
+use tape_blocks::{ParsedInstruction, parse_and_merge};
 use tape_core::types::SlotNumber;
 use tape_protocol::Api;
 use tape_retry::{RetryConfig, retry_if};
@@ -118,7 +118,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             }
         };
 
-        let instructions = match tape_blocks::parse_and_merge(&block) {
+        let instructions = match parse_and_merge(&block) {
             Ok(instructions) => instructions,
             Err(error) => {
                 error!(
@@ -165,6 +165,22 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 slot = slot.0,
                 error = %error,
                 "block_ingestor: send to ReplayManager failed: {}",
+                error
+            );
+            return Err(error);
+        }
+
+        if let Err(error) = send_block(
+            &self.senders.snapshot,
+            ChannelName::SnapshotManager,
+            Arc::clone(&block),
+        )
+        .await
+        {
+            error!(
+                slot = slot.0,
+                error = %error,
+                "block_ingestor: send to SnapshotManager failed: {}",
                 error
             );
             return Err(error);

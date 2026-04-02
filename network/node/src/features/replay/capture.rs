@@ -3,7 +3,7 @@ use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_store::types::Pubkey as StorePubkey;
 
 use crate::core::error::NodeError;
@@ -27,7 +27,7 @@ pub struct CaptureOutput {
 }
 
 impl CaptureOutput {
-    pub fn into_batch(self, slot: tape_core::types::SlotNumber) -> ReplayBatch {
+    pub fn into_batch(self, slot: SlotNumber) -> ReplayBatch {
         ReplayBatch {
             slot,
             events: self.events.into_iter().map(|entry| entry.event).collect(),
@@ -92,6 +92,9 @@ fn capture_instruction(
             },
             raw_track: None,
         },
+        ParsedInstruction::InitSnapshotEpoch { .. }
+        | ParsedInstruction::CertifySnapshotGroup { .. }
+        | ParsedInstruction::FinalizeSnapshotEpoch { .. } => return Ok(None),
         ParsedInstruction::TrackWrite {
             track,
             key,
@@ -220,15 +223,19 @@ fn capture_instruction(
 #[cfg(test)]
 mod tests {
     use solana_sdk::pubkey::Pubkey;
-    use tape_api::event::{EpochAdvanced, TapeReserved, TrackCertified, TrackWritten};
+    use tape_api::event::{
+        EpochAdvanced, SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified,
+        TapeReserved, TrackCertified, TrackWritten,
+    };
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::spooler::SpoolGroup;
     use tape_core::snapshot::ReplayableEvent;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
 
     use super::capture_block;
@@ -244,8 +251,8 @@ mod tests {
                 root: Hash::new_unique(),
                 commitment: Hash::new_unique(),
                 profile: EncodingProfile::default(),
-                stripe_size: 64,
-                stripe_count: 2,
+                stripe_size: StorageUnits::from_bytes(64),
+                stripe_count: StripeCount(2),
                 leaves: [Hash::default(); SPOOL_GROUP_SIZE],
             }),
             event: TrackWritten {
@@ -256,6 +263,40 @@ mod tests {
                 spool_group: 3u64.to_le_bytes(),
                 track_hash: Hash::new_unique(),
             },
+        }
+    }
+
+    fn snapshot_block() -> ParsedBlock {
+        ParsedBlock {
+            slot: SlotNumber(7),
+            instructions: vec![
+                ParsedInstruction::InitSnapshotEpoch {
+                    event: SnapshotEpochInitialized {
+                        epoch: EpochNumber(7),
+                        parent_epoch: EpochNumber(6),
+                        tape: Pubkey::new_unique(),
+                    },
+                },
+                ParsedInstruction::CertifySnapshotGroup {
+                    event: SnapshotGroupCertified {
+                        epoch: EpochNumber(7),
+                        group: SpoolGroup(3),
+                        tape: Pubkey::new_unique(),
+                        track: Pubkey::new_unique(),
+                        track_number: TrackNumber(9),
+                        commitment: Hash::from([0x44; 32]),
+                        signer_count: [2; 8],
+                        signer_weight: [3; 8],
+                    },
+                },
+                ParsedInstruction::FinalizeSnapshotEpoch {
+                    event: SnapshotEpochFinalized {
+                        epoch: EpochNumber(7),
+                        parent_epoch: EpochNumber(6),
+                        tail_epoch: EpochNumber(7),
+                    },
+                },
+            ],
         }
     }
 
@@ -405,5 +446,14 @@ mod tests {
         assert_eq!(captured.raw_tracks[0].track, track.into());
         assert_eq!(u64::from(captured.raw_tracks[0].spool_group), 4);
         assert_eq!(captured.raw_tracks[0].data, vec![0xAB; 4 * 1024]);
+    }
+
+    #[test]
+    fn ignores_snapshot_instructions() {
+        let captured = capture_block(EpochNumber(7), &snapshot_block()).unwrap();
+
+        assert!(captured.events.is_empty());
+        assert!(captured.raw_tracks.is_empty());
+        assert_eq!(captured.next_epoch, EpochNumber(7));
     }
 }

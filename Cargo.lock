@@ -3968,6 +3968,7 @@ name = "peer-http"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "axum",
  "peer-manager",
  "peer-tls",
  "prometheus",
@@ -3977,6 +3978,7 @@ dependencies = [
  "tape-crypto",
  "tape-protocol",
  "tape-store",
+ "tokio",
  "wincode 0.1.2",
 ]
 
@@ -4003,6 +4005,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "tape-core",
+ "tape-crypto",
  "tape-protocol",
  "tokio",
 ]
@@ -4682,6 +4685,7 @@ dependencies = [
  "arc-swap",
  "bytemuck",
  "rpc",
+ "rpc-litesvm",
  "rpc-solana",
  "solana-account-decoder",
  "solana-client",

@@ -1,6 +1,7 @@
 //! Route constants and URL builders for the node API.
 
-use tape_core::types::TrackNumber;
+use tape_core::spooler::SpoolGroup;
+use tape_core::types::{EpochNumber, TrackNumber};
 
 pub const API_V1: &str = "/v1";
 
@@ -11,6 +12,7 @@ pub const INCONSISTENCY_PATH:        &str = "/v1/tracks/{track_id}/inconsistency
 pub const INFO_PATH:                 &str = "/v1/info";
 pub const METRICS_PATH:              &str = "/v1/metrics";
 pub const REPAIR_PATH:               &str = "/v1/tracks/{track_id}/repair";
+pub const SNAPSHOT_SIGN_PATH:        &str = "/v1/snapshots/{epoch}/groups/{group}/sign";
 pub const SIGN_PATH:                 &str = "/v1/tracks/{track_id}/sign";
 pub const SLICE_PATH:                &str = "/v1/tracks/{track_id}/slices/{spool_id}";
 pub const SLICE_STATUS_PATH:         &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
@@ -63,6 +65,10 @@ pub fn sign_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/sign")
 }
 
+pub fn snapshot_sign_url(epoch: EpochNumber, group: SpoolGroup) -> String {
+    format!("/v1/snapshots/{}/groups/{}/sign", epoch.0, group.0)
+}
+
 pub fn repair_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/repair")
 }
@@ -85,6 +91,10 @@ mod tests {
         assert_eq!(find_track_url("def"), "/v1/tapes/def/tracks/find");
         assert_eq!(list_tracks_by_tape_url("def"), "/v1/tapes/def/tracks/list");
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");
+        assert_eq!(
+            snapshot_sign_url(EpochNumber(11), SpoolGroup(4)),
+            "/v1/snapshots/11/groups/4/sign"
+        );
         assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");
         assert_eq!(inconsistency_url("abc"), "/v1/tracks/abc/inconsistency");

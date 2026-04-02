@@ -10,7 +10,8 @@ use tape_protocol::api::{
     GetTrackProofReq, GetTrackProofRes, GetTrackReq, GetTrackRes, InconsistencyRequest,
     InvalidateReq, InvalidateRes, ListTracksByTapeReq, ListTracksByTapeRequest,
     ListTracksByTapeRes, ListTracksByTapeResponse, PutSliceReq, PutSliceRes, RepairReq,
-    RepairRequest, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncSlicesRequest,
+    RepairRequest, RepairRes, SignSnapshotReq, SignSnapshotRes, SignSnapshotRequest,
+    SyncSlicesReq, SyncSlicesRes, SyncSlicesRequest,
     SyncSlicesResponse, SyncTracksReq, SyncTracksRes, SyncTracksRequest, SyncTracksResponse,
     TrackDataResponse, TrackProofResponse, TrackResponse,
 };
@@ -63,115 +64,6 @@ impl HttpApi {
     }
 }
 
-fn base_url(scheme: &str, addr: NetworkAddress) -> Result<String, ApiError> {
-    let sa = addr
-        .to_socket_addr()
-        .map_err(|e| ApiError::ConnectionFailed(e.to_string()))?;
-    Ok(format!("{scheme}://{sa}"))
-}
-
-fn resolve(scheme: &str, pm: &PeerManager, node: NodeId) -> Result<String, ApiError> {
-    let addr = pm.resolve(node).ok_or(ApiError::NodeUnresolved(node))?;
-    base_url(scheme, addr)
-}
-
-fn map_reqwest(e: reqwest::Error) -> ApiError {
-    let msg = error_chain(&e);
-    if e.is_timeout() {
-        ApiError::Timeout
-    } else if e.is_connect() {
-        ApiError::ConnectionFailed(msg)
-    } else {
-        ApiError::Other(msg)
-    }
-}
-
-fn error_chain(e: &dyn std::error::Error) -> String {
-    let mut msg = e.to_string();
-    let mut source = e.source();
-    while let Some(cause) = source {
-        msg.push_str(": ");
-        msg.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    msg
-}
-
-async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiError> {
-    let status = resp.status();
-    if status.is_success() {
-        return Ok(resp);
-    }
-    match status.as_u16() {
-        404 => Err(ApiError::NotFound),
-        403 => {
-            let body = resp.text().await.unwrap_or_default();
-            if body.contains("not responsible") {
-                Err(ApiError::NotResponsible)
-            } else if body.contains("not in committee") {
-                Err(ApiError::NotInCommittee)
-            } else {
-                Err(ApiError::ServerError {
-                    status: 403,
-                    message: body,
-                })
-            }
-        }
-        s => {
-            let body = resp.text().await.unwrap_or_default();
-            Err(ApiError::ServerError {
-                status: s,
-                message: body,
-            })
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    use tape_core::bls::BlsPubkey;
-    use tape_crypto::Pubkey;
-    use peer_manager::PeerNode;
-
-    fn make_peer(id: u64, port: u16) -> PeerNode {
-        PeerNode {
-            node_id: NodeId(id),
-            authority: Pubkey::new_unique(),
-            state_address: Pubkey::new_unique(),
-            bls_pubkey: BlsPubkey::new_unique(),
-            tls_pubkey: Pubkey::new_unique(),
-            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
-        }
-    }
-
-    #[test]
-    fn resolves_peers_added_after_api_construction() {
-        let peer_manager = Arc::new(PeerManager::new());
-        let api = HttpApi::new(reqwest::Client::new(), peer_manager.clone());
-        let node_id = NodeId(7);
-
-        assert!(matches!(
-            resolve(api.scheme, api.peer_manager.as_ref(), node_id),
-            Err(ApiError::NodeUnresolved(id)) if id == node_id
-        ));
-
-        peer_manager.add_peer(make_peer(7, 8080));
-
-        let base = resolve(api.scheme, api.peer_manager.as_ref(), node_id).unwrap();
-        assert_eq!(base, "http://127.0.0.1:8080");
-    }
-
-    #[test]
-    fn default_timeout_builder_constructs_http_api() {
-        let peer_manager = Arc::new(PeerManager::new());
-        let api = HttpApi::with_default_timeouts(peer_manager.clone());
-        assert_eq!(api.scheme, "http");
-        assert!(Arc::ptr_eq(&api.peer_manager, &peer_manager));
-    }
-}
 
 #[async_trait]
 impl Api for HttpApi {
@@ -550,6 +442,46 @@ impl Api for HttpApi {
         })
     }
 
+    async fn sign_snapshot(
+        &self,
+        node: NodeId,
+        req: &SignSnapshotReq,
+    ) -> Result<SignSnapshotRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let url = format!("{base}{}", api::snapshot_sign_url(req.snapshot_epoch, req.group));
+        let wire_req = SignSnapshotRequest {
+            signing_epoch: req.signing_epoch,
+            commitment: req.commitment,
+            parent_epoch: req.parent_epoch,
+        };
+        let body = wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        let bytes_sent = body.len() as u64;
+        let start = Instant::now();
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("sign_snapshot", &resp, start, bytes_sent);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("sign_snapshot", bytes.len() as u64);
+        let wire: BlsSignResponse = wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(SignSnapshotRes {
+            signature: wire.signature,
+            node_id: wire.node_id,
+            epoch: wire.epoch,
+        })
+    }
+
     async fn invalidate(
         &self,
         node: NodeId,
@@ -639,3 +571,199 @@ impl Api for HttpApi {
         Ok(GetStatsRes { stats })
     }
 }
+
+fn base_url(scheme: &str, addr: NetworkAddress) -> Result<String, ApiError> {
+    let sa = addr
+        .to_socket_addr()
+        .map_err(|e| ApiError::ConnectionFailed(e.to_string()))?;
+    Ok(format!("{scheme}://{sa}"))
+}
+
+fn resolve(scheme: &str, pm: &PeerManager, node: NodeId) -> Result<String, ApiError> {
+    let addr = pm.resolve(node).ok_or(ApiError::NodeUnresolved(node))?;
+    base_url(scheme, addr)
+}
+
+fn map_reqwest(e: reqwest::Error) -> ApiError {
+    let msg = error_chain(&e);
+    if e.is_timeout() {
+        ApiError::Timeout
+    } else if e.is_connect() {
+        ApiError::ConnectionFailed(msg)
+    } else {
+        ApiError::Other(msg)
+    }
+}
+
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut msg = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        msg.push_str(": ");
+        msg.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    msg
+}
+
+async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    match status.as_u16() {
+        404 => Err(ApiError::NotFound),
+        403 => {
+            let body = resp.text().await.unwrap_or_default();
+            if body.contains("not responsible") {
+                Err(ApiError::NotResponsible)
+            } else if body.contains("not in committee") {
+                Err(ApiError::NotInCommittee)
+            } else {
+                Err(ApiError::ServerError {
+                    status: 403,
+                    message: body,
+                })
+            }
+        }
+        s => {
+            let body = resp.text().await.unwrap_or_default();
+            Err(ApiError::ServerError {
+                status: s,
+                message: body,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use axum::body::Bytes;
+    use axum::extract::Path;
+    use axum::http::{header, StatusCode};
+    use axum::routing::post;
+    use axum::Router;
+    use tokio::net::TcpListener;
+    use tape_core::bls::{BlsPrivateKey, BlsPubkey};
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::types::EpochNumber;
+    use tape_crypto::Hash;
+    use tape_crypto::Pubkey;
+    use peer_manager::PeerNode;
+
+    fn make_peer(id: u64, port: u16) -> PeerNode {
+        PeerNode {
+            node_id: NodeId(id),
+            authority: Pubkey::new_unique(),
+            state_address: Pubkey::new_unique(),
+            bls_pubkey: BlsPubkey::new_unique(),
+            tls_pubkey: Pubkey::new_unique(),
+            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
+        }
+    }
+
+    #[test]
+    fn resolves_peers_added_after_api_construction() {
+        let peer_manager = Arc::new(PeerManager::new());
+        let api = HttpApi::new(reqwest::Client::new(), peer_manager.clone());
+        let node_id = NodeId(7);
+
+        assert!(matches!(
+            resolve(api.scheme, api.peer_manager.as_ref(), node_id),
+            Err(ApiError::NodeUnresolved(id)) if id == node_id
+        ));
+
+        peer_manager.add_peer(make_peer(7, 8080));
+
+        let base = resolve(api.scheme, api.peer_manager.as_ref(), node_id).unwrap();
+        assert_eq!(base, "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn default_timeout_builder_constructs_http_api() {
+        let peer_manager = Arc::new(PeerManager::new());
+        let api = HttpApi::with_default_timeouts(peer_manager.clone());
+        assert_eq!(api.scheme, "http");
+        assert!(Arc::ptr_eq(&api.peer_manager, &peer_manager));
+    }
+
+    #[tokio::test]
+    async fn snapshot_sign_roundtrip() {
+        let snapshot_epoch = EpochNumber(10);
+        let group = SpoolGroup(4);
+        let request = SignSnapshotRequest {
+            signing_epoch: EpochNumber(11),
+            commitment: Hash::from([0xAB; 32]),
+            parent_epoch: EpochNumber(9),
+        };
+        let response = BlsSignResponse {
+            signature: BlsPrivateKey::from_random()
+                .sign(b"snapshot-sign")
+                .unwrap(),
+            node_id: NodeId(7),
+            epoch: EpochNumber(11),
+        };
+
+        let expected_request = Arc::new(request.clone());
+        let expected_response = Arc::new(response.clone());
+        let router = Router::new().route(
+            api::SNAPSHOT_SIGN_PATH,
+            post({
+                let expected_request = Arc::clone(&expected_request);
+                let expected_response = Arc::clone(&expected_response);
+                move |Path((epoch, route_group)): Path<(u64, u64)>, body: Bytes| {
+                    let expected_request = Arc::clone(&expected_request);
+                    let expected_response = Arc::clone(&expected_response);
+                    async move {
+                        let decoded: SignSnapshotRequest = wincode::deserialize(&body).unwrap();
+                        assert_eq!(epoch, snapshot_epoch.0);
+                        assert_eq!(route_group, group.0);
+                        assert_eq!(decoded, *expected_request);
+
+                        let body = wincode::serialize(expected_response.as_ref()).unwrap();
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, BINARY_CONTENT)],
+                            body,
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let peer_manager = Arc::new(PeerManager::new());
+        peer_manager.add_peer(make_peer(7, port));
+        let api = HttpApi::new(reqwest::Client::new(), peer_manager);
+
+        let decoded = api
+            .sign_snapshot(
+                NodeId(7),
+                &SignSnapshotReq {
+                    snapshot_epoch,
+                    signing_epoch: request.signing_epoch,
+                    group,
+                    commitment: request.commitment,
+                    parent_epoch: request.parent_epoch,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(decoded.signature, response.signature);
+        assert_eq!(decoded.node_id, response.node_id);
+        assert_eq!(decoded.epoch, response.epoch);
+
+        server.abort();
+        let _ = server.await;
+    }
+}
+

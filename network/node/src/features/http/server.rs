@@ -128,6 +128,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 post(handlers::repair::repair::<Db, Cluster, Blockchain>),
             )
             .route(
+                api_routes::SNAPSHOT_SIGN_PATH,
+                post(handlers::snapshot::sign_snapshot::<Db, Cluster, Blockchain>),
+            )
+            .route(
                 api_routes::INCONSISTENCY_PATH,
                 post(handlers::inconsistency::invalidate::<Db, Cluster, Blockchain>),
             )

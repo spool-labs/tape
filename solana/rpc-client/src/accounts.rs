@@ -4,9 +4,9 @@ use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_sdk::pubkey::Pubkey;
 use rpc::{Rpc, RpcError};
 
-use tape_api::state::{AccountType, Archive, Epoch, History, Node, SnapshotState, Stake, System, Tape};
+use tape_api::state::{AccountType, Archive, Epoch, History, Node, Stake, System, Tape};
 use tape_api::program::tapedrive::{
-    self, SYSTEM_ADDRESS, EPOCH_ADDRESS, ARCHIVE_ADDRESS, SNAPSHOT_STATE_ADDRESS,
+    self, SYSTEM_ADDRESS, EPOCH_ADDRESS, ARCHIVE_ADDRESS,
     history_pda, node_pda, stake_pda, tape_pda,
 };
 
@@ -74,14 +74,6 @@ impl<R: Rpc> RpcClient<R> {
         }
 
         result
-    }
-
-    /// Fetch the SnapshotState singleton account
-    pub async fn get_snapshot_state(&self) -> Result<SnapshotState, RpcError> {
-        let account = self.rpc().get_account(&SNAPSHOT_STATE_ADDRESS).await?;
-        SnapshotState::unpack_with_discriminator(&account.data)
-            .map(|s| *s)
-            .map_err(|e| RpcError::Deserialization(e.to_string()))
     }
 
     /// Fetch the Archive singleton account

@@ -3,7 +3,8 @@
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
-    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced, TapeDestroyed,
+    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
+    SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified, TapeDestroyed,
     TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
@@ -23,6 +24,9 @@ use crate::error::ParseError;
 pub enum RawInstruction {
     AdvanceEpoch,
     SyncEpoch,
+    InitSnapshotEpoch,
+    CertifySnapshotGroup,
+    FinalizeSnapshotEpoch,
     AdvancePool {
         node: Pubkey,
     },
@@ -70,6 +74,15 @@ pub enum ParsedInstruction {
     },
     SyncEpoch {
         event: NodeSynced,
+    },
+    InitSnapshotEpoch {
+        event: SnapshotEpochInitialized,
+    },
+    CertifySnapshotGroup {
+        event: SnapshotGroupCertified,
+    },
+    FinalizeSnapshotEpoch {
+        event: SnapshotEpochFinalized,
     },
     AdvancePool {
         node: Pubkey,
@@ -176,6 +189,12 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::SyncEpoch => Ok(Some(RawInstruction::SyncEpoch)),
 
+        TapeInstruction::InitSnapshotEpoch => Ok(Some(RawInstruction::InitSnapshotEpoch)),
+
+        TapeInstruction::CertifySnapshotGroup => Ok(Some(RawInstruction::CertifySnapshotGroup)),
+
+        TapeInstruction::FinalizeSnapshotEpoch => Ok(Some(RawInstruction::FinalizeSnapshotEpoch)),
+
         TapeInstruction::TrackWrite => {
             let authority = get_account(1)?;
             let (header, payload) = ix::parse_track_write(&ix_data[1..])
@@ -246,5 +265,139 @@ pub fn parse_raw_instruction(
 
         // Instructions we don't need to track
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytemuck::Zeroable;
+    use crate::event::TapedriveEvent;
+    use crate::merge::merge;
+    use solana_sdk::instruction::Instruction;
+    use solana_sdk::pubkey::Pubkey;
+    use solana_transaction_status::UiCompiledInstruction;
+    use tape_api::event::{
+        SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified,
+    };
+    use tape_api::instruction::{
+        build_certify_snapshot_group_ix, build_finalize_snapshot_epoch_ix,
+        build_init_snapshot_epoch_ix,
+    };
+    use tape_api::program::tapedrive::{CommitteeBitmap, ID as TAPE_DRIVE_PROGRAM_ID};
+    use tape_core::bls::BlsSignature;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_crypto::Hash;
+
+    fn compiled_instruction(instruction: &Instruction) -> (UiCompiledInstruction, Vec<String>) {
+        let account_keys = vec![TAPE_DRIVE_PROGRAM_ID.to_string()];
+        (
+            UiCompiledInstruction {
+                program_id_index: 0,
+                accounts: vec![],
+                data: bs58::encode(&instruction.data).into_string(),
+                stack_height: None,
+            },
+            account_keys,
+        )
+    }
+
+    #[test]
+    fn parses_snapshot_instructions() {
+        let (ix, keys) = compiled_instruction(&build_init_snapshot_epoch_ix(
+            Pubkey::new_unique(),
+            EpochNumber(7),
+        ));
+        assert!(matches!(
+            parse_raw_instruction(&ix, &keys).unwrap(),
+            Some(RawInstruction::InitSnapshotEpoch)
+        ));
+
+        let (ix, keys) = compiled_instruction(&build_certify_snapshot_group_ix(
+            Pubkey::new_unique(),
+            EpochNumber(7),
+            EpochNumber(8),
+            SpoolGroup(3),
+            Hash::from([0x11; 32]),
+            EncodingProfile::basic_default(),
+            StorageUnits::from_bytes(512),
+            StripeCount(4),
+            [Hash::from([0x22; 32]); SPOOL_GROUP_SIZE],
+            CommitteeBitmap::zeroed(),
+            BlsSignature::zeroed(),
+        ));
+        assert!(matches!(
+            parse_raw_instruction(&ix, &keys).unwrap(),
+            Some(RawInstruction::CertifySnapshotGroup)
+        ));
+
+        let (ix, keys) = compiled_instruction(&build_finalize_snapshot_epoch_ix(
+            Pubkey::new_unique(),
+            EpochNumber(7),
+        ));
+        assert!(matches!(
+            parse_raw_instruction(&ix, &keys).unwrap(),
+            Some(RawInstruction::FinalizeSnapshotEpoch)
+        ));
+    }
+
+    #[test]
+    fn parses_snapshot_events() {
+        let init = SnapshotEpochInitialized {
+            epoch: EpochNumber(7),
+            parent_epoch: EpochNumber(6),
+            tape: Pubkey::new_unique(),
+        };
+        let cert = SnapshotGroupCertified {
+            epoch: EpochNumber(7),
+            group: SpoolGroup(4),
+            tape: Pubkey::new_unique(),
+            track: Pubkey::new_unique(),
+            track_number: TrackNumber(9),
+            commitment: Hash::from([0x44; 32]),
+            signer_count: [2; 8],
+            signer_weight: [3; 8],
+        };
+        let finalized = SnapshotEpochFinalized {
+            epoch: EpochNumber(7),
+            parent_epoch: EpochNumber(6),
+            tail_epoch: EpochNumber(7),
+        };
+
+        let instructions = vec![
+            RawInstruction::InitSnapshotEpoch,
+            RawInstruction::CertifySnapshotGroup,
+            RawInstruction::FinalizeSnapshotEpoch,
+        ];
+        let events = vec![
+            TapedriveEvent::SnapshotInitialized(init),
+            TapedriveEvent::SnapshotCertified(cert),
+            TapedriveEvent::SnapshotFinalized(finalized),
+        ];
+
+        let merged = merge(instructions, events).expect("merge snapshot instructions");
+
+        assert!(matches!(
+            merged.as_slice(),
+            [
+                ParsedInstruction::InitSnapshotEpoch { event: decoded_init },
+                ParsedInstruction::CertifySnapshotGroup { event: decoded_cert },
+                ParsedInstruction::FinalizeSnapshotEpoch { event: decoded_finalized },
+            ] if decoded_init.epoch == init.epoch
+                && decoded_init.parent_epoch == init.parent_epoch
+                && decoded_init.tape == init.tape
+                && decoded_cert.epoch == cert.epoch
+                && decoded_cert.group == cert.group
+                && decoded_cert.tape == cert.tape
+                && decoded_cert.track == cert.track
+                && decoded_cert.track_number == cert.track_number
+                && decoded_cert.commitment == cert.commitment
+                && decoded_finalized.epoch == finalized.epoch
+                && decoded_finalized.parent_epoch == finalized.parent_epoch
+                && decoded_finalized.tail_epoch == finalized.tail_epoch
+        ));
     }
 }

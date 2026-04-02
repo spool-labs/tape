@@ -21,7 +21,10 @@ pub use enums::ObjectInfo;
 pub use tape_core::system::{NodeStatus, SpoolState, SpoolStatus};
 
 // Re-export key types
-pub use keys::{EpochKey, EventLogKey, SliceKey, SpoolIndexKey, TrackLookupKey, UnitKey};
+pub use keys::{
+    EpochKey, EventLogKey, SliceKey, SnapshotGroupKey, SnapshotSliceKey, SpoolIndexKey,
+    TrackLookupKey, UnitKey,
+};
 
 // Re-export value types
 pub use values::{InvalidationProof, SliceValue, TapeInfo};

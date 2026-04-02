@@ -18,7 +18,7 @@ use rocksdb;
 /// Returns a vector of `ColumnFamilyDescriptor` instances, one for each column family
 /// in the tape-store. Each CF is configured based on its access patterns and data characteristics.
 ///
-/// # Column Family Configurations (14 total)
+/// # Column Family Configurations (17 total)
 ///
 /// ## Metadata Columns
 /// - `meta` - String keys, arbitrary values (BlockBased)
@@ -27,6 +27,9 @@ use rocksdb;
 /// - `track_lookup` - 72-byte ordered tape track index with 32-byte tape prefix (BlockBased)
 /// - `track_data` - 32-byte Pubkey keys, local track payload values (PlainTable)
 /// - `object_info` - 32-byte Pubkey keys (PlainTable)
+/// - `snapshot_epoch` - 8-byte EpochKey -> SnapshotEpochInfo (PlainTable)
+/// - `snapshot_group` - 16-byte SnapshotGroupKey -> SnapshotGroupInfo (BlockBased, 8-byte prefix)
+/// - `snapshot_slice` - 18-byte SnapshotSliceKey -> SliceValue (BlockBased, 8-byte prefix)
 ///
 /// ## Sync Columns
 /// - `sync_cursor` - Singleton (0-byte key) (BlockBased)
@@ -72,6 +75,25 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
         // Object info - 32-byte Pubkey keys, ObjectInfo values
         ColumnFamilyConfig::new("object_info")
             .with_plain_table(32)
+            .build(),
+
+        // Snapshot epoch - 8-byte EpochKey, SnapshotEpochInfo values
+        ColumnFamilyConfig::new("snapshot_epoch")
+            .with_plain_table(8)
+            .build(),
+
+        // Snapshot group - 16-byte SnapshotGroupKey, SnapshotGroupInfo values
+        // 8-byte epoch prefix for efficient per-epoch scans and deletion
+        ColumnFamilyConfig::new("snapshot_group")
+            .with_block_based()
+            .with_prefix_extractor(8)
+            .build(),
+
+        // Snapshot slice - 18-byte SnapshotSliceKey, staged slice values
+        // 8-byte epoch prefix for per-epoch staging cleanup
+        ColumnFamilyConfig::new("snapshot_slice")
+            .with_block_based()
+            .with_prefix_extractor(8)
             .build(),
 
         // Sync cursor - singleton (empty key)
@@ -180,7 +202,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 14);
+        assert_eq!(configs.len(), 17);
     }
 
     #[test]
@@ -195,6 +217,9 @@ mod tests {
             "track_lookup",
             "track_data",
             "object_info",
+            "snapshot_epoch",
+            "snapshot_group",
+            "snapshot_slice",
             "sync_cursor",
             "gc",
             "spool_status",

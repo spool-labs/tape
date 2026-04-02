@@ -1,7 +1,10 @@
+#[cfg(feature = "wincode")]
+use wincode_derive::{SchemaRead, SchemaWrite};
 use bytemuck::{Pod, Zeroable};
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct Bitmap<const BYTES: usize>([u8; BYTES]);
 
 unsafe impl<const BYTES: usize> Zeroable for Bitmap<BYTES> {}

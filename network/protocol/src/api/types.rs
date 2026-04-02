@@ -34,6 +34,14 @@ pub struct BlsSignResponse {
     pub epoch: EpochNumber,
 }
 
+/// Request body for snapshot signing.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SignSnapshotRequest {
+    pub signing_epoch: EpochNumber,
+    pub commitment: Hash,
+    pub parent_epoch: EpochNumber,
+}
+
 /// Request for inconsistency attestation.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct InconsistencyRequest {
@@ -83,13 +91,9 @@ pub struct NodeStats {
     pub current_epoch: u64,
     pub owned_spools: u64,
     pub tracks_stored: u64,
-    /// Logical slice payload bytes stored by this node.
     pub slice_payload_bytes: u64,
-    /// Actual backend store size including DB overhead and metadata.
     pub store_disk_bytes: u64,
-    /// Free filesystem bytes available to the store path, when supported.
     pub free_disk_bytes: Option<u64>,
-    /// Whether background reclaim is pending or in progress.
     pub reclaim_pending: bool,
     pub slices_stored: u64,
     pub bytes_uploaded: u64,
@@ -204,7 +208,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::track::blob::BlobInfo;
-    use tape_core::types::StorageUnits;
+    use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
     #[test]
@@ -282,6 +286,19 @@ mod tests {
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: BlsSignResponse = wincode::deserialize(&bytes).unwrap();
         assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn sign_snapshot_request() {
+        let req = SignSnapshotRequest {
+            signing_epoch: EpochNumber(8),
+            commitment: Hash::from([0xAB; 32]),
+            parent_epoch: EpochNumber(6),
+        };
+
+        let bytes = wincode::serialize(&req).unwrap();
+        let decoded: SignSnapshotRequest = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(req, decoded);
     }
 
     #[test]
@@ -392,8 +409,8 @@ mod tests {
                 root: Hash::from([0x44; 32]),
                 commitment: Hash::from([0x55; 32]),
                 profile: EncodingProfile::basic_default(),
-                stripe_size: 256,
-                stripe_count: 8,
+                stripe_size: StorageUnits::from_bytes(256),
+                stripe_count: StripeCount(8),
                 leaves: [Hash::from([0x66; 32]); SPOOL_GROUP_SIZE],
             }),
         };
