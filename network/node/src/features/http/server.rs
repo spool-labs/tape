@@ -88,14 +88,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::SIGN_PATH,
                 get(handlers::sign::certify::<Db, Cluster, Blockchain>),
-            )
-            .route(
-                api_routes::SNAPSHOT_COMMITMENTS_PATH,
-                get(handlers::snapshot::get_snapshot::<Db, Cluster, Blockchain>),
-            )
-            .route(
-                api_routes::SNAPSHOT_SIG_PATH,
-                post(handlers::sign::put_snapshot::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]

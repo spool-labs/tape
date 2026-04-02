@@ -2,8 +2,7 @@
 
 use tape_api::event::{
     EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    SnapshotRegistered, TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted,
-    TrackInvalidated, TrackWritten,
+    TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
 
 use crate::error::ParseError;
@@ -16,7 +15,6 @@ use crate::error::ParseError;
 #[derive(Debug, Clone)]
 pub enum TapedriveEvent {
     EpochAdvanced(EpochAdvanced),
-    SnapshotRegistered(SnapshotRegistered),
     TrackCertified(TrackCertified),
     TrackDeleted(TrackDeleted),
     TrackInvalidated(TrackInvalidated),
@@ -57,11 +55,6 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
             let event = bytemuck::try_from_bytes::<EpochAdvanced>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::EpochAdvanced(*event)))
-        }
-        EventType::SnapshotRegistered => {
-            let event = bytemuck::try_from_bytes::<SnapshotRegistered>(event_data)
-                .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::SnapshotRegistered(*event)))
         }
         EventType::TrackCertified => {
             let event = bytemuck::try_from_bytes::<TrackCertified>(event_data)

@@ -3,12 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tape_protocol::api::{
     Api, ApiError, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes, GetHealthReq,
-    GetHealthRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq,
-    GetStatsRes, GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes,
-    GetTrackProofReq, GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
-    ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, PutSnapshotReq,
-    PutSnapshotRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncTracksReq,
-    SyncTracksRes,
+    GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes, GetTrackByNumberReq,
+    GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
+    GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
+    ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes,
+    SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
 };
 use tape_core::types::NodeId;
 
@@ -39,8 +38,6 @@ impl MemoryApi {
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
-            PeerReq::PutSnapshot(_) => PeerRes::PutSnapshot(Err(not_impl())),
-            PeerReq::GetSnapshot(_) => PeerRes::GetSnapshot(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
@@ -113,14 +110,6 @@ impl Api for MemoryApi {
 
     async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
         dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
-    }
-
-    async fn put_snapshot(&self, node: NodeId, req: &PutSnapshotReq) -> Result<PutSnapshotRes, ApiError> {
-        dispatch!(self, node, PutSnapshotReq { epoch: req.epoch, chunk_index: req.chunk_index, submission: req.submission.clone() }, PutSnapshot)
-    }
-
-    async fn get_snapshot(&self, node: NodeId, req: &GetSnapshotReq) -> Result<GetSnapshotRes, ApiError> {
-        dispatch!(self, node, GetSnapshotReq { epoch: req.epoch }, GetSnapshot)
     }
 
     async fn get_health(&self, node: NodeId, _req: &GetHealthReq) -> Result<GetHealthRes, ApiError> {

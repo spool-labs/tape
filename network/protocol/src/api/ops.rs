@@ -6,7 +6,7 @@ use tape_core::track::data::TrackData;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::{EpochNumber, NodeId, TrackNumber};
 use tape_crypto::Hash;
-use crate::api::types::{ InconsistencyProof, NodeStats, SlicePayload, SnapshotSignatureSubmission, SyncSliceEntry, SyncTrackEntry, };
+use crate::api::types::{InconsistencyProof, NodeStats, SlicePayload, SyncSliceEntry, SyncTrackEntry};
 use tape_crypto::Pubkey;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -169,26 +169,6 @@ pub struct InvalidateRes {
 }
 
 #[derive(Clone, Debug)]
-pub struct PutSnapshotReq {
-    pub epoch: EpochNumber,
-    pub chunk_index: u64,
-    pub submission: SnapshotSignatureSubmission,
-}
-
-#[derive(Clone, Debug)]
-pub struct PutSnapshotRes;
-
-#[derive(Clone, Debug)]
-pub struct GetSnapshotReq {
-    pub epoch: EpochNumber,
-}
-
-#[derive(Clone, Debug)]
-pub struct GetSnapshotRes {
-    pub commitments: Vec<Hash>,
-}
-
-#[derive(Clone, Debug)]
 pub struct GetHealthReq;
 
 #[derive(Clone, Debug)]
@@ -219,8 +199,6 @@ pub enum PeerReq {
     Repair(RepairReq),
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
-    PutSnapshot(PutSnapshotReq),
-    GetSnapshot(GetSnapshotReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -239,8 +217,6 @@ pub enum PeerRes {
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
-    PutSnapshot(Result<PutSnapshotRes, ApiError>),
-    GetSnapshot(Result<GetSnapshotRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),
 }

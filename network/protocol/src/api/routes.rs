@@ -14,8 +14,6 @@ pub const REPAIR_PATH:               &str = "/v1/tracks/{track_id}/repair";
 pub const SIGN_PATH:                 &str = "/v1/tracks/{track_id}/sign";
 pub const SLICE_PATH:                &str = "/v1/tracks/{track_id}/slices/{spool_id}";
 pub const SLICE_STATUS_PATH:         &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
-pub const SNAPSHOT_COMMITMENTS_PATH: &str = "/v1/snapshots/{epoch}/commitments";
-pub const SNAPSHOT_SIG_PATH:         &str = "/v1/snapshots/{epoch}/{chunk_index}/partial_signature";
 pub const STATS_PATH:                &str = "/v1/stats";
 pub const SYNC_SLICES_PATH:          &str = "/v1/sync/slices";
 pub const SYNC_TRACKS_PATH:          &str = "/v1/sync/tracks";
@@ -73,14 +71,6 @@ pub fn inconsistency_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/inconsistency")
 }
 
-pub fn snapshot_signature_url(epoch: u64, chunk_index: u64) -> String {
-    format!("/v1/snapshots/{epoch}/{chunk_index}/partial_signature")
-}
-
-pub fn snapshot_commitments_url(epoch: u64) -> String {
-    format!("/v1/snapshots/{epoch}/commitments")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,9 +88,5 @@ mod tests {
         assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");
         assert_eq!(inconsistency_url("abc"), "/v1/tracks/abc/inconsistency");
-        assert_eq!(
-            snapshot_signature_url(10, 3),
-            "/v1/snapshots/10/3/partial_signature"
-        );
     }
 }

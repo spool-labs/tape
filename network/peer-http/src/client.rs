@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use tape_protocol::api::{
     self, Api, ApiError, BlsInconsistencyResponse, BlsSignResponse, CertifyReq, CertifyRes,
     CONTENT_TYPE_JSON, BINARY_CONTENT, FindTrackReq, FindTrackRes, FindTrackRequest,
-    GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes,
-    GetStatsReq, GetStatsRes, GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq,
-    GetTrackDataRes, GetTrackProofReq, GetTrackProofRes, GetTrackReq, GetTrackRes, InconsistencyRequest, InvalidateReq,
-    InvalidateRes, ListTracksByTapeReq, ListTracksByTapeRequest, ListTracksByTapeRes,
-    ListTracksByTapeResponse, PutSliceReq, PutSliceRes, PutSnapshotReq, PutSnapshotRes,
-    RepairReq, RepairRequest, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncSlicesRequest,
+    GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes,
+    GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes,
+    GetTrackProofReq, GetTrackProofRes, GetTrackReq, GetTrackRes, InconsistencyRequest,
+    InvalidateReq, InvalidateRes, ListTracksByTapeReq, ListTracksByTapeRequest,
+    ListTracksByTapeRes, ListTracksByTapeResponse, PutSliceReq, PutSliceRes, RepairReq,
+    RepairRequest, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncSlicesRequest,
     SyncSlicesResponse, SyncTracksReq, SyncTracksRes, SyncTracksRequest, SyncTracksResponse,
     TrackDataResponse, TrackProofResponse, TrackResponse,
 };
@@ -18,7 +18,6 @@ use peer_manager::PeerManager;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
-use tape_crypto::Hash;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
@@ -590,65 +589,6 @@ impl Api for HttpApi {
             node_id: wire.node_id,
             epoch: wire.epoch,
         })
-    }
-
-    async fn put_snapshot(
-        &self,
-        node: NodeId,
-        req: &PutSnapshotReq,
-    ) -> Result<PutSnapshotRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!(
-            "{base}{}",
-            api::snapshot_signature_url(req.epoch.0, req.chunk_index)
-        );
-        let body = wincode::serialize(&req.submission)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        let bytes_sent = body.len() as u64;
-        let start = Instant::now();
-        let resp = self
-            .client
-            .post(&url)
-            .header("content-type", BINARY_CONTENT)
-            .body(body)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record("put_snapshot", &resp, start, bytes_sent);
-        check_status(resp).await?;
-        Ok(PutSnapshotRes)
-    }
-
-    async fn get_snapshot(
-        &self,
-        node: NodeId,
-        req: &GetSnapshotReq,
-    ) -> Result<GetSnapshotRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!(
-            "{base}{}",
-            api::snapshot_commitments_url(req.epoch.0)
-        );
-
-        let start = Instant::now();
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record("get_snapshot", &resp, start, 0);
-        let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_snapshot", bytes.len() as u64);
-        let commitments: Vec<Hash> =
-            wincode::deserialize(&bytes)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        Ok(GetSnapshotRes { commitments })
     }
 
     async fn get_health(

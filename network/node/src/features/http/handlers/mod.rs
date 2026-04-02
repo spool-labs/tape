@@ -5,6 +5,5 @@ pub mod metrics;
 pub mod repair;
 pub mod sign;
 pub mod slice;
-pub mod snapshot;
 pub mod sync;
 pub mod track;

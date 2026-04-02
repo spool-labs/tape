@@ -7,7 +7,7 @@ use store::Store;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_core::types::NodeId;
+use tape_core::types::{NodeId, StorageUnits};
 use tape_protocol::{Api, ApiError};
 use tape_protocol::api::ops::{GetTrackDataReq, SyncSlicesReq};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
@@ -275,8 +275,11 @@ fn verify_slice(
         return false;
     }
 
-    if let Some(max_len) = track_data.stripe_size.checked_mul(track_data.stripe_count) {
-        if max_len > 0 && data.len() as u64 > max_len {
+    if let Some(max_len) = track_data
+        .stripe_size
+        .checked_mul(StorageUnits::from_bytes(track_data.stripe_count.as_u64()))
+    {
+        if max_len > StorageUnits::zero() && data.len() as u64 > max_len.as_u64() {
             return false;
         }
     }

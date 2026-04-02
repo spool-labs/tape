@@ -10,37 +10,10 @@
 
 use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{
-    ChunkIndex, EpochNumber, Hash, InvalidationProof, Pubkey, SlotNumber,
-    SnapshotCertResult, SnapshotChunkMeta, SnapshotPartialSignature, UnitKey,
-};
+use crate::types::{EpochNumber, Hash, InvalidationProof, Pubkey, SlotNumber, UnitKey};
 use crate::TapeStore;
 use store::Store;
-use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::types::NodeId;
-
-const SNAPSHOT_PARTIAL_SIG_PREFIX: &str = "snapshot_partial_sig";
-
-fn partial_sig_group_prefix(epoch: EpochNumber, group: u64) -> String {
-    format!("{SNAPSHOT_PARTIAL_SIG_PREFIX}:{}:{}:", epoch.as_u64(), group)
-}
-
-fn parse_partial_sig_key(key: &[u8]) -> Option<(EpochNumber, u64, u8)> {
-    let key = std::str::from_utf8(key).ok()?;
-    let parts = key.split(':').collect::<Vec<_>>();
-    if parts.len() != 4 || parts[0] != SNAPSHOT_PARTIAL_SIG_PREFIX {
-        return None;
-    }
-
-    let epoch = parts
-        .get(1)
-        .and_then(|p| p.parse::<u64>().ok())
-        .map(EpochNumber)?;
-    let group = parts.get(2).and_then(|p| p.parse::<u64>().ok())?;
-    let member_index = parts.get(3).and_then(|p| p.parse::<u8>().ok())?;
-
-    Some((epoch, group, member_index))
-}
 
 // Meta keys
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
@@ -80,46 +53,6 @@ pub trait MetaOps {
     fn get_gc_completed_epoch(&self) -> Result<Option<EpochNumber>>;
     fn set_gc_completed_epoch(&self, epoch: EpochNumber) -> Result<()>;
 
-    // Snapshot commitments (per epoch+chunk_index)
-    fn get_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex) -> Result<Option<Hash>>;
-    fn set_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex, commitment: Hash) -> Result<()>;
-    fn delete_snapshot_commitments(&self, epoch: EpochNumber) -> Result<()>;
-
-    // Snapshot metadata (encoding params + leaf hashes for registration)
-    fn get_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotChunkMeta>>;
-    fn set_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex, meta: SnapshotChunkMeta) -> Result<()>;
-    fn delete_snapshot_metadata(&self, epoch: EpochNumber) -> Result<()>;
-
-    // Snapshot cert results
-    fn get_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>>;
-    fn set_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()>;
-    fn delete_snapshot_cert(&self, epoch: EpochNumber) -> Result<()>;
-
-    /// Partial snapshot signatures (peer-pushed) for each group.
-    fn set_snapshot_partial_signature(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-        partial: SnapshotPartialSignature,
-    ) -> Result<()>;
-    fn get_snapshot_partial_signature(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-        member_index: u8,
-    ) -> Result<Option<SnapshotPartialSignature>>;
-    fn get_snapshot_partial_signatures(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-    ) -> Result<Vec<SnapshotPartialSignature>>;
-    fn delete_snapshot_partial_signatures(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-    ) -> Result<()>;
-    fn delete_snapshot_partial_signatures_for_epoch(&self, epoch: EpochNumber) -> Result<()>;
-
     // Invalidation proofs
     fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>>;
     fn set_invalidation_proof(&self, track: Pubkey, proof: InvalidationProof) -> Result<()>;
@@ -153,8 +86,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
 
     fn set_cluster_hash(&self, hash: Hash) -> Result<()> {
         let key = CLUSTER_HASH_KEY.to_string();
-        let bytes = hash.as_ref().to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
+        self.put::<MetaCol>(&key, &hash.as_ref().to_vec())?;
         Ok(())
     }
 
@@ -178,8 +110,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
 
     fn set_node_address(&self, address: Pubkey) -> Result<()> {
         let key = NODE_ADDRESS_KEY.to_string();
-        let bytes = address.0.to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
+        self.put::<MetaCol>(&key, &address.0.to_vec())?;
         Ok(())
     }
 
@@ -203,8 +134,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
 
     fn set_node_id(&self, id: NodeId) -> Result<()> {
         let key = NODE_ID_KEY.to_string();
-        let bytes = id.0.to_le_bytes().to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
+        self.put::<MetaCol>(&key, &id.0.to_le_bytes().to_vec())?;
         Ok(())
     }
 
@@ -237,8 +167,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
 
     fn set_bootstrap_target_epoch(&self, epoch: EpochNumber) -> Result<()> {
         let key = SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY.to_string();
-        let bytes = epoch.as_u64().to_le_bytes().to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
+        self.put::<MetaCol>(&key, &epoch.as_u64().to_le_bytes().to_vec())?;
         Ok(())
     }
 
@@ -264,198 +193,13 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex) -> Result<Option<Hash>> {
-        let key = format!("snapshot:{}:{}", epoch.as_u64(), chunk_index.as_u64());
-        match self.get::<MetaCol>(&key)? {
-            Some(bytes) => {
-                if bytes.len() != 32 {
-                    return Err(TapeStoreError::InvalidDataLength {
-                        expected: 32,
-                        actual: bytes.len(),
-                    });
-                }
-                let mut hash_bytes = [0u8; 32];
-                hash_bytes.copy_from_slice(&bytes);
-                Ok(Some(Hash(hash_bytes)))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn set_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex, commitment: Hash) -> Result<()> {
-        let key = format!("snapshot:{}:{}", epoch.as_u64(), chunk_index.as_u64());
-        let bytes = commitment.0.to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
-        Ok(())
-    }
-
-    fn delete_snapshot_commitments(&self, epoch: EpochNumber) -> Result<()> {
-        for i in 0..SPOOL_GROUP_COUNT {
-            let key = format!("snapshot:{}:{}", epoch.as_u64(), i);
-            self.delete::<MetaCol>(&key)?;
-        }
-        Ok(())
-    }
-
-    fn get_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotChunkMeta>> {
-        let key = format!("snapshot_meta:{}:{}", epoch.as_u64(), chunk.as_u64());
-        match self.get::<MetaCol>(&key)? {
-            Some(bytes) => {
-                let meta: SnapshotChunkMeta = wincode::deserialize(&bytes)
-                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot metadata: {}", e)))?;
-                Ok(Some(meta))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn set_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex, meta: SnapshotChunkMeta) -> Result<()> {
-        let key = format!("snapshot_meta:{}:{}", epoch.as_u64(), chunk.as_u64());
-        let bytes = wincode::serialize(&meta)
-            .map_err(|e| TapeStoreError::Serialization(format!("snapshot metadata: {}", e)))?;
-        self.put::<MetaCol>(&key, &bytes)?;
-        Ok(())
-    }
-
-    fn delete_snapshot_metadata(&self, epoch: EpochNumber) -> Result<()> {
-        for i in 0..SPOOL_GROUP_COUNT {
-            let key = format!("snapshot_meta:{}:{}", epoch.as_u64(), i);
-            self.delete::<MetaCol>(&key)?;
-        }
-        Ok(())
-    }
-
-    fn get_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>> {
-        let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), chunk.as_u64());
-        match self.get::<MetaCol>(&key)? {
-            Some(bytes) => {
-                let result: SnapshotCertResult = wincode::deserialize(&bytes)
-                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot cert: {}", e)))?;
-                Ok(Some(result))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn set_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()> {
-        let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), chunk.as_u64());
-        let bytes = wincode::serialize(&result)
-            .map_err(|e| TapeStoreError::Serialization(format!("snapshot cert: {}", e)))?;
-        self.put::<MetaCol>(&key, &bytes)?;
-        Ok(())
-    }
-
-    fn delete_snapshot_cert(&self, epoch: EpochNumber) -> Result<()> {
-        for i in 0..SPOOL_GROUP_COUNT {
-            let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), i);
-            self.delete::<MetaCol>(&key)?;
-        }
-        Ok(())
-    }
-
-    fn set_snapshot_partial_signature(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-        partial: SnapshotPartialSignature,
-    ) -> Result<()> {
-        let key = format!(
-            "{SNAPSHOT_PARTIAL_SIG_PREFIX}:{}:{}:{}",
-            epoch.as_u64(),
-            group,
-            partial.member_index,
-        );
-        let bytes = wincode::serialize(&partial)
-            .map_err(|e| TapeStoreError::Serialization(format!("snapshot partial signature: {e}")))?;
-        self.put::<MetaCol>(&key, &bytes)?;
-        Ok(())
-    }
-
-    fn get_snapshot_partial_signature(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-        member_index: u8,
-    ) -> Result<Option<SnapshotPartialSignature>> {
-        let key = format!(
-            "{SNAPSHOT_PARTIAL_SIG_PREFIX}:{}:{}:{}",
-            epoch.as_u64(),
-            group,
-            member_index
-        );
-        match self.get::<MetaCol>(&key)? {
-            Some(bytes) => {
-                let partial: SnapshotPartialSignature = wincode::deserialize(&bytes)
-                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot partial signature: {e}")))?;
-                Ok(Some(partial))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn get_snapshot_partial_signatures(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-    ) -> Result<Vec<SnapshotPartialSignature>> {
-        let prefix = partial_sig_group_prefix(epoch, group);
-        let mut partials = Vec::new();
-
-        for (key, value_bytes) in self.inner().iter::<MetaCol>()? {
-            if key.starts_with(&prefix) {
-                let partial: SnapshotPartialSignature = wincode::deserialize(&value_bytes)
-                    .map_err(|e| TapeStoreError::Serialization(format!(
-                        "snapshot partial signature: {e}"
-                    )))?;
-                partials.push(partial);
-            }
-        }
-        Ok(partials)
-    }
-
-    fn delete_snapshot_partial_signatures(
-        &self,
-        epoch: EpochNumber,
-        group: u64,
-    ) -> Result<()> {
-        let prefix = partial_sig_group_prefix(epoch, group);
-        let keys: Vec<String> = self
-            .inner()
-            .iter::<MetaCol>()?
-            .into_iter()
-            .filter_map(|(key, _)| key.starts_with(&prefix).then_some(key))
-            .collect();
-
-        for key in keys {
-            self.delete::<MetaCol>(&key)?;
-        }
-        Ok(())
-    }
-
-    fn delete_snapshot_partial_signatures_for_epoch(&self, epoch: EpochNumber) -> Result<()> {
-        let keys: Vec<String> = self
-            .inner()
-            .iter::<MetaCol>()?
-            .into_iter()
-            .filter_map(|(key, _)| {
-                parse_partial_sig_key(key.as_bytes())
-                    .filter(|(sig_epoch, _, _)| *sig_epoch == epoch)
-                    .map(|_| key)
-            })
-            .collect();
-
-        for key in keys {
-            self.delete::<MetaCol>(&key)?;
-        }
-        Ok(())
-    }
-
     fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>> {
         let key = format!("invalidation:{}", track);
         match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
-                let proof: InvalidationProof = wincode::deserialize(&bytes)
-                    .map_err(|e| TapeStoreError::Serialization(format!("invalidation proof: {}", e)))?;
+                let proof: InvalidationProof = wincode::deserialize(&bytes).map_err(|e| {
+                    TapeStoreError::Serialization(format!("invalidation proof: {}", e))
+                })?;
                 Ok(Some(proof))
             }
             None => Ok(None),
@@ -496,8 +240,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
 
     fn set_epoch_nonce(&self, epoch: EpochNumber, nonce: Hash) -> Result<()> {
         let key = format!("epoch_nonce:{}", epoch.as_u64());
-        let bytes = nonce.0.to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
+        self.put::<MetaCol>(&key, &nonce.0.to_vec())?;
         Ok(())
     }
 
@@ -529,8 +272,8 @@ impl<S: Store> MetaOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::bls::BlsSignature;
     use store_memory::MemoryStore;
+    use tape_core::bls::BlsSignature;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -609,77 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_commitment_roundtrip() {
-        let store = test_store();
-        let epoch = EpochNumber(42);
-        let hash = Hash::new_unique();
-
-        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap().is_none());
-
-        store.set_snapshot_commitment(epoch, ChunkIndex(0), hash).unwrap();
-        assert_eq!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap(), Some(hash));
-
-        // Different chunk index returns None
-        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(1)).unwrap().is_none());
-
-        // Set multiple chunks, then delete all
-        store.set_snapshot_commitment(epoch, ChunkIndex(1), Hash::new_unique()).unwrap();
-        store.set_snapshot_commitment(epoch, ChunkIndex(2), Hash::new_unique()).unwrap();
-        store.delete_snapshot_commitments(epoch).unwrap();
-
-        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap().is_none());
-        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(1)).unwrap().is_none());
-        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(2)).unwrap().is_none());
-    }
-
-    #[test]
-    fn snapshot_metadata_roundtrip() {
-        let store = test_store();
-        let epoch = EpochNumber(10);
-        let chunk = ChunkIndex(5);
-
-        assert!(store.get_snapshot_metadata(epoch, chunk).unwrap().is_none());
-
-        let meta = SnapshotChunkMeta {
-            leaves: vec![Hash::new_unique(); 20],
-            stripe_size: 1024 * 1024,
-            stripe_count: 3,
-            encoding_type: 2,
-            encoding_params: 0x100714,
-        };
-
-        store.set_snapshot_metadata(epoch, chunk, meta.clone()).unwrap();
-        assert_eq!(store.get_snapshot_metadata(epoch, chunk).unwrap(), Some(meta));
-
-        // Different chunk returns None
-        assert!(store.get_snapshot_metadata(epoch, ChunkIndex(6)).unwrap().is_none());
-
-        store.delete_snapshot_metadata(epoch).unwrap();
-        assert!(store.get_snapshot_metadata(epoch, chunk).unwrap().is_none());
-    }
-
-    #[test]
-    fn snapshot_cert_roundtrip() {
-        let store = test_store();
-        let epoch = EpochNumber(10);
-        let chunk = ChunkIndex(5);
-
-        assert!(store.get_snapshot_cert(epoch, chunk).unwrap().is_none());
-
-        let cert = SnapshotCertResult {
-            member_indices: vec![0, 2, 5, 7],
-            signature: BlsSignature(G1CompressedPoint([0xAB; 32])),
-            epoch: 10,
-        };
-
-        store.set_snapshot_cert(epoch, chunk, cert.clone()).unwrap();
-        assert_eq!(store.get_snapshot_cert(epoch, chunk).unwrap(), Some(cert));
-
-        store.delete_snapshot_cert(epoch).unwrap();
-        assert!(store.get_snapshot_cert(epoch, chunk).unwrap().is_none());
-    }
-
-    #[test]
     fn epoch_nonce_roundtrip() {
         let store = test_store();
         let epoch = EpochNumber(42);
@@ -689,8 +361,6 @@ mod tests {
 
         store.set_epoch_nonce(epoch, nonce).unwrap();
         assert_eq!(store.get_epoch_nonce(epoch).unwrap(), Some(nonce));
-
-        // Different epoch returns None
         assert!(store.get_epoch_nonce(EpochNumber(43)).unwrap().is_none());
     }
 
@@ -721,62 +391,5 @@ mod tests {
 
         store.delete_invalidation_proof(track).unwrap();
         assert!(store.get_invalidation_proof(track).unwrap().is_none());
-    }
-
-    #[test]
-    fn partial_signature_roundtrip() {
-        let store = test_store();
-        let epoch = EpochNumber(7);
-        let group = 3;
-
-        assert!(store
-            .get_snapshot_partial_signature(epoch, group, 0)
-            .unwrap()
-            .is_none());
-
-        let sig_a = SnapshotPartialSignature {
-            member_index: 2,
-            signature: BlsSignature(G1CompressedPoint([0x11; 32])),
-            epoch: epoch.0,
-        };
-
-        let sig_b = SnapshotPartialSignature {
-            member_index: 5,
-            signature: BlsSignature(G1CompressedPoint([0x22; 32])),
-            epoch: epoch.0,
-        };
-
-        store
-            .set_snapshot_partial_signature(epoch, group, sig_a.clone())
-            .unwrap();
-        store
-            .set_snapshot_partial_signature(epoch, group, sig_b.clone())
-            .unwrap();
-
-        let mut sigs = store
-            .get_snapshot_partial_signatures(epoch, group)
-            .unwrap();
-        sigs.sort_by_key(|partial| partial.member_index);
-
-        assert_eq!(sigs, vec![sig_a.clone(), sig_b.clone()]);
-        assert_eq!(
-            store
-                .get_snapshot_partial_signature(epoch, group, 2)
-                .unwrap()
-                .unwrap(),
-            sig_a
-        );
-
-        assert!(store
-            .delete_snapshot_partial_signatures(epoch, group)
-            .is_ok());
-        assert!(store
-            .get_snapshot_partial_signature(epoch, group, 2)
-            .unwrap()
-            .is_none());
-
-        assert!(store
-            .delete_snapshot_partial_signatures_for_epoch(epoch)
-            .is_ok());
     }
 }

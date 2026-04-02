@@ -13,6 +13,7 @@ use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tape_store::types::{BlobInfo, Pubkey, SpoolState, TrackData};
+use tape_core::types::{StorageUnits, StripeCount};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -276,7 +277,10 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 ) -> Result<Vec<u8>, ()> {
 
     let profile = track_data.profile;
-    if !profile.is_clay() || track_data.stripe_size == 0 || track_data.stripe_count == 0 {
+    if !profile.is_clay()
+        || track_data.stripe_size == StorageUnits::zero()
+        || track_data.stripe_count == StripeCount::zero()
+    {
         return Err(());
     }
 
@@ -305,7 +309,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
     let slicer = Slicer::with_profile(
         ClayCoder::from_params(profile.clay_params()),
-        track_data.stripe_size as usize,
+        track_data.stripe_size.as_usize(),
         true,
         profile,
     );
@@ -315,7 +319,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             lost,
             &available,
             track_data.size.0 as usize,
-            track_data.stripe_size as usize,
+            track_data.stripe_size.as_usize(),
         )
         .map_err(|_| ())?;
 
@@ -325,7 +329,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
     let metadata = SliceMetadata::with_profile(
         track_data.size.0 as usize,
-        track_data.stripe_size as usize,
+        track_data.stripe_size.as_usize(),
         profile,
     )
     .to_bytes();

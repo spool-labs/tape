@@ -5,7 +5,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_core::types::NodeId;
+use tape_core::types::{NodeId, StorageUnits};
 use tape_protocol::Api;
 use tape_protocol::api::ops::GetSliceReq;
 use tape_retry::RetryConfig;
@@ -182,13 +182,13 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             }
 
             let profile = track_data.profile;
-            if !profile.is_clay() || track_data.stripe_size == 0 {
+            if !profile.is_clay() || track_data.stripe_size == StorageUnits::zero() {
                 continue;
             }
 
             let mut slicer = Slicer::with_profile(
                 ClayCoder::from_params(profile.clay_params()),
-                track_data.stripe_size as usize,
+                track_data.stripe_size.as_usize(),
                 true,
                 profile,
             );

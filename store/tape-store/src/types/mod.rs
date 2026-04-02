@@ -24,10 +24,7 @@ pub use tape_core::system::{NodeStatus, SpoolState, SpoolStatus};
 pub use keys::{EpochKey, EventLogKey, SliceKey, SpoolIndexKey, TrackLookupKey, UnitKey};
 
 // Re-export value types
-pub use values::{
-    InvalidationProof, SliceValue, SnapshotCertResult, SnapshotChunkMeta,
-    SnapshotPartialSignature, TapeInfo,
-};
+pub use values::{InvalidationProof, SliceValue, TapeInfo};
 pub use tape_core::track::blob::BlobInfo;
 pub use tape_core::track::data::TrackData;
 pub use tape_core::track::types::PackedTrack;
