@@ -99,10 +99,12 @@ pub struct TrackMeta {
 }
 
 #[cfg(test)]
+#[cfg(feature = "wincode")]
 mod tests {
     use super::*;
     use crate::encoding::EncodingProfile;
     use crate::erasure::SPOOL_GROUP_SIZE;
+    use crate::types::StripeCount;
 
     fn sample_blob_info() -> BlobInfo {
         BlobInfo {
@@ -110,13 +112,12 @@ mod tests {
             root: Hash::from([0x11; 32]),
             commitment: Hash::from([0x22; 32]),
             profile: EncodingProfile::basic_default(),
-            stripe_size: 128,
-            stripe_count: 4,
+            stripe_size: StorageUnits::from_bytes(128),
+            stripe_count: StripeCount(4),
             leaves: [Hash::from([0x33; 32]); SPOOL_GROUP_SIZE],
         }
     }
 
-    #[cfg(feature = "wincode")]
     #[test]
     fn track_data_blob_wincode_roundtrip() {
         let data = TrackData::Blob(sample_blob_info());

@@ -1,7 +1,11 @@
-use solana_program::pubkey::Pubkey;
 use const_crypto::ed25519;
-use tape_core::{prelude::Bitmap, types::{EpochNumber, TrackNumber}};
+use solana_program::pubkey::Pubkey;
+use tape_core::{
+    prelude::Bitmap,
+    types::{EpochNumber, TrackNumber},
+};
 use tape_crypto::Hash;
+
 use super::token::MINT_ADDRESS;
 
 pub use tape_core::erasure::MEMBER_COUNT;
@@ -31,8 +35,9 @@ pub const RESOURCE:        &[u8] = b"resource";
 pub const TRACK:           &[u8] = b"track";
 pub const STAKE:           &[u8] = b"stake";
 pub const CERTIFICATE:     &[u8] = b"certificate";
-pub const SNAPSHOT:        &[u8] = b"snapshot";
 pub const SNAPSHOT_STATE:  &[u8] = b"snapshot_state";
+pub const SNAPSHOT_MANIFEST: &[u8] = b"snapshot_manifest";
+pub const SNAPSHOT_TAPE:   &[u8] = b"snapshot_tape";
 
 pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 
@@ -182,13 +187,14 @@ pub fn cert_pda(parent: Pubkey, message: Hash, epoch: EpochNumber) -> (Pubkey, u
     Pubkey::find_program_address(&[CERTIFICATE, parent.as_ref(), message.as_ref(), &epoch.pack()], &id())
 }
 
-/// Derive the snapshot track PDA for a given epoch and commitment hash.
 #[inline(always)]
-pub fn snapshot_pda(epoch: EpochNumber, commitment: Hash) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[SNAPSHOT, &epoch.pack(), &commitment.0],
-        &id(),
-    )
+pub fn snapshot_manifest_pda(epoch: EpochNumber) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &id())
+}
+
+#[inline(always)]
+pub fn snapshot_tape_pda(epoch: EpochNumber) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &id())
 }
 
 #[cfg(test)]
@@ -221,5 +227,23 @@ mod tests {
         let (pda, bump) = snapshot_state_pda();
         assert_eq!(pda, SNAPSHOT_STATE_ADDRESS);
         assert_eq!(bump, SNAPSHOT_STATE_BUMP);
+    }
+
+    #[test]
+    fn test_snapshot_epoch_pdas_are_distinct_and_stable() {
+        let epoch = EpochNumber(42);
+
+        let (manifest, manifest_bump) = snapshot_manifest_pda(epoch);
+        let (tape, tape_bump) = snapshot_tape_pda(epoch);
+
+        assert_ne!(manifest, tape);
+        assert_eq!(
+            (manifest, manifest_bump),
+            Pubkey::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &id()),
+        );
+        assert_eq!(
+            (tape, tape_bump),
+            Pubkey::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &id()),
+        );
     }
 }

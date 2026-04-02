@@ -124,9 +124,9 @@ pub enum TapeInstruction {
     InvalidateTrack,
 
     // Snapshot
-    ReserveSnapshotTape = 0xC0,
-    RegisterSnapshot,
-    CertifySnapshot,
+    InitSnapshotEpoch = 0xC0,
+    CertifySnapshotGroup,
+    FinalizeSnapshotEpoch,
 
     // Stream
     //CreateStream = 0xB0,
@@ -195,9 +195,9 @@ tape_solana::instruction!(TapeInstruction, DeleteTrack);
 tape_solana::instruction!(TapeInstruction, CertifyTrack);
 tape_solana::instruction!(TapeInstruction, InvalidateTrack);
 
-tape_solana::instruction!(TapeInstruction, ReserveSnapshotTape);
-tape_solana::instruction!(TapeInstruction, RegisterSnapshot);
-tape_solana::instruction!(TapeInstruction, CertifySnapshot);
+tape_solana::instruction!(TapeInstruction, InitSnapshotEpoch);
+tape_solana::instruction!(TapeInstruction, CertifySnapshotGroup);
+tape_solana::instruction!(TapeInstruction, FinalizeSnapshotEpoch);
 
 //instruction!(TapeInstruction, CreateStream);
 //instruction!(TapeInstruction, RegisterStream);

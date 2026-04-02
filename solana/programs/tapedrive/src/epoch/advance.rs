@@ -1,8 +1,9 @@
 use tape_solana::*;
-use crate::error::*;
 use tape_api::prelude::*;
 use tape_api::event::EpochAdvanced;
 use tape_crypto::hash::Hash;
+
+use crate::error::TapeError;
 
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let now = Clock::get()?.unix_timestamp;
@@ -13,7 +14,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         system_info,
         archive_info,
         epoch_info,
-        _snapshot_state_info,
+        snapshot_state_info,
         slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -53,12 +54,11 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::BadSchedule.into());
     }
 
-    // TODO: bring this in once we have snapshots working
     // Snapshot gate
-    // let snapshot_state = _snapshot_state_info
-    //     .is_snapshot_state()?
-    //     .as_account::<SnapshotState>(&tapedrive::ID)?;
-    // require_previous_snapshot(epoch, &snapshot_state)?;
+    let snapshot_state = snapshot_state_info
+        .is_snapshot_state()?
+        .as_account::<SnapshotState>(&tapedrive::ID)?;
+    require_previous_snapshot(epoch, snapshot_state)?;
 
     // Save old epoch for event logging
     let old_epoch = epoch.id;
@@ -149,7 +149,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 fn require_previous_snapshot(epoch: &Epoch, snapshot: &SnapshotState) -> ProgramResult {
     if epoch.id > EpochNumber(1) {
         let required = epoch.id - EpochNumber(1);
-        if snapshot.latest_epoch < required {
+        if snapshot.tail_epoch < required {
             return Err(TapeError::SnapshotIncomplete.into());
         }
     }
@@ -272,7 +272,7 @@ mod tests {
 
         // Snapshot for epoch 41 must be complete to advance from epoch 42
         let snapshot_state = SnapshotState {
-            latest_epoch: EpochNumber(41),
+            tail_epoch: EpochNumber(41),
             ..SnapshotState::zeroed()
         };
 
@@ -410,7 +410,7 @@ mod tests {
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
         let snapshot_state = SnapshotState {
-            latest_epoch: EpochNumber(1),
+            tail_epoch: EpochNumber(1),
             ..SnapshotState::zeroed()
         };
 
@@ -536,7 +536,7 @@ mod tests {
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
         let snapshot_state = SnapshotState {
-            latest_epoch: EpochNumber(1),
+            tail_epoch: EpochNumber(1),
             ..SnapshotState::zeroed()
         };
 
@@ -613,7 +613,7 @@ mod tests {
         ).expect("reserve capacity");
 
         let snapshot_state = SnapshotState {
-            latest_epoch: EpochNumber(9),
+            tail_epoch: EpochNumber(9),
             ..SnapshotState::zeroed()
         };
 
@@ -773,7 +773,7 @@ mod tests {
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
         let snapshot_state = SnapshotState {
-            latest_epoch: EpochNumber(1),
+            tail_epoch: EpochNumber(1),
             ..SnapshotState::zeroed()
         };
 
@@ -842,7 +842,7 @@ mod tests {
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
         let snapshot_state = SnapshotState {
-            latest_epoch: EpochNumber(4),
+            tail_epoch: EpochNumber(4),
             ..SnapshotState::zeroed()
         };
 
@@ -867,7 +867,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "snapshot gate temporarily disabled while snapshot program logic is excluded"]
     fn test_advance_blocked_snapshot_incomplete() {
         // Test that epoch advance is blocked when the previous epoch's snapshot is not done
         let env = test_env();
@@ -903,9 +902,9 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
-        // latest_epoch = 3 but we need >= 4 to advance from epoch 5
+        // tail_epoch = 3 but we need >= 4 to advance from epoch 5
         let snapshot_state = SnapshotState {
-            latest_epoch: EpochNumber(3),
+            tail_epoch: EpochNumber(3),
             ..SnapshotState::zeroed()
         };
 

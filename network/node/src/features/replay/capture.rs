@@ -1,5 +1,5 @@
 use tape_blocks::{ParseError, ParsedInstruction};
-use tape_core::snapshot::{ReplayTrack, ReplayableEvent};
+use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;

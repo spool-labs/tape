@@ -41,6 +41,12 @@ pub enum TapeError {
     BadEpochId = 0x33,
     #[error("snapshot incomplete")]
     SnapshotIncomplete = 0x34,
+    #[error("snapshot group already sealed")]
+    SnapshotGroupSealed = 0x35,
+    #[error("snapshot parent mismatch")]
+    SnapshotParentMismatch = 0x36,
+    #[error("snapshot epoch not open")]
+    SnapshotEpochClosed = 0x37,
 
     // Committee (0x40-0x45)
     #[error("no quorum")]
@@ -130,6 +136,7 @@ impl TapeError {
                 | Self::AlreadySynced
                 | Self::AlreadyInvalidated
                 | Self::AlreadyCertified
+                | Self::SnapshotGroupSealed
                 | Self::UnexpectedState
         )
     }
@@ -163,6 +170,10 @@ impl TapeError {
             Self::TooSoon => "Please wait - epoch duration has not elapsed",
             Self::BadSchedule => "Invalid schedule",
             Self::BadEpochId => "Invalid epoch ID",
+            Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
+            Self::SnapshotGroupSealed => "Snapshot group already sealed",
+            Self::SnapshotParentMismatch => "Snapshot parent no longer matches the canonical tail",
+            Self::SnapshotEpochClosed => "Snapshot epoch is not the currently open snapshot epoch",
             Self::NoQuorum => "Quorum not reached",
             Self::NoSigners => "No signers provided",
             Self::BadMember => "Invalid committee member",
@@ -186,7 +197,6 @@ impl TapeError {
             Self::BadProof => "Invalid proof",
             Self::ListFull => "Blacklist is full",
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",
-            Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
             Self::AlreadyInvalidated => "Track already invalidated",
             Self::AlreadyCertified => "Track already certified",
         }

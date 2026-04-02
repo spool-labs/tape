@@ -1,5 +1,5 @@
 use tape_core::spooler::SpoolGroup;
-use tape_core::snapshot::ReplayableEvent;
+use tape_core::snapshot::types::ReplayableEvent;
 use tape_core::types::SlotNumber;
 use tape_store::types::Pubkey;
 

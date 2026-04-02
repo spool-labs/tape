@@ -1,12 +1,13 @@
 use core::mem::size_of;
 
+use crate::instruction::read_instruction_pod;
+use crate::program::tapedrive;
+use crate::program::tapedrive::{CommitteeBitmap, epoch_pda, system_pda, tape_pda};
 use tape_core::prelude::*;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::{CompressedTrackProof, TrackKind};
 use tape_crypto::Hash;
-use crate::program::tapedrive;
-use crate::program::tapedrive::*;
 use tape_solana::*;
 
 pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
@@ -50,11 +51,11 @@ pub fn build_track_write_blob_ix(
     key: Hash,          // Track identifier (e.g., file path hash)
     blob: BlobInfo,
 ) -> Result<Instruction, ProgramError> {
-    if blob.stripe_size == 0 {
+    if blob.stripe_size == StorageUnits::zero() {
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    if blob.stripe_count == 0 {
+    if blob.stripe_count == StripeCount::zero() {
         return Err(ProgramError::InvalidInstructionData);
     }
 
@@ -180,7 +181,7 @@ fn split_track_write_data(data: &[u8]) -> Result<(TrackWrite, &[u8]), ProgramErr
     }
 
     let (header, value) = data.split_at(size_of::<TrackWrite>());
-    let header = super::read_instruction_pod::<TrackWrite>(header)?;
+    let header = read_instruction_pod::<TrackWrite>(header)?;
 
     Ok((header, value))
 }
@@ -205,7 +206,7 @@ pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, TrackDataSlice<'_>)
                 return Err(ProgramError::InvalidInstructionData);
             }
 
-            let blob = super::read_instruction_pod::<BlobInfo>(value)?;
+            let blob = read_instruction_pod::<BlobInfo>(value)?;
 
             TrackDataSlice::Blob(blob)
         }
@@ -216,17 +217,17 @@ pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, TrackDataSlice<'_>)
 
 #[inline(always)]
 pub fn parse_delete_track(data: &[u8]) -> Result<DeleteTrack, ProgramError> {
-    super::read_instruction_pod::<DeleteTrack>(data)
+    read_instruction_pod::<DeleteTrack>(data)
 }
 
 #[inline(always)]
 pub fn parse_certify_track(data: &[u8]) -> Result<CertifyTrack, ProgramError> {
-    super::read_instruction_pod::<CertifyTrack>(data)
+    read_instruction_pod::<CertifyTrack>(data)
 }
 
 #[inline(always)]
 pub fn parse_invalidate_track(data: &[u8]) -> Result<InvalidateTrack, ProgramError> {
-    super::read_instruction_pod::<InvalidateTrack>(data)
+    read_instruction_pod::<InvalidateTrack>(data)
 }
 
 #[inline(always)]

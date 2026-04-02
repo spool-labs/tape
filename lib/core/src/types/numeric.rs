@@ -14,6 +14,7 @@ define_numeric_type!(ShareAmount, "shares");
 define_numeric_type!(BasisPoints, "bps");
 define_numeric_type!(StorageUnits, "units");
 define_numeric_type!(ChunkIndex, "chunk");
+define_numeric_type!(StripeCount, "stripes");
 
 impl BasisPoints {
     pub const MAX: u64 = 10_000;
@@ -140,5 +141,13 @@ mod tests {
         // Ceiling division
         let partial = StorageUnits::from_bytes(StorageUnits::MB + 1);
         assert_eq!(partial.to_mb(), 2);
+    }
+
+    #[test]
+    fn test_stripe_count() {
+        let stripe_count = StripeCount(4);
+        assert_eq!(stripe_count.pack(), 4u64.to_le_bytes());
+        assert_eq!(StripeCount::unpack(7u64.to_le_bytes()), StripeCount(7));
+        assert_eq!(stripe_count.as_u64(), 4);
     }
 }

@@ -1,20 +1,7 @@
-//! Snapshot certification message format.
-//!
-//! Defines the message format for BLS signatures in the snapshot certification flow.
-//! Unlike track certification which binds to a track address, snapshot certification
-//! uses (epoch, commitment) since all committee members deterministically produce
-//! the same event log.
-//!
-//! # Message Format
-//!
-//! ```text
-//! +------------------+------------------+---------------------+
-//! | DOMAIN_TAG (8B)  | EPOCH (8B LE)    | COMMITMENT (32B)    |
-//! +------------------+------------------+---------------------+
-//! ```
-//!
-//! Total: 48 bytes
+use bytemuck::{Pod, Zeroable};
+use tape_crypto::Hash;
 
+use crate::spooler::SpoolGroup;
 use crate::types::EpochNumber;
 
 /// Domain separation tag for snapshot certification.
@@ -22,47 +9,44 @@ use crate::types::EpochNumber;
 pub const SNAPSHOT_DOMAIN_TAG: &[u8; 8] = b"SNAPSHOT";
 
 /// Size of the snapshot certification message in bytes.
-/// 8 (domain) + 8 (epoch) + 32 (commitment hash) = 48 bytes
-pub const SNAPSHOT_MESSAGE_SIZE: usize = 48;
+/// 8 (domain) + 8 + 8 + 8 + 32 + 8 = 72 bytes.
+pub const SNAPSHOT_MESSAGE_SIZE: usize = 72;
 
 /// Message format for snapshot certification BLS signatures.
-///
-/// This struct represents the canonical message that committee members sign
-/// when certifying a snapshot chunk. It includes:
-/// - Domain separation tag to prevent cross-protocol signature reuse
-/// - Epoch number to prevent replay attacks across epochs
-/// - Commitment hash (merkle root) to bind the signature to specific data
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
 pub struct SnapshotMessage {
-    /// Current epoch number.
-    pub epoch: EpochNumber,
-    /// Commitment hash (merkle root of erasure-coded slices).
-    pub commitment_hash: [u8; 32],
+    pub snapshot_epoch: EpochNumber,
+    pub signing_epoch: EpochNumber,
+    pub group: SpoolGroup,
+    pub commitment: Hash,
+    pub parent_epoch: EpochNumber,
 }
 
 impl SnapshotMessage {
-    /// Create a new snapshot certification message.
-    pub const fn new(epoch: EpochNumber, commitment_hash: [u8; 32]) -> Self {
+    pub const fn new(
+        snapshot_epoch: EpochNumber,
+        signing_epoch: EpochNumber,
+        group: SpoolGroup,
+        commitment: Hash,
+        parent_epoch: EpochNumber,
+    ) -> Self {
         Self {
-            epoch,
-            commitment_hash,
+            snapshot_epoch,
+            signing_epoch,
+            group,
+            commitment,
+            parent_epoch,
         }
     }
 
-    /// Serialize the message to bytes for signing.
-    ///
-    /// Format: `DOMAIN_TAG (8) || EPOCH (8 LE) || COMMITMENT_HASH (32)`
     pub fn to_bytes(&self) -> [u8; SNAPSHOT_MESSAGE_SIZE] {
         let mut buf = [0u8; SNAPSHOT_MESSAGE_SIZE];
         buf[0..8].copy_from_slice(SNAPSHOT_DOMAIN_TAG);
-        buf[8..16].copy_from_slice(&self.epoch.pack());
-        buf[16..48].copy_from_slice(&self.commitment_hash);
+        buf[8..].copy_from_slice(bytemuck::bytes_of(self));
         buf
     }
 
-    /// Deserialize a message from bytes.
-    ///
-    /// Returns `None` if the domain tag doesn't match or length is wrong.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != SNAPSHOT_MESSAGE_SIZE {
             return None;
@@ -72,14 +56,7 @@ impl SnapshotMessage {
             return None;
         }
 
-        let epoch = EpochNumber::unpack(bytes[8..16].try_into().ok()?);
-        let mut commitment_hash = [0u8; 32];
-        commitment_hash.copy_from_slice(&bytes[16..48]);
-
-        Some(Self {
-            epoch,
-            commitment_hash,
-        })
+        bytemuck::try_from_bytes::<Self>(&bytes[8..]).copied().ok()
     }
 }
 
@@ -89,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_message_size() {
-        assert_eq!(SNAPSHOT_MESSAGE_SIZE, 48);
+        assert_eq!(SNAPSHOT_MESSAGE_SIZE, 72);
     }
 
     #[test]
@@ -100,35 +77,38 @@ mod tests {
 
     #[test]
     fn test_message_roundtrip() {
-        let epoch = EpochNumber(12345);
-        let commitment_hash = [0xCD; 32];
-
-        let msg = SnapshotMessage::new(epoch, commitment_hash);
+        let msg = SnapshotMessage::new(
+            EpochNumber(12345),
+            EpochNumber(12346),
+            SpoolGroup(7),
+            Hash::from([0xCD; 32]),
+            EpochNumber(12344),
+        );
         let bytes = msg.to_bytes();
 
         assert_eq!(bytes.len(), SNAPSHOT_MESSAGE_SIZE);
 
         let recovered = SnapshotMessage::from_bytes(&bytes).expect("should parse");
-        assert_eq!(recovered.epoch, epoch);
-        assert_eq!(recovered.commitment_hash, commitment_hash);
+        assert_eq!(recovered, msg);
     }
 
     #[test]
     fn test_message_format() {
-        let epoch = EpochNumber(0x0102030405060708);
-        let commitment_hash = [0x99; 32];
-
-        let msg = SnapshotMessage::new(epoch, commitment_hash);
+        let msg = SnapshotMessage::new(
+            EpochNumber(0x0102030405060708),
+            EpochNumber(0x1112131415161718),
+            SpoolGroup(0x2122232425262728),
+            Hash::from([0x99; 32]),
+            EpochNumber(0x3132333435363738),
+        );
         let bytes = msg.to_bytes();
 
-        // Check domain tag
         assert_eq!(&bytes[0..8], b"SNAPSHOT");
-
-        // Check epoch (little-endian)
         assert_eq!(&bytes[8..16], &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
-
-        // Check commitment hash
-        assert_eq!(&bytes[16..48], &[0x99; 32]);
+        assert_eq!(&bytes[16..24], &[0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11]);
+        assert_eq!(&bytes[24..32], &[0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
+        assert_eq!(&bytes[32..64], &[0x99; 32]);
+        assert_eq!(&bytes[64..72], &[0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31]);
     }
 
     #[test]
@@ -150,33 +130,66 @@ mod tests {
 
     #[test]
     fn test_different_epochs_produce_different_messages() {
-        let commitment = [0xAA; 32];
-        let msg1 = SnapshotMessage::new(EpochNumber(1), commitment);
-        let msg2 = SnapshotMessage::new(EpochNumber(2), commitment);
+        let commitment = Hash::from([0xAA; 32]);
+        let msg1 = SnapshotMessage::new(
+            EpochNumber(1),
+            EpochNumber(2),
+            SpoolGroup(3),
+            commitment,
+            EpochNumber(0),
+        );
+        let msg2 = SnapshotMessage::new(
+            EpochNumber(2),
+            EpochNumber(2),
+            SpoolGroup(3),
+            commitment,
+            EpochNumber(0),
+        );
 
         assert_ne!(msg1.to_bytes(), msg2.to_bytes());
     }
 
     #[test]
-    fn test_different_commitments_produce_different_messages() {
-        let msg1 = SnapshotMessage::new(EpochNumber(42), [0xAA; 32]);
-        let msg2 = SnapshotMessage::new(EpochNumber(42), [0xBB; 32]);
+    fn test_different_group_or_parent_produce_different_messages() {
+        let msg1 = SnapshotMessage::new(
+            EpochNumber(42),
+            EpochNumber(43),
+            SpoolGroup(1),
+            Hash::from([0xAA; 32]),
+            EpochNumber(41),
+        );
+        let msg2 = SnapshotMessage::new(
+            EpochNumber(42),
+            EpochNumber(43),
+            SpoolGroup(2),
+            Hash::from([0xAA; 32]),
+            EpochNumber(41),
+        );
+        let msg3 = SnapshotMessage::new(
+            EpochNumber(42),
+            EpochNumber(43),
+            SpoolGroup(1),
+            Hash::from([0xAA; 32]),
+            EpochNumber(40),
+        );
 
         assert_ne!(msg1.to_bytes(), msg2.to_bytes());
+        assert_ne!(msg1.to_bytes(), msg3.to_bytes());
     }
 
     #[test]
     fn test_domain_separation_from_certify() {
         use crate::cert::track::CertifyMessage;
 
-        // Same epoch and commitment, different message types should produce different bytes
-        let epoch = EpochNumber(42);
-        let commitment = [0xAA; 32];
+        let snapshot_msg = SnapshotMessage::new(
+            EpochNumber(42),
+            EpochNumber(43),
+            SpoolGroup(9),
+            Hash::from([0xAA; 32]),
+            EpochNumber(41),
+        );
+        let certify_msg = CertifyMessage::new(EpochNumber(42), [0xAA; 32]);
 
-        let snapshot_msg = SnapshotMessage::new(epoch, commitment);
-        let certify_msg = CertifyMessage::new(epoch, commitment);
-
-        // Domain tags differ
         assert_ne!(&snapshot_msg.to_bytes()[0..8], &certify_msg.to_bytes()[0..8]);
     }
 }

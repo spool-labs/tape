@@ -5,7 +5,8 @@ use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::Hash;
-use crate::error::*;
+
+use crate::error::TapeError;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let (args, payload) = parse_track_write(data)?;
@@ -150,8 +151,8 @@ mod tests {
             root: data_root,
             commitment,
             profile,
-            stripe_size: 1024,
-            stripe_count: 1,
+            stripe_size: StorageUnits::from_bytes(1024),
+            stripe_count: StripeCount(1),
             leaves,
         };
 

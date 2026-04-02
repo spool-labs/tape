@@ -181,7 +181,7 @@ mod tests {
     use std::time::Duration;
 
     use rpc::Rpc;
-    use tape_core::snapshot::ReplayableEvent;
+    use tape_core::snapshot::types::ReplayableEvent;
     use tape_core::system::EpochPhase;
     use tape_core::types::{EpochNumber, SlotNumber};
     use tape_store::ops::EventLogOps;

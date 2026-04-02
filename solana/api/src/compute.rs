@@ -28,8 +28,8 @@ pub const SET_COMMISSION_RATE_CU: u32 = 400_000;
 /// ClaimCommission — reads pool state and transfers accumulated commission.
 pub const CLAIM_COMMISSION_CU: u32 = 400_000;
 
-/// RegisterSnapshot — builds commitment tree from spool group leaves.
-pub const REGISTER_SNAPSHOT_CU: u32 = 700_000;
+/// InitSnapshotEpoch — creates the per-epoch manifest and snapshot tape.
+pub const INIT_SNAPSHOT_EPOCH_CU: u32 = 700_000;
 
 /// StakeWithPool — creates/resizes ATA, transfers tokens, updates pool state.
 pub const STAKE_WITH_POOL_CU: u32 = 1_400_000;
@@ -43,5 +43,8 @@ pub const CERTIFY_TRACK_CU: u32 = 1_400_000;
 /// InvalidateTrack — BLS aggregate signature verification for fraud proof.
 pub const INVALIDATE_TRACK_CU: u32 = 1_400_000;
 
-/// CertifySnapshot — BLS aggregate signature verification for snapshot cert.
-pub const CERTIFY_SNAPSHOT_CU: u32 = 1_400_000;
+/// CertifySnapshotGroup — BLS aggregate signature verification for snapshot cert.
+pub const CERTIFY_SNAPSHOT_GROUP_CU: u32 = 1_400_000;
+
+/// FinalizeSnapshotEpoch — verifies manifest completion and advances the tail.
+pub const FINALIZE_SNAPSHOT_EPOCH_CU: u32 = 400_000;

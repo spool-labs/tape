@@ -11,7 +11,7 @@ use tape_crypto::merkle::hash_leaf;
 use crate::encoding::EncodingProfile;
 use crate::spooler::SpoolIndex;
 use crate::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
-use crate::types::StorageUnits;
+use crate::types::{StorageUnits, StripeCount};
 
 #[cfg(feature = "wincode")]
 use core::mem::MaybeUninit;
@@ -37,9 +37,9 @@ pub struct BlobInfo {
     /// Erasure-coding profile used for the blob.
     pub profile: EncodingProfile,
     /// Stripe size in bytes.
-    pub stripe_size: u64,
+    pub stripe_size: StorageUnits,
     /// Number of stripes.
-    pub stripe_count: u64,
+    pub stripe_count: StripeCount,
     /// Per-slice commitment leaves.
     pub leaves: [Hash; SPOOL_GROUP_SIZE],
 }
@@ -120,8 +120,8 @@ mod tests {
             root: Hash::from([0x11; 32]),
             commitment: Hash::from([0x22; 32]),
             profile: EncodingProfile::basic_default(),
-            stripe_size: 64,
-            stripe_count: 2,
+            stripe_size: StorageUnits::from_bytes(64),
+            stripe_count: StripeCount(2),
             leaves: [Hash::from([0x33; 32]); SPOOL_GROUP_SIZE],
         }
     }
@@ -132,6 +132,17 @@ mod tests {
         let blob = sample_blob_info();
         let bytes = wincode::serialize(&blob).expect("serialize");
         let recovered: BlobInfo = wincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(recovered, blob);
+    }
+
+    #[test]
+    fn blob_info_pack_roundtrip_uses_domain_types() {
+        let blob = sample_blob_info();
+        let packed = blob.pack();
+        let recovered = BlobInfo::unpack(packed);
+
+        assert_eq!(recovered.stripe_size, StorageUnits::from_bytes(64));
+        assert_eq!(recovered.stripe_count, StripeCount(2));
         assert_eq!(recovered, blob);
     }
 }

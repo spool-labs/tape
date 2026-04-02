@@ -2,8 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use solana_program::pubkey::Pubkey;
 use tape_core::bls::BlsPubkey;
-use tape_core::encoding::EncodingProfile;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::spooler::SpoolGroup;
 use tape_core::system::NodePreferences;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
 use tape_crypto::Hash;
@@ -16,11 +15,13 @@ pub enum EventType {
     Unknown = 0,
 
     // Track events (0x10 range)
-    SnapshotRegistered = 0x10,
-    TrackCertified = 0x11,
-    TrackDeleted = 0x12,
-    TrackInvalidated = 0x13,
-    TrackWritten = 0x14,
+    SnapshotEpochInitialized = 0x10,
+    SnapshotGroupCertified = 0x11,
+    SnapshotEpochFinalized = 0x12,
+    TrackCertified = 0x13,
+    TrackDeleted = 0x14,
+    TrackInvalidated = 0x15,
+    TrackWritten = 0x16,
 
     // Tape events (0x20 range)
     TapeReserved = 0x20,
@@ -44,35 +45,43 @@ pub enum EventType {
     CommissionClaimed = 0x60,
 }
 
-/// Emitted when a new snapshot track is registered on-chain.
+/// Emitted when an epoch's snapshot manifest and tape are initialized.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotRegistered {
-    /// Snapshot track account address
-    pub track: Pubkey,
-    /// Parent tape address
-    pub tape: Pubkey,
-    /// User-defined identifier hash
-    pub key: Hash,
-    /// Total storage in bytes
-    pub size: StorageUnits,
-    /// Erasure coding Merkle root
-    pub commitment: Hash,
-    /// Registration epoch
+pub struct SnapshotEpochInitialized {
     pub epoch: EpochNumber,
-    /// Encoding profile (type + params)
-    pub profile: EncodingProfile,
-    /// Assigned spool group index (0..SPOOL_GROUP_COUNT-1)
-    pub spool_group: [u8; 8],
-    /// Stripe size in bytes
-    pub stripe_size: [u8; 8],
-    /// Number of stripes
-    pub stripe_count: [u8; 8],
-    /// Per-slice commitment leaf hashes
-    pub leaves: [Hash; SPOOL_GROUP_SIZE],
+    pub parent_epoch: EpochNumber,
+    pub tape: Pubkey,
 }
 
-tape_solana::event!(EventType, SnapshotRegistered);
+tape_solana::event!(EventType, SnapshotEpochInitialized);
+
+/// Emitted when a canonical snapshot group is sealed into the manifest/tape.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SnapshotGroupCertified {
+    pub epoch: EpochNumber,
+    pub group: SpoolGroup,
+    pub tape: Pubkey,
+    pub track: Pubkey,
+    pub track_number: TrackNumber,
+    pub commitment: Hash,
+    pub signer_count: [u8; 8],
+    pub signer_weight: [u8; 8],
+}
+
+tape_solana::event!(EventType, SnapshotGroupCertified);
+
+/// Emitted when a snapshot epoch becomes the canonical tail.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SnapshotEpochFinalized {
+    pub epoch: EpochNumber,
+    pub parent_epoch: EpochNumber,
+    pub tail_epoch: EpochNumber,
+}
+
+tape_solana::event!(EventType, SnapshotEpochFinalized);
 
 /// Emitted when a track achieves certification quorum.
 #[repr(C)]
@@ -336,8 +345,10 @@ mod tests {
 
     #[test]
     fn test_event_type_values() {
-        assert_eq!(EventType::SnapshotRegistered as u8, 0x10);
-        assert_eq!(EventType::TrackCertified as u8, 0x11);
+        assert_eq!(EventType::SnapshotEpochInitialized as u8, 0x10);
+        assert_eq!(EventType::SnapshotGroupCertified as u8, 0x11);
+        assert_eq!(EventType::SnapshotEpochFinalized as u8, 0x12);
+        assert_eq!(EventType::TrackCertified as u8, 0x13);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
         assert_eq!(EventType::EpochAdvanced as u8, 0x40);
@@ -348,7 +359,9 @@ mod tests {
     #[test]
     fn test_event_sizes() {
         // Verify events fit within Solana's 1024-byte log limit
-        assert!(SnapshotRegistered::size_of() < 1024);
+        assert!(SnapshotEpochInitialized::size_of() < 1024);
+        assert!(SnapshotGroupCertified::size_of() < 1024);
+        assert!(SnapshotEpochFinalized::size_of() < 1024);
         assert!(TrackCertified::size_of() < 1024);
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
@@ -356,5 +369,25 @@ mod tests {
         assert!(NodeSynced::size_of() < 1024);
         assert!(PoolAdvanced::size_of() < 1024);
         assert!(StakeDeposited::size_of() < 1024);
+    }
+
+    #[test]
+    fn snapshot_group_certified_layout_preserves_domain_types() {
+        let event = SnapshotGroupCertified {
+            epoch: EpochNumber(7),
+            group: SpoolGroup(3),
+            tape: Pubkey::new_unique(),
+            track: Pubkey::new_unique(),
+            track_number: TrackNumber(11),
+            commitment: Hash::from([0x33; 32]),
+            signer_count: 19u64.to_le_bytes(),
+            signer_weight: 42u64.to_le_bytes(),
+        };
+
+        let bytes = event.to_bytes();
+        let recovered = SnapshotGroupCertified::try_from_bytes(&bytes).expect("parse event");
+
+        assert_eq!(recovered.group, SpoolGroup(3));
+        assert_eq!(recovered.track_number, TrackNumber(11));
     }
 }

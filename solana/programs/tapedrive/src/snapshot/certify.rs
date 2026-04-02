@@ -1,90 +1,88 @@
-use tape_solana::*;
 use tape_api::prelude::*;
-use tape_api::event::TrackCertified;
-use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-use tape_crypto::bls12254::min_sig::*;
-use crate::error::*;
+use tape_core::snapshot::chunk::snapshot_chunk_key;
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_crypto::bls12254::min_sig::{verify_aggregate, G1Point};
 
-pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = CertifySnapshot::try_from_bytes(data)?;
+use crate::error::TapeError;
+
+pub fn process_certify_snapshot_group(
+    accounts: &[AccountInfo<'_>],
+    data: &[u8],
+) -> ProgramResult {
+    let args = CertifySnapshotGroup::try_from_bytes(data)?;
     let [
         fee_payer_info,
         system_info,
         epoch_info,
-        tape_info,
-        track_info,
         snapshot_state_info,
-    ] = accounts else {
+        manifest_info,
+        snapshot_tape_info,
+    ] = accounts
+    else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    fee_payer_info
-        .is_signer()?
-        .is_writable()?;
+    fee_payer_info.is_signer()?.is_writable()?;
 
     let (system_address, _) = system_pda();
-
     let system = system_info
         .is_system()?
         .has_address(&system_address)?
         .as_account::<System>(&tapedrive::ID)?;
+    let epoch = epoch_info.is_epoch()?.as_account::<Epoch>(&tapedrive::ID)?;
+    let snapshot_state = snapshot_state_info
+        .is_snapshot_state()?
+        .as_account::<SnapshotState>(&tapedrive::ID)?;
 
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
+    let snapshot_epoch = EpochNumber::unpack(args.snapshot_epoch);
+    let current_epoch = current_epoch(epoch);
+    let expected_epoch = required_snapshot_epoch(current_epoch)?;
+    let expected_parent = snapshot_state
+        .tail_epoch
+        .checked_add(EpochNumber(1))
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    let (tape_address, _) = tape_pda(system_address);
-
-    tape_info
-        .has_address(&tape_address)?
-        .as_account::<Tape>(&tapedrive::ID)?;
-
-    let track = track_info
-        .is_writable()?
-        .as_account_mut::<Track>(&tapedrive::ID)?;
-
-    // Verify track belongs to the snapshot tape
-    if track.tape != tape_address {
-        return Err(ProgramError::InvalidAccountData);
+    if snapshot_epoch != expected_epoch || snapshot_epoch != expected_parent {
+        return Err(TapeError::SnapshotEpochClosed.into());
     }
 
-    // Derive expected track PDA from the track's commitment and verify
-    let epoch_number = EpochNumber::unpack(args.epoch);
+    let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
+    let manifest = manifest_info
+        .is_writable()?
+        .has_address(&manifest_address)?
+        .is_snapshot_manifest()?
+        .as_account_mut::<SnapshotManifest>(&tapedrive::ID)?;
 
-    // Snapshot must be for a past epoch (epoch has already advanced)
-    if epoch_number >= current_epoch(epoch) {
+    if manifest.parent_epoch != snapshot_state.tail_epoch {
+        return Err(TapeError::SnapshotParentMismatch.into());
+    }
+
+    let group = SpoolGroup::unpack(args.group);
+    let group_index = group.0 as usize;
+    if group_index >= SPOOL_GROUP_COUNT {
         return Err(ProgramError::InvalidArgument);
     }
-
-    let commitment = track.data.commitment_hash;
-
-    let (track_address, _) = snapshot_pda(epoch_number, commitment);
-    if track_address != *track_info.key {
-        return Err(ProgramError::InvalidAccountData);
+    if manifest.group_bitmap.is_set(group_index) {
+        return Err(TapeError::SnapshotGroupSealed.into());
     }
 
-    // Already certified — idempotent success for race conditions
-    if track.data.is_certified() {
-        return Err(TapeError::AlreadyCertified.into());
-    }
+    let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
+    let snapshot_tape = snapshot_tape_info
+        .is_writable()?
+        .has_address(&snapshot_tape_address)?
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if !track.data.is_registered() {
+    if manifest.tape != snapshot_tape_address || snapshot_tape.authority != system_address {
         return Err(ProgramError::InvalidAccountData);
     }
 
     let signing_epoch = EpochNumber::unpack(args.signing_epoch);
     let (committee, spools) = system
-        .committee_at(signing_epoch, current_epoch(epoch))
+        .committee_at(signing_epoch, current_epoch)
         .ok_or(TapeError::BadEpochId)?;
 
-    let group = track.data.spool_group();
-    if (group.0 as usize) >= SPOOL_GROUP_COUNT {
-        return Err(ProgramError::InvalidArgument);
-    }
-
-    let weight = spools.group_weight(group, &args.bitmap);
-
-    if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
+    let signer_weight = spools.group_weight(group, &args.bitmap);
+    if !is_supermajority(signer_weight, SPOOL_GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
@@ -96,189 +94,251 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     let mut pubkeys = Vec::with_capacity(indices.len());
     for member_index in &indices {
-        if let Some(member) = committee.member_at(*member_index) {
-            pubkeys.push(member.key.0);
-        } else {
-            return Err(TapeError::BadMember.into());
-        }
+        let member = committee
+            .member_at(*member_index)
+            .ok_or(TapeError::BadMember)?;
+        pubkeys.push(member.key.0);
     }
 
-    let decompressed_sig = G1Point::try_from(&args.signature.0)
+    let decompressed_sig =
+        G1Point::try_from(&args.signature.0).map_err(|_| TapeError::BadSignature)?;
+    let message = SnapshotMessage::new(
+        snapshot_epoch,
+        signing_epoch,
+        group,
+        args.commitment,
+        manifest.parent_epoch,
+    )
+    .to_bytes();
+
+    verify_aggregate(&message, &pubkeys, &decompressed_sig)
         .map_err(|_| TapeError::BadSignature)?;
 
-    // Build snapshot message with domain separation
-    let snapshot_message = SnapshotMessage::new(
-        epoch_number,
-        commitment.0,
-    );
-    let message = snapshot_message.to_bytes();
+    let track_meta = get_snapshot_track_meta(args)?;
+    let track_number = snapshot_tape.tracks.next_number();
+    let track = CompressedTrack {
+        tape: snapshot_tape_address,
+        key: snapshot_chunk_key(snapshot_epoch, group, manifest.parent_epoch),
+        track_number,
+        kind: TrackKind::Blob as u64,
+        state: TrackState::Certified as u64,
+        size: track_meta.size,
+        spool_group: group,
+        value_hash: track_meta.value_hash,
+    };
 
-    verify_aggregate(
-        &message,
-        &pubkeys,
-        &decompressed_sig,
-    ).map_err(|_| TapeError::BadSignature)?;
+    snapshot_tape.write_track(&track)?;
 
-    let snapshot_state = snapshot_state_info
-        .is_writable()?
-        .is_snapshot_state()?
-        .as_account_mut::<SnapshotState>(&tapedrive::ID)?;
+    manifest.group_bitmap.set(group_index);
+    manifest.certified_count = manifest
+        .certified_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    manifest.groups[group_index] = SnapshotChunkRecord {
+        commitment: args.commitment,
+        track_number,
+        profile: EncodingProfile::unpack(args.profile),
+        stripe_size: StorageUnits::unpack(args.stripe_size),
+        stripe_count: StripeCount::unpack(args.stripe_count),
+    };
 
     let signer_count = indices.len() as u64;
+    let track_address = track_pda(snapshot_tape_address, track_number).0;
 
-    track.data.set_certified(
-        epoch_number,
-    );
-
-    // Track certification progress per epoch.
-    // If this is a new epoch, reset the counter.
-    if epoch_number != snapshot_state.certifying_epoch {
-        snapshot_state.certifying_epoch = epoch_number;
-        snapshot_state.certified_count = 0;
-    }
-
-    snapshot_state.certified_count += 1;
-
-    // All chunks certified — mark epoch as fully snapshotted.
-    if snapshot_state.certified_count == SPOOL_GROUP_COUNT as u64 {
-        snapshot_state.latest_epoch = epoch_number;
-    }
-
-    TrackCertified {
-        track: *track_info.key,
-        epoch: epoch_number,
+    SnapshotGroupCertified {
+        epoch: snapshot_epoch,
+        group,
+        tape: snapshot_tape_address,
+        track: track_address,
+        track_number,
+        commitment: args.commitment,
         signer_count: signer_count.to_le_bytes(),
-        signer_weight: weight.to_le_bytes(),
-    }.log();
+        signer_weight: signer_weight.to_le_bytes(),
+    }
+    .log();
 
     Ok(())
 }
 
+fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, ProgramError> {
+    if current_epoch <= EpochNumber(1) {
+        return Err(TapeError::SnapshotEpochClosed.into());
+    }
+
+    current_epoch
+        .checked_sub(EpochNumber(1))
+        .ok_or(TapeError::SnapshotEpochClosed.into())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use tape_api::prelude::{BlsPrivateKey, BlsPubkey, BlsSignature};
+    use tape_core::snapshot::chunk::{SnapshotChunkMeta, snapshot_chunk_value_hash};
+    use tape_core::track::store::TrackStore;
     use tape_crypto::Hash;
-    use tape_test::*;
+    use tape_crypto::merkle::root_from_leaf_hashes;
+    use tape_crypto::merkle::MerkleTree;
     use tape_spooler::dhondt_allocate;
-    use tape_core::spooler::SpoolGroup;
+    use tape_test::*;
+
+    use super::*;
 
     #[test]
-    fn test_certify_snapshot() {
+    fn test_certify_snapshot_group() {
         let fee_payer = Pubkey::new_unique();
-        let (system_address, _) = system_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (tape_address, _) = tape_pda(system_address);
-
-        let epoch_number = EpochNumber(42);
-        let commitment_hash = Hash::new_unique();
-        let spool_group = SpoolGroup(49); // Last chunk triggers latest_epoch update
-        let (track_address, _) = snapshot_pda(epoch_number, commitment_hash);
-
+        let snapshot_epoch = EpochNumber(42);
+        let signing_epoch = EpochNumber(43);
+        let group = SpoolGroup(0);
         const SIGNERS: usize = 75;
 
-        // Generate BLS keypairs for committee
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
+        let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
+        let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
+
         let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..MEMBER_COUNT)
             .map(|_| {
-                let sk = BlsPrivateKey::from_random();
-                let pk = sk.public_key().unwrap();
-                (sk, pk)
+                let private_key = BlsPrivateKey::from_random();
+                let public_key = private_key.public_key().expect("public key");
+                (private_key, public_key)
             })
             .collect();
 
-        // Build on-chain committee and spools
         let mut system = System::zeroed();
         system.committee = Committee::from_members(
             &committee
                 .iter()
                 .enumerate()
-                .map(|(i, (_, pk))| CommitteeMember {
-                    id: NodeId::from(i as u64),
-                    stake: TAPE(1_000 * (i * i) as u64),
-                    key: *pk,
+                .map(|(member_index, (_, public_key))| CommitteeMember {
+                    id: NodeId::from(member_index as u64),
+                    stake: TAPE(1_000 * (member_index * member_index) as u64),
+                    key: *public_key,
                     ..CommitteeMember::zeroed()
                 })
                 .collect::<Vec<_>>(),
         );
 
         let stakes = system.committee.active_stakes();
-        let seat_counts = dhondt_allocate(
-            &stakes,
-            SPOOL_COUNT as u16,
-        ).unwrap();
-        system.spools = SpoolAssignment::try_from_counts(&seat_counts)
-            .expect("spools from counts");
+        let seat_counts = dhondt_allocate(&stakes, SPOOL_COUNT as u16).expect("seat counts");
+        system.spools = SpoolAssignment::try_from_counts(&seat_counts).expect("spools");
 
+        let epoch = Epoch {
+            id: signing_epoch,
+            ..Epoch::zeroed()
+        };
+        let snapshot_state = SnapshotState {
+            tail_epoch: EpochNumber(41),
+        };
+        let manifest = SnapshotManifest {
+            epoch: snapshot_epoch,
+            parent_epoch: EpochNumber(41),
+            tape: snapshot_tape_address,
+            certified_count: 0,
+            group_bitmap: SnapshotGroupBitmap::zeroed(),
+            reserved: [0; 7],
+            groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
+        };
         let tape = Tape {
+            id: TapeNumber(9),
             authority: system_address,
+            capacity: StorageUnits(u64::MAX),
+            active_epoch: snapshot_epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            tracks: TrackStore {
+                tree: MerkleTree::new(),
+                next_number: TrackNumber(0),
+                live_count: 0,
+            },
             ..Tape::zeroed()
         };
 
-        let track = Track {
-            tape: tape_address,
-            key: Hash::default(),
-            data: TrackData {
-                commitment_hash,
-                spool_group,
-                ..TrackData::zeroed()
-            },
-            ..Track::zeroed()
-        };
+        let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
 
-        // Epoch account reflects the CURRENT epoch (already advanced past the snapshot epoch)
-        let epoch = Epoch {
-            id: EpochNumber(epoch_number.as_u64() + 1),
-            nonce: Hash::default(),
-            ..Epoch::zeroed()
-        };
-
-        // Build bitmap and aggregate BLS signature
-        let committee_size = system.committee.size();
-        assert!(SIGNERS <= committee_size);
-
-        // Sign with highest-index members (they own the most spools, including group 49)
-        let signed_indices: Vec<usize> = (MEMBER_COUNT - SIGNERS..MEMBER_COUNT).collect();
-        let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
-
-        let snapshot_message = SnapshotMessage::new(
-            epoch_number,
-            commitment_hash.0,
-        );
-        let message = snapshot_message.to_bytes();
-
+        let signed_indices: Vec<usize> = (0..SIGNERS).collect();
+        let bitmap = CommitteeBitmap::from_indices(&signed_indices, system.committee.size());
+        let message = SnapshotMessage::new(
+            snapshot_epoch,
+            signing_epoch,
+            group,
+            commitment,
+            EpochNumber(41),
+        )
+        .to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .map(|&i| {
-                let member_pk = system.committee
-                    .member_at(i)
-                    .expect("member at index").key;
-                let sk = committee
+            .map(|member_index| {
+                let member_public_key = system
+                    .committee
+                    .member_at(*member_index)
+                    .expect("member at index")
+                    .key;
+                let private_key = committee
                     .iter()
-                    .find(|(_, pk)| *pk == member_pk)
-                    .expect("matching sk for pk").0
+                    .find(|(_, public_key)| *public_key == member_public_key)
+                    .expect("matching keypair")
+                    .0
                     .clone();
-                sk.sign(&message).unwrap()
+                private_key.sign(&message).expect("signature")
             })
             .collect();
+        let aggregate_signature = BlsSignature::aggregate(&partials).expect("aggregate");
 
-        let agg_sig = BlsSignature::aggregate(&partials).unwrap();
-
-        // signing_epoch = current on-chain epoch (epoch has advanced past snapshot epoch)
-        let signing_epoch = epoch.id;
-        let instruction = build_certify_snapshot_ix(
-            fee_payer, epoch_number, signing_epoch, commitment_hash, bitmap, agg_sig,
+        let instruction = build_certify_snapshot_group_ix(
+            fee_payer,
+            snapshot_epoch,
+            signing_epoch,
+            group,
+            commitment,
+            EncodingProfile::basic_default(),
+            StorageUnits::from_bytes(512),
+            StripeCount(4),
+            leaves,
+            bitmap,
+            aggregate_signature,
         );
 
-        let (snapshot_state_address, _) = snapshot_state_pda();
-        let snapshot_state = SnapshotState::zeroed();
+        let expected_track = CompressedTrack {
+            tape: snapshot_tape_address,
+            key: snapshot_chunk_key(snapshot_epoch, group, EpochNumber(41)),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(2048),
+            spool_group: group,
+            value_hash: snapshot_chunk_value_hash(&SnapshotChunkMeta {
+                commitment,
+                profile: EncodingProfile::basic_default(),
+                stripe_size: StorageUnits::from_bytes(512),
+                stripe_count: StripeCount(4),
+            }),
+        };
+        let mut expected_tree = MerkleTree::new();
+        expected_tree
+            .add_leaf_hash(expected_track.get_hash())
+            .expect("append track");
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(tape_address, tape.pack(), tapedrive::ID),
-            pda(track_address, track.pack(), tapedrive::ID),
             pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
+            pda(manifest_address, manifest.pack(), tapedrive::ID),
+            pda(snapshot_tape_address, tape.pack(), tapedrive::ID),
         ];
+
+        let mut expected_group_bitmap = SnapshotGroupBitmap::zeroed();
+        expected_group_bitmap.set(group.0 as usize);
+
+        let mut expected_groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
+        expected_groups[group.0 as usize] = SnapshotChunkRecord {
+            commitment,
+            track_number: TrackNumber(0),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+        };
 
         let env = test_env();
         env.process_instruction(
@@ -286,32 +346,117 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&track_address).data(
-                    Track {
-                        data: TrackData {
-                            state: TrackState {
-                                phase: TrackPhase::Certified.into(),
-                                certified_epoch: epoch_number,
+                Check::account(&manifest_address)
+                    .data(
+                        SnapshotManifest {
+                            certified_count: 1,
+                            group_bitmap: expected_group_bitmap,
+                            groups: expected_groups,
+                            ..manifest
+                        }
+                        .pack()
+                        .as_ref(),
+                    )
+                    .build(),
+                Check::account(&snapshot_tape_address)
+                    .data(
+                        Tape {
+                            used: StorageUnits::from_bytes(2048),
+                            tracks: TrackStore {
+                                tree: expected_tree,
+                                next_number: TrackNumber(1),
+                                live_count: 1,
                             },
-                            ..track.data
-                        },
-                        ..track
-                    }
-                    .pack()
-                    .as_ref(),
-                )
-                .build(),
-                Check::account(&snapshot_state_address).data(
-                    SnapshotState {
-                        certifying_epoch: epoch_number,
-                        certified_count: 1,
-                        ..snapshot_state
-                    }
-                    .pack()
-                    .as_ref(),
-                )
-                .build(),
+                            ..tape
+                        }
+                        .pack()
+                        .as_ref(),
+                    )
+                    .build(),
             ],
+        );
+    }
+
+    #[test]
+    fn test_certify_snapshot_group_rejects_sealed_group() {
+        let fee_payer = Pubkey::new_unique();
+        let snapshot_epoch = EpochNumber(42);
+        let signing_epoch = EpochNumber(43);
+        let group = SpoolGroup(0);
+
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
+        let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
+        let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
+
+        let mut group_bitmap = SnapshotGroupBitmap::zeroed();
+        group_bitmap.set(group.0 as usize);
+
+        let instruction = build_certify_snapshot_group_ix(
+            fee_payer,
+            snapshot_epoch,
+            signing_epoch,
+            group,
+            Hash::from([0x22; 32]),
+            EncodingProfile::basic_default(),
+            StorageUnits::from_bytes(512),
+            StripeCount(4),
+            [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE],
+            CommitteeBitmap::zeroed(),
+            BlsSignature::zeroed(),
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_address, System::zeroed().pack(), tapedrive::ID),
+            pda(
+                epoch_address,
+                Epoch {
+                    id: signing_epoch,
+                    ..Epoch::zeroed()
+                }
+                .pack(),
+                tapedrive::ID,
+            ),
+            pda(
+                snapshot_state_address,
+                SnapshotState {
+                    tail_epoch: EpochNumber(41),
+                }
+                .pack(),
+                tapedrive::ID,
+            ),
+            pda(
+                manifest_address,
+                SnapshotManifest {
+                    epoch: snapshot_epoch,
+                    parent_epoch: EpochNumber(41),
+                    tape: snapshot_tape_address,
+                    certified_count: 1,
+                    group_bitmap,
+                    reserved: [0; 7],
+                    groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
+                }
+                .pack(),
+                tapedrive::ID,
+            ),
+            pda(
+                snapshot_tape_address,
+                Tape {
+                    authority: system_address,
+                    ..Tape::zeroed()
+                }
+                .pack(),
+                tapedrive::ID,
+            ),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::SnapshotGroupSealed.into())],
         );
     }
 }

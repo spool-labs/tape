@@ -7,7 +7,7 @@ use crate::error::{Result, TapeStoreError};
 use crate::types::keys::EventLogKey;
 use crate::TapeStore;
 use store::{Column, Store};
-use tape_core::snapshot::{ReplayableEvent, SnapshotEntry};
+use tape_core::snapshot::types::{ReplayableEvent, SnapshotEntry};
 use tape_core::types::{EpochNumber, SlotNumber};
 
 /// Serialize an EventLogKey to raw bytes (bypassing TypedStore).
@@ -131,7 +131,7 @@ mod tests {
 
     use super::*;
     use store_memory::MemoryStore;
-    use tape_core::snapshot::ReplayTrack;
+    use tape_core::snapshot::types::ReplayTrack;
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{StorageUnits, TrackNumber};

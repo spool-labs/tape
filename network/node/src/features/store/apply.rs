@@ -1,7 +1,7 @@
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::snapshot::{ReplayTrack, ReplayableEvent};
+use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
 use tape_core::track::types::TrackState;
 use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};

@@ -86,7 +86,7 @@ fn persist_raw_tracks<Db: Store>(
 mod tests {
     use solana_sdk::pubkey::Pubkey;
     use store_memory::MemoryStore;
-    use tape_core::snapshot::{ReplayTrack, ReplayableEvent};
+    use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};

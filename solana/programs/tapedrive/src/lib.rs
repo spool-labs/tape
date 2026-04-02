@@ -5,21 +5,40 @@ pub mod blacklist;
 pub mod epoch;
 pub mod error;
 pub mod node;
+pub mod snapshot;
 pub mod staking;
 pub mod tape;
 pub mod track;
 
-use archive::*;
-use blacklist::*;
-use epoch::*;
-use node::*;
-use staking::*;
-use tape::*;
-use track::*;
-
-use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::prelude::{TapeInstruction, parse_instruction};
 use tape_api::program::tapedrive;
+use tape_solana::{AccountInfo, ProgramError, ProgramResult, Pubkey, TryFromPrimitive, entrypoint};
+
+use crate::archive::{process_create_system, process_expand_system, process_initialize};
+use crate::blacklist::{process_add_to_blacklist, process_remove_from_blacklist};
+use crate::epoch::process_advance_epoch;
+use crate::node::{
+    process_advance_pool, process_claim_commission, process_join_network,
+    process_register_node, process_set_authority, process_set_bls_pubkey,
+    process_set_commission_rate, process_set_name, process_set_network_address,
+    process_set_network_tls, process_set_storage_capacity, process_set_storage_price,
+    process_sync_epoch,
+};
+use snapshot::certify::process_certify_snapshot_group;
+use snapshot::finalize::process_finalize_snapshot_epoch;
+use snapshot::init::process_init_snapshot_epoch;
+use crate::staking::{
+    process_merge_pool_stake, process_request_stake_unlock, process_split_pool_stake,
+    process_stake_with_pool, process_unstake_from_pool,
+};
+use crate::tape::{
+    process_destroy_tape, process_merge_tape, process_reserve_tape,
+    process_split_tape_by_epoch, process_split_tape_by_size,
+};
+use crate::track::{
+    process_certify_track, process_delete_track, process_invalidate_track,
+    process_track_write,
+};
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -86,11 +105,14 @@ pub fn process_instruction(
             TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,        // CU 1_400_000
             TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,  // CU 1_400_000
 
-            // Snapshot program logic is temporarily excluded while the
-            // snapshot refactor catches up with the compressed-track path.
-            TapeInstruction::ReserveSnapshotTape
-            | TapeInstruction::RegisterSnapshot
-            | TapeInstruction::CertifySnapshot => return Err(ProgramError::InvalidInstructionData),
+            // Snapshot
+            TapeInstruction::InitSnapshotEpoch => process_init_snapshot_epoch(accounts, data)?,
+            TapeInstruction::CertifySnapshotGroup => {
+                process_certify_snapshot_group(accounts, data)?
+            }
+            TapeInstruction::FinalizeSnapshotEpoch => {
+                process_finalize_snapshot_epoch(accounts, data)?
+            }
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

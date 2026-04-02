@@ -1,7 +1,3 @@
 pub mod certify;
-pub mod register;
-pub mod reserve;
-
-pub use certify::*;
-pub use register::*;
-pub use reserve::*;
+pub mod finalize;
+pub mod init;
