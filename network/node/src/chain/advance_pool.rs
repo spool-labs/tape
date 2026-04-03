@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use store::Store;
 use tape_api::compute::ADVANCE_POOL_CU;
 use tape_api::instruction::build_advance_pool_ix;
@@ -16,17 +15,11 @@ pub async fn submit_advance_pool<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let fee_payer = ctx.pubkey().into();
     let authority = ctx.pubkey().into();
     let node_address = ctx.node_address();
-
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
-        ADVANCE_POOL_CU);
-
     let ix = build_advance_pool_ix(fee_payer, authority, node_address);
 
     ctx.rpc
-        .send_instructions(
-            ctx.signer(),
-            vec![cu_ix, ix]
-    ).await
+        .send_instructions_with_compute_unit_limit(ctx.signer(), ADVANCE_POOL_CU, vec![ix])
+        .await
 }
 
 #[cfg(test)]

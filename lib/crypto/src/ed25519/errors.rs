@@ -13,3 +13,19 @@ pub enum SignatureError {
     #[error("verification failed")]
     VerificationFailed,
 }
+
+#[cfg(not(target_os = "solana"))]
+#[derive(Debug, Error)]
+pub enum KeypairFileError {
+    #[error("failed to read keypair file {path}: {message}")]
+    FileRead { path: String, message: String },
+
+    #[error("failed to parse keypair JSON from {path}: {message}")]
+    JsonParse { path: String, message: String },
+
+    #[error("keypair JSON must contain {expected} bytes (got {actual})")]
+    InvalidLength { expected: usize, actual: usize },
+
+    #[error("invalid keypair data: {0}")]
+    InvalidKeypair(String),
+}

@@ -15,8 +15,7 @@ tape-api = { workspace = true }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true }
 
-# Solana types for block parsing
-solana-sdk = { workspace = true }
+# Solana RPC block types
 solana-transaction-status = { workspace = true }
 
 # Serialization/parsing
@@ -30,3 +29,6 @@ thiserror = { workspace = true }
 [features]
 default = []
 test-utils = []
+
+[dev-dependencies]
+solana-sdk = { workspace = true }

@@ -227,7 +227,6 @@ pub fn merge(
 mod tests {
     use super::*;
     use bytemuck::Zeroable;
-    use solana_sdk::pubkey::Pubkey;
     use tape_api::event::{
         EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced,
         SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified, TapeDestroyed,
@@ -238,6 +237,7 @@ mod tests {
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
     #[test]
@@ -274,13 +274,13 @@ mod tests {
         let init = SnapshotEpochInitialized {
             epoch: EpochNumber(7),
             parent_epoch: EpochNumber(6),
-            tape: Pubkey::new_unique(),
+            tape: Address::new_unique(),
         };
         let cert = SnapshotGroupCertified {
             epoch: EpochNumber(7),
             group: SpoolGroup(3),
-            tape: Pubkey::new_unique(),
-            track: Pubkey::new_unique(),
+            tape: Address::new_unique(),
+            track: Address::new_unique(),
             track_number: TrackNumber(9),
             commitment: Hash::from([0x44; 32]),
             signer_count: [2; 8],
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_merge_certify_track() {
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
         let event = TrackCertified {
             track,
             epoch: EpochNumber(10),
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_merge_certify_track_missing_event() {
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
         let instructions = vec![RawInstruction::CertifyTrack { track }];
         let events = vec![]; // No events!
 
@@ -382,9 +382,9 @@ mod tests {
 
     #[test]
     fn test_merge_multiple_instructions() {
-        let track1 = Pubkey::new_unique();
-        let track2 = Pubkey::new_unique();
-        let owner = Pubkey::new_unique();
+        let track1 = Address::new_unique();
+        let track2 = Address::new_unique();
+        let owner = Address::new_unique();
 
         let epoch_event = EpochAdvanced {
             old_epoch: EpochNumber(1),
@@ -401,7 +401,7 @@ mod tests {
         let register_event = TrackWritten {
             epoch: EpochNumber(2),
             track: track1,
-            tape: Pubkey::new_unique(),
+            tape: Address::new_unique(),
             spool_group: 0u64.to_le_bytes(),
             track_number: TrackNumber(0),
             track_hash: Hash::default(),
@@ -472,8 +472,8 @@ mod tests {
     #[test]
     fn test_merge_required_events_missing() {
         // DeleteTrack requires TrackDeleted event
-        let track = Pubkey::new_unique();
-        let owner = Pubkey::new_unique();
+        let track = Address::new_unique();
+        let owner = Address::new_unique();
 
         let instructions = vec![RawInstruction::DeleteTrack { owner, track }];
         let events = vec![]; // No event
@@ -489,7 +489,7 @@ mod tests {
     fn required_events_missing_cases() -> Vec<RawInstruction> {
         vec![
             RawInstruction::TrackWrite {
-                authority: Pubkey::new_unique(),
+                authority: Address::new_unique(),
                 key: Hash::default(),
                 value: TrackData::Blob(BlobInfo {
                     size: StorageUnits::mb(1_024),
@@ -502,26 +502,26 @@ mod tests {
                 }),
             },
             RawInstruction::DeleteTrack {
-                owner: Pubkey::new_unique(),
-                track: Pubkey::new_unique(),
+                owner: Address::new_unique(),
+                track: Address::new_unique(),
             },
             RawInstruction::InvalidateTrack {
-                track: Pubkey::new_unique(),
+                track: Address::new_unique(),
             },
             RawInstruction::ReserveTape {
-                owner: Pubkey::new_unique(),
-                tape: Pubkey::new_unique(),
+                owner: Address::new_unique(),
+                tape: Address::new_unique(),
             },
             RawInstruction::DestroyTape {
-                owner: Pubkey::new_unique(),
-                tape: Pubkey::new_unique(),
+                owner: Address::new_unique(),
+                tape: Address::new_unique(),
             },
             RawInstruction::RegisterNode {
-                authority: Pubkey::new_unique(),
-                node: Pubkey::new_unique(),
+                authority: Address::new_unique(),
+                node: Address::new_unique(),
             },
             RawInstruction::JoinNetwork {
-                node: Pubkey::new_unique(),
+                node: Address::new_unique(),
             },
         ]
     }
@@ -556,20 +556,20 @@ mod tests {
     }
 
     fn required_events_success_cases() -> Vec<(RawInstruction, TapedriveEvent)> {
-        let register_track = Pubkey::new_unique();
-        let register_tape = Pubkey::new_unique();
-        let delete_track = Pubkey::new_unique();
-        let delete_tape = Pubkey::new_unique();
-        let invalid_track = Pubkey::new_unique();
-        let reserve_tape = Pubkey::new_unique();
-        let destroy_tape = Pubkey::new_unique();
-        let register_node = Pubkey::new_unique();
-        let join_node = Pubkey::new_unique();
+        let register_track = Address::new_unique();
+        let register_tape = Address::new_unique();
+        let delete_track = Address::new_unique();
+        let delete_tape = Address::new_unique();
+        let invalid_track = Address::new_unique();
+        let reserve_tape = Address::new_unique();
+        let destroy_tape = Address::new_unique();
+        let register_node = Address::new_unique();
+        let join_node = Address::new_unique();
 
         vec![
             (
                 RawInstruction::TrackWrite {
-                    authority: Pubkey::new_unique(),
+                    authority: Address::new_unique(),
                     key: Hash::default(),
                     value: TrackData::Blob(BlobInfo {
                         size: StorageUnits::mb(1_024),
@@ -592,7 +592,7 @@ mod tests {
             ),
             (
                 RawInstruction::DeleteTrack {
-                    owner: Pubkey::new_unique(),
+                    owner: Address::new_unique(),
                     track: delete_track,
                 },
                 TapedriveEvent::TrackDeleted(TrackDeleted {
@@ -613,12 +613,12 @@ mod tests {
             ),
             (
                 RawInstruction::ReserveTape {
-                    owner: Pubkey::new_unique(),
+                    owner: Address::new_unique(),
                     tape: reserve_tape,
                 },
                 TapedriveEvent::TapeReserved(TapeReserved {
                     tape: reserve_tape,
-                    authority: Pubkey::new_unique(),
+                    authority: Address::new_unique(),
                     capacity: StorageUnits::mb(10_000),
                     active_epoch: EpochNumber(1),
                     expiry_epoch: EpochNumber(10),
@@ -627,23 +627,23 @@ mod tests {
             ),
             (
                 RawInstruction::DestroyTape {
-                    owner: Pubkey::new_unique(),
+                    owner: Address::new_unique(),
                     tape: destroy_tape,
                 },
                 TapedriveEvent::TapeDestroyed(TapeDestroyed {
                     tape: destroy_tape,
-                    authority: Pubkey::new_unique(),
+                    authority: Address::new_unique(),
                 }),
             ),
             (
                 RawInstruction::RegisterNode {
-                    authority: Pubkey::new_unique(),
+                    authority: Address::new_unique(),
                     node: register_node,
                 },
                 TapedriveEvent::NodeRegistered(NodeRegistered {
                     node: register_node,
                     id: NodeId::new(1),
-                    authority: Pubkey::new_unique(),
+                    authority: Address::new_unique(),
                     epoch: EpochNumber(0),
                 }),
             ),
@@ -700,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_merge_sync_epoch_with_event() {
-        let node = Pubkey::new_unique();
+        let node = Address::new_unique();
         let instructions = vec![RawInstruction::SyncEpoch];
         let events = vec![TapedriveEvent::NodeSynced(NodeSynced {
             node,
@@ -727,7 +727,7 @@ mod tests {
         // AdvanceEpoch instruction with TrackCertified event should fail
         let instructions = vec![RawInstruction::AdvanceEpoch];
         let events = vec![TapedriveEvent::TrackCertified(TrackCertified {
-            track: Pubkey::new_unique(),
+            track: Address::new_unique(),
             epoch: EpochNumber(1),
             signer_count: [0; 8],
             signer_weight: [0; 8],

@@ -1,4 +1,5 @@
 use crate::client::RpcClient;
+use crate::compute::with_compute_unit_limit;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey as SolanaPubkey;
 use solana_sdk::signature::Signature as SolanaSignature;
@@ -96,6 +97,21 @@ impl<R: Rpc> RpcClient<R> {
         result
     }
 
+    pub async fn send_instructions_with_compute_unit_limit(
+        &self,
+        payer: &dyn TapeSigner,
+        compute_unit_limit: u32,
+        instructions: Vec<Instruction>,
+    ) -> Result<Txid, RpcError> {
+        let ix = with_compute_unit_limit(
+            compute_unit_limit, 
+            instructions
+        );
+
+        self.send_instructions(payer, ix)
+            .await
+    }
+
     /// Send a transaction with custom signers
     ///
     /// Use this when you need additional signers beyond the payer.
@@ -169,6 +185,21 @@ impl<R: Rpc> RpcClient<R> {
         }
 
         result
+    }
+
+    pub async fn send_instructions_with_signers_and_compute_unit_limit(
+        &self,
+        payer: &dyn TapeSigner,
+        compute_unit_limit: u32,
+        instructions: Vec<Instruction>,
+        signers: &[&dyn TapeSigner],
+    ) -> Result<Txid, RpcError> {
+        self.send_instructions_with_signers(
+            payer,
+            with_compute_unit_limit(compute_unit_limit, instructions),
+            signers,
+        )
+        .await
     }
 
     /// Send a transaction without waiting for confirmation

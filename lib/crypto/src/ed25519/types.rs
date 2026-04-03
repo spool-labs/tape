@@ -12,6 +12,8 @@
 
 #[cfg(not(target_os = "solana"))]
 use crate::address::Address;
+#[cfg(not(target_os = "solana"))]
+use std::path::Path;
 
 // ed25519-consensus is only available off-chain (it brings in curve25519-dalek-ng
 // which has stack size issues on SBF)
@@ -22,11 +24,13 @@ use rand::CryptoRng;
 #[cfg(not(target_os = "solana"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "solana"))]
+use serde_json;
+#[cfg(not(target_os = "solana"))]
 use solana_program::pubkey::Pubkey as SolanaPubkey;
 
 use super::consts::{ED25519_PUBKEY_LEN, ED25519_SIG_LEN};
 #[cfg(not(target_os = "solana"))]
-use super::errors::SignatureError;
+use super::errors::{KeypairFileError, SignatureError};
 
 /// Constant for pubkey length (32 bytes).
 pub const PUBKEY_LEN: usize = ED25519_PUBKEY_LEN;
@@ -259,6 +263,31 @@ impl Keypair {
         bytes
     }
 
+    pub fn try_from_keypair_slice(bytes: &[u8]) -> Result<Self, SignatureError> {
+        let keypair_bytes: [u8; 64] = bytes
+            .try_into()
+            .map_err(|_| SignatureError::InvalidArgument)?;
+        Self::from_keypair_bytes(keypair_bytes)
+    }
+
+    pub fn try_from_json_bytes(json: &[u8]) -> Result<Self, KeypairFileError> {
+        let keypair_bytes: Vec<u8> =
+            serde_json::from_slice(json).map_err(|error| KeypairFileError::JsonParse {
+                path: "<memory>".to_string(),
+                message: error.to_string(),
+            })?;
+        let keypair_bytes: [u8; 64] =
+            keypair_bytes
+                .try_into()
+                .map_err(|bytes: Vec<u8>| KeypairFileError::InvalidLength {
+                    expected: 64,
+                    actual: bytes.len(),
+                })?;
+
+        Self::from_keypair_bytes(keypair_bytes)
+            .map_err(|error| KeypairFileError::InvalidKeypair(error.to_string()))
+    }
+
     pub fn from_keypair_bytes(bytes: [u8; 64]) -> Result<Self, SignatureError> {
         let mut secret_bytes = [0u8; 32];
         secret_bytes.copy_from_slice(&bytes[..32]);
@@ -278,6 +307,36 @@ impl Keypair {
         keypair: &solana_sdk::signature::Keypair,
     ) -> Result<Self, SignatureError> {
         Self::from_keypair_bytes(keypair.to_bytes())
+    }
+
+    pub fn try_load_json_file(path: &Path) -> Result<Self, KeypairFileError> {
+        let contents = std::fs::read(path).map_err(|error| KeypairFileError::FileRead {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?;
+
+        let keypair_bytes: Vec<u8> =
+            serde_json::from_slice(&contents).map_err(|error| KeypairFileError::JsonParse {
+                path: path.display().to_string(),
+                message: error.to_string(),
+            })?;
+        let keypair_bytes: [u8; 64] =
+            keypair_bytes
+                .try_into()
+                .map_err(|bytes: Vec<u8>| KeypairFileError::InvalidLength {
+                    expected: 64,
+                    actual: bytes.len(),
+                })?;
+
+        Self::from_keypair_bytes(keypair_bytes)
+            .map_err(|error| KeypairFileError::InvalidKeypair(error.to_string()))
+    }
+
+    pub fn try_to_solana_keypair(
+        &self,
+    ) -> Result<solana_sdk::signature::Keypair, SignatureError> {
+        solana_sdk::signature::Keypair::try_from(self.to_keypair_bytes().as_ref())
+            .map_err(|_| SignatureError::InvalidArgument)
     }
 
     /// Get the Solana pubkey for this keypair.
@@ -380,6 +439,26 @@ mod tests {
     }
 
     #[test]
+    fn test_try_from_keypair_slice() {
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let bytes = keypair.to_keypair_bytes();
+        let recovered = Keypair::try_from_keypair_slice(&bytes).expect("should recover");
+
+        assert_eq!(recovered.to_keypair_bytes(), bytes);
+    }
+
+    #[test]
+    fn test_try_from_json_bytes() {
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let bytes = serde_json::to_vec(&keypair.to_keypair_bytes().to_vec()).expect("serialize");
+        let recovered = Keypair::try_from_json_bytes(&bytes).expect("should recover");
+
+        assert_eq!(recovered.to_keypair_bytes(), keypair.to_keypair_bytes());
+    }
+
+    #[test]
     fn test_from_solana_keypair() {
         let keypair = solana_sdk::signature::Keypair::new();
         let recovered = Keypair::from_solana_keypair(&keypair).expect("should recover");
@@ -388,4 +467,14 @@ mod tests {
         assert_eq!(recovered.to_solana_pubkey(), keypair.pubkey());
     }
 
+    #[test]
+    fn test_try_to_solana_keypair() {
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let solana_keypair = keypair
+            .try_to_solana_keypair()
+            .expect("should convert to solana keypair");
+
+        assert_eq!(solana_keypair.to_bytes(), keypair.to_keypair_bytes());
+    }
 }

@@ -1,11 +1,11 @@
 use rand::Rng;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
+use solana_sdk::signature::Keypair as SolanaKeypair;
+use tape_crypto::ed25519::Keypair;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;
 use tape_crypto::address::Address;
-use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_sdk::keys::stake_key::StakeKey;
 use tape_sdk::tapedrive::Tapedrive;
 
@@ -44,14 +44,14 @@ impl StakeFuzzer {
     pub async fn step_epoch(
         &mut self,
         rpc: &LiteSvmRpc,
-        admin: &Keypair,
+        admin: &SolanaKeypair,
         node_authorities: &[Pubkey],
     ) {
         if node_authorities.is_empty() {
             return;
         }
 
-        let payer = CryptoKeypair::from_solana_keypair(admin)
+        let payer = Keypair::from_solana_keypair(admin)
             .expect("convert devnet payer to crypto keypair");
         let sdk = Tapedrive::new(rpc.clone(), payer);
 

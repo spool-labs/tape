@@ -85,6 +85,7 @@
 
 mod accounts;
 mod client;
+pub mod compute;
 mod snapshot;
 mod transactions;
 

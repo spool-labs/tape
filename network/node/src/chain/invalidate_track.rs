@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use store::Store;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
@@ -24,10 +23,6 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let fee_payer = ctx.pubkey().into();
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
-
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
-        INVALIDATE_TRACK_CU);
-
     let ix = build_invalidate_track_ix(
         fee_payer,
         system_address,
@@ -40,8 +35,6 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     );
 
     ctx.rpc
-        .send_instructions(
-            ctx.signer(),
-            vec![cu_ix, ix]
-    ).await
+        .send_instructions_with_compute_unit_limit(ctx.signer(), INVALIDATE_TRACK_CU, vec![ix])
+        .await
 }

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use store::Store;
 use tape_api::compute::ADVANCE_EPOCH_CU;
 use tape_api::instruction::build_advance_epoch_ix;
@@ -15,17 +14,11 @@ pub async fn submit_advance_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
     let authority = ctx.pubkey().into();
-
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
-        ADVANCE_EPOCH_CU);
-
     let ix = build_advance_epoch_ix(fee_payer, authority);
 
     ctx.rpc
-        .send_instructions(
-            ctx.signer(),
-            vec![cu_ix, ix]
-    ).await
+        .send_instructions_with_compute_unit_limit(ctx.signer(), ADVANCE_EPOCH_CU, vec![ix])
+        .await
 }
 
 #[cfg(test)]

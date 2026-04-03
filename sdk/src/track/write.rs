@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 use thiserror::Error;
 
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-
 use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use rpc_client::parse_tape_error;
 use tape_api::compute::CERTIFY_TRACK_CU;
@@ -366,9 +364,6 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
         .map_err(TapedriveError::Certification)?;
     let proof = queries::query_track_proof(client, &track_address).await?;
 
-    let compute_ix =
-        ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_CU);
-
     let certify_ix = build_certify_track_ix(
         payer.pubkey().into(),
         tape_key.address(),
@@ -380,9 +375,10 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
 
     match client
         .rpc()
-        .send_instructions_with_signers(
+        .send_instructions_with_signers_and_compute_unit_limit(
             payer,
-            vec![compute_ix, certify_ix],
+            CERTIFY_TRACK_CU,
+            vec![certify_ix],
             &[tape_signer],
         )
         .await

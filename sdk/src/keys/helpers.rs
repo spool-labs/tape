@@ -8,7 +8,6 @@
 
 use std::path::Path;
 
-use solana_sdk::signature::Keypair;
 use thiserror::Error;
 
 use rpc_client::RpcClient;
@@ -17,23 +16,21 @@ use tape_core::bls::BlsPrivateKey;
 use tape_core::spooler::SpoolIndex;
 use tape_core::system::Committee;
 use tape_core::types::NodeId;
-use tape_crypto::ed25519::Keypair as CryptoKeypair;
+use tape_crypto::ed25519::errors::KeypairFileError;
+use tape_crypto::ed25519::Keypair;
 use tape_crypto::Hash;
 
 /// Errors from helper functions.
 #[derive(Debug, Error)]
 pub enum HelperError {
-    /// Failed to read file.
-    #[error("Failed to read file {path}: {message}")]
+    #[error(transparent)]
+    KeypairFile(#[from] KeypairFileError),
+
+    #[error("Failed to read {path}: {message}")]
     FileRead { path: String, message: String },
 
-    /// Failed to parse JSON.
-    #[error("Failed to parse JSON from {path}: {message}")]
+    #[error("Invalid JSON in {path}: {message}")]
     JsonParse { path: String, message: String },
-
-    /// Invalid keypair data.
-    #[error("Invalid keypair data: {0}")]
-    InvalidKeypair(String),
 
     /// Invalid hash format.
     #[error("Invalid {name} hex: {message}")]
@@ -65,25 +62,18 @@ pub enum HelperError {
 /// let keypair = load_solana_keypair(Path::new("~/.config/solana/id.json"))?;
 /// println!("Pubkey: {}", keypair.pubkey());
 /// ```
-pub fn load_solana_keypair(path: &Path) -> Result<Keypair, HelperError> {
-    let contents = std::fs::read(path).map_err(|e| HelperError::FileRead {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
-
-    let bytes: Vec<u8> = serde_json::from_slice(&contents).map_err(|e| HelperError::JsonParse {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
-
-    Keypair::try_from(bytes.as_slice()).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
+pub fn load_solana_keypair(
+    path: &Path,
+) -> Result<solana_sdk::signature::Keypair, HelperError> {
+    let keypair = Keypair::try_load_json_file(path)?;
+    keypair.try_to_solana_keypair().map_err(|error| {
+        KeypairFileError::InvalidKeypair(error.to_string()).into()
+    })
 }
 
 /// Load a Tapedrive ed25519 keypair from a Solana-compatible JSON file.
-pub fn load_ed25519_keypair(path: &Path) -> Result<CryptoKeypair, HelperError> {
-    let keypair = load_solana_keypair(path)?;
-    CryptoKeypair::from_solana_keypair(&keypair)
-        .map_err(|error| HelperError::InvalidKeypair(error.to_string()))
+pub fn load_ed25519_keypair(path: &Path) -> Result<Keypair, HelperError> {
+    Keypair::try_load_json_file(path).map_err(Into::into)
 }
 
 /// Load a BLS private key from a JSON file.
@@ -128,26 +118,13 @@ pub fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey, HelperError> {
 /// let tls_keypair = load_tls_keypair(Path::new("tls.json"))?;
 /// let pubkey = tls_keypair.pubkey();
 /// ```
-pub fn load_tls_keypair(path: &Path) -> Result<Keypair, HelperError> {
-    let contents = std::fs::read(path).map_err(|e| HelperError::FileRead {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
-
-    let bytes: Vec<u8> = serde_json::from_slice(&contents).map_err(|e| HelperError::JsonParse {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
-
-    if bytes.len() != 64 {
-        return Err(HelperError::InvalidLength {
-            name: "TLS keypair".to_string(),
-            expected: 64,
-            actual: bytes.len(),
-        });
-    }
-
-    Keypair::try_from(bytes.as_slice()).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
+pub fn load_tls_keypair(
+    path: &Path,
+) -> Result<solana_sdk::signature::Keypair, HelperError> {
+    let keypair = Keypair::try_load_json_file(path)?;
+    keypair.try_to_solana_keypair().map_err(|error| {
+        KeypairFileError::InvalidKeypair(error.to_string()).into()
+    })
 }
 
 // ============================================================================

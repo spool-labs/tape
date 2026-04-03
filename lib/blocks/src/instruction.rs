@@ -1,6 +1,5 @@
 //! Instruction parsing from Solana transactions.
 
-use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
@@ -147,12 +146,12 @@ pub fn parse_raw_instruction(
         return Ok(None);
     }
 
-    let program_id: Pubkey = account_keys[program_id_index]
+    let program_id: Address = account_keys[program_id_index]
         .parse()
         .map_err(|_| ParseError::InvalidPubkey)?;
 
     // Only process tapedrive program instructions
-    if program_id != TAPE_DRIVE_PROGRAM_ID {
+    if program_id != Address::from(TAPE_DRIVE_PROGRAM_ID) {
         return Ok(None);
     }
 
@@ -276,7 +275,6 @@ mod tests {
     use crate::event::TapedriveEvent;
     use crate::merge::merge;
     use solana_sdk::instruction::Instruction;
-    use solana_sdk::pubkey::Pubkey;
     use solana_transaction_status::UiCompiledInstruction;
     use tape_api::event::{
         SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified,
@@ -291,6 +289,7 @@ mod tests {
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
     fn compiled_instruction(instruction: &Instruction) -> (UiCompiledInstruction, Vec<String>) {
@@ -309,7 +308,7 @@ mod tests {
     #[test]
     fn parses_snapshot_instructions() {
         let (ix, keys) = compiled_instruction(&build_init_snapshot_epoch_ix(
-            Pubkey::new_unique(),
+            Address::new_unique(),
             EpochNumber(7),
         ));
         assert!(matches!(
@@ -318,7 +317,7 @@ mod tests {
         ));
 
         let (ix, keys) = compiled_instruction(&build_certify_snapshot_group_ix(
-            Pubkey::new_unique(),
+            Address::new_unique(),
             EpochNumber(7),
             EpochNumber(8),
             SpoolGroup(3),
@@ -336,7 +335,7 @@ mod tests {
         ));
 
         let (ix, keys) = compiled_instruction(&build_finalize_snapshot_epoch_ix(
-            Pubkey::new_unique(),
+            Address::new_unique(),
             EpochNumber(7),
         ));
         assert!(matches!(
@@ -350,13 +349,13 @@ mod tests {
         let init = SnapshotEpochInitialized {
             epoch: EpochNumber(7),
             parent_epoch: EpochNumber(6),
-            tape: Pubkey::new_unique(),
+            tape: Address::new_unique(),
         };
         let cert = SnapshotGroupCertified {
             epoch: EpochNumber(7),
             group: SpoolGroup(4),
-            tape: Pubkey::new_unique(),
-            track: Pubkey::new_unique(),
+            tape: Address::new_unique(),
+            track: Address::new_unique(),
             track_number: TrackNumber(9),
             commitment: Hash::from([0x44; 32]),
             signer_count: [2; 8],

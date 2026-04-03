@@ -1,12 +1,12 @@
 //! Block-level parsing.
 
 use std::collections::BTreeMap;
-use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::{
     option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
     UiConfirmedBlock, UiInstruction, UiMessage, UiTransactionStatusMeta,
 };
 use tape_api::program::tapedrive::ID as TAPE_DRIVE_PROGRAM_ID;
+use tape_crypto::address::Address;
 
 use crate::error::ParseError;
 use crate::event::{parse_event_data, TapedriveEvent};
@@ -163,12 +163,13 @@ fn parse_transaction(
 /// Parse events from transaction log messages.
 fn parse_log_messages(meta: &UiTransactionStatusMeta) -> Result<Vec<TapedriveEvent>, ParseError> {
     let mut events = Vec::new();
+    let tapedrive_program_id = Address::from(TAPE_DRIVE_PROGRAM_ID);
 
     let OptionSerializer::Some(log_messages) = &meta.log_messages else {
         return Ok(events);
     };
 
-    let mut program_stack: Vec<Pubkey> = Vec::new();
+    let mut program_stack: Vec<Address> = Vec::new();
 
     for log in log_messages {
         if is_program_invoke(log) {
@@ -180,7 +181,7 @@ fn parse_log_messages(meta: &UiTransactionStatusMeta) -> Result<Vec<TapedriveEve
         }
 
         // Only parse events from tapedrive program
-        let is_tapedrive = program_stack.last() == Some(&TAPE_DRIVE_PROGRAM_ID);
+        let is_tapedrive = program_stack.last() == Some(&tapedrive_program_id);
 
         if is_tapedrive && is_program_data(log) {
             if let Some(event) = parse_event_data(log)? {
@@ -241,13 +242,13 @@ mod tests {
     };
     use tape_api::event::{EpochAdvanced, EventType, NodeSynced, TrackWritten};
     use tape_api::instruction::build_track_write_raw_ix;
-    use tape_api::program::tapedrive::ID as TestTapeDriveId;
-    use tape_api::program::tapedrive::{epoch_pda, tape_pda};
+    use tape_api::program::tapedrive::{self, epoch_pda, tape_pda};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::types::{EpochNumber, NodeId, StorageUnits, StripeCount};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
     #[test]
@@ -275,11 +276,11 @@ mod tests {
         use crate::event::TapedriveEvent;
         use tape_api::event::TrackWritten;
 
-        let tx2_track = Pubkey::new_unique();
+        let tx2_track = Address::new_unique();
 
         let tx1 = ParsedTransaction {
             raw_instructions: vec![RawInstruction::TrackWrite {
-                authority: Pubkey::new_unique(),
+                authority: Address::new_unique(),
                 key: Hash::default(),
                 value: TrackData::Blob(BlobInfo {
                     size: 1_024u64.into(),
@@ -297,7 +298,7 @@ mod tests {
         let track_event = TrackWritten {
             epoch: 2.into(),
             track: tx2_track,
-            tape: Pubkey::new_unique(),
+            tape: Address::new_unique(),
             spool_group: 0u64.to_le_bytes(),
             track_number: 0u64.into(),
             track_hash: Hash::default(),
@@ -305,7 +306,7 @@ mod tests {
 
         let tx2 = ParsedTransaction {
             raw_instructions: vec![RawInstruction::TrackWrite {
-                authority: Pubkey::new_unique(),
+                authority: Address::new_unique(),
                 key: Hash::default(),
                 value: TrackData::Blob(BlobInfo {
                     size: 1_024u64.into(),
@@ -353,7 +354,7 @@ mod tests {
                     phase: 1, // Syncing
                 }),
                 TapedriveEvent::NodeSynced(NodeSynced {
-                    node: Pubkey::new_unique(),
+                    node: Address::new_unique(),
                     id: NodeId::new(1),
                     epoch: 1u64.into(),
                     spools_hash: Hash::default(),
@@ -439,19 +440,19 @@ mod tests {
 
     #[test]
     fn test_parse_transaction_interleaves_inner_instructions_by_outer_index() {
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
+        let fee_payer = Address::new_unique();
+        let authority = Address::new_unique();
         let epoch = epoch_pda().0;
         let tape = tape_pda(authority).0;
         let slot_hashes = sysvar::slot_hashes::ID;
         let other_program = Pubkey::new_unique();
-        let tapedrive_program = TestTapeDriveId;
+        let tapedrive_program = tapedrive::ID;
         let account_keys = vec![
             other_program,
-            fee_payer,
-            authority,
-            epoch,
-            tape,
+            fee_payer.into(),
+            authority.into(),
+            epoch.into(),
+            tape.into(),
             slot_hashes,
             tapedrive_program,
         ];
@@ -499,7 +500,7 @@ mod tests {
                         EventType::TrackWritten,
                         &TrackWritten {
                             epoch: EpochNumber(3),
-                            track: Pubkey::new_unique(),
+                            track: Address::new_unique(),
                             tape,
                             spool_group: 1u64.to_le_bytes(),
                             track_number: 7u64.into(),
@@ -513,7 +514,7 @@ mod tests {
                         EventType::TrackWritten,
                         &TrackWritten {
                             epoch: EpochNumber(3),
-                            track: Pubkey::new_unique(),
+                            track: Address::new_unique(),
                             tape,
                             spool_group: 2u64.to_le_bytes(),
                             track_number: 8u64.into(),

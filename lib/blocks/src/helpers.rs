@@ -1,6 +1,6 @@
 //! Shared helper functions for log parsing.
 
-use solana_sdk::pubkey::Pubkey;
+use tape_crypto::address::Address;
 
 /// Check if log indicates program invoke.
 pub fn is_program_invoke(log: &str) -> bool {
@@ -23,10 +23,10 @@ pub fn is_program_data(log: &str) -> bool {
 }
 
 /// Extract program ID from invoke log.
-pub fn get_program_id(log: &str) -> Option<Pubkey> {
+pub fn get_program_id(log: &str) -> Option<Address> {
     let parts: Vec<&str> = log.split_whitespace().collect();
     if parts.len() >= 3 {
-        return parts[1].parse::<Pubkey>().ok();
+        return parts[1].parse::<Address>().ok();
     }
     None
 }

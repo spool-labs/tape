@@ -135,6 +135,7 @@ mod tests {
     use super::*;
     use tape_core::prelude::*;
     use tape_api::event::{SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified};
+    use tape_crypto::address::Address;
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::TrackNumber;
     use tape_crypto::Hash;
@@ -175,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_parse_track_certified_event() {
-        let track = solana_sdk::pubkey::Pubkey::new_unique();
+        let track = Address::new_unique();
         let event = TrackCertified {
             track,
             epoch: EpochNumber(10),
@@ -197,8 +198,8 @@ mod tests {
 
     #[test]
     fn test_parse_track_written_event() {
-        let track = solana_sdk::pubkey::Pubkey::new_unique();
-        let tape = solana_sdk::pubkey::Pubkey::new_unique();
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let event = TrackWritten {
             epoch: EpochNumber(3),
             track,
@@ -224,8 +225,8 @@ mod tests {
 
     #[test]
     fn test_parse_snapshot_group_certified_event() {
-        let track = solana_sdk::pubkey::Pubkey::new_unique();
-        let tape = solana_sdk::pubkey::Pubkey::new_unique();
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let event = SnapshotGroupCertified {
             epoch: EpochNumber(11),
             group: SpoolGroup(4),
@@ -257,7 +258,7 @@ mod tests {
         let init = SnapshotEpochInitialized {
             epoch: EpochNumber(20),
             parent_epoch: EpochNumber(19),
-            tape: solana_sdk::pubkey::Pubkey::new_unique(),
+            tape: Address::new_unique(),
         };
         let finalized = SnapshotEpochFinalized {
             epoch: EpochNumber(20),
@@ -289,8 +290,8 @@ mod tests {
 
     #[test]
     fn test_parse_tape_reserved_event() {
-        let tape = solana_sdk::pubkey::Pubkey::new_unique();
-        let authority = solana_sdk::pubkey::Pubkey::new_unique();
+        let tape = Address::new_unique();
+        let authority = Address::new_unique();
         let event = TapeReserved {
             tape,
             authority,

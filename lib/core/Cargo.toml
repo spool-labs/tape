@@ -15,7 +15,6 @@ documentation = "https://docs.rs/tape-core"
 tape-crypto.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true
-solana-program.workspace = true
 five8.workspace = true
 serde.workspace = true
 wincode = { workspace = true, optional = true }

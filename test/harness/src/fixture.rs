@@ -10,7 +10,7 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature};
 use tape_api::program::{exchange, staking, tapedrive, token};
-use tape_crypto::ed25519::Keypair as CryptoKeypair;
+use tape_crypto::ed25519::Keypair;
 use tape_crypto::signer::Signer as TapeSigner;
 use tracing::trace;
 
@@ -182,6 +182,6 @@ impl Default for ChainFixture {
     }
 }
 
-fn crypto_keypair(keypair: &Keypair) -> Result<CryptoKeypair> {
-    CryptoKeypair::from_solana_keypair(keypair).context("convert Solana keypair")
+fn crypto_keypair(keypair: &Keypair) -> Result<Keypair> {
+    Keypair::from_solana_keypair(keypair).context("convert Solana keypair")
 }

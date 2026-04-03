@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use store::Store;
 use tape_api::compute::FINALIZE_SNAPSHOT_EPOCH_CU;
 use tape_api::instruction::build_finalize_snapshot_epoch_ix;
@@ -17,11 +16,14 @@ pub async fn submit_finalize_snapshot_epoch<Db: Store, Cluster: Api, Blockchain:
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
 
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(FINALIZE_SNAPSHOT_EPOCH_CU);
     let ix = build_finalize_snapshot_epoch_ix(fee_payer, snapshot_epoch);
 
     ctx.rpc
-        .send_instructions(ctx.signer(), vec![cu_ix, ix])
+        .send_instructions_with_compute_unit_limit(
+            ctx.signer(),
+            FINALIZE_SNAPSHOT_EPOCH_CU,
+            vec![ix],
+        )
         .await
 }
 
