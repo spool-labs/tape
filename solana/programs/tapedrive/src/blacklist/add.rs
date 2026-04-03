@@ -29,11 +29,11 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_type::<Tape>(&tapedrive::ID)?
         .as_account::<Tape>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if proof.state.tape != *tape_info.key {
+    if proof.state.tape != (*tape_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -64,8 +64,8 @@ mod tests {
 
         // PDAs
         let blob_hash = Hash::new_unique();
-        let (node_address, _) = node_pda(authority);
-        let (tape_address, _) = tape_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
+        let (tape_address, _) = tape_pda(authority.into());
         let track_number = TrackNumber(0);
         let size = StorageUnits::mb(500);
         let track = CompressedTrack {
@@ -91,16 +91,14 @@ mod tests {
             .expect("proof has correct length");
 
         // Instruction
-        let instruction = build_add_to_blacklist_ix(
-            fee_payer,
-            authority,
+        let instruction = build_add_to_blacklist_ix(fee_payer.into(), authority.into(),
             node_address,
             CompressedTrackProof { state: track, proof },
         );
 
         // Prepare node with initialized blacklist
         let mut node = Node::zeroed();
-        node.authority = authority;
+        node.authority = authority.into();
         node.blacklist = Blacklist::new();
         let tape = Tape {
             tracks: TrackStore {
@@ -134,7 +132,7 @@ mod tests {
                 Check::success(),
 
                 // Verify node updated with blacklist containing the track
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(expected_node.pack().as_ref())
                     .build(),
             ],

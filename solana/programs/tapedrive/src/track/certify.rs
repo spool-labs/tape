@@ -46,11 +46,11 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let track_address = track_pda(track.tape, track.track_number).0;
 
-    if tape.authority != *authority_info.key {
+    if tape.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if tape_address != *tape_info.key || track.tape != *tape_info.key {
+    if tape_address != (*tape_info.key).into() || track.tape != (*tape_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -146,7 +146,7 @@ mod tests {
         let authority = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
 
-        let (tape_address, _) = tape_pda(authority);
+        let (tape_address, _) = tape_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
@@ -211,7 +211,7 @@ mod tests {
             .unwrap();
 
         let tape = Tape {
-            authority,
+            authority: authority.into(),
             tracks: TrackStore {
                 tree: track_tree,
                 next_number: TrackNumber(1),
@@ -251,9 +251,7 @@ mod tests {
 
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 
-        let instruction = build_certify_track_ix(
-            fee_payer,
-            authority,
+        let instruction = build_certify_track_ix(fee_payer.into(), authority.into(),
             CompressedTrackProof { state: track, proof },
             epoch.id,
             bitmap,
@@ -275,7 +273,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&tape_address).data(
+                Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
                         tracks: TrackStore {
                             tree: expected_tree,

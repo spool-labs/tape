@@ -50,24 +50,24 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     epoch_info
         .is_empty()?
         .is_writable()?
-        .has_address(&epoch_address)?;
+        .has_address(&epoch_address.into())?;
 
     archive_info
         .is_empty()?
         .is_writable()?
-        .has_address(&archive_address)?;
+        .has_address(&archive_address.into())?;
 
     archive_ata_info
         .is_empty()?
         .is_writable()?
-        .has_address(&archive_ata_address)?;
+        .has_address(&archive_ata_address.into())?;
 
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     snapshot_state_info
         .is_empty()?
         .is_writable()?
-        .has_address(&snapshot_state_address)?;
+        .has_address(&snapshot_state_address.into())?;
 
     // Mint must be the program's TAPE mint
     mint_info
@@ -151,7 +151,7 @@ mod tests {
 
         let system = System::zeroed();
 
-        let instruction = build_initialize_ix(fee_payer, authority);
+        let instruction = build_initialize_ix(fee_payer.into(), authority.into());
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -182,7 +182,7 @@ mod tests {
                 Check::success(),
 
                 // System initialized
-                Check::account(&system_address).data(
+                Check::account(&Pubkey::from(system_address)).data(
                     System {
                         total_nodes: 0,
                         ..system
@@ -190,7 +190,7 @@ mod tests {
                 ).build(),
 
                 // Epoch created + initialized
-                Check::account(&epoch_address).data(
+                Check::account(&Pubkey::from(epoch_address)).data(
                     Epoch {
                         id: EpochNumber(1),
                         state: EpochState::active(),
@@ -199,14 +199,14 @@ mod tests {
                     }.pack().as_ref()
                 ).build(),
 
-                Check::account(&snapshot_state_address).data(
+                Check::account(&Pubkey::from(snapshot_state_address)).data(
                     SnapshotState {
                         tail_epoch: EpochNumber(0),
                     }.pack().as_ref()
                 ).build(),
 
                 // Archive created + initialized
-                Check::account(&archive_address).data(
+                Check::account(&Pubkey::from(archive_address)).data(
                     Archive {
                         storage_capacity: StorageUnits::tb(100),
                         storage_price: TAPE::from("0.0001"),
@@ -216,7 +216,7 @@ mod tests {
                 ).build(),
 
                 // Archive ATA created
-                Check::account(&archive_ata).data(
+                Check::account(&Pubkey::from(archive_ata)).data(
                     token(archive_ata, archive_address, 0).1.data.as_ref()
                 ).build(),
             ],

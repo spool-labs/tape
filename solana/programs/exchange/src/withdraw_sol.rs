@@ -25,7 +25,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     authority_info
         .is_signer()?
         .is_writable()?
-        .has_address(&exchange.authority)?;
+        .has_address(&exchange.authority.into())?;
 
     rent_info
         .is_sysvar(&sysvar::rent::ID)?;

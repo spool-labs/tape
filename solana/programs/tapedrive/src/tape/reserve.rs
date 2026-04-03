@@ -34,7 +34,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *authority_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     token_program_info
         .is_program(&spl_token::ID)?;
@@ -56,12 +56,12 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .is_archive_ata()?;
 
-    let (tape_address, _)  = tape_pda(*authority_info.key);
+    let (tape_address, _) = tape_pda((*authority_info.key).into());
 
     tape_info
         .is_empty()?
         .is_writable()?
-        .has_address(&tape_address)?;
+        .has_address(&tape_address.into())?;
 
     let start_epoch = EpochNumber::unpack(args.activation_epoch);
     let end_epoch = EpochNumber::unpack(args.expiry_epoch);
@@ -125,7 +125,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let tape = tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
 
     tape.id = tape_id;
-    tape.authority = *authority_info.key;
+    tape.authority = (*authority_info.key).into();
     tape.active_epoch = start_epoch;
     tape.expiry_epoch = end_epoch;
     tape.capacity = total_units;
@@ -141,7 +141,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     TapeReserved {
         tape: tape_address,
-        authority: *authority_info.key,
+        authority: (*authority_info.key).into(),
         capacity: total_units,
         active_epoch: start_epoch,
         expiry_epoch: end_epoch,
@@ -166,13 +166,12 @@ mod tests {
         let end_epoch = EpochNumber(45);           // Two epochs duration
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
 
-        let instruction = build_reserve_tape_ix(
-            fee_payer, authority, storage_units, start_epoch, end_epoch);
+        let instruction = build_reserve_tape_ix(fee_payer.into(), authority.into(), storage_units, start_epoch, end_epoch);
 
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
-        let (tape_address, _) = tape_pda(authority);
+        let (tape_address, _) = tape_pda(authority.into());
         let authority_ata = ata_address(&authority);
 
         // Setup existing accounts
@@ -224,10 +223,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&tape_address).data(
+                Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
                         id: TapeNumber(1),  // First tape
-                        authority: authority,
+                        authority: authority.into(),
                         capacity: storage_units,
                         used: StorageUnits::zero(),
                         active_epoch: start_epoch,
@@ -235,13 +234,13 @@ mod tests {
                         ..Tape::zeroed()
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&archive_address).data(
+                Check::account(&Pubkey::from(archive_address)).data(
                     expected_archive.pack().as_ref()
                 ).build(),
-                Check::account(&authority_ata).data(
+                Check::account(&Pubkey::from(authority_ata)).data(
                     token(authority_ata, authority, initial_token_balance - total_cost).1.data.as_ref()
                 ).build(),
-                Check::account(&archive_ata).data(
+                Check::account(&Pubkey::from(archive_ata)).data(
                     token(archive_ata, archive_address, total_cost).1.data.as_ref()
                 ).build(),
             ]

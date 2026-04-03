@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use futures::stream::{self, StreamExt};
-use solana_sdk::pubkey::Pubkey;
+use tape_crypto::address::Address;
 use thiserror::Error;
 
 use tape_api::instruction::build_certify_track_ix;
@@ -187,7 +187,7 @@ impl CertificationCollector {
     pub async fn collect_signatures<P: Api>(
         &self,
         peer_client: &P,
-        track_address: &Pubkey,
+        track_address: &Address,
         spool_group: SpoolGroup,
         system: &System,
     ) -> Result<CollectedSignatures, CertificationError> {
@@ -232,11 +232,11 @@ impl CertificationCollector {
             });
         }
 
-        let track_pubkey = track_address.into();
+        let track = *track_address;
         let max_retries = self.config.max_retries;
 
         let mut requests = stream::iter(signature_requests.into_iter().map(|request| {
-            let track = track_pubkey;
+            let track = track;
             async move {
                 let req = CertifyReq { track };
                 let config = RetryConfig {
@@ -395,8 +395,8 @@ impl CertificationCollector {
 
     /// Build a CertifyTrack instruction from collected signatures.
     pub fn build_certify_instruction(
-        fee_payer: Pubkey,
-        authority: Pubkey,
+        fee_payer: Address,
+        authority: Address,
         track: CompressedTrackProof,
         collected: &CollectedSignatures,
     ) -> solana_sdk::instruction::Instruction {

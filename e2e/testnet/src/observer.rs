@@ -9,6 +9,7 @@ use tape_api::program::tapedrive::node_pda;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::system::EpochPhase;
 use tape_core::types::SlotNumber;
+use tape_crypto::address::Address;
 use tape_protocol::api::NodeStats;
 use tape_protocol::ProtocolState;
 
@@ -128,9 +129,10 @@ impl Observer {
 
     async fn observe_node(&self, node: &NodeRef) -> NodeView {
         let scrape_fut = self.scrape_node(node.port);
-        let chain_fut = self.rpc.get_node(&node.authority);
+        let authority = Address::from(node.authority);
+        let chain_fut = self.rpc.get_node(&authority);
         let (scrape, onchain) = tokio::join!(scrape_fut, chain_fut);
-        let node_address = node_pda(node.authority).0.to_string();
+        let node_address = node_pda(authority).0.to_string();
 
         let (node_id, pool_stake) = match onchain {
             Ok(onchain_node) => {

@@ -7,6 +7,7 @@ use tape_core::erasure::MEMBER_COUNT;
 use tape_core::system::{Committee, CommitteeMember, EpochPhase};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::EpochNumber;
+use tape_crypto::address::Address;
 use tape_protocol::{Api, fetch::fetch_state};
 use tape_retry::{retry_if, RetryConfig};
 use tokio_util::sync::CancellationToken;
@@ -89,7 +90,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
 
     pub async fn handle_advance_pool(
         &self,
-        node: tape_crypto::Pubkey,
+        node: Address,
         epoch: EpochNumber,
         phase: u64,
     ) -> Result<(), NodeError> {
@@ -236,7 +237,7 @@ mod tests {
 
         handlers
             .handle_advance_pool(
-                harness.node(NODE).node_address,
+                harness.node(NODE).node_address.into(),
                 EPOCH,
                 EpochPhase::Active as u64,
             )
@@ -246,7 +247,7 @@ mod tests {
 
         handlers
             .handle_advance_pool(
-                harness.node(NODE).node_address,
+                harness.node(NODE).node_address.into(),
                 EPOCH + EpochNumber(1),
                 EpochPhase::Syncing as u64,
             )
@@ -283,7 +284,7 @@ mod tests {
 
         handlers
             .handle_join_network(NodeJoinedCommittee {
-                node: joined.node_address,
+                node: joined.node_address.into(),
                 id: joined.node_id,
                 stake: 500u64.to_le_bytes(),
                 key,

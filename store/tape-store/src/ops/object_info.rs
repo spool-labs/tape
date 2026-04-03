@@ -1,42 +1,44 @@
 //! ObjectInfo operations for tracked object metadata
 
+use store::Store;
+use tape_crypto::address::Address;
+
 use crate::columns::ObjectInfoCol;
 use crate::error::Result;
-use crate::types::{ObjectInfo, Pubkey};
+use crate::types::ObjectInfo;
 use crate::TapeStore;
-use store::Store;
 
 /// Operations for object info
 pub trait ObjectInfoOps {
     /// Get object info by address
-    fn get_object_info(&self, address: Pubkey) -> Result<Option<ObjectInfo>>;
+    fn get_object_info(&self, address: Address) -> Result<Option<ObjectInfo>>;
 
     /// Store object info
-    fn put_object_info(&self, address: Pubkey, info: ObjectInfo) -> Result<()>;
+    fn put_object_info(&self, address: Address, info: ObjectInfo) -> Result<()>;
 
     /// Delete object info
-    fn delete_object_info(&self, address: Pubkey) -> Result<()>;
+    fn delete_object_info(&self, address: Address) -> Result<()>;
 
     /// Check if object info exists
-    fn has_object_info(&self, address: Pubkey) -> Result<bool>;
+    fn has_object_info(&self, address: Address) -> Result<bool>;
 }
 
 impl<S: Store> ObjectInfoOps for TapeStore<S> {
-    fn get_object_info(&self, address: Pubkey) -> Result<Option<ObjectInfo>> {
+    fn get_object_info(&self, address: Address) -> Result<Option<ObjectInfo>> {
         Ok(self.get::<ObjectInfoCol>(&address)?)
     }
 
-    fn put_object_info(&self, address: Pubkey, info: ObjectInfo) -> Result<()> {
+    fn put_object_info(&self, address: Address, info: ObjectInfo) -> Result<()> {
         self.put::<ObjectInfoCol>(&address, &info)?;
         Ok(())
     }
 
-    fn delete_object_info(&self, address: Pubkey) -> Result<()> {
+    fn delete_object_info(&self, address: Address) -> Result<()> {
         self.delete::<ObjectInfoCol>(&address)?;
         Ok(())
     }
 
-    fn has_object_info(&self, address: Pubkey) -> Result<bool> {
+    fn has_object_info(&self, address: Address) -> Result<bool> {
         Ok(self.contains::<ObjectInfoCol>(&address)?)
     }
 }
@@ -54,7 +56,7 @@ mod tests {
     #[test]
     fn test_object_info_blacklisted() {
         let store = test_store();
-        let addr = Pubkey::new_unique();
+        let addr = Address::new_unique();
 
         store
             .put_object_info(addr, ObjectInfo::Blacklisted)
@@ -66,10 +68,10 @@ mod tests {
     #[test]
     fn test_object_info_valid() {
         let store = test_store();
-        let addr = Pubkey::new_unique();
+        let addr = Address::new_unique();
 
         let info = ObjectInfo::Valid {
-            track_address: Pubkey::new_unique(),
+            track_address: Address::new_unique(),
             registered_epoch: EpochNumber(5),
             certified_epoch: Some(EpochNumber(6)),
             slot: SlotNumber(50),
@@ -83,7 +85,7 @@ mod tests {
     #[test]
     fn test_object_info_invalid() {
         let store = test_store();
-        let addr = Pubkey::new_unique();
+        let addr = Address::new_unique();
 
         let info = ObjectInfo::Invalid {
             epoch: EpochNumber(10),
@@ -98,7 +100,7 @@ mod tests {
     #[test]
     fn test_object_info_has_and_delete() {
         let store = test_store();
-        let addr = Pubkey::new_unique();
+        let addr = Address::new_unique();
 
         assert!(!store.has_object_info(addr).unwrap());
 

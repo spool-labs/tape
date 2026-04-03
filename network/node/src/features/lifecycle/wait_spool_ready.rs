@@ -133,6 +133,7 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
+    use tape_crypto::address::Address;
     use super::*;
     use tape_core::erasure::SPOOL_COUNT;
     use tape_core::spooler::SpoolAssignment;
@@ -140,7 +141,7 @@ mod tests {
     use tape_core::types::NodeId;
     use tape_core::types::coin::{Coin, TAPE};
     use tape_protocol::ProtocolState;
-    use tape_store::types::{Pubkey, SpoolState};
+    use tape_store::types::SpoolState;
 
     use crate::context::test_utils::test_context;
 
@@ -169,7 +170,7 @@ mod tests {
         ctx.store
             .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
 
         let result = check_readiness(&ctx).unwrap();
         assert!(matches!(result, Readiness::NotReady { .. }));

@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 use solana_program::instruction::{AccountMeta, Instruction};
-use solana_program::pubkey::Pubkey;
 use tape_core::bls::BlsSignature;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
@@ -9,6 +8,7 @@ use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{TrackKind, TrackState};
 use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
 use tape_solana::*;
@@ -74,7 +74,7 @@ pub fn get_snapshot_track_meta(args: &CertifySnapshotGroup) -> Result<TrackMeta,
 }
 
 pub fn build_init_snapshot_epoch_ix(
-    fee_payer: Pubkey,
+    fee_payer: Address,
     snapshot_epoch: EpochNumber,
 ) -> Instruction {
     let (system_address, _) = system_pda();
@@ -87,13 +87,13 @@ pub fn build_init_snapshot_epoch_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(system_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(archive_address, false),
-            AccountMeta::new_readonly(snapshot_state_address, false),
-            AccountMeta::new(manifest_address, false),
-            AccountMeta::new(snapshot_tape_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new_readonly(snapshot_state_address.into(), false),
+            AccountMeta::new(manifest_address.into(), false),
+            AccountMeta::new(snapshot_tape_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
@@ -105,7 +105,7 @@ pub fn build_init_snapshot_epoch_ix(
 }
 
 pub fn build_certify_snapshot_group_ix(
-    fee_payer: Pubkey,
+    fee_payer: Address,
     snapshot_epoch: EpochNumber,
     signing_epoch: EpochNumber,
     group: SpoolGroup,
@@ -126,12 +126,12 @@ pub fn build_certify_snapshot_group_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(system_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new_readonly(snapshot_state_address, false),
-            AccountMeta::new(manifest_address, false),
-            AccountMeta::new(snapshot_tape_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(snapshot_state_address.into(), false),
+            AccountMeta::new(manifest_address.into(), false),
+            AccountMeta::new(snapshot_tape_address.into(), false),
         ],
         data: CertifySnapshotGroup {
             snapshot_epoch: snapshot_epoch.pack(),
@@ -150,7 +150,7 @@ pub fn build_certify_snapshot_group_ix(
 }
 
 pub fn build_finalize_snapshot_epoch_ix(
-    fee_payer: Pubkey,
+    fee_payer: Address,
     snapshot_epoch: EpochNumber,
 ) -> Instruction {
     let (epoch_address, _) = epoch_pda();
@@ -160,10 +160,10 @@ pub fn build_finalize_snapshot_epoch_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(snapshot_state_address, false),
-            AccountMeta::new_readonly(manifest_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(snapshot_state_address.into(), false),
+            AccountMeta::new_readonly(manifest_address.into(), false),
         ],
         data: FinalizeSnapshotEpoch {
             snapshot_epoch: snapshot_epoch.pack(),
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn build_init_snapshot_epoch_ix_smoke() {
-        let instruction = build_init_snapshot_epoch_ix(Pubkey::new_unique(), EpochNumber(7));
+        let instruction = build_init_snapshot_epoch_ix(Address::new_unique(), EpochNumber(7));
 
         assert_eq!(instruction.program_id, tapedrive::ID);
         assert_eq!(instruction.accounts.len(), 9);
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn build_certify_snapshot_group_ix_smoke() {
         let instruction = build_certify_snapshot_group_ix(
-            Pubkey::new_unique(),
+            Address::new_unique(),
             EpochNumber(7),
             EpochNumber(8),
             SpoolGroup(2),
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn build_finalize_snapshot_epoch_ix_smoke() {
-        let instruction = build_finalize_snapshot_epoch_ix(Pubkey::new_unique(), EpochNumber(7));
+        let instruction = build_finalize_snapshot_epoch_ix(Address::new_unique(), EpochNumber(7));
 
         assert_eq!(instruction.program_id, tapedrive::ID);
         assert_eq!(instruction.accounts.len(), 4);

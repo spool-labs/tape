@@ -153,8 +153,9 @@ mod tests {
     #[test]
     fn empty_weight() {
         let spools = SpoolAssignment::new([]);
+        let empty: [u8; 0] = [];
         assert_eq!(spools.weight(0), 0);
-        assert_eq!(SpoolAssignment::try_from(&[]).unwrap().0, []);
+        assert_eq!(SpoolAssignment::try_from(&[]).unwrap().0, empty);
     }
 
     #[test]
@@ -214,8 +215,9 @@ mod tests {
 
     #[test]
     fn test_spool_map() {
-        assert_eq!(to_spool_map(&[0]), &[]);
-        assert_eq!(to_spool_map(&[0, 0, 0]), &[]);
+        let empty: &[SpoolMapping] = &[];
+        assert_eq!(to_spool_map(&[0]), empty);
+        assert_eq!(to_spool_map(&[0, 0, 0]), empty);
         assert_eq!(to_spool_map(&[1, 2, 3]), &[0, 1, 1, 2, 2, 2]);
         assert_eq!(to_spool_map(&[3, 0, 2]), &[0, 0, 0, 2, 2]);
         assert_eq!(to_spool_map(&[1, 1, 1, 1]), &[0, 1, 2, 3]);

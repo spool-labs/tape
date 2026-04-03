@@ -1,27 +1,25 @@
 //! Track protocol types and merkle proofs.
 
 use core::mem::size_of;
+#[cfg(feature = "wincode")]
+use core::mem::MaybeUninit;
 
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use solana_program::pubkey::Pubkey;
-use tape_crypto::Hash;
-use tape_crypto::hash::hashv;
-use tape_crypto::merkle::{MerkleError, MerkleTree};
-
-use crate::spooler::SpoolGroup;
-use crate::track::{TRACK_LEAF_V1, TRACK_TREE_HEIGHT};
-use crate::types::{StorageUnits, TrackNumber};
-
 #[cfg(feature = "wincode")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "wincode")]
-use core::mem::MaybeUninit;
+use tape_crypto::address::Address;
+use tape_crypto::hash::{hashv, Hash};
+use tape_crypto::merkle::{MerkleError, MerkleTree};
 #[cfg(feature = "wincode")]
 use wincode::{
     io::{Reader, Writer},
     ReadResult, SchemaRead, SchemaWrite, WriteResult,
 };
+
+use crate::spooler::SpoolGroup;
+use crate::track::{TRACK_LEAF_V1, TRACK_TREE_HEIGHT};
+use crate::types::{StorageUnits, TrackNumber};
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
@@ -42,7 +40,7 @@ pub enum TrackState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Pod, Zeroable)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize))]
 pub struct CompressedTrack {
-    pub tape: Pubkey,
+    pub tape: Address,
     pub key: Hash,
     pub track_number: TrackNumber,
     pub kind: u64,

@@ -1,7 +1,24 @@
 //! Integration tests for TapeStore with RocksDB backend
 
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::types::{StorageUnits, TrackNumber};
+use tape_crypto::address::Address;
+use tape_crypto::hash::Hash;
 use tape_store::{ops::*, types::*, TapeStore};
 use tempfile::TempDir;
+
+fn sample_track(tape: Address) -> CompressedTrack {
+    CompressedTrack {
+        tape,
+        key: Hash::new_unique(),
+        track_number: TrackNumber(0),
+        kind: TrackKind::Blob as u64,
+        state: TrackState::Certified as u64,
+        size: StorageUnits::from_bytes(1024),
+        spool_group: SpoolGroup(3),
+        value_hash: Hash::new_unique(),
+    }
+}
 
 #[test]
 fn open_primary() {
@@ -10,17 +27,8 @@ fn open_primary() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let track_address = Pubkey::new_unique();
-    let info = TrackInfo {
-        tape_address: Pubkey::new_unique(),
-        spool_group: SpoolGroup(3),
-        original_size: 1024,
-        stripe_size: 0,
-        stripe_count: 0,
-        encoding_type: 1,
-        encoding_params: 0,
-        commitment: vec![],
-    };
+    let track_address = Address::new_unique();
+    let info = sample_track(Address::new_unique());
 
     store.put_track(track_address, info.clone()).unwrap();
     let retrieved = store.get_track(track_address).unwrap();
@@ -32,22 +40,13 @@ fn open_primary_persistence() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test_db");
 
-    let track_address = Pubkey::new_unique();
-    let tape_address = Pubkey::new_unique();
+    let track_address = Address::new_unique();
+    let tape_address = Address::new_unique();
 
     // Write data
     {
         let store = TapeStore::open_primary(&db_path).unwrap();
-        let info = TrackInfo {
-            tape_address,
-            spool_group: SpoolGroup(3),
-            original_size: 512,
-            stripe_size: 0,
-            stripe_count: 0,
-            encoding_type: 1,
-            encoding_params: 0,
-            commitment: vec![],
-        };
+        let info = sample_track(tape_address);
         store.put_track(track_address, info).unwrap();
     }
 
@@ -57,7 +56,7 @@ fn open_primary_persistence() {
         let retrieved = store.get_track(track_address).unwrap();
         assert!(retrieved.is_some());
         let info = retrieved.unwrap();
-        assert_eq!(info.tape_address, tape_address);
+        assert_eq!(info.tape, tape_address);
     }
 }
 
@@ -69,18 +68,10 @@ fn all_column_families() {
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     // Tracks
-    let track_address = Pubkey::new_unique();
-    let tape_address = Pubkey::new_unique();
-    let track_info = TrackInfo {
-        tape_address,
-        spool_group: SpoolGroup(3),
-        original_size: 1024 * 1024,
-        stripe_size: 0,
-        stripe_count: 0,
-        encoding_type: 2, // Clay
-        encoding_params: 0,
-        commitment: vec![],
-    };
+    let track_address = Address::new_unique();
+    let tape_address = Address::new_unique();
+    let mut track_info = sample_track(tape_address);
+    track_info.size = StorageUnits::from_bytes(1024 * 1024);
     store.put_track(track_address, track_info).unwrap();
 
     // Tape info
@@ -91,7 +82,7 @@ fn all_column_families() {
     store.put_tape(tape_address, tape_info).unwrap();
 
     // Object info
-    let object_address = Pubkey::new_unique();
+    let object_address = Address::new_unique();
     let object_info = ObjectInfo::Valid {
         track_address,
         registered_epoch: EpochNumber(5),
@@ -108,7 +99,7 @@ fn all_column_families() {
         .unwrap();
 
     // Sync progress
-    let progress_track = Pubkey::new_unique();
+    let progress_track = Address::new_unique();
     store.set_spool_sync_cursor(42, progress_track).unwrap();
 
     // Pending recovery
@@ -143,7 +134,7 @@ fn large_slice_data() {
 
     // Test with a 2 MiB slice - large enough to trigger BlobDB (threshold is 256 KiB)
     let large_data = vec![0xAB; 2 * 1024 * 1024];
-    let track_address = Pubkey::new_unique();
+    let track_address = Address::new_unique();
 
     store
         .put_slice(0, track_address, large_data.clone())
@@ -161,8 +152,8 @@ fn spool_prefix_iteration() {
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     // Add slices to multiple spools
-    let spool_42_tracks: Vec<Pubkey> = (0..10).map(|_| Pubkey::new_unique()).collect();
-    let spool_100_tracks: Vec<Pubkey> = (0..5).map(|_| Pubkey::new_unique()).collect();
+    let spool_42_tracks: Vec<Address> = (0..10).map(|_| Address::new_unique()).collect();
+    let spool_100_tracks: Vec<Address> = (0..5).map(|_| Address::new_unique()).collect();
 
     for track in &spool_42_tracks {
         store.put_slice(42, *track, vec![0u8; 100]).unwrap();
@@ -191,18 +182,9 @@ fn track_operations() {
     let db_path = temp_dir.path().join("test_db");
 
     let store = TapeStore::open_primary(&db_path).unwrap();
-    let track = Pubkey::new_unique();
+    let track = Address::new_unique();
 
-    let info = TrackInfo {
-        tape_address: Pubkey::new_unique(),
-        spool_group: SpoolGroup(3),
-        original_size: 1024,
-        stripe_size: 0,
-        stripe_count: 0,
-        encoding_type: 1,
-        encoding_params: 0,
-        commitment: vec![],
-    };
+    let info = sample_track(Address::new_unique());
     store.put_track(track, info.clone()).unwrap();
 
     let retrieved = store.get_track(track).unwrap().unwrap();
@@ -247,9 +229,9 @@ fn pending_recovery_operations() {
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     let spool_id = 42;
-    let track1 = Pubkey::new_unique();
-    let track2 = Pubkey::new_unique();
-    let track3 = Pubkey::new_unique();
+    let track1 = Address::new_unique();
+    let track2 = Address::new_unique();
+    let track3 = Address::new_unique();
 
     // Add pending recoveries
     store.add_pending_recovery(spool_id, track1).unwrap();
@@ -282,9 +264,9 @@ fn pending_repair_operations() {
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     let spool_id = 42;
-    let track1 = Pubkey::new_unique();
-    let track2 = Pubkey::new_unique();
-    let track3 = Pubkey::new_unique();
+    let track1 = Address::new_unique();
+    let track2 = Address::new_unique();
+    let track3 = Address::new_unique();
 
     store.add_pending_repair(spool_id, track1).unwrap();
     store.add_pending_repair(spool_id, track2).unwrap();
@@ -311,7 +293,7 @@ fn slice_operations() {
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     let spool_id = 42;
-    let track = Pubkey::new_unique();
+    let track = Address::new_unique();
 
     let data = vec![0xAB; 100];
 
@@ -362,7 +344,7 @@ fn object_info_operations() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let addr = Pubkey::new_unique();
+    let addr = Address::new_unique();
 
     // Blacklisted
     store
@@ -375,7 +357,7 @@ fn object_info_operations() {
 
     // Overwrite with Valid
     let info = ObjectInfo::Valid {
-        track_address: Pubkey::new_unique(),
+        track_address: Address::new_unique(),
         registered_epoch: EpochNumber(5),
         certified_epoch: Some(EpochNumber(6)),
         slot: SlotNumber(50),
@@ -396,7 +378,7 @@ fn tape_info_operations() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let tape = Pubkey::new_unique();
+    let tape = Address::new_unique();
     let info = TapeInfo {
         end_epoch: EpochNumber(200),
         next_track_number: TrackNumber(0),

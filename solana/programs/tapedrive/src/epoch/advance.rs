@@ -226,7 +226,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -337,7 +337,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address).data(
+                Check::account(&Pubkey::from(system_address)).data(
                     System {
                         spools: expected_seats,
                         spools_prev: system.spools,
@@ -347,7 +347,7 @@ mod tests {
                         ..system
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&epoch_address).data(
+                Check::account(&Pubkey::from(epoch_address)).data(
                     Epoch {
                         id: e1,
                         state: EpochState::syncing(),
@@ -355,7 +355,7 @@ mod tests {
                         nonce: Hash::default(),
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&archive_address).data({
+                Check::account(&Pubkey::from(archive_address)).data({
                     Archive {
                         schedule,
 
@@ -381,7 +381,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -441,7 +441,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -496,7 +496,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -568,7 +568,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -641,7 +641,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&epoch_address).data(
+                Check::account(&Pubkey::from(epoch_address)).data(
                     expected_epoch.pack().as_ref()
                 ).build(),
             ]
@@ -657,7 +657,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -720,7 +720,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&epoch_address).data(
+                Check::account(&Pubkey::from(epoch_address)).data(
                     expected_epoch.pack().as_ref()
                 ).build(),
             ]
@@ -736,7 +736,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -805,7 +805,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -874,7 +874,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into());
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();

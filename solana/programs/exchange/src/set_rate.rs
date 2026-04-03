@@ -22,7 +22,7 @@ pub fn process_set_exchange_rate(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     // Only exchange authority may update the rate
     authority_info
         .is_signer()?
-        .has_address(&exchange.authority)?;
+        .has_address(&exchange.authority.into())?;
 
     // Parse and validate new rate
     let tape_per_unit = TAPE::unpack(args.tape).as_u64();

@@ -7,9 +7,8 @@ use peer_manager::{PeerManager, PeerNode};
 use peer_memory::MemoryApi;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signer};
 use tape_api::program::tapedrive::{self, tape_pda, track_pda};
+use tape_api::state::Tape;
 use tape_core::bls::BlsPubkey;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
@@ -21,8 +20,9 @@ use tape_core::system::CommitteeMember;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
-use tape_api::state::Tape;
-use tape_crypto::{hash, Hash, Pubkey as CryptoPubkey};
+use tape_crypto::{hash, Hash};
+use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair;
 use tape_protocol::api::{
     ApiError, FindTrackVersion, FindTrackRes, GetTrackByNumberRes, GetTrackDataRes,
     GetTrackProofRes, GetTrackRes, ListTracksByTapeRes, PeerReq, PeerRes,
@@ -34,8 +34,8 @@ use tape_sdk::tapedrive::Tapedrive;
 struct Fixture {
     rpc: LiteSvmRpc,
     client: Tapedrive<LiteSvmRpc, MemoryApi>,
-    tracks: Arc<Mutex<HashMap<CryptoPubkey, CompressedTrack>>>,
-    data: Arc<Mutex<HashMap<CryptoPubkey, TrackData>>>,
+    tracks: Arc<Mutex<HashMap<Address, CompressedTrack>>>,
+    data: Arc<Mutex<HashMap<Address, TrackData>>>,
 }
 
 fn unexpected_error() -> ApiError {
@@ -54,9 +54,8 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
         PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(unexpected_error())),
         PeerReq::Repair(_) => PeerRes::Repair(Err(unexpected_error())),
         PeerReq::Certify(_) => PeerRes::Certify(Err(unexpected_error())),
+        PeerReq::SignSnapshot(_) => PeerRes::SignSnapshot(Err(unexpected_error())),
         PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(unexpected_error())),
-        PeerReq::PutSnapshot(_) => PeerRes::PutSnapshot(Err(unexpected_error())),
-        PeerReq::GetSnapshot(_) => PeerRes::GetSnapshot(Err(unexpected_error())),
         PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(unexpected_error())),
         PeerReq::GetStats(_) => PeerRes::GetStats(Err(unexpected_error())),
         PeerReq::PutSlice(_) => PeerRes::PutSlice(Err(unexpected_error())),
@@ -65,22 +64,23 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
 }
 
 impl Fixture {
-    fn insert_track(&self, track: CompressedTrack, data: TrackData) -> Pubkey {
+    fn insert_track(&self, track: CompressedTrack, data: TrackData) -> Address {
         let address = track_pda(track.tape, track.track_number).0;
-        self.tracks.lock().unwrap().insert(address.into(), track);
-        self.data.lock().unwrap().insert(address.into(), data);
+        self.tracks.lock().unwrap().insert(address, track);
+        self.data.lock().unwrap().insert(address, data);
         address
     }
 }
 
 fn setup() -> Fixture {
     let rpc = LiteSvmRpc::new();
-    let payer = Keypair::new();
+    let mut rng = rand::thread_rng();
+    let payer = Keypair::new(&mut rng);
     let rpc_client = Arc::new(RpcClient::from_rpc(rpc.clone()));
 
-    let tracks = Arc::new(Mutex::new(HashMap::<CryptoPubkey, CompressedTrack>::new()));
-    let data = Arc::new(Mutex::new(HashMap::<CryptoPubkey, TrackData>::new()));
-    let proofs = Arc::new(Mutex::new(HashMap::<CryptoPubkey, CompressedTrackProof>::new()));
+    let tracks = Arc::new(Mutex::new(HashMap::<Address, CompressedTrack>::new()));
+    let data = Arc::new(Mutex::new(HashMap::<Address, TrackData>::new()));
+    let proofs = Arc::new(Mutex::new(HashMap::<Address, CompressedTrackProof>::new()));
 
     let api = Arc::new(MemoryApi::new({
         let tracks = tracks.clone();
@@ -169,9 +169,8 @@ fn setup() -> Fixture {
             PeerReq::SyncTracks(_) => unexpected_peer_response(&req),
             PeerReq::Repair(_) => unexpected_peer_response(&req),
             PeerReq::Certify(_) => unexpected_peer_response(&req),
+            PeerReq::SignSnapshot(_) => unexpected_peer_response(&req),
             PeerReq::Invalidate(_) => unexpected_peer_response(&req),
-            PeerReq::PutSnapshot(_) => unexpected_peer_response(&req),
-            PeerReq::GetSnapshot(_) => unexpected_peer_response(&req),
             PeerReq::GetHealth(_) => unexpected_peer_response(&req),
             PeerReq::GetStats(_) => unexpected_peer_response(&req),
             PeerReq::PutSlice(_) => unexpected_peer_response(&req),
@@ -192,7 +191,7 @@ fn setup() -> Fixture {
         peer_manager,
         api,
         rpc_client,
-        Some(&payer),
+        Some(payer),
     );
 
     Fixture {
@@ -206,21 +205,21 @@ fn setup() -> Fixture {
 fn make_peer(node_id: NodeId, port: u16) -> PeerNode {
     PeerNode {
         node_id,
-        authority: Pubkey::new_unique().into(),
-        state_address: Pubkey::new_unique().into(),
+        authority: Address::new_unique(),
+        state_address: Address::new_unique(),
         bls_pubkey: BlsPubkey::zeroed(),
-        tls_pubkey: Pubkey::new_unique().into(),
+        tls_pubkey: Address::new_unique(),
         network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
     }
 }
 
-fn pipe(rpc: &LiteSvmRpc, address: Pubkey, packed: &[u8]) {
+fn pipe(rpc: &LiteSvmRpc, address: Address, packed: &[u8]) {
     rpc.set_account_data(address, tapedrive::ID, packed).unwrap();
 }
 
-fn make_tape(authority: Pubkey) -> Tape {
+fn make_tape(authority: Address) -> Tape {
     let mut tape: Tape = Zeroable::zeroed();
-    tape.authority = authority.into();
+    tape.authority = authority;
     tape.capacity = StorageUnits::mb(100);
     tape.used = StorageUnits::mb(10);
     tape.active_epoch = EpochNumber(1);
@@ -230,7 +229,7 @@ fn make_tape(authority: Pubkey) -> Tape {
 }
 
 fn make_raw_track(
-    tape: Pubkey,
+    tape: Address,
     key: Hash,
     track_number: u64,
     raw: &[u8],
@@ -252,10 +251,11 @@ fn make_raw_track(
 #[tokio::test]
 async fn get_tape_uses_rpc_account() {
     let fixture = setup();
-    let authority = Keypair::new();
-    let tape_address: Pubkey = tape_pda(authority.pubkey()).0.into();
+    let mut rng = rand::thread_rng();
+    let authority = Keypair::new(&mut rng);
+    let tape_address = tape_pda(authority.pubkey().into()).0;
 
-    let tape = make_tape(authority.pubkey());
+    let tape = make_tape(authority.pubkey().into());
     pipe(&fixture.rpc, tape_address, &tape.pack());
 
     let result = fixture.client.get_tape(&tape_address).await.unwrap();
@@ -268,8 +268,9 @@ async fn get_tape_uses_rpc_account() {
 #[tokio::test]
 async fn track_queries_use_memory_peer_catalog() {
     let fixture = setup();
-    let tape_authority = Keypair::new();
-    let tape_address: Pubkey = tape_pda(tape_authority.pubkey()).0.into();
+    let mut rng = rand::thread_rng();
+    let tape_authority = Keypair::new(&mut rng);
+    let tape_address: Address = tape_pda(tape_authority.pubkey().into()).0;
 
     let key_a = hash::hash(b"track-a");
     let key_b = hash::hash(b"track-b");
@@ -321,8 +322,9 @@ async fn track_queries_use_memory_peer_catalog() {
 #[tokio::test]
 async fn read_raw_track_uses_memory_peer_data() {
     let fixture = setup();
-    let tape_authority = Keypair::new();
-    let tape_address: Pubkey = tape_pda(tape_authority.pubkey()).0.into();
+    let mut rng = rand::thread_rng();
+    let tape_authority = Keypair::new(&mut rng);
+    let tape_address: Address = tape_pda(tape_authority.pubkey().into()).0;
     let key = hash::hash(b"raw-track");
     let raw = b"hello raw track";
 
@@ -336,8 +338,9 @@ async fn read_raw_track_uses_memory_peer_data() {
 #[tokio::test]
 async fn verify_raw_track_uses_value_hash() {
     let fixture = setup();
-    let tape_authority = Keypair::new();
-    let tape_address: Pubkey = tape_pda(tape_authority.pubkey()).0.into();
+    let mut rng = rand::thread_rng();
+    let tape_authority = Keypair::new(&mut rng);
+    let tape_address: Address = tape_pda(tape_authority.pubkey().into()).0;
     let key = hash::hash(b"verify-raw-track");
     let raw = b"verified data";
 

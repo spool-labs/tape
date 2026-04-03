@@ -44,23 +44,23 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     }
 
     // Source vault token account
-    let (source_stake_address, _)           = stake_pda(*authority_info.key);
+    let (source_stake_address, _) = stake_pda((*authority_info.key).into());
     let (source_vault_address, source_bump) = vault_pda(source_stake_address);
 
     source_vault_info
-        .has_address(&source_vault_address)?
+        .has_address(&source_vault_address.into())?
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *source_vault_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     // Destination vault token account must be empty; we'll create it
-    let (dest_stake_address, _)             = stake_pda(*recipient_info.key);
+    let (dest_stake_address, _) = stake_pda((*recipient_info.key).into());
     let (dest_vault_address, dest_bump)     = vault_pda(dest_stake_address);
 
     dest_vault_info
         .is_writable()?
-        .has_address(&dest_vault_address)?;
+        .has_address(&dest_vault_address.into())?;
 
     // If the PDA token account doesn't exist yet, create it; otherwise validate it.
     if dest_vault_info.is_empty().is_ok() {
@@ -76,7 +76,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         dest_vault_info
             .as_token_account()?
             .assert(|t| t.owner() == *dest_vault_info.key)?
-            .assert(|t| t.mint() == MINT_ADDRESS)?;
+            .assert(|t| t.mint() == MINT_ADDRESS.into())?;
     }
 
     transfer_signed_with_bump(
@@ -98,6 +98,10 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    fn to_pubkey(address: impl Into<Pubkey>) -> Pubkey {
+        address.into()
+    }
+
     #[test]
     fn test_split_stake() {
         let amount: u64 = 1_000;
@@ -107,12 +111,17 @@ mod tests {
         let authority = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
 
-        let instruction = build_split_stake_ix(fee_payer, authority, recipient, amount.into());
+        let instruction = build_split_stake_ix(
+            fee_payer.into(),
+            authority.into(),
+            recipient.into(),
+            amount.into(),
+        );
 
-        let (source_stake_address, _) = stake_pda(authority);
+        let (source_stake_address, _) = stake_pda(authority.into());
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(recipient);
+        let (dest_stake_address, _) = stake_pda(recipient.into());
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         let accounts = vec![
@@ -120,8 +129,12 @@ mod tests {
             sol(authority, 0),
             sol(recipient, 0),
 
-            token(source_vault_address, source_vault_address, initial_source_balance),
-            empty(dest_vault_address),
+            token(
+                to_pubkey(source_vault_address),
+                to_pubkey(source_vault_address),
+                initial_source_balance,
+            ),
+            empty(to_pubkey(dest_vault_address)),
 
             mint(0),
             token_program(),
@@ -137,17 +150,17 @@ mod tests {
                 Check::account(&fee_payer)
                     .lamports(1_000_000_000 - rent_token())
                     .build(),
-                Check::account(&source_vault_address).data(
+                Check::account(&to_pubkey(source_vault_address)).data(
                     token(
-                        source_vault_address,
-                        source_vault_address,
+                        to_pubkey(source_vault_address),
+                        to_pubkey(source_vault_address),
                         initial_source_balance - amount
                     ).1.data.as_ref(),
                 ).build(),
-                Check::account(&dest_vault_address).data(
+                Check::account(&to_pubkey(dest_vault_address)).data(
                     token(
-                        dest_vault_address,
-                        dest_vault_address,
+                        to_pubkey(dest_vault_address),
+                        to_pubkey(dest_vault_address),
                         amount
                     ).1.data.as_ref(),
                 ).build(),
@@ -165,12 +178,17 @@ mod tests {
         let authority = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
 
-        let instruction = build_split_stake_ix(fee_payer, authority, recipient, amount.into());
+        let instruction = build_split_stake_ix(
+            fee_payer.into(),
+            authority.into(),
+            recipient.into(),
+            amount.into(),
+        );
 
-        let (source_stake_address, _) = stake_pda(authority);
+        let (source_stake_address, _) = stake_pda(authority.into());
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(recipient);
+        let (dest_stake_address, _) = stake_pda(recipient.into());
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         let accounts = vec![
@@ -179,13 +197,13 @@ mod tests {
             sol(recipient, 0),
 
             token(
-                source_vault_address,
-                source_vault_address,
+                to_pubkey(source_vault_address),
+                to_pubkey(source_vault_address),
                 initial_source_balance
             ),
             token(
-                dest_vault_address,
-                dest_vault_address,
+                to_pubkey(dest_vault_address),
+                to_pubkey(dest_vault_address),
                 initial_dest_balance
             ),
 
@@ -203,17 +221,17 @@ mod tests {
                 Check::account(&fee_payer)
                     .lamports(1_000_000_000)
                     .build(),
-                Check::account(&source_vault_address).data(
+                Check::account(&to_pubkey(source_vault_address)).data(
                     token(
-                        source_vault_address,
-                        source_vault_address,
+                        to_pubkey(source_vault_address),
+                        to_pubkey(source_vault_address),
                         initial_source_balance - amount
                     ).1.data.as_ref(),
                 ).build(),
-                Check::account(&dest_vault_address).data(
+                Check::account(&to_pubkey(dest_vault_address)).data(
                     token(
-                        dest_vault_address,
-                        dest_vault_address,
+                        to_pubkey(dest_vault_address),
+                        to_pubkey(dest_vault_address),
                         initial_dest_balance + amount
                     ).1.data.as_ref(),
                 ).build(),

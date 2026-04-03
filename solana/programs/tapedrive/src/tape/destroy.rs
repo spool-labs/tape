@@ -41,7 +41,7 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if tape.authority != *authority_info.key {
+    if tape.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -61,8 +61,8 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     TapeDestroyed {
-        tape: *tape_info.key,
-        authority: *authority_info.key,
+        tape: (*tape_info.key).into(),
+        authority: (*authority_info.key).into(),
     }.log();
 
     close_account(tape_info, fee_payer_info)?;
@@ -79,13 +79,13 @@ mod tests {
     fn test_destroy_tape() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let (tape_address, _) = tape_pda(authority);
+        let (tape_address, _) = tape_pda(authority.into());
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
 
         // Tape expired at 50, used = 0
         let tape = Tape {
-            authority: authority,
+            authority: authority.into(),
             capacity: StorageUnits::mb(123),
             used: StorageUnits(0),
             active_epoch: EpochNumber(40),
@@ -101,7 +101,7 @@ mod tests {
             ..Archive::zeroed()
         };
 
-        let instruction = build_destroy_tape_ix(fee_payer, authority);
+        let instruction = build_destroy_tape_ix(fee_payer.into(), authority.into());
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -125,14 +125,14 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&fee_payer)
+                Check::account(&Pubkey::from(fee_payer))
                     .lamports(1_000_000_000 + rent(Tape::get_size()))
                     .build(),
-                Check::account(&tape_address)
+                Check::account(&Pubkey::from(tape_address))
                     .lamports(0)
                     .closed()
                     .build(),
-                Check::account(&archive_address)
+                Check::account(&Pubkey::from(archive_address))
                     .data(expected_archive.pack().as_ref())
                     .build(),
             ],

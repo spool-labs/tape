@@ -6,19 +6,19 @@ use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::{EpochNumber, NodeId, TrackNumber};
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use crate::api::types::{
     InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
     SyncTrackEntry,
 };
-use tape_crypto::Pubkey;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::ApiError;
 
 #[derive(Clone, Debug)]
 pub struct PutSliceReq {
-    pub track: Pubkey,
+    pub track: Address,
     pub spool: SpoolIndex,
     pub payload: SlicePayload,
 }
@@ -28,7 +28,7 @@ pub struct PutSliceRes;
 
 #[derive(Clone, Debug)]
 pub struct GetSliceReq {
-    pub track: Pubkey,
+    pub track: Address,
     pub spool: SpoolIndex,
 }
 
@@ -39,7 +39,7 @@ pub struct GetSliceRes {
 
 #[derive(Clone, Debug)]
 pub struct GetTrackReq {
-    pub track: Pubkey,
+    pub track: Address,
 }
 
 #[derive(Clone, Debug)]
@@ -49,7 +49,7 @@ pub struct GetTrackRes {
 
 #[derive(Clone, Debug)]
 pub struct GetTrackByNumberReq {
-    pub tape: Pubkey,
+    pub tape: Address,
     pub track_number: TrackNumber,
 }
 
@@ -66,7 +66,7 @@ pub enum FindTrackVersion {
 
 #[derive(Clone, Debug)]
 pub struct FindTrackReq {
-    pub tape: Pubkey,
+    pub tape: Address,
     pub key: Hash,
     pub version: FindTrackVersion,
 }
@@ -78,7 +78,7 @@ pub struct FindTrackRes {
 
 #[derive(Clone, Debug)]
 pub struct ListTracksByTapeReq {
-    pub tape: Pubkey,
+    pub tape: Address,
     pub cursor: Option<TrackNumber>,
     pub limit: u32,
 }
@@ -91,7 +91,7 @@ pub struct ListTracksByTapeRes {
 
 #[derive(Clone, Debug)]
 pub struct GetTrackDataReq {
-    pub track: Pubkey,
+    pub track: Address,
 }
 
 #[derive(Clone, Debug)]
@@ -101,7 +101,7 @@ pub struct GetTrackDataRes {
 
 #[derive(Clone, Debug)]
 pub struct GetTrackProofReq {
-    pub track: Pubkey,
+    pub track: Address,
 }
 
 #[derive(Clone, Debug)]
@@ -137,7 +137,7 @@ pub struct SyncTracksRes {
 
 #[derive(Clone, Debug)]
 pub struct RepairReq {
-    pub track: Pubkey,
+    pub track: Address,
     pub helper_spool: SpoolIndex,
     pub stripes: Vec<StripeSubChunkRequest>,
 }
@@ -149,7 +149,7 @@ pub struct RepairRes {
 
 #[derive(Clone, Debug)]
 pub struct CertifyReq {
-    pub track: Pubkey,
+    pub track: Address,
 }
 
 #[derive(Clone, Debug)]
@@ -177,7 +177,7 @@ pub struct SignSnapshotRes {
 
 #[derive(Clone, Debug)]
 pub struct InvalidateReq {
-    pub track: Pubkey,
+    pub track: Address,
     pub proof: InconsistencyProof,
 }
 

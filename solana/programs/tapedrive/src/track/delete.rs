@@ -29,11 +29,11 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let proof = args.track;
     let track_address = track_pda(proof.state.tape, proof.state.track_number).0;
 
-    if tape.authority != *authority_info.key {
+    if tape.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if tape_address != *tape_info.key || proof.state.tape != *tape_info.key {
+    if tape_address != (*tape_info.key).into() || proof.state.tape != (*tape_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -67,7 +67,7 @@ mod tests {
         let authority = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
 
-        let (tape_address, _) = tape_pda(authority);
+        let (tape_address, _) = tape_pda(authority.into());
         let track_number = TrackNumber(0);
         let size = StorageUnits::mb(250);
         let track = CompressedTrack {
@@ -94,7 +94,7 @@ mod tests {
         expected_tree.remove_leaf_hash(track_number.0, &proof, track_hash).unwrap();
 
         let tape = Tape {
-            authority: authority,
+            authority: authority.into(),
             capacity: StorageUnits::mb(1000),
             used: size,
             active_epoch: EpochNumber(15),
@@ -107,9 +107,7 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let instruction = build_delete_track_ix(
-            fee_payer,
-            authority,
+        let instruction = build_delete_track_ix(fee_payer.into(), authority.into(),
             CompressedTrackProof { state: track, proof },
         );
 
@@ -126,7 +124,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&tape_address).data(
+                Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
                         used: StorageUnits(0),
                         tracks: TrackStore {

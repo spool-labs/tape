@@ -80,7 +80,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match classify_tx(result) {
             TxOutcome::Confirmed(sig) => {
-                info!(epoch = epoch.0, %sig, "sync_epoch: confirmed");
+                info!(epoch = epoch.0, ?sig, "sync_epoch: confirmed");
                 return TaskDone::Done(Action::SyncEpoch, epoch);
             }
             TxOutcome::Program(TapeError::AlreadySynced) => {

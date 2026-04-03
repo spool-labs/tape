@@ -1,4 +1,5 @@
 use tape_solana::*;
+use tape_crypto::address::Address;
 use crate::utils::ata;
 use crate::program::token;
 use crate::program::token::*;
@@ -8,8 +9,8 @@ use crate::program::token::*;
 pub struct InitializeMint {}
 
 pub fn build_initialize_mint_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
 ) -> Instruction {
 
     let (mint_address, _) = mint_pda();
@@ -21,13 +22,13 @@ pub fn build_initialize_mint_ix(
     Instruction {
         program_id: token::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(authority_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
 
-            AccountMeta::new(mint_address, false),
-            AccountMeta::new(metadata_address, false),
-            AccountMeta::new(treasury_address, false),
+            AccountMeta::new(mint_address.into(), false),
+            AccountMeta::new(metadata_address.into(), false),
+            AccountMeta::new(treasury_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),

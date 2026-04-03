@@ -10,6 +10,8 @@ use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature};
 use tape_api::program::{exchange, staking, tapedrive, token};
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
+use tape_crypto::signer::Signer as TapeSigner;
 use tracing::trace;
 
 #[derive(Clone)]
@@ -131,8 +133,9 @@ impl ChainFixture {
         slot_advance_per_tx: u64,
     ) -> Result<Signature> {
         let client = RpcClient::from_rpc(self.rpc.clone());
+        let payer = crypto_keypair(payer).context("payer keypair")?;
         let sig = client
-            .send_instructions(payer, instructions)
+            .send_instructions(&payer, instructions)
             .await
             .context("send_instructions")?;
 
@@ -140,7 +143,7 @@ impl ChainFixture {
             let _ = self.advance_slots(slot_advance_per_tx).await?;
         }
 
-        Ok(sig)
+        Ok(sig.into())
     }
 
     pub async fn send_instructions_with_signers_and_advance(
@@ -151,8 +154,17 @@ impl ChainFixture {
         slot_advance_per_tx: u64,
     ) -> Result<Signature> {
         let client = RpcClient::from_rpc(self.rpc.clone());
+        let payer = crypto_keypair(payer).context("payer keypair")?;
+        let signers = signers
+            .iter()
+            .map(|signer| crypto_keypair(signer).context("instruction signer"))
+            .collect::<Result<Vec<_>>>()?;
+        let signer_refs = signers
+            .iter()
+            .map(|signer| signer as &dyn TapeSigner)
+            .collect::<Vec<_>>();
         let sig = client
-            .send_instructions_with_signers(payer, instructions, signers)
+            .send_instructions_with_signers(&payer, instructions, &signer_refs)
             .await
             .context("send_instructions_with_signers")?;
 
@@ -160,7 +172,7 @@ impl ChainFixture {
             let _ = self.advance_slots(slot_advance_per_tx).await?;
         }
 
-        Ok(sig)
+        Ok(sig.into())
     }
 }
 
@@ -168,4 +180,8 @@ impl Default for ChainFixture {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn crypto_keypair(keypair: &Keypair) -> Result<CryptoKeypair> {
+    CryptoKeypair::from_solana_keypair(keypair).context("convert Solana keypair")
 }

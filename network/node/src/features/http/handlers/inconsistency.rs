@@ -14,13 +14,13 @@ use tape_core::cert::InvalidateMessage;
 use tape_core::erasure::{SPOOL_GROUP_SIZE, group_for_spool};
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::EpochNumber;
-use tape_crypto::Pubkey;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, BlsInconsistencyResponse, InconsistencyProof, InconsistencyRequest,
 };
 use tape_store::ops::{TrackDataOps, TrackOps};
-use tape_store::types::{Pubkey as StorePubkey, TrackData};
+use tape_store::types::TrackData;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
@@ -35,11 +35,11 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| RouteError::BadRequest(format!("inconsistency request: {error}")))?;
 
     let epoch = current_epoch(&state)?;
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
 
-    let track_key: StorePubkey = track.into();
+    let track_key = track;
 
     let track_info = state
         .context

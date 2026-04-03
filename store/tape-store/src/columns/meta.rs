@@ -4,7 +4,7 @@
 //! - node_status: NodeStatus (wincode-serialized)
 //! - cluster_hash: Hash (32 bytes)
 //! - chain_epoch: EpochNumber
-//! - node_address: Pubkey
+//! - node_address: Address
 
 use store::Column;
 

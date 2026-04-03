@@ -13,6 +13,7 @@ use tape_api::instruction::{
 use tape_api::program::tapedrive::node_pda;
 use tape_api::utils::to_name;
 use solana_sdk::signer::Signer;
+use tape_crypto::address::Address;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::{BasisPoints, EpochNumber};
 use crate::chain::ChainFixture;
@@ -60,7 +61,7 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_initialize_mint_ix(admin_pub, admin_pub)],
+                vec![build_initialize_mint_ix(admin_pub.into(), admin_pub.into())],
                 slot_bump,
             )
             .await
@@ -70,7 +71,7 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_create_system_ix(admin_pub, admin_pub)],
+                vec![build_create_system_ix(admin_pub.into(), admin_pub.into())],
                 slot_bump,
             )
             .await
@@ -82,7 +83,7 @@ impl<'a> SimnetScenario<'a> {
                 .chain()
                 .send_instructions_and_advance(
                     admin,
-                    vec![build_expand_system_ix(admin_pub, admin_pub)],
+                    vec![build_expand_system_ix(admin_pub.into(), admin_pub.into())],
                     slot_bump,
                 )
                 .await;
@@ -106,7 +107,7 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_initialize_ix(admin_pub, admin_pub)],
+                vec![build_initialize_ix(admin_pub.into(), admin_pub.into())],
                 slot_bump,
             )
             .await
@@ -139,12 +140,12 @@ impl<'a> SimnetScenario<'a> {
                 .map_err(|e| anyhow::anyhow!("bls pop: {e:?}"))?;
 
             let ix = build_register_node_ix(
-                node.authority(),
-                node.authority(),
+                node.authority().into(),
+                node.authority().into(),
                 name,
                 commission,
                 network_address,
-                network_tls,
+                network_tls.into(),
                 bls_pubkey,
                 bls_pop,
             );
@@ -167,8 +168,9 @@ impl<'a> SimnetScenario<'a> {
         let slot_bump = self.harness.config().slot_advance_per_tx;
 
         for node in self.harness.nodes() {
-            let (node_address, _) = node_pda(node.authority());
-            let ix = build_join_network_ix(node.authority(), node.authority(), node_address);
+            let authority = Address::from(node.authority());
+            let (node_address, _) = node_pda(authority);
+            let ix = build_join_network_ix(authority, authority, node_address);
 
             let result = self
                 .harness
@@ -193,7 +195,10 @@ impl<'a> SimnetScenario<'a> {
             .node(authority_node_index)
             .context("authority node missing")?;
 
-        let ix = build_advance_epoch_ix(authority.authority(), authority.authority());
+        let ix = build_advance_epoch_ix(
+            authority.authority().into(),
+            authority.authority().into(),
+        );
 
         self.harness
             .chain()

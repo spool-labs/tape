@@ -1,7 +1,7 @@
 use rpc::RpcError;
 use rpc_client::parse_tape_error;
-use solana_sdk::signature::Signature;
 use tape_api::errors::TapeError;
+use tape_crypto::tx::Txid;
 
 /// Outcome of a Solana transaction submission attempt.
 ///
@@ -14,7 +14,7 @@ use tape_api::errors::TapeError;
 /// and some mean "rejected" (NotInCommittee, BadSchedule).
 pub enum TxOutcome {
     /// Transaction confirmed on chain.
-    Confirmed(Signature),
+    Confirmed(Txid),
     /// On-chain program returned a typed TapeError.
     Program(TapeError),
     /// Transport/RPC error (timeout, connection, blockhash expired, etc.)
@@ -26,7 +26,7 @@ pub enum TxOutcome {
 ///
 /// Parses program errors from the RPC error string. If no program error
 /// is found, the error is treated as a transport-level issue.
-pub fn classify_tx(result: Result<Signature, RpcError>) -> TxOutcome {
+pub fn classify_tx(result: Result<Txid, RpcError>) -> TxOutcome {
     match result {
         Ok(sig) => TxOutcome::Confirmed(sig),
         Err(err) => match parse_tape_error(&err) {
@@ -41,10 +41,11 @@ pub fn classify_tx(result: Result<Signature, RpcError>) -> TxOutcome {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use solana_sdk::signature::Signature;
 
     #[test]
     fn confirmed() {
-        let sig = Signature::new_unique();
+        let sig: Txid = Signature::new_unique().into();
         let outcome = classify_tx(Ok(sig));
         assert!(matches!(outcome, TxOutcome::Confirmed(_)));
     }

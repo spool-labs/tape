@@ -83,7 +83,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match classify_tx(result) {
             TxOutcome::Confirmed(sig) => {
-                info!(epoch = epoch.0, %sig, "join_network: confirmed");
+                info!(epoch = epoch.0, ?sig, "join_network: confirmed");
                 return TaskDone::Done(Action::JoinNetwork, epoch);
             }
             TxOutcome::Program(

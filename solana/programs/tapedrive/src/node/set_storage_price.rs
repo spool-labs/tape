@@ -20,7 +20,7 @@ pub fn process_set_storage_price(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -42,12 +42,12 @@ mod tests {
         let old_price = TAPE(500);
         let new_price = TAPE(1000);
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_storage_price_ix(fee_payer, authority, node_address, new_price);
+        let instruction = build_set_storage_price_ix(fee_payer.into(), authority.into(), node_address, new_price);
 
         let node = Node {
-            authority,
+            authority: authority.into(),
             preferences: NodePreferences {
                 storage_price: old_price,
                 ..NodePreferences::zeroed()
@@ -67,7 +67,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         preferences: NodePreferences {
                             storage_price: new_price,

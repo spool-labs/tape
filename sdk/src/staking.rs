@@ -1,9 +1,6 @@
 //! Staking operations for the Tapedrive network.
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
-
 use rpc::Rpc;
 use tape_api::compute::{
     ADVANCE_POOL_CU, REQUEST_STAKE_UNLOCK_CU, STAKE_WITH_POOL_CU, UNSTAKE_FROM_POOL_CU,
@@ -14,6 +11,7 @@ use tape_api::instruction::{
     build_unstake_from_pool_ix,
 };
 use tape_core::types::coin::{Coin, TAPE};
+use tape_crypto::address::Address;
 
 use tape_protocol::Api;
 
@@ -31,27 +29,27 @@ impl<Blockchain: Rpc, Cluster: Api>
     pub async fn stake_with_pool(
         &self,
         stake_key: &StakeKey,
-        pool: Pubkey,
+        pool: Address,
         amount: Coin<TAPE>,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
+        let stake_signer = stake_key.keypair();
 
         let mut ixs = vec![
             ComputeBudgetInstruction::set_compute_unit_limit(STAKE_WITH_POOL_CU),
         ];
 
-        ixs.extend(
-            build_authority_with_tokens_ix(
-                payer.pubkey(),
-                stake_key.pubkey(),
-                amount,
-            ),
-        );
+        ixs.extend(build_authority_with_tokens_ix(
+            payer.pubkey().into(),
+            stake_key.address(),
+            amount,
+        )
+        .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?);
 
         ixs.push(
             build_stake_with_pool_ix(
-                payer.pubkey(),
-                stake_key.pubkey(),
+                payer.pubkey().into(),
+                stake_key.address(),
                 pool,
                 amount,
             ),
@@ -61,7 +59,7 @@ impl<Blockchain: Rpc, Cluster: Api>
             .send_instructions_with_signers(
                 payer,
                 ixs,
-                &[stake_key.as_keypair()],
+                &[stake_signer],
             )
             .await?;
 
@@ -71,14 +69,14 @@ impl<Blockchain: Rpc, Cluster: Api>
     /// Advance a node's staking pool to the current epoch.
     pub async fn advance_pool(
         &self,
-        node_authority: Pubkey,
-        pool: Pubkey,
+        node_authority: Address,
+        pool: Address,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
             ADVANCE_POOL_CU);
 
-        let ix = build_advance_pool_ix(payer.pubkey(), node_authority, pool);
+        let ix = build_advance_pool_ix(payer.pubkey().into(), node_authority, pool);
 
         self.rpc()
             .send_instructions(payer, vec![cu_ix, ix])
@@ -91,14 +89,15 @@ impl<Blockchain: Rpc, Cluster: Api>
     pub async fn request_stake_unlock(
         &self,
         stake_key: &StakeKey,
-        pool: Pubkey,
+        pool: Address,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
+        let stake_signer = stake_key.keypair();
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(REQUEST_STAKE_UNLOCK_CU);
 
         let ix = build_request_stake_unlock_ix(
-            payer.pubkey(),
-            stake_key.pubkey(),
+            payer.pubkey().into(),
+            stake_key.address(),
             pool,
         );
 
@@ -106,7 +105,7 @@ impl<Blockchain: Rpc, Cluster: Api>
             .send_instructions_with_signers(
                 payer,
                 vec![cu_ix, ix],
-                &[stake_key.as_keypair()],
+                &[stake_signer],
             )
             .await?;
 
@@ -117,14 +116,15 @@ impl<Blockchain: Rpc, Cluster: Api>
     pub async fn unstake_from_pool(
         &self,
         stake_key: &StakeKey,
-        pool: Pubkey,
+        pool: Address,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
+        let stake_signer = stake_key.keypair();
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(UNSTAKE_FROM_POOL_CU);
 
         let ix = build_unstake_from_pool_ix(
-            payer.pubkey(),
-            stake_key.pubkey(),
+            payer.pubkey().into(),
+            stake_key.address(),
             pool,
         );
 
@@ -132,7 +132,7 @@ impl<Blockchain: Rpc, Cluster: Api>
             .send_instructions_with_signers(
                 payer,
                 vec![cu_ix, ix],
-                &[stake_key.as_keypair()],
+                &[stake_signer],
             )
             .await?;
 

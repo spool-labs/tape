@@ -53,3 +53,4 @@ ark-serialize = { version = "0.5.0" }
 rand = { version = "0.8.5", default-features = true }
 # ed25519-consensus brings in curve25519-dalek-ng which has stack size issues on SBF
 ed25519-consensus = "2.1"
+solana-sdk = { workspace = true }

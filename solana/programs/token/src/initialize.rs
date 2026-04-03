@@ -34,17 +34,17 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     mint_info
         .is_empty()?
         .is_writable()?
-        .has_address(&MINT_ADDRESS)?;
+        .has_address(&MINT_ADDRESS.into())?;
 
     metadata_info
         .is_empty()?
         .is_writable()?
-        .has_address(&METADATA_ADDRESS)?;
+        .has_address(&METADATA_ADDRESS.into())?;
 
     treasury_info
         .is_empty()?
         .is_writable()?
-        .has_address(&TREASURY_ADDRESS)?;
+        .has_address(&TREASURY_ADDRESS.into())?;
 
 
     // Check programs and sysvars.
@@ -147,13 +147,17 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    fn to_pubkey(address: impl Into<Pubkey>) -> Pubkey {
+        address.into()
+    }
+
     #[test]
     fn test_initialize() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let authority_ata = ata_address(&authority);
 
-        let instruction = build_initialize_mint_ix(fee_payer, authority);
+        let instruction = build_initialize_mint_ix(fee_payer.into(), authority.into());
 
         let (treasury_address, _) = treasury_pda();
         let (mint_address, _) = mint_pda();
@@ -164,9 +168,9 @@ mod tests {
             sol(authority, 0),
             empty(authority_ata),
 
-            empty(mint_address),
-            empty(metadata_address),
-            empty(treasury_address),
+            empty(to_pubkey(mint_address)),
+            empty(to_pubkey(metadata_address)),
+            empty(to_pubkey(treasury_address)),
 
             system_program(),
             token_program(),
@@ -181,14 +185,14 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&treasury_address).data(
+                Check::account(&to_pubkey(treasury_address)).data(
                     Treasury {
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&authority_ata).data(
                     token(authority_ata, authority, MAX_SUPPLY).1.data.as_ref()
                 ).build(),
-                Check::account(&mint_address).data(
+                Check::account(&to_pubkey(mint_address)).data(
                     mint(MAX_SUPPLY).1.data.as_ref()
                 ).build(),
             ]

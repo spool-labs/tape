@@ -8,6 +8,7 @@
 use crate::track::blob::BlobInfo;
 use crate::track::types::CompressedTrack;
 use crate::types::{EpochNumber, NodeId, SlotNumber};
+use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 
 #[cfg(feature = "wincode")]
@@ -27,19 +28,19 @@ pub enum ReplayableEvent {
 
     /// Track was certified.
     CertifyTrack {
-        track: [u8; 32],
+        track: Address,
         epoch: EpochNumber,
     },
 
     /// Track was deleted.
     DeleteTrack {
-        track: [u8; 32],
+        track: Address,
         epoch: EpochNumber,
     },
 
     /// Track was invalidated.
     InvalidateTrack {
-        track: [u8; 32],
+        track: Address,
         epoch: EpochNumber,
     },
 
@@ -51,7 +52,7 @@ pub enum ReplayableEvent {
 
     /// Node synced for epoch.
     SyncEpoch {
-        node: [u8; 32],
+        node: Address,
         node_id: NodeId,
         epoch: EpochNumber,
         spools_hash: Hash,
@@ -59,27 +60,27 @@ pub enum ReplayableEvent {
 
     /// Tape was reserved.
     ReserveTape {
-        tape: [u8; 32],
-        authority: [u8; 32],
+        tape: Address,
+        authority: Address,
         active_epoch: EpochNumber,
         expiry_epoch: EpochNumber,
     },
 
     /// Tape was destroyed.
     DestroyTape {
-        tape: [u8; 32],
+        tape: Address,
         epoch: EpochNumber,
     },
 
     /// Node was registered.
     RegisterNode {
-        authority: [u8; 32],
-        node: [u8; 32],
+        authority: Address,
+        node: Address,
     },
 
     /// Node joined the network.
     JoinNetwork {
-        node: [u8; 32],
+        node: Address,
     },
 }
 
@@ -119,9 +120,6 @@ pub struct SnapshotLog {
 
 #[cfg(test)]
 mod tests {
-    use solana_program::pubkey::Pubkey;
-
-    use super::*;
     use crate::spooler::SpoolGroup;
     use crate::track::types::{TrackKind, TrackState};
     #[cfg(feature = "wincode")]
@@ -130,11 +128,12 @@ mod tests {
     use crate::erasure::SPOOL_GROUP_SIZE;
     #[cfg(feature = "wincode")]
     use crate::types::{StorageUnits, StripeCount};
+    use super::*;
 
     fn raw_replay_track() -> ReplayTrack {
         ReplayTrack {
             state: CompressedTrack {
-                tape: Pubkey::new_from_array([1u8; 32]),
+                tape: Address::from([1u8; 32]),
                 key: Hash::default(),
                 track_number: 0u64.into(),
                 kind: TrackKind::Raw as u64,
@@ -152,7 +151,7 @@ mod tests {
     fn blob_replay_track() -> ReplayTrack {
         ReplayTrack {
             state: CompressedTrack {
-                tape: Pubkey::new_from_array([2u8; 32]),
+                tape: Address::from([2u8; 32]),
                 key: Hash::from([3u8; 32]),
                 track_number: 1u64.into(),
                 kind: TrackKind::Blob as u64,
@@ -179,15 +178,15 @@ mod tests {
         let events = vec![
             ReplayableEvent::Track(raw_replay_track()),
             ReplayableEvent::CertifyTrack {
-                track: [2u8; 32],
+                track: Address::from([2u8; 32]),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::DeleteTrack {
-                track: [3u8; 32],
+                track: Address::from([3u8; 32]),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::InvalidateTrack {
-                track: [4u8; 32],
+                track: Address::from([4u8; 32]),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::AdvanceEpoch {
@@ -195,26 +194,28 @@ mod tests {
                 new_epoch: EpochNumber(10),
             },
             ReplayableEvent::SyncEpoch {
-                node: [5u8; 32],
+                node: Address::from([5u8; 32]),
                 node_id: NodeId(1),
                 epoch: EpochNumber(10),
                 spools_hash: Hash::default(),
             },
             ReplayableEvent::ReserveTape {
-                tape: [6u8; 32],
-                authority: [7u8; 32],
+                tape: Address::from([6u8; 32]),
+                authority: Address::from([7u8; 32]),
                 active_epoch: EpochNumber(10),
                 expiry_epoch: EpochNumber(20),
             },
             ReplayableEvent::DestroyTape {
-                tape: [8u8; 32],
+                tape: Address::from([8u8; 32]),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::RegisterNode {
-                authority: [9u8; 32],
-                node: [10u8; 32],
+                authority: Address::from([9u8; 32]),
+                node: Address::from([10u8; 32]),
             },
-            ReplayableEvent::JoinNetwork { node: [11u8; 32] },
+            ReplayableEvent::JoinNetwork {
+                node: Address::from([11u8; 32]),
+            },
         ];
         assert_eq!(events.len(), 10);
     }
@@ -242,7 +243,7 @@ mod tests {
                             ..raw_replay_track()
                         }),
                         ReplayableEvent::CertifyTrack {
-                            track: [1u8; 32],
+                            track: Address::from([1u8; 32]),
                             epoch: EpochNumber(42),
                         },
                     ],
@@ -273,14 +274,14 @@ mod tests {
                     },
                     ReplayableEvent::Track(ReplayTrack {
                         state: CompressedTrack {
-                            tape: Pubkey::new_from_array([0xAB; 32]),
+                            tape: Address::from([0xAB; 32]),
                             ..raw_replay_track().state
                         },
                         epoch: EpochNumber(42),
                         ..raw_replay_track()
                     }),
                     ReplayableEvent::SyncEpoch {
-                        node: [0xCD; 32],
+                        node: Address::from([0xCD; 32]),
                         node_id: NodeId(7),
                         epoch: EpochNumber(42),
                         spools_hash: Hash::default(),
@@ -301,10 +302,12 @@ mod tests {
             ReplayableEvent::Track(raw_replay_track()),
             ReplayableEvent::Track(blob_replay_track()),
             ReplayableEvent::CertifyTrack {
-                track: [2u8; 32],
+                track: Address::from([2u8; 32]),
                 epoch: EpochNumber(10),
             },
-            ReplayableEvent::JoinNetwork { node: [3u8; 32] },
+            ReplayableEvent::JoinNetwork {
+                node: Address::from([3u8; 32]),
+            },
         ];
 
         for event in &events {

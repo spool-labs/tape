@@ -4,7 +4,7 @@ use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, SlotNumber};
-use tape_store::types::Pubkey as StorePubkey;
+use tape_crypto::address::Address;
 
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
@@ -82,12 +82,12 @@ fn capture_instruction(
         },
         ParsedInstruction::SyncEpoch { event } => CapturedTrackWrite {
             event: CapturedEvent {
-                epoch: *current_epoch,
-                event: ReplayableEvent::SyncEpoch {
-                    node: event.node.to_bytes(),
-                    node_id: event.id,
-                    epoch: event.epoch,
-                    spools_hash: event.spools_hash,
+                    epoch: *current_epoch,
+                    event: ReplayableEvent::SyncEpoch {
+                        node: event.node,
+                        node_id: event.id,
+                        epoch: event.epoch,
+                        spools_hash: event.spools_hash,
                 },
             },
             raw_track: None,
@@ -131,7 +131,7 @@ fn capture_instruction(
                 },
                 raw_track: match value {
                     TrackData::Raw(bytes) => Some(RawTrack {
-                        track: StorePubkey::from(*track),
+                        track: Address::from(*track),
                         spool_group,
                         data: bytes.clone(),
                     }),
@@ -143,7 +143,7 @@ fn capture_instruction(
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::DeleteTrack {
-                    track: track.to_bytes(),
+                    track: (*track).into(),
                     epoch: *current_epoch,
                 },
             },
@@ -153,7 +153,7 @@ fn capture_instruction(
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::CertifyTrack {
-                    track: track.to_bytes(),
+                    track: (*track).into(),
                     epoch: event.epoch,
                 },
             },
@@ -163,7 +163,7 @@ fn capture_instruction(
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::InvalidateTrack {
-                    track: track.to_bytes(),
+                    track: (*track).into(),
                     epoch: event.epoch,
                 },
             },
@@ -173,8 +173,8 @@ fn capture_instruction(
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::ReserveTape {
-                    tape: tape.to_bytes(),
-                    authority: event.authority.to_bytes(),
+                    tape: (*tape).into(),
+                    authority: event.authority,
                     active_epoch: event.active_epoch,
                     expiry_epoch: event.expiry_epoch,
                 },
@@ -185,7 +185,7 @@ fn capture_instruction(
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::DestroyTape {
-                    tape: tape.to_bytes(),
+                    tape: (*tape).into(),
                     epoch: *current_epoch,
                 },
             },
@@ -199,8 +199,8 @@ fn capture_instruction(
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::RegisterNode {
-                    authority: authority.to_bytes(),
-                    node: node.to_bytes(),
+                    authority: (*authority).into(),
+                    node: (*node).into(),
                 },
             },
             raw_track: None,
@@ -209,7 +209,7 @@ fn capture_instruction(
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::JoinNetwork {
-                    node: node.to_bytes(),
+                    node: (*node).into(),
                 },
             },
             raw_track: None,
@@ -222,7 +222,7 @@ fn capture_instruction(
 
 #[cfg(test)]
 mod tests {
-    use solana_sdk::pubkey::Pubkey;
+    use tape_crypto::address::Address;
     use tape_api::event::{
         EpochAdvanced, SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified,
         TapeReserved, TrackCertified, TrackWritten,
@@ -230,6 +230,7 @@ mod tests {
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::COMMITMENT_TREE_HEIGHT;
     use tape_core::spooler::SpoolGroup;
     use tape_core::snapshot::ReplayableEvent;
     use tape_core::track::blob::BlobInfo;
@@ -237,24 +238,35 @@ mod tests {
     use tape_core::track::types::{TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
+    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 
     use super::capture_block;
     use crate::features::block::ingestor::ParsedBlock;
 
-    fn blob_track_write_instruction(track: Pubkey, tape: Pubkey, epoch: EpochNumber) -> ParsedInstruction {
+    fn blob_info(slices: &[Vec<u8>]) -> BlobInfo {
+        let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+
+        BlobInfo {
+            size: StorageUnits::from_bytes(64 * slices.len() as u64),
+            root: Hash::new_unique(),
+            commitment,
+            profile: EncodingProfile::default(),
+            stripe_size: StorageUnits::from_bytes(64),
+            stripe_count: StripeCount(slices.len() as u64),
+            leaves,
+        }
+    }
+
+    fn blob_track_write_instruction(track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
+        let payload = vec![vec![0xAA; 64]; SPOOL_GROUP_SIZE];
+        let blob = blob_info(&payload);
+
         ParsedInstruction::TrackWrite {
-            authority: Pubkey::new_unique(),
+            authority: Address::new_unique(),
             track,
             key: Hash::new_unique(),
-            value: TrackData::Blob(BlobInfo {
-                size: StorageUnits::mb(1),
-                root: Hash::new_unique(),
-                commitment: Hash::new_unique(),
-                profile: EncodingProfile::default(),
-                stripe_size: StorageUnits::from_bytes(64),
-                stripe_count: StripeCount(2),
-                leaves: [Hash::default(); SPOOL_GROUP_SIZE],
-            }),
+            value: TrackData::Blob(blob),
             event: TrackWritten {
                 epoch,
                 track,
@@ -271,19 +283,19 @@ mod tests {
             slot: SlotNumber(7),
             instructions: vec![
                 ParsedInstruction::InitSnapshotEpoch {
-                    event: SnapshotEpochInitialized {
-                        epoch: EpochNumber(7),
-                        parent_epoch: EpochNumber(6),
-                        tape: Pubkey::new_unique(),
-                    },
+                event: SnapshotEpochInitialized {
+                    epoch: EpochNumber(7),
+                    parent_epoch: EpochNumber(6),
+                    tape: Address::new_unique(),
                 },
+            },
                 ParsedInstruction::CertifySnapshotGroup {
                     event: SnapshotGroupCertified {
-                        epoch: EpochNumber(7),
-                        group: SpoolGroup(3),
-                        tape: Pubkey::new_unique(),
-                        track: Pubkey::new_unique(),
-                        track_number: TrackNumber(9),
+                    epoch: EpochNumber(7),
+                    group: SpoolGroup(3),
+                    tape: Address::new_unique(),
+                    track: Address::new_unique(),
+                    track_number: TrackNumber(9),
                         commitment: Hash::from([0x44; 32]),
                         signer_count: [2; 8],
                         signer_weight: [3; 8],
@@ -300,9 +312,9 @@ mod tests {
         }
     }
 
-    fn raw_track_write_instruction(track: Pubkey, tape: Pubkey, epoch: EpochNumber) -> ParsedInstruction {
+    fn raw_track_write_instruction(track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
         ParsedInstruction::TrackWrite {
-            authority: Pubkey::new_unique(),
+            authority: Address::new_unique(),
             track,
             key: Hash::new_unique(),
             value: TrackData::Raw(vec![0xAB; 4 * 1024]),
@@ -317,7 +329,7 @@ mod tests {
         }
     }
 
-    fn certify_track_instruction(track: Pubkey, epoch: EpochNumber) -> ParsedInstruction {
+    fn certify_track_instruction(track: Address, epoch: EpochNumber) -> ParsedInstruction {
         ParsedInstruction::CertifyTrack {
             track,
             event: TrackCertified {
@@ -329,13 +341,13 @@ mod tests {
         }
     }
 
-    fn reserve_tape_instruction(tape: Pubkey, active_epoch: EpochNumber, expiry_epoch: EpochNumber) -> ParsedInstruction {
+    fn reserve_tape_instruction(tape: Address, active_epoch: EpochNumber, expiry_epoch: EpochNumber) -> ParsedInstruction {
         ParsedInstruction::ReserveTape {
-            owner: Pubkey::new_unique(),
+            owner: Address::new_unique(),
             tape,
             event: TapeReserved {
                 tape,
-                authority: Pubkey::new_unique(),
+                authority: Address::new_unique(),
                 capacity: StorageUnits::mb(10),
                 active_epoch,
                 expiry_epoch,
@@ -362,8 +374,8 @@ mod tests {
 
     #[test]
     fn keeps_order() {
-        let track = Pubkey::new_unique();
-        let tape = Pubkey::new_unique();
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let block = ParsedBlock {
             slot: SlotNumber(42),
             instructions: vec![
@@ -391,8 +403,8 @@ mod tests {
 
     #[test]
     fn rebuckets_events() {
-        let track = Pubkey::new_unique();
-        let tape = Pubkey::new_unique();
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let block = ParsedBlock {
             slot: SlotNumber(100),
             instructions: vec![
@@ -420,8 +432,8 @@ mod tests {
 
     #[test]
     fn captures_raw_track_write() {
-        let track = Pubkey::new_unique();
-        let tape = Pubkey::new_unique();
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let block = ParsedBlock {
             slot: SlotNumber(5),
             instructions: vec![raw_track_write_instruction(track, tape, EpochNumber(9))],

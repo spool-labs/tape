@@ -36,6 +36,7 @@ tape-retry = { workspace = true }
 
 # Metrics (optional)
 tape-metrics = { workspace = true, optional = true }
+tape-crypto.workspace = true
 
 [features]
 default = []

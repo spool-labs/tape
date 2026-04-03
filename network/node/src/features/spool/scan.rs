@@ -133,26 +133,27 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
+    use tape_crypto::address::Address;
     use super::*;
-    use tape_api::state::{CompressedTrack, TrackKind, TrackState};
     use tape_core::encoding::EncodingProfile;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::Hash;
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::{ObjectInfo, Pubkey};
+    use tape_store::types::ObjectInfo;
 
     use crate::context::test_utils::test_context;
 
     const SPOOL: SpoolIndex = 5;
 
-    fn addr(n: u8) -> Pubkey {
-        Pubkey([n; 32])
+    fn addr(n: u8) -> Address {
+        Address::from([n; 32])
     }
 
     fn track(group: SpoolGroup) -> CompressedTrack {
         let _profile = EncodingProfile::clay_default();
         CompressedTrack {
-            tape: Pubkey([0; 32]),
+            tape: Address::from([0; 32]),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Blob as u64,
@@ -184,7 +185,7 @@ mod tests {
         assert_eq!(result, ScanResult::Done { gaps: 0 });
     }
 
-    fn certified(track_address: Pubkey) -> ObjectInfo {
+    fn certified(track_address: Address) -> ObjectInfo {
         ObjectInfo::Valid {
             track_address,
             registered_epoch: EpochNumber(1),

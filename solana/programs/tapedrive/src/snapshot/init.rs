@@ -25,7 +25,7 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     rent_info.is_sysvar(&sysvar::rent::ID)?;
 
     let (system_address, _) = system_pda();
-    system_info.is_system()?.has_address(&system_address)?;
+    system_info.is_system()?.has_address(&system_address.into())?;
 
     let epoch = epoch_info.is_epoch()?.as_account::<Epoch>(&tapedrive::ID)?;
     let archive = archive_info
@@ -52,13 +52,13 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     manifest_info
         .is_empty()?
         .is_writable()?
-        .has_address(&manifest_address)?;
+        .has_address(&manifest_address.into())?;
 
     let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
     snapshot_tape_info
         .is_empty()?
         .is_writable()?
-        .has_address(&snapshot_tape_address)?;
+        .has_address(&snapshot_tape_address.into())?;
 
     create_program_account::<SnapshotManifest>(
         manifest_info,
@@ -86,7 +86,7 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
 
     let snapshot_tape = snapshot_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
     snapshot_tape.id = tape_id;
-    snapshot_tape.authority = system_address;
+    snapshot_tape.authority = system_address.into();
     snapshot_tape.active_epoch = snapshot_epoch;
     snapshot_tape.expiry_epoch = EpochNumber(u64::MAX);
     snapshot_tape.capacity = StorageUnits(u64::MAX);
@@ -150,7 +150,7 @@ mod tests {
             tail_epoch: EpochNumber(0),
         };
 
-        let instruction = build_init_snapshot_epoch_ix(fee_payer, snapshot_epoch);
+        let instruction = build_init_snapshot_epoch_ix(fee_payer.into(), snapshot_epoch);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -176,7 +176,7 @@ mod tests {
 
         let expected_tape = Tape {
             id: TapeNumber(5),
-            authority: system_address,
+            authority: system_address.into(),
             capacity: StorageUnits(u64::MAX),
             used: StorageUnits::zero(),
             active_epoch: snapshot_epoch,
@@ -190,7 +190,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&archive_address)
+                Check::account(&Pubkey::from(archive_address))
                     .data(
                         Archive {
                             tape_count: 5,
@@ -200,10 +200,10 @@ mod tests {
                         .as_ref(),
                     )
                     .build(),
-                Check::account(&manifest_address)
+                Check::account(&Pubkey::from(manifest_address))
                     .data(expected_manifest.pack().as_ref())
                     .build(),
-                Check::account(&snapshot_tape_address)
+                Check::account(&Pubkey::from(snapshot_tape_address))
                     .data(expected_tape.pack().as_ref())
                     .build(),
             ],
@@ -230,7 +230,7 @@ mod tests {
             tail_epoch: EpochNumber(1),
         };
 
-        let instruction = build_init_snapshot_epoch_ix(fee_payer, snapshot_epoch);
+        let instruction = build_init_snapshot_epoch_ix(fee_payer.into(), snapshot_epoch);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),

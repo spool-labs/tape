@@ -1,7 +1,7 @@
 //! Error types for tape-store operations
 
-use crate::types::Pubkey;
 use tape_core::types::EpochNumber;
+use tape_crypto::address::Address;
 use thiserror::Error;
 
 /// Errors that can occur during tape-store operations
@@ -13,15 +13,15 @@ pub enum TapeStoreError {
 
     /// Tape info not found
     #[error("Tape info not found: {0:?}")]
-    TapeNotFound(Pubkey),
+    TapeNotFound(Address),
 
     /// Track info not found
     #[error("Track info not found: {0:?}")]
-    TrackNotFound(Pubkey),
+    TrackNotFound(Address),
 
     /// Slice not found
     #[error("Slice not found: spool={0}, track={1:?}")]
-    SliceNotFound(u16, Pubkey),
+    SliceNotFound(u16, Address),
 
     /// Spool not found
     #[error("Spool not found: spool={0}")]

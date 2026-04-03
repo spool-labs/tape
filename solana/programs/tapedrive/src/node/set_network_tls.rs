@@ -20,7 +20,7 @@ pub fn process_set_network_tls(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -41,14 +41,14 @@ mod tests {
         let old_tls = Pubkey::new_unique();
         let new_tls = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_network_tls_ix(fee_payer, authority, node_address, new_tls);
+        let instruction = build_set_network_tls_ix(fee_payer.into(), authority.into(), node_address, new_tls.into());
 
         let node = Node {
-            authority,
+            authority: authority.into(),
             metadata: NodeMetadata {
-                network_tls: old_tls,
+                network_tls: old_tls.into(),
                 ..NodeMetadata::zeroed()
             },
             ..Node::zeroed()
@@ -66,10 +66,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         metadata: NodeMetadata {
-                            network_tls: new_tls,
+                            network_tls: new_tls.into(),
                             ..node.metadata
                         },
                         ..node

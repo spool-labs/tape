@@ -11,6 +11,7 @@ use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_DRIVE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
 use tape_core::track::data::{TrackData, TrackDataSlice};
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
 use crate::error::ParseError;
@@ -28,37 +29,37 @@ pub enum RawInstruction {
     CertifySnapshotGroup,
     FinalizeSnapshotEpoch,
     AdvancePool {
-        node: Pubkey,
+        node: Address,
     },
     TrackWrite {
-        authority: Pubkey,
+        authority: Address,
         key: Hash,
         value: TrackData,
     },
     DeleteTrack {
-        owner: Pubkey,
-        track: Pubkey,
+        owner: Address,
+        track: Address,
     },
     CertifyTrack {
-        track: Pubkey,
+        track: Address,
     },
     InvalidateTrack {
-        track: Pubkey,
+        track: Address,
     },
     ReserveTape {
-        owner: Pubkey,
-        tape: Pubkey,
+        owner: Address,
+        tape: Address,
     },
     DestroyTape {
-        owner: Pubkey,
-        tape: Pubkey,
+        owner: Address,
+        tape: Address,
     },
     RegisterNode {
-        authority: Pubkey,
-        node: Pubkey,
+        authority: Address,
+        node: Address,
     },
     JoinNetwork {
-        node: Pubkey,
+        node: Address,
     },
 }
 
@@ -85,52 +86,52 @@ pub enum ParsedInstruction {
         event: SnapshotEpochFinalized,
     },
     AdvancePool {
-        node: Pubkey,
+        node: Address,
         event: PoolAdvanced,
     },
 
     // Track management
     TrackWrite {
-        authority: Pubkey,
-        track: Pubkey,
+        authority: Address,
+        track: Address,
         key: Hash,
         value: TrackData,
         event: TrackWritten,
     },
     DeleteTrack {
-        owner: Pubkey,
-        track: Pubkey,
+        owner: Address,
+        track: Address,
         event: TrackDeleted,
     },
     CertifyTrack {
-        track: Pubkey,
+        track: Address,
         event: TrackCertified,
     },
     InvalidateTrack {
-        track: Pubkey,
+        track: Address,
         event: TrackInvalidated,
     },
 
     // Tape management
     ReserveTape {
-        owner: Pubkey,
-        tape: Pubkey,
+        owner: Address,
+        tape: Address,
         event: TapeReserved,
     },
     DestroyTape {
-        owner: Pubkey,
-        tape: Pubkey,
+        owner: Address,
+        tape: Address,
         event: TapeDestroyed,
     },
 
     // Node management
     RegisterNode {
-        authority: Pubkey,
-        node: Pubkey,
+        authority: Address,
+        node: Address,
         event: NodeRegistered,
     },
     JoinNetwork {
-        node: Pubkey,
+        node: Address,
         event: NodeJoinedCommittee,
     },
 }
@@ -173,7 +174,7 @@ pub fn parse_raw_instruction(
     };
 
     // Helper to get account pubkey at index
-    let get_account = |idx: usize| -> Result<Pubkey, ParseError> {
+    let get_account = |idx: usize| -> Result<Address, ParseError> {
         let account_idx =
             *ix.accounts.get(idx).ok_or(ParseError::MissingAccount("account"))? as usize;
         if account_idx >= account_keys.len() {

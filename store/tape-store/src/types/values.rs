@@ -9,7 +9,12 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 
 const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
 
+/// A wrapper around a byte vector with a widened decode limit for track slice data.
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
+
+/// Stored slice bytes with a widened decode limit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
 
 /// Metadata about a tape (storage allocation)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
@@ -28,10 +33,6 @@ pub struct InvalidationProof {
     pub signature: BlsSignature,
     pub computed_root: [u8; 32],
 }
-
-/// Stored slice bytes with a widened decode limit.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
 
 #[cfg(test)]
 mod tests {

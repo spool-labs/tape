@@ -17,6 +17,8 @@ use solana_transaction_status::{
 };
 use std::sync::Arc;
 use rpc::{Rpc, RpcError};
+use tape_crypto::address::Address;
+use tape_crypto::tx::Txid;
 use tokio::sync::RwLock;
 
 /// Production Solana RPC client with retry and failover capabilities.
@@ -235,7 +237,7 @@ impl SolanaRpc {
     }
 
     /// Convert a ClientError to RpcError.
-    fn convert_error(err: ClientError, pubkey: Option<Pubkey>) -> RpcError {
+    fn convert_error(err: ClientError, pubkey: Option<Address>) -> RpcError {
         let err_str = err.to_string();
 
         // Check for specific error types
@@ -407,12 +409,13 @@ impl Rpc for SolanaRpc {
 
     async fn get_transaction(
         &self,
-        signature: &Signature,
+        txid: &Txid,
     ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
-        let signature = *signature;
+        let txid = *txid;
+        let signature: Signature = txid.into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
         let commitment = self.config.commitment;
@@ -453,7 +456,7 @@ impl Rpc for SolanaRpc {
                     let rpc_err = if err_str.contains("not found")
                         || err_str.contains("Transaction version not supported")
                     {
-                        RpcError::TransactionNotFound(signature)
+                        RpcError::TransactionNotFound(txid)
                     } else {
                         Self::convert_error(e, None)
                     };
@@ -503,18 +506,19 @@ impl Rpc for SolanaRpc {
         }
     }
 
-    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError> {
+    async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
         let pubkey = *pubkey;
+        let solana_pubkey: Pubkey = pubkey.into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
             let result = {
                 let client = self.client.read().await;
-                tokio::time::timeout(self.config.timeout, client.get_account(&pubkey)).await
+                tokio::time::timeout(self.config.timeout, client.get_account(&solana_pubkey)).await
             };
 
             match result {
@@ -542,12 +546,13 @@ impl Rpc for SolanaRpc {
 
     async fn get_multiple_accounts(
         &self,
-        pubkeys: &[Pubkey],
+        pubkeys: &[Address],
     ) -> Result<Vec<Option<Account>>, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
         let pubkeys = pubkeys.to_vec();
+        let solana_pubkeys: Vec<Pubkey> = pubkeys.iter().copied().map(Into::into).collect();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
@@ -556,7 +561,7 @@ impl Rpc for SolanaRpc {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.get_multiple_accounts(&pubkeys),
+                    client.get_multiple_accounts(&solana_pubkeys),
                 )
                 .await
             };
@@ -591,13 +596,14 @@ impl Rpc for SolanaRpc {
 
     async fn get_program_accounts(
         &self,
-        program_id: &Pubkey,
+        program_id: &Address,
         config: RpcProgramAccountsConfig,
-    ) -> Result<Vec<(Pubkey, Account)>, RpcError> {
+    ) -> Result<Vec<(Address, Account)>, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
         let program_id = *program_id;
+        let solana_program_id: Pubkey = program_id.into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
@@ -607,7 +613,7 @@ impl Rpc for SolanaRpc {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.get_program_accounts_with_config(&program_id, config_clone),
+                    client.get_program_accounts_with_config(&solana_program_id, config_clone),
                 )
                 .await
             };
@@ -625,7 +631,10 @@ impl Rpc for SolanaRpc {
                         );
                     }
 
-                    return Ok(accounts);
+                    return Ok(accounts
+                        .into_iter()
+                        .map(|(address, account)| (address.into(), account))
+                        .collect());
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
@@ -640,7 +649,7 @@ impl Rpc for SolanaRpc {
         }
     }
 
-    async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError> {
+    async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -667,7 +676,7 @@ impl Rpc for SolanaRpc {
                         metrics.record_request("sendTransaction", "success", timer.elapsed_secs());
                     }
 
-                    return Ok(sig);
+                    return Ok(sig.into());
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
@@ -684,7 +693,7 @@ impl Rpc for SolanaRpc {
     async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
-    ) -> Result<Signature, RpcError> {
+    ) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -715,7 +724,7 @@ impl Rpc for SolanaRpc {
                         );
                     }
 
-                    return Ok(sig);
+                    return Ok(sig.into());
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
@@ -732,12 +741,12 @@ impl Rpc for SolanaRpc {
 
     async fn get_signature_status(
         &self,
-        signature: &Signature,
+        txid: &Txid,
     ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
-        let signature = *signature;
+        let signature: Signature = (*txid).into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 

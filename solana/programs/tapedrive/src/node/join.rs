@@ -33,7 +33,7 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let node = node_info
         .as_account::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -67,7 +67,7 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .map_err(|_| TapeError::UnexpectedState)?;
 
     NodeJoinedCommittee {
-        node: *node_info.key,
+        node: (*node_info.key).into(),
         id: member.id,
         stake: member.stake.as_u64().to_le_bytes(),
         key: member.key,
@@ -93,11 +93,11 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
         // Setup existing accounts
         let mut system = System::zeroed();
@@ -112,7 +112,7 @@ mod tests {
         epoch.id = EpochNumber(42);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
 
         // Minimal pool setup to produce a non-zero activation balance
         node.pool.stake = TAPE(1_000);
@@ -153,13 +153,13 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address)
+                Check::account(&Pubkey::from(system_address))
                     .data(system.pack().as_ref())
                     .build(),
-                Check::account(&epoch_address) // unchanged
+                Check::account(&Pubkey::from(epoch_address)) // unchanged
                     .data(epoch.pack().as_ref())
                     .build(),
-                Check::account(&node_address) // unchanged
+                Check::account(&Pubkey::from(node_address)) // unchanged
                     .data(node.pack().as_ref())
                     .build(),
             ],
@@ -173,20 +173,20 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
-        let mut system = System::zeroed();
+        let system = System::zeroed();
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
 
         epoch.id = EpochNumber(42);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
 
         // Pool has NO active stake, only scheduled stake
         node.pool.stake = TAPE(0);
@@ -225,20 +225,20 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
-        let mut system = System::zeroed();
+        let system = System::zeroed();
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
 
         epoch.id = EpochNumber(42);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
         // No active stake at all
         node.pool.stake = TAPE(0);
         node.pool.shares = ShareAmount(0);
@@ -268,11 +268,11 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
         let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
@@ -281,7 +281,7 @@ mod tests {
         epoch.id = EpochNumber(10);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
         node.pool.stake = TAPE(3_000);
         node.pool.shares = ShareAmount(3_000);
         // STALE: latest_advance_epoch is N-1, but current epoch is N
@@ -322,11 +322,11 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
         let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
@@ -335,7 +335,7 @@ mod tests {
         epoch.id = EpochNumber(10);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
         // Fresh stake from AdvancePool
         node.pool.stake = TAPE(5_000);
         node.pool.shares = ShareAmount(5_000);
@@ -381,7 +381,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address)
+                Check::account(&Pubkey::from(system_address))
                     .data(system.pack().as_ref())
                     .build(),
             ],
@@ -395,11 +395,11 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
         let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
@@ -408,7 +408,7 @@ mod tests {
         epoch.id = EpochNumber(10);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
         // Fresh stake including rewards from AdvancePool
         node.pool.stake = TAPE(6_000);
         node.pool.shares = ShareAmount(6_000);
@@ -454,7 +454,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address)
+                Check::account(&Pubkey::from(system_address))
                     .data(system.pack().as_ref())
                     .build(),
             ],
@@ -468,11 +468,11 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
         let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
@@ -481,7 +481,7 @@ mod tests {
         epoch.id = EpochNumber(2);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
         // pool.stake is 0 (stake hasn't activated yet)
         node.pool.stake = TAPE(0);
         node.pool.shares = ShareAmount(0);
@@ -526,11 +526,11 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+        let instruction = build_join_network_ix(fee_payer.into(), authority.into(), node_address);
 
         let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
@@ -539,7 +539,7 @@ mod tests {
         epoch.id = EpochNumber(10);
 
         node.id = NodeId(5);
-        node.authority = authority;
+        node.authority = authority.into();
         node.pool.stake = TAPE(2_000);
         node.pool.shares = ShareAmount(2_000);
         // Stale latest_advance_epoch is OK for NEW JOIN (not in current committee)
@@ -593,7 +593,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address)
+                Check::account(&Pubkey::from(system_address))
                     .data(system.pack().as_ref())
                     .build(),
             ],

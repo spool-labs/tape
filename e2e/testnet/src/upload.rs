@@ -9,6 +9,7 @@ use rand::RngCore;
 use rpc_solana::RpcConfig;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 use tape_retry::{Backoff, RetryConfig};
@@ -162,7 +163,9 @@ async fn run_upload(
     })
     .context("create upload rpc client")?;
 
-    let sdk = Tapedrive::new(rpc, &admin);
+    let admin = CryptoKeypair::from_solana_keypair(&admin)
+        .context("convert uploader keypair")?;
+    let sdk = Tapedrive::new(rpc, admin);
     let capacity = StorageUnits::from_bytes(data.len() as u64);
     let reserve_capacity = capacity + StorageUnits::mb(1);
     let mut backoff = Backoff::new(RetryConfig {

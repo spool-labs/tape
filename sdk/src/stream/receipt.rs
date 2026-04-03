@@ -1,6 +1,6 @@
 //! Stream receipt returned by stream write operations.
 
-use solana_sdk::pubkey::Pubkey;
+use tape_crypto::address::Address;
 
 use tape_core::types::TrackNumber;
 
@@ -8,9 +8,9 @@ use tape_core::types::TrackNumber;
 #[derive(Debug, Clone)]
 pub struct StreamReceipt {
     /// The tape PDA address.
-    pub tape: Pubkey,
+    pub tape: Address,
     /// The manifest track address for the stored stream.
-    pub manifest: Pubkey,
+    pub manifest: Address,
     /// Track number of the manifest on the tape.
     pub manifest_track_number: TrackNumber,
 }

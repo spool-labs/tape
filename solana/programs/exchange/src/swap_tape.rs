@@ -28,7 +28,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_signer()?
         .is_writable()?;
 
-    let (exchange_ata, _) = exchange_ata(*exchange_info.key);
+    let (exchange_ata, _) = exchange_ata((*exchange_info.key).into());
 
     let exchange = exchange_info
         .is_writable()?
@@ -37,13 +37,13 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     authority_ata_info
         .is_writable()?
         .as_token_account()?
-        .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
+        .assert(|a| a.mint().eq(&MINT_ADDRESS.into()))?;
 
     exchange_ata_info
         .is_writable()?
-        .has_address(&exchange_ata)?
+        .has_address(&exchange_ata.into())?
         .as_token_account()?
-        .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
+        .assert(|a| a.mint().eq(&MINT_ADDRESS.into()))?;
 
     token_program_info
         .is_program(&spl_token::ID)?;

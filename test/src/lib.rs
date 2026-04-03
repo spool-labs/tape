@@ -40,7 +40,9 @@ pub use mollusk_svm::result::Check;
 
 // Helpers for constructing test accounts.
 
-pub fn sol(key: Pubkey, lamports: u64) -> (Pubkey, Account) {
+pub fn sol(key: impl Into<Pubkey>, lamports: u64) -> (Pubkey, Account) {
+    let key = key.into();
+
     (key, Account {
         lamports,
         data: vec![],
@@ -50,7 +52,10 @@ pub fn sol(key: Pubkey, lamports: u64) -> (Pubkey, Account) {
     })
 }
 
-pub fn pda(key: Pubkey, data: Vec<u8>, program: Pubkey) -> (Pubkey, Account) {
+pub fn pda(key: impl Into<Pubkey>, data: Vec<u8>, program: impl Into<Pubkey>) -> (Pubkey, Account) {
+    let key = key.into();
+    let program = program.into();
+
     (key, Account {
         lamports: rent(data.len()),
         data,
@@ -72,22 +77,28 @@ pub fn rent_mint() -> u64 {
     rent(Mint::LEN)
 }
 
-pub fn empty(key: Pubkey) -> (Pubkey, Account) {
+pub fn empty(key: impl Into<Pubkey>) -> (Pubkey, Account) {
+    let key = key.into();
+
     (key, Account::default())
 }
 
 pub fn ata_address(owner: &Pubkey) -> Pubkey {
-    get_associated_token_address(owner, &MINT_ADDRESS)
+    get_associated_token_address(owner, &MINT_ADDRESS.into())
 }
 
-pub fn ata(owner: Pubkey, amount: u64) -> (Pubkey, Account) {
+pub fn ata(owner: impl Into<Pubkey>, amount: u64) -> (Pubkey, Account) {
+    let owner = owner.into();
     let address = ata_address(&owner);
     token(address, owner, amount)
 }
 
-pub fn token(address: Pubkey, owner: Pubkey, amount: u64) -> (Pubkey, Account) {
+pub fn token(address: impl Into<Pubkey>, owner: impl Into<Pubkey>, amount: u64) -> (Pubkey, Account) {
+    let address = address.into();
+    let owner = owner.into();
+
     let state = Token {
-        mint: MINT_ADDRESS,
+        mint: MINT_ADDRESS.into(),
         owner,
         amount,
         delegate: COption::None,
@@ -111,7 +122,7 @@ pub fn token(address: Pubkey, owner: Pubkey, amount: u64) -> (Pubkey, Account) {
 
 pub fn mint(supply: u64) -> (Pubkey, Account) {
     let mint_data = Mint {
-        mint_authority: Some(TREASURY_ADDRESS).into(),
+        mint_authority: Some(Pubkey::from(TREASURY_ADDRESS)).into(),
         supply,
         decimals: TOKEN_DECIMALS,
         is_initialized: true,
@@ -121,7 +132,7 @@ pub fn mint(supply: u64) -> (Pubkey, Account) {
     let mut data = vec![0u8; Mint::LEN];
     Mint::pack(mint_data, &mut data).unwrap();
 
-    (MINT_ADDRESS, Account {
+    (MINT_ADDRESS.into(), Account {
         lamports: rent_mint(),
         data,
         owner: spl_token_program::ID,
@@ -285,5 +296,3 @@ macro_rules! program_elf {
         include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $relative_path))
     };
 }
-
-

@@ -7,11 +7,10 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
-use tape_crypto::Pubkey;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse};
 use tape_store::ops::{SliceOps, TrackOps};
-use tape_store::types::Pubkey as StorePubkey;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
@@ -22,10 +21,10 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<impl IntoResponse, RouteError> {
 
     let epoch = current_epoch(&state)?;
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-    let track_key: StorePubkey = track.into();
+    let track_key = track;
 
     let track = state
         .context

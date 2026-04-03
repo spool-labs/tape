@@ -1,10 +1,13 @@
 use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
+use tape_crypto::address::Address;
 
 tape_solana::declare_id!("tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL"); 
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
+pub const METADATA_PROGRAM_ID: [u8; 32] =
+    unsafe { *(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) };
 
 pub const MINT:      &[u8] = b"mint";
 pub const MINT_SEED: &[u8] = &[152, 68, 212, 200, 25, 113, 221, 71];
@@ -19,79 +22,85 @@ pub const METADATA_NAME:   &str = "TAPE";
 pub const METADATA_SYMBOL: &str = "TAPE";
 pub const METADATA_URI:    &str = "https://tapedrive.io/metadata.json";
 
-pub const MINT_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).0);
+pub const MINT_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).0);
 
 pub const MINT_BUMP: u8 = 
     ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).1;
 
-pub const METADATA_ADDRESS: Pubkey = Pubkey::new_from_array(
+pub const METADATA_ADDRESS: Address = Address::new(
     ed25519::derive_program_address(
         &[
             METADATA,
-            unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            &METADATA_PROGRAM_ID,
+            MINT_ADDRESS.as_bytes(),
         ],
-        unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
+        &METADATA_PROGRAM_ID,
     ).0
 );
 
 pub const METADATA_BUMP: u8 = ed25519::derive_program_address(
     &[
         METADATA,
-        unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
-        unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+        &METADATA_PROGRAM_ID,
+        MINT_ADDRESS.as_bytes(),
     ],
-    unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
+    &METADATA_PROGRAM_ID,
 ).1;
 
-pub const TREASURY_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).0);
+pub const TREASURY_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).0);
 
 pub const TREASURY_BUMP: u8 =
     ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).1;
 
 
 #[cfg(debug_assertions)]
-pub fn mint_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[MINT, MINT_SEED], &id())
+pub fn mint_pda() -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[MINT, MINT_SEED], &program_id)
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn mint_pda() -> (Pubkey, u8) {
+pub fn mint_pda() -> (Address, u8) {
     (MINT_ADDRESS, MINT_BUMP)
 }
 
 #[cfg(debug_assertions)]
-pub fn metadata_pda() -> (Pubkey, u8) {
+pub fn metadata_pda() -> (Address, u8) {
+    let metadata_program_id: Address = mpl_token_metadata::ID.into();
     let (mint, _) = mint_pda();
-    Pubkey::find_program_address(
+
+    Address::find_program_address(
         &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref()],
-        &mpl_token_metadata::ID,
+        &metadata_program_id,
     )
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn metadata_pda() -> (Pubkey, u8) {
+pub fn metadata_pda() -> (Address, u8) {
     (METADATA_ADDRESS, METADATA_BUMP)
 }
 
 #[cfg(debug_assertions)]
-pub fn treasury_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[TREASURY], &id())
+pub fn treasury_pda() -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[TREASURY], &program_id)
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn treasury_pda() -> (Pubkey, u8) {
+pub fn treasury_pda() -> (Address, u8) {
     (TREASURY_ADDRESS, TREASURY_BUMP)
 }
 
 
 #[cfg(test)]
 mod tests {
+    use solana_program::pubkey::Pubkey;
+
     use super::*;
 
     #[test]
@@ -112,5 +121,18 @@ mod tests {
         let (pda, bump) = treasury_pda();
         assert_eq!(pda, TREASURY_ADDRESS);
         assert_eq!(bump, TREASURY_BUMP);
+    }
+
+    #[test]
+    fn metadata_pda_matches_solana_derivation() {
+        let (pda, bump) = metadata_pda();
+        let (mint, _) = mint_pda();
+        let (expected_pda, expected_bump) = Pubkey::find_program_address(
+            &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref()],
+            &mpl_token_metadata::ID,
+        );
+
+        assert_eq!(pda, expected_pda.into());
+        assert_eq!(bump, expected_bump);
     }
 }

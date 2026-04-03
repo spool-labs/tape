@@ -61,7 +61,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match classify_tx(result) {
             TxOutcome::Confirmed(sig) => {
-                info!(epoch = epoch.0, %sig, "advance_pool: confirmed");
+                info!(epoch = epoch.0, ?sig, "advance_pool: confirmed");
                 return TaskDone::Done(Action::AdvancePool, epoch);
             }
             TxOutcome::Program(TapeError::AlreadyAdvanced) => {

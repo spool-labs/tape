@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair};
-
-use rpc::{Rpc};
+use rpc::Rpc;
 use rpc_client::RpcClient;
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::StorageUnits;
+use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair;
 use tape_crypto::Hash;
 use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -40,7 +40,7 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
     ///
     /// Takes an RPC backend and a payer keypair. Uses the default HTTP
     /// peer client for storage node communication.
-    pub fn new(rpc: Blockchain, payer: &Keypair) -> Self {
+    pub fn new(rpc: Blockchain, payer: Keypair) -> Self {
         Self::new_read_only(rpc).with_payer(payer)
     }
 
@@ -66,20 +66,20 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
         rpc: Arc<RpcClient<Blockchain>>,
-        payer: Option<&Keypair>,
+        payer: Option<Keypair>,
     ) -> Self {
         Self {
             state,
             peer_manager,
             api,
             rpc,
-            payer: payer.map(clone_keypair),
+            payer,
         }
     }
 
     /// Attach or replace the payer used for mutating operations.
-    pub fn with_payer(mut self, payer: &Keypair) -> Self {
-        self.payer = Some(clone_keypair(payer));
+    pub fn with_payer(mut self, payer: Keypair) -> Self {
+        self.payer = Some(payer);
         self
     }
 
@@ -151,7 +151,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Read a stored stream by its manifest track address into memory.
     pub async fn read_bytes(
         &self,
-        manifest: &Pubkey,
+        manifest: &Address,
     ) -> Result<Vec<u8>, TapedriveError> {
         read_bytes(self, manifest).await
     }
@@ -159,13 +159,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Read a stored stream by its manifest track address into an async sink.
     pub async fn read_into<Writer: AsyncWrite + Unpin>(
         &self,
-        manifest: &Pubkey,
+        manifest: &Address,
         writer: Writer,
     ) -> Result<(), TapedriveError> {
         read_into(self, manifest, writer).await
     }
-}
-
-fn clone_keypair(payer: &Keypair) -> Keypair {
-    Keypair::try_from(payer.to_bytes().as_ref()).unwrap()
 }

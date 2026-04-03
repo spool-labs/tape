@@ -1,6 +1,5 @@
 use rpc::Rpc;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 
 use crate::error::TapedriveError;
@@ -14,13 +13,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     pub async fn delete(
         &self,
         tape_key: &TapeKey,
-        track: Pubkey,
+        track: Address,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
+        let tape_signer = tape_key.keypair();
         let proof = queries::query_track_proof(self, &track).await?;
         let ix = build_delete_track_ix(
-            payer.pubkey(),
-            tape_key.pubkey(),
+            payer.pubkey().into(),
+            tape_key.address(),
             proof,
         );
 
@@ -28,7 +28,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .send_instructions_with_signers(
                 payer,
                 vec![ix],
-                &[tape_key.as_keypair()],
+                &[tape_signer],
             )
             .await?;
 

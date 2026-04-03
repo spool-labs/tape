@@ -27,12 +27,14 @@ use solana_transaction_status::{
     TransactionWithStatusMeta, UiConfirmedBlock, UiTransactionEncoding,
     VersionedTransactionWithStatusMeta,
 };
+use tape_crypto::address::Address;
+use tape_crypto::tx::Txid;
 use tokio::task::JoinHandle;
 
 struct Inner {
     svm: LiteSVM,
     slots: HashMap<Slot, SlotData>,
-    tx_slot_index: HashMap<Signature, Slot>,
+    tx_slot_index: HashMap<Txid, Slot>,
     current_block_height: u64,
     last_recorded_slot: Option<Slot>,
     /// Highest slot visible via `get_slot()` / `get_block()`.
@@ -220,8 +222,8 @@ impl LiteSvmRpc {
     ) {
         let slot = Self::current_slot_locked(inner);
         let sig = match result {
-            Ok(meta) => meta.signature,
-            Err(failed) => failed.meta.signature,
+            Ok(meta) => Txid::from(meta.signature),
+            Err(failed) => Txid::from(failed.meta.signature),
         };
 
         let previous_blockhash = inner
@@ -299,27 +301,28 @@ impl Rpc for LiteSvmRpc {
 
     async fn get_transaction(
         &self,
-        signature: &Signature,
+        txid: &Txid,
     ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError> {
         let inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let signature: Signature = (*txid).into();
 
-        let Some(slot) = inner.tx_slot_index.get(signature).copied() else {
-            return Err(RpcError::TransactionNotFound(*signature));
+        let Some(slot) = inner.tx_slot_index.get(txid).copied() else {
+            return Err(RpcError::TransactionNotFound(*txid));
         };
 
         let Some(slot_data) = inner.slots.get(&slot) else {
-            return Err(RpcError::TransactionNotFound(*signature));
+            return Err(RpcError::TransactionNotFound(*txid));
         };
 
         let Some(recorded) = slot_data
             .transactions
             .iter()
-            .find(|recorded| recorded.tx.signatures.first() == Some(signature))
+            .find(|recorded| recorded.tx.signatures.first() == Some(&signature))
         else {
-            return Err(RpcError::TransactionNotFound(*signature));
+            return Err(RpcError::TransactionNotFound(*txid));
         };
 
         let tx_with_meta = TransactionWithStatusMeta::Complete(VersionedTransactionWithStatusMeta {
@@ -348,37 +351,45 @@ impl Rpc for LiteSvmRpc {
         Ok(inner.current_block_height)
     }
 
-    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError> {
+    async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError> {
         let inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let solana_pubkey: Pubkey = (*pubkey).into();
         inner
             .svm
-            .get_account(pubkey)
+            .get_account(&solana_pubkey)
             .ok_or(RpcError::AccountNotFound(*pubkey))
     }
 
     async fn get_multiple_accounts(
         &self,
-        pubkeys: &[Pubkey],
+        pubkeys: &[Address],
     ) -> Result<Vec<Option<Account>>, RpcError> {
         let inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        Ok(pubkeys.iter().map(|pk| inner.svm.get_account(pk)).collect())
+        Ok(pubkeys
+            .iter()
+            .map(|pk| {
+                let solana_pubkey: Pubkey = (*pk).into();
+                inner.svm.get_account(&solana_pubkey)
+            })
+            .collect())
     }
 
     async fn get_program_accounts(
         &self,
-        program_id: &Pubkey,
+        program_id: &Address,
         config: RpcProgramAccountsConfig,
-    ) -> Result<Vec<(Pubkey, Account)>, RpcError> {
+    ) -> Result<Vec<(Address, Account)>, RpcError> {
         let inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let solana_program_id: Pubkey = (*program_id).into();
 
         let filters = config.filters.unwrap_or_default();
 
@@ -388,7 +399,7 @@ impl Rpc for LiteSvmRpc {
             .inner
             .iter()
             .filter_map(|(k, acc)| {
-                if acc.owner() != program_id {
+                if acc.owner() != &solana_program_id {
                     return None;
                 }
 
@@ -399,7 +410,7 @@ impl Rpc for LiteSvmRpc {
                 });
 
                 if passes {
-                    Some((*k, Account::from(acc.clone())))
+                    Some(((*k).into(), Account::from(acc.clone())))
                 } else {
                     None
                 }
@@ -409,7 +420,7 @@ impl Rpc for LiteSvmRpc {
         Ok(out)
     }
 
-    async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError> {
+    async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError> {
         let mut inner = self
             .inner
             .lock()
@@ -433,7 +444,7 @@ impl Rpc for LiteSvmRpc {
         inner.svm.expire_blockhash();
 
         match result {
-            Ok(meta) => Ok(meta.signature),
+            Ok(meta) => Ok(meta.signature.into()),
             Err(failed) => Err(RpcError::Transaction(failed.err.to_string())),
         }
     }
@@ -441,25 +452,26 @@ impl Rpc for LiteSvmRpc {
     async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
-    ) -> Result<Signature, RpcError> {
+    ) -> Result<Txid, RpcError> {
         // LiteSVM executes immediately, so send == send_and_confirm.
         self.send_transaction(transaction).await
     }
 
     async fn get_signature_status(
         &self,
-        signature: &Signature,
+        txid: &Txid,
     ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError> {
         let inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let signature: Signature = (*txid).into();
 
-        let Some(slot) = inner.tx_slot_index.get(signature) else {
+        let Some(slot) = inner.tx_slot_index.get(txid) else {
             return Ok(None);
         };
 
-        let status = match inner.svm.get_transaction(signature) {
+        let status = match inner.svm.get_transaction(&signature) {
             Some(result) => {
                 let _ = tx_result_to_transaction_status(&result, *slot);
                 tx_result_to_status_result(&result)

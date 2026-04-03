@@ -19,3 +19,4 @@ async-trait.workspace = true
 
 # Error handling
 thiserror.workspace = true
+tape-crypto.workspace = true

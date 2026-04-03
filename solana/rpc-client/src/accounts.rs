@@ -1,7 +1,6 @@
 use crate::client::RpcClient;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
-use solana_sdk::pubkey::Pubkey;
 use rpc::{Rpc, RpcError};
 
 use tape_api::state::{AccountType, Archive, Epoch, History, Node, Stake, System, Tape};
@@ -11,6 +10,7 @@ use tape_api::program::tapedrive::{
 };
 
 use tape_core::types::{NodeId, TapeNumber};
+use tape_crypto::address::Address;
 
 impl<R: Rpc> RpcClient<R> {
     // ========================================================================
@@ -108,7 +108,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// # Arguments
     /// * `authority` - The authority public key of the node
-    pub async fn get_node(&self, authority: &Pubkey) -> Result<Node, RpcError> {
+    pub async fn get_node(&self, authority: &Address) -> Result<Node, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
@@ -138,7 +138,7 @@ impl<R: Rpc> RpcClient<R> {
     /// * `authority` - The authority public key of the stake
     pub async fn get_stake(
         &self,
-        authority: &Pubkey,
+        authority: &Address,
     ) -> Result<Stake, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
@@ -167,7 +167,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// # Arguments
     /// * `authority` - The authority public key of the tape
-    pub async fn get_tape(&self, authority: &Pubkey) -> Result<Tape, RpcError> {
+    pub async fn get_tape(&self, authority: &Address) -> Result<Tape, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
@@ -195,7 +195,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// # Arguments
     /// * `node` - The node public key
-    pub async fn get_history(&self, node: &Pubkey) -> Result<History, RpcError> {
+    pub async fn get_history(&self, node: &Address) -> Result<History, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
@@ -227,7 +227,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// WARNING: This is an expensive operation that fetches all node accounts.
     /// Use sparingly, especially on mainnet.
-    pub async fn get_all_nodes(&self) -> Result<Vec<(Pubkey, Node)>, RpcError> {
+    pub async fn get_all_nodes(&self) -> Result<Vec<(Address, Node)>, RpcError> {
         let config = RpcProgramAccountsConfig {
             filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
                 0, // Offset 0 is the discriminator
@@ -245,7 +245,8 @@ impl<R: Rpc> RpcClient<R> {
             sort_results: None,
         };
 
-        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
+        let program_id: Address = tapedrive::ID.into();
+        let accounts = self.rpc().get_program_accounts(&program_id, config).await?;
 
         accounts
             .into_iter()
@@ -262,7 +263,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// WARNING: This is an expensive operation that fetches all tape accounts.
     /// Use sparingly, especially on mainnet.
-    pub async fn get_all_tapes(&self) -> Result<Vec<(Pubkey, Tape)>, RpcError> {
+    pub async fn get_all_tapes(&self) -> Result<Vec<(Address, Tape)>, RpcError> {
         let config = RpcProgramAccountsConfig {
             filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
                 0, // Offset 0 is the discriminator
@@ -280,7 +281,8 @@ impl<R: Rpc> RpcClient<R> {
             sort_results: None,
         };
 
-        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
+        let program_id: Address = tapedrive::ID.into();
+        let accounts = self.rpc().get_program_accounts(&program_id, config).await?;
 
         accounts
             .into_iter()
@@ -308,7 +310,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// # Returns
     /// The Node account address and data, or an error if not found.
-    pub async fn get_node_by_id(&self, node_id: NodeId) -> Result<(Pubkey, Node), RpcError> {
+    pub async fn get_node_by_id(&self, node_id: NodeId) -> Result<(Address, Node), RpcError> {
         // Account layout: [discriminator (8 bytes)][id (8 bytes)]...
         // Filter on both discriminator and id field
         let id_bytes = node_id.as_u64().to_le_bytes();
@@ -338,7 +340,8 @@ impl<R: Rpc> RpcClient<R> {
             sort_results: None,
         };
 
-        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
+        let program_id: Address = tapedrive::ID.into();
+        let accounts = self.rpc().get_program_accounts(&program_id, config).await?;
 
         accounts
             .into_iter()
@@ -361,7 +364,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// # Returns
     /// The Tape account address and data, or an error if not found.
-    pub async fn get_tape_by_number(&self, tape_number: TapeNumber) -> Result<(Pubkey, Tape), RpcError> {
+    pub async fn get_tape_by_number(&self, tape_number: TapeNumber) -> Result<(Address, Tape), RpcError> {
         // Account layout: [discriminator (8 bytes)][id (8 bytes)]...
         let id_bytes = tape_number.as_u64().to_le_bytes();
 
@@ -390,7 +393,8 @@ impl<R: Rpc> RpcClient<R> {
             sort_results: None,
         };
 
-        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
+        let program_id: Address = tapedrive::ID.into();
+        let accounts = self.rpc().get_program_accounts(&program_id, config).await?;
 
         accounts
             .into_iter()
@@ -411,7 +415,7 @@ impl<R: Rpc> RpcClient<R> {
     ///
     /// # Arguments
     /// * `address` - The tape PDA address
-    pub async fn get_tape_by_address(&self, address: &Pubkey) -> Result<Tape, RpcError> {
+    pub async fn get_tape_by_address(&self, address: &Address) -> Result<Tape, RpcError> {
         let account = self.rpc().get_account(address).await?;
         Tape::unpack_with_discriminator(&account.data)
             .map(|t| *t)

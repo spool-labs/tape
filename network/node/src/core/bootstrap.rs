@@ -6,13 +6,12 @@ use peer_manager::PeerManager;
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
 use store_rocks::RocksStore;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::ed25519::Keypair;
 use tape_store::TapeStore;
 use tracing::info;
 
@@ -168,9 +167,11 @@ pub async fn ensure_registered<Blockchain: Rpc>(
     keypair: &Keypair,
     bls_keypair: &BlsPrivateKey,
 ) -> Result<(), NodeError> {
-    match rpc.get_node(&keypair.pubkey()).await {
+    let authority = keypair.address();
+
+    match rpc.get_node(&authority).await {
         Ok(node) => {
-            info!(authority = %keypair.pubkey(), "node already registered on-chain");
+            info!(authority = %authority, "node already registered on-chain");
             return validate_node_metadata::<Blockchain>(&node, config, bls_keypair);
         }
         Err(RpcError::AccountNotFound(_)) => {}
@@ -191,7 +192,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
 
     info!(
         name = %config.node.name,
-        authority = %keypair.pubkey(),
+        authority = %authority,
         "registering node on-chain"
     );
 
@@ -207,13 +208,13 @@ pub async fn ensure_registered<Blockchain: Rpc>(
     .await;
 
     match result {
-        Ok(sig) => {
-            info!(signature = %sig, "node registered successfully");
+        Ok(txid) => {
+            info!(txid = ?txid, "node registered successfully");
             Ok(())
         }
         Err(reg_err) => {
             // Registration failed — re-fetch to handle concurrent registration.
-            match rpc.get_node(&keypair.pubkey()).await {
+            match rpc.get_node(&authority).await {
                 Ok(node) => {
                     info!("node appeared on-chain after failed registration tx");
                     validate_node_metadata::<Blockchain>(&node, config, bls_keypair)
@@ -230,12 +231,11 @@ mod tests {
     use std::path::PathBuf;
 
     use rpc_client::RpcClient;
-    use solana_sdk::signature::Keypair;
-    use solana_sdk::signer::Signer;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::{BasisPoints, EpochNumber, SlotNumber};
+    use tape_crypto::ed25519::Keypair;
 
     use super::{ensure_registered, resolve_network_address};
     use crate::chain::register_node::submit_register_node;
@@ -320,9 +320,10 @@ mod tests {
         bls: &BlsPrivateKey,
         address: NetworkAddress,
     ) {
+        let authority = keypair.to_solana_pubkey();
         harness
             .rpc()
-            .airdrop(&keypair.pubkey(), 10_000_000_000)
+            .airdrop(&authority, 10_000_000_000)
             .expect("airdrop");
 
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
@@ -348,10 +349,12 @@ mod tests {
             .await
             .expect("build harness");
 
-        let keypair = Keypair::new();
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let authority = keypair.to_solana_pubkey();
         harness
             .rpc()
-            .airdrop(&keypair.pubkey(), 10_000_000_000)
+            .airdrop(&authority, 10_000_000_000)
             .expect("airdrop");
 
         let bls = BlsPrivateKey::from_random();
@@ -363,7 +366,7 @@ mod tests {
             .expect("ensure_registered");
 
         // Verify node now exists on chain
-        let node = rpc.get_node(&keypair.pubkey()).await.expect("get node");
+        let node = rpc.get_node(&keypair.address()).await.expect("get node");
         assert_eq!(
             node.metadata.bls_pubkey,
             bls.public_key().expect("bls pubkey")
@@ -379,7 +382,8 @@ mod tests {
             .await
             .expect("build harness");
 
-        let keypair = Keypair::new();
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
@@ -404,7 +408,8 @@ mod tests {
             .await
             .expect("build harness");
 
-        let keypair = Keypair::new();
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
         let bls_original = BlsPrivateKey::from_random();
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
@@ -435,7 +440,8 @@ mod tests {
             .await
             .expect("build harness");
 
-        let keypair = Keypair::new();
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),

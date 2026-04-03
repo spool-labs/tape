@@ -22,7 +22,7 @@ pub fn process_set_bls_pubkey(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -52,12 +52,12 @@ mod tests {
         let new_bls_pubkey = new_secret.public_key().expect("pubkey");
         let new_bls_pop = new_secret.proof_of_possession().expect("pop");
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_bls_pubkey_ix(fee_payer, authority, node_address, new_bls_pubkey, new_bls_pop);
+        let instruction = build_set_bls_pubkey_ix(fee_payer.into(), authority.into(), node_address, new_bls_pubkey, new_bls_pop);
 
         let node = Node {
-            authority,
+            authority: authority.into(),
             metadata: NodeMetadata {
                 bls_pubkey: old_bls_pubkey,
                 next_bls_pubkey: old_bls_pubkey,
@@ -78,7 +78,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         metadata: NodeMetadata {
                             next_bls_pubkey: new_bls_pubkey,

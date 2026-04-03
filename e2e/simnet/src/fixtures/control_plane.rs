@@ -25,14 +25,14 @@ impl SimnetScenario<'_> {
 
     pub fn node_address(&self, index: usize) -> Pubkey {
         let authority = self.harness.nodes()[index].authority();
-        let (node_address, _) = node_pda(authority);
-        node_address
+        let (node_address, _) = node_pda(authority.into());
+        node_address.into()
     }
 
     pub fn stake_address(&self, index: usize) -> Pubkey {
         let authority = self.harness.nodes()[index].authority();
-        let (stake_address, _) = stake_pda(authority);
-        stake_address
+        let (stake_address, _) = stake_pda(authority.into());
+        stake_address.into()
     }
 
     pub fn fund_node(&self, index: usize, lamports: u64) -> Result<()> {
@@ -65,19 +65,19 @@ impl SimnetScenario<'_> {
         let payer_is_authority = payer.pubkey() == authority;
         if !payer_is_authority {
             ixs.extend(build_authority_with_tokens_ix(
-                payer.pubkey(),
-                authority,
+                payer.pubkey().into(),
+                authority.into(),
                 amount,
-            ));
+            )?);
         }
         ixs.push(build_stake_with_pool_ix(
-            payer.pubkey(),
-            authority,
-            node_address,
+            payer.pubkey().into(),
+            authority.into(),
+            node_address.into(),
             amount,
         ));
         if !payer_is_authority {
-            ixs.push(build_close_ata_ix(authority, payer.pubkey()));
+            ixs.push(build_close_ata_ix(authority.into(), payer.pubkey().into())?);
         }
 
         self.harness
@@ -101,9 +101,9 @@ impl SimnetScenario<'_> {
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_request_stake_unlock_ix(
-            payer.pubkey(),
-            node.authority(),
-            self.node_address(node_index),
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
@@ -128,9 +128,9 @@ impl SimnetScenario<'_> {
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_unstake_from_pool_ix(
-            payer.pubkey(),
-            node.authority(),
-            self.node_address(node_index),
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
@@ -155,9 +155,9 @@ impl SimnetScenario<'_> {
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_join_network_ix(
-            payer.pubkey(),
-            node.authority(),
-            self.node_address(node_index),
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
@@ -191,7 +191,11 @@ impl SimnetScenario<'_> {
         trace!(node_index, "submitting advance_pool instruction");
         let payer = self.harness.admin();
         let authority = self.harness.nodes()[node_index].authority();
-        let ix = build_advance_pool_ix(payer.pubkey(), authority, self.node_address(node_index));
+        let ix = build_advance_pool_ix(
+            payer.pubkey().into(),
+            authority.into(),
+            self.node_address(node_index).into(),
+        );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
@@ -237,9 +241,9 @@ impl SimnetScenario<'_> {
             .collect();
 
         let ix = build_epoch_sync_ix(
-            payer.pubkey(),
-            node.authority(),
-            self.node_address(node_index),
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
             EpochNumber(epoch.id.as_u64()),
             &spools,
         );
@@ -280,9 +284,9 @@ impl SimnetScenario<'_> {
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_set_commission_ix(
-            payer.pubkey(),
-            node.authority(),
-            self.node_address(node_index),
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
             BasisPoints(basis_points),
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
@@ -312,9 +316,9 @@ impl SimnetScenario<'_> {
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_claim_commission_ix(
-            payer.pubkey(),
-            node.authority(),
-            self.node_address(node_index),
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 

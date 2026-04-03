@@ -57,7 +57,6 @@ mod tests {
     use rpc::RpcError;
     use crate::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
-    use solana_sdk::pubkey::Pubkey;
     use tape_api::program::tapedrive::{self, snapshot_manifest_pda, snapshot_state_pda};
     use tape_api::state::{
         SnapshotChunkRecord, SnapshotGroupBitmap, SnapshotManifest, SnapshotState,
@@ -65,7 +64,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_COUNT;
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
-    use tape_crypto::Hash;
+    use tape_crypto::{Hash, address::Address};
 
     fn client() -> RpcClient<LiteSvmRpc> {
         RpcClient::from_rpc(LiteSvmRpc::new())
@@ -84,7 +83,7 @@ mod tests {
         SnapshotManifest {
             epoch,
             parent_epoch: epoch - EpochNumber(1),
-            tape: Pubkey::new_unique(),
+            tape: Address::new_unique(),
             certified_count: 1,
             group_bitmap: {
                 let mut bitmap = SnapshotGroupBitmap::zeroed();

@@ -4,11 +4,11 @@
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
-//! - `tape`: Tape metadata (Pubkey -> TapeInfo)
-//! - `track`: Canonical compressed-track catalog (Pubkey -> PackedTrack)
+//! - `tape`: Tape metadata (Address -> TapeInfo)
+//! - `track`: Canonical compressed-track catalog (Address -> PackedTrack)
 //! - `track_lookup`: Tape-local ordered index ((tape, track_number, key) -> ())
-//! - `track_data`: Local track payload data (Pubkey -> TrackData)
-//! - `object_info`: Object metadata (Pubkey -> ObjectInfo)
+//! - `track_data`: Local track payload data (Address -> TrackData)
+//! - `object_info`: Object metadata (Address -> ObjectInfo)
 //! - `snapshot_epoch`: Per-epoch snapshot progress (EpochKey -> SnapshotEpochInfo)
 //! - `snapshot_group`: Per-group snapshot artifacts (SnapshotGroupKey -> SnapshotGroupInfo)
 //! - `snapshot_slice`: Staging snapshot slice bytes (SnapshotSliceKey -> SliceValue)
@@ -21,7 +21,7 @@
 //! - `spool_status`: Spool status (SpoolIndexKey -> SpoolStatus)
 //! - `spool_pending_repair`: Pending repair (SliceKey -> ())
 //! - `spool_pending_recovery`: Pending recovery (SliceKey -> ())
-//! - `spool_sync_cursor`: Sync cursor (SpoolIndexKey -> Pubkey)
+//! - `spool_sync_cursor`: Sync cursor (SpoolIndexKey -> Address)
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data (SliceKey -> Vec<u8>)

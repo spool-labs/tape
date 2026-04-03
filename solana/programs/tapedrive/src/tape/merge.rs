@@ -39,22 +39,22 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    let (source_tape_address, _) = tape_pda(*source_authority_info.key);
-    let (dest_tape_address, _)   = tape_pda(*dest_authority_info.key);
+    let (source_tape_address, _) = tape_pda((*source_authority_info.key).into());
+    let (dest_tape_address, _) = tape_pda((*dest_authority_info.key).into());
 
     let source_tape = source_tape_info
         .is_writable()?
-        .has_address(&source_tape_address)?
+        .has_address(&source_tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     let dest_tape   = dest_tape_info
         .is_writable()?
-        .has_address(&dest_tape_address)?
+        .has_address(&dest_tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     // Require correct authorities
-    if source_tape.authority != *source_authority_info.key ||
-       dest_tape.authority != *dest_authority_info.key {
+    if source_tape.authority != (*source_authority_info.key).into() ||
+       dest_tape.authority != (*dest_authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -95,8 +95,8 @@ mod tests {
         let source_authority = Pubkey::new_unique();
         let dest_authority = Pubkey::new_unique();
 
-        let (source_tape_address, _) = tape_pda(source_authority);
-        let (dest_tape_address, _)   = tape_pda(dest_authority);
+        let (source_tape_address, _) = tape_pda(source_authority.into());
+        let (dest_tape_address, _)   = tape_pda(dest_authority.into());
         let (archive_address, _)     = archive_pda();
 
         // Two tapes with identical epochs
@@ -104,7 +104,7 @@ mod tests {
         let e1 = EpochNumber(110);
 
         let source_tape = Tape {
-            authority: source_authority,
+            authority: source_authority.into(),
             capacity: StorageUnits::mb(200),
             used: StorageUnits::mb(30),
             active_epoch: e0,
@@ -112,7 +112,7 @@ mod tests {
             ..Tape::zeroed()
         };
         let dest_tape = Tape {
-            authority: dest_authority,
+            authority: dest_authority.into(),
             capacity: StorageUnits::mb(100),
             used: StorageUnits::mb(20),
             active_epoch: e0,
@@ -125,7 +125,7 @@ mod tests {
             ..Archive::zeroed()
         };
 
-        let instruction = build_merge_tape_ix(fee_payer, source_authority, dest_authority);
+        let instruction = build_merge_tape_ix(fee_payer.into(), source_authority.into(), dest_authority.into());
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -140,7 +140,7 @@ mod tests {
         ];
 
         let expected_tape = Tape {
-            authority: dest_authority,
+            authority: dest_authority.into(),
             capacity: StorageUnits::mb(300),
             used: StorageUnits::mb(50),
             active_epoch: e0,
@@ -159,11 +159,11 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&dest_tape_address)
+                Check::account(&Pubkey::from(dest_tape_address))
                     .data(expected_tape.pack().as_ref()).build(),
-                Check::account(&source_tape_address)
+                Check::account(&Pubkey::from(source_tape_address))
                     .lamports(0).closed().build(),
-                Check::account(&archive_address)
+                Check::account(&Pubkey::from(archive_address))
                     .data(expected_archive.pack().as_ref()).build(),
             ],
         );

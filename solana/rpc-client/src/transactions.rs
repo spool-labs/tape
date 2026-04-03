@@ -1,8 +1,28 @@
 use crate::client::RpcClient;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::signature::{Keypair, Signature, Signer};
+use solana_sdk::pubkey::Pubkey as SolanaPubkey;
+use solana_sdk::signature::Signature as SolanaSignature;
+use solana_sdk::signer::{Signer as SolanaSigner, SignerError as SolanaSignerError};
 use solana_sdk::transaction::Transaction;
 use rpc::{Rpc, RpcError};
+use tape_crypto::signer::Signer as TapeSigner;
+use tape_crypto::tx::Txid;
+
+struct SolanaSignerAdapter<'a>(&'a dyn TapeSigner);
+
+impl SolanaSigner for SolanaSignerAdapter<'_> {
+    fn try_pubkey(&self) -> Result<SolanaPubkey, SolanaSignerError> {
+        Ok(self.0.pubkey().into())
+    }
+
+    fn try_sign_message(&self, message: &[u8]) -> Result<SolanaSignature, SolanaSignerError> {
+        Ok(self.0.sign(message).to_bytes().into())
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
+}
 
 impl<R: Rpc> RpcClient<R> {
     /// Build and send a transaction from instructions
@@ -28,21 +48,23 @@ impl<R: Rpc> RpcClient<R> {
     /// - The transaction simulation fails
     pub async fn send_instructions(
         &self,
-        payer: &Keypair,
+        payer: &dyn TapeSigner,
         instructions: Vec<Instruction>,
-    ) -> Result<Signature, RpcError> {
+    ) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
             // Fetch the latest blockhash
             let blockhash = self.rpc().get_latest_blockhash().await?;
+            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
+            let signers = [SolanaSignerAdapter(payer)];
 
             // Build and sign the transaction
             let transaction = Transaction::new_signed_with_payer(
                 &instructions,
-                Some(&payer.pubkey()),
-                &[payer],
+                Some(&payer_pubkey),
+                &signers,
                 blockhash,
             );
 
@@ -95,25 +117,28 @@ impl<R: Rpc> RpcClient<R> {
     /// - The transaction simulation fails
     pub async fn send_instructions_with_signers(
         &self,
-        payer: &Keypair,
+        payer: &dyn TapeSigner,
         instructions: Vec<Instruction>,
-        signers: &[&Keypair],
-    ) -> Result<Signature, RpcError> {
+        signers: &[&dyn TapeSigner],
+    ) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
             // Fetch the latest blockhash
             let blockhash = self.rpc().get_latest_blockhash().await?;
+            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
 
             // Combine payer with additional signers
-            let mut all_signers: Vec<&Keypair> = vec![payer];
-            all_signers.extend(signers);
+            let mut all_signers: Vec<SolanaSignerAdapter<'_>> =
+                Vec::with_capacity(signers.len() + 1);
+            all_signers.push(SolanaSignerAdapter(payer));
+            all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
 
             // Build and sign the transaction
             let transaction = Transaction::new_signed_with_payer(
                 &instructions,
-                Some(&payer.pubkey()),
+                Some(&payer_pubkey),
                 &all_signers,
                 blockhash,
             );
@@ -165,21 +190,23 @@ impl<R: Rpc> RpcClient<R> {
     /// - The transaction fails to send
     pub async fn send_instructions_async(
         &self,
-        payer: &Keypair,
+        payer: &dyn TapeSigner,
         instructions: Vec<Instruction>,
-    ) -> Result<Signature, RpcError> {
+    ) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
             // Fetch the latest blockhash
             let blockhash = self.rpc().get_latest_blockhash().await?;
+            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
+            let signers = [SolanaSignerAdapter(payer)];
 
             // Build and sign the transaction
             let transaction = Transaction::new_signed_with_payer(
                 &instructions,
-                Some(&payer.pubkey()),
-                &[payer],
+                Some(&payer_pubkey),
+                &signers,
                 blockhash,
             );
 
@@ -225,25 +252,28 @@ impl<R: Rpc> RpcClient<R> {
     /// - The transaction fails to send
     pub async fn send_instructions_with_signers_async(
         &self,
-        payer: &Keypair,
+        payer: &dyn TapeSigner,
         instructions: Vec<Instruction>,
-        signers: &[&Keypair],
-    ) -> Result<Signature, RpcError> {
+        signers: &[&dyn TapeSigner],
+    ) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
             // Fetch the latest blockhash
             let blockhash = self.rpc().get_latest_blockhash().await?;
+            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
 
             // Combine payer with additional signers
-            let mut all_signers: Vec<&Keypair> = vec![payer];
-            all_signers.extend(signers);
+            let mut all_signers: Vec<SolanaSignerAdapter<'_>> =
+                Vec::with_capacity(signers.len() + 1);
+            all_signers.push(SolanaSignerAdapter(payer));
+            all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
 
             // Build and sign the transaction
             let transaction = Transaction::new_signed_with_payer(
                 &instructions,
-                Some(&payer.pubkey()),
+                Some(&payer_pubkey),
                 &all_signers,
                 blockhash,
             );
@@ -279,6 +309,8 @@ impl<R: Rpc> RpcClient<R> {
 mod tests {
     use super::*;
     use rpc_solana::RpcConfig;
+    use tape_crypto::ed25519::Keypair;
+    use solana_sdk::signature::Keypair as SolanaKeypair;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::system_instruction;
 
@@ -288,10 +320,12 @@ mod tests {
         let config = RpcConfig::default();
         let client = RpcClient::new(config).unwrap();
 
-        let payer = Keypair::new();
+        let solana_payer = SolanaKeypair::new();
+        let payer = Keypair::from_solana_keypair(&solana_payer).expect("convert payer");
         let to = Pubkey::new_unique();
+        let payer_pubkey = payer.to_solana_pubkey();
 
-        let instruction = system_instruction::transfer(&payer.pubkey(), &to, 1000);
+        let instruction = system_instruction::transfer(&payer_pubkey, &to, 1000);
 
         // This would fail without funds, but tests the API
         let result = client.send_instructions(&payer, vec![instruction]).await;

@@ -1,8 +1,8 @@
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_crypto::address::Address;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
-use tape_store::types::Pubkey;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -16,7 +16,7 @@ pub struct CleanupStats {
 
 pub fn delete_track_local<Db: Store>(
     store: &TapeStore<Db>,
-    track: Pubkey,
+    track: Address,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
 
@@ -34,7 +34,7 @@ pub fn delete_track_local<Db: Store>(
 
 pub fn delete_tape_local<Db: Store>(
     store: &TapeStore<Db>,
-    tape: Pubkey,
+    tape: Address,
     track_batch: usize,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
@@ -71,7 +71,7 @@ pub fn delete_tape_local<Db: Store>(
 
 pub fn cleanup_track_slices<Db: Store>(
     store: &TapeStore<Db>,
-    track: Pubkey,
+    track: Address,
     spool_group: SpoolGroup,
 ) -> Result<usize, NodeError> {
     let mut deleted_slices = 0usize;

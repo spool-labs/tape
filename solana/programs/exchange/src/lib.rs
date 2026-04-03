@@ -68,6 +68,10 @@ mod tests {
     use tape_test::*;
     use solana_sdk::account::Account;
 
+    fn to_pubkey(address: impl Into<Pubkey>) -> Pubkey {
+        address.into()
+    }
+
     fn create_exchange(
         signer: Pubkey, 
         balance_tape: u64, 
@@ -77,7 +81,7 @@ mod tests {
     ) -> Exchange {
 
         Exchange {
-            authority: signer,
+            authority: signer.into(),
             balance_tape: TAPE(balance_tape),
             balance_sol: SOL(balance_sol),
             rate: ExchangeRate {
@@ -87,8 +91,8 @@ mod tests {
         }
     }
 
-    fn create_account(address: Pubkey, data: &Exchange) -> Account {
-        let mut account = pda(address, data.pack(), exchange::ID).1;
+    fn create_account(address: impl Into<Pubkey>, data: &Exchange) -> Account {
+        let mut account = pda(to_pubkey(address), data.pack(), exchange::ID).1;
         account.lamports += data.balance_sol.as_u64();
         account
     }
@@ -97,16 +101,16 @@ mod tests {
     fn test_register() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let instruction = build_register_exchange_ix(fee_payer, authority);
+        let instruction = build_register_exchange_ix(fee_payer.into(), authority.into());
 
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
         let (exchange_ata, _) = exchange_ata(exchange_address);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
-            empty(exchange_address),
-            empty(exchange_ata),
+            empty(to_pubkey(exchange_address)),
+            empty(to_pubkey(exchange_ata)),
             mint(1_000),
 
             system_program(),
@@ -121,9 +125,9 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     Exchange {
-                        authority: authority,
+                        authority: authority.into(),
                         balance_tape: TAPE::zero(),
                         balance_sol: SOL::zero(),
                         rate: ExchangeRate::flat(),
@@ -140,16 +144,22 @@ mod tests {
         let tape_rate = 100; // 100 TAPE
         let sol_rate = 1; // 1 SOL
 
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
         let exchange = create_exchange(authority, 0, 0, 1, 1);
         let account = create_account(exchange_address, &exchange);
 
-        let instruction = build_set_exchange_rate_ix(fee_payer, authority, exchange_address, tape_rate, sol_rate);
+        let instruction = build_set_exchange_rate_ix(
+            fee_payer.into(),
+            authority.into(),
+            exchange_address,
+            tape_rate,
+            sol_rate,
+        );
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
-            (exchange_address, account),
+            (to_pubkey(exchange_address), account),
         ];
 
         let expected_exchange = Exchange {
@@ -166,7 +176,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     expected_exchange.pack().as_ref()
                 ).build(),
             ]
@@ -181,12 +191,18 @@ mod tests {
 
         let amount = TAPE(1000); // 0.001 TAPE
 
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
         let (exchange_ata, _) = exchange_ata(exchange_address);
 
         let exchange = create_exchange(authority, 500, 0, 1, 1);
         let account = create_account(exchange_address, &exchange);
-        let instruction = build_deposit_tape_ix(fee_payer, authority, authority_ata, exchange_address, amount);
+        let instruction = build_deposit_tape_ix(
+            fee_payer.into(),
+            authority.into(),
+            authority_ata.into(),
+            exchange_address,
+            amount,
+        );
 
         let initial_authority_balance = 2000; // Sufficient for 1000
         let initial_exchange_ata_balance = 500;
@@ -195,8 +211,12 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             token(authority_ata, authority, initial_authority_balance),
-            (exchange_address, account),
-            token(exchange_ata, exchange_address, initial_exchange_ata_balance),
+            (to_pubkey(exchange_address), account),
+            token(
+                to_pubkey(exchange_ata),
+                to_pubkey(exchange_address),
+                initial_exchange_ata_balance,
+            ),
             token_program(),
         ];
 
@@ -211,14 +231,18 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     expected_exchange.pack().as_ref()
                 ).build(),
                 Check::account(&authority_ata).data(
                     token(authority_ata, authority, initial_authority_balance - amount.as_u64()).1.data.as_ref()
                 ).build(),
-                Check::account(&exchange_ata).data(
-                    token(exchange_ata, exchange_address, initial_exchange_ata_balance + amount.as_u64()).1.data.as_ref()
+                Check::account(&to_pubkey(exchange_ata)).data(
+                    token(
+                        to_pubkey(exchange_ata),
+                        to_pubkey(exchange_address),
+                        initial_exchange_ata_balance + amount.as_u64(),
+                    ).1.data.as_ref()
                 ).build(),
             ]
         );
@@ -230,7 +254,7 @@ mod tests {
         let authority = Pubkey::new_unique();
         let amount = SOL(1_000_000); // 0.001 SOL
 
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
 
         let exchange = create_exchange(authority, 0, 500_000, 1, 1);
         let account = create_account(exchange_address, &exchange);
@@ -241,11 +265,12 @@ mod tests {
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, initial_authority_lamports),
-            (exchange_address, account),
+            (to_pubkey(exchange_address), account),
             system_program(),
         ];
 
-        let instruction = build_deposit_sol_ix(fee_payer, authority, exchange_address, amount);
+        let instruction =
+            build_deposit_sol_ix(fee_payer.into(), authority.into(), exchange_address, amount);
 
         let expected_exchange = Exchange {
             balance_sol: exchange.balance_sol + amount,
@@ -258,13 +283,13 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     expected_exchange.pack().as_ref()
                 ).build(),
                 Check::account(&authority).lamports(
                     initial_authority_lamports - amount.as_u64()
                 ).build(),
-                Check::account(&exchange_address).lamports(
+                Check::account(&to_pubkey(exchange_address)).lamports(
                     initial_exchange_lamports + amount.as_u64()
                 ).build(),
             ]
@@ -279,12 +304,18 @@ mod tests {
 
         let amount = TAPE(500); // 0.0005 TAPE
 
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
         let (exchange_ata, _) = exchange_ata(exchange_address);
 
         let exchange = create_exchange(authority, 1000, 0, 1, 1);
         let account = create_account(exchange_address, &exchange);
-        let instruction = build_withdraw_tape_ix(fee_payer, authority, authority_ata, exchange_address, amount);
+        let instruction = build_withdraw_tape_ix(
+            fee_payer.into(),
+            authority.into(),
+            authority_ata.into(),
+            exchange_address,
+            amount,
+        );
 
         let initial_authority_ata_balance = 500;
         let initial_exchange_ata_balance = 1000;
@@ -293,8 +324,12 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             token(authority_ata, authority, initial_authority_ata_balance),
-            (exchange_address, account),
-            token(exchange_ata, exchange_address, initial_exchange_ata_balance),
+            (to_pubkey(exchange_address), account),
+            token(
+                to_pubkey(exchange_ata),
+                to_pubkey(exchange_address),
+                initial_exchange_ata_balance,
+            ),
             token_program(),
         ];
 
@@ -309,14 +344,18 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     expected_exchange.pack().as_ref()
                 ).build(),
                 Check::account(&authority_ata).data(
                     token(authority_ata, authority, initial_authority_ata_balance + amount.as_u64()).1.data.as_ref()
                 ).build(),
-                Check::account(&exchange_ata).data(
-                    token(exchange_ata, exchange_address, initial_exchange_ata_balance - amount.as_u64()).1.data.as_ref()
+                Check::account(&to_pubkey(exchange_ata)).data(
+                    token(
+                        to_pubkey(exchange_ata),
+                        to_pubkey(exchange_address),
+                        initial_exchange_ata_balance - amount.as_u64(),
+                    ).1.data.as_ref()
                 ).build(),
             ]
         );
@@ -328,7 +367,7 @@ mod tests {
         let authority = Pubkey::new_unique();
         let amount = SOL(1_000_000); // 0.001 SOL
 
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
         let exchange = create_exchange(authority, 0, 2_000_000, 1, 1);
         let account = create_account(exchange_address, &exchange);
 
@@ -338,11 +377,12 @@ mod tests {
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, initial_authority_lamports),
-            (exchange_address, account),
+            (to_pubkey(exchange_address), account),
             rent_sysvar(),
         ];
 
-        let instruction = build_withdraw_sol_ix(fee_payer, authority, exchange_address, amount);
+        let instruction =
+            build_withdraw_sol_ix(fee_payer.into(), authority.into(), exchange_address, amount);
 
         let expected_exchange = Exchange {
             balance_sol: exchange.balance_sol - amount,
@@ -355,13 +395,13 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     expected_exchange.pack().as_ref()
                 ).build(),
                 Check::account(&authority).lamports(
                     initial_authority_lamports + amount.as_u64()
                 ).build(),
-                Check::account(&exchange_address).lamports(
+                Check::account(&to_pubkey(exchange_address)).lamports(
                     initial_exchange_lamports - amount.as_u64()
                 ).build(),
             ]
@@ -380,12 +420,18 @@ mod tests {
 
         let amount_out_tape = amount_sol.as_u64() * tape_rate / sol_rate; // 0.001 * 100 = 0.1 TAPE = 100_000
 
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
         let (exchange_ata, _) = exchange_ata(exchange_address);
 
         let exchange = create_exchange(authority, 200_000, 500_000, tape_rate, sol_rate);
         let account = create_account(exchange_address, &exchange);
-        let instruction = build_swap_for_tape_ix(fee_payer, authority, authority_ata, exchange_address, amount_sol);
+        let instruction = build_swap_for_tape_ix(
+            fee_payer.into(),
+            authority.into(),
+            authority_ata.into(),
+            exchange_address,
+            amount_sol,
+        );
 
         let initial_authority_lamports = 2_000_000_000;
         let initial_exchange_lamports = account.lamports;
@@ -396,8 +442,12 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             sol(authority, initial_authority_lamports),
             token(authority_ata, authority, initial_authority_ata_balance),
-            (exchange_address, account),
-            token(exchange_ata, exchange_address, initial_exchange_ata_balance),
+            (to_pubkey(exchange_address), account),
+            token(
+                to_pubkey(exchange_ata),
+                to_pubkey(exchange_address),
+                initial_exchange_ata_balance,
+            ),
             system_program(),
             token_program(),
         ];
@@ -414,20 +464,24 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     expected_exchange.pack().as_ref()
                 ).build(),
                 Check::account(&authority).lamports(
                     initial_authority_lamports - amount_sol.as_u64()
                 ).build(),
-                Check::account(&exchange_address).lamports(
+                Check::account(&to_pubkey(exchange_address)).lamports(
                     initial_exchange_lamports + amount_sol.as_u64()
                 ).build(),
                 Check::account(&authority_ata).data(
                     token(authority_ata, authority, initial_authority_ata_balance + amount_out_tape).1.data.as_ref()
                 ).build(),
-                Check::account(&exchange_ata).data(
-                    token(exchange_ata, exchange_address, initial_exchange_ata_balance - amount_out_tape).1.data.as_ref()
+                Check::account(&to_pubkey(exchange_ata)).data(
+                    token(
+                        to_pubkey(exchange_ata),
+                        to_pubkey(exchange_address),
+                        initial_exchange_ata_balance - amount_out_tape,
+                    ).1.data.as_ref()
                 ).build(),
             ]
         );
@@ -444,12 +498,18 @@ mod tests {
         let sol_rate = 1000;
 
         let amount_out_sol = amount_tape.as_u64() * sol_rate / tape_rate; // 0.001 / 100 = 0.00001 SOL = 10_000
-        let (exchange_address, _) = exchange_pda(authority);
+        let (exchange_address, _) = exchange_pda(authority.into());
         let (exchange_ata, _) = exchange_ata(exchange_address);
         let exchange = create_exchange(authority, 2000, 1_000_000, tape_rate, sol_rate);
         let account = create_account(exchange_address, &exchange);
 
-        let instruction = build_swap_for_sol_ix(fee_payer, authority, authority_ata, exchange_address, amount_tape);
+        let instruction = build_swap_for_sol_ix(
+            fee_payer.into(),
+            authority.into(),
+            authority_ata.into(),
+            exchange_address,
+            amount_tape,
+        );
 
         let initial_authority_lamports = 1_000_000_000;
         let initial_exchange_lamports = account.lamports;
@@ -460,8 +520,12 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             sol(authority, initial_authority_lamports),
             token(authority_ata, authority, initial_authority_ata_balance),
-            (exchange_address, account),
-            token(exchange_ata, exchange_address, initial_exchange_ata_balance),
+            (to_pubkey(exchange_address), account),
+            token(
+                to_pubkey(exchange_ata),
+                to_pubkey(exchange_address),
+                initial_exchange_ata_balance,
+            ),
             token_program(),
             rent_sysvar(),
         ];
@@ -478,20 +542,24 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&exchange_address).data(
+                Check::account(&to_pubkey(exchange_address)).data(
                     expected_exchange.pack().as_ref()
                 ).build(),
                 Check::account(&authority).lamports(
                     initial_authority_lamports + amount_out_sol
                 ).build(),
-                Check::account(&exchange_address).lamports(
+                Check::account(&to_pubkey(exchange_address)).lamports(
                     initial_exchange_lamports - amount_out_sol
                 ).build(),
                 Check::account(&authority_ata).data(
                     token(authority_ata, authority, initial_authority_ata_balance - amount_tape.as_u64()).1.data.as_ref()
                 ).build(),
-                Check::account(&exchange_ata).data(
-                    token(exchange_ata, exchange_address, initial_exchange_ata_balance + amount_tape.as_u64()).1.data.as_ref()
+                Check::account(&to_pubkey(exchange_ata)).data(
+                    token(
+                        to_pubkey(exchange_ata),
+                        to_pubkey(exchange_address),
+                        initial_exchange_ata_balance + amount_tape.as_u64(),
+                    ).1.data.as_ref()
                 ).build(),
             ]
         );

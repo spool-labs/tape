@@ -247,15 +247,15 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_core::bls::BlsPubkey;
-    use tape_crypto::Pubkey;
+    use tape_crypto::address::Address;
 
     fn make_peer(id: u64, port: u16) -> PeerNode {
         PeerNode {
             node_id: NodeId(id),
-            authority: Pubkey::new_unique(),
-            state_address: Pubkey::new_unique(),
+            authority: Address::new_unique(),
+            state_address: Address::new_unique(),
             bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: Pubkey::new_unique(),
+            tls_pubkey: Address::new_unique(),
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
         }
     }

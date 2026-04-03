@@ -39,7 +39,7 @@ pub fn process_finalize_snapshot_epoch(
 
     let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
     let manifest = manifest_info
-        .has_address(&manifest_address)?
+        .has_address(&manifest_address.into())?
         .is_snapshot_manifest()?
         .as_account::<SnapshotManifest>(&tapedrive::ID)?;
 
@@ -115,7 +115,7 @@ mod tests {
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
 
-        let instruction = build_finalize_snapshot_epoch_ix(fee_payer, snapshot_epoch);
+        let instruction = build_finalize_snapshot_epoch_ix(fee_payer.into(), snapshot_epoch);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -130,7 +130,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&snapshot_state_address)
+                Check::account(&Pubkey::from(snapshot_state_address))
                     .data(
                         SnapshotState {
                             tail_epoch: snapshot_epoch,
@@ -170,7 +170,7 @@ mod tests {
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
 
-        let instruction = build_finalize_snapshot_epoch_ix(fee_payer, snapshot_epoch);
+        let instruction = build_finalize_snapshot_epoch_ix(fee_payer.into(), snapshot_epoch);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),

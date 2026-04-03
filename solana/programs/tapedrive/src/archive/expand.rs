@@ -30,7 +30,7 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system_info
         .is_type::<System>(&tapedrive::ID)?
         .is_writable()?
-        .has_address(&system_address)?;
+        .has_address(&system_address.into())?;
 
     let current_size = system_info.data_len();
     let required_size = System::get_size();
@@ -67,7 +67,7 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
          let fee_payer = Pubkey::new_unique();
          let authority = Pubkey::new_unique();
 
-         let instruction = build_expand_system_ix(fee_payer, authority);
+         let instruction = build_expand_system_ix(fee_payer.into(), authority.into());
          let (system_address, _) = system_pda();
 
          // Create a system account that is one byte short.
@@ -89,7 +89,7 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
              &accounts,
              &[
                  Check::success(),
-                 Check::account(&system_address).data(
+                 Check::account(&Pubkey::from(system_address)).data(
                      System {
                          ..System::zeroed()
                      }.pack().as_ref()
@@ -103,7 +103,7 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let (system_address, _) = system_pda();
-        let instruction = build_expand_system_ix(fee_payer, authority);
+        let instruction = build_expand_system_ix(fee_payer.into(), authority.into());
 
         // Create a system account with minimal size (1 byte)
         let initial_size = 1;
@@ -133,7 +133,7 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address)
+                Check::account(&Pubkey::from(system_address))
                     .space(expected_size)
                     .build(),
             ],

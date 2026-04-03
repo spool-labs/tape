@@ -4674,6 +4674,7 @@ dependencies = [
  "solana-client",
  "solana-sdk",
  "solana-transaction-status",
+ "tape-crypto",
  "thiserror 2.0.18",
 ]
 
@@ -4713,6 +4714,7 @@ dependencies = [
  "solana-transaction-status",
  "tape-api",
  "tape-blocks",
+ "tape-crypto",
  "tokio",
 ]
 
@@ -4727,6 +4729,7 @@ dependencies = [
  "solana-client",
  "solana-sdk",
  "solana-transaction-status",
+ "tape-crypto",
  "tape-metrics",
  "tape-retry",
  "thiserror 2.0.18",
@@ -8724,6 +8727,7 @@ dependencies = [
  "solana-curve25519",
  "solana-nostd-sha256",
  "solana-program",
+ "solana-sdk",
  "thiserror 2.0.18",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
@@ -8839,6 +8843,7 @@ dependencies = [
  "peer-manager",
  "peer-memory",
  "peer-tls",
+ "rand 0.8.5",
  "rlimit",
  "rpc",
  "rpc-client",

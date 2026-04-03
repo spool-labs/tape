@@ -6,14 +6,15 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::ops::RepairReq;
 use tape_protocol::api::types::StripeSubChunkRequest;
 use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::{BlobInfo, Pubkey, SpoolState, TrackData};
 use tape_core::types::{StorageUnits, StripeCount};
+use tape_store::types::{BlobInfo, SpoolState, TrackData};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -271,7 +272,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     _config: &RecoveryConfig,
     spool: SpoolIndex,
     peers: &GroupPeers,
-    track: Pubkey,
+    track: Address,
     track_data: &BlobInfo,
     token: &CancellationToken,
 ) -> Result<Vec<u8>, ()> {
@@ -378,7 +379,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     spool: SpoolIndex,
     plan: &RepairPlan,
     peers: &GroupPeers,
-    track: Pubkey,
+    track: Address,
     token: &CancellationToken,
 ) -> Result<HashMap<SliceIndex, Vec<u8>>, ()> {
     let reqs = per_helper_reqs(plan, spool, track);
@@ -460,7 +461,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 fn per_helper_reqs(
     plan: &RepairPlan,
     spool: SpoolIndex,
-    track: Pubkey,
+    track: Address,
 ) -> HashMap<SliceIndex, RepairReq> {
     let group = SpoolGroup::of(spool);
     let mut reqs: HashMap<SliceIndex, RepairReq> = HashMap::new();
@@ -546,14 +547,19 @@ pub fn extract_repair_data(
 
 #[cfg(test)]
 mod tests {
+    use tape_crypto::address::Address;
     use super::*;
     use peer_memory::MemoryApi;
-    use tape_api::state::{CompressedTrack, TrackKind, TrackState};
     use tape_core::encoding::EncodingProfile;
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::erasure::COMMITMENT_TREE_HEIGHT;
+    use tape_core::track::data::TrackData;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
+    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_protocol::api::ops::{PeerReq, PeerRes, RepairRes};
     use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
+    use tape_core::track::blob::BlobInfo;
     use tape_store::ops::ObjectInfoOps;
     use tape_store::types::{ObjectInfo, SpoolStatus};
 
@@ -561,33 +567,41 @@ mod tests {
 
     const SPOOL: SpoolIndex = 5;
 
-    fn addr(n: u8) -> Pubkey {
-        Pubkey([n; 32])
+    fn addr(n: u8) -> Address {
+        Address::from([n; 32])
     }
 
     fn clay_track(size: u64, slices: &[Vec<u8>]) -> CompressedTrack {
-        let profile = EncodingProfile::clay_default();
-        let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
-        let stripe_size = metadata.stripe_size() as u64;
-        let _commitment: Vec<_> = slices
-            .iter()
-            .map(|s| tape_crypto::merkle::hash_leaf(s))
-            .collect();
-        let _stripe_count = size.div_ceil(stripe_size);
-        let _ = profile;
+        let blob = clay_blob(size, slices);
         CompressedTrack {
-            tape: Pubkey([0; 32]),
+            tape: Address::from([0; 32]),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size),
             spool_group: SpoolGroup::of(SPOOL),
-            value_hash: Hash::new_unique(),
+            value_hash: blob.get_hash(),
         }
     }
 
-    fn certified(track: Pubkey) -> ObjectInfo {
+    fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobInfo {
+        let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
+        let stripe_size = metadata.stripe_size() as u64;
+        let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        BlobInfo {
+            size: StorageUnits::from_bytes(size),
+            root: Hash::new_unique(),
+            commitment,
+            profile: EncodingProfile::clay_default(),
+            stripe_size: StorageUnits::from_bytes(stripe_size),
+            stripe_count: StripeCount(size.div_ceil(stripe_size)),
+            leaves,
+        }
+    }
+
+    fn certified(track: Address) -> ObjectInfo {
         ObjectInfo::Valid {
             track_address: track,
             registered_epoch: EpochNumber(1),
@@ -647,7 +661,8 @@ mod tests {
         let lost_pos = group.slice_of(SPOOL).unwrap() as usize;
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
-        let track_info_for_api = track_info.clone();
+        let track_blob = clay_blob(1024, &slices);
+        let track_blob_for_api = track_blob.clone();
         let slices_for_api = slices.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
@@ -655,7 +670,7 @@ mod tests {
                 let helper_slice = &slices_for_api[group.slice_of(req.helper_spool).unwrap() as usize];
 
                 let data = extract_repair_data(
-                    &track_info_for_api,
+                    &track_blob_for_api,
                     &req.stripes,
                     helper_slice,
                 ).unwrap();
@@ -669,6 +684,7 @@ mod tests {
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
+        ctx.store.put_track_data(track, TrackData::Blob(track_blob.clone())).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
 
@@ -690,11 +706,13 @@ mod tests {
             profile,
         );
         let slices = slicer.encode(&vec![0x24; 1024]).unwrap();
+        let track_blob = clay_blob(1024, &slices);
 
         ctx.store
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
+        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
         ctx.store.add_pending_repair(SPOOL, a).unwrap();
 
@@ -729,11 +747,13 @@ mod tests {
             profile,
         );
         let slices = slicer.encode(&vec![0x33; 1024]).unwrap();
+        let track_blob = clay_blob(1024, &slices);
 
         ctx.store
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
+        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
         ctx.store
             .put_object_info(
                 a,
@@ -777,14 +797,15 @@ mod tests {
         let lost_pos = group.slice_of(SPOOL).unwrap() as usize;
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
-        let track_info_for_api = track_info.clone();
+        let track_blob = clay_blob(1024, &slices);
+        let track_blob_for_api = track_blob.clone();
         let slices_for_api = slices.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::Repair(ref req) => {
                 let helper_slice = &slices_for_api[group.slice_of(req.helper_spool).unwrap() as usize];
                 let data = extract_repair_data(
-                    &track_info_for_api,
+                    &track_blob_for_api,
                     &req.stripes,
                     helper_slice,
                 ).unwrap();
@@ -817,6 +838,7 @@ mod tests {
 
         ctx.store.set_spool_state(SPOOL, state).unwrap();
         ctx.store.put_track(track, track_info).unwrap();
+        ctx.store.put_track_data(track, TrackData::Blob(track_blob)).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
 

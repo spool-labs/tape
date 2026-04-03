@@ -1,13 +1,15 @@
 //! Spool operations
 
+use tape_core::spooler::SpoolIndex;
+use tape_crypto::address::Address;
+use store::{Column, Store};
+
 use crate::columns::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
 use crate::error::{Result, TapeStoreError};
-use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolState};
+use crate::types::{SliceKey, SpoolIndexKey, SpoolState};
 use crate::TapeStore;
-use store::{Column, Store};
-use tape_core::spooler::SpoolIndex;
 
 /// Operations for spool management
 pub trait SpoolOps {
@@ -20,36 +22,24 @@ pub trait SpoolOps {
     fn iter_all_spools(&self) -> Result<Vec<(SpoolIndex, SpoolState)>>;
 
     // Pending repair
-    fn add_pending_repair(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()>;
-    fn remove_pending_repair(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()>;
-    fn has_pending_repair(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<bool>;
+    fn add_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
+    fn remove_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
+    fn has_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool>;
 
     // Iterate pending repairs for a spool (up to `limit`)
-    fn iter_pending_repairs(
-        &self,
-        spool_id: SpoolIndex,
-        limit: usize,
-    ) -> Result<Vec<Pubkey>>;
+    fn iter_pending_repairs( &self, spool_id: SpoolIndex, limit: usize,) -> Result<Vec<Address>>;
 
     // Pending recovery
-    fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()>;
-    fn remove_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()>;
-    fn has_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<bool>;
+    fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
+    fn remove_pending_recovery(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
+    fn has_pending_recovery(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool>;
 
     // Iterate pending recoveries for a spool (up to `limit`)
-    fn iter_pending_recoveries(
-        &self,
-        spool_id: SpoolIndex,
-        limit: usize,
-    ) -> Result<Vec<Pubkey>>;
+    fn iter_pending_recoveries( &self, spool_id: SpoolIndex, limit: usize,) -> Result<Vec<Address>>;
 
     // Sync progress
-    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Pubkey>>;
-    fn set_spool_sync_cursor(
-        &self,
-        spool_id: SpoolIndex,
-        last_synced_track: Pubkey,
-    ) -> Result<()>;
+    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Address>>;
+    fn set_spool_sync_cursor( &self, spool_id: SpoolIndex, last_synced_track: Address,) -> Result<()>;
     fn remove_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<()>;
 
     // Bulk clear all pending repairs for a spool
@@ -85,34 +75,34 @@ impl<S: Store> SpoolOps for TapeStore<S> {
             .collect())
     }
 
-    fn add_pending_repair(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()> {
+    fn add_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         self.put::<SpoolPendingRepairCol>(&key, &())?;
         Ok(())
     }
 
-    fn remove_pending_repair(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()> {
+    fn remove_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         self.delete::<SpoolPendingRepairCol>(&key)?;
         Ok(())
     }
 
-    fn has_pending_repair(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<bool> {
+    fn has_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool> {
         let key = SliceKey::new(spool_id, track_address);
         Ok(self.contains::<SpoolPendingRepairCol>(&key)?)
     }
 
-    fn iter_pending_repairs(&self, spool_id: SpoolIndex, limit: usize) -> Result<Vec<Pubkey>> {
+    fn iter_pending_repairs(&self, spool_id: SpoolIndex, limit: usize) -> Result<Vec<Address>> {
         iter_pending_by_spool(self, SpoolPendingRepairCol::CF_NAME, spool_id, limit)
     }
 
-    fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()> {
+    fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         self.put::<SpoolPendingRecoveryCol>(&key, &())?;
         Ok(())
     }
 
-    fn remove_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()> {
+    fn remove_pending_recovery(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         self.delete::<SpoolPendingRecoveryCol>(&key)?;
         Ok(())
@@ -121,7 +111,7 @@ impl<S: Store> SpoolOps for TapeStore<S> {
     fn has_pending_recovery(
         &self,
         spool_id: SpoolIndex,
-        track_address: Pubkey,
+        track_address: Address,
     ) -> Result<bool> {
         let key = SliceKey::new(spool_id, track_address);
         Ok(self.contains::<SpoolPendingRecoveryCol>(&key)?)
@@ -131,7 +121,7 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         &self,
         spool_id: SpoolIndex,
         limit: usize,
-    ) -> Result<Vec<Pubkey>> {
+    ) -> Result<Vec<Address>> {
         iter_pending_by_spool(self, SpoolPendingRecoveryCol::CF_NAME, spool_id, limit)
     }
 
@@ -143,7 +133,7 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         clear_all_pending_by_spool(self, SpoolPendingRecoveryCol::CF_NAME, spool_id)
     }
 
-    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Pubkey>> {
+    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Address>> {
         let key = SpoolIndexKey::new(spool_id);
         Ok(self.get::<SpoolSyncCursorCol>(&key)?)
     }
@@ -151,7 +141,7 @@ impl<S: Store> SpoolOps for TapeStore<S> {
     fn set_spool_sync_cursor(
         &self,
         spool_id: SpoolIndex,
-        last_synced_track: Pubkey,
+        last_synced_track: Address,
     ) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.put::<SpoolSyncCursorCol>(&key, &last_synced_track)?;
@@ -171,7 +161,7 @@ fn iter_pending_by_spool<S: Store>(
     cf_name: &str,
     spool_id: SpoolIndex,
     limit: usize,
-) -> Result<Vec<Pubkey>> {
+) -> Result<Vec<Address>> {
     let prefix = SliceKey::spool_prefix(spool_id);
     let iter = store.inner().inner().iter_prefix(cf_name, &prefix)?;
 
@@ -267,7 +257,7 @@ mod tests {
     fn test_pending_recovery() {
         let store = test_store();
         let spool_id = 42;
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
 
         assert!(!store.has_pending_recovery(spool_id, track).unwrap());
 
@@ -282,7 +272,7 @@ mod tests {
     fn test_pending_repair() {
         let store = test_store();
         let spool_id = 42;
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
 
         assert!(!store.has_pending_repair(spool_id, track).unwrap());
 
@@ -298,9 +288,9 @@ mod tests {
         let store = test_store();
         let spool_id = 42;
 
-        let track1 = Pubkey::new_unique();
-        let track2 = Pubkey::new_unique();
-        let track3 = Pubkey::new_unique();
+        let track1 = Address::new_unique();
+        let track2 = Address::new_unique();
+        let track3 = Address::new_unique();
 
         store.add_pending_recovery(spool_id, track1).unwrap();
         store.add_pending_recovery(spool_id, track2).unwrap();
@@ -308,7 +298,7 @@ mod tests {
 
         // Different spool should not appear
         store
-            .add_pending_recovery(99, Pubkey::new_unique())
+            .add_pending_recovery(99, Address::new_unique())
             .unwrap();
 
         let pending = store.iter_pending_recoveries(spool_id, 100).unwrap();
@@ -320,15 +310,15 @@ mod tests {
         let store = test_store();
         let spool_id = 42;
 
-        let track1 = Pubkey::new_unique();
-        let track2 = Pubkey::new_unique();
-        let track3 = Pubkey::new_unique();
+        let track1 = Address::new_unique();
+        let track2 = Address::new_unique();
+        let track3 = Address::new_unique();
 
         store.add_pending_repair(spool_id, track1).unwrap();
         store.add_pending_repair(spool_id, track2).unwrap();
         store.add_pending_repair(spool_id, track3).unwrap();
 
-        store.add_pending_repair(99, Pubkey::new_unique()).unwrap();
+        store.add_pending_repair(99, Address::new_unique()).unwrap();
 
         let pending = store.iter_pending_repairs(spool_id, 100).unwrap();
         assert_eq!(pending.len(), 3);
@@ -338,9 +328,9 @@ mod tests {
     fn clear_all_pending() {
         let store = test_store();
 
-        let t1 = Pubkey::new_unique();
-        let t2 = Pubkey::new_unique();
-        let t3 = Pubkey::new_unique();
+        let t1 = Address::new_unique();
+        let t2 = Address::new_unique();
+        let t3 = Address::new_unique();
 
         store.add_pending_recovery(42, t1).unwrap();
         store.add_pending_recovery(42, t2).unwrap();
@@ -356,9 +346,9 @@ mod tests {
     fn clear_all_pending_repairs() {
         let store = test_store();
 
-        let t1 = Pubkey::new_unique();
-        let t2 = Pubkey::new_unique();
-        let t3 = Pubkey::new_unique();
+        let t1 = Address::new_unique();
+        let t2 = Address::new_unique();
+        let t3 = Address::new_unique();
 
         store.add_pending_repair(42, t1).unwrap();
         store.add_pending_repair(42, t2).unwrap();
@@ -374,7 +364,7 @@ mod tests {
     fn test_sync_progress_roundtrip() {
         let store = test_store();
         let spool_id = 42;
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
 
         assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());
 

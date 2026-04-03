@@ -26,7 +26,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    let (history_address, _) = history_pda(*node_info.key);
+    let (history_address, _) = history_pda((*node_info.key).into());
 
     fee_payer_info
         .is_signer()?
@@ -39,7 +39,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *authority_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     archive_info
         .is_archive()?;
@@ -62,28 +62,28 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
     let history = history_info
-        .has_address(&history_address)?
+        .has_address(&history_address.into())?
         .as_account::<History>(&tapedrive::ID)?
-        .assert(|h| h.node == *node_info.key)?;
+        .assert(|h| h.node == (*node_info.key).into())?;
 
     if node.latest_advance_epoch < prev_epoch(epoch) {
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*authority_info.key);
+    let (stake_address, _) = stake_pda((*authority_info.key).into());
     let (vault_address, _) = vault_pda(stake_address);
 
     let stake = stake_info
         .is_writable()?
-        .has_address(&stake_address)?
+        .has_address(&stake_address.into())?
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if stake.authority != *authority_info.key || stake.pool != *node_info.key {
+    if stake.authority != (*authority_info.key).into() || stake.pool != (*node_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
     vault_info
-        .has_address(&vault_address)?
+        .has_address(&vault_address.into())?
         .is_writable()?;
 
     let staked_tape = &mut stake.inner;
@@ -151,8 +151,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     // Transfer out the principal, and close vault
     solana_program::program::invoke(
         &build_unstake_ix(
-            *fee_payer_info.key,
-            *authority_info.key,
+            (*fee_payer_info.key).into(),
+            (*authority_info.key).into(),
         ),
         &[
             fee_payer_info.clone(),
@@ -165,8 +165,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     StakeWithdrawn {
         stake: stake_address,
-        authority: *authority_info.key,
-        pool: *node_info.key,
+        authority: (*authority_info.key).into(),
+        pool: (*node_info.key).into(),
         principal: staked_tape.amount.as_u64().to_le_bytes(),
         rewards: total_rewards.as_u64().to_le_bytes(),
     }.log();
@@ -198,12 +198,12 @@ mod tests {
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
         let (epoch_address, _) = epoch_pda();
-        let (pool_address, _)  = node_pda(pool_owner);
-        let (history_address, _) = history_pda(pool_address);
-        let (stake_address, _) = stake_pda(authority);
+        let (pool_address, _)  = node_pda(pool_owner.into());
+        let (history_address, _) = history_pda(pool_address.into());
+        let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
 
-        let instruction = build_unstake_from_pool_ix(fee_payer, authority, pool_address);
+        let instruction = build_unstake_from_pool_ix(fee_payer.into(), authority.into(), pool_address);
 
         // Epoch timeline
         let e0: EpochNumber = EpochNumber(42);     // activation epoch
@@ -222,12 +222,12 @@ mod tests {
 
         node.id = NodeId(7);
         node.latest_advance_epoch = e3;
-        node.authority = pool_owner;
+        node.authority = pool_owner.into();
 
         let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
         let withdraw_rate   = ExchangeRate { tape: 1200, other: 8800 };
 
-        history.node = pool_address;
+        history.node = pool_address.into();
         history.inner.push(e0, activation_rate);
         history.inner.push(e4, withdraw_rate);
 
@@ -250,8 +250,8 @@ mod tests {
 
         // Stake account prepared in "unlocking" state with withdraw at e4
         let stake = Stake {
-            authority: authority,
-            pool: pool_address,
+            authority: authority.into(),
+            pool: pool_address.into(),
             inner: StakedTape {
                 amount: TAPE(principal),
                 activation_epoch: e0,
@@ -289,23 +289,23 @@ mod tests {
                 Check::success(),
 
                 // fee_payer gets stake account rent refund (not vault rent - that goes to authority)
-                Check::account(&fee_payer)
+                Check::account(&Pubkey::from(fee_payer))
                     .lamports(1_000_000_000 + rent(Stake::get_size()))
                     .build(),
                 // authority receives vault rent refund
-                Check::account(&authority)
+                Check::account(&Pubkey::from(authority))
                     .lamports(rent_token())
                     .build(),
-                Check::account(&stake_address)
+                Check::account(&Pubkey::from(stake_address))
                     .lamports(0)
                     .closed()
                     .build(),
-                Check::account(&vault_address)
+                Check::account(&Pubkey::from(vault_address))
                     .lamports(0)
                     .closed()
                     .build(),
 
-                Check::account(&archive_ata).data(
+                Check::account(&Pubkey::from(archive_ata)).data(
                     token(
                         archive_ata,
                         archive_address,
@@ -314,7 +314,7 @@ mod tests {
                 ).build(),
 
                 // Authority gets principal tokens and rewards
-                Check::account(&authority_ata).data(
+                Check::account(&Pubkey::from(authority_ata)).data(
                     token(
                         authority_ata,
                         authority,
@@ -323,7 +323,7 @@ mod tests {
                 ).build(),
 
                 // Pool rewards reduced by owed_rewards (cap was exact)
-                Check::account(&pool_address).data(
+                Check::account(&Pubkey::from(pool_address)).data(
                     Node {
                         pool: StakingPool {
                             rewards: node.pool.rewards - TAPE(reward),
@@ -333,11 +333,11 @@ mod tests {
                     }.pack().as_ref()
                 ).build(),
 
-                Check::account(&epoch_address) // unchanged
+                Check::account(&Pubkey::from(epoch_address)) // unchanged
                     .data(epoch.pack().as_ref())
                     .build(),
 
-                Check::account(&history_address) // unchanged
+                Check::account(&Pubkey::from(history_address)) // unchanged
                     .data(history.pack().as_ref())
                     .build(),
             ],

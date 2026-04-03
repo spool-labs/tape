@@ -1,6 +1,7 @@
-use tape_solana::*;
-
+use solana_program::pubkey::Pubkey;
 use tape_core::types::EpochNumber;
+use tape_crypto::address::Address;
+
 use crate::state::Epoch;
 use crate::consts::NAME_LENGTH;
 use crate::program::token;
@@ -39,7 +40,7 @@ where
 pub fn from_name(val: &[u8; NAME_LENGTH]) -> String {
     let mut name_bytes = val.to_vec();
     name_bytes.retain(|&x| x != 0);
-    String::from_utf8(name_bytes).unwrap()
+    String::from_utf8_lossy(&name_bytes).into_owned()
 }
 
 /// Helper: get the current epoch from an Epoch account
@@ -62,6 +63,9 @@ pub fn prev_epoch(epoch: &Epoch) -> EpochNumber {
 
 /// Helper: get the associated token account
 #[inline(always)]
-pub fn ata(owner: &Pubkey) -> Pubkey {
-    get_associated_token_address(owner, &token::MINT_ADDRESS)
+pub fn ata(owner: &Address) -> Address {
+    let owner_pubkey: Pubkey = owner.into();
+    let mint_address: Pubkey = token::MINT_ADDRESS.into();
+
+    get_associated_token_address(&owner_pubkey, &mint_address).into()
 }

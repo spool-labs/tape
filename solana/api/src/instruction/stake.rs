@@ -1,4 +1,5 @@
 use tape_solana::*;
+use tape_crypto::address::Address;
 use tape_core::prelude::*;
 use crate::program::staking;
 use crate::utils::ata;
@@ -26,9 +27,9 @@ pub struct MergeStake {}
 
 
 pub fn build_stake_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    pool: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    pool: Address,
     amount: Coin<TAPE>,
 ) -> Instruction {
 
@@ -42,14 +43,14 @@ pub fn build_stake_ix(
     Instruction {
         program_id: staking::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(authority_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
 
-            AccountMeta::new_readonly(pool, false),
-            AccountMeta::new(vault_address, false),
+            AccountMeta::new_readonly(pool.into(), false),
+            AccountMeta::new(vault_address.into(), false),
 
-            AccountMeta::new_readonly(mint_address, false),
+            AccountMeta::new_readonly(mint_address.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
         ],
@@ -58,8 +59,8 @@ pub fn build_stake_ix(
 }
 
 pub fn build_unstake_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
 ) -> Instruction {
 
     let (stake_address, _) = stake_pda(authority);
@@ -69,10 +70,10 @@ pub fn build_unstake_ix(
     Instruction {
         program_id: staking::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new(authority, true),  // writable: receives vault rent refund
-            AccountMeta::new(authority_ata, false),
-            AccountMeta::new(vault_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new(authority.into(), true),  // writable: receives vault rent refund
+            AccountMeta::new(authority_ata.into(), false),
+            AccountMeta::new(vault_address.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: UnstakeTokens {}.to_bytes(),
@@ -80,9 +81,9 @@ pub fn build_unstake_ix(
 }
 
 pub fn build_split_stake_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    recipient: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    recipient: Address,
     amount: Coin<TAPE>,
 ) -> Instruction {
 
@@ -101,14 +102,14 @@ pub fn build_split_stake_ix(
     Instruction {
         program_id: staking::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new_readonly(recipient, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new_readonly(recipient.into(), true),
 
-            AccountMeta::new(source_vault_address, false),
-            AccountMeta::new(dest_vault_address, false),
+            AccountMeta::new(source_vault_address.into(), false),
+            AccountMeta::new(dest_vault_address.into(), false),
 
-            AccountMeta::new_readonly(mint_address, false),
+            AccountMeta::new_readonly(mint_address.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
         ],
@@ -117,9 +118,9 @@ pub fn build_split_stake_ix(
 }
 
 pub fn build_merge_stake_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    recipient: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    recipient: Address,
 ) -> Instruction {
 
     // Source (donor) stake/vault token PDA
@@ -133,12 +134,12 @@ pub fn build_merge_stake_ix(
     Instruction {
         program_id: staking::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new(authority, true),  // writable: receives vault rent refund
-            AccountMeta::new_readonly(recipient, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new(authority.into(), true),  // writable: receives vault rent refund
+            AccountMeta::new_readonly(recipient.into(), true),
 
-            AccountMeta::new(source_vault_address, false),
-            AccountMeta::new(dest_vault_address, false),
+            AccountMeta::new(source_vault_address.into(), false),
+            AccountMeta::new(dest_vault_address.into(), false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
         ],

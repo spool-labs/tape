@@ -24,20 +24,20 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_signer()?;
 
     mint_info
-        .has_address(&MINT_ADDRESS)?;
+        .has_address(&MINT_ADDRESS.into())?;
 
-    let (exchange_address, _) = exchange_pda(*authority_info.key);
+    let (exchange_address, _) = exchange_pda((*authority_info.key).into());
     let (exchange_ata, _) = exchange_ata(exchange_address);
 
     exchange_info
         .is_empty()?
         .is_writable()?
-        .has_address(&exchange_address)?;
+        .has_address(&exchange_address.into())?;
 
     exchange_ata_info
         .is_empty()?
         .is_writable()?
-        .has_address(&exchange_ata)?;
+        .has_address(&exchange_ata.into())?;
 
     // Check programs and sysvars.
     system_program_info
@@ -60,7 +60,7 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     let exchange = exchange_info.as_account_mut::<Exchange>(&exchange::ID)?;
 
-    exchange.authority = *authority_info.key;
+    exchange.authority = (*authority_info.key).into();
     exchange.balance_sol = SOL::zero();
     exchange.balance_tape = TAPE::zero();
     exchange.rate = ExchangeRate::flat();
@@ -78,4 +78,3 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     Ok(())
 }
-

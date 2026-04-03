@@ -2,11 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use solana_sdk::signature::Keypair;
 use tape_core::bls::BlsPrivateKey;
 use tape_api::consts::NAME_LENGTH;
 use tape_core::types::BasisPoints;
-use tape_sdk::keys::helpers::{load_bls_keypair, load_solana_keypair};
+use tape_crypto::ed25519::Keypair;
+use tape_sdk::keys::helpers::{load_bls_keypair, load_ed25519_keypair};
 
 use crate::core::error::NodeError;
 use super::{
@@ -139,9 +139,9 @@ impl NodeConfig {
         Ok(())
     }
 
-    /// Load the Solana authority keypair referenced by the config.
+    /// Load the node authority keypair referenced by the config.
     pub fn load_node_keypair(&self) -> Result<Keypair, NodeError> {
-        load_solana_keypair(&self.node.node_keypair).map_err(|error| {
+        load_ed25519_keypair(&self.node.node_keypair).map_err(|error| {
             NodeError::Keypair(format!(
                 "failed to load node keypair from {}: {error}",
                 self.node.node_keypair.display()

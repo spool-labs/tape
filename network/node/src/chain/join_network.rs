@@ -2,19 +2,19 @@ use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::signature::Signature;
 use store::Store;
 use tape_api::compute::JOIN_NETWORK_CU;
 use tape_api::instruction::build_join_network_ix;
+use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 
 use crate::context::NodeContext;
 
 pub async fn submit_join_network<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-) -> Result<Signature, RpcError> {
-    let fee_payer = ctx.pubkey();
-    let authority = ctx.pubkey();
+) -> Result<Txid, RpcError> {
+    let fee_payer = ctx.pubkey().into();
+    let authority = ctx.pubkey().into();
     let node_address = ctx.node_address();
 
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(

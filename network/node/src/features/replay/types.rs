@@ -1,11 +1,11 @@
 use tape_core::spooler::SpoolGroup;
 use tape_core::snapshot::types::ReplayableEvent;
 use tape_core::types::SlotNumber;
-use tape_store::types::Pubkey;
+use tape_crypto::address::Address;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTrack {
-    pub track: Pubkey,
+    pub track: Address,
     pub spool_group: SpoolGroup,
     pub data: Vec<u8>,
 }

@@ -46,7 +46,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let history = history_info
         .is_writable()?
         .as_account_mut::<History>(&tapedrive::ID)?
-        .assert_mut(|h| h.node == *node_info.key)?;
+        .assert_mut(|h| h.node == (*node_info.key).into())?;
 
     // Cannot advance pool during Syncing phase - wait for settling
     if epoch.state.is_syncing() {
@@ -132,7 +132,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     PoolAdvanced {
-        node: *node_info.key,
+        node: (*node_info.key).into(),
         id: node.id,
         epoch: current_epoch(epoch),
         phase: epoch.state.phase,
@@ -163,10 +163,10 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (pool_address, _) = node_pda(pool_owner);
-        let (history_address, _) = history_pda(pool_address);
+        let (pool_address, _) = node_pda(pool_owner.into());
+        let (history_address, _) = history_pda(pool_address.into());
 
-        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
+        let instruction = build_advance_pool_ix(fee_payer.into(), authority.into(), pool_address);
 
         let mut system = System::zeroed();
         let mut archive = Archive::zeroed();
@@ -178,7 +178,7 @@ mod tests {
         // Minimal pool setup: non-zero stake/shares so rewards can be applied
         let mut node = Node {
             id: NodeId(2),
-            authority: pool_owner,
+            authority: pool_owner.into(),
             pool: StakingPool {
                 stake: TAPE(1_000),
                 shares: ShareAmount(1_000),
@@ -257,13 +257,13 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&archive_address)
+                Check::account(&Pubkey::from(archive_address))
                     .data(archive.pack().as_ref())
                     .build(),
-                Check::account(&pool_address)
+                Check::account(&Pubkey::from(pool_address))
                     .data(node.pack().as_ref())
                     .build(),
-                Check::account(&history_address)
+                Check::account(&Pubkey::from(history_address))
                     .data(history.pack().as_ref())
                     .build(),
             ],
@@ -279,10 +279,10 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (pool_address, _) = node_pda(pool_owner);
-        let (history_address, _) = history_pda(pool_address);
+        let (pool_address, _) = node_pda(pool_owner.into());
+        let (history_address, _) = history_pda(pool_address.into());
 
-        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
+        let instruction = build_advance_pool_ix(fee_payer.into(), authority.into(), pool_address);
 
         let mut system = System::zeroed();
         let mut archive = Archive::zeroed();
@@ -293,7 +293,7 @@ mod tests {
 
         let mut node = Node {
             id: NodeId(2),
-            authority: pool_owner,
+            authority: pool_owner.into(),
             pool: StakingPool {
                 stake: TAPE(1_000),
                 shares: ShareAmount(1_000),
@@ -366,16 +366,16 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&epoch_address)
+                Check::account(&Pubkey::from(epoch_address))
                     .data(epoch.pack().as_ref())
                     .build(),
-                Check::account(&archive_address)
+                Check::account(&Pubkey::from(archive_address))
                     .data(archive.pack().as_ref())
                     .build(),
-                Check::account(&pool_address)
+                Check::account(&Pubkey::from(pool_address))
                     .data(node.pack().as_ref())
                     .build(),
-                Check::account(&history_address)
+                Check::account(&Pubkey::from(history_address))
                     .data(history.pack().as_ref())
                     .build(),
             ],
@@ -393,10 +393,10 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (pool_address, _) = node_pda(pool_owner);
-        let (history_address, _) = history_pda(pool_address);
+        let (pool_address, _) = node_pda(pool_owner.into());
+        let (history_address, _) = history_pda(pool_address.into());
 
-        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
+        let instruction = build_advance_pool_ix(fee_payer.into(), authority.into(), pool_address);
 
         let mut system = System::zeroed();
         let mut archive = Archive::zeroed();
@@ -414,7 +414,7 @@ mod tests {
 
         let mut node = Node {
             id: NodeId(2),
-            authority: pool_owner,
+            authority: pool_owner.into(),
             pool: StakingPool {
                 stake: TAPE(1_000),
                 shares: ShareAmount(1_000),
@@ -485,16 +485,16 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&epoch_address)
+                Check::account(&Pubkey::from(epoch_address))
                     .data(epoch.pack().as_ref())
                     .build(),
-                Check::account(&pool_address)
+                Check::account(&Pubkey::from(pool_address))
                     .data(node.pack().as_ref())
                     .build(),
-                Check::account(&archive_address)
+                Check::account(&Pubkey::from(archive_address))
                     .data(expected_archive.pack().as_ref())
                     .build(),
-                Check::account(&history_address)
+                Check::account(&Pubkey::from(history_address))
                     .data(history.pack().as_ref())
                     .build(),
             ],
@@ -511,10 +511,10 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (pool_address, _) = node_pda(pool_owner);
-        let (history_address, _) = history_pda(pool_address);
+        let (pool_address, _) = node_pda(pool_owner.into());
+        let (history_address, _) = history_pda(pool_address.into());
 
-        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
+        let instruction = build_advance_pool_ix(fee_payer.into(), authority.into(), pool_address);
 
         let mut system = System::zeroed();
         let mut archive = Archive::zeroed();
@@ -534,7 +534,7 @@ mod tests {
 
         let node = Node {
             id: NodeId(2),
-            authority: pool_owner,
+            authority: pool_owner.into(),
             pool: StakingPool {
                 stake: TAPE(1_000),
                 shares: ShareAmount(1_000),

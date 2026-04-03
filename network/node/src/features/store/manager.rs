@@ -84,17 +84,17 @@ fn persist_raw_tracks<Db: Store>(
 
 #[cfg(test)]
 mod tests {
-    use solana_sdk::pubkey::Pubkey;
     use store_memory::MemoryStore;
     use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::ops::{MetaOps, SpoolOps, TrackDataOps};
     use tape_store::TapeStore;
-    use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus};
+    use tape_store::types::{SpoolState, SpoolStatus};
 
     use super::persist_batch;
     use crate::features::replay::types::{RawTrack, ReplayBatch};
@@ -124,7 +124,7 @@ mod tests {
             slot: SlotNumber(77),
             events: vec![ReplayableEvent::Track(ReplayTrack {
                 state: CompressedTrack {
-                    tape: Pubkey::new_from_array([0x11; 32]),
+                    tape: Address::from([0x11; 32]),
                     key: Hash::default(),
                     track_number: TrackNumber(0),
                     kind: TrackKind::Raw as u64,
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn persists_raw_writes_for_owned_spools() {
         let store = test_store();
-        let track = StorePubkey::from(Pubkey::new_unique());
+        let track = Address::new_unique();
         let spool_group = SpoolGroup::from(5);
         let raw = vec![1, 2, 3, 4];
 
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn skips_raw_writes_for_non_owners() {
         let store = test_store();
-        let track = StorePubkey::from(Pubkey::new_unique());
+        let track = Address::new_unique();
         let spool_group = SpoolGroup::from(6);
 
         let batch = ReplayBatch {

@@ -3,10 +3,12 @@
 //! - SpoolStatusCol: spool_id -> SpoolStatus
 //! - SpoolPendingRepairCol: (spool_id, track_address) -> ()
 //! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
-//! - SpoolSyncCursorCol: spool_id -> Pubkey (last synced track)
+//! - SpoolSyncCursorCol: spool_id -> Address (last synced track)
 
-use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolState};
 use store::Column;
+use tape_crypto::address::Address;
+
+use crate::types::{SliceKey, SpoolIndexKey, SpoolState};
 
 /// Spool status tracking
 ///
@@ -47,11 +49,11 @@ impl Column for SpoolPendingRecoveryCol {
 /// Spool sync cursor tracking
 ///
 /// Key: SpoolIndexKey (2 bytes: spool_id BE)
-/// Value: Pubkey (last synced track address)
+/// Value: Address (last synced track address)
 pub struct SpoolSyncCursorCol;
 
 impl Column for SpoolSyncCursorCol {
     const CF_NAME: &'static str = "spool_sync_cursor";
     type Key = SpoolIndexKey;
-    type Value = Pubkey;
+    type Value = Address;
 }

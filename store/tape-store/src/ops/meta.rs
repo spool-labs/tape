@@ -10,10 +10,12 @@
 
 use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{EpochNumber, Hash, InvalidationProof, Pubkey, SlotNumber, UnitKey};
 use crate::TapeStore;
 use store::Store;
 use tape_core::types::NodeId;
+use tape_crypto::address::Address;
+
+use crate::types::{EpochNumber, Hash, InvalidationProof, SlotNumber, UnitKey};
 
 // Meta keys
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
@@ -32,8 +34,8 @@ pub trait MetaOps {
     fn set_cluster_hash(&self, hash: Hash) -> Result<()>;
 
     // Node address
-    fn get_node_address(&self) -> Result<Option<Pubkey>>;
-    fn set_node_address(&self, address: Pubkey) -> Result<()>;
+    fn get_node_address(&self) -> Result<Option<Address>>;
+    fn set_node_address(&self, address: Address) -> Result<()>;
 
     // Node ID
     fn get_node_id(&self) -> Result<Option<NodeId>>;
@@ -54,9 +56,9 @@ pub trait MetaOps {
     fn set_gc_completed_epoch(&self, epoch: EpochNumber) -> Result<()>;
 
     // Invalidation proofs
-    fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>>;
-    fn set_invalidation_proof(&self, track: Pubkey, proof: InvalidationProof) -> Result<()>;
-    fn delete_invalidation_proof(&self, track: Pubkey) -> Result<()>;
+    fn get_invalidation_proof(&self, track: Address) -> Result<Option<InvalidationProof>>;
+    fn set_invalidation_proof(&self, track: Address, proof: InvalidationProof) -> Result<()>;
+    fn delete_invalidation_proof(&self, track: Address) -> Result<()>;
 
     // Epoch nonce (randomness seed for leader schedule)
     fn get_epoch_nonce(&self, epoch: EpochNumber) -> Result<Option<Hash>>;
@@ -90,7 +92,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_node_address(&self) -> Result<Option<Pubkey>> {
+    fn get_node_address(&self) -> Result<Option<Address>> {
         let key = NODE_ADDRESS_KEY.to_string();
         match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
@@ -102,15 +104,15 @@ impl<S: Store> MetaOps for TapeStore<S> {
                 }
                 let mut addr_bytes = [0u8; 32];
                 addr_bytes.copy_from_slice(&bytes);
-                Ok(Some(Pubkey(addr_bytes)))
+                Ok(Some(Address::from(addr_bytes)))
             }
             None => Ok(None),
         }
     }
 
-    fn set_node_address(&self, address: Pubkey) -> Result<()> {
+    fn set_node_address(&self, address: Address) -> Result<()> {
         let key = NODE_ADDRESS_KEY.to_string();
-        self.put::<MetaCol>(&key, &address.0.to_vec())?;
+        self.put::<MetaCol>(&key, &address.to_bytes().to_vec())?;
         Ok(())
     }
 
@@ -193,7 +195,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>> {
+    fn get_invalidation_proof(&self, track: Address) -> Result<Option<InvalidationProof>> {
         let key = format!("invalidation:{}", track);
         match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
@@ -206,7 +208,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
         }
     }
 
-    fn set_invalidation_proof(&self, track: Pubkey, proof: InvalidationProof) -> Result<()> {
+    fn set_invalidation_proof(&self, track: Address, proof: InvalidationProof) -> Result<()> {
         let key = format!("invalidation:{}", track);
         let bytes = wincode::serialize(&proof)
             .map_err(|e| TapeStoreError::Serialization(format!("invalidation proof: {}", e)))?;
@@ -214,7 +216,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
-    fn delete_invalidation_proof(&self, track: Pubkey) -> Result<()> {
+    fn delete_invalidation_proof(&self, track: Address) -> Result<()> {
         let key = format!("invalidation:{}", track);
         self.delete::<MetaCol>(&key)?;
         Ok(())
@@ -294,7 +296,7 @@ mod tests {
     #[test]
     fn test_node_address_roundtrip() {
         let store = test_store();
-        let address = Pubkey::new_unique();
+        let address = Address::new_unique();
 
         assert!(store.get_node_address().unwrap().is_none());
 
@@ -377,7 +379,7 @@ mod tests {
     #[test]
     fn test_invalidation_proof_roundtrip() {
         let store = test_store();
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
         let proof = InvalidationProof {
             bitmap: 0xFF,
             signature: BlsSignature(G1CompressedPoint([1u8; 32])),

@@ -11,7 +11,8 @@ use tape_api::program::tapedrive::track_pda;
 use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::TrackNumber;
-use tape_crypto::{Hash, Pubkey};
+use tape_crypto::address::Address;
+use tape_crypto::Hash;
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf};
 use tape_protocol::Api;
 use tape_protocol::api::{
@@ -29,7 +30,7 @@ pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
     let track = state
@@ -51,7 +52,7 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
     let track = state
@@ -89,7 +90,7 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
     let track = state
@@ -148,7 +149,7 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
-    let tape: Pubkey = tape_id
+    let tape: Address = tape_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
     let track = track_pda(tape, TrackNumber(track_number)).0;
@@ -172,7 +173,7 @@ pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let tape: Pubkey = tape_id
+    let tape: Address = tape_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
     let request: FindTrackRequest = wincode::deserialize(&body)
@@ -210,7 +211,7 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let tape: Pubkey = tape_id
+    let tape: Address = tape_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
     let request: ListTracksByTapeRequest = wincode::deserialize(&body)

@@ -22,11 +22,11 @@ use rocksdb;
 ///
 /// ## Metadata Columns
 /// - `meta` - String keys, arbitrary values (BlockBased)
-/// - `tape` - 32-byte Pubkey keys (PlainTable)
-/// - `track` - 32-byte Pubkey keys, packed compressed-track values (PlainTable)
+/// - `tape` - 32-byte Address keys (PlainTable)
+/// - `track` - 32-byte Address keys, packed compressed-track values (PlainTable)
 /// - `track_lookup` - 72-byte ordered tape track index with 32-byte tape prefix (BlockBased)
-/// - `track_data` - 32-byte Pubkey keys, local track payload values (PlainTable)
-/// - `object_info` - 32-byte Pubkey keys (PlainTable)
+/// - `track_data` - 32-byte Address keys, local track payload values (PlainTable)
+/// - `object_info` - 32-byte Address keys (PlainTable)
 /// - `snapshot_epoch` - 8-byte EpochKey -> SnapshotEpochInfo (PlainTable)
 /// - `snapshot_group` - 16-byte SnapshotGroupKey -> SnapshotGroupInfo (BlockBased, 8-byte prefix)
 /// - `snapshot_slice` - 18-byte SnapshotSliceKey -> SliceValue (BlockBased, 8-byte prefix)
@@ -50,12 +50,12 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Tape - 32-byte Pubkey keys, small TapeInfo values
+        // Tape - 32-byte Address keys, small TapeInfo values
         ColumnFamilyConfig::new("tape")
             .with_plain_table(32)
             .build(),
 
-        // Track - 32-byte Pubkey keys, PackedTrack values
+        // Track - 32-byte Address keys, PackedTrack values
         ColumnFamilyConfig::new("track")
             .with_plain_table(32)
             .build(),
@@ -67,12 +67,12 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_prefix_extractor(32)
             .build(),
 
-        // Track data - 32-byte Pubkey keys, local payload values
+        // Track data - 32-byte Address keys, local payload values
         ColumnFamilyConfig::new("track_data")
             .with_plain_table(32)
             .build(),
 
-        // Object info - 32-byte Pubkey keys, ObjectInfo values
+        // Object info - 32-byte Address keys, ObjectInfo values
         ColumnFamilyConfig::new("object_info")
             .with_plain_table(32)
             .build(),

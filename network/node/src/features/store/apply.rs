@@ -4,8 +4,9 @@ use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
 use tape_core::track::types::TrackState;
 use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
+use tape_crypto::address::Address;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
-use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, SpoolStatus, TapeInfo, TrackData};
+use tape_store::types::{ObjectInfo, SpoolStatus, TapeInfo, TrackData};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -36,20 +37,20 @@ pub fn apply_event<Db: Store>(
             put_track_object(store, replay, slot)?;
         }
         ReplayableEvent::CertifyTrack { track, epoch } => {
-            set_certified(store, StorePubkey(*track), *epoch)?;
+            set_certified(store, *track, *epoch)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
-            let _ = delete_track_local(store, StorePubkey(*track))?;
+            let _ = delete_track_local(store, *track)?;
         }
         ReplayableEvent::InvalidateTrack { track, epoch } => {
-            invalidate_track(store, StorePubkey(*track), *epoch, slot)?;
+            invalidate_track(store, *track, *epoch, slot)?;
         }
         ReplayableEvent::ReserveTape {
             tape, expiry_epoch, ..
         } => {
             store
                 .put_tape(
-                    StorePubkey(*tape),
+                    *tape,
                     TapeInfo {
                         end_epoch: *expiry_epoch,
                         next_track_number: TrackNumber(0),
@@ -58,7 +59,7 @@ pub fn apply_event<Db: Store>(
                 .map_err(store_error)?;
         }
         ReplayableEvent::DestroyTape { tape, .. } => {
-            let _ = delete_tape_local(store, StorePubkey(*tape), DELETE_TAPE_BATCH_SIZE)?;
+            let _ = delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
         }
         ReplayableEvent::AdvanceEpoch { .. }
         | ReplayableEvent::SyncEpoch { .. }
@@ -77,19 +78,19 @@ fn put_track_object<Db: Store>(
     validate_replay_track(replay)?;
 
     let (track, _) = track_pda(replay.state.tape, replay.state.track_number);
-    let track = StorePubkey::from(track);
+    let track = Address::from(track);
 
     store.put_track(track, replay.state).map_err(store_error)?;
 
     if let Some(mut tape_info) = store
-        .get_tape(StorePubkey::from(replay.state.tape))
+        .get_tape(Address::from(replay.state.tape))
         .map_err(store_error)?
     {
         let next_track_number = TrackNumber(replay.state.track_number.0 + 1);
         if tape_info.next_track_number.0 < next_track_number.0 {
             tape_info.next_track_number = next_track_number;
             store
-                .put_tape(StorePubkey::from(replay.state.tape), tape_info)
+                .put_tape(Address::from(replay.state.tape), tape_info)
                 .map_err(store_error)?;
         }
     }
@@ -133,7 +134,7 @@ fn validate_replay_track(replay: &ReplayTrack) -> Result<(), NodeError> {
 
 fn set_certified<Db: Store>(
     store: &TapeStore<Db>,
-    track: StorePubkey,
+    track: Address,
     epoch: EpochNumber,
 ) -> Result<(), NodeError> {
     if let Some(mut track_info) = store.get_track(track).map_err(store_error)? {
@@ -172,7 +173,7 @@ fn set_certified<Db: Store>(
 
 fn enqueue_certified_repairs<Db: Store>(
     store: &TapeStore<Db>,
-    track: StorePubkey,
+    track: Address,
 ) -> Result<(), NodeError> {
     let Some(track_info) = store.get_track(track).map_err(store_error)? else {
         return Ok(());
@@ -211,7 +212,7 @@ fn enqueue_certified_repairs<Db: Store>(
 
 fn invalidate_track<Db: Store>(
     store: &TapeStore<Db>,
-    track: StorePubkey,
+    track: Address,
     epoch: EpochNumber,
     slot: SlotNumber,
 ) -> Result<(), NodeError> {
@@ -234,7 +235,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use solana_sdk::pubkey::Pubkey;
+    use tape_crypto::address::Address;
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
@@ -243,10 +244,10 @@ mod tests {
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
-    use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, SpoolState, SpoolStatus, TapeInfo};
+    use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus, TapeInfo};
     use tape_store::TapeStore;
 
     use super::apply_slot;
@@ -255,14 +256,14 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    fn make_blob_track(tape: Pubkey, track_number: TrackNumber, epoch: EpochNumber) -> ReplayableEvent {
+    fn make_blob_track(tape: Address, track_number: TrackNumber, epoch: EpochNumber) -> ReplayableEvent {
         let blob = BlobInfo {
             size: StorageUnits::mb(2),
             root: Hash::new_unique(),
             commitment: Hash::new_unique(),
             profile: EncodingProfile::default(),
-            stripe_size: 128,
-            stripe_count: 3,
+            stripe_size: StorageUnits::from_bytes(128),
+            stripe_count: StripeCount(3),
             leaves: [Hash::default(); SPOOL_GROUP_SIZE],
         };
 
@@ -282,7 +283,7 @@ mod tests {
         })
     }
 
-    fn make_raw_track(tape: Pubkey, track_number: TrackNumber, epoch: EpochNumber) -> ReplayableEvent {
+    fn make_raw_track(tape: Address, track_number: TrackNumber, epoch: EpochNumber) -> ReplayableEvent {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
@@ -290,7 +291,7 @@ mod tests {
                 track_number,
                 kind: TrackKind::Raw as u64,
                 state: TrackState::Certified as u64,
-                size: StorageUnits::kb(4),
+                size: StorageUnits::from_bytes(4 * 1024),
                 spool_group: SpoolGroup::from(5),
                 value_hash: Hash::new_unique(),
             },
@@ -299,7 +300,7 @@ mod tests {
         })
     }
 
-    fn track_info(tape: Pubkey, spool_group: SpoolGroup) -> CompressedTrack {
+    fn track_info(tape: Address, spool_group: SpoolGroup) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
@@ -316,20 +317,20 @@ mod tests {
     fn writes_state() {
         let store = test_store();
         let slot = SlotNumber(55);
-        let tape = Pubkey::new_unique();
+        let tape = Address::new_unique();
         let track_number = TrackNumber(9);
         let (track, _) = track_pda(tape, track_number);
 
         let events = vec![
             ReplayableEvent::ReserveTape {
-                tape: tape.to_bytes(),
-                authority: Pubkey::new_unique().to_bytes(),
+                tape,
+                authority: Address::new_unique(),
                 active_epoch: EpochNumber(6),
                 expiry_epoch: EpochNumber(12),
             },
             make_blob_track(tape, track_number, EpochNumber(6)),
             ReplayableEvent::CertifyTrack {
-                track: track.to_bytes(),
+                track,
                 epoch: EpochNumber(8),
             },
         ];
@@ -337,23 +338,25 @@ mod tests {
         apply_slot(&store, slot, &events).unwrap();
 
         assert_eq!(
-            store.get_tape(StorePubkey::from(tape)).unwrap(),
+            store.get_tape(tape).unwrap(),
             Some(TapeInfo {
                 end_epoch: EpochNumber(12),
-                next_track_number: TrackNumber(0),
+                next_track_number: TrackNumber(10),
             })
         );
 
-        let track_info = store.get_track(StorePubkey::from(track)).unwrap().unwrap();
-        assert_eq!(track_info.tape_address, StorePubkey::from(tape));
-        assert_eq!(track_info.original_size, StorageUnits::mb(2).0);
-        assert_eq!(track_info.stripe_size, 128);
-        assert_eq!(track_info.stripe_count, 3);
+        let track_info = store.get_track(track).unwrap().unwrap();
+        assert_eq!(track_info.tape, tape);
+        assert_eq!(track_info.track_number, track_number);
+        assert_eq!(track_info.kind, TrackKind::Blob as u64);
+        assert_eq!(track_info.state, TrackState::Certified as u64);
+        assert_eq!(track_info.size, StorageUnits::mb(2));
+        assert_eq!(track_info.spool_group, SpoolGroup::from(4));
 
         assert_eq!(
-            store.get_object_info(StorePubkey::from(track)).unwrap(),
+            store.get_object_info(track).unwrap(),
             Some(ObjectInfo::Valid {
-                track_address: StorePubkey::from(track),
+                track_address: track,
                 registered_epoch: EpochNumber(6),
                 certified_epoch: Some(EpochNumber(8)),
                 slot,
@@ -365,7 +368,7 @@ mod tests {
     fn writes_raw_state() {
         let store = test_store();
         let slot = SlotNumber(56);
-        let tape = Pubkey::new_unique();
+        let tape = Address::new_unique();
         let track_number = TrackNumber(10);
         let (track, _) = track_pda(tape, track_number);
 
@@ -376,20 +379,20 @@ mod tests {
         )
         .unwrap();
 
-        let track_info = store.get_track(StorePubkey::from(track)).unwrap().unwrap();
-        assert_eq!(track_info.tape_address, StorePubkey::from(tape));
-        assert_eq!(track_info.original_size, StorageUnits::kb(4).0);
-        assert_eq!(track_info.stripe_size, 0);
-        assert_eq!(track_info.stripe_count, 0);
-        assert!(track_info.commitment.is_empty());
+        let track_info = store.get_track(track).unwrap().unwrap();
+        assert_eq!(track_info.tape, tape);
+        assert_eq!(track_info.track_number, track_number);
+        assert_eq!(track_info.kind, TrackKind::Raw as u64);
+        assert_eq!(track_info.state, TrackState::Certified as u64);
+        assert_eq!(track_info.size, StorageUnits::from_bytes(4 * 1024));
     }
 
     #[test]
     fn deletes_track() {
         let store = test_store();
         let slot = SlotNumber(21);
-        let track = Pubkey::from(SolanaPubkey::new_unique());
-        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let spool_group = SpoolGroup::from(11);
 
         store.put_track(track, track_info(tape, spool_group)).unwrap();
@@ -414,7 +417,7 @@ mod tests {
             &store,
             slot,
             &[ReplayableEvent::DeleteTrack {
-                track: track.0,
+                track,
                 epoch: EpochNumber(4),
             }],
         )
@@ -436,8 +439,8 @@ mod tests {
     fn invalidates_track() {
         let store = test_store();
         let slot = SlotNumber(34);
-        let track = Pubkey::from(SolanaPubkey::new_unique());
-        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let spool_group = SpoolGroup::from(23);
 
         store.put_track(track, track_info(tape, spool_group)).unwrap();
@@ -462,7 +465,7 @@ mod tests {
             &store,
             SlotNumber(55),
             &[ReplayableEvent::InvalidateTrack {
-                track: track.0,
+                track,
                 epoch: EpochNumber(8),
             }],
         )
@@ -490,11 +493,11 @@ mod tests {
     fn destroys_tape() {
         let store = test_store();
         let slot = SlotNumber(13);
-        let tape = Pubkey::from(SolanaPubkey::new_unique());
-        let other_tape = Pubkey::from(SolanaPubkey::new_unique());
-        let track_a = Pubkey::from(SolanaPubkey::new_unique());
-        let track_b = Pubkey::from(SolanaPubkey::new_unique());
-        let track_other = Pubkey::from(SolanaPubkey::new_unique());
+        let tape = Address::new_unique();
+        let other_tape = Address::new_unique();
+        let track_a = Address::new_unique();
+        let track_b = Address::new_unique();
+        let track_other = Address::new_unique();
         let spool_group = SpoolGroup::from(31);
 
         store
@@ -555,7 +558,7 @@ mod tests {
             &store,
             SlotNumber(99),
             &[ReplayableEvent::DestroyTape {
-                tape: tape.0,
+                tape,
                 epoch: EpochNumber(9),
             }],
         )
@@ -584,8 +587,8 @@ mod tests {
     fn certify_enqueues_repair() {
         let store = test_store();
         let slot = SlotNumber(10);
-        let track = Pubkey::from(SolanaPubkey::new_unique());
-        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let spool_group = SpoolGroup::from(7);
         let spool_id = spool_group.spool_at(0);
 
@@ -609,7 +612,7 @@ mod tests {
             &store,
             slot,
             &[ReplayableEvent::CertifyTrack {
-                track: track.0,
+                track,
                 epoch: EpochNumber(4),
             }],
         )
@@ -624,8 +627,8 @@ mod tests {
     fn certify_noop_when_slice_present() {
         let store = test_store();
         let slot = SlotNumber(10);
-        let track = Pubkey::from(SolanaPubkey::new_unique());
-        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let spool_group = SpoolGroup::from(7);
         let spool_id = spool_group.spool_at(0);
 
@@ -650,7 +653,7 @@ mod tests {
             &store,
             slot,
             &[ReplayableEvent::CertifyTrack {
-                track: track.0,
+                track,
                 epoch: EpochNumber(4),
             }],
         )
@@ -667,8 +670,8 @@ mod tests {
     fn certify_noop_when_not_owner() {
         let store = test_store();
         let slot = SlotNumber(10);
-        let track = Pubkey::from(SolanaPubkey::new_unique());
-        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
         let spool_group = SpoolGroup::from(7);
 
         store.put_track(track, track_info(tape, spool_group)).unwrap();
@@ -688,7 +691,7 @@ mod tests {
             &store,
             slot,
             &[ReplayableEvent::CertifyTrack {
-                track: track.0,
+                track,
                 epoch: EpochNumber(4),
             }],
         )

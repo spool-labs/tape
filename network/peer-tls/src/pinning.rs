@@ -6,18 +6,18 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
-use tape_crypto::Pubkey;
+use tape_crypto::address::Address;
 
 /// Server certificate verifier that pins the leaf cert's public key bytes.
 pub struct PinnedServerCertVerifier {
     provider: Arc<CryptoProvider>,
-    allowed_pubkeys: HashSet<Pubkey>,
+    allowed_pubkeys: HashSet<Address>,
 }
 
 impl PinnedServerCertVerifier {
     /// Create a verifier that accepts only certificates whose Ed25519 public key
     /// matches one of the given keys.
-    pub fn new<I: IntoIterator<Item = Pubkey>>(keys: I) -> Self {
+    pub fn new<I: IntoIterator<Item = Address>>(keys: I) -> Self {
         Self {
             provider: Arc::new(rustls::crypto::ring::default_provider()),
             allowed_pubkeys: keys.into_iter().collect(),
@@ -25,7 +25,7 @@ impl PinnedServerCertVerifier {
     }
 
     /// Extract the SubjectPublicKeyInfo bytes from a DER certificate.
-    fn extract_pubkey(cert_der: &CertificateDer<'_>) -> Result<Pubkey, RustlsError> {
+    fn extract_pubkey(cert_der: &CertificateDer<'_>) -> Result<Address, RustlsError> {
         let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
             .map_err(|_| RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
 
@@ -35,14 +35,14 @@ impl PinnedServerCertVerifier {
         if spki.len() == 32 {
             let mut key = [0u8; 32];
             key.copy_from_slice(spki);
-            return Ok(Pubkey::new_from_array(key));
+            return Ok(Address::from(key));
         }
 
         // Some encodings wrap the key in ASN.1; try the last 32 bytes
         if spki.len() > 32 {
             let mut key = [0u8; 32];
             key.copy_from_slice(&spki[spki.len() - 32..]);
-            return Ok(Pubkey::new_from_array(key));
+            return Ok(Address::from(key));
         }
 
         Err(RustlsError::InvalidCertificate(

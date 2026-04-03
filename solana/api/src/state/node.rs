@@ -1,9 +1,11 @@
+use tape_crypto::address::Address;
 use tape_solana::*;
 use tape_core::prelude::*;
+
 use super::AccountType;
 use crate::program::{
-    EPOCH_VALUES,
     BLACKLIST_SIZE,
+    EPOCH_VALUES,
 };
 
 #[repr(C)]
@@ -13,7 +15,7 @@ pub struct Node {
     pub id: NodeId,
 
     /// The authority that owns this node.
-    pub authority: Pubkey,
+    pub authority: Address,
 
     /// Metadata about this storage node.
     pub metadata: NodeMetadata,

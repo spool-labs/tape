@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::signature::Signature;
 use store::Store;
 use tape_api::compute::CERTIFY_SNAPSHOT_GROUP_CU;
 use tape_api::instruction::build_certify_snapshot_group_ix;
@@ -13,6 +12,7 @@ use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
 use tape_crypto::Hash;
+use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 
 use crate::context::NodeContext;
@@ -29,8 +29,8 @@ pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: 
     leaves: [Hash; SPOOL_GROUP_SIZE],
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
-) -> Result<Signature, RpcError> {
-    let fee_payer = ctx.pubkey();
+) -> Result<Txid, RpcError> {
+    let fee_payer = ctx.pubkey().into();
 
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_SNAPSHOT_GROUP_CU);
     let ix = build_certify_snapshot_group_ix(
@@ -56,7 +56,9 @@ pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: 
 mod tests {
     use bytemuck::Zeroable;
     use tape_api::errors::TapeError;
-    use tape_api::program::tapedrive::CommitteeBitmap;
+    use tape_api::prelude::tapedrive;
+    use tape_api::program::tapedrive::{CommitteeBitmap, snapshot_state_pda};
+    use tape_api::state::SnapshotState;
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
@@ -67,6 +69,7 @@ mod tests {
     use tape_crypto::merkle::root_from_leaf_hashes;
 
     use super::submit_certify_snapshot_group;
+    use crate::chain::submit_init_snapshot_epoch;
     use crate::core::chain_tx::{TxOutcome, classify_tx};
     use crate::harness::NodeHarness;
 
@@ -84,6 +87,21 @@ mod tests {
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
+        let (snapshot_state_address, _) = snapshot_state_pda();
+        ctx.rpc
+            .rpc()
+            .set_account_data(
+                snapshot_state_address,
+                tapedrive::ID,
+                &SnapshotState {
+                    tail_epoch: EpochNumber(1),
+                }
+                .pack(),
+            )
+            .expect("store snapshot state");
+        submit_init_snapshot_epoch(&ctx, SNAPSHOT_EPOCH)
+            .await
+            .expect("init snapshot epoch");
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
 

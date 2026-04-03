@@ -20,7 +20,7 @@ pub fn process_set_network_address(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -41,12 +41,12 @@ mod tests {
         let old_address = NetworkAddress::new_ipv4([1, 2, 3, 4], 1234);
         let new_address = NetworkAddress::new_ipv4([5, 6, 7, 8], 5678);
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_network_address_ix(fee_payer, authority, node_address, new_address);
+        let instruction = build_set_network_address_ix(fee_payer.into(), authority.into(), node_address, new_address);
 
         let node = Node {
-            authority,
+            authority: authority.into(),
             metadata: NodeMetadata {
                 network_address: old_address,
                 ..NodeMetadata::zeroed()
@@ -66,7 +66,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         metadata: NodeMetadata {
                             network_address: new_address,

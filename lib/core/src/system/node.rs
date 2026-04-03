@@ -1,10 +1,11 @@
-use crate::types::*;
-use tape_crypto::Pubkey;
-use crate::bls::BlsPubkey;
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
+use tape_crypto::address::Address;
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
+
+use crate::bls::BlsPubkey;
+use crate::types::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
@@ -15,8 +16,8 @@ pub struct NodeMetadata {
     /// The SocketAddr of the node
     pub network_address: NetworkAddress,
 
-    /// The public key used for TLS connections to this node.
-    pub network_tls: Pubkey,
+    /// The address used for TLS connections to this node.
+    pub network_tls: Address,
 
     /// The BLS public key of this node.
     pub bls_pubkey: BlsPubkey,

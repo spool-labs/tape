@@ -1,4 +1,5 @@
 use tape_solana::*;
+use tape_crypto::address::Address;
 use tape_core::prelude::*;
 use crate::program::exchange;
 use crate::program::*;
@@ -52,8 +53,8 @@ pub struct SwapForSol {
 
 
 pub fn build_register_exchange_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
 ) -> Instruction {
 
     let (mint_address, _) = mint_pda();
@@ -63,11 +64,11 @@ pub fn build_register_exchange_ix(
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(exchange_address, false),
-            AccountMeta::new(exchange_ata, false),
-            AccountMeta::new_readonly(mint_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(exchange_address.into(), false),
+            AccountMeta::new(exchange_ata.into(), false),
+            AccountMeta::new_readonly(mint_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
@@ -78,9 +79,9 @@ pub fn build_register_exchange_ix(
 }
 
 pub fn build_deposit_sol_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    exchange: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    exchange: Address,
     amount: Coin<SOL>,
 ) -> Instruction {
     let amount = amount.pack();
@@ -88,9 +89,9 @@ pub fn build_deposit_sol_ix(
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new(authority, true),
-            AccountMeta::new(exchange, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new(authority.into(), true),
+            AccountMeta::new(exchange.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: DepositSol {
@@ -100,9 +101,9 @@ pub fn build_deposit_sol_ix(
 }
 
 pub fn build_withdraw_sol_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    exchange: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    exchange: Address,
     amount: Coin<SOL>,
 ) -> Instruction {
     let amount = amount.pack();
@@ -110,9 +111,9 @@ pub fn build_withdraw_sol_ix(
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new(authority, true),
-            AccountMeta::new(exchange, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new(authority.into(), true),
+            AccountMeta::new(exchange.into(), false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: WithdrawSol {
@@ -122,10 +123,10 @@ pub fn build_withdraw_sol_ix(
 }
 
 pub fn build_deposit_tape_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    authority_ata: Pubkey,
-    exchange: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    authority_ata: Address,
+    exchange: Address,
     amount: Coin<TAPE>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
@@ -134,11 +135,11 @@ pub fn build_deposit_tape_ix(
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(authority_ata, false),
-            AccountMeta::new(exchange, false),
-            AccountMeta::new(exchange_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
+            AccountMeta::new(exchange.into(), false),
+            AccountMeta::new(exchange_ata.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: DepositTape {
@@ -148,10 +149,10 @@ pub fn build_deposit_tape_ix(
 }
 
 pub fn build_withdraw_tape_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    authority_ata: Pubkey,
-    exchange: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    authority_ata: Address,
+    exchange: Address,
     amount: Coin<TAPE>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
@@ -160,11 +161,11 @@ pub fn build_withdraw_tape_ix(
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(authority_ata, false),
-            AccountMeta::new(exchange, false),
-            AccountMeta::new(exchange_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
+            AccountMeta::new(exchange.into(), false),
+            AccountMeta::new(exchange_ata.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: WithdrawTape {
@@ -174,18 +175,18 @@ pub fn build_withdraw_tape_ix(
 }
 
 pub fn build_set_exchange_rate_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    exchange: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    exchange: Address,
     tape: u64,
     sol: u64,
 ) -> Instruction {
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(exchange, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(exchange.into(), false),
         ],
         data: SetExchangeRate {
             tape: tape.to_le_bytes(),
@@ -196,10 +197,10 @@ pub fn build_set_exchange_rate_ix(
 }
 
 pub fn build_swap_for_tape_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    authority_ata: Pubkey,
-    exchange: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    authority_ata: Address,
+    exchange: Address,
     amount_sol: Coin<SOL>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
@@ -208,11 +209,11 @@ pub fn build_swap_for_tape_ix(
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new(authority, true),
-            AccountMeta::new(authority_ata, false),
-            AccountMeta::new(exchange, false),
-            AccountMeta::new(exchange_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
+            AccountMeta::new(exchange.into(), false),
+            AccountMeta::new(exchange_ata.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
@@ -221,10 +222,10 @@ pub fn build_swap_for_tape_ix(
 }
 
 pub fn build_swap_for_sol_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    authority_ata: Pubkey,
-    exchange: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    authority_ata: Address,
+    exchange: Address,
     amount_tape: Coin<TAPE>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
@@ -233,11 +234,11 @@ pub fn build_swap_for_sol_ix(
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new(authority, true),
-            AccountMeta::new(authority_ata, false),
-            AccountMeta::new(exchange, false),
-            AccountMeta::new(exchange_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
+            AccountMeta::new(exchange.into(), false),
+            AccountMeta::new(exchange_ata.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],

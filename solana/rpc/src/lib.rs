@@ -38,8 +38,6 @@ pub use async_trait::async_trait;
 // Re-export commonly used Solana types for convenience
 pub use solana_client::rpc_config::RpcProgramAccountsConfig;
 pub use solana_sdk::commitment_config::CommitmentLevel;
-pub use solana_sdk::pubkey::Pubkey;
-pub use solana_sdk::signature::Signature;
 pub use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock};
 
 /// Prelude module for convenient imports

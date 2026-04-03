@@ -7,13 +7,13 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, SyncSliceEntry, SyncSlicesRequest, SyncSlicesResponse, SyncTrackEntry,
     SyncTracksRequest, SyncTracksResponse,
 };
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::Pubkey as StorePubkey;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -34,7 +34,7 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotResponsible)?;
 
-    let cursor = request.cursor.map(StorePubkey::new);
+    let cursor = request.cursor.map(Address::new);
     let limit = (request.limit as usize).clamp(1, MAX_SYNC_BATCH);
     let slices = state
         .context
@@ -43,7 +43,7 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?;
 
     let next_cursor = if slices.len() == limit {
-        slices.last().map(|(track, _)| track.0)
+        slices.last().map(|(track, _)| track.to_bytes())
     } else {
         None
     };
@@ -51,7 +51,7 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let entries = slices
         .into_iter()
         .map(|(track, slice_data)| SyncSliceEntry {
-            track_address: track.0,
+            track_address: track.to_bytes(),
             slice_data,
         })
         .collect();
@@ -86,7 +86,7 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let limit = (request.limit as usize).clamp(1, MAX_SYNC_BATCH);
     let scan_batch = limit.max(MIN_SCAN_BATCH);
-    let mut scan_cursor = request.cursor.map(StorePubkey::new);
+    let mut scan_cursor = request.cursor.map(Address::new);
     let mut entries = Vec::with_capacity(limit);
     let mut next_cursor = None;
 
@@ -103,7 +103,7 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         for (track_address, track) in tracks.iter() {
-            next_cursor = Some(track_address.0);
+            next_cursor = Some(track_address.to_bytes());
 
             if !track.spool_group.contains(request.spool_index) {
                 continue;
@@ -119,7 +119,7 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
             };
 
             entries.push(SyncTrackEntry {
-                track_address: track_address.0,
+                track_address: track_address.to_bytes(),
                 data,
             });
 
@@ -146,7 +146,7 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
             break;
         }
 
-        scan_cursor = next_cursor.map(StorePubkey::new);
+        scan_cursor = next_cursor.map(Address::new);
     }
 
     let response = SyncTracksResponse {

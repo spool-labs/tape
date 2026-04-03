@@ -25,7 +25,7 @@ pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) 
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -60,14 +60,14 @@ mod tests {
     fn test_remove_from_blacklist_success() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
         // Build a node with a single blacklisted track
         let blob_hash = Hash::new_unique();
         let units = StorageUnits::mb(500);
 
         let mut node = Node::zeroed();
-        node.authority = authority;
+        node.authority = authority.into();
         node.blacklist = Blacklist::new();
         node.blacklist.add(blob_hash, units).expect("add");
 
@@ -86,9 +86,7 @@ mod tests {
         assert!(node.blacklist.contains(0, &proof, blob_hash, units));
 
         // Build instruction
-        let instruction = build_remove_from_blacklist_ix(
-            fee_payer,
-            authority,
+        let instruction = build_remove_from_blacklist_ix(fee_payer.into(), authority.into(),
             node_address,
             0,
             blob_hash,
@@ -115,7 +113,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(node.pack().as_ref())
                     .build(),
             ],
@@ -126,23 +124,21 @@ mod tests {
     fn test_remove_from_blacklist_bad_proof() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
         let blob_hash = Hash::new_unique();
         let units = StorageUnits::mb(123);
 
         // Node with one blacklisted entry
         let mut node = Node::zeroed();
-        node.authority = authority;
+        node.authority = authority.into();
         node.blacklist = Blacklist::new();
         node.blacklist.add(blob_hash, units).expect("add");
 
         // Provide an invalid proof (all zeros)
         let bad_proof: [Hash; BLACKLIST_SIZE] = [Hash::zeroed(); BLACKLIST_SIZE];
 
-        let instruction = build_remove_from_blacklist_ix(
-            fee_payer,
-            authority,
+        let instruction = build_remove_from_blacklist_ix(fee_payer.into(), authority.into(),
             node_address,
             0,
             blob_hash,

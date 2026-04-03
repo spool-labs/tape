@@ -1,4 +1,5 @@
 use tape_solana::*;
+use tape_crypto::address::Address;
 use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use crate::consts::NAME_LENGTH;
@@ -13,7 +14,7 @@ pub struct RegisterNode {
     pub name: [u8; NAME_LENGTH],
     pub commission_rate: [u8; 8],
     pub network_address: NetworkAddress,
-    pub network_tls: Pubkey,
+    pub network_tls: Address,
     pub bls_pubkey: BlsPubkey,
     pub bls_pop: BlsSignature,
 }
@@ -42,7 +43,7 @@ pub struct SetNetworkAddress {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetNetworkTls {
-    pub network_tls: Pubkey,
+    pub network_tls: Address,
 }
 
 #[repr(C)]
@@ -82,12 +83,12 @@ pub struct ClaimCommission {}
 
 
 pub fn build_register_node_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
     name: [u8; NAME_LENGTH],
     commission_rate: BasisPoints,
     network_address: NetworkAddress,
-    network_tls: Pubkey,
+    network_tls: Address,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
 ) -> Instruction {
@@ -103,14 +104,14 @@ pub fn build_register_node_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new(system_address, false),
-            AccountMeta::new_readonly(archive_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(node_address, false),
-            AccountMeta::new(history_address, false),
+            AccountMeta::new(system_address.into(), false),
+            AccountMeta::new_readonly(archive_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(node_address.into(), false),
+            AccountMeta::new(history_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
@@ -127,9 +128,9 @@ pub fn build_register_node_ix(
 }
 
 pub fn build_join_network_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
@@ -138,20 +139,20 @@ pub fn build_join_network_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(system_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new_readonly(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(system_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(node_address.into(), false),
         ],
         data: JoinNetwork {}.to_bytes(),
     }
 }
 
 pub fn build_epoch_sync_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
     epoch: EpochNumber,
     spools: &[SpoolIndex],
 ) -> Instruction {
@@ -165,11 +166,11 @@ pub fn build_epoch_sync_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new_readonly(system_address, false),
-            AccountMeta::new(epoch_address, false),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new(epoch_address.into(), false),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SyncEpoch {
             epoch,
@@ -179,28 +180,28 @@ pub fn build_epoch_sync_ix(
 }
 
 pub fn build_set_authority_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
-    new_authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    new_authority: Address,
 ) -> Instruction {
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new_readonly(new_authority, false),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new_readonly(new_authority.into(), false),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SetAuthority {}.to_bytes(),
     }
 }
 
 pub fn build_set_bls_pubkey_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
 ) -> Instruction {
@@ -208,9 +209,9 @@ pub fn build_set_bls_pubkey_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SetBlsPubkey {
             bls_pubkey,
@@ -220,9 +221,9 @@ pub fn build_set_bls_pubkey_ix(
 }
 
 pub fn build_set_name_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
     name: &str,
 ) -> Instruction {
     let name = to_name(&name);
@@ -230,9 +231,9 @@ pub fn build_set_name_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SetName {
             name,
@@ -241,18 +242,18 @@ pub fn build_set_name_ix(
 }
 
 pub fn build_set_network_address_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
     network_address: NetworkAddress,
 ) -> Instruction {
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SetNetworkAddress {
             network_address,
@@ -261,18 +262,18 @@ pub fn build_set_network_address_ix(
 }
 
 pub fn build_set_network_tls_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
-    network_tls: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    network_tls: Address,
 ) -> Instruction {
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SetNetworkTls {
             network_tls,
@@ -281,9 +282,9 @@ pub fn build_set_network_tls_ix(
 }
 
 pub fn build_set_commission_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
     commission_rate: BasisPoints,
 ) -> Instruction {
     let commission_rate = commission_rate.pack();
@@ -293,10 +294,10 @@ pub fn build_set_commission_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(node_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
         ],
         data: SetCommissionRate {
             commission_rate,
@@ -305,9 +306,9 @@ pub fn build_set_commission_ix(
 }
 
 pub fn build_claim_commission_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
 ) -> Instruction {
 
     let authority_ata        = ata(&authority);
@@ -317,14 +318,14 @@ pub fn build_claim_commission_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(authority_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
 
-            AccountMeta::new(archive_address, false),
-            AccountMeta::new(archive_ata, false),
+            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new(archive_ata.into(), false),
 
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(node_address.into(), false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
@@ -333,9 +334,9 @@ pub fn build_claim_commission_ix(
 }
 
 pub fn build_set_storage_capacity_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
     size: StorageUnits,
 ) -> Instruction {
     let size = size.pack();
@@ -343,9 +344,9 @@ pub fn build_set_storage_capacity_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SetStorageCapacity {
             size,
@@ -354,9 +355,9 @@ pub fn build_set_storage_capacity_ix(
 }
 
 pub fn build_set_storage_price_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    node_address: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
     price: Coin<TAPE>,
 ) -> Instruction {
     let price = price.pack();
@@ -364,9 +365,9 @@ pub fn build_set_storage_price_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(node_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
         ],
         data: SetStoragePrice {
             price,

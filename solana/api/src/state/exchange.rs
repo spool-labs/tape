@@ -1,12 +1,14 @@
+use tape_crypto::address::Address;
 use tape_solana::*;
 use tape_core::prelude::*;
+
 use super::AccountType;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Exchange {
     /// The authority that controls the exchange.
-    pub authority: Pubkey,
+    pub authority: Address,
 
     /// The total amount of TAPE in the exchange.
     pub balance_tape: Coin<TAPE>,

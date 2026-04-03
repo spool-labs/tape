@@ -1,4 +1,5 @@
 use tape_solana::*;
+use tape_crypto::address::Address;
 
 use crate::program::tapedrive;
 use crate::program::tapedrive::{archive_ata, archive_pda, epoch_pda, snapshot_state_pda, system_pda};
@@ -17,17 +18,17 @@ pub struct ExpandSystem {}
 pub struct Initialize {}
 
 pub fn build_create_system_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
 ) -> Instruction {
     let (system_address, _) = system_pda();
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(system_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(system_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
@@ -36,17 +37,17 @@ pub fn build_create_system_ix(
 }
 
 pub fn build_expand_system_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
 ) -> Instruction {
     let (system_address, _) = system_pda();
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(system_address, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(system_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
@@ -56,8 +57,8 @@ pub fn build_expand_system_ix(
 
 
 pub fn build_initialize_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
@@ -69,16 +70,16 @@ pub fn build_initialize_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new(system_address, false),
-            AccountMeta::new(epoch_address, false),
-            AccountMeta::new(archive_address, false),
-            AccountMeta::new(archive_ata, false),
-            AccountMeta::new(snapshot_state_address, false),
+            AccountMeta::new(system_address.into(), false),
+            AccountMeta::new(epoch_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new(archive_ata.into(), false),
+            AccountMeta::new(snapshot_state_address.into(), false),
 
-            AccountMeta::new_readonly(mint_address, false),
+            AccountMeta::new_readonly(mint_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),

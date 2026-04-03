@@ -1,17 +1,17 @@
 use anyhow::{Context, Result};
 use peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
-use tape_api::program::tapedrive::track_pda;
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
+use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::{SPOOL_GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrack;
+use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::Hash;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_store::ops::{SliceOps, SpoolOps};
-use tape_store::types::Pubkey as StorePubkey;
 
 use crate::scenario::SimnetScenario;
 
@@ -19,7 +19,9 @@ impl SimnetScenario<'_> {
     /// Create an SDK client backed by the simnet chain using an arbitrary keypair.
     pub fn sdk(&self, keypair: &Keypair) -> Tapedrive<LiteSvmRpc, HttpApi> {
         let rpc = self.harness.chain().rpc().clone();
-        Tapedrive::new(rpc, keypair)
+        let payer = CryptoKeypair::from_solana_keypair(keypair)
+            .expect("convert simnet payer to crypto keypair");
+        Tapedrive::new(rpc, payer)
     }
 
     /// Upload a blob: reserve tape, register track, upload slices, certify.
@@ -29,7 +31,7 @@ impl SimnetScenario<'_> {
         key: Hash,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, Pubkey, CompressedTrack)> {
+    ) -> Result<(TapeKey, Address, CompressedTrack)> {
         let sdk = self.sdk(keypair);
         let (tape_key, track) = sdk
             .write(key, data, epochs)
@@ -40,7 +42,7 @@ impl SimnetScenario<'_> {
     }
 
     /// Download and reconstruct a blob from its track address.
-    pub async fn download(&self, keypair: &Keypair, track: &Pubkey) -> Result<Vec<u8>> {
+    pub async fn download(&self, keypair: &Keypair, track: &Address) -> Result<Vec<u8>> {
         let sdk = self.sdk(keypair);
         sdk.read(track)
             .await
@@ -48,8 +50,8 @@ impl SimnetScenario<'_> {
     }
 
     /// Count slices stored across all nodes for a track's spool group.
-    pub fn count_slices(&self, track: &Pubkey, group: SpoolGroup) -> Result<usize> {
-        let track_store_key = StorePubkey::new(track.to_bytes());
+    pub fn count_slices(&self, track: &Address, group: SpoolGroup) -> Result<usize> {
+        let track_store_key = *track;
         let mut count = 0usize;
 
         for i in 0..SPOOL_GROUP_SIZE {

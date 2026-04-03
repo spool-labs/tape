@@ -448,16 +448,16 @@ fn stream_error(error: StreamError) -> TapedriveError {
 #[cfg(test)]
 mod tests {
     use bytemuck::Zeroable;
-    use solana_sdk::pubkey::Pubkey;
     use tape_api::state::Tape;
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
+    use tape_crypto::address::Address;
 
     use super::*;
 
     fn make_tape(capacity_bytes: u64, used_bytes: u64, next_track_number: u64) -> Tape {
         let mut tape = Tape::zeroed();
         tape.id = TapeNumber(1);
-        tape.authority = Pubkey::new_unique();
+        tape.authority = Address::new_unique();
         tape.capacity = StorageUnits::from_bytes(capacity_bytes);
         tape.used = StorageUnits::from_bytes(used_bytes);
         tape.active_epoch = EpochNumber(1);

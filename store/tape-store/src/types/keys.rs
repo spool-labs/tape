@@ -7,11 +7,12 @@
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
 //! - TrackLookupKey: (tape, track_number BE, key) (72 bytes)
 
-use crate::types::Pubkey;
-use serde::{Deserialize, Serialize};
 use std::mem::MaybeUninit;
+
+use serde::{Deserialize, Serialize};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::{EpochNumber, TrackNumber};
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::{
     io::{Reader, Writer},
@@ -135,13 +136,13 @@ impl<'de> SchemaRead<'de> for SpoolIndexKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SliceKey {
     pub spool_id: u16,
-    pub track_address: Pubkey,
+    pub track_address: Address,
 }
 
 impl SliceKey {
     pub const SIZE: usize = 34;
 
-    pub fn new(spool_id: u16, track_address: Pubkey) -> Self {
+    pub fn new(spool_id: u16, track_address: Address) -> Self {
         Self {
             spool_id,
             track_address,
@@ -162,7 +163,7 @@ impl SliceKey {
 /// track_number ordering enables ordered tape scans for list/proof generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackLookupKey {
-    pub tape: Pubkey,
+    pub tape: Address,
     pub track_number: TrackNumber,
     pub key: Hash,
 }
@@ -170,7 +171,7 @@ pub struct TrackLookupKey {
 impl TrackLookupKey {
     pub const SIZE: usize = 72;
 
-    pub fn new(tape: Pubkey, track_number: TrackNumber, key: Hash) -> Self {
+    pub fn new(tape: Address, track_number: TrackNumber, key: Hash) -> Self {
         Self {
             tape,
             track_number,
@@ -179,13 +180,13 @@ impl TrackLookupKey {
     }
 
     /// Create prefix bytes for tape-based iteration.
-    pub fn tape_prefix(tape: Pubkey) -> [u8; 32] {
-        tape.0
+    pub fn tape_prefix(tape: Address) -> [u8; 32] {
+        tape.to_bytes()
     }
 
     /// Create a start key that sorts immediately after all entries for the
     /// given track number under the tape.
-    pub fn after_track_number(tape: Pubkey, track_number: TrackNumber) -> Self {
+    pub fn after_track_number(tape: Address, track_number: TrackNumber) -> Self {
         Self {
             tape,
             track_number,
@@ -202,7 +203,7 @@ impl SchemaWrite for TrackLookupKey {
     }
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&src.tape.0)?;
+        writer.write_exact(src.tape.as_ref())?;
         writer.write_exact(&src.track_number.0.to_be_bytes())?;
         writer.write_exact(&src.key.0)?;
         Ok(())
@@ -217,7 +218,7 @@ impl<'de> SchemaRead<'de> for TrackLookupKey {
         let track_number: [u8; 8] = unsafe { reader.get_t()? };
         let key: [u8; 32] = unsafe { reader.get_t()? };
         dst.write(TrackLookupKey {
-            tape: Pubkey(tape),
+            tape: Address::from(tape),
             track_number: TrackNumber(u64::from_be_bytes(track_number)),
             key: Hash(key),
         });
@@ -337,7 +338,7 @@ impl SchemaWrite for SliceKey {
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
         let spool_bytes = src.spool_id.to_be_bytes();
         writer.write_exact(&spool_bytes)?;
-        writer.write_exact(&src.track_address.0)?;
+        writer.write_exact(src.track_address.as_ref())?;
         Ok(())
     }
 }
@@ -351,7 +352,7 @@ impl<'de> SchemaRead<'de> for SliceKey {
         let spool_id = u16::from_be_bytes(spool_bytes);
         dst.write(SliceKey {
             spool_id,
-            track_address: Pubkey(track_bytes),
+            track_address: Address::from(track_bytes),
         });
         Ok(())
     }
@@ -481,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_slice_key_size() {
-        let key = SliceKey::new(42, Pubkey([1u8; 32]));
+        let key = SliceKey::new(42, Address::new([1u8; 32]));
         let bytes = wincode::serialize(&key).unwrap();
         assert_eq!(bytes.len(), SliceKey::SIZE);
     }
@@ -489,8 +490,8 @@ mod tests {
     #[test]
     fn test_slice_key_ordering() {
         // Spool 1 should come before spool 100
-        let key1 = SliceKey::new(1, Pubkey([255u8; 32]));
-        let key2 = SliceKey::new(100, Pubkey([0u8; 32]));
+        let key1 = SliceKey::new(1, Address::new([255u8; 32]));
+        let key2 = SliceKey::new(100, Address::new([0u8; 32]));
 
         let bytes1 = wincode::serialize(&key1).unwrap();
         let bytes2 = wincode::serialize(&key2).unwrap();
@@ -500,7 +501,7 @@ mod tests {
 
     #[test]
     fn test_slice_key_roundtrip() {
-        let key = SliceKey::new(42, Pubkey([0xAB; 32]));
+        let key = SliceKey::new(42, Address::new([0xAB; 32]));
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: SliceKey = wincode::deserialize(&bytes).unwrap();
         assert_eq!(key, decoded);
@@ -561,7 +562,7 @@ mod tests {
     #[test]
     fn test_track_lookup_key_size() {
         let key = TrackLookupKey::new(
-            Pubkey([0xAA; 32]),
+            Address::new([0xAA; 32]),
             TrackNumber(42),
             Hash([0xBB; 32]),
         );
@@ -571,9 +572,9 @@ mod tests {
 
     #[test]
     fn test_track_lookup_key_ordering() {
-        let key1 = TrackLookupKey::new(Pubkey([1u8; 32]), TrackNumber(1), Hash([0u8; 32]));
-        let key2 = TrackLookupKey::new(Pubkey([1u8; 32]), TrackNumber(2), Hash([0u8; 32]));
-        let key3 = TrackLookupKey::new(Pubkey([2u8; 32]), TrackNumber(0), Hash([0u8; 32]));
+        let key1 = TrackLookupKey::new(Address::new([1u8; 32]), TrackNumber(1), Hash([0u8; 32]));
+        let key2 = TrackLookupKey::new(Address::new([1u8; 32]), TrackNumber(2), Hash([0u8; 32]));
+        let key3 = TrackLookupKey::new(Address::new([2u8; 32]), TrackNumber(0), Hash([0u8; 32]));
 
         let bytes1 = wincode::serialize(&key1).unwrap();
         let bytes2 = wincode::serialize(&key2).unwrap();
@@ -586,7 +587,7 @@ mod tests {
     #[test]
     fn test_track_lookup_key_roundtrip() {
         let key = TrackLookupKey::new(
-            Pubkey([0xCD; 32]),
+            Address::new([0xCD; 32]),
             TrackNumber(77),
             Hash([0xEF; 32]),
         );

@@ -1,4 +1,5 @@
 use tape_solana::*;
+use tape_crypto::address::Address;
 use tape_core::prelude::*;
 use crate::utils::ata;
 use crate::program::tapedrive;
@@ -34,8 +35,8 @@ pub struct MergeTape {}
 
 
 pub fn build_reserve_tape_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
     storage_units: StorageUnits,
     activation_epoch: EpochNumber,
     expiry_epoch: EpochNumber,
@@ -55,14 +56,14 @@ pub fn build_reserve_tape_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(authority_ata, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
 
-            AccountMeta::new(tape_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(archive_address, false),
-            AccountMeta::new(archive_ata, false),
+            AccountMeta::new(tape_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new(archive_ata.into(), false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
@@ -77,9 +78,9 @@ pub fn build_reserve_tape_ix(
 }
 
 pub fn build_split_tape_by_size_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    recipient: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    recipient: Address,
     size: StorageUnits,
 ) -> Instruction {
     let (source_tape_address, _) = tape_pda(authority);
@@ -91,13 +92,13 @@ pub fn build_split_tape_by_size_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(recipient, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(recipient.into(), true),
 
-            AccountMeta::new(source_tape_address, false),
-            AccountMeta::new(dest_tape_address, false),
-            AccountMeta::new(archive_address, false),
+            AccountMeta::new(source_tape_address.into(), false),
+            AccountMeta::new(dest_tape_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
@@ -107,9 +108,9 @@ pub fn build_split_tape_by_size_ix(
 }
 
 pub fn build_split_tape_by_epoch_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    recipient: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    recipient: Address,
     split_epoch: EpochNumber,
 ) -> Instruction {
     let (source_tape_address, _) = tape_pda(authority);
@@ -121,13 +122,13 @@ pub fn build_split_tape_by_epoch_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(recipient, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(recipient.into(), true),
 
-            AccountMeta::new(source_tape_address, false),
-            AccountMeta::new(dest_tape_address, false),
-            AccountMeta::new(archive_address, false),
+            AccountMeta::new(source_tape_address.into(), false),
+            AccountMeta::new(dest_tape_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
@@ -137,9 +138,9 @@ pub fn build_split_tape_by_epoch_ix(
 }
 
 pub fn build_merge_tape_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
-    recipient: Pubkey,
+    fee_payer: Address,
+    authority: Address,
+    recipient: Address,
 ) -> Instruction {
     let (source_tape_address, _) = tape_pda(authority);
     let (dest_tape_address, _) = tape_pda(recipient);
@@ -148,13 +149,13 @@ pub fn build_merge_tape_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(recipient, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(recipient.into(), true),
 
-            AccountMeta::new(source_tape_address, false),
-            AccountMeta::new(dest_tape_address, false),
-            AccountMeta::new(archive_address, false),
+            AccountMeta::new(source_tape_address.into(), false),
+            AccountMeta::new(dest_tape_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
         ],
@@ -163,8 +164,8 @@ pub fn build_merge_tape_ix(
 }
 
 pub fn build_destroy_tape_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
 ) -> Instruction {
     let (tape_address, _) = tape_pda(authority);
     let (epoch_address, _) = epoch_pda();
@@ -173,12 +174,12 @@ pub fn build_destroy_tape_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new(tape_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(archive_address, false),
+            AccountMeta::new(tape_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
         ],

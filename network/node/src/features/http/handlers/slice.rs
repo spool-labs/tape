@@ -8,12 +8,11 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
-use tape_crypto::Pubkey;
+use tape_crypto::address::Address;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, SlicePayload};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::TrackData;
 use tracing::{debug, trace};
 
@@ -26,10 +25,10 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<impl IntoResponse, RouteError> {
     trace!(track_id = %track_id, spool_id, "http get_slice start");
 
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-    let track_key: StorePubkey = track.into();
+    let track_key = track;
 
     state
         .context
@@ -73,10 +72,10 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         "http put_slice start"
     );
 
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-    let track_key: StorePubkey = track.into();
+    let track_key = track;
     let payload: SlicePayload = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 

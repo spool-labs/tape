@@ -1,4 +1,5 @@
 use store::Store;
+use tape_crypto::address::Address;
 use tape_store::ops::ObjectInfoOps;
 use tape_store::types::ObjectInfo;
 use tape_store::TapeStore;
@@ -18,7 +19,7 @@ pub enum TrackRequirement {
 
 pub fn track_requirement<Db: Store>(
     store: &TapeStore<Db>,
-    track: tape_store::types::Pubkey,
+    track: Address,
 ) -> Result<TrackRequirement, NodeError> {
     let info = store
         .get_object_info(track)

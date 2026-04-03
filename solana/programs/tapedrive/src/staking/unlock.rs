@@ -24,8 +24,8 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     authority_info
         .is_signer()?;
 
-    let (stake_address, _) = stake_pda(*authority_info.key);
-    let (history_address, _) = history_pda(*node_info.key);
+    let (stake_address, _) = stake_pda((*authority_info.key).into());
+    let (history_address, _) = history_pda((*node_info.key).into());
 
     let epoch = epoch_info
         .is_epoch()?
@@ -36,20 +36,20 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
     let history = history_info
-        .has_address(&history_address)?
+        .has_address(&history_address.into())?
         .as_account::<History>(&tapedrive::ID)?
-        .assert(|h| h.node == *node_info.key)?;
+        .assert(|h| h.node == (*node_info.key).into())?;
 
     let stake = stake_info
-        .has_address(&stake_address)?
+        .has_address(&stake_address.into())?
         .is_writable()?
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if stake.authority != *authority_info.key {
+    if stake.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if stake.pool != *node_info.key {
+    if stake.pool != (*node_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -107,8 +107,8 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     // Emit event
     StakeUnlockRequested {
         stake: stake_address,
-        authority: *authority_info.key,
-        pool: *node_info.key,
+        authority: (*authority_info.key).into(),
+        pool: (*node_info.key).into(),
         amount: staked_tape.amount.pack(),
         withdraw_epoch,
     }.log();
@@ -132,11 +132,11 @@ mod tests {
         let authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_request_stake_unlock_ix(fee_payer, authority, pool_address);
+        let instruction = build_request_stake_unlock_ix(fee_payer.into(), authority.into(), pool_address.into());
 
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = stake_pda(authority);
-        let (history_address, _) = history_pda(pool_address);
+        let (stake_address, _) = stake_pda(authority.into());
+        let (history_address, _) = history_pda(pool_address.into());
 
         // Setup existing accounts
         let mut epoch = Epoch::zeroed();
@@ -156,13 +156,13 @@ mod tests {
         node.latest_advance_epoch = e2;
         node.pool.stake = TAPE(5000);
 
-        history.node = pool_address;
+        history.node = pool_address.into();
         history.inner.push(e0, ExchangeRate { tape: 1000, other: 9000 });
         history.inner.push(e1, ExchangeRate { tape: 1100, other: 8900 });
         history.inner.push(e2, ExchangeRate { tape: 1200, other: 8800 });
 
-        stake.authority = authority;
-        stake.pool = pool_address;
+        stake.authority = authority.into();
+        stake.pool = pool_address.into();
         stake.inner = StakedTape::new(TAPE(1000), e0);
 
         // Calculate shares at activation
@@ -185,7 +185,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&stake_address).data(
+                Check::account(&Pubkey::from(stake_address)).data(
                     Stake {
                         inner: StakedTape {
                             state: StakeState {
@@ -197,7 +197,7 @@ mod tests {
                         ..stake
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&pool_address).data(
+                Check::account(&Pubkey::from(pool_address)).data(
                     Node {
                         pool: StakingPool {
                             schedule: PoolSchedule {
@@ -212,10 +212,10 @@ mod tests {
                         ..node
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&epoch_address) // unchanged
+                Check::account(&Pubkey::from(epoch_address)) // unchanged
                     .data(epoch.pack().as_ref())
                     .build(),
-                Check::account(&history_address) // unchanged
+                Check::account(&Pubkey::from(history_address)) // unchanged
                     .data(history.pack().as_ref())
                     .build(),
             ]

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use tape_core::types::{EpochNumber, SlotNumber};
-use crate::types::Pubkey;
+use tape_crypto::address::Address;
 
 /// Information about a tracked object
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
@@ -18,7 +18,7 @@ pub enum ObjectInfo {
     },
     /// Object is valid
     Valid {
-        track_address: Pubkey,
+        track_address: Address,
         registered_epoch: EpochNumber,
         certified_epoch: Option<EpochNumber>,
         slot: SlotNumber,
@@ -27,11 +27,12 @@ pub enum ObjectInfo {
 
 #[cfg(test)]
 mod tests {
+    use tape_crypto::address::Address;
+
     use super::*;
 
     #[test]
     fn object_info_roundtrip() {
-        use crate::types::Pubkey;
         use tape_core::types::SlotNumber;
 
         let infos = vec![
@@ -41,13 +42,13 @@ mod tests {
                 slot: SlotNumber(100),
             },
             ObjectInfo::Valid {
-                track_address: Pubkey::new([1u8; 32]),
+                track_address: Address::new([1u8; 32]),
                 registered_epoch: EpochNumber(5),
                 certified_epoch: Some(EpochNumber(6)),
                 slot: SlotNumber(50),
             },
             ObjectInfo::Valid {
-                track_address: Pubkey::new([2u8; 32]),
+                track_address: Address::new([2u8; 32]),
                 registered_epoch: EpochNumber(7),
                 certified_epoch: None,
                 slot: SlotNumber(70),

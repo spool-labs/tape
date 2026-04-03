@@ -27,7 +27,7 @@ pub fn process_certify_snapshot_group(
     let (system_address, _) = system_pda();
     let system = system_info
         .is_system()?
-        .has_address(&system_address)?
+        .has_address(&system_address.into())?
         .as_account::<System>(&tapedrive::ID)?;
     let epoch = epoch_info.is_epoch()?.as_account::<Epoch>(&tapedrive::ID)?;
     let snapshot_state = snapshot_state_info
@@ -49,7 +49,7 @@ pub fn process_certify_snapshot_group(
     let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
     let manifest = manifest_info
         .is_writable()?
-        .has_address(&manifest_address)?
+        .has_address(&manifest_address.into())?
         .is_snapshot_manifest()?
         .as_account_mut::<SnapshotManifest>(&tapedrive::ID)?;
 
@@ -69,7 +69,7 @@ pub fn process_certify_snapshot_group(
     let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
     let snapshot_tape = snapshot_tape_info
         .is_writable()?
-        .has_address(&snapshot_tape_address)?
+        .has_address(&snapshot_tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     if manifest.tape != snapshot_tape_address || snapshot_tape.authority != system_address {
@@ -241,7 +241,7 @@ mod tests {
         };
         let tape = Tape {
             id: TapeNumber(9),
-            authority: system_address,
+            authority: system_address.into(),
             capacity: StorageUnits(u64::MAX),
             active_epoch: snapshot_epoch,
             expiry_epoch: EpochNumber(u64::MAX),
@@ -285,8 +285,7 @@ mod tests {
             .collect();
         let aggregate_signature = BlsSignature::aggregate(&partials).expect("aggregate");
 
-        let instruction = build_certify_snapshot_group_ix(
-            fee_payer,
+        let instruction = build_certify_snapshot_group_ix(fee_payer.into(),
             snapshot_epoch,
             signing_epoch,
             group,
@@ -346,7 +345,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&manifest_address)
+                Check::account(&Pubkey::from(manifest_address))
                     .data(
                         SnapshotManifest {
                             certified_count: 1,
@@ -358,7 +357,7 @@ mod tests {
                         .as_ref(),
                     )
                     .build(),
-                Check::account(&snapshot_tape_address)
+                Check::account(&Pubkey::from(snapshot_tape_address))
                     .data(
                         Tape {
                             used: StorageUnits::from_bytes(2048),
@@ -393,8 +392,7 @@ mod tests {
         let mut group_bitmap = SnapshotGroupBitmap::zeroed();
         group_bitmap.set(group.0 as usize);
 
-        let instruction = build_certify_snapshot_group_ix(
-            fee_payer,
+        let instruction = build_certify_snapshot_group_ix(fee_payer.into(),
             snapshot_epoch,
             signing_epoch,
             group,
@@ -444,7 +442,7 @@ mod tests {
             pda(
                 snapshot_tape_address,
                 Tape {
-                    authority: system_address,
+                    authority: system_address.into(),
                     ..Tape::zeroed()
                 }
                 .pack(),

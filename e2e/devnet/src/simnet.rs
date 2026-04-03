@@ -8,7 +8,6 @@ use reqwest::Client;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use tape_api::errors::{is_account_state_pending_error, ProgramError, TapeError};
@@ -26,6 +25,8 @@ use tape_core::types::network::NetworkAddress;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::tls::pick_bind;
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
+use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::hash;
 use tape_protocol::api::HEALTH_PATH;
 use tape_sdk::error::TapedriveError;
@@ -54,19 +55,19 @@ const HTTP_HEALTH_TIMEOUT: Duration = Duration::from_millis(750);
 
 enum UploadResult {
     AttemptStarted {
-        upload_id: Pubkey,
+        upload_id: Address,
     },
     Success {
-        upload_id: Pubkey,
+        upload_id: Address,
         expiry_epoch: u64,
     },
     Retrying {
-        upload_id: Pubkey,
+        upload_id: Address,
         error: String,
         next_retry_in_ms: u64,
     },
     Failed {
-        upload_id: Pubkey,
+        upload_id: Address,
     },
 }
 
@@ -191,7 +192,7 @@ async fn async_run(
                     }
                     Some(Command::UploadBlob) => {
                         let tape_key = TapeKey::generate();
-                        let upload_id = tape_key.pubkey();
+                        let upload_id = tape_key.address();
                         state.upload_pending += 1;
                         state.upload_running.insert(upload_id, Instant::now());
                         let rpc = state.chain.rpc().clone();
@@ -402,7 +403,7 @@ async fn init_chain(chain: &ChainFixture) -> Result<Keypair> {
     chain
         .send_instructions_and_advance(
             &admin,
-            vec![build_initialize_mint_ix(admin_pub, admin_pub)],
+            vec![build_initialize_mint_ix(admin_pub.into(), admin_pub.into())],
             SLOT_BUMP,
         )
         .await
@@ -411,7 +412,7 @@ async fn init_chain(chain: &ChainFixture) -> Result<Keypair> {
     chain
         .send_instructions_and_advance(
             &admin,
-            vec![build_create_system_ix(admin_pub, admin_pub)],
+            vec![build_create_system_ix(admin_pub.into(), admin_pub.into())],
             SLOT_BUMP,
         )
         .await
@@ -421,7 +422,7 @@ async fn init_chain(chain: &ChainFixture) -> Result<Keypair> {
         let result = chain
             .send_instructions_and_advance(
                 &admin,
-                vec![build_expand_system_ix(admin_pub, admin_pub)],
+                vec![build_expand_system_ix(admin_pub.into(), admin_pub.into())],
                 SLOT_BUMP,
             )
             .await;
@@ -444,7 +445,7 @@ async fn init_chain(chain: &ChainFixture) -> Result<Keypair> {
     chain
         .send_instructions_and_advance(
             &admin,
-            vec![build_initialize_ix(admin_pub, admin_pub)],
+            vec![build_initialize_ix(admin_pub.into(), admin_pub.into())],
             SLOT_BUMP,
         )
         .await
@@ -466,10 +467,10 @@ struct SimnetState {
     upload_completed: Vec<u64>,
     upload_failed: u64,
     upload_retries: u64,
-    upload_running: HashMap<Pubkey, Instant>,
+    upload_running: HashMap<Address, Instant>,
     upload_last_retry_error: Option<String>,
     upload_next_retry_in_ms: Option<u64>,
-    upload_next_retry_deadlines: HashMap<Pubkey, Instant>,
+    upload_next_retry_deadlines: HashMap<Address, Instant>,
     upload_retry_in_progress: bool,
     upload_tx: mpsc::UnboundedSender<UploadResult>,
     upload_rx: mpsc::UnboundedReceiver<UploadResult>,
@@ -515,12 +516,12 @@ impl SimnetState {
             .map_err(|e| anyhow::anyhow!("bls pop: {e:?}"))?;
 
         let ix = build_register_node_ix(
-            node.authority(),
-            node.authority(),
+            node.authority().into(),
+            node.authority().into(),
             name,
             BasisPoints(0),
             network_address,
-            network_tls,
+            network_tls.into(),
             bls_pubkey,
             bls_pop,
         );
@@ -531,19 +532,20 @@ impl SimnetState {
             .with_context(|| format!("register_node {id}"))?;
 
         // Stake
-        let (node_address, _) = node_pda(node.authority());
+        let authority = Address::from(node.authority());
+        let (node_address, _) = node_pda(authority);
         let amount = TAPE::parse("100").map_err(|_| anyhow::anyhow!("parse stake amount"))?;
 
         let mut stake_ixs =
             vec![ComputeBudgetInstruction::set_compute_unit_limit(CU_HIGH)];
         stake_ixs.extend(build_authority_with_tokens_ix(
-            self.admin.pubkey(),
-            node.authority(),
+            self.admin.pubkey().into(),
+            authority,
             amount,
-        ));
+        )?);
         stake_ixs.push(build_stake_with_pool_ix(
-            self.admin.pubkey(),
-            node.authority(),
+            self.admin.pubkey().into(),
+            authority,
             node_address,
             amount,
         ));
@@ -560,8 +562,8 @@ impl SimnetState {
 
         // Advance pool (tolerate AlreadyAdvanced)
         let adv_ix = build_advance_pool_ix(
-            self.admin.pubkey(),
-            node.authority(),
+            self.admin.pubkey().into(),
+            authority,
             node_address,
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
@@ -577,7 +579,7 @@ impl SimnetState {
 
         // Join network — non-fatal if stake is pending activation
         let join_ix =
-            build_join_network_ix(self.admin.pubkey(), node.authority(), node_address);
+            build_join_network_ix(self.admin.pubkey().into(), authority, node_address);
         let cu_ix2 = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
 
         if let Err(e) = self.chain
@@ -646,12 +648,12 @@ impl SimnetState {
             .map_err(|e| anyhow::anyhow!("bls pop: {e:?}"))?;
 
         let ix = build_register_node_ix(
-            node.authority(),
-            node.authority(),
+            node.authority().into(),
+            node.authority().into(),
             name,
             BasisPoints(0),
             network_address,
-            network_tls,
+            network_tls.into(),
             bls_pubkey,
             bls_pop,
         );
@@ -661,19 +663,20 @@ impl SimnetState {
             .await
             .with_context(|| format!("register_node {id}"))?;
 
-        let (node_address, _) = node_pda(node.authority());
+        let authority = Address::from(node.authority());
+        let (node_address, _) = node_pda(authority);
         let amount = TAPE::parse("100").map_err(|_| anyhow::anyhow!("parse stake amount"))?;
 
         let mut stake_ixs =
             vec![ComputeBudgetInstruction::set_compute_unit_limit(CU_HIGH)];
         stake_ixs.extend(build_authority_with_tokens_ix(
-            self.admin.pubkey(),
-            node.authority(),
+            self.admin.pubkey().into(),
+            authority,
             amount,
-        ));
+        )?);
         stake_ixs.push(build_stake_with_pool_ix(
-            self.admin.pubkey(),
-            node.authority(),
+            self.admin.pubkey().into(),
+            authority,
             node_address,
             amount,
         ));
@@ -689,8 +692,8 @@ impl SimnetState {
             .with_context(|| format!("stake node {id}"))?;
 
         let adv_ix = build_advance_pool_ix(
-            self.admin.pubkey(),
-            node.authority(),
+            self.admin.pubkey().into(),
+            authority,
             node_address,
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
@@ -705,7 +708,7 @@ impl SimnetState {
         }
 
         let join_ix =
-            build_join_network_ix(self.admin.pubkey(), node.authority(), node_address);
+            build_join_network_ix(self.admin.pubkey().into(), authority, node_address);
         let cu_ix2 = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
 
         if let Err(e) = self.chain
@@ -827,8 +830,10 @@ async fn upload_random_blob(
         (key, data)
     };
 
-    let sdk = Tapedrive::new(rpc, admin);
-    let upload_id = tape_key.pubkey();
+    let payer = CryptoKeypair::from_solana_keypair(admin)
+        .expect("convert devnet uploader to crypto keypair");
+    let sdk = Tapedrive::new(rpc, payer);
+    let upload_id = tape_key.address();
     let capacity = StorageUnits::from_bytes(data.len() as u64);
     let reserve_capacity = capacity + StorageUnits::mb(1); // 1 MB headroom
     let mut expiry_epoch = None;
@@ -897,7 +902,6 @@ mod tests {
                     .build()
                     .unwrap();
                 rt.block_on(async {
-                    init_tls();
                     let chain = ChainFixture::new();
                     let admin = init_chain(&chain).await.expect("init_chain");
 

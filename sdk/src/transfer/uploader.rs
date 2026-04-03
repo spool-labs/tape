@@ -12,11 +12,11 @@ use tape_core::bft::{max_faulty, min_correct};
 use tape_core::erasure::{SPOOL_GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_protocol::api::{Api, ApiError, SlicePayload, PutSliceReq};
 use tape_retry::{Retryable, retry_if, RetryConfig};
 use tape_protocol::ProtocolState;
-use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Semaphore;
 use tracing::warn;
 
@@ -53,7 +53,7 @@ impl SliceWithProof {
 /// is sent to the node that owns that slice's spool according to the
 /// SpoolAssignment.
 pub struct DistributedUploader {
-    track: Pubkey,
+    track: Address,
     spool_group: SpoolGroup,
     slices: Vec<SliceWithProof>,
     /// Spool-to-node map for this group, built from ProtocolState at construction.
@@ -72,7 +72,7 @@ struct NodeUploadResult {
 impl DistributedUploader {
     /// Create a new uploader with group-aware spool-based routing.
     pub fn new(
-        track: Pubkey,
+        track: Address,
         spool_group: SpoolGroup,
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
@@ -269,6 +269,7 @@ mod tests {
     use tape_core::system::CommitteeMember;
     use tape_core::types::coin::{Coin, TAPE};
     use tape_slicer::MERKLE_HEIGHT;
+    use tape_crypto::address::Address;
 
     fn make_test_slices(count: usize) -> Vec<SliceWithProof> {
         (0..count)
@@ -303,7 +304,7 @@ mod tests {
         let state = make_test_state(2);
 
         let uploader = DistributedUploader::new(
-            Pubkey::new_unique(),
+            Address::new_unique(),
             SpoolGroup(0),
             slices,
             &state,

@@ -5,7 +5,24 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::types::{StorageUnits, TrackNumber};
+use tape_crypto::address::Address;
+use tape_crypto::Hash;
 use tape_store::{ops::*, types::*, TapeStore};
+
+fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
+    CompressedTrack {
+        tape,
+        key: Hash::new_unique(),
+        track_number: TrackNumber(track_number),
+        kind: TrackKind::Raw as u64,
+        state: TrackState::Certified as u64,
+        size: StorageUnits::from_bytes(1024),
+        spool_group: SpoolGroup(3),
+        value_hash: Hash::new_unique(),
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -14,19 +31,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup primary
     let primary = TapeStore::open_primary(&primary_path)?;
-    let tape_address = Pubkey::new([0xAA; 32]);
+    let tape_address = Address::new([0xAA; 32]);
     for i in 1..=3 {
-        let track_address = Pubkey::new([i as u8; 32]);
-        let info = TrackInfo {
-            tape_address,
-            spool_group: SpoolGroup(3),
-            original_size: 1024,
-            encoding_type: 1,
-            encoding_params: 0,
-            stripe_size: 0,
-            stripe_count: 0,
-            commitment: vec![],
-        };
+        let track_address = Address::new([i as u8; 32]);
+        let info = sample_track(tape_address, (i - 1) as u64);
         primary.put_track(track_address, info)?;
     }
 
@@ -35,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read-only replica (static snapshot)
     drop(primary);
     let read_only = TapeStore::open_read_only(&primary_path)?;
-    let track1 = read_only.get_track(Pubkey::new([1; 32]))?;
+    let track1 = read_only.get_track(Address::new([1; 32]))?;
     println!("Read-only sees track 1: {}", track1.is_some());
     drop(read_only);
 
@@ -45,17 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     secondary.catch_up_with_primary()?;
 
     // Write to primary, secondary doesn't see it yet
-    let new_track = Pubkey::new([10; 32]);
-    let new_info = TrackInfo {
-        tape_address,
-        spool_group: SpoolGroup(3),
-        original_size: 1024,
-        encoding_type: 1,
-        encoding_params: 0,
-        stripe_size: 0,
-        stripe_count: 0,
-        commitment: vec![],
-    };
+    let new_track = Address::new([10; 32]);
+    let new_info = sample_track(tape_address, 9);
     primary.put_track(new_track, new_info)?;
 
     let before = secondary.get_track(new_track)?;
@@ -82,17 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Write while syncing
     for i in 11..=13u8 {
         thread::sleep(Duration::from_millis(500));
-        let track_address = Pubkey::new([i; 32]);
-        let info = TrackInfo {
-            tape_address,
-            spool_group: SpoolGroup(3),
-            original_size: 1024,
-            encoding_type: 1,
-            encoding_params: 0,
-            stripe_size: 0,
-            stripe_count: 0,
-            commitment: vec![],
-        };
+        let track_address = Address::new([i; 32]);
+        let info = sample_track(tape_address, (i - 1) as u64);
         primary.put_track(track_address, info)?;
     }
 
@@ -100,12 +90,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify sync
     for i in 11..=13u8 {
-        let track = secondary.get_track(Pubkey::new([i; 32]))?;
+        let track = secondary.get_track(Address::new([i; 32]))?;
         println!("Track {}: {}", i, track.is_some());
     }
 
     // Operation traits work on secondary
-    let found = secondary.get_track(Pubkey::new([1; 32]))?;
+    let found = secondary.get_track(Address::new([1; 32]))?;
     println!("Found track 1: {:?}", found.is_some());
 
     running.store(false, std::sync::atomic::Ordering::Relaxed);

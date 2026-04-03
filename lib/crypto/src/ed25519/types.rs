@@ -2,13 +2,16 @@
 //!
 //! This module provides wrapper types for Ed25519 cryptography:
 //! - `SecretKey` - wrapper around `SigningKey` (off-chain only)
-//! - `PublicKey` - wrapper around `VerificationKey` (off-chain only)
+//! - `Pubkey` - wrapper around `VerificationKey` (off-chain only)
 //! - `Signature` - wrapper around `ed25519_consensus::Signature` (off-chain only)
-//! - `Keypair` - combines SecretKey and PublicKey (off-chain only)
+//! - `Keypair` - combines SecretKey and Pubkey (off-chain only)
 //!
 //! For on-chain signature verification, use `sig_verify` from `crate::ed25519::sig`.
 
 #![allow(unexpected_cfgs)]
+
+#[cfg(not(target_os = "solana"))]
+use crate::address::Address;
 
 // ed25519-consensus is only available off-chain (it brings in curve25519-dalek-ng
 // which has stack size issues on SBF)
@@ -18,14 +21,15 @@ use ed25519_consensus::{SigningKey, VerificationKey};
 use rand::CryptoRng;
 #[cfg(not(target_os = "solana"))]
 use serde::{Deserialize, Serialize};
-
+#[cfg(not(target_os = "solana"))]
+use solana_program::pubkey::Pubkey as SolanaPubkey;
 
 use super::consts::{ED25519_PUBKEY_LEN, ED25519_SIG_LEN};
 #[cfg(not(target_os = "solana"))]
 use super::errors::SignatureError;
 
-/// Constant for public key length (32 bytes).
-pub const PUBLIC_KEY_LEN: usize = ED25519_PUBKEY_LEN;
+/// Constant for pubkey length (32 bytes).
+pub const PUBKEY_LEN: usize = ED25519_PUBKEY_LEN;
 
 /// Constant for signature length (64 bytes).
 pub const SIGNATURE_LEN: usize = ED25519_SIG_LEN;
@@ -49,8 +53,8 @@ impl SecretKey {
     }
 
     /// Derive the public key from this secret key.
-    pub fn public_key(&self) -> PublicKey {
-        PublicKey(self.0.verification_key())
+    pub fn public_key(&self) -> Pubkey {
+        Pubkey(self.0.verification_key())
     }
 
     /// Sign a message with this secret key.
@@ -70,10 +74,10 @@ impl SecretKey {
 /// Only available off-chain (uses ed25519-consensus).
 #[cfg(not(target_os = "solana"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicKey(VerificationKey);
+pub struct Pubkey(VerificationKey);
 
 #[cfg(not(target_os = "solana"))]
-impl PublicKey {
+impl Pubkey {
     /// The length of a public key in bytes.
     pub const LEN: usize = ED25519_PUBKEY_LEN;
 
@@ -94,6 +98,10 @@ impl PublicKey {
         self.0.to_bytes()
     }
 
+    pub fn address(self) -> Address {
+        self.to_bytes().into()
+    }
+
     /// Verify a signature on a message.
     pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), SignatureError> {
         self.0
@@ -105,34 +113,66 @@ impl PublicKey {
 // Solana Pubkey conversions
 
 #[cfg(not(target_os = "solana"))]
-impl From<PublicKey> for solana_program::pubkey::Pubkey {
-    fn from(pk: PublicKey) -> Self {
-        solana_program::pubkey::Pubkey::from(pk.to_bytes())
+impl From<Pubkey> for SolanaPubkey {
+    fn from(pubkey: Pubkey) -> Self {
+        Self::from(pubkey.to_bytes())
     }
 }
 
 #[cfg(not(target_os = "solana"))]
-impl From<&PublicKey> for solana_program::pubkey::Pubkey {
-    fn from(pk: &PublicKey) -> Self {
-        solana_program::pubkey::Pubkey::from(*pk.as_bytes())
+impl From<&Pubkey> for SolanaPubkey {
+    fn from(pubkey: &Pubkey) -> Self {
+        Self::from(*pubkey.as_bytes())
     }
 }
 
 #[cfg(not(target_os = "solana"))]
-impl TryFrom<solana_program::pubkey::Pubkey> for PublicKey {
+impl TryFrom<SolanaPubkey> for Pubkey {
     type Error = SignatureError;
 
-    fn try_from(pubkey: solana_program::pubkey::Pubkey) -> Result<Self, Self::Error> {
-        PublicKey::from_bytes(pubkey.to_bytes())
+    fn try_from(pubkey: SolanaPubkey) -> Result<Self, Self::Error> {
+        Self::from_bytes(pubkey.to_bytes())
     }
 }
 
 #[cfg(not(target_os = "solana"))]
-impl TryFrom<&solana_program::pubkey::Pubkey> for PublicKey {
+impl TryFrom<&SolanaPubkey> for Pubkey {
     type Error = SignatureError;
 
-    fn try_from(pubkey: &solana_program::pubkey::Pubkey) -> Result<Self, Self::Error> {
-        PublicKey::from_bytes(pubkey.to_bytes())
+    fn try_from(pubkey: &SolanaPubkey) -> Result<Self, Self::Error> {
+        Self::from_bytes(pubkey.to_bytes())
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+impl From<Pubkey> for Address {
+    fn from(value: Pubkey) -> Self {
+        value.address()
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+impl From<&Pubkey> for Address {
+    fn from(value: &Pubkey) -> Self {
+        value.to_bytes().into()
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+impl TryFrom<Address> for Pubkey {
+    type Error = SignatureError;
+
+    fn try_from(value: Address) -> Result<Self, Self::Error> {
+        Self::from_bytes(value.to_bytes())
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+impl TryFrom<&Address> for Pubkey {
+    type Error = SignatureError;
+
+    fn try_from(value: &Address) -> Result<Self, Self::Error> {
+        Self::from_bytes(value.to_bytes())
     }
 }
 
@@ -160,7 +200,7 @@ impl Signature {
     }
 
     /// Verify this signature on a message with the given public key.
-    pub fn verify(&self, msg: &[u8], pk: &PublicKey) -> Result<(), SignatureError> {
+    pub fn verify(&self, msg: &[u8], pk: &Pubkey) -> Result<(), SignatureError> {
         pk.verify(msg, self)
     }
 }
@@ -171,7 +211,7 @@ impl Signature {
 #[cfg(not(target_os = "solana"))]
 pub struct Keypair {
     secret: SecretKey,
-    public: PublicKey,
+    public: Pubkey,
 }
 
 #[cfg(not(target_os = "solana"))]
@@ -189,9 +229,17 @@ impl Keypair {
         Self { secret, public }
     }
 
+    pub fn pubkey(&self) -> Pubkey {
+        self.public
+    }
+
     /// Get a reference to the public key.
-    pub fn public_key(&self) -> &PublicKey {
+    pub fn public_key(&self) -> &Pubkey {
         &self.public
+    }
+
+    pub fn address(&self) -> Address {
+        self.pubkey().into()
     }
 
     /// Get a reference to the secret key.
@@ -204,15 +252,45 @@ impl Keypair {
         self.secret.sign(msg)
     }
 
+    pub fn to_keypair_bytes(&self) -> [u8; 64] {
+        let mut bytes = [0u8; 64];
+        bytes[..32].copy_from_slice(self.secret_key().as_bytes());
+        bytes[32..].copy_from_slice(self.pubkey().as_bytes());
+        bytes
+    }
+
+    pub fn from_keypair_bytes(bytes: [u8; 64]) -> Result<Self, SignatureError> {
+        let mut secret_bytes = [0u8; 32];
+        secret_bytes.copy_from_slice(&bytes[..32]);
+        let secret = SecretKey::from_bytes(secret_bytes);
+        let keypair = Self::from_secret(secret);
+        let mut public_bytes = [0u8; 32];
+        public_bytes.copy_from_slice(&bytes[32..]);
+
+        if keypair.pubkey().to_bytes() != public_bytes {
+            return Err(SignatureError::InvalidPublicKey);
+        }
+
+        Ok(keypair)
+    }
+
+    pub fn from_solana_keypair(
+        keypair: &solana_sdk::signature::Keypair,
+    ) -> Result<Self, SignatureError> {
+        Self::from_keypair_bytes(keypair.to_bytes())
+    }
+
     /// Get the Solana pubkey for this keypair.
-    pub fn solana_pubkey(&self) -> solana_program::pubkey::Pubkey {
-        (&self.public).into()
+    pub fn to_solana_pubkey(&self) -> SolanaPubkey {
+        self.pubkey().into()
     }
 }
 
 // Tests use rand which is only available off-chain
 #[cfg(all(test, not(target_os = "solana")))]
 mod tests {
+    use solana_sdk::signer::Signer as SolanaSigner;
+
     use super::*;
 
     #[test]
@@ -240,15 +318,15 @@ mod tests {
     fn test_solana_pubkey_conversion() {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
-        let public_key = keypair.public_key();
+        let pubkey = keypair.pubkey();
 
         // Convert to Solana Pubkey
-        let solana_pubkey: solana_program::pubkey::Pubkey = public_key.into();
+        let solana_pubkey: SolanaPubkey = pubkey.into();
 
         // Convert back
-        let recovered = PublicKey::try_from(solana_pubkey).expect("should convert back");
+        let recovered = Pubkey::try_from(solana_pubkey).expect("should convert back");
 
-        assert_eq!(public_key, &recovered);
+        assert_eq!(pubkey, recovered);
     }
 
     #[test]
@@ -265,15 +343,15 @@ mod tests {
     }
 
     #[test]
-    fn test_public_key_bytes_roundtrip() {
+    fn test_pubkey_bytes_roundtrip() {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
-        let public_key = keypair.public_key();
+        let pubkey = keypair.pubkey();
 
-        let bytes = public_key.to_bytes();
-        let recovered = PublicKey::from_bytes(bytes).expect("should recover");
+        let bytes = pubkey.to_bytes();
+        let recovered = Pubkey::from_bytes(bytes).expect("should recover");
 
-        assert_eq!(public_key, &recovered);
+        assert_eq!(pubkey, recovered);
     }
 
     #[test]
@@ -288,6 +366,26 @@ mod tests {
 
         assert_eq!(signature, recovered);
         assert!(keypair.public_key().verify(message, &recovered).is_ok());
+    }
+
+    #[test]
+    fn test_keypair_bytes_roundtrip() {
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let bytes = keypair.to_keypair_bytes();
+        let recovered = Keypair::from_keypair_bytes(bytes).expect("should recover");
+
+        assert_eq!(recovered.pubkey(), keypair.pubkey());
+        assert_eq!(recovered.to_keypair_bytes(), bytes);
+    }
+
+    #[test]
+    fn test_from_solana_keypair() {
+        let keypair = solana_sdk::signature::Keypair::new();
+        let recovered = Keypair::from_solana_keypair(&keypair).expect("should recover");
+
+        assert_eq!(recovered.to_keypair_bytes(), keypair.to_bytes());
+        assert_eq!(recovered.to_solana_pubkey(), keypair.pubkey());
     }
 
 }

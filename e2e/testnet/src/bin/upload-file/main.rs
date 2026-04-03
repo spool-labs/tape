@@ -5,6 +5,7 @@ use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use rpc_solana::RpcConfig;
 use tape_core::types::StorageUnits;
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::hashv;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_sdk::keys::tape_key::TapeKey;
@@ -48,7 +49,9 @@ async fn main() -> Result<()> {
         ..Default::default()
     })
     .context("create rpc client")?;
-    let sdk = Tapedrive::new(rpc, &admin);
+    let admin = CryptoKeypair::from_solana_keypair(&admin)
+        .context("convert admin keypair")?;
+    let sdk = Tapedrive::new(rpc, admin);
 
     let tape_key = TapeKey::generate();
     let size = StorageUnits::from_bytes(cli.size_bytes as u64);

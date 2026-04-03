@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use rpc::Rpc;
-use solana_sdk::pubkey::Pubkey;
 use tape_core::erasure::group_start;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::track::data::TrackData;
 use tape_core::types::NodeId;
+use tape_crypto::address::Address;
 use tape_crypto::hash::hash;
 use tape_protocol::api::{ApiError, GetTrackDataReq};
 use tape_protocol::Api;
@@ -20,12 +20,12 @@ use tape_crypto::Hash;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Read a track's data by address. No key needed — reads are public.
-    pub async fn read(&self, track: &Pubkey) -> Result<Vec<u8>, TapedriveError> {
+    pub async fn read(&self, track: &Address) -> Result<Vec<u8>, TapedriveError> {
         read_track(self, track).await
     }
 
     /// Verify that `data` matches the on-chain commitment for a track.
-    pub async fn verify(&self, track: &Pubkey, data: &[u8]) -> Result<bool, TapedriveError> {
+    pub async fn verify(&self, track: &Address, data: &[u8]) -> Result<bool, TapedriveError> {
         verify_track_data(self, track, data).await
     }
 }
@@ -43,7 +43,7 @@ pub fn localize_slices(
 
 pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    track: &Pubkey,
+    track: &Address,
 ) -> Result<Vec<u8>, TapedriveError> {
     let track_info = client.get_track(track).await?;
     let track_data = fetch_track_data(client, *track, track_info.spool_group).await?;
@@ -96,7 +96,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
 
 pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    track: &Pubkey,
+    track: &Address,
     data: &[u8],
 ) -> Result<bool, TapedriveError> {
     let track_info = client.get_track(track).await?;
@@ -125,15 +125,13 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
 
 async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    track: Pubkey,
+    track: Address,
     spool_group: SpoolGroup,
 ) -> Result<TrackData, TapedriveError> {
     let state = bootstrap_network_state(client).await?;
     let mut peers = Vec::new();
     let mut saw_not_found = false;
     let mut last_error = None;
-    let track = track.into();
-
     for (_, node_id) in state.group_peers(spool_group) {
         if peers.contains(&node_id) {
             continue;

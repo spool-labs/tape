@@ -17,6 +17,7 @@ use tape_core::bls::BlsPrivateKey;
 use tape_core::spooler::SpoolIndex;
 use tape_core::system::Committee;
 use tape_core::types::NodeId;
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::Hash;
 
 /// Errors from helper functions.
@@ -76,6 +77,13 @@ pub fn load_solana_keypair(path: &Path) -> Result<Keypair, HelperError> {
     })?;
 
     Keypair::try_from(bytes.as_slice()).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
+}
+
+/// Load a Tapedrive ed25519 keypair from a Solana-compatible JSON file.
+pub fn load_ed25519_keypair(path: &Path) -> Result<CryptoKeypair, HelperError> {
+    let keypair = load_solana_keypair(path)?;
+    CryptoKeypair::from_solana_keypair(&keypair)
+        .map_err(|error| HelperError::InvalidKeypair(error.to_string()))
 }
 
 /// Load a BLS private key from a JSON file.

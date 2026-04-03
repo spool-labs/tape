@@ -38,35 +38,35 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_program(&staking::ID)?;
 
     // Derive addresses
-    let (source_stake_address, _) = stake_pda(*source_authority_info.key);
-    let (dest_stake_address, _)   = stake_pda(*dest_authority_info.key);
+    let (source_stake_address, _) = stake_pda((*source_authority_info.key).into());
+    let (dest_stake_address, _) = stake_pda((*dest_authority_info.key).into());
 
     let (source_vault_address, _) = vault_pda(source_stake_address);
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
 
     // Load/validate source stake
     source_stake_info
-        .has_address(&source_stake_address)?
+        .has_address(&source_stake_address.into())?
         .is_writable()?
         .is_type::<Stake>(&tapedrive::ID)?;
 
     let source_stake = source_stake_info
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if source_stake.authority != *source_authority_info.key || source_stake.pool != *node_info.key {
+    if source_stake.authority != (*source_authority_info.key).into() || source_stake.pool != (*node_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
     // Load/validate destination stake
     dest_stake_info
-        .has_address(&dest_stake_address)?
+        .has_address(&dest_stake_address.into())?
         .is_writable()?
         .is_type::<Stake>(&tapedrive::ID)?;
 
     let dest_stake = dest_stake_info
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if dest_stake.authority != *dest_authority_info.key || dest_stake.pool != *node_info.key {
+    if dest_stake.authority != (*dest_authority_info.key).into() || dest_stake.pool != (*node_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -81,10 +81,10 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     // Validate vaults
     source_vault_info
-        .has_address(&source_vault_address)?
+        .has_address(&source_vault_address.into())?
         .is_writable()?;
     dest_vault_info
-        .has_address(&dest_vault_address)?
+        .has_address(&dest_vault_address.into())?
         .is_writable()?;
 
     // Amount to merge
@@ -97,9 +97,9 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     // CPI into staking program to move all funds and close source vault
     solana_program::program::invoke(
         &build_merge_stake_ix(
-            *fee_payer_info.key,
-            *source_authority_info.key,
-            *dest_authority_info.key,
+            (*fee_payer_info.key).into(),
+            (*source_authority_info.key).into(),
+            (*dest_authority_info.key).into(),
         ),
         &[
             fee_payer_info.clone(),
@@ -137,12 +137,12 @@ mod tests {
         let dest_authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_merge_pool_stake_ix(fee_payer, source_authority, pool_address, dest_authority);
+        let instruction = build_merge_pool_stake_ix(fee_payer.into(), source_authority.into(), pool_address.into(), dest_authority.into());
 
-        let (source_stake_address, _) = stake_pda(source_authority);
+        let (source_stake_address, _) = stake_pda(source_authority.into());
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(dest_authority);
+        let (dest_stake_address, _) = stake_pda(dest_authority.into());
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         // Prepare node
@@ -152,8 +152,8 @@ mod tests {
         let e0: EpochNumber = EpochNumber(73);
 
         let source_stake = Stake {
-            authority: source_authority,
-            pool: pool_address,
+            authority: source_authority.into(),
+            pool: pool_address.into(),
             inner: StakedTape {
                 amount: TAPE(amount),
                 activation_epoch: e0,
@@ -162,8 +162,8 @@ mod tests {
         };
 
         let dest_stake = Stake {
-            authority: dest_authority,
-            pool: pool_address,
+            authority: dest_authority.into(),
+            pool: pool_address.into(),
             inner: StakedTape {
                 amount: TAPE(initial_dest_balance),
                 activation_epoch: e0,
@@ -194,27 +194,27 @@ mod tests {
                 Check::success(),
 
                 // fee_payer gets stake account rent refund (not vault rent - that goes to authority)
-                Check::account(&fee_payer)
+                Check::account(&Pubkey::from(fee_payer))
                     .lamports(1_000_000_000 + rent(source_stake.pack().len()))
                     .build(),
                 // source_authority receives vault rent refund
-                Check::account(&source_authority)
+                Check::account(&Pubkey::from(source_authority))
                     .lamports(rent_token())
                     .build(),
-                Check::account(&source_stake_address)
+                Check::account(&Pubkey::from(source_stake_address))
                     .lamports(0)
                     .closed()
                     .build(),
-                Check::account(&source_vault_address)
+                Check::account(&Pubkey::from(source_vault_address))
                     .lamports(0)
                     .closed()
                     .build(),
 
                 // Destination stake receives principal; source amount becomes zero
-                Check::account(&dest_stake_address).data(
+                Check::account(&Pubkey::from(dest_stake_address)).data(
                     Stake {
-                        authority: dest_authority,
-                        pool: pool_address,
+                        authority: dest_authority.into(),
+                        pool: pool_address.into(),
                         inner: StakedTape {
                             amount: TAPE(initial_dest_balance + amount),
                             activation_epoch: e0,
@@ -224,7 +224,7 @@ mod tests {
                 ).build(),
 
                 // Vaults: move tokens and close source vault (rent refunded to authority)
-                Check::account(&dest_vault_address).data(
+                Check::account(&Pubkey::from(dest_vault_address)).data(
                     token(
                         dest_vault_address,
                         dest_vault_address,

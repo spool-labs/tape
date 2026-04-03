@@ -25,7 +25,7 @@ pub fn process_set_commission_rate(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -62,11 +62,11 @@ mod tests {
         let authority = Pubkey::new_unique();
 
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
         // Try to set commission above 10000 bps
         let invalid_commission = BasisPoints(15000);
-        let instruction = build_set_commission_ix(fee_payer, authority, node_address, invalid_commission);
+        let instruction = build_set_commission_ix(fee_payer.into(), authority.into(), node_address, invalid_commission);
 
         let epoch = Epoch {
             id: EpochNumber(42),
@@ -77,7 +77,7 @@ mod tests {
 
         let node = Node {
             id: NodeId(9000),
-            authority,
+            authority: authority.into(),
             pool: StakingPool::new(BasisPoints(500)),
             ..Node::zeroed()
         };
@@ -107,9 +107,9 @@ mod tests {
         let new_commission = BasisPoints(200);
 
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_commission_ix(fee_payer, authority, node_address, new_commission);
+        let instruction = build_set_commission_ix(fee_payer.into(), authority.into(), node_address, new_commission);
 
         // Setup existing accounts
 
@@ -122,7 +122,7 @@ mod tests {
 
         let mut node = Node {
             id: NodeId(9000),
-            authority,
+            authority: authority.into(),
             pool: StakingPool::new(old_commission),
             ..Node::zeroed()
         };
@@ -146,7 +146,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         pool: StakingPool {
                             commission_rate: old_commission,

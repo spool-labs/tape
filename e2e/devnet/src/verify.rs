@@ -5,6 +5,7 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tape_store::types::TrackData;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::types::CompressedTrack;
+use tape_core::types::StorageUnits;
 
 /// Verify all slices in Active spools match their track commitments.
 /// Logs errors for any integrity violations found.
@@ -105,10 +106,10 @@ fn validate_slice_entry(
 
     let expected_max = blob_info
         .stripe_size
-        .checked_mul(blob_info.stripe_count)
+        .checked_mul(StorageUnits::from_bytes(blob_info.stripe_count.as_u64()))
         .ok_or_else(|| "invalid stripe dimensions".to_string())?;
 
-    if expected_max > 0 && data.len() as u64 > expected_max {
+    if expected_max.to_bytes() > 0 && StorageUnits::from_bytes(data.len() as u64) > expected_max {
         return Err("slice exceeds expected decoded size".to_string());
     }
 

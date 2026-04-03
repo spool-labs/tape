@@ -11,5 +11,4 @@ pub use sig::sig_verify;
 // which brings in curve25519-dalek-ng with stack size issues on SBF).
 // For on-chain signature verification, use `sig_verify` with raw bytes.
 #[cfg(not(target_os = "solana"))]
-pub use types::{Keypair, PublicKey, SecretKey, Signature};
-
+pub use types::{Keypair, Pubkey, SecretKey, Signature};

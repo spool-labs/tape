@@ -134,7 +134,7 @@ mod tests {
     fn test_empty() {
         let indices: Vec<usize> = vec![];
         let bitmap = TestBitmap::from_indices(&indices, N);
-        assert_eq!(bitmap.indices(N), vec![]);
+        assert_eq!(bitmap.indices(N), Vec::<usize>::new());
         assert_eq!(bitmap.count_ones(), 0);
     }
 

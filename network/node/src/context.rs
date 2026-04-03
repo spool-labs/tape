@@ -2,8 +2,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use solana_sdk::signature::{Keypair, Signature};
-use solana_sdk::signer::Signer;
 use tokio::sync::watch::Receiver;
 
 use peer_manager::{PeerManager, PeerManagerError};
@@ -18,8 +16,9 @@ use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::spooler::SpoolIndex;
 use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
-use tape_crypto::Pubkey;
+use tape_crypto::address::Address;
 use tape_crypto::bls12254::BLSError;
+use tape_crypto::ed25519::{Keypair, Pubkey, Signature};
 use tape_protocol::{Api, ProtocolState};
 use tape_store::{TapeStore, ops::MetaOps, types::NodeStatus};
 
@@ -40,7 +39,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub metrics: NodeMetrics,
 
     node_id: NodeId,
-    node_address: Pubkey,
+    node_address: Address,
     keypair: Arc<Keypair>,
     bls_keypair: Arc<BlsPrivateKey>,
     reclaim_pending: AtomicBool,
@@ -51,7 +50,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.node_id
     }
 
-    pub fn node_address(&self) -> Pubkey {
+    pub fn node_address(&self) -> Address {
         self.node_address
     }
 
@@ -64,11 +63,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     }
 
     pub fn sign(&self, message: &[u8]) -> Signature {
-        self.keypair.sign_message(message)
+        self.keypair.sign(message)
     }
 
-    pub fn bls_pubkey(&self) -> BlsPubkey {
-        self.bls_keypair.public_key().expect("bls public key")
+    pub fn bls_pubkey(&self) -> Result<BlsPubkey, BLSError> {
+        self.bls_keypair.public_key()
     }
 
     pub fn bls_sign(&self, message: &[u8]) -> Result<BlsSignature, BLSError> {
@@ -137,8 +136,6 @@ pub mod test_utils {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use solana_sdk::signature::Keypair;
-
     use peer_manager::PeerManager;
     use peer_memory::MemoryApi;
     use rpc_litesvm::LiteSvmRpc;
@@ -165,12 +162,13 @@ pub mod test_utils {
     }
 
     pub fn test_context_with_api_and_rpc(api: MemoryApi, rpc: LiteSvmRpc) -> TestContext {
-        let keypair = Keypair::new();
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
         let rpc = RpcClient::from_rpc(rpc);
         let peer_manager = Arc::new(PeerManager::new());
         let store = TapeStore::new(MemoryStore::new());
-        let (node_address, _) = node_pda(keypair.pubkey());
+        let (node_address, _) = node_pda(keypair.address());
 
         Arc::new(NodeContext {
             node_id: NodeId(0),
@@ -234,13 +232,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         rpc: &RpcClient<Blockchain>,
         keypair: &Keypair,
     ) -> Result<NodeId, NodeError> {
-        let node = rpc.get_node(&keypair.pubkey()).await?;
+        let authority = keypair.address();
+        let node = rpc.get_node(&authority).await?;
         Ok(node.id)
     }
 
     pub async fn build(self) -> Result<Arc<NodeContext<Db, Cluster, Blockchain>>, NodeError> {
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
-        let (node_address, _) = node_pda(self.keypair.pubkey());
+        let (node_address, _) = node_pda(self.keypair.address());
 
         self.store
             .set_node_id(node_id)
@@ -275,10 +274,10 @@ mod tests {
     use peer_manager::PeerManager;
     use peer_memory::MemoryApi;
     use rpc_client::RpcClient;
-    use solana_sdk::signature::Keypair;
     use store_memory::MemoryStore;
     use tape_chain_harness::ChainHarness;
     use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_crypto::ed25519::Keypair;
     use tape_store::ops::MetaOps;
     use tape_store::TapeStore;
 
@@ -309,7 +308,7 @@ mod tests {
         .expect("build context");
 
         assert_eq!(ctx.node_id(), node.node_id);
-        assert_eq!(ctx.node_address(), node.node_address);
+        assert_eq!(ctx.node_address(), node.node_address.into());
         assert_eq!(ctx.store.get_node_id().expect("get node id"), Some(node.node_id));
         assert_eq!(
             ctx.store.get_node_address().expect("get node address"),
@@ -317,8 +316,8 @@ mod tests {
         );
     }
 
-    fn clone_keypair(keypair: &Keypair) -> Keypair {
-        Keypair::try_from(keypair.to_bytes().as_ref()).expect("clone keypair")
+    fn clone_keypair(keypair: &solana_sdk::signature::Keypair) -> Keypair {
+        Keypair::from_solana_keypair(keypair).expect("clone keypair")
     }
 
     fn test_config() -> NodeConfig {

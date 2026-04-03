@@ -1,12 +1,12 @@
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
-use solana_sdk::signature::{Keypair, Signature};
-use solana_sdk::signer::Signer;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::build_register_node_ix;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::types::BasisPoints;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::ed25519::Keypair;
+use tape_crypto::tx::Txid;
 
 pub async fn submit_register_node<Blockchain: Rpc>(
     rpc: &RpcClient<Blockchain>,
@@ -16,8 +16,8 @@ pub async fn submit_register_node<Blockchain: Rpc>(
     network_address: NetworkAddress,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
-) -> Result<Signature, RpcError> {
-    let authority = keypair.pubkey();
+) -> Result<Txid, RpcError> {
+    let authority = keypair.address();
     let network_tls = authority;
 
     let ix = build_register_node_ix(
@@ -37,13 +37,12 @@ pub async fn submit_register_node<Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use rpc_client::RpcClient;
-    use solana_sdk::signature::Keypair;
-    use solana_sdk::signer::Signer;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::BasisPoints;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::EpochNumber;
+    use tape_crypto::ed25519::Keypair;
 
     use super::submit_register_node;
     use crate::harness::NodeHarness;
@@ -57,10 +56,12 @@ mod tests {
             .await
             .expect("build harness");
 
-        let keypair = Keypair::new();
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let authority = keypair.to_solana_pubkey();
         harness
             .rpc()
-            .airdrop(&keypair.pubkey(), 10_000_000_000)
+            .airdrop(&authority, 10_000_000_000)
             .expect("airdrop");
 
         let bls = BlsPrivateKey::from_random();
@@ -77,7 +78,7 @@ mod tests {
         .await
         .expect("register node");
 
-        let node = rpc.get_node(&keypair.pubkey()).await.expect("get node");
+        let node = rpc.get_node(&keypair.address()).await.expect("get node");
         assert_eq!(node.metadata.bls_pubkey, bls_pubkey);
         assert_eq!(node.metadata.network_address, address);
         assert_eq!(node.pool.commission_rate, commission);

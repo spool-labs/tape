@@ -14,6 +14,7 @@ use store_memory::MemoryStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::SlotNumber;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
@@ -239,6 +240,6 @@ fn test_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
     Ok(config)
 }
 
-fn clone_keypair(keypair: &Keypair) -> Keypair {
-    Keypair::try_from(keypair.to_bytes().as_ref()).expect("clone keypair")
+fn clone_keypair(keypair: &Keypair) -> CryptoKeypair {
+    CryptoKeypair::from_solana_keypair(keypair).expect("clone keypair")
 }

@@ -650,17 +650,17 @@ mod tests {
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::EpochNumber;
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
-    use tape_crypto::Pubkey;
     use peer_manager::PeerNode;
 
     fn make_peer(id: u64, port: u16) -> PeerNode {
         PeerNode {
             node_id: NodeId(id),
-            authority: Pubkey::new_unique(),
-            state_address: Pubkey::new_unique(),
+            authority: Address::new_unique(),
+            state_address: Address::new_unique(),
             bls_pubkey: BlsPubkey::new_unique(),
-            tls_pubkey: Pubkey::new_unique(),
+            tls_pubkey: Address::new_unique(),
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
         }
     }
@@ -766,4 +766,3 @@ mod tests {
         let _ = server.await;
     }
 }
-

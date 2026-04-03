@@ -4,6 +4,7 @@ use tape_core::{
     prelude::Bitmap,
     types::{EpochNumber, TrackNumber},
 };
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
 use super::token::MINT_ADDRESS;
@@ -25,6 +26,10 @@ tape_solana::declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W");
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
+pub const SPL_TOKEN_PROGRAM_ID: [u8; 32] =
+    unsafe { *(&spl_token::ID as *const Pubkey as *const [u8; 32]) };
+pub const ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID: [u8; 32] =
+    unsafe { *(&spl_associated_token_account::ID as *const Pubkey as *const [u8; 32]) };
 
 pub const SYSTEM:          &[u8] = b"system";
 pub const ARCHIVE:         &[u8] = b"archive";
@@ -41,32 +46,32 @@ pub const SNAPSHOT_TAPE:   &[u8] = b"snapshot_tape";
 
 pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 
-pub const SYSTEM_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
+pub const SYSTEM_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
 
 pub const SYSTEM_BUMP: u8 =
     ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).1;
 
-pub const EPOCH_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).0);
+pub const EPOCH_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).0);
 
 pub const EPOCH_BUMP: u8 =
     ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).1;
 
-pub const ARCHIVE_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).0);
+pub const ARCHIVE_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).0);
 
 pub const ARCHIVE_BUMP: u8 =
     ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).1;
 
-pub const ARCHIVE_ATA: Pubkey = Pubkey::new_from_array(
+pub const ARCHIVE_ATA: Address = Address::new(
     ed25519::derive_program_address(
         &[
-            unsafe { &*(&ARCHIVE_ADDRESS as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            ARCHIVE_ADDRESS.as_bytes(),
+            &SPL_TOKEN_PROGRAM_ID,
+            MINT_ADDRESS.as_bytes(),
         ],
-        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
+        &ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     )
     .0,
 );
@@ -74,16 +79,16 @@ pub const ARCHIVE_ATA: Pubkey = Pubkey::new_from_array(
 pub const ARCHIVE_ATA_BUMP: u8 = 
     ed25519::derive_program_address(
         &[
-            unsafe { &*(&ARCHIVE_ADDRESS as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            ARCHIVE_ADDRESS.as_bytes(),
+            &SPL_TOKEN_PROGRAM_ID,
+            MINT_ADDRESS.as_bytes(),
         ],
-        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
+        &ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     )
     .1;
 
-pub const SNAPSHOT_STATE_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[SNAPSHOT_STATE], &PROGRAM_ID).0);
+pub const SNAPSHOT_STATE_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[SNAPSHOT_STATE], &PROGRAM_ID).0);
 
 pub const SNAPSHOT_STATE_BUMP: u8 =
     ed25519::derive_program_address(&[SNAPSHOT_STATE], &PROGRAM_ID).1;
@@ -93,112 +98,131 @@ pub const SNAPSHOT_STATE_BUMP: u8 =
 // ====================================================================
 
 #[cfg(debug_assertions)]
-pub fn system_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[SYSTEM], &id())
+pub fn system_pda() -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[SYSTEM], &program_id)
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn system_pda() -> (Pubkey, u8) {
+pub fn system_pda() -> (Address, u8) {
     (SYSTEM_ADDRESS, SYSTEM_BUMP)
 }
 
 #[cfg(debug_assertions)]
-pub fn epoch_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[EPOCH], &id())
+pub fn epoch_pda() -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[EPOCH], &program_id)
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn epoch_pda() -> (Pubkey, u8) {
+pub fn epoch_pda() -> (Address, u8) {
     (EPOCH_ADDRESS, EPOCH_BUMP)
 }
 
 
 #[cfg(debug_assertions)]
 #[inline(always)]
-pub fn archive_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[ARCHIVE], &id())
+pub fn archive_pda() -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[ARCHIVE], &program_id)
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn archive_pda() -> (Pubkey, u8) {
+pub fn archive_pda() -> (Address, u8) {
     (ARCHIVE_ADDRESS, ARCHIVE_BUMP)
 }
 
 #[cfg(debug_assertions)]
 #[inline(always)]
-pub fn archive_ata() -> (Pubkey, u8) {
-    Pubkey::find_program_address(
+pub fn archive_ata() -> (Address, u8) {
+    let associated_token_account_program_id: Address = spl_associated_token_account::ID.into();
+
+    Address::find_program_address(
         &[
             ARCHIVE_ADDRESS.as_ref(),
             spl_token::ID.as_ref(),
             MINT_ADDRESS.as_ref(),
         ],
-        &spl_associated_token_account::ID,
+        &associated_token_account_program_id,
     )
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn archive_ata() -> (Pubkey, u8) {
+pub fn archive_ata() -> (Address, u8) {
     (ARCHIVE_ATA, ARCHIVE_ATA_BUMP)
 }
 
 #[cfg(debug_assertions)]
-pub fn snapshot_state_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[SNAPSHOT_STATE], &id())
+pub fn snapshot_state_pda() -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[SNAPSHOT_STATE], &program_id)
 }
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn snapshot_state_pda() -> (Pubkey, u8) {
+pub fn snapshot_state_pda() -> (Address, u8) {
     (SNAPSHOT_STATE_ADDRESS, SNAPSHOT_STATE_BUMP)
 }
 
 #[inline(always)]
-pub fn node_pda(authority: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[NODE, authority.as_ref()], &id())
+pub fn node_pda(authority: Address) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[NODE, authority.as_ref()], &program_id)
 }
 
 #[inline(always)]
-pub fn stake_pda(authority: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[STAKE, authority.as_ref()], &id())
+pub fn stake_pda(authority: Address) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[STAKE, authority.as_ref()], &program_id)
 }
 
 #[inline(always)]
-pub fn history_pda(node: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[HISTORY, node.as_ref()], &id())
+pub fn history_pda(node: Address) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[HISTORY, node.as_ref()], &program_id)
 }
 
 #[inline(always)]
-pub fn tape_pda(authority: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[RESOURCE, authority.as_ref()], &id())
+pub fn tape_pda(authority: Address) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[RESOURCE, authority.as_ref()], &program_id)
 }
 
 #[inline(always)]
-pub fn track_pda(tape: Pubkey, track_number: TrackNumber) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[TRACK, tape.as_ref(), &track_number.pack()], &id())
+pub fn track_pda(tape: Address, track_number: TrackNumber) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[TRACK, tape.as_ref(), &track_number.pack()], &program_id)
 }
 
 #[inline(always)]
-pub fn cert_pda(parent: Pubkey, message: Hash, epoch: EpochNumber) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[CERTIFICATE, parent.as_ref(), message.as_ref(), &epoch.pack()], &id())
+pub fn cert_pda(parent: Address, message: Hash, epoch: EpochNumber) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(
+        &[CERTIFICATE, parent.as_ref(), message.as_ref(), &epoch.pack()],
+        &program_id,
+    )
 }
 
 #[inline(always)]
-pub fn snapshot_manifest_pda(epoch: EpochNumber) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &id())
+pub fn snapshot_manifest_pda(epoch: EpochNumber) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &program_id)
 }
 
 #[inline(always)]
-pub fn snapshot_tape_pda(epoch: EpochNumber) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &id())
+pub fn snapshot_tape_pda(epoch: EpochNumber) -> (Address, u8) {
+    let program_id: Address = id().into();
+    Address::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &program_id)
 }
 
 #[cfg(test)]
 mod tests {
+    use solana_program::pubkey::Pubkey;
+
     use super::*;
 
     #[test]
@@ -239,11 +263,19 @@ mod tests {
         assert_ne!(manifest, tape);
         assert_eq!(
             (manifest, manifest_bump),
-            Pubkey::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &id()),
+            {
+                let (address, bump) =
+                    Pubkey::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &id());
+                (address.into(), bump)
+            },
         );
         assert_eq!(
             (tape, tape_bump),
-            Pubkey::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &id()),
+            {
+                let (address, bump) =
+                    Pubkey::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &id());
+                (address.into(), bump)
+            },
         );
     }
 }

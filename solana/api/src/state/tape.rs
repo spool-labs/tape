@@ -2,6 +2,8 @@ use tape_solana::*;
 use tape_core::prelude::*;
 use tape_core::track::store::TrackStore;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
+use tape_crypto::address::Address;
+
 use crate::errors::TapeError;
 use super::AccountType;
 
@@ -12,7 +14,7 @@ pub struct Tape {
     pub id: TapeNumber,
 
     /// The authority that owns this tape.
-    pub authority: Pubkey,
+    pub authority: Address,
 
     /// The amount of storage reserved.
     pub capacity: StorageUnits,

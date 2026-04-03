@@ -34,7 +34,7 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -89,7 +89,7 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     node.latest_sync_epoch = current_epoch(epoch);
 
     NodeSynced {
-        node: *node_info.key,
+        node: (*node_info.key).into(),
         id: node.id,
         epoch: current_epoch(epoch),
         spools_hash: args.spools,
@@ -116,7 +116,7 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
         // Setup existing accounts
 
@@ -125,7 +125,7 @@ mod tests {
         let mut node = Node::zeroed();
 
         node.id = NodeId(9000);
-        node.authority = authority;
+        node.authority = authority.into();
         node.latest_sync_epoch = EpochNumber(7);
 
         system.committee = Committee::from_members(&[
@@ -140,9 +140,7 @@ mod tests {
         epoch.id = EpochNumber(42);
         epoch.state = EpochState::syncing();
 
-        let instruction = build_epoch_sync_ix(
-            fee_payer,
-            authority,
+        let instruction = build_epoch_sync_ix(fee_payer.into(), authority.into(),
             node_address,
             epoch.id,
             &system.spools.spools_for_member(1) // index 1
@@ -165,7 +163,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&epoch_address).data(
+                Check::account(&Pubkey::from(epoch_address)).data(
                     Epoch {
                         state: EpochState {
                             phase: EpochPhase::Syncing.into(),
@@ -175,7 +173,7 @@ mod tests {
                         ..epoch
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&node_address).data(
+                Check::account(&Pubkey::from(node_address)).data(
                     Node {
                         latest_sync_epoch: EpochNumber(42),
                         ..node
@@ -215,9 +213,7 @@ mod tests {
 
         epoch.state = EpochState::syncing();
 
-        let instruction = build_epoch_sync_ix(
-            fee_payer,
-            authority,
+        let instruction = build_epoch_sync_ix(fee_payer.into(), authority.into(),
             node_address,
             epoch.id,
             &system.spools.spools_for_member(1)
@@ -236,7 +232,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&epoch_address).data(
+                Check::account(&Pubkey::from(epoch_address)).data(
                     Epoch {
                         state: EpochState {
                             phase: EpochPhase::Settling.into(),
@@ -246,7 +242,7 @@ mod tests {
                         ..epoch
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&node_address).data(
+                Check::account(&Pubkey::from(node_address)).data(
                     Node {
                         latest_sync_epoch: EpochNumber(42),
                         ..node

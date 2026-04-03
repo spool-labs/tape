@@ -12,6 +12,7 @@ solana-sdk = "=2.3"
 solana-transaction-status = "=2.3"
 litesvm = { version = "0.7", default-features = false }
 tokio = { version = "1.37", features = ["rt", "time"] }
+tape-crypto.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1.37", features = ["macros", "rt-multi-thread"] }

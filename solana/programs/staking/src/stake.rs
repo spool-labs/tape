@@ -28,7 +28,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *authority_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     pool_info
         .not_empty()?
@@ -42,11 +42,11 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let (stake_address, _)      = stake_pda(*authority_info.key);
+    let (stake_address, _) = stake_pda((*authority_info.key).into());
     let (vault_address, bump)   = vault_pda(stake_address);
 
     vault_info
-        .has_address(&vault_address)?
+        .has_address(&vault_address.into())?
         .is_writable()?;
 
     // If the PDA token account doesn't exist yet, create it; otherwise validate it.
@@ -63,7 +63,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         vault_info
             .as_token_account()?
             .assert(|t| t.owner() == *vault_info.key)?
-            .assert(|t| t.mint() == MINT_ADDRESS)?;
+            .assert(|t| t.mint() == MINT_ADDRESS.into())?;
     }
 
     let amount = TAPE::unpack(args.amount);
@@ -88,6 +88,10 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    fn to_pubkey(address: impl Into<Pubkey>) -> Pubkey {
+        address.into()
+    }
+
     #[test]
     fn test_stake() {
         let amount: u64 = 1000;
@@ -96,9 +100,10 @@ mod tests {
         let authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_stake_ix(fee_payer, authority, pool_address, amount.into());
+        let instruction =
+            build_stake_ix(fee_payer.into(), authority.into(), pool_address.into(), amount.into());
 
-        let (stake_address, _) = stake_pda(authority);
+        let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
         let authority_ata = ata_address(&authority);
 
@@ -112,7 +117,7 @@ mod tests {
             token(authority_ata, authority, initial_token_balance),
 
             pda(pool_address, pool.pack(), tapedrive::ID),
-            empty(vault_address),
+            empty(to_pubkey(vault_address)),
             mint(0),
 
             token_program(),
@@ -135,10 +140,10 @@ mod tests {
                         initial_token_balance - amount
                     ).1.data.as_ref()
                 ).build(),
-                Check::account(&vault_address).data(
+                Check::account(&to_pubkey(vault_address)).data(
                     token(
-                        vault_address,
-                        vault_address,
+                        to_pubkey(vault_address),
+                        to_pubkey(vault_address),
                         amount
                     ).1.data.as_ref()
                 ).build(),
@@ -154,9 +159,10 @@ mod tests {
         let authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_stake_ix(fee_payer, authority, pool_address, amount.into());
+        let instruction =
+            build_stake_ix(fee_payer.into(), authority.into(), pool_address.into(), amount.into());
 
-        let (stake_address, _) = stake_pda(authority);
+        let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
         let authority_ata = ata_address(&authority);
 
@@ -170,7 +176,7 @@ mod tests {
             token(authority_ata, authority, initial_token_balance),
 
             pda(pool_address, pool.pack(), tapedrive::ID),
-            token(vault_address, vault_address, 0),
+            token(to_pubkey(vault_address), to_pubkey(vault_address), 0),
             mint(0),
 
             token_program(),
@@ -194,10 +200,10 @@ mod tests {
                         initial_token_balance - amount
                     ).1.data.as_ref()
                 ).build(),
-                Check::account(&vault_address).data(
+                Check::account(&to_pubkey(vault_address)).data(
                     token(
-                        vault_address,
-                        vault_address,
+                        to_pubkey(vault_address),
+                        to_pubkey(vault_address),
                         amount
                     ).1.data.as_ref()
                 ).build(),

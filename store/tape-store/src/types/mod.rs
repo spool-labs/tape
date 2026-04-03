@@ -4,10 +4,7 @@
 //! - Enums: NodeStatus, SpoolState, ObjectInfo
 //! - Keys: EpochKey, UnitKey, SpoolIndexKey, SliceKey, TrackLookupKey
 //! - Values: TapeInfo, PackedTrack
-//! - Wrappers: Pubkey
-
 mod enums;
-mod impls;
 pub mod keys;
 mod values;
 
@@ -31,6 +28,3 @@ pub use values::{InvalidationProof, SliceValue, TapeInfo};
 pub use tape_core::track::blob::BlobInfo;
 pub use tape_core::track::data::TrackData;
 pub use tape_core::track::types::PackedTrack;
-
-// Re-export wrapper types
-pub use impls::Pubkey;

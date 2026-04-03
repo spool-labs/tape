@@ -23,20 +23,20 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *authority_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     token_program_info
         .is_program(&spl_token::ID)?;
 
-    let (stake_address, _)   = stake_pda(*authority_info.key);
+    let (stake_address, _) = stake_pda((*authority_info.key).into());
     let (vault_address, bump) = vault_pda(stake_address);
 
     vault_info
-        .has_address(&vault_address)?
+        .has_address(&vault_address.into())?
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *vault_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     let amount = vault_info
         .as_token_account()?
@@ -70,6 +70,10 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    fn to_pubkey(address: impl Into<Pubkey>) -> Pubkey {
+        address.into()
+    }
+
     #[test]
     fn test_unstake() {
         let amount: u64 = 1000;
@@ -77,9 +81,9 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_unstake_ix(fee_payer, authority);
+        let instruction = build_unstake_ix(fee_payer.into(), authority.into());
 
-        let (stake_address, _) = stake_pda(authority);
+        let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
         let authority_ata = ata_address(&authority);
 
@@ -87,7 +91,7 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             token(authority_ata, authority, 0),
-            token(vault_address, vault_address, amount),
+            token(to_pubkey(vault_address), to_pubkey(vault_address), amount),
             token_program(),
         ];
 
@@ -106,7 +110,7 @@ mod tests {
                         amount
                     ).1.data.as_ref()
                 ).build(),
-                Check::account(&vault_address)
+                Check::account(&to_pubkey(vault_address))
                     .lamports(0)
                     .closed()
                     .build(),

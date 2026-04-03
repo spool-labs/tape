@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_crypto::Pubkey;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
@@ -26,7 +26,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let request: RepairRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("repair request: {error}")))?;
 
-    let track: Pubkey = track_id
+    let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
 

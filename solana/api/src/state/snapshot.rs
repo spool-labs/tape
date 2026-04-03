@@ -1,5 +1,6 @@
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::prelude::*;
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_solana::*;
 
@@ -46,7 +47,7 @@ impl SnapshotChunkRecord {
 pub struct SnapshotManifest {
     pub epoch: EpochNumber,
     pub parent_epoch: EpochNumber,
-    pub tape: Pubkey,
+    pub tape: Address,
     pub certified_count: SpoolCount,
     pub group_bitmap: SnapshotGroupBitmap,
     // Explicit padding keeps the account POD-safe before the 8-byte-aligned group array.

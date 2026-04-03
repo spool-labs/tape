@@ -564,6 +564,7 @@ fn check_expiry(
 
 #[cfg(test)]
 mod tests {
+    use tape_crypto::address::Address;
     use tape_core::spooler::{SpoolAssignment, SpoolIndex};
     use tape_core::system::{CommitteeMember, EpochPhase};
     use tape_core::types::EpochNumber;
@@ -579,8 +580,6 @@ mod tests {
     use crate::context::test_utils::test_context;
     use crate::features::spool::types::{Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult};
     use tape_core::erasure::SPOOL_COUNT;
-    use tape_store::types::Pubkey;
-
     const EPOCH: EpochNumber = EpochNumber(2);
 
     fn owned_state(spools: &[SpoolIndex]) -> ProtocolState {
@@ -686,7 +685,7 @@ mod tests {
         ctx.store
             .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
 
         let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
@@ -702,7 +701,7 @@ mod tests {
         ctx.store
             .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_recovery(5, Pubkey([1; 32])).unwrap();
+        ctx.store.add_pending_recovery(5, Address::from([1; 32])).unwrap();
 
         let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
@@ -717,7 +716,7 @@ mod tests {
         ctx.store
             .set_spool_state(5, SpoolState::new(SpoolStatus::Scan, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
@@ -800,7 +799,7 @@ mod tests {
         ctx.store
             .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
 
         let mut manager = SpoolManager::new(
             ctx.clone(),

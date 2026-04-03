@@ -102,7 +102,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
 
         let node = Node {
             id: node_id,
-            authority: identity.authority,
+            authority: identity.authority.into(),
             metadata: NodeMetadata {
                 bls_pubkey,
                 next_bls_pubkey: bls_pubkey,
@@ -121,9 +121,9 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             ..Node::zeroed()
         };
 
-        let (history_address, _) = history_pda(identity.node_address);
+        let (history_address, _) = history_pda(identity.node_address.into());
         let history = History {
-            node: identity.node_address,
+            node: identity.node_address.into(),
             registered_epoch: node_spec.registered_epoch,
             latest_epoch: previous_epoch(spec.epoch),
             inner: PoolHistory::new(),
@@ -148,7 +148,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             data: node,
         });
         history_accounts.push(SeedAccount {
-            address: history_address,
+            address: history_address.into(),
             data: history,
         });
     }
@@ -168,19 +168,19 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
     Ok(SeededWorld {
         protocol_state,
         system: SeedAccount {
-            address: system_address,
+            address: system_address.into(),
             data: system,
         },
         epoch: SeedAccount {
-            address: epoch_address,
+            address: epoch_address.into(),
             data: epoch,
         },
         archive: SeedAccount {
-            address: archive_address,
+            address: archive_address.into(),
             data: archive,
         },
         snapshot_state: SeedAccount {
-            address: snapshot_state_address,
+            address: snapshot_state_address.into(),
             data: snapshot_state,
         },
         nodes,
@@ -201,11 +201,11 @@ fn build_identities(count: usize) -> Vec<NodeIdentity> {
         .map(|_| {
             let keypair = Arc::new(Keypair::new());
             let authority = keypair.pubkey();
-            let (node_address, _) = node_pda(authority);
+            let (node_address, _) = node_pda(authority.into());
             let bls_keypair = Arc::new(BlsPrivateKey::from_random());
             NodeIdentity {
                 authority,
-                node_address,
+                node_address: node_address.into(),
                 keypair,
                 bls_keypair,
             }

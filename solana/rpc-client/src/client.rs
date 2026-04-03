@@ -1,5 +1,6 @@
 use rpc_solana::{RpcConfig, SolanaRpc};
 use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError, UiConfirmedBlock};
+use tape_crypto::tx::Txid;
 
 #[cfg(feature = "metrics")]
 use std::sync::Arc;
@@ -88,9 +89,9 @@ impl<R: Rpc> RpcClient<R> {
     /// Get a confirmed transaction by signature.
     pub async fn get_transaction(
         &self,
-        signature: &rpc::Signature,
+        txid: &Txid,
     ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError> {
-        self.rpc.get_transaction(signature).await
+        self.rpc.get_transaction(txid).await
     }
 }
 

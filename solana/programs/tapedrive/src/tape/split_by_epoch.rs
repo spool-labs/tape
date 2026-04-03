@@ -42,23 +42,23 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     // Derive PDAs
-    let (source_tape_address, _) = tape_pda(*source_authority_info.key);
-    let (dest_tape_address, _)   = tape_pda(*dest_authority_info.key);
+    let (source_tape_address, _) = tape_pda((*source_authority_info.key).into());
+    let (dest_tape_address, _) = tape_pda((*dest_authority_info.key).into());
 
     // Validate source tape
     source_tape_info
-        .has_address(&source_tape_address)?
+        .has_address(&source_tape_address.into())?
         .is_writable()?
         .is_type::<Tape>(&tapedrive::ID)?;
     let source_tape = source_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if source_tape.authority != *source_authority_info.key {
+    if source_tape.authority != (*source_authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
     // Destination must be empty PDA for recipient
     dest_tape_info
-        .has_address(&dest_tape_address)?
+        .has_address(&dest_tape_address.into())?
         .is_writable()?
         .is_empty()?;
 
@@ -81,7 +81,7 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     let dest_tape = dest_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
 
     // Initialize destination: later time slice with same capacity; used starts at zero
-    dest_tape.authority    = *dest_authority_info.key;
+    dest_tape.authority = (*dest_authority_info.key).into();
     dest_tape.active_epoch = split_epoch;
     dest_tape.expiry_epoch = source_tape.expiry_epoch;
     dest_tape.capacity     = source_tape.capacity;
@@ -104,13 +104,13 @@ mod tests {
         let source_authority = Pubkey::new_unique();
         let dest_authority = Pubkey::new_unique();
 
-        let (source_tape_address, _) = tape_pda(source_authority);
-        let (dest_tape_address, _)   = tape_pda(dest_authority);
+        let (source_tape_address, _) = tape_pda(source_authority.into());
+        let (dest_tape_address, _)   = tape_pda(dest_authority.into());
         let (archive_address, _)     = archive_pda();
 
         // Source: 500 capacity, used 123, epochs [40, 50)
         let source_tape = Tape {
-            authority: source_authority,
+            authority: source_authority.into(),
             capacity: StorageUnits::mb(500),
             used: StorageUnits::mb(123),
             active_epoch: EpochNumber(40),
@@ -124,7 +124,7 @@ mod tests {
         };
 
         let split_epoch = EpochNumber(45);
-        let instruction = build_split_tape_by_epoch_ix(fee_payer, source_authority, dest_authority, split_epoch);
+        let instruction = build_split_tape_by_epoch_ix(fee_payer.into(), source_authority.into(), dest_authority.into(), split_epoch);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -140,7 +140,7 @@ mod tests {
         ];
 
         let expected_dest = Tape {
-            authority: dest_authority,
+            authority: dest_authority.into(),
             capacity: StorageUnits::mb(500),
             used: StorageUnits(0), // starts zero for future slice
             active_epoch: EpochNumber(45),
@@ -148,7 +148,7 @@ mod tests {
             ..Tape::zeroed()
         };
         let expected_source = Tape {
-            authority: source_authority,
+            authority: source_authority.into(),
             capacity: StorageUnits::mb(500),
             used: StorageUnits::mb(123),
             active_epoch: EpochNumber(40),
@@ -166,11 +166,11 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&dest_tape_address)
+                Check::account(&Pubkey::from(dest_tape_address))
                     .data(expected_dest.pack().as_ref()).build(),
-                Check::account(&source_tape_address)
+                Check::account(&Pubkey::from(source_tape_address))
                     .data(expected_source.pack().as_ref()).build(),
-                Check::account(&archive_address)
+                Check::account(&Pubkey::from(archive_address))
                     .data(expected_archive.pack().as_ref())
                     .build(),
             ],

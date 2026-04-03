@@ -27,18 +27,18 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     authority_info
         .is_signer()?;
 
-    let (node_address, _) = node_pda(*authority_info.key);
+    let (node_address, _) = node_pda((*authority_info.key).into());
     let (history_address, _) = history_pda(node_address);
 
     node_info
         .is_empty()?
         .is_writable()?
-        .has_address(&node_address)?;
+        .has_address(&node_address.into())?;
 
     history_info
         .is_empty()?
         .is_writable()?
-        .has_address(&history_address)?;
+        .has_address(&history_address.into())?;
 
     let system = system_info
         .is_writable()?
@@ -82,7 +82,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
 
     node.id                   = node_number.into();
-    node.authority            = *authority_info.key;
+    node.authority = (*authority_info.key).into();
     node.registered_epoch     = current_epoch(epoch);
     node.latest_sync_epoch    = current_epoch(epoch);
     node.latest_advance_epoch = current_epoch(epoch);
@@ -125,7 +125,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     NodeRegistered {
         node: node_address,
         id: node.id,
-        authority: *authority_info.key,
+        authority: (*authority_info.key).into(),
         epoch: current_epoch(epoch),
     }.log();
 
@@ -152,13 +152,11 @@ mod tests {
         let bls_pubkey = secret.public_key().expect("pubkey");
         let bls_pop = secret.proof_of_possession().expect("pop");
 
-        let instruction = build_register_node_ix(
-            fee_payer,
-            authority,
+        let instruction = build_register_node_ix(fee_payer.into(), authority.into(),
             name,
             commission_rate,
             network_address,
-            network_tls,
+            network_tls.into(),
             bls_pubkey,
             bls_pop,
         );
@@ -166,7 +164,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
 
         // Setup existing accounts
@@ -203,22 +201,22 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address).data(
+                Check::account(&Pubkey::from(system_address)).data(
                     System {
                         total_nodes: 1,
                         ..system
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&node_address).data(
+                Check::account(&Pubkey::from(node_address)).data(
                     Node {
                         id: NodeId::new(0),
-                        authority,
+                        authority: authority.into(),
                         pool: StakingPool::new(commission_rate),
                         blacklist: Blacklist::new(),
                         metadata: NodeMetadata {
                             name,
                             network_address,
-                            network_tls,
+                            network_tls: network_tls.into(),
                             bls_pubkey,
                             next_bls_pubkey: bls_pubkey,
                         },
@@ -232,7 +230,7 @@ mod tests {
                         ..Node::zeroed()
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&history_address).data({
+                Check::account(&Pubkey::from(history_address)).data({
                     let mut expected_history = History {
                         node: node_address,
                         registered_epoch: epoch.id,

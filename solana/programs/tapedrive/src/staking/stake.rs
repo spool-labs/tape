@@ -60,13 +60,13 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *authority_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     if node.latest_advance_epoch < prev_epoch(epoch) {
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*authority_info.key);
+    let (stake_address, _) = stake_pda((*authority_info.key).into());
     let (vault_address, _) = vault_pda(stake_address);
 
     // We require a new stake account for each stake action to simplify logic. 
@@ -75,12 +75,12 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     stake_info
         .is_empty()?
         .is_writable()?
-        .has_address(&stake_address)?;
+        .has_address(&stake_address.into())?;
 
     vault_info
         .is_empty()?
         .is_writable()?
-        .has_address(&vault_address)?;
+        .has_address(&vault_address.into())?;
 
     let amount = TAPE::unpack(args.amount);
     if amount.is_zero() {
@@ -114,17 +114,17 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_type::<Stake>(&tapedrive::ID)?
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    stake.authority  = *authority_info.key;
-    stake.pool       = *node_info.key;
+    stake.authority = (*authority_info.key).into();
+    stake.pool = (*node_info.key).into();
     stake.inner      = staked_tape;
 
     // Create the vault for the stake and transfer tokens into it
     // (in an isolated program to remove custody issues)
     solana_program::program::invoke(
         &build_stake_ix(
-            *fee_payer_info.key,
-            *authority_info.key,
-            *node_info.key,
+            (*fee_payer_info.key).into(),
+            (*authority_info.key).into(),
+            (*node_info.key).into(),
             amount,
         ),
         &[
@@ -142,8 +142,8 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
     StakeDeposited {
         stake: stake_address,
-        authority: *authority_info.key,
-        pool: *node_info.key,
+        authority: (*authority_info.key).into(),
+        pool: (*node_info.key).into(),
         amount: amount.as_u64().to_le_bytes(),
         activation_epoch: staked_tape.activation_epoch,
     }.log();
@@ -172,12 +172,12 @@ mod tests {
         let pool_address = Pubkey::new_unique();
         let amount: u64 = 1000;
 
-        let instruction = build_stake_with_pool_ix(fee_payer, authority, pool_address, amount.into());
+        let instruction = build_stake_with_pool_ix(fee_payer.into(), authority.into(), pool_address.into(), amount.into());
 
         let authority_ata = ata_address(&authority);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = stake_pda(authority);
+        let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
 
         // Setup existing accounts
@@ -238,10 +238,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&stake_address).data(
+                Check::account(&Pubkey::from(stake_address)).data(
                     Stake {
-                        authority: authority,
-                        pool: pool_address,
+                        authority: authority.into(),
+                        pool: pool_address.into(),
                         inner: StakedTape {
                             amount: amount.into(),
                             activation_epoch: e2,
@@ -249,7 +249,7 @@ mod tests {
                         },
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&pool_address).data(
+                Check::account(&Pubkey::from(pool_address)).data(
                     Node {
                         pool: StakingPool {
                             schedule: PoolSchedule {
@@ -264,14 +264,14 @@ mod tests {
                         ..node
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&authority_ata).data(
+                Check::account(&Pubkey::from(authority_ata)).data(
                     token(
                         authority_ata,
                         authority,
                         initial_token_balance - amount
                     ).1.data.as_ref()
                 ).build(),
-                Check::account(&vault_address).data(
+                Check::account(&Pubkey::from(vault_address)).data(
                     token(
                         vault_address,
                         vault_address,
@@ -290,12 +290,12 @@ mod tests {
         let pool_address = Pubkey::new_unique();
         let amount: u64 = 1000;
 
-        let instruction = build_stake_with_pool_ix(fee_payer, authority, pool_address, amount.into());
+        let instruction = build_stake_with_pool_ix(fee_payer.into(), authority.into(), pool_address.into(), amount.into());
 
         let authority_ata = ata_address(&authority);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = stake_pda(authority);
+        let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
 
         let mut system = System::zeroed();
@@ -344,10 +344,10 @@ mod tests {
             &[
                 Check::success(),
                 // Activation epoch is E+0 (immediate) in low-quorum mode
-                Check::account(&stake_address).data(
+                Check::account(&Pubkey::from(stake_address)).data(
                     Stake {
-                        authority: authority,
-                        pool: pool_address,
+                        authority: authority.into(),
+                        pool: pool_address.into(),
                         inner: StakedTape {
                             amount: amount.into(),
                             activation_epoch: e0,  // Immediate activation

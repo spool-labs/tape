@@ -11,10 +11,10 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use rpc::Rpc;
-use solana_sdk::pubkey::Pubkey;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::StorageUnits;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 
 use crate::error::TapedriveError;
@@ -29,7 +29,7 @@ const CHUNK_CONCURRENCY: usize = 8;
 /// Read a manifest track and return the full stream contents in memory.
 pub async fn read_bytes<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    manifest_address: &Pubkey,
+    manifest_address: &Address,
 ) -> Result<Vec<u8>, TapedriveError> {
     let (manifest, manifest_track) = read_manifest(client, manifest_address).await?;
     let mut buffer = MemoryWriter::new(manifest.total_size)?;
@@ -40,7 +40,7 @@ pub async fn read_bytes<Blockchain: Rpc, Cluster: Api>(
 /// Read a manifest track and write the reconstructed stream into an async sink.
 pub async fn read_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + Unpin>(
     client: &Tapedrive<Blockchain, Cluster>,
-    manifest_address: &Pubkey,
+    manifest_address: &Address,
     mut writer: Writer,
 ) -> Result<(), TapedriveError> {
     let (manifest, manifest_track) = read_manifest(client, manifest_address).await?;
@@ -50,7 +50,7 @@ pub async fn read_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + Unpin
 /// Load and validate the manifest plus its track metadata.
 async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    manifest_address: &Pubkey,
+    manifest_address: &Address,
 ) -> Result<(ChunkManifest, CompressedTrack), TapedriveError> {
     let manifest_bytes = client.read(manifest_address).await?;
     let manifest = ChunkManifest::from_bytes(&manifest_bytes)

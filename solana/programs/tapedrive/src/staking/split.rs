@@ -49,22 +49,22 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     }
 
     // Derive stake/vault addresses
-    let (source_stake_address, _) = stake_pda(*source_authority_info.key);
+    let (source_stake_address, _) = stake_pda((*source_authority_info.key).into());
     let (source_vault_address, _) = vault_pda(source_stake_address);
 
-    let (dest_stake_address, _) = stake_pda(*dest_authority_info.key);
+    let (dest_stake_address, _) = stake_pda((*dest_authority_info.key).into());
     let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
     // Validate source stake
     source_stake_info
-        .has_address(&source_stake_address)?
+        .has_address(&source_stake_address.into())?
         .is_writable()?
         .is_type::<Stake>(&tapedrive::ID)?;
 
     let source_stake = source_stake_info
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if source_stake.authority != *source_authority_info.key || source_stake.pool != *node_info.key {
+    if source_stake.authority != (*source_authority_info.key).into() || source_stake.pool != (*node_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -79,12 +79,12 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     // Validate source vault
     source_vault_info
-        .has_address(&source_vault_address)?
+        .has_address(&source_vault_address.into())?
         .is_writable()?;
 
     // Destination stake: must be empty (we'll create it), or already be the correct PDA and empty
     dest_stake_info
-        .has_address(&dest_stake_address)?
+        .has_address(&dest_stake_address.into())?
         .is_writable()?
         .is_empty()?; // Enforce creation for simplicity
 
@@ -102,8 +102,8 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
     // Initialize dest stake with same activation epoch/state, amount = split amount
-    dest_stake.authority = *dest_authority_info.key;
-    dest_stake.pool      = *node_info.key;
+    dest_stake.authority = (*dest_authority_info.key).into();
+    dest_stake.pool = (*node_info.key).into();
     dest_stake.inner     = StakedTape {
         amount,
         activation_epoch: source_stake.inner.activation_epoch,
@@ -117,15 +117,15 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     // Validate destination vault
     // It may be empty (will be created by the staking program CPI) or already exist.
     dest_vault_info
-        .has_address(&dest_vault_address)?
+        .has_address(&dest_vault_address.into())?
         .is_writable()?;
 
     // CPI into staking program to split the underlying vaults
     solana_program::program::invoke(
         &build_split_stake_ix(
-            *fee_payer_info.key,
-            *source_authority_info.key,
-            *dest_authority_info.key,
+            (*fee_payer_info.key).into(),
+            (*source_authority_info.key).into(),
+            (*dest_authority_info.key).into(),
             amount,
         ),
         &[
@@ -161,12 +161,12 @@ mod tests {
         let dest_authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_split_pool_stake_ix(fee_payer, source_authority, pool_address, dest_authority, amount.into());
+        let instruction = build_split_pool_stake_ix(fee_payer.into(), source_authority.into(), pool_address.into(), dest_authority.into(), amount.into());
 
-        let (source_stake_address, _) = stake_pda(source_authority);
+        let (source_stake_address, _) = stake_pda(source_authority.into());
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(dest_authority);
+        let (dest_stake_address, _) = stake_pda(dest_authority.into());
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         // Prepare a minimal node
@@ -175,8 +175,8 @@ mod tests {
         // Source stake in staked state
         let e0: EpochNumber = EpochNumber(100);
         let source_stake = Stake {
-            authority: source_authority,
-            pool: pool_address,
+            authority: source_authority.into(),
+            pool: pool_address.into(),
             inner: StakedTape {
                 amount: TAPE(initial_source_balance),
                 activation_epoch: e0,
@@ -214,10 +214,10 @@ mod tests {
                 Check::success(),
 
                 // Source stake amount reduced
-                Check::account(&source_stake_address).data(
+                Check::account(&Pubkey::from(source_stake_address)).data(
                     Stake {
-                        authority: source_authority,
-                        pool: pool_address,
+                        authority: source_authority.into(),
+                        pool: pool_address.into(),
                         inner: StakedTape {
                             amount: TAPE(initial_source_balance - amount),
                             activation_epoch: e0,
@@ -227,10 +227,10 @@ mod tests {
                 ).build(),
 
                 // Destination stake account created with split amount, same activation/state
-                Check::account(&dest_stake_address).data(
+                Check::account(&Pubkey::from(dest_stake_address)).data(
                     Stake {
-                        authority: dest_authority,
-                        pool: pool_address,
+                        authority: dest_authority.into(),
+                        pool: pool_address.into(),
                         inner: StakedTape {
                             amount: TAPE(amount),
                             activation_epoch: e0,
@@ -240,14 +240,14 @@ mod tests {
                 ).build(),
 
                 // Vault balances moved, destination vault created
-                Check::account(&source_vault_address).data(
+                Check::account(&Pubkey::from(source_vault_address)).data(
                     token(
                         source_vault_address,
                         source_vault_address,
                         initial_source_balance - amount
                     ).1.data.as_ref()
                 ).build(),
-                Check::account(&dest_vault_address).data(
+                Check::account(&Pubkey::from(dest_vault_address)).data(
                     token(
                         dest_vault_address,
                         dest_vault_address,

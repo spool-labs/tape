@@ -12,26 +12,11 @@ use tape_core::types::EpochNumber;
 pub trait SnapshotOps {
     fn get_epoch_info(&self, epoch: EpochNumber) -> Result<Option<SnapshotEpochInfo>>;
     fn put_epoch_info(&self, info: SnapshotEpochInfo) -> Result<()>;
-    fn get_group_info(
-        &self,
-        epoch: EpochNumber,
-        group: SpoolGroup,
-    ) -> Result<Option<SnapshotGroupInfo>>;
+    fn get_group_info( &self, epoch: EpochNumber, group: SpoolGroup,) -> Result<Option<SnapshotGroupInfo>>;
     fn put_group_info(&self, info: SnapshotGroupInfo) -> Result<()>;
     fn iter_groups_for_epoch(&self, epoch: EpochNumber) -> Result<Vec<SnapshotGroupInfo>>;
-    fn get_group_slice(
-        &self,
-        epoch: EpochNumber,
-        group: SpoolGroup,
-        spool: SpoolIndex,
-    ) -> Result<Option<Vec<u8>>>;
-    fn put_group_slice(
-        &self,
-        epoch: EpochNumber,
-        group: SpoolGroup,
-        spool: SpoolIndex,
-        data: Vec<u8>,
-    ) -> Result<()>;
+    fn get_group_slice( &self, epoch: EpochNumber, group: SpoolGroup, spool: SpoolIndex,) -> Result<Option<Vec<u8>>>;
+    fn put_group_slice( &self, epoch: EpochNumber, group: SpoolGroup, spool: SpoolIndex, data: Vec<u8>,) -> Result<()>;
     fn delete_epoch_data(&self, epoch: EpochNumber) -> Result<()>;
 }
 
@@ -157,7 +142,7 @@ mod tests {
         SnapshotEpochInfo {
             epoch,
             parent_epoch: epoch - EpochNumber(1),
-            tape: [1u8; 32],
+            tape: [1u8; 32].into(),
             status: SnapshotEpochStatus::Initialized,
             certified_groups: SnapshotGroupBitmap::from_indices(&[0, 2], SPOOL_GROUP_COUNT),
         }
@@ -178,7 +163,7 @@ mod tests {
             leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], MEMBER_COUNT),
             signature: BlsSignature::zeroed(),
-            track: Some([2u8; 32]),
+            track: Some([2u8; 32].into()),
             track_number: Some(TrackNumber(7)),
         }
     }

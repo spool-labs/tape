@@ -2,8 +2,6 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Signature, Signer};
 
 use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use rpc_client::parse_tape_error;
@@ -21,7 +19,9 @@ use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
 use tape_retry::{RetryConfig, Retryable};
@@ -55,7 +55,7 @@ pub struct UploadPlan {
 
 #[derive(Clone)]
 pub struct WrittenTrack {
-    pub address: Pubkey,
+    pub address: Address,
     pub track: CompressedTrack,
 }
 
@@ -159,9 +159,10 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     raw: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
     let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
     let write_ix = build_track_write_raw_ix(
-        payer.pubkey(),
-        tape_key.pubkey(),
+        payer.pubkey().into(),
+        tape_key.address(),
         key,
         raw,
     )
@@ -172,12 +173,12 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
         .send_instructions_with_signers(
             payer,
             vec![write_ix],
-            &[tape_key.as_keypair()],
+            &[tape_signer],
         )
         .await?;
 
     let written = fetch_track_written_event(client, &signature).await?;
-    let track_address: Pubkey = written.track.into();
+    let track_address: Address = written.track.into();
     let track = queries::retry_fetch_track_by_number(
         client,
         &written.tape,
@@ -199,9 +200,10 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let plan = prepare_plan(data)?;
     let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
     let write_ix = build_track_write_blob_ix(
-        payer.pubkey(),
-        tape_key.pubkey(),
+        payer.pubkey().into(),
+        tape_key.address(),
         key,
         BlobInfo {
             size: plan.storage_units,
@@ -220,12 +222,12 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
         .send_instructions_with_signers(
             payer,
             vec![write_ix],
-            &[tape_key.as_keypair()],
+            &[tape_signer],
         )
         .await?;
 
     let written = fetch_track_written_event(client, &signature).await?;
-    let track_address: Pubkey = written.track.into();
+    let track_address: Address = written.track.into();
     let track = queries::retry_fetch_track_by_number(
         client,
         &written.tape,
@@ -244,7 +246,7 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
 
 async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    track_address: Pubkey,
+    track_address: Address,
     spool_group: SpoolGroup,
     slices: Vec<SliceWithProof>,
 ) -> Result<(), TapedriveError> {
@@ -260,13 +262,12 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
 
 async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    track_address: Pubkey,
+    track_address: Address,
     spool_group: SpoolGroup,
 ) -> Result<(), TapedriveError> {
     let state = bootstrap_network_state(client).await?;
     let group_peers = state.group_peers(spool_group);
     let required = min_correct(state.group_member_count(spool_group) as u64) as usize;
-    let track: tape_crypto::Pubkey = track_address.into();
 
     tape_retry::retry_if(
         RetryConfig::ten(),
@@ -283,7 +284,7 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
                         continue;
                     }
 
-                    let req = GetTrackDataReq { track };
+                    let req = GetTrackDataReq { track: track_address };
                     if api.get_track_data(*node_id, &req).await.is_ok() {
                         visible += 1;
                     }
@@ -346,10 +347,11 @@ fn should_retry_track_completion(err: &TrackCompletionError) -> bool {
 async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    track_address: Pubkey,
+    track_address: Address,
     spool_group: SpoolGroup,
 ) -> Result<(), TapedriveError> {
     let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
     let system = client.rpc().get_system().await?;
 
     let collector = CertificationCollector::with_defaults();
@@ -368,8 +370,8 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
         ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_CU);
 
     let certify_ix = build_certify_track_ix(
-        payer.pubkey(),
-        tape_key.pubkey(),
+        payer.pubkey().into(),
+        tape_key.address(),
         proof,
         EpochNumber(collected.epoch),
         collected.bitmap,
@@ -381,7 +383,7 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
         .send_instructions_with_signers(
             payer,
             vec![compute_ix, certify_ix],
-            &[tape_key.as_keypair()],
+            &[tape_signer],
         )
         .await
     {
@@ -395,7 +397,7 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
 
 async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape: &Pubkey,
+    tape: &Address,
     track_number: tape_core::types::TrackNumber,
 ) -> Result<CompressedTrack, TapedriveError> {
     let result = tape_retry::retry_if(
@@ -482,7 +484,7 @@ mod tests {
 
 async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    signature: &Signature,
+    signature: &Txid,
 ) -> Result<TrackWritten, TapedriveError> {
     let transaction = tape_retry::retry(
         RetryConfig::ten(),

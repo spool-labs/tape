@@ -1,5 +1,7 @@
+use tape_crypto::address::Address;
 use tape_solana::*;
 use tape_core::prelude::*;
+
 use super::AccountType;
 use crate::program::EPOCH_HISTORY;
 
@@ -7,7 +9,7 @@ use crate::program::EPOCH_HISTORY;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct History {
     /// The node this history is associated with.
-    pub node: Pubkey,
+    pub node: Address,
 
     /// The epoch when this history was registered.
     pub registered_epoch: EpochNumber,

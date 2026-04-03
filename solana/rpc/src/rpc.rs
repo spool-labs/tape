@@ -10,10 +10,10 @@ use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_sdk::account::Account;
 use solana_sdk::commitment_config::CommitmentLevel;
 use solana_sdk::hash::Hash;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock};
+use tape_crypto::address::Address;
+use tape_crypto::tx::Txid;
 
 use crate::error::RpcError;
 
@@ -55,7 +55,7 @@ pub trait Rpc: Send + Sync {
     /// Get a confirmed transaction by signature.
     async fn get_transaction(
         &self,
-        signature: &Signature,
+        txid: &Txid,
     ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError>;
 
     /// Get the current block height
@@ -68,35 +68,35 @@ pub trait Rpc: Send + Sync {
     /// Fetch a single account's data
     ///
     /// Returns `Err(RpcError::AccountNotFound)` if the account doesn't exist.
-    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError>;
+    async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError>;
 
     /// Fetch multiple accounts in a single request
     ///
     /// Returns `None` for accounts that don't exist.
     async fn get_multiple_accounts(
         &self,
-        pubkeys: &[Pubkey],
+        pubkeys: &[Address],
     ) -> Result<Vec<Option<Account>>, RpcError>;
 
     /// Fetch program accounts with filters
     async fn get_program_accounts(
         &self,
-        program_id: &Pubkey,
+        program_id: &Address,
         config: RpcProgramAccountsConfig,
-    ) -> Result<Vec<(Pubkey, Account)>, RpcError>;
+    ) -> Result<Vec<(Address, Account)>, RpcError>;
 
     // ========================================================================
     // Transaction Operations
     // ========================================================================
 
     /// Send a transaction without waiting for confirmation
-    async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError>;
+    async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError>;
 
     /// Send a transaction and wait for confirmation
     async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
-    ) -> Result<Signature, RpcError>;
+    ) -> Result<Txid, RpcError>;
 
     /// Check the status of a transaction signature
     ///
@@ -106,6 +106,6 @@ pub trait Rpc: Send + Sync {
     /// - `Ok(None)` - Transaction not yet confirmed
     async fn get_signature_status(
         &self,
-        signature: &Signature,
+        txid: &Txid,
     ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError>;
 }

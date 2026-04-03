@@ -22,12 +22,7 @@ fn serialize_key(key: &EventLogKey) -> Vec<u8> {
 /// epoch can be garbage collected.
 pub trait EventLogOps {
     /// Append a replayable event to the epoch's event log.
-    fn append_event(
-        &self,
-        epoch: EpochNumber,
-        slot: SlotNumber,
-        event: &ReplayableEvent,
-    ) -> Result<()>;
+    fn append_event(&self, epoch: EpochNumber, slot: SlotNumber, event: &ReplayableEvent,) -> Result<()>;
 
     /// Read all events for an epoch, grouped by slot and ordered by (slot, seq).
     fn get_epoch_events(&self, epoch: EpochNumber) -> Result<Vec<SnapshotEntry>>;
@@ -127,14 +122,13 @@ impl<S: Store> EventLogOps for TapeStore<S> {
 
 #[cfg(test)]
 mod tests {
-    use solana_program::pubkey::Pubkey;
-
     use super::*;
     use store_memory::MemoryStore;
     use tape_core::snapshot::types::ReplayTrack;
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::hash::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -164,7 +158,7 @@ mod tests {
                 SlotNumber(150),
                 &ReplayableEvent::Track(ReplayTrack {
                     state: CompressedTrack {
-                        tape: Pubkey::new_from_array([2u8; 32]),
+                        tape: Address::new([2u8; 32]),
                         key: Hash::default(),
                         track_number: TrackNumber(1),
                         kind: TrackKind::Raw as u64,
@@ -184,7 +178,7 @@ mod tests {
                 epoch,
                 SlotNumber(150),
                 &ReplayableEvent::CertifyTrack {
-                    track: [1u8; 32],
+                    track: Address::new([1u8; 32]),
                     epoch: EpochNumber(1),
                 },
             )
@@ -211,7 +205,7 @@ mod tests {
                 epoch,
                 SlotNumber(10),
                 &ReplayableEvent::JoinNetwork {
-                    node: [1u8; 32],
+                    node: Address::new([1u8; 32]),
                 },
             )
             .unwrap();
@@ -240,8 +234,8 @@ mod tests {
                 epoch,
                 SlotNumber(20),
                 &ReplayableEvent::RegisterNode {
-                    authority: [1u8; 32],
-                    node: [2u8; 32],
+                    authority: [1u8; 32].into(),
+                    node: [2u8; 32].into(),
                 },
             )
             .unwrap();
@@ -309,7 +303,7 @@ mod tests {
                     epoch,
                     slot,
                     &ReplayableEvent::SyncEpoch {
-                        node: [i; 32],
+                        node: [i; 32].into(),
                         node_id: tape_core::types::NodeId(i as u64),
                         epoch,
                         spools_hash: Hash::default(),
@@ -326,7 +320,7 @@ mod tests {
         for (i, event) in entries[0].events.iter().enumerate() {
             match event {
                 ReplayableEvent::SyncEpoch { node, .. } => {
-                    assert_eq!(node[0], i as u8);
+                    assert_eq!(node.to_bytes()[0], i as u8);
                 }
                 _ => panic!("unexpected event type"),
             }

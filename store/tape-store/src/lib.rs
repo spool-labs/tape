@@ -135,16 +135,16 @@ mod tests {
     use crate::types::*;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
-    use tape_crypto::Pubkey as CryptoPubkey;
 
     #[test]
     fn test_track_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
-        let address = Pubkey::new_unique();
+        let address = Address::new_unique();
 
         let info = CompressedTrack {
-            tape: CryptoPubkey::new_unique(),
+            tape: Address::new_unique(),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Blob as u64,
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn test_tape_info_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
-        let address = Pubkey::new_unique();
+        let address = Address::new_unique();
 
         let info = TapeInfo {
             end_epoch: EpochNumber(200),
@@ -177,10 +177,10 @@ mod tests {
     #[test]
     fn test_object_info_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
-        let address = Pubkey::new_unique();
+        let address = Address::new_unique();
 
         let info = ObjectInfo::Valid {
-            track_address: Pubkey::new_unique(),
+            track_address: Address::new_unique(),
             registered_epoch: EpochNumber(5),
             certified_epoch: Some(EpochNumber(6)),
             slot: SlotNumber(50),
@@ -207,7 +207,7 @@ mod tests {
     fn test_slice_data_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
         let spool_id = 42;
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
 
         let data = vec![0xAB; 1024];
 
@@ -224,7 +224,7 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
 
         // Node address
-        let addr = Pubkey::new_unique();
+        let addr = Address::new_unique();
         store.set_node_address(addr).unwrap();
         assert_eq!(store.get_node_address().unwrap(), Some(addr));
 
@@ -254,7 +254,7 @@ mod tests {
 
         // Insert slices in non-sequential spool order
         for spool_id in [100u16, 1, 50, 200, 25] {
-            let track = Pubkey::new_unique();
+            let track = Address::new_unique();
             let data = vec![0u8; 10];
             store.put_slice(spool_id, track, data).unwrap();
         }
@@ -277,9 +277,9 @@ mod tests {
         // Create primary and write some data
         {
             let store = TapeStore::open_primary(&path).unwrap();
-            let track = Pubkey::new_unique();
+            let track = Address::new_unique();
             let info = CompressedTrack {
-                tape: CryptoPubkey::new_unique(),
+                tape: Address::new_unique(),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Blob as u64,
@@ -316,9 +316,9 @@ mod tests {
         // Create primary and write initial data
         {
             let store = TapeStore::open_primary(&primary_path).unwrap();
-            let track = Pubkey::new_unique();
+            let track = Address::new_unique();
             let info = CompressedTrack {
-                tape: CryptoPubkey::new_unique(),
+                tape: Address::new_unique(),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Blob as u64,

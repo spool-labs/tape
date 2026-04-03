@@ -21,11 +21,11 @@ pub fn process_set_authority(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    node.authority = *new_authority_info.key;
+    node.authority = (*new_authority_info.key).into();
 
     Ok(())
 }
@@ -41,12 +41,12 @@ mod tests {
         let authority = Pubkey::new_unique();
         let new_authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_authority_ix(fee_payer, authority, node_address, new_authority);
+        let instruction = build_set_authority_ix(fee_payer.into(), authority.into(), node_address, new_authority.into());
 
         let node = Node {
-            authority,
+            authority: authority.into(),
             ..Node::zeroed()
         };
 
@@ -63,9 +63,9 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
-                        authority: new_authority,
+                        authority: new_authority.into(),
                         ..node
                     }.pack().as_ref())
                     .build(),

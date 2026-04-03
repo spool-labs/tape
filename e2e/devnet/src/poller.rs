@@ -369,7 +369,7 @@ async fn poll_once(
             None
         };
 
-        let authority = tracked.ctx.pubkey();
+        let authority = tracked.ctx.pubkey().address();
         if let Ok(node) = tracked.ctx.rpc.get_node(&authority).await {
             tracked.pool_stake = node.pool.stake.as_u64();
         }

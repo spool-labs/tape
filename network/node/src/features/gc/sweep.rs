@@ -2,10 +2,11 @@ use tokio::task::yield_now;
 
 use store::Store;
 use tape_core::types::EpochNumber;
+use tape_crypto::address::Address;
 use tape_store::{
     TapeStore,
     ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
-    types::{ObjectInfo, Pubkey},
+    types::ObjectInfo,
 };
 
 use crate::config::store::GcConfig;
@@ -200,7 +201,7 @@ async fn sweep_stale_recoveries<Db: Store>(store: &TapeStore<Db>) -> Result<(), 
 fn should_delete_slice<Db: Store>(
     store: &TapeStore<Db>,
     spool_id: u16,
-    track: Pubkey,
+    track: Address,
 ) -> Result<bool, NodeError> {
     let Some(track_info) = store.get_track(track).map_err(store_error)? else {
         return Ok(true);
@@ -217,7 +218,7 @@ fn should_delete_slice<Db: Store>(
 fn recovery_is_stale<Db: Store>(
     store: &TapeStore<Db>,
     spool_id: u16,
-    track: Pubkey,
+    track: Address,
 ) -> Result<bool, NodeError> {
     let Some(track_info) = store.get_track(track).map_err(store_error)? else {
         return Ok(true);
@@ -267,16 +268,17 @@ impl From<CleanupStats> for GcSweepStats {
 
 #[cfg(test)]
 mod tests {
+    use tape_crypto::address::Address;
     use store_memory::MemoryStore;
-    use tape_api::state::{CompressedTrack, TrackKind, TrackState};
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::Hash;
     use tape_store::{
         TapeStore,
         ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
-        types::{ObjectInfo, Pubkey, TapeInfo},
+        types::{ObjectInfo, TapeInfo},
     };
 
     use super::sweep_epoch;
@@ -296,7 +298,7 @@ mod tests {
         }
     }
 
-    fn valid_object(track: Pubkey, epoch: EpochNumber, slot: SlotNumber) -> ObjectInfo {
+    fn valid_object(track: Address, epoch: EpochNumber, slot: SlotNumber) -> ObjectInfo {
         ObjectInfo::Valid {
             track_address: track,
             registered_epoch: epoch,
@@ -305,7 +307,7 @@ mod tests {
         }
     }
 
-    fn track_info(tape: Pubkey, spool_group: SpoolGroup) -> CompressedTrack {
+    fn track_info(tape: Address, spool_group: SpoolGroup) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
@@ -322,8 +324,8 @@ mod tests {
     async fn expires_tape() {
         let store = test_store();
         let config = test_config();
-        let tape = Pubkey::new_unique();
-        let track = Pubkey::new_unique();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
         let spool_id = 20;
         let slot = SlotNumber(10);
 
@@ -357,8 +359,8 @@ mod tests {
     async fn removes_orphan_track() {
         let store = test_store();
         let config = test_config();
-        let tape = Pubkey::new_unique();
-        let track = Pubkey::new_unique();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
         let spool_id = 20;
 
         store
@@ -381,8 +383,8 @@ mod tests {
     async fn removes_orphan_slice() {
         let store = test_store();
         let config = test_config();
-        let tape = Pubkey::new_unique();
-        let track = Pubkey::new_unique();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
         let spool_id = 20;
 
         store
@@ -423,8 +425,8 @@ mod tests {
     async fn removes_stale_recovery() {
         let store = test_store();
         let config = test_config();
-        let tape = Pubkey::new_unique();
-        let track = Pubkey::new_unique();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
         let spool_id = 20;
 
         store
@@ -460,8 +462,8 @@ mod tests {
     async fn repeat_noop() {
         let store = test_store();
         let config = test_config();
-        let tape = Pubkey::new_unique();
-        let track = Pubkey::new_unique();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
         let spool_id = 20;
 
         store
@@ -496,9 +498,9 @@ mod tests {
         let store = test_store();
         let config = test_config();
 
-        let tape = Pubkey::new_unique();
-        let track_stale = Pubkey::new_unique();
-        let track_recent = Pubkey::new_unique();
+        let tape = Address::new_unique();
+        let track_stale = Address::new_unique();
+        let track_recent = Address::new_unique();
         let spool_group = SpoolGroup(1);
         let spool_id = spool_group.spool_at(0);
 

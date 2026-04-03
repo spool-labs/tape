@@ -1,10 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
-use solana_program::pubkey::Pubkey;
 use tape_core::bls::BlsPubkey;
 use tape_core::spooler::SpoolGroup;
 use tape_core::system::NodePreferences;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
 /// Discriminator for event types.
@@ -51,7 +51,7 @@ pub enum EventType {
 pub struct SnapshotEpochInitialized {
     pub epoch: EpochNumber,
     pub parent_epoch: EpochNumber,
-    pub tape: Pubkey,
+    pub tape: Address,
 }
 
 tape_solana::event!(EventType, SnapshotEpochInitialized);
@@ -62,8 +62,8 @@ tape_solana::event!(EventType, SnapshotEpochInitialized);
 pub struct SnapshotGroupCertified {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub tape: Pubkey,
-    pub track: Pubkey,
+    pub tape: Address,
+    pub track: Address,
     pub track_number: TrackNumber,
     pub commitment: Hash,
     pub signer_count: [u8; 8],
@@ -88,7 +88,7 @@ tape_solana::event!(EventType, SnapshotEpochFinalized);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackCertified {
     /// Track account address
-    pub track: Pubkey,
+    pub track: Address,
     /// Certification epoch
     pub epoch: EpochNumber,
     /// Committee members who signed
@@ -104,9 +104,9 @@ tape_solana::event!(EventType, TrackCertified);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackDeleted {
     /// Track account address
-    pub track: Pubkey,
+    pub track: Address,
     /// Parent tape address
-    pub tape: Pubkey,
+    pub tape: Address,
     /// Track key for reference
     pub key: Hash,
     /// Storage being freed
@@ -120,7 +120,7 @@ tape_solana::event!(EventType, TrackDeleted);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackInvalidated {
     /// Track account address
-    pub track: Pubkey,
+    pub track: Address,
     /// Invalidation epoch
     pub epoch: EpochNumber,
 }
@@ -132,8 +132,8 @@ tape_solana::event!(EventType, TrackInvalidated);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackWritten {
     pub epoch: EpochNumber,
-    pub track: Pubkey,
-    pub tape: Pubkey,
+    pub track: Address,
+    pub tape: Address,
     pub track_number: TrackNumber,
     pub spool_group: [u8; 8],
     pub track_hash: Hash,
@@ -146,9 +146,9 @@ tape_solana::event!(EventType, TrackWritten);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TapeReserved {
     /// Tape account address
-    pub tape: Pubkey,
+    pub tape: Address,
     /// Owner who reserved
-    pub authority: Pubkey,
+    pub authority: Address,
     /// Reserved capacity in bytes
     pub capacity: StorageUnits,
     /// First active epoch
@@ -166,9 +166,9 @@ tape_solana::event!(EventType, TapeReserved);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TapeDestroyed {
     /// Tape account address
-    pub tape: Pubkey,
+    pub tape: Address,
     /// Owner who destroyed
-    pub authority: Pubkey,
+    pub authority: Address,
 }
 
 tape_solana::event!(EventType, TapeDestroyed);
@@ -178,11 +178,11 @@ tape_solana::event!(EventType, TapeDestroyed);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct NodeRegistered {
     /// Node account address
-    pub node: Pubkey,
+    pub node: Address,
     /// Assigned unique node ID
     pub id: NodeId,
     /// Node operator pubkey
-    pub authority: Pubkey,
+    pub authority: Address,
     /// Registration epoch
     pub epoch: EpochNumber,
 }
@@ -194,7 +194,7 @@ tape_solana::event!(EventType, NodeRegistered);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct NodeJoinedCommittee {
     /// Node account address
-    pub node: Pubkey,
+    pub node: Address,
     /// Node ID
     pub id: NodeId,
     /// Stake in TAPE flux units
@@ -216,7 +216,7 @@ tape_solana::event!(EventType, NodeJoinedCommittee);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct NodeSynced {
     /// Node account address
-    pub node: Pubkey,
+    pub node: Address,
     /// Node ID
     pub id: NodeId,
     /// Synced epoch
@@ -234,7 +234,7 @@ tape_solana::event!(EventType, NodeSynced);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct PoolAdvanced {
     /// Node account address
-    pub node: Pubkey,
+    pub node: Address,
     /// Node ID
     pub id: NodeId,
     /// Current epoch
@@ -276,11 +276,11 @@ tape_solana::event!(EventType, EpochAdvanced);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StakeDeposited {
     /// Stake account address
-    pub stake: Pubkey,
+    pub stake: Address,
     /// Staker
-    pub authority: Pubkey,
+    pub authority: Address,
     /// Target pool
-    pub pool: Pubkey,
+    pub pool: Address,
     /// TAPE flux units
     pub amount: [u8; 8],
     /// When stake activates
@@ -294,11 +294,11 @@ tape_solana::event!(EventType, StakeDeposited);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StakeUnlockRequested {
     /// Stake account address
-    pub stake: Pubkey,
+    pub stake: Address,
     /// Staker
-    pub authority: Pubkey,
+    pub authority: Address,
     /// Pool
-    pub pool: Pubkey,
+    pub pool: Address,
     /// Amount being unlocked
     pub amount: [u8; 8],
     /// When withdrawal available
@@ -312,11 +312,11 @@ tape_solana::event!(EventType, StakeUnlockRequested);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StakeWithdrawn {
     /// Stake account address
-    pub stake: Pubkey,
+    pub stake: Address,
     /// Staker
-    pub authority: Pubkey,
+    pub authority: Address,
     /// Pool
-    pub pool: Pubkey,
+    pub pool: Address,
     /// Principal returned
     pub principal: [u8; 8],
     /// Rewards earned
@@ -330,9 +330,9 @@ tape_solana::event!(EventType, StakeWithdrawn);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CommissionClaimed {
     /// Node account address
-    pub node: Pubkey,
+    pub node: Address,
     /// Node operator
-    pub authority: Pubkey,
+    pub authority: Address,
     /// TAPE flux units claimed
     pub amount: [u8; 8],
 }
@@ -376,8 +376,8 @@ mod tests {
         let event = SnapshotGroupCertified {
             epoch: EpochNumber(7),
             group: SpoolGroup(3),
-            tape: Pubkey::new_unique(),
-            track: Pubkey::new_unique(),
+            tape: Address::new_unique(),
+            track: Address::new_unique(),
             track_number: TrackNumber(11),
             commitment: Hash::from([0x33; 32]),
             signer_count: 19u64.to_le_bytes(),

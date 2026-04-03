@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tape_crypto::Pubkey;
+use tape_crypto::address::Address;
 
 use crate::identity::load_identity;
 use crate::pinning::PinnedServerCertVerifier;
 
 /// TLS configuration for peer connections.
 pub struct TlsConfig {
-    pub server_tls_keys: Vec<Pubkey>,
+    pub server_tls_keys: Vec<Address>,
     pub client_cert_path: Option<PathBuf>,
     pub client_key_path: Option<PathBuf>,
 }

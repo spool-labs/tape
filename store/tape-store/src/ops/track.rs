@@ -1,25 +1,27 @@
 //! Canonical compressed-track catalog operations.
 
 use tape_core::track::types::{CompressedTrack, PackedTrack};
+use store::{Column, Store};
+use tape_crypto::address::Address;
+
 use crate::columns::{TrackCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{Pubkey, TrackLookupKey, TrackNumber, UnitKey};
+use crate::types::{TrackLookupKey, TrackNumber, UnitKey};
 use crate::TapeStore;
-use store::{Column, Store};
 
 /// Operations for the compressed-track catalog.
 pub trait TrackOps {
     /// Get track by address.
-    fn get_track(&self, track_address: Pubkey) -> Result<Option<CompressedTrack>>;
+    fn get_track(&self, track_address: Address) -> Result<Option<CompressedTrack>>;
 
     /// Store track metadata.
-    fn put_track(&self, track_address: Pubkey, track: CompressedTrack) -> Result<()>;
+    fn put_track(&self, track_address: Address, track: CompressedTrack) -> Result<()>;
 
     /// Delete track metadata.
-    fn delete_track(&self, track_address: Pubkey) -> Result<()>;
+    fn delete_track(&self, track_address: Address) -> Result<()>;
 
     /// Check if track metadata exists without loading data.
-    fn has_track(&self, track_address: Pubkey) -> Result<bool>;
+    fn has_track(&self, track_address: Address) -> Result<bool>;
 
     /// Count all tracks without loading data.
     fn count_tracks(&self) -> Result<usize>;
@@ -27,34 +29,34 @@ pub trait TrackOps {
     /// Paginated track iteration ordered by track address.
     fn iter_tracks_from(
         &self,
-        after_track: Option<Pubkey>,
+        after_track: Option<Address>,
         limit: usize,
-    ) -> Result<Vec<(Pubkey, CompressedTrack)>>;
+    ) -> Result<Vec<(Address, CompressedTrack)>>;
 
     /// Paginated track iteration ordered by (tape, track_number, key).
     fn iter_tracks_by_tape_from(
         &self,
-        tape: Pubkey,
+        tape: Address,
         after_track_number: Option<TrackNumber>,
         limit: usize,
     ) -> Result<Vec<CompressedTrack>>;
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
-    fn get_track(&self, track_address: Pubkey) -> Result<Option<CompressedTrack>> {
+    fn get_track(&self, track_address: Address) -> Result<Option<CompressedTrack>> {
         Ok(self
             .get::<TrackCol>(&track_address)?
             .map(CompressedTrack::unpack))
     }
 
-    fn put_track(&self, track_address: Pubkey, track: CompressedTrack) -> Result<()> {
+    fn put_track(&self, track_address: Address, track: CompressedTrack) -> Result<()> {
         self.put::<TrackCol>(&track_address, &track.pack())?;
         let lookup = TrackLookupKey::new(track.tape.into(), track.track_number, track.key);
         self.put::<TrackLookupCol>(&lookup, &UnitKey)?;
         Ok(())
     }
 
-    fn delete_track(&self, track_address: Pubkey) -> Result<()> {
+    fn delete_track(&self, track_address: Address) -> Result<()> {
         if let Some(track) = self.get_track(track_address)? {
             let lookup = TrackLookupKey::new(track.tape.into(), track.track_number, track.key);
             self.delete::<TrackLookupCol>(&lookup)?;
@@ -63,7 +65,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
         Ok(())
     }
 
-    fn has_track(&self, track_address: Pubkey) -> Result<bool> {
+    fn has_track(&self, track_address: Address) -> Result<bool> {
         Ok(self.contains::<TrackCol>(&track_address)?)
     }
 
@@ -77,9 +79,9 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
     fn iter_tracks_from(
         &self,
-        after_track: Option<Pubkey>,
+        after_track: Option<Address>,
         limit: usize,
-    ) -> Result<Vec<(Pubkey, CompressedTrack)>> {
+    ) -> Result<Vec<(Address, CompressedTrack)>> {
         let start_key = match after_track {
             Some(track) => wincode::serialize(&track)
                 .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?,
@@ -93,7 +95,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
         let mut results = Vec::new();
         for (key_bytes, value_bytes) in iter {
-            let key: Pubkey = wincode::deserialize(&key_bytes)
+            let key: Address = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?;
             // Skip the cursor key if resuming
             if after_track.is_some() && Some(key) == after_track {
@@ -111,7 +113,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
     fn iter_tracks_by_tape_from(
         &self,
-        tape: Pubkey,
+        tape: Address,
         after_track_number: Option<TrackNumber>,
         limit: usize,
     ) -> Result<Vec<CompressedTrack>> {
@@ -152,10 +154,9 @@ impl<S: Store> TrackOps for TapeStore<S> {
 mod key {
     use tape_api::program::tapedrive::track_pda;
     use tape_core::types::TrackNumber;
+    use tape_crypto::address::Address;
 
-    use crate::types::Pubkey;
-
-    pub fn track_address(tape: Pubkey, track_number: TrackNumber) -> Pubkey {
+    pub fn track_address(tape: Address, track_number: TrackNumber) -> Address {
         track_pda(tape.into(), track_number).0.into()
     }
 }
@@ -175,7 +176,7 @@ mod tests {
 
     fn make_track_info() -> CompressedTrack {
         CompressedTrack {
-            tape: Pubkey::new_unique().into(),
+            tape: Address::new_unique(),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: 0,
@@ -189,7 +190,7 @@ mod tests {
     #[test]
     fn test_track_roundtrip() {
         let store = test_store();
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
         let info = make_track_info();
 
         assert!(store.get_track(track).unwrap().is_none());
@@ -203,7 +204,7 @@ mod tests {
     #[test]
     fn test_track_delete() {
         let store = test_store();
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
         let info = make_track_info();
 
         store.put_track(track, info).unwrap();
@@ -216,7 +217,7 @@ mod tests {
     #[test]
     fn test_has_track() {
         let store = test_store();
-        let track = Pubkey::new_unique();
+        let track = Address::new_unique();
 
         assert!(!store.has_track(track).unwrap());
 
@@ -233,7 +234,7 @@ mod tests {
         assert_eq!(store.count_tracks().unwrap(), 0);
 
         for _ in 0..3 {
-            store.put_track(Pubkey::new_unique(), make_track_info()).unwrap();
+            store.put_track(Address::new_unique(), make_track_info()).unwrap();
         }
         assert_eq!(store.count_tracks().unwrap(), 3);
     }
@@ -243,7 +244,7 @@ mod tests {
         let store = test_store();
 
         for _ in 0..5 {
-            store.put_track(Pubkey::new_unique(), make_track_info()).unwrap();
+            store.put_track(Address::new_unique(), make_track_info()).unwrap();
         }
 
         let all = store.iter_tracks_from(None, 100).unwrap();
@@ -255,7 +256,7 @@ mod tests {
         let store = test_store();
 
         for _ in 0..5 {
-            store.put_track(Pubkey::new_unique(), make_track_info()).unwrap();
+            store.put_track(Address::new_unique(), make_track_info()).unwrap();
         }
 
         // Get first 2
@@ -281,25 +282,25 @@ mod tests {
     #[test]
     fn test_iter_tracks_by_tape_from() {
         let store = test_store();
-        let tape_a = Pubkey::new_unique();
-        let tape_b = Pubkey::new_unique();
+        let tape_a = Address::new_unique();
+        let tape_b = Address::new_unique();
 
         let mut track0 = make_track_info();
-        track0.tape = tape_a.into();
+        track0.tape = tape_a;
         track0.track_number = TrackNumber(0);
-        let addr0 = track_pda(track0.tape, track0.track_number).0.into();
+        let addr0 = track_pda(track0.tape.into(), track0.track_number).0.into();
         store.put_track(addr0, track0).unwrap();
 
         let mut track1 = make_track_info();
-        track1.tape = tape_a.into();
+        track1.tape = tape_a;
         track1.track_number = TrackNumber(1);
-        let addr1 = track_pda(track1.tape, track1.track_number).0.into();
+        let addr1 = track_pda(track1.tape.into(), track1.track_number).0.into();
         store.put_track(addr1, track1).unwrap();
 
         let mut other = make_track_info();
-        other.tape = tape_b.into();
+        other.tape = tape_b;
         other.track_number = TrackNumber(0);
-        let other_addr = track_pda(other.tape, other.track_number).0.into();
+        let other_addr = track_pda(other.tape.into(), other.track_number).0.into();
         store.put_track(other_addr, other).unwrap();
 
         let first = store.iter_tracks_by_tape_from(tape_a, None, 1).unwrap();

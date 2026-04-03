@@ -9,6 +9,7 @@ use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::{CompressedTrackProof, TrackKind};
 use tape_crypto::Hash;
 use tape_solana::*;
+use tape_crypto::address::Address;
 
 pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
 
@@ -46,8 +47,8 @@ pub struct InvalidateTrack {
 
 
 pub fn build_track_write_blob_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
     key: Hash,          // Track identifier (e.g., file path hash)
     blob: BlobInfo,
 ) -> Result<Instruction, ProgramError> {
@@ -65,11 +66,11 @@ pub fn build_track_write_blob_ix(
     Ok(Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(tape_address, false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(tape_address.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: make_blob(key, blob),
@@ -77,8 +78,8 @@ pub fn build_track_write_blob_ix(
 }
 
 pub fn build_track_write_raw_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
     key: Hash,
     raw: &[u8],
 ) -> Result<Instruction, ProgramError> {
@@ -88,11 +89,11 @@ pub fn build_track_write_raw_ix(
     Ok(Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(tape_address, false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(tape_address.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: make_raw(key, raw)?,
@@ -100,24 +101,24 @@ pub fn build_track_write_raw_ix(
 }
 
 pub fn build_delete_track_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
     track: CompressedTrackProof,
 ) -> Instruction {
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(track.state.tape, false),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(track.state.tape.into(), false),
         ],
         data: DeleteTrack { track }.to_bytes(),
     }
 }
 
 pub fn build_certify_track_ix(
-    fee_payer: Pubkey,
-    authority: Pubkey,
+    fee_payer: Address,
+    authority: Address,
     track: CompressedTrackProof,
     epoch: EpochNumber,
     bitmap: CommitteeBitmap,
@@ -129,12 +130,12 @@ pub fn build_certify_track_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new_readonly(system_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(track.state.tape, false),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(track.state.tape.into(), false),
         ],
         data: CertifyTrack {
             track,
@@ -146,9 +147,9 @@ pub fn build_certify_track_ix(
 }
 
 pub fn build_invalidate_track_ix(
-    fee_payer: Pubkey,
-    system_address: Pubkey,
-    epoch_address: Pubkey,
+    fee_payer: Address,
+    system_address: Address,
+    epoch_address: Address,
     track: CompressedTrackProof,
     epoch: EpochNumber,
     bitmap: CommitteeBitmap,
@@ -158,11 +159,11 @@ pub fn build_invalidate_track_ix(
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(fee_payer.into(), true),
 
-            AccountMeta::new_readonly(system_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
-            AccountMeta::new(track.state.tape, false),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(track.state.tape.into(), false),
         ],
         data: InvalidateTrack {
             track,

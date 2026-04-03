@@ -30,7 +30,7 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system_info
         .is_empty()?
         .is_writable()?
-        .has_address(&system_address)?;
+        .has_address(&system_address.into())?;
 
     let size = MAX_PERMITTED_DATA_INCREASE
         .min(System::get_size());
@@ -58,7 +58,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_create_system_ix(fee_payer, authority);
+        let instruction = build_create_system_ix(fee_payer.into(), authority.into());
         let (system_address, _) = system_pda();
 
         let accounts = vec![
@@ -79,7 +79,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address)
+                Check::account(&Pubkey::from(system_address))
                     .space(size)
                     .owner(&tapedrive::ID)
                     .data_slice(0, &[System::discriminator()])

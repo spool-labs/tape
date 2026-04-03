@@ -2,7 +2,8 @@ use crate::bls::BlsSignature;
 use crate::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use crate::spooler::SpoolGroup;
 use crate::types::{Bitmap, EpochNumber, TrackNumber};
-use tape_crypto::Hash;
+use tape_crypto::address::Address;
+use tape_crypto::hash::Hash;
 
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -36,7 +37,7 @@ pub enum SnapshotGroupStatus {
 pub struct SnapshotEpochInfo {
     pub epoch: EpochNumber,
     pub parent_epoch: EpochNumber,
-    pub tape: [u8; 32],
+    pub tape: Address,
     pub status: SnapshotEpochStatus,
     pub certified_groups: SnapshotGroupBitmap,
 }
@@ -52,7 +53,7 @@ pub struct SnapshotGroupInfo {
     pub leaves: [Hash; SPOOL_GROUP_SIZE],
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
-    pub track: Option<[u8; 32]>,
+    pub track: Option<Address>,
     pub track_number: Option<TrackNumber>,
 }
 
@@ -81,7 +82,7 @@ mod tests {
         let epoch = SnapshotEpochInfo {
             epoch: EpochNumber(42),
             parent_epoch: EpochNumber(41),
-            tape: [1u8; 32],
+            tape: Address::from([1u8; 32]),
             status: SnapshotEpochStatus::PartiallyCertified,
             certified_groups: SnapshotGroupBitmap::from_indices(&[0, 2, 4], SPOOL_GROUP_COUNT),
         };
@@ -100,7 +101,7 @@ mod tests {
             leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], MEMBER_COUNT),
             signature: BlsSignature::zeroed(),
-            track: Some([2u8; 32]),
+            track: Some(Address::from([2u8; 32])),
             track_number: Some(TrackNumber(7)),
         };
 

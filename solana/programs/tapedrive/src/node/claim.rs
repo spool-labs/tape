@@ -30,7 +30,7 @@ pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_writable()?
         .as_token_account()?
         .assert(|t| t.owner() == *authority_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
     archive_info
         .is_archive()?;
@@ -45,7 +45,7 @@ pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -65,8 +65,8 @@ pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     )?;
 
     CommissionClaimed {
-        node: *node_info.key,
-        authority: *authority_info.key,
+        node: (*node_info.key).into(),
+        authority: (*authority_info.key).into(),
         amount: commission.as_u64().to_le_bytes(),
     }.log();
 
@@ -86,10 +86,10 @@ mod tests {
         let authority_ata = ata_address(&authority);
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
         // Build instruction
-        let instruction = build_claim_commission_ix(fee_payer, authority, node_address);
+        let instruction = build_claim_commission_ix(fee_payer.into(), authority.into(), node_address);
 
         // Commission to be claimed
         let commission_amount: u64 = 1_234;
@@ -99,7 +99,7 @@ mod tests {
 
         // Node with claimable commission
         let mut node = Node::zeroed();
-        node.authority = authority;
+        node.authority = authority.into();
         node.pool = StakingPool {
             commission: TAPE(commission_amount),
             ..StakingPool::zeroed()
@@ -129,17 +129,17 @@ mod tests {
                 Check::success(),
 
                 // Authority receives the full commission
-                Check::account(&authority_ata).data(
+                Check::account(&Pubkey::from(authority_ata)).data(
                     token(authority_ata, authority, commission_amount).1.data.as_ref()
                 ).build(),
 
                 // Archive ATA reduced to zero
-                Check::account(&archive_ata).data(
+                Check::account(&Pubkey::from(archive_ata)).data(
                     token(archive_ata, archive_address, 0).1.data.as_ref()
                 ).build(),
 
                 // Node commission should be zero after claim
-                Check::account(&node_address).data(
+                Check::account(&Pubkey::from(node_address)).data(
                     Node {
                         pool: StakingPool {
                             commission: TAPE(0),

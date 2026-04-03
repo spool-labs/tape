@@ -4,10 +4,10 @@
 //! implementation-agnostic. Specific implementations (like `rpc-solana`)
 //! convert their internal errors into these types.
 
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signature;
 use std::time::Duration;
 use thiserror::Error;
+use tape_crypto::address::Address;
+use tape_crypto::tx::Txid;
 
 /// Errors from RPC operations
 ///
@@ -33,11 +33,11 @@ pub enum RpcError {
 
     /// Account does not exist at the given address
     #[error("Account not found: {0}")]
-    AccountNotFound(Pubkey),
+    AccountNotFound(Address),
 
     /// Transaction does not exist for the given signature
-    #[error("Transaction not found: {0}")]
-    TransactionNotFound(Signature),
+    #[error("Transaction not found: {0:?}")]
+    TransactionNotFound(Txid),
 
     /// Failed to deserialize account data
     #[error("Deserialization failed: {0}")]
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(RpcError::Timeout(Duration::from_secs(1)).category(), "timeout");
         assert_eq!(RpcError::BlockNotAvailable.category(), "block_not_available");
         assert_eq!(
-            RpcError::AccountNotFound(Pubkey::default()).category(),
+            RpcError::AccountNotFound(Address::default()).category(),
             "not_found"
         );
         assert_eq!(
@@ -182,7 +182,7 @@ mod tests {
         assert!(RpcError::Timeout(Duration::from_secs(1)).is_retriable());
         assert!(RpcError::BlockNotAvailable.is_retriable());
         assert!(RpcError::BlockhashExpired.is_retriable());
-        assert!(!RpcError::AccountNotFound(Pubkey::default()).is_retriable());
+        assert!(!RpcError::AccountNotFound(Address::default()).is_retriable());
         assert!(!RpcError::Deserialization("test".to_string()).is_retriable());
     }
 
@@ -191,7 +191,7 @@ mod tests {
         assert!(RpcError::Timeout(Duration::from_secs(1)).should_failover());
         assert!(!RpcError::BlockNotAvailable.should_failover());
         assert!(!RpcError::BlockhashExpired.should_failover());
-        assert!(!RpcError::AccountNotFound(Pubkey::default()).should_failover());
+        assert!(!RpcError::AccountNotFound(Address::default()).should_failover());
     }
 
     #[test]

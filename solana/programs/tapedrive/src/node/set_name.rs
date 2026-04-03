@@ -20,7 +20,7 @@ pub fn process_set_name(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -41,12 +41,12 @@ mod tests {
         let old_name = "hello, world";
         let new_name = "tapedrive";
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_name_ix(fee_payer, authority, node_address, new_name);
+        let instruction = build_set_name_ix(fee_payer.into(), authority.into(), node_address, new_name);
 
         let node = Node {
-            authority,
+            authority: authority.into(),
             metadata: NodeMetadata {
                 name: to_name(old_name),
                 ..NodeMetadata::zeroed()
@@ -66,7 +66,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         metadata: NodeMetadata {
                             name: to_name(new_name),

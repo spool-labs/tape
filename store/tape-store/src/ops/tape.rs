@@ -1,42 +1,44 @@
 //! TapeInfo operations for tape metadata
 
+use store::Store;
+use tape_crypto::address::Address;
+
 use crate::columns::TapeCol;
 use crate::error::Result;
-use crate::types::{Pubkey, TapeInfo};
+use crate::types::TapeInfo;
 use crate::TapeStore;
-use store::Store;
 
 /// Operations for tape info
 pub trait TapeOps {
     /// Get tape info by address
-    fn get_tape(&self, tape_address: Pubkey) -> Result<Option<TapeInfo>>;
+    fn get_tape(&self, tape_address: Address) -> Result<Option<TapeInfo>>;
 
     /// Store tape info
-    fn put_tape(&self, tape_address: Pubkey, info: TapeInfo) -> Result<()>;
+    fn put_tape(&self, tape_address: Address, info: TapeInfo) -> Result<()>;
 
     /// Delete tape info
-    fn delete_tape(&self, tape_address: Pubkey) -> Result<()>;
+    fn delete_tape(&self, tape_address: Address) -> Result<()>;
 
     /// Iterate all stored tapes
-    fn iter_all_tapes(&self) -> Result<Vec<(Pubkey, TapeInfo)>>;
+    fn iter_all_tapes(&self) -> Result<Vec<(Address, TapeInfo)>>;
 }
 
 impl<S: Store> TapeOps for TapeStore<S> {
-    fn get_tape(&self, tape_address: Pubkey) -> Result<Option<TapeInfo>> {
+    fn get_tape(&self, tape_address: Address) -> Result<Option<TapeInfo>> {
         Ok(self.get::<TapeCol>(&tape_address)?)
     }
 
-    fn put_tape(&self, tape_address: Pubkey, info: TapeInfo) -> Result<()> {
+    fn put_tape(&self, tape_address: Address, info: TapeInfo) -> Result<()> {
         self.put::<TapeCol>(&tape_address, &info)?;
         Ok(())
     }
 
-    fn delete_tape(&self, tape_address: Pubkey) -> Result<()> {
+    fn delete_tape(&self, tape_address: Address) -> Result<()> {
         self.delete::<TapeCol>(&tape_address)?;
         Ok(())
     }
 
-    fn iter_all_tapes(&self) -> Result<Vec<(Pubkey, TapeInfo)>> {
+    fn iter_all_tapes(&self) -> Result<Vec<(Address, TapeInfo)>> {
         Ok(self.iter::<TapeCol>()?.into_iter().collect())
     }
 }
@@ -54,7 +56,7 @@ mod tests {
     #[test]
     fn test_tape_roundtrip() {
         let store = test_store();
-        let tape = Pubkey::new_unique();
+        let tape = Address::new_unique();
 
         let info = TapeInfo {
             end_epoch: EpochNumber(200),
@@ -75,15 +77,15 @@ mod tests {
 
         assert!(store.iter_all_tapes().unwrap().is_empty());
 
-        let tape1 = Pubkey::new_unique();
-        let tape2 = Pubkey::new_unique();
+        let tape1 = Address::new_unique();
+        let tape2 = Address::new_unique();
         store.put_tape(tape1, TapeInfo { end_epoch: EpochNumber(100), next_track_number: TrackNumber(0) }).unwrap();
         store.put_tape(tape2, TapeInfo { end_epoch: EpochNumber(200), next_track_number: TrackNumber(0) }).unwrap();
 
         let tapes = store.iter_all_tapes().unwrap();
         assert_eq!(tapes.len(), 2);
 
-        let addresses: Vec<Pubkey> = tapes.iter().map(|(addr, _)| *addr).collect();
+        let addresses: Vec<Address> = tapes.iter().map(|(addr, _)| *addr).collect();
         assert!(addresses.contains(&tape1));
         assert!(addresses.contains(&tape2));
     }
@@ -91,7 +93,7 @@ mod tests {
     #[test]
     fn test_tape_delete() {
         let store = test_store();
-        let tape = Pubkey::new_unique();
+        let tape = Address::new_unique();
 
         let info = TapeInfo {
             end_epoch: EpochNumber(150),

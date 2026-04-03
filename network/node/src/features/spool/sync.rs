@@ -8,11 +8,12 @@ use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::{NodeId, StorageUnits};
+use tape_crypto::address::Address;
 use tape_protocol::{Api, ApiError};
 use tape_protocol::api::ops::{GetTrackDataReq, SyncSlicesReq};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::{BlobInfo, Pubkey};
 use tape_retry::RetryConfig;
+use tape_store::types::BlobInfo;
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
@@ -48,7 +49,7 @@ use crate::features::spool::types::SyncResult;
 // the rest of the spool group.
 
 struct SyncBatch {
-    next_cursor: Option<Pubkey>,
+    next_cursor: Option<Address>,
     synced: usize,
     fetched_bytes: u64,
     persisted_bytes: u64,
@@ -176,7 +177,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     config: &RecoveryConfig,
     spool: SpoolIndex,
     prev_owner: NodeId,
-    cursor: Option<Pubkey>,
+    cursor: Option<Address>,
     token: &CancellationToken,
 ) -> Result<SyncBatch, ApiError> {
 
@@ -186,7 +187,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let req = SyncSlicesReq {
         spool_index: spool,
-        cursor: cursor.map(|track| track.0),
+        cursor: cursor.map(|track| track.to_bytes()),
         limit: config.sync_batch.max(1) as u32,
     };
 
@@ -199,7 +200,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ).await?;
 
     for entry in res.entries {
-        let track_addr = Pubkey(entry.track_address);
+        let track_addr = Address::new(entry.track_address);
         let slice_len = entry.slice_data.len() as u64;
 
         fetched_bytes += slice_len;
@@ -251,7 +252,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         persisted_bytes += slice_len;
     }
 
-    let next_cursor = res.next_cursor.map(Pubkey);
+    let next_cursor = res.next_cursor.map(Address::new);
 
     Ok(SyncBatch {
         next_cursor,
@@ -371,7 +372,7 @@ fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
-    track: Pubkey,
+    track: Address,
     peers: &[NodeId],
     token: &CancellationToken,
 ) -> Result<TrackData, ()> {
@@ -397,30 +398,33 @@ async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockcha
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::COMMITMENT_TREE_HEIGHT;
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
+    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_protocol::api::ops::{PeerReq, PeerRes, SyncSlicesRes};
-    use tape_protocol::api::types::SyncSpoolEntry;
+    use tape_protocol::api::types::SyncSliceEntry;
     use tape_slicer::{ClayCoder, ErasureCoder, SliceMetadata, Slicer};
     use tape_store::types::{SpoolState, SpoolStatus};
 
+    use super::*;
     use crate::context::test_utils::{test_context, test_context_with_api};
 
     const SPOOL: SpoolIndex = 5;
     const PEER: NodeId = NodeId(99);
 
-    fn addr(n: u8) -> Pubkey {
-        Pubkey([n; 32])
+    fn addr(n: u8) -> Address {
+        Address::from([n; 32])
     }
 
-    fn entry(track: Pubkey, data: &[u8]) -> SyncSpoolEntry {
-        SyncSpoolEntry {
-            track_address: track.0,
+    fn entry(track: Address, data: &[u8]) -> SyncSliceEntry {
+        SyncSliceEntry {
+            track_address: track.to_bytes(),
             slice_data: data.to_vec(),
         }
     }
@@ -442,34 +446,48 @@ mod tests {
         slicer.encode(&vec![fill; size]).unwrap()
     }
 
+    fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobInfo {
+        let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
+        let stripe_size = metadata.stripe_size() as u64;
+        let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+
+        BlobInfo {
+            size: StorageUnits::from_bytes(size),
+            root: Hash::new_unique(),
+            commitment,
+            profile: EncodingProfile::clay_default(),
+            stripe_size: StorageUnits::from_bytes(stripe_size),
+            stripe_count: StripeCount(size.div_ceil(stripe_size)),
+            leaves,
+        }
+    }
+
     fn clay_track(size: u64, slices: &[Vec<u8>]) -> CompressedTrack {
         let profile = EncodingProfile::clay_default();
         let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
-        let stripe_size = metadata.stripe_size() as u64;
-        let _commitment: Vec<_> = slices
-            .iter()
-            .map(|slice| tape_crypto::merkle::hash_leaf(slice))
-            .collect();
-        let _stripe_count = size.div_ceil(stripe_size);
+        let _stripe_size = metadata.stripe_size() as u64;
+        let blob = clay_blob(size, slices);
         let _ = profile;
 
         CompressedTrack {
-            tape: Pubkey([0; 32]),
+            tape: Address::from([0; 32]),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size),
             spool_group: SpoolGroup::of(SPOOL),
-            value_hash: Hash::new_unique(),
+            value_hash: blob.get_hash(),
         }
     }
 
-    fn local_slice(fill: u8, size: usize) -> (CompressedTrack, Vec<u8>) {
+    fn local_slice(fill: u8, size: usize) -> (CompressedTrack, BlobInfo, Vec<u8>) {
         let slices = clay_slices(fill, size);
         let track_info = clay_track(size as u64, &slices);
+        let blob = clay_blob(size as u64, &slices);
         let position = track_info.spool_group.slice_of(SPOOL).unwrap() as usize;
-        (track_info, slices[position].clone())
+        (track_info, blob, slices[position].clone())
     }
 
     #[tokio::test]
@@ -486,7 +504,7 @@ mod tests {
     #[tokio::test]
     async fn pulls_slices() {
         let a = addr(1);
-        let (track_info, data) = local_slice(0xAB, 1024);
+        let (track_info, track_blob, data) = local_slice(0xAB, 1024);
         let data_clone = data.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
@@ -501,6 +519,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
+        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -519,8 +538,8 @@ mod tests {
     #[tokio::test]
     async fn overwrites_existing() {
         let a = addr(1);
-        let (track_info, synced_data) = local_slice(0xAB, 1024);
-        let (_, stale_data) = local_slice(0xCD, 1024);
+        let (track_info, track_blob, synced_data) = local_slice(0xAB, 1024);
+        let (_, _, stale_data) = local_slice(0xCD, 1024);
         let synced_data_clone = synced_data.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
@@ -536,6 +555,7 @@ mod tests {
             .unwrap();
 
         ctx.store.put_track(a, track_info).unwrap();
+        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
         ctx.store.put_slice(SPOOL, a, stale_data).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -571,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn skips_missing_track() {
         let a = addr(1);
-        let (_, data) = local_slice(0xAB, 1024);
+        let (_, track_blob, data) = local_slice(0xAB, 1024);
         let data_clone = data.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
@@ -585,6 +605,7 @@ mod tests {
         ctx.store
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
             .unwrap();
+        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -602,7 +623,7 @@ mod tests {
     #[tokio::test]
     async fn skips_invalid_data() {
         let a = addr(1);
-        let (track_info, _) = local_slice(0xAB, 1024);
+        let (track_info, track_blob, _) = local_slice(0xAB, 1024);
         let invalid_data = vec![0xEE; 64];
         let invalid_data_clone = invalid_data.clone();
 
@@ -618,6 +639,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
+        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -636,8 +658,8 @@ mod tests {
     async fn resumes_cursor() {
         let a1 = addr(1);
         let a2 = addr(2);
-        let (track_info1, slice1) = local_slice(0x11, 1024);
-        let (track_info2, slice2) = local_slice(0x22, 1024);
+        let (track_info1, blob1, slice1) = local_slice(0x11, 1024);
+        let (track_info2, blob2, slice2) = local_slice(0x22, 1024);
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let counter = call_count.clone();
 
@@ -647,7 +669,7 @@ mod tests {
                 if n == 0 {
                     PeerRes::SyncSlices(Ok(SyncSlicesRes {
                         entries: vec![entry(a1, &slice1)],
-                        next_cursor: Some(a2.0),
+                    next_cursor: Some(a2.to_bytes()),
                     }))
                 } else {
                     PeerRes::SyncSlices(Ok(SyncSlicesRes {
@@ -664,6 +686,8 @@ mod tests {
             .unwrap();
         ctx.store.put_track(a1, track_info1).unwrap();
         ctx.store.put_track(a2, track_info2).unwrap();
+        ctx.store.put_track_data(a1, TrackData::Blob(blob1)).unwrap();
+        ctx.store.put_track_data(a2, TrackData::Blob(blob2)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert!(matches!(result, SyncResult::Done { .. }));

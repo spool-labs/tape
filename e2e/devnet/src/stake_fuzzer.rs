@@ -4,13 +4,15 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;
+use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_sdk::keys::stake_key::StakeKey;
 use tape_sdk::tapedrive::Tapedrive;
 
 enum DelegationPhase {
     Idle,
-    Staked { pool: Pubkey },
-    Unlocking { pool: Pubkey },
+    Staked { pool: Address },
+    Unlocking { pool: Address },
 }
 
 struct DelegatedStake {
@@ -49,12 +51,15 @@ impl StakeFuzzer {
             return;
         }
 
-        let sdk = Tapedrive::new(rpc.clone(), admin);
+        let payer = CryptoKeypair::from_solana_keypair(admin)
+            .expect("convert devnet payer to crypto keypair");
+        let sdk = Tapedrive::new(rpc.clone(), payer);
 
         // Advance all node pools (tolerate errors)
         for auth in node_authorities {
-            let (pool, _) = node_pda(*auth);
-            if let Err(e) = sdk.advance_pool(*auth, pool).await {
+            let authority = Address::from(*auth);
+            let (pool, _) = node_pda(authority);
+            if let Err(e) = sdk.advance_pool(authority, pool).await {
                 tracing::error!("advance_pool: {e:#}");
             }
         }
@@ -66,7 +71,7 @@ impl StakeFuzzer {
 
         for idx in indices {
             let auth_idx = rng.gen_range(0..node_authorities.len());
-            let node_auth = node_authorities[auth_idx];
+            let node_auth = Address::from(node_authorities[auth_idx]);
             let (pool, _) = node_pda(node_auth);
 
             let d = &mut self.delegations[idx];

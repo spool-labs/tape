@@ -20,7 +20,7 @@ pub fn process_set_storage_capacity(accounts: &[AccountInfo<'_>], data: &[u8]) -
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *authority_info.key {
+    if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -42,12 +42,12 @@ mod tests {
         let old_capacity = StorageUnits::mb(5_000_000);
         let new_capacity = StorageUnits::mb(1_000_000);
 
-        let (node_address, _) = node_pda(authority);
+        let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_storage_capacity_ix(fee_payer, authority, node_address, new_capacity);
+        let instruction = build_set_storage_capacity_ix(fee_payer.into(), authority.into(), node_address, new_capacity);
 
         let node = Node {
-            authority,
+            authority: authority.into(),
             preferences: NodePreferences {
                 storage_capacity: old_capacity,
                 ..NodePreferences::zeroed()
@@ -67,7 +67,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&node_address)
+                Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         preferences: NodePreferences {
                             storage_capacity: new_capacity,

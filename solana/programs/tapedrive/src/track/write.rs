@@ -35,11 +35,11 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .is_epoch()?
         .as_account::<Epoch>(&tapedrive::ID)?;
 
-    let (tape_address, _) = tape_pda(*authority_info.key);
+    let (tape_address, _) = tape_pda((*authority_info.key).into());
 
     let tape = tape_info
         .is_writable()?
-        .has_address(&tape_address)?
+        .has_address(&tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     if tape.expiry_epoch <= current_epoch(epoch) {
@@ -156,23 +156,21 @@ mod tests {
             leaves,
         };
 
-        let instruction = build_track_write_blob_ix(
-            fee_payer,
-            authority,
+        let instruction = build_track_write_blob_ix(fee_payer.into(), authority.into(),
             bucket_hash,
             blob,
         )
         .expect("valid blob write instruction");
 
         let (epoch_address, _) = epoch_pda();
-        let (tape_address, _) = tape_pda(authority);
+        let (tape_address, _) = tape_pda(authority.into());
 
         // Setup existing accounts
 
         let epoch = Epoch::zeroed();
         let tape = Tape {
             id: TapeNumber(1),
-            authority: authority,
+            authority: authority.into(),
             capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
@@ -213,10 +211,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&tape_address).data(
+                Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
                         id: tape.id,
-                        authority: authority,
+                        authority: authority.into(),
                         capacity: tape.capacity,
                         used: storage_units,
                         active_epoch: tape.active_epoch,
