@@ -11,8 +11,8 @@ use tape_api::instruction::{
 use tape_api::program::tapedrive::{node_pda, stake_pda};
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::system::NodeStatus;
 use tape_store::ops::SpoolOps;
-use tape_store::types::NodeStatus;
 use tracing::trace;
 
 use crate::fixtures::err::{adv_done, join_done, sync_done};

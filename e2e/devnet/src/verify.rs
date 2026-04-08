@@ -1,8 +1,8 @@
 use tape_core::erasure::slice_for_spool;
 use tape_core::spooler::SpoolIndex;
+use tape_core::track::data::TrackData;
 use tape_e2e_simnet::TestNode;
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::TrackData;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::StorageUnits;

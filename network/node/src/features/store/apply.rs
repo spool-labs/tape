@@ -2,11 +2,13 @@ use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
+use tape_core::system::SpoolStatus;
 use tape_core::track::types::TrackState;
+use tape_core::track::data::TrackData;
 use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
-use tape_store::types::{ObjectInfo, SpoolStatus, TapeInfo, TrackData};
+use tape_store::types::{ObjectInfo, TapeInfo};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -247,7 +249,8 @@ mod tests {
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
-    use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus, TapeInfo};
+    use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
 
     use super::apply_slot;

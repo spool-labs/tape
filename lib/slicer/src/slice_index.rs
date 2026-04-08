@@ -1,4 +1,4 @@
-use super::SPOOL_GROUP_SIZE;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::ops::Deref;

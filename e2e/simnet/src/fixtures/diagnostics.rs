@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use tape_store::ops::SpoolOps;
-use tape_store::types::{NodeStatus, SpoolState};
+use tape_core::system::{NodeStatus, SpoolState};
 use tracing::trace;
 
 use crate::log::{log_path, read_log};

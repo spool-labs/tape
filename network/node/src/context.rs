@@ -20,7 +20,8 @@ use tape_crypto::address::Address;
 use tape_crypto::bls12254::BLSError;
 use tape_crypto::ed25519::{Keypair, Pubkey, Signature};
 use tape_protocol::{Api, ProtocolState};
-use tape_store::{TapeStore, ops::MetaOps, types::NodeStatus};
+use tape_core::system::NodeStatus;
+use tape_store::{TapeStore, ops::MetaOps};
 
 use crate::config::node::NodeConfig;
 use crate::core::error::NodeError;

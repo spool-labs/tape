@@ -5,6 +5,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::track::data::TrackData;
 use tape_core::types::{NodeId, StorageUnits};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
@@ -12,7 +13,6 @@ use tape_protocol::api::ops::GetSliceReq;
 use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::TrackData;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -447,7 +447,8 @@ mod tests {
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus};
+    use tape_store::types::ObjectInfo;
+    use tape_core::system::{SpoolState, SpoolStatus};
 
     use crate::context::test_utils::{test_context, test_context_with_api};
 

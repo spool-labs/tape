@@ -6,7 +6,7 @@ use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
-use tape_store::types::SpoolStatus;
+use tape_core::system::SpoolStatus;
 
 /// Full spool recovery flow: upload blob, drop nodes, verify
 /// Sync/Scan/Repair/Recover workers converge back to Active, then download.

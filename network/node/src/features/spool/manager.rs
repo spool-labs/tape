@@ -6,10 +6,10 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
-use tape_store::types::{SpoolState, SpoolStatus};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -572,7 +572,7 @@ mod tests {
     use tape_core::types::NodeId;
     use tape_protocol::ProtocolState;
     use tape_store::ops::SpoolOps;
-    use tape_store::types::{SpoolState, SpoolStatus};
+    use tape_core::system::{SpoolState, SpoolStatus};
     use tokio_util::sync::CancellationToken;
 
     use super::SpoolManager;

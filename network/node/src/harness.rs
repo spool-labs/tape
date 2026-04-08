@@ -11,12 +11,11 @@ use tape_chain_harness::{
     ChainHarness, ChainHarnessBuilder, HarnessNode, HarnessNodeSpec, IntoEpochNumber,
 };
 use tape_core::spooler::SpoolIndex;
-use tape_core::system::EpochPhase;
+use tape_core::system::{EpochPhase, SpoolState, SpoolStatus};
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::ed25519::Keypair;
 use tape_store::TapeStore;
 use tape_store::ops::SpoolOps;
-use tape_store::types::{SpoolState, SpoolStatus};
 
 use crate::config::node::NodeConfig;
 use crate::context::{NodeContext, NodeContextBuilder};

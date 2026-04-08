@@ -1,6 +1,7 @@
 //! Sync cursor column family for tracking last processed slot
 
-use crate::types::{SlotNumber, UnitKey};
+use crate::types::UnitKey;
+use tape_core::types::SlotNumber;
 use store::Column;
 
 /// Singleton column for sync cursor

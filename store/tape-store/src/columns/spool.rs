@@ -7,8 +7,9 @@
 
 use store::Column;
 use tape_crypto::address::Address;
+use tape_core::system::SpoolState;
 
-use crate::types::{SliceKey, SpoolIndexKey, SpoolState};
+use crate::types::{SliceKey, SpoolIndexKey};
 
 /// Spool status tracking
 ///

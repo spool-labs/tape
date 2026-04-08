@@ -11,6 +11,7 @@ use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::cert::InvalidateMessage;
 use tape_core::erasure::{SPOOL_GROUP_SIZE, group_for_spool};
+use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{CommitteeBitmap, EpochNumber};
 use tape_crypto::address::Address;
@@ -19,7 +20,6 @@ use tape_protocol::api::{
     BINARY_CONTENT, BlsInconsistencyResponse, InconsistencyProof, InconsistencyRequest,
 };
 use tape_store::ops::{TrackDataOps, TrackOps};
-use tape_store::types::TrackData;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};

@@ -1,5 +1,5 @@
 use ratatui::style::Color;
-use tape_store::types::NodeStatus;
+use tape_core::system::NodeStatus;
 
 pub const NODE_EVENT_HISTORY_EPOCHS: usize = 16;
 

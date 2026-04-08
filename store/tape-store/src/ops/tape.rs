@@ -46,7 +46,7 @@ impl<S: Store> TapeOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{EpochNumber, TrackNumber};
+    use tape_core::types::{EpochNumber, TrackNumber};
     use store_memory::MemoryStore;
 
     fn test_store() -> TapeStore<MemoryStore> {

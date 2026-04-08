@@ -6,11 +6,10 @@ use tracing::{debug, info};
 use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::SpoolIndex;
-use tape_core::system::EpochPhase;
+use tape_core::system::{EpochPhase, SpoolStatus};
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::SpoolOps;
-use tape_store::types::SpoolStatus;
 use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 
 use crate::context::NodeContext;
@@ -137,11 +136,11 @@ mod tests {
     use super::*;
     use tape_core::erasure::SPOOL_COUNT;
     use tape_core::spooler::SpoolAssignment;
+    use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::system::{CommitteeMember, EpochPhase};
     use tape_core::types::NodeId;
     use tape_core::types::coin::{Coin, TAPE};
     use tape_protocol::ProtocolState;
-    use tape_store::types::SpoolState;
 
     use crate::context::test_utils::test_context;
 

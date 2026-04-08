@@ -3,8 +3,8 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
+use tape_core::track::data::TrackData;
 use tape_store::ops::{MetaOps, TrackDataOps};
-use tape_store::types::TrackData;
 use tape_store::TapeStore;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -90,11 +90,11 @@ mod tests {
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::system::{SpoolState, SpoolStatus};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::ops::{MetaOps, SpoolOps, TrackDataOps};
     use tape_store::TapeStore;
-    use tape_store::types::{SpoolState, SpoolStatus};
 
     use super::persist_batch;
     use crate::features::replay::types::{RawTrack, ReplayBatch};

@@ -5,9 +5,9 @@
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_core::spooler::SpoolIndex;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_slicer::{
-    ClayCoder, ReedSolomonCoder, Slicer, SliceMetadata, ErasureCoder,
-    SPOOL_GROUP_SIZE, DEFAULT_STRIPE_SIZE,
+    ClayCoder, DEFAULT_STRIPE_SIZE, ErasureCoder, ReedSolomonCoder, Slicer, SliceMetadata,
 };
 
 use crate::error::DownloadError;

@@ -8,12 +8,12 @@ use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::{NodeId, StorageUnits};
+use tape_core::track::blob::BlobInfo;
 use tape_crypto::address::Address;
 use tape_protocol::{Api, ApiError};
 use tape_protocol::api::ops::{GetTrackDataReq, SyncSlicesReq};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tape_retry::RetryConfig;
-use tape_store::types::BlobInfo;
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
@@ -410,7 +410,7 @@ mod tests {
     use tape_protocol::api::ops::{PeerReq, PeerRes, SyncSlicesRes};
     use tape_protocol::api::types::SyncSliceEntry;
     use tape_slicer::{ClayCoder, ErasureCoder, SliceMetadata, Slicer};
-    use tape_store::types::{SpoolState, SpoolStatus};
+    use tape_core::system::{SpoolState, SpoolStatus};
 
     use super::*;
     use crate::context::test_utils::{test_context, test_context_with_api};

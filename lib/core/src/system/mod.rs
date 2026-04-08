@@ -15,4 +15,3 @@ pub use node::*;
 pub use rewards::*;
 pub use schedule::*;
 pub use status::*;
-

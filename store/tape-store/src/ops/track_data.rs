@@ -2,10 +2,10 @@
 
 use store::Store;
 use tape_crypto::address::Address;
+use tape_core::track::data::TrackData;
 
 use crate::columns::TrackDataCol;
 use crate::error::Result;
-use crate::types::TrackData;
 use crate::TapeStore;
 
 pub trait TrackDataOps {

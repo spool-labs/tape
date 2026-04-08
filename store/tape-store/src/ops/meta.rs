@@ -12,10 +12,11 @@ use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
 use crate::TapeStore;
 use store::Store;
-use tape_core::types::NodeId;
+use tape_core::types::{EpochNumber, NodeId, SlotNumber};
 use tape_crypto::address::Address;
+use tape_crypto::Hash;
 
-use crate::types::{EpochNumber, Hash, InvalidationProof, SlotNumber, UnitKey};
+use crate::types::{InvalidationProof, UnitKey};
 
 // Meta keys
 const CLUSTER_HASH_KEY: &str = "cluster_hash";

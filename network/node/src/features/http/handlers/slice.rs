@@ -8,12 +8,12 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+use tape_core::track::data::TrackData;
 use tape_crypto::address::Address;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, SlicePayload};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::TrackData;
 use tracing::{debug, trace};
 
 use crate::features::http::error::RouteError;

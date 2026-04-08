@@ -4,7 +4,6 @@ pub mod compute;
 pub mod consts;
 pub mod errors;
 pub mod event;
-pub mod fsm;
 pub mod helpers;
 pub mod program;
 pub mod instruction;
@@ -13,13 +12,9 @@ pub mod state;
 pub mod utils;
 
 pub mod prelude {
-    pub use tape_core::prelude::*;
-    pub use tape_solana::*;
-
     pub use crate::compute::*;
     pub use crate::consts::*;
     pub use crate::event::*;
-    pub use crate::fsm::*;
     pub use crate::helpers::*;
     pub use crate::instruction::*;
     pub use crate::loaders::*;

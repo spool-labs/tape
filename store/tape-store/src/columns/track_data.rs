@@ -2,8 +2,7 @@
 
 use store::Column;
 use tape_crypto::address::Address;
-
-use crate::types::TrackData;
+use tape_core::track::data::TrackData;
 
 /// Local track payload data indexed by track address.
 ///

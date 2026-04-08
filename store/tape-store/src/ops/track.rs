@@ -3,10 +3,11 @@
 use tape_core::track::types::{CompressedTrack, PackedTrack};
 use store::{Column, Store};
 use tape_crypto::address::Address;
+use tape_core::types::TrackNumber;
 
 use crate::columns::{TrackCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{TrackLookupKey, TrackNumber, UnitKey};
+use crate::types::{TrackLookupKey, UnitKey};
 use crate::TapeStore;
 
 /// Operations for the compressed-track catalog.
@@ -166,8 +167,8 @@ mod tests {
     use super::*;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::types::StorageUnits;
+    use tape_core::spooler::SpoolGroup;
     use tape_crypto::Hash;
-    use crate::types::SpoolGroup;
     use store_memory::MemoryStore;
 
     fn test_store() -> TapeStore<MemoryStore> {

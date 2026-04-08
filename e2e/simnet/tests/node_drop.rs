@@ -4,8 +4,8 @@ use rand::Rng as _;
 use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::types::BasisPoints;
+use tape_core::system::SpoolStatus;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
-use tape_store::types::SpoolStatus;
 
 #[tokio::test]
 async fn spool_node_drop() {

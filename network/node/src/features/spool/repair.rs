@@ -5,7 +5,11 @@ use peer_manager::PeerManager;
 use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::system::SpoolState;
+use tape_core::track::blob::BlobInfo;
+use tape_core::track::data::TrackData;
 use tape_core::types::NodeId;
+use tape_core::types::{StorageUnits, StripeCount};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::ops::RepairReq;
@@ -13,8 +17,6 @@ use tape_protocol::api::types::StripeSubChunkRequest;
 use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_core::types::{StorageUnits, StripeCount};
-use tape_store::types::{BlobInfo, SpoolState, TrackData};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -561,7 +563,8 @@ mod tests {
     use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
     use tape_core::track::blob::BlobInfo;
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::{ObjectInfo, SpoolStatus};
+    use tape_store::types::ObjectInfo;
+    use tape_core::system::SpoolStatus;
 
     use crate::context::test_utils::{test_context, test_context_with_api};
 

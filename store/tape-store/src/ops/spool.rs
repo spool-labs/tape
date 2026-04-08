@@ -1,6 +1,7 @@
 //! Spool operations
 
 use tape_core::spooler::SpoolIndex;
+use tape_core::system::SpoolState;
 use tape_crypto::address::Address;
 use store::{Column, Store};
 
@@ -8,7 +9,7 @@ use crate::columns::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
 use crate::error::{Result, TapeStoreError};
-use crate::types::{SliceKey, SpoolIndexKey, SpoolState};
+use crate::types::{SliceKey, SpoolIndexKey};
 use crate::TapeStore;
 
 /// Operations for spool management
@@ -202,12 +203,12 @@ mod tests {
     use super::*;
     use store_memory::MemoryStore;
     use tape_core::types::EpochNumber;
+    use tape_core::system::SpoolStatus;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
     }
 
-    use crate::types::SpoolStatus;
 
     fn active_state() -> SpoolState {
         SpoolState::new(SpoolStatus::Active, EpochNumber(0))

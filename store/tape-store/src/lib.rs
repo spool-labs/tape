@@ -39,10 +39,8 @@ pub mod ops;
 pub mod types;
 
 use store::{Store, TypedStore};
+use store_rocks::RocksStore;
 
-pub use store::WriteBatch;
-pub use store_memory::MemoryStore;
-pub use store_rocks::RocksStore;
 
 /// Wrapper around TypedStore providing tape-specific storage operations
 pub struct TapeStore<S: Store> {
@@ -132,9 +130,13 @@ impl TapeStore<RocksStore> {
 mod tests {
     use super::*;
     use crate::ops::*;
-    use crate::types::*;
+    use crate::types::{ObjectInfo, TapeInfo};
+    use store_memory::MemoryStore;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::types::{EpochNumber, SlotNumber};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 

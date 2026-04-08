@@ -7,11 +7,11 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::track::data::TrackData;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::TrackData;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;

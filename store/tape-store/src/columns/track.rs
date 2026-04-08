@@ -2,8 +2,8 @@
 
 use store::Column;
 use tape_crypto::address::Address;
+use tape_core::track::types::PackedTrack;
 
-use crate::types::PackedTrack;
 
 /// Track catalog indexed by track address.
 ///
