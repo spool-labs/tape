@@ -7,10 +7,15 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+use tape_core::snapshot::info::SnapshotEpochStatus;
+use tape_core::types::EpochNumber;
+use tape_store::ops::SnapshotOps;
+
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::snapshot::build::build_snapshot_epoch;
 use crate::features::snapshot::observe::{observe_block, observe_state};
 
 pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -63,7 +68,32 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
     }
 
     async fn handle_state(&self, state: Arc<ProtocolState>) -> Result<(), NodeError> {
-        observe_state(&self.context, state).await
+        observe_state(&self.context, state.clone()).await?;
+
+        if state.epoch >= EpochNumber(2) {
+            let snapshot_epoch = state.epoch.saturating_sub(EpochNumber(1));
+            self.maybe_build(snapshot_epoch).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn maybe_build(&self, snapshot_epoch: EpochNumber) -> Result<(), NodeError> {
+        let epoch_info = self
+            .context
+            .store
+            .get_epoch_info(snapshot_epoch)
+            .map_err(|e| NodeError::Store(format!("get_epoch_info({snapshot_epoch}): {e}")))?;
+
+        let Some(info) = epoch_info else {
+            return Ok(());
+        };
+
+        if info.status != SnapshotEpochStatus::Pending {
+            return Ok(());
+        }
+
+        build_snapshot_epoch(&self.context, snapshot_epoch).await
     }
 
     async fn handle_block(&self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {

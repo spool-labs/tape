@@ -14,7 +14,16 @@ use tape_crypto::hash::Hash;
 #[cfg(feature = "wincode")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
+use wincode::containers::{Pod, Vec as WincodeVec};
+#[cfg(feature = "wincode")]
+use wincode::len::BincodeLen;
+#[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
+
+#[cfg(feature = "wincode")]
+const SNAPSHOT_FRAME_LIMIT: usize = 4 * 1024 * 1024;
+#[cfg(feature = "wincode")]
+type SnapshotFrameBytes = WincodeVec<Pod<u8>, BincodeLen<SNAPSHOT_FRAME_LIMIT>>;
 
 /// Replayable event — mirrors block processing handler parameters.
 ///
@@ -116,6 +125,83 @@ pub struct SnapshotLog {
     pub end_slot: SlotNumber,
     /// Ordered entries (one per slot that had events).
     pub entries: Vec<SnapshotEntry>,
+}
+
+/// Fixed-size header for the snapshot framed binary format
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
+pub struct SnapshotHeader {
+    pub version: u8,
+    pub epoch: EpochNumber,
+    pub start_slot: SlotNumber,
+    pub end_slot: SlotNumber,
+    pub entry_count: u64,
+}
+
+/// Length-prefixed frame wrapping one serialized SnapshotEntry
+#[cfg(feature = "wincode")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SnapshotEntryFrame {
+    pub len: u64,
+    #[wincode(with = "SnapshotFrameBytes")]
+    pub data: Vec<u8>,
+}
+
+#[cfg(feature = "wincode")]
+impl SnapshotLog {
+    /// Serialize to the framed binary format
+    ///
+    /// Each entry is individually serialized with wincode to stay within
+    /// the default preallocation limit. The wire format is:
+    /// `[SnapshotHeader][SnapshotEntryFrame_0][SnapshotEntryFrame_1]...`
+    pub fn to_bytes(&self) -> wincode::Result<Vec<u8>> {
+        let header = SnapshotHeader {
+            version: self.version,
+            epoch: self.epoch,
+            start_slot: self.start_slot,
+            end_slot: self.end_slot,
+            entry_count: self.entries.len() as u64,
+        };
+
+        let mut buffer = wincode::serialize(&header)?;
+
+        for entry in &self.entries {
+            let entry_bytes = wincode::serialize(entry)?;
+            let frame = SnapshotEntryFrame {
+                len: entry_bytes.len() as u64,
+                data: entry_bytes,
+            };
+            buffer.extend(wincode::serialize(&frame)?);
+        }
+
+        Ok(buffer)
+    }
+
+    /// Deserialize from the framed binary format
+    pub fn from_bytes(data: &[u8]) -> wincode::Result<Self> {
+        let header: SnapshotHeader = wincode::deserialize(data)?;
+        let header_size = wincode::serialized_size(&header)? as usize;
+
+        let mut cursor = header_size;
+        let mut entries = Vec::with_capacity(header.entry_count as usize);
+
+        for _ in 0..header.entry_count {
+            let frame: SnapshotEntryFrame = wincode::deserialize(&data[cursor..])?;
+            let frame_size = wincode::serialized_size(&frame)? as usize;
+            cursor += frame_size;
+
+            let entry: SnapshotEntry = wincode::deserialize(&frame.data)?;
+            entries.push(entry);
+        }
+
+        Ok(SnapshotLog {
+            version: header.version,
+            epoch: header.epoch,
+            start_slot: header.start_slot,
+            end_slot: header.end_slot,
+            entries,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -324,5 +410,65 @@ mod tests {
         let bytes = wincode::serialize(&track).expect("serialize");
         let recovered: ReplayTrack = wincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(recovered, track);
+    }
+
+    // framed serialization roundtrips through to_bytes/from_bytes
+    #[cfg(feature = "wincode")]
+    #[test]
+    fn snapshot_framed_roundtrip() {
+        let log = SnapshotLog {
+            version: 1,
+            epoch: EpochNumber(42),
+            start_slot: SlotNumber(100),
+            end_slot: SlotNumber(200),
+            entries: vec![
+                SnapshotEntry {
+                    slot: SlotNumber(100),
+                    events: vec![ReplayableEvent::AdvanceEpoch {
+                        old_epoch: EpochNumber(41),
+                        new_epoch: EpochNumber(42),
+                    }],
+                },
+                SnapshotEntry {
+                    slot: SlotNumber(150),
+                    events: vec![
+                        ReplayableEvent::Track(blob_replay_track()),
+                        ReplayableEvent::CertifyTrack {
+                            track: Address::from([1u8; 32]),
+                            epoch: EpochNumber(42),
+                        },
+                        ReplayableEvent::SyncEpoch {
+                            node: Address::from([0xCD; 32]),
+                            node_id: NodeId(7),
+                            epoch: EpochNumber(42),
+                            spools_hash: Hash::default(),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let bytes = log.to_bytes().expect("to_bytes");
+        let recovered = SnapshotLog::from_bytes(&bytes).expect("from_bytes");
+
+        assert_eq!(recovered, log);
+    }
+
+    // empty snapshot log roundtrips correctly
+    #[cfg(feature = "wincode")]
+    #[test]
+    fn snapshot_empty_roundtrip() {
+        let log = SnapshotLog {
+            version: 1,
+            epoch: EpochNumber(5),
+            start_slot: SlotNumber(0),
+            end_slot: SlotNumber(0),
+            entries: vec![],
+        };
+
+        let bytes = log.to_bytes().expect("to_bytes");
+        let recovered = SnapshotLog::from_bytes(&bytes).expect("from_bytes");
+
+        assert_eq!(recovered, log);
     }
 }
