@@ -26,13 +26,13 @@ pub struct SnapshotChunkMeta {
 
 #[inline]
 pub fn snapshot_chunk_key(
-    snapshot_epoch: EpochNumber,
+    epoch: EpochNumber,
     group: SpoolGroup,
     parent_epoch: EpochNumber,
 ) -> Hash {
     hashv(&[
         SNAPSHOT_KEY_V1,
-        &snapshot_epoch.pack(),
+        &epoch.pack(),
         &group.pack(),
         &parent_epoch.pack(),
     ])

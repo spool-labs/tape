@@ -121,6 +121,7 @@ mod tests {
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::store::TrackStore;
     use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
+    use tape_core::types::CommitteeBitmap;
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
     use tape_test::*;

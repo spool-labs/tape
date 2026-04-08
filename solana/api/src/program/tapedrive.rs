@@ -1,16 +1,12 @@
 use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_core::{
-    prelude::Bitmap,
     types::{EpochNumber, TrackNumber},
 };
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
 use super::token::MINT_ADDRESS;
-
-pub use tape_core::erasure::MEMBER_COUNT;
-
 pub const MIN_COMMITTEE_SIZE:     usize = 20;   // 20 for production (matches SPOOL_GROUP_SIZE)
 pub const FUTURE_EPOCHS:          usize = 256;
 pub const EPOCH_HISTORY:          usize = 256;
@@ -43,8 +39,6 @@ pub const CERTIFICATE:     &[u8] = b"certificate";
 pub const SNAPSHOT_STATE:  &[u8] = b"snapshot_state";
 pub const SNAPSHOT_MANIFEST: &[u8] = b"snapshot_manifest";
 pub const SNAPSHOT_TAPE:   &[u8] = b"snapshot_tape";
-
-pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 
 pub const SYSTEM_ADDRESS: Address =
     Address::new(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);

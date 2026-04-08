@@ -224,15 +224,15 @@ fn capture_instruction(
 mod tests {
     use tape_crypto::address::Address;
     use tape_api::event::{
-        EpochAdvanced, SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified,
-        TapeReserved, TrackCertified, TrackWritten,
+        EpochAdvanced, SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeReserved,
+        TrackCertified, TrackWritten,
     };
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::erasure::COMMITMENT_TREE_HEIGHT;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::snapshot::ReplayableEvent;
+    use tape_core::snapshot::types::ReplayableEvent;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{TrackKind, TrackState};
@@ -283,29 +283,25 @@ mod tests {
             slot: SlotNumber(7),
             instructions: vec![
                 ParsedInstruction::InitSnapshotEpoch {
-                event: SnapshotEpochInitialized {
-                    epoch: EpochNumber(7),
-                    parent_epoch: EpochNumber(6),
-                    tape: Address::new_unique(),
+                event: SnapshotInit {
+                    parent: EpochNumber(6),
+                    current: EpochNumber(7),
                 },
             },
                 ParsedInstruction::CertifySnapshotGroup {
-                    event: SnapshotGroupCertified {
+                    event: SnapshotCertified {
                     epoch: EpochNumber(7),
                     group: SpoolGroup(3),
-                    tape: Address::new_unique(),
-                    track: Address::new_unique(),
-                    track_number: TrackNumber(9),
+                    track: TrackNumber(9),
                         commitment: Hash::from([0x44; 32]),
                         signer_count: [2; 8],
                         signer_weight: [3; 8],
                     },
                 },
                 ParsedInstruction::FinalizeSnapshotEpoch {
-                    event: SnapshotEpochFinalized {
-                        epoch: EpochNumber(7),
-                        parent_epoch: EpochNumber(6),
-                        tail_epoch: EpochNumber(7),
+                    event: SnapshotFinalized {
+                        parent: EpochNumber(6),
+                        current: EpochNumber(7),
                     },
                 },
             ],

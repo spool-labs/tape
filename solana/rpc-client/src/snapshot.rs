@@ -58,13 +58,13 @@ mod tests {
     use crate::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
     use tape_api::program::tapedrive::{self, snapshot_manifest_pda, snapshot_state_pda};
-    use tape_api::state::{
-        SnapshotChunkRecord, SnapshotGroupBitmap, SnapshotManifest, SnapshotState,
-    };
+    use tape_api::state::{SnapshotChunkRecord, SnapshotManifest, SnapshotState};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_COUNT;
-    use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
-    use tape_crypto::{Hash, address::Address};
+    use tape_core::types::{
+        EpochNumber, SnapshotGroupBitmap, StorageUnits, StripeCount, TrackNumber,
+    };
+    use tape_crypto::Hash;
 
     fn client() -> RpcClient<LiteSvmRpc> {
         RpcClient::from_rpc(LiteSvmRpc::new())
@@ -81,16 +81,12 @@ mod tests {
         };
 
         SnapshotManifest {
-            epoch,
             parent_epoch: epoch - EpochNumber(1),
-            tape: Address::new_unique(),
-            certified_count: 1,
             group_bitmap: {
                 let mut bitmap = SnapshotGroupBitmap::zeroed();
                 bitmap.set(7);
                 bitmap
             },
-            reserved: [0; 7],
             groups,
         }
     }
@@ -115,8 +111,9 @@ mod tests {
     #[tokio::test]
     async fn snapshot_manifest_roundtrip() {
         let client = client();
-        let manifest = snapshot_manifest(EpochNumber(22));
-        let (address, _) = snapshot_manifest_pda(manifest.epoch);
+        let epoch = EpochNumber(22);
+        let manifest = snapshot_manifest(epoch);
+        let (address, _) = snapshot_manifest_pda(epoch);
 
         client
             .rpc()
@@ -124,7 +121,7 @@ mod tests {
             .expect("store snapshot manifest");
 
         let decoded = client
-            .get_snapshot_manifest(manifest.epoch)
+            .get_snapshot_manifest(epoch)
             .await
             .expect("read manifest");
         assert_eq!(decoded, manifest);

@@ -16,7 +16,7 @@ pub const SNAPSHOT_MESSAGE_SIZE: usize = 72;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
 pub struct SnapshotMessage {
-    pub snapshot_epoch: EpochNumber,
+    pub epoch: EpochNumber,
     pub signing_epoch: EpochNumber,
     pub group: SpoolGroup,
     pub commitment: Hash,
@@ -25,14 +25,14 @@ pub struct SnapshotMessage {
 
 impl SnapshotMessage {
     pub const fn new(
-        snapshot_epoch: EpochNumber,
+        epoch: EpochNumber,
         signing_epoch: EpochNumber,
         group: SpoolGroup,
         commitment: Hash,
         parent_epoch: EpochNumber,
     ) -> Self {
         Self {
-            snapshot_epoch,
+            epoch,
             signing_epoch,
             group,
             commitment,

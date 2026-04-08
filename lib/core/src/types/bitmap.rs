@@ -1,35 +1,59 @@
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 use bytemuck::{Pod, Zeroable};
+use crate::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT};
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
-pub struct Bitmap<const BYTES: usize>([u8; BYTES]);
+pub struct Bitmap<const BITS: usize, const BYTES: usize>([u8; BYTES]);
 
-unsafe impl<const BYTES: usize> Zeroable for Bitmap<BYTES> {}
-unsafe impl<const BYTES: usize> Pod for Bitmap<BYTES> {}
+pub type CommitteeBitmap =
+    Bitmap<MEMBER_COUNT, { aligned_bytes_for_members(MEMBER_COUNT, 8) }>;
+pub type SnapshotGroupBitmap =
+    Bitmap<SPOOL_GROUP_COUNT, { aligned_bytes_for_members(SPOOL_GROUP_COUNT, 8) }>;
 
-impl<const BYTES: usize> Bitmap<BYTES> {
+unsafe impl<const BITS: usize, const BYTES: usize> Zeroable for Bitmap<BITS, BYTES> {}
+unsafe impl<const BITS: usize, const BYTES: usize> Pod for Bitmap<BITS, BYTES> {}
+
+impl<const BITS: usize, const BYTES: usize> Bitmap<BITS, BYTES> {
+    fn assert_storage() {
+        assert!(bytes_for_members(BITS) <= BYTES, "bitmap storage too small for bits");
+    }
+
+    /// Returns the raw storage bytes for this bitmap.
+    pub fn as_bytes(&self) -> &[u8; BYTES] {
+        Self::assert_storage();
+        &self.0
+    }
+
+    /// Returns the raw storage bytes for this bitmap.
+    pub fn as_bytes_mut(&mut self) -> &mut [u8; BYTES] {
+        Self::assert_storage();
+        &mut self.0
+    }
+
     /// Creates a new bitmap from a list of indices.
     pub fn from_indices(indices: &[usize], n: usize) -> Self {
-        let required = bytes_for_members(n);
-        assert!(required <= BYTES, "bitmap too small for n");
+        Self::assert_storage();
+        assert!(n <= BITS, "n exceeds bitmap capacity");
         let vec = indices_to_bitmap(indices, n);
         let mut arr = [0u8; BYTES];
-        arr[..required].copy_from_slice(&vec);
+        arr[..vec.len()].copy_from_slice(&vec);
         Self(arr)
     }
 
     /// Returns the list of set indices in the bitmap.
     pub fn indices(&self, n: usize) -> Vec<usize> {
-        assert!(n <= BYTES * 8, "n exceeds bitmap capacity");
+        Self::assert_storage();
+        assert!(n <= BITS, "n exceeds bitmap capacity");
         bitmap_indices(&self.0, n)
     }
 
     /// Sets the bit at the given index.
     pub fn set(&mut self, index: usize) {
-        assert!(index < BYTES * 8, "index out of range");
+        Self::assert_storage();
+        assert!(index < BITS, "index out of range");
         let byte_idx = index / 8;
         let bit_idx = index % 8;
         self.0[byte_idx] |= 1u8 << bit_idx;
@@ -37,7 +61,8 @@ impl<const BYTES: usize> Bitmap<BYTES> {
 
     /// Checks if the bit at the given index is set.
     pub fn is_set(&self, index: usize) -> bool {
-        assert!(index < BYTES * 8, "index out of range");
+        Self::assert_storage();
+        assert!(index < BITS, "index out of range");
         let byte_idx = index / 8;
         let bit_idx = index % 8;
         (self.0[byte_idx] >> bit_idx) & 1 == 1
@@ -45,7 +70,8 @@ impl<const BYTES: usize> Bitmap<BYTES> {
 
     /// Clears the bit at the given index.
     pub fn clear(&mut self, index: usize) {
-        assert!(index < BYTES * 8, "index out of range");
+        Self::assert_storage();
+        assert!(index < BITS, "index out of range");
         let byte_idx = index / 8;
         let bit_idx = index % 8;
         self.0[byte_idx] &= !(1u8 << bit_idx);
@@ -53,13 +79,24 @@ impl<const BYTES: usize> Bitmap<BYTES> {
 
     /// Returns the number of set bits in the bitmap.
     pub fn count_ones(&self) -> usize {
-        self.0.iter().map(|&b| b.count_ones() as usize).sum()
+        Self::assert_storage();
+        self.indices(BITS).len()
     }
 }
 
 /// Returns the number of bytes needed to store n bits.
 pub const fn bytes_for_members(n: usize) -> usize {
     (n + 7) / 8
+}
+
+/// Returns the number of bytes needed to store n bits, rounded up to alignment_bytes.
+pub const fn aligned_bytes_for_members(n: usize, alignment_bytes: usize) -> usize {
+    let byte_count = bytes_for_members(n);
+    if alignment_bytes == 0 {
+        return byte_count;
+    }
+
+    ((byte_count + alignment_bytes - 1) / alignment_bytes) * alignment_bytes
 }
 
 /// Returns the indices of set bits in the given bitmap up to n bits.
@@ -97,7 +134,7 @@ mod tests {
     use super::*;
 
     const N: usize = 16;
-    type TestBitmap = Bitmap<2>;
+    type TestBitmap = Bitmap<N, 2>;
 
     #[test]
     fn test_from_indices() {
@@ -147,10 +184,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "bitmap too small for n")]
+    #[should_panic(expected = "bitmap storage too small for bits")]
     fn test_from_indices_too_small() {
         let indices = vec![0];
-        let _ = Bitmap::<1>::from_indices(&indices, 9); // 9 bits need 2 bytes
+        let _ = Bitmap::<9, 1>::from_indices(&indices, 9); // 9 bits need 2 bytes
     }
 
     #[test]
@@ -158,5 +195,20 @@ mod tests {
     fn test_indices_exceeds_capacity() {
         let bitmap = TestBitmap::zeroed();
         let _ = bitmap.indices(17);
+    }
+
+    #[test]
+    fn count_ones_ignores_storage_padding() {
+        let mut bitmap = Bitmap::<10, 2>::zeroed();
+        bitmap.set(0);
+        bitmap.set(9);
+        assert_eq!(bitmap.count_ones(), 2);
+    }
+
+    #[test]
+    fn aligned_bytes() {
+        assert_eq!(aligned_bytes_for_members(50, 8), 8);
+        assert_eq!(aligned_bytes_for_members(128, 8), 16);
+        assert_eq!(aligned_bytes_for_members(50, 0), 7);
     }
 }

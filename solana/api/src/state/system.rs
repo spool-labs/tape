@@ -1,7 +1,8 @@
 use tape_solana::*;
 use tape_core::prelude::*;
 use super::AccountType;
-use crate::program::{MEMBER_COUNT, MIN_COMMITTEE_SIZE};
+use crate::program::tapedrive::MIN_COMMITTEE_SIZE;
+use tape_core::erasure::MEMBER_COUNT;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
@@ -95,4 +96,3 @@ impl System {
 }
 
 tape_solana::state!(AccountType, System);
-

@@ -8,7 +8,7 @@ use super::CertificateError;
 /// The message is a 32-byte value the signer signs (e.g., a hash or address).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EdwardsCertificate<const BYTES: usize> {
+pub struct EdwardsCertificate<const BITS: usize, const BYTES: usize> {
     /// The message bytes to be signed (32 bytes). Conventionally a hash or address.
     pub message: Hash,
 
@@ -16,20 +16,20 @@ pub struct EdwardsCertificate<const BYTES: usize> {
     pub epoch: EpochNumber,
 
     /// Bitmap of committee members that have signed.
-    pub signers: Bitmap<BYTES>,
+    pub signers: Bitmap<BITS, BYTES>,
 }
 
-unsafe impl<const BYTES: usize> Zeroable for EdwardsCertificate<BYTES> {}
-unsafe impl<const BYTES: usize> Pod for EdwardsCertificate<BYTES> {}
+unsafe impl<const BITS: usize, const BYTES: usize> Zeroable for EdwardsCertificate<BITS, BYTES> {}
+unsafe impl<const BITS: usize, const BYTES: usize> Pod for EdwardsCertificate<BITS, BYTES> {}
 
-impl<const BYTES: usize> EdwardsCertificate<BYTES> {
+impl<const BITS: usize, const BYTES: usize> EdwardsCertificate<BITS, BYTES> {
     /// Create a new certificate for an exact epoch and 32-byte message.
     #[inline]
     pub fn new(message: Hash, epoch: EpochNumber) -> Self {
         Self {
             message,
             epoch,
-            signers: Bitmap::<BYTES>::zeroed(),
+            signers: Bitmap::<BITS, BYTES>::zeroed(),
         }
     }
 
@@ -82,8 +82,8 @@ impl<const BYTES: usize> EdwardsCertificate<BYTES> {
     pub fn merge_signers_from(&mut self, other: &Self) {
         debug_assert!(self.message == other.message && self.epoch == other.epoch, "certificate mismatch");
 
-        let self_bytes = unsafe { &mut *(&mut self.signers as *mut Bitmap<BYTES> as *mut [u8; BYTES]) };
-        let other_bytes = unsafe { &*(&other.signers as *const Bitmap<BYTES> as *const [u8; BYTES]) };
+        let self_bytes = self.signers.as_bytes_mut();
+        let other_bytes = other.signers.as_bytes();
 
         for i in 0..BYTES {
             self_bytes[i] |= other_bytes[i];
@@ -112,7 +112,7 @@ mod tests {
 
         // Cert at exact epoch
         let epoch = EpochNumber(10);
-        let mut cert = EdwardsCertificate::<2>::new(message, epoch);
+        let mut cert = EdwardsCertificate::<16, 2>::new(message, epoch);
 
         cert.try_add_signature(epoch, 0, &pubkey, &sig64)
             .expect("valid ed25519 signature should mark bit");
@@ -125,7 +125,7 @@ mod tests {
     fn epoch_mismatch() {
         let message = Hash::from([7u8; 32]);
         let epoch = EpochNumber(5);
-        let mut cert = EdwardsCertificate::<1>::new(message, epoch);
+        let mut cert = EdwardsCertificate::<8, 1>::new(message, epoch);
 
         let dummy_pk = [0u8; 32];
         let dummy_sig = [0u8; 64];
@@ -140,8 +140,8 @@ mod tests {
         let epoch = EpochNumber(1);
 
         // Two certs for same (message, epoch)
-        let mut a = EdwardsCertificate::<2>::new(message, epoch);
-        let mut b = EdwardsCertificate::<2>::new(message, epoch);
+        let mut a = EdwardsCertificate::<16, 2>::new(message, epoch);
+        let mut b = EdwardsCertificate::<16, 2>::new(message, epoch);
 
         // Set disjoint bits
         a.signers.set(3);

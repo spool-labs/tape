@@ -240,7 +240,7 @@ mod tests {
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
-    use tape_core::snapshot::{ReplayTrack, ReplayableEvent};
+    use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};

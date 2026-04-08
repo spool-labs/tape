@@ -10,7 +10,7 @@ use super::CertificateError;
 /// Each call verifies a single-signer BLS signature and sets the bit for that member.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlsCertificate<const BYTES: usize> {
+pub struct BlsCertificate<const BITS: usize, const BYTES: usize> {
     /// The 32-byte message to be signed (e.g., a hash or address).
     pub message: Hash,
 
@@ -18,20 +18,20 @@ pub struct BlsCertificate<const BYTES: usize> {
     pub epoch: EpochNumber,
 
     /// Bitmap of committee members that have signed.
-    pub signers: Bitmap<BYTES>,
+    pub signers: Bitmap<BITS, BYTES>,
 }
 
-unsafe impl<const BYTES: usize> Zeroable for BlsCertificate<BYTES> {}
-unsafe impl<const BYTES: usize> Pod for BlsCertificate<BYTES> {}
+unsafe impl<const BITS: usize, const BYTES: usize> Zeroable for BlsCertificate<BITS, BYTES> {}
+unsafe impl<const BITS: usize, const BYTES: usize> Pod for BlsCertificate<BITS, BYTES> {}
 
-impl<const BYTES: usize> BlsCertificate<BYTES> {
+impl<const BITS: usize, const BYTES: usize> BlsCertificate<BITS, BYTES> {
     /// Create a new certificate for an exact epoch and 32-byte message.
     #[inline]
     pub fn new(message: Hash, epoch: EpochNumber) -> Self {
         Self {
             message,
             epoch,
-            signers: Bitmap::<BYTES>::zeroed(),
+            signers: Bitmap::<BITS, BYTES>::zeroed(),
         }
     }
 
@@ -115,8 +115,8 @@ impl<const BYTES: usize> BlsCertificate<BYTES> {
     /// This ORs the bitmaps in place.
     pub fn merge_signers_from(&mut self, other: &Self) {
         debug_assert!(self.message == other.message && self.epoch == other.epoch, "certificate mismatch");
-        let self_bytes = unsafe { &mut *(&mut self.signers as *mut Bitmap<BYTES> as *mut [u8; BYTES]) };
-        let other_bytes = unsafe { &*(&other.signers as *const Bitmap<BYTES> as *const [u8; BYTES]) };
+        let self_bytes = self.signers.as_bytes_mut();
+        let other_bytes = other.signers.as_bytes();
 
         for i in 0..BYTES {
             self_bytes[i] |= other_bytes[i];
@@ -145,7 +145,7 @@ mod tests {
         let sig = sk.sign(message.as_ref()).unwrap();
 
         // Create cert and verify/mark
-        let mut cert = BlsCertificate::<2>::new(message, epoch);
+        let mut cert = BlsCertificate::<16, 2>::new(message, epoch);
         assert_eq!(cert.signer_count(), 0);
         cert.try_add_signature(epoch, 1, pk, sig).expect("mark ok");
 
@@ -160,7 +160,7 @@ mod tests {
         let msg = Hash::from([7u8; 32]);
         let sig = sk.sign(msg.as_ref()).unwrap();
 
-        let mut cert = BlsCertificate::<1>::new(msg, EpochNumber(5));
+        let mut cert = BlsCertificate::<8, 1>::new(msg, EpochNumber(5));
         let err = cert.try_add_signature(EpochNumber(6), 0, pk, sig).unwrap_err();
         assert_eq!(err, CertificateError::EpochMismatch);
     }
@@ -171,8 +171,8 @@ mod tests {
         let epoch = EpochNumber(1);
 
         // Two certs for same (message, epoch)
-        let mut a = BlsCertificate::<2>::new(message, epoch);
-        let mut b = BlsCertificate::<2>::new(message, epoch);
+        let mut a = BlsCertificate::<16, 2>::new(message, epoch);
+        let mut b = BlsCertificate::<16, 2>::new(message, epoch);
 
         // Set disjoint bits
         a.signers.set(3);

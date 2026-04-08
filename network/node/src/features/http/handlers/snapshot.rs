@@ -7,7 +7,8 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::snapshot::{SnapshotGroupInfo, SnapshotGroupStatus, SnapshotMessage};
+use tape_core::cert::snapshot::SnapshotMessage;
+use tape_core::snapshot::info::{SnapshotGroupInfo, SnapshotGroupStatus};
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
@@ -18,21 +19,16 @@ use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    Path((snapshot_epoch, group)): Path<(u64, u64)>,
+    Path((epoch, group)): Path<(u64, u64)>,
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     let request: SignSnapshotRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("snapshot sign request: {error}")))?;
-    let snapshot_epoch = EpochNumber(snapshot_epoch);
+    let epoch = EpochNumber(epoch);
     let group = SpoolGroup(group);
 
-    let epoch = current_epoch(&state)?;
-    if request.signing_epoch != epoch {
-        return Err(RouteError::BadRequest(
-            "snapshot signing epoch does not match current epoch".into(),
-        ));
-    }
+    let signing_epoch = current_epoch(&state)?;
 
     let protocol = state.context.state();
     if protocol.find_member(state.context.node_id()).is_none() {
@@ -50,18 +46,25 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let group_info = state
         .context
         .store
-        .get_group_info(snapshot_epoch, group)
+        .get_group_info(epoch, group)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotFound)?;
+
+    let epoch_info = state
+        .context
+        .store
+        .get_epoch_info(epoch)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
     validate_group_info(&group_info, &request)?;
 
     let message = SnapshotMessage::new(
-        snapshot_epoch,
-        request.signing_epoch,
+        epoch,
+        signing_epoch,
         group,
         request.commitment,
-        request.parent_epoch,
+        epoch_info.parent_epoch,
     );
     let signature = state
         .context
@@ -71,7 +74,7 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let response = BlsSignResponse {
         signature,
         node_id: state.context.node_id(),
-        epoch,
+        epoch: signing_epoch,
     };
 
     let bytes = wincode::serialize(&response)
@@ -88,12 +91,6 @@ fn validate_group_info(
 ) -> Result<(), RouteError> {
     if matches!(info.status, SnapshotGroupStatus::Missing) {
         return Err(RouteError::NotFound);
-    }
-
-    if info.parent_epoch != request.parent_epoch {
-        return Err(RouteError::BadRequest(
-            "snapshot group parent epoch mismatch".into(),
-        ));
     }
 
     if info.meta.commitment != request.commitment {
@@ -116,14 +113,14 @@ mod tests {
     use axum::extract::{Path, State};
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
+    use tape_core::cert::snapshot::SnapshotMessage;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{MEMBER_COUNT, SPOOL_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::{
-        CommitteeBitmap, SnapshotChunkMeta, SnapshotGroupStatus, SnapshotMessage,
-    };
+    use tape_core::snapshot::chunk::SnapshotChunkMeta;
+    use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotGroupStatus};
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
-    use tape_core::types::{EpochNumber, NodeId, StorageUnits, StripeCount};
+    use tape_core::types::{CommitteeBitmap, EpochNumber, NodeId, StorageUnits, StripeCount};
     use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::Hash;
     use tape_protocol::ProtocolState;
@@ -135,28 +132,22 @@ mod tests {
         BlsPrivateKey::from_random().sign(message).unwrap()
     }
 
-    fn request(
-        signing_epoch: EpochNumber,
-        commitment: Hash,
-        parent_epoch: EpochNumber,
-    ) -> SignSnapshotRequest {
+    fn request(commitment: Hash) -> SignSnapshotRequest {
         SignSnapshotRequest {
-            signing_epoch,
             commitment,
-            parent_epoch,
         }
     }
 
-    fn group_info(
-        snapshot_epoch: EpochNumber,
-        group: SpoolGroup,
-        commitment: Hash,
-        parent_epoch: EpochNumber,
-    ) -> SnapshotGroupInfo {
-        SnapshotGroupInfo {
-            epoch: snapshot_epoch,
+    fn epoch_info(parent_epoch: EpochNumber) -> SnapshotEpochInfo {
+        SnapshotEpochInfo {
             parent_epoch,
-            group,
+            status: tape_core::snapshot::info::SnapshotEpochStatus::Built,
+            certified_groups: tape_core::types::SnapshotGroupBitmap::zeroed(),
+        }
+    }
+
+    fn group_info(commitment: Hash) -> SnapshotGroupInfo {
+        SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
             meta: SnapshotChunkMeta {
                 commitment,
@@ -167,7 +158,6 @@ mod tests {
             leaves: [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE],
             bitmap: CommitteeBitmap::from_indices(&[0], MEMBER_COUNT),
             signature: snapshot_signature(b"group-info"),
-            track: None,
             track_number: None,
         }
     }
@@ -196,13 +186,13 @@ mod tests {
             peer_memory::MemoryApi,
             rpc_litesvm::LiteSvmRpc,
         >,
-        snapshot_epoch: EpochNumber,
+        epoch: EpochNumber,
         group: SpoolGroup,
         body: SignSnapshotRequest,
     ) -> Result<axum::response::Response, RouteError> {
         let bytes = wincode::serialize(&body).unwrap();
         sign_snapshot(
-            Path((snapshot_epoch.0, group.0)),
+            Path((epoch.0, group.0)),
             State(state),
             Bytes::from(bytes),
         )
@@ -216,24 +206,27 @@ mod tests {
         let state = local_state_for_node_0(true);
         context.set_state(state).unwrap();
 
-        let snapshot_epoch = EpochNumber(10);
-        let signing_epoch = EpochNumber(11);
+        let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
         let commitment = Hash::from([0xAB; 32]);
         let parent_epoch = EpochNumber(9);
 
         context
             .store
-            .put_group_info(group_info(snapshot_epoch, group, commitment, parent_epoch))
+            .put_epoch_info(epoch, epoch_info(parent_epoch))
+            .unwrap();
+        context
+            .store
+            .put_group_info(epoch, group, group_info(commitment))
             .unwrap();
 
         let response = match render(
             AppState {
                 context: context.clone(),
             },
-            snapshot_epoch,
+            epoch,
             group,
-            request(signing_epoch, commitment, parent_epoch),
+            request(commitment),
         )
         .await
         {
@@ -247,7 +240,8 @@ mod tests {
             .expect("body");
         let decoded: BlsSignResponse = wincode::deserialize(&bytes).unwrap();
 
-        let message = SnapshotMessage::new(snapshot_epoch, signing_epoch, group, commitment, parent_epoch);
+        let signing_epoch = EpochNumber(11);
+        let message = SnapshotMessage::new(epoch, signing_epoch, group, commitment, parent_epoch);
         let expected = context.bls_sign(&message.to_bytes()).unwrap();
 
         assert_eq!(decoded.signature, expected);
@@ -260,15 +254,15 @@ mod tests {
         let context = test_context();
         context.set_state(local_state_for_node_0(true)).unwrap();
 
-        let snapshot_epoch = EpochNumber(10);
+        let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let request = request(EpochNumber(11), Hash::from([0xAB; 32]), EpochNumber(9));
+        let request = request(Hash::from([0xAB; 32]));
 
         let err = render(
             AppState {
                 context: context.clone(),
             },
-            snapshot_epoch,
+            epoch,
             group,
             request,
         )
@@ -282,24 +276,27 @@ mod tests {
         let context = test_context();
         context.set_state(local_state_for_node_0(false)).unwrap();
 
-        let snapshot_epoch = EpochNumber(10);
-        let signing_epoch = EpochNumber(11);
+        let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
         let commitment = Hash::from([0xAB; 32]);
         let parent_epoch = EpochNumber(9);
 
         context
             .store
-            .put_group_info(group_info(snapshot_epoch, group, commitment, parent_epoch))
+            .put_epoch_info(epoch, epoch_info(parent_epoch))
+            .unwrap();
+        context
+            .store
+            .put_group_info(epoch, group, group_info(commitment))
             .unwrap();
 
         let err = render(
             AppState {
                 context: context.clone(),
             },
-            snapshot_epoch,
+            epoch,
             group,
-            request(signing_epoch, commitment, parent_epoch),
+            request(commitment),
         )
         .await
         .expect_err("non-responsible node should fail");
@@ -311,24 +308,27 @@ mod tests {
         let context = test_context();
         context.set_state(local_state_for_node_0(true)).unwrap();
 
-        let snapshot_epoch = EpochNumber(10);
-        let signing_epoch = EpochNumber(11);
+        let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
         let commitment = Hash::from([0xAB; 32]);
         let parent_epoch = EpochNumber(9);
 
         context
             .store
-            .put_group_info(group_info(snapshot_epoch, group, commitment, parent_epoch))
+            .put_epoch_info(epoch, epoch_info(parent_epoch))
+            .unwrap();
+        context
+            .store
+            .put_group_info(epoch, group, group_info(commitment))
             .unwrap();
 
         let err = render(
             AppState {
                 context: context.clone(),
             },
-            snapshot_epoch,
+            epoch,
             group,
-            request(signing_epoch, Hash::from([0xCD; 32]), parent_epoch),
+            request(Hash::from([0xCD; 32])),
         )
         .await
         .expect_err("mismatched commitment should fail");

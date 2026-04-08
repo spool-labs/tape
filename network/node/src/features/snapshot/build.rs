@@ -10,8 +10,8 @@ use crate::core::error::NodeError;
 
 pub async fn build_snapshot_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    snapshot_epoch: EpochNumber,
+    epoch: EpochNumber,
 ) -> Result<(), NodeError> {
-    let _ = (context, snapshot_epoch);
+    let _ = (context, epoch);
     todo!("snapshot build algorithm")
 }

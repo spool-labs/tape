@@ -15,9 +15,9 @@ pub enum EventType {
     Unknown = 0,
 
     // Track events (0x10 range)
-    SnapshotEpochInitialized = 0x10,
-    SnapshotGroupCertified = 0x11,
-    SnapshotEpochFinalized = 0x12,
+    SnapshotInit = 0x10,
+    SnapshotCertified = 0x11,
+    SnapshotFinalized = 0x12,
     TrackCertified = 0x13,
     TrackDeleted = 0x14,
     TrackInvalidated = 0x15,
@@ -45,43 +45,40 @@ pub enum EventType {
     CommissionClaimed = 0x60,
 }
 
-/// Emitted when an epoch's snapshot manifest and tape are initialized.
+/// Emitted when an epoch's snapshot manifest is initialized.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotEpochInitialized {
-    pub epoch: EpochNumber,
-    pub parent_epoch: EpochNumber,
-    pub tape: Address,
+pub struct SnapshotInit {
+    pub parent: EpochNumber,
+    pub current: EpochNumber,
 }
 
-tape_solana::event!(EventType, SnapshotEpochInitialized);
+tape_solana::event!(EventType, SnapshotInit);
 
 /// Emitted when a canonical snapshot group is sealed into the manifest/tape.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotGroupCertified {
+pub struct SnapshotCertified {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub tape: Address,
-    pub track: Address,
-    pub track_number: TrackNumber,
+    /// Canonical track number on the epoch's derived snapshot tape.
+    pub track: TrackNumber,
     pub commitment: Hash,
     pub signer_count: [u8; 8],
     pub signer_weight: [u8; 8],
 }
 
-tape_solana::event!(EventType, SnapshotGroupCertified);
+tape_solana::event!(EventType, SnapshotCertified);
 
 /// Emitted when a snapshot epoch becomes the canonical tail.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotEpochFinalized {
-    pub epoch: EpochNumber,
-    pub parent_epoch: EpochNumber,
-    pub tail_epoch: EpochNumber,
+pub struct SnapshotFinalized {
+    pub parent: EpochNumber,
+    pub current: EpochNumber,
 }
 
-tape_solana::event!(EventType, SnapshotEpochFinalized);
+tape_solana::event!(EventType, SnapshotFinalized);
 
 /// Emitted when a track achieves certification quorum.
 #[repr(C)]
@@ -345,9 +342,9 @@ mod tests {
 
     #[test]
     fn test_event_type_values() {
-        assert_eq!(EventType::SnapshotEpochInitialized as u8, 0x10);
-        assert_eq!(EventType::SnapshotGroupCertified as u8, 0x11);
-        assert_eq!(EventType::SnapshotEpochFinalized as u8, 0x12);
+        assert_eq!(EventType::SnapshotInit as u8, 0x10);
+        assert_eq!(EventType::SnapshotCertified as u8, 0x11);
+        assert_eq!(EventType::SnapshotFinalized as u8, 0x12);
         assert_eq!(EventType::TrackCertified as u8, 0x13);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
@@ -359,9 +356,9 @@ mod tests {
     #[test]
     fn test_event_sizes() {
         // Verify events fit within Solana's 1024-byte log limit
-        assert!(SnapshotEpochInitialized::size_of() < 1024);
-        assert!(SnapshotGroupCertified::size_of() < 1024);
-        assert!(SnapshotEpochFinalized::size_of() < 1024);
+        assert!(SnapshotInit::size_of() < 1024);
+        assert!(SnapshotCertified::size_of() < 1024);
+        assert!(SnapshotFinalized::size_of() < 1024);
         assert!(TrackCertified::size_of() < 1024);
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
@@ -372,22 +369,20 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_group_certified_layout_preserves_domain_types() {
-        let event = SnapshotGroupCertified {
+    fn snapshot_certified_layout_preserves_domain_types() {
+        let event = SnapshotCertified {
             epoch: EpochNumber(7),
             group: SpoolGroup(3),
-            tape: Address::new_unique(),
-            track: Address::new_unique(),
-            track_number: TrackNumber(11),
+            track: TrackNumber(11),
             commitment: Hash::from([0x33; 32]),
             signer_count: 19u64.to_le_bytes(),
             signer_weight: 42u64.to_le_bytes(),
         };
 
         let bytes = event.to_bytes();
-        let recovered = SnapshotGroupCertified::try_from_bytes(&bytes).expect("parse event");
+        let recovered = SnapshotCertified::try_from_bytes(&bytes).expect("parse event");
 
         assert_eq!(recovered.group, SpoolGroup(3));
-        assert_eq!(recovered.track_number, TrackNumber(11));
+        assert_eq!(recovered.track, TrackNumber(11));
     }
 }

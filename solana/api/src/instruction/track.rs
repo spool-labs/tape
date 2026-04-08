@@ -2,14 +2,15 @@ use core::mem::size_of;
 
 use crate::instruction::read_instruction_pod;
 use crate::program::tapedrive;
-use crate::program::tapedrive::{CommitteeBitmap, epoch_pda, system_pda, tape_pda};
 use tape_core::prelude::*;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::{CompressedTrackProof, TrackKind};
+use tape_core::types::CommitteeBitmap;
 use tape_crypto::Hash;
 use tape_solana::*;
 use tape_crypto::address::Address;
+use crate::program::tapedrive::{epoch_pda, system_pda, tape_pda};
 
 pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
 

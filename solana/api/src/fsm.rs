@@ -365,7 +365,7 @@ mod tests {
     use tape_core::types::{NodeId, VersionId};
     use tape_core::erasure::SPOOL_COUNT;
     use tape_crypto::Hash;
-    use crate::program::MEMBER_COUNT;
+    use tape_core::erasure::MEMBER_COUNT;
 
     fn make_member(id: u64, stake: u64) -> CommitteeMember {
         CommitteeMember::new(NodeId(id), TAPE(stake))

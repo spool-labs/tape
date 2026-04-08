@@ -87,7 +87,11 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
     ///
     /// # Panics
     /// Panics if `group >= SPOOL_GROUP_COUNT`.
-    pub fn group_weight<const BYTES: usize>(&self, group: SpoolGroup, bitmap: &Bitmap<BYTES>) -> u64 {
+    pub fn group_weight<const BITS: usize, const BYTES: usize>(
+        &self,
+        group: SpoolGroup,
+        bitmap: &Bitmap<BITS, BYTES>,
+    ) -> u64 {
         assert!((group.0 as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
         let start = group.0 as usize * SPOOL_GROUP_SIZE;
         let end = start + SPOOL_GROUP_SIZE;
@@ -195,7 +199,7 @@ mod tests {
         let sa = SpoolAssignment::new(arr);
 
         // Bitmap with members 0 and 1 set
-        let bm = Bitmap::<1>::from_indices(&[0, 1], 8);
+        let bm = Bitmap::<8, 1>::from_indices(&[0, 1], 8);
         assert_eq!(sa.group_weight(SpoolGroup(0), &bm), 20); // all 20 owned by member 0
         assert_eq!(sa.group_weight(SpoolGroup(1), &bm), 10); // 10 owned by member 1
     }

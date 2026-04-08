@@ -5,7 +5,7 @@ use solana_transaction_status::{
     option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
     UiConfirmedBlock, UiInstruction, UiMessage, UiTransactionStatusMeta,
 };
-use tape_api::program::tapedrive::ID as TAPE_DRIVE_PROGRAM_ID;
+use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
 use tape_crypto::address::Address;
 
 use crate::error::ParseError;
@@ -163,7 +163,7 @@ fn parse_transaction(
 /// Parse events from transaction log messages.
 fn parse_log_messages(meta: &UiTransactionStatusMeta) -> Result<Vec<TapedriveEvent>, ParseError> {
     let mut events = Vec::new();
-    let tapedrive_program_id = Address::from(TAPE_DRIVE_PROGRAM_ID);
+    let tapedrive_program_id = Address::from(TAPE_PROGRAM_ID);
 
     let OptionSerializer::Some(log_messages) = &meta.log_messages else {
         return Ok(events);

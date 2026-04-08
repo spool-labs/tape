@@ -448,11 +448,9 @@ impl Api for HttpApi {
         req: &SignSnapshotReq,
     ) -> Result<SignSnapshotRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", api::snapshot_sign_url(req.snapshot_epoch, req.group));
+        let url = format!("{base}{}", api::snapshot_sign_url(req.epoch, req.group));
         let wire_req = SignSnapshotRequest {
-            signing_epoch: req.signing_epoch,
             commitment: req.commitment,
-            parent_epoch: req.parent_epoch,
         };
         let body = wincode::serialize(&wire_req)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -692,12 +690,10 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_sign_roundtrip() {
-        let snapshot_epoch = EpochNumber(10);
+        let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
         let request = SignSnapshotRequest {
-            signing_epoch: EpochNumber(11),
             commitment: Hash::from([0xAB; 32]),
-            parent_epoch: EpochNumber(9),
         };
         let response = BlsSignResponse {
             signature: BlsPrivateKey::from_random()
@@ -719,7 +715,7 @@ mod tests {
                     let expected_response = Arc::clone(&expected_response);
                     async move {
                         let decoded: SignSnapshotRequest = wincode::deserialize(&body).unwrap();
-                        assert_eq!(epoch, snapshot_epoch.0);
+                        assert_eq!(epoch, EpochNumber(10).0);
                         assert_eq!(route_group, group.0);
                         assert_eq!(decoded, *expected_request);
 
@@ -748,11 +744,9 @@ mod tests {
             .sign_snapshot(
                 NodeId(7),
                 &SignSnapshotReq {
-                    snapshot_epoch,
-                    signing_epoch: request.signing_epoch,
+                    epoch,
                     group,
                     commitment: request.commitment,
-                    parent_epoch: request.parent_epoch,
                 },
             )
             .await

@@ -37,9 +37,7 @@ pub struct BlsSignResponse {
 /// Request body for snapshot signing.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SignSnapshotRequest {
-    pub signing_epoch: EpochNumber,
     pub commitment: Hash,
-    pub parent_epoch: EpochNumber,
 }
 
 /// Request for inconsistency attestation.
@@ -291,9 +289,7 @@ mod tests {
     #[test]
     fn sign_snapshot_request() {
         let req = SignSnapshotRequest {
-            signing_epoch: EpochNumber(8),
             commitment: Hash::from([0xAB; 32]),
-            parent_epoch: EpochNumber(6),
         };
 
         let bytes = wincode::serialize(&req).unwrap();

@@ -5,16 +5,16 @@ use crate::error::{Result, TapeStoreError};
 use crate::types::{EpochKey, SnapshotGroupKey, SnapshotSliceKey, SliceValue};
 use crate::TapeStore;
 use store::{Column, Store};
-use tape_core::snapshot::{SnapshotEpochInfo, SnapshotGroupInfo};
+use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotGroupInfo};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::EpochNumber;
 
 pub trait SnapshotOps {
     fn get_epoch_info(&self, epoch: EpochNumber) -> Result<Option<SnapshotEpochInfo>>;
-    fn put_epoch_info(&self, info: SnapshotEpochInfo) -> Result<()>;
+    fn put_epoch_info(&self, epoch: EpochNumber, info: SnapshotEpochInfo) -> Result<()>;
     fn get_group_info( &self, epoch: EpochNumber, group: SpoolGroup,) -> Result<Option<SnapshotGroupInfo>>;
-    fn put_group_info(&self, info: SnapshotGroupInfo) -> Result<()>;
-    fn iter_groups_for_epoch(&self, epoch: EpochNumber) -> Result<Vec<SnapshotGroupInfo>>;
+    fn put_group_info(&self, epoch: EpochNumber, group: SpoolGroup, info: SnapshotGroupInfo) -> Result<()>;
+    fn iter_groups_for_epoch(&self, epoch: EpochNumber) -> Result<Vec<(SpoolGroup, SnapshotGroupInfo)>>;
     fn get_group_slice( &self, epoch: EpochNumber, group: SpoolGroup, spool: SpoolIndex,) -> Result<Option<Vec<u8>>>;
     fn put_group_slice( &self, epoch: EpochNumber, group: SpoolGroup, spool: SpoolIndex, data: Vec<u8>,) -> Result<()>;
     fn delete_epoch_data(&self, epoch: EpochNumber) -> Result<()>;
@@ -25,8 +25,8 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         Ok(self.get::<SnapshotEpochCol>(&EpochKey(epoch.0))?)
     }
 
-    fn put_epoch_info(&self, info: SnapshotEpochInfo) -> Result<()> {
-        self.put::<SnapshotEpochCol>(&EpochKey(info.epoch.0), &info)?;
+    fn put_epoch_info(&self, epoch: EpochNumber, info: SnapshotEpochInfo) -> Result<()> {
+        self.put::<SnapshotEpochCol>(&EpochKey(epoch.0), &info)?;
         Ok(())
     }
 
@@ -39,13 +39,13 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         Ok(self.get::<SnapshotGroupCol>(&key)?)
     }
 
-    fn put_group_info(&self, info: SnapshotGroupInfo) -> Result<()> {
-        let key = SnapshotGroupKey::new(info.epoch, info.group);
+    fn put_group_info(&self, epoch: EpochNumber, group: SpoolGroup, info: SnapshotGroupInfo) -> Result<()> {
+        let key = SnapshotGroupKey::new(epoch, group);
         self.put::<SnapshotGroupCol>(&key, &info)?;
         Ok(())
     }
 
-    fn iter_groups_for_epoch(&self, epoch: EpochNumber) -> Result<Vec<SnapshotGroupInfo>> {
+    fn iter_groups_for_epoch(&self, epoch: EpochNumber) -> Result<Vec<(SpoolGroup, SnapshotGroupInfo)>> {
         let prefix = SnapshotGroupKey::epoch_prefix(epoch);
         let iter = self
             .inner()
@@ -53,12 +53,16 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
             .iter_prefix(SnapshotGroupCol::CF_NAME, &prefix)?;
 
         let mut groups = Vec::new();
-        for (_key_bytes, value_bytes) in iter {
+        for (key_bytes, value_bytes) in iter {
+            let key: SnapshotGroupKey = wincode::deserialize(&key_bytes)
+                .map_err(|error| TapeStoreError::Serialization(format!(
+                    "snapshot group key: {error}"
+                )))?;
             let info: SnapshotGroupInfo = wincode::deserialize(&value_bytes)
                 .map_err(|error| TapeStoreError::Serialization(format!(
                     "snapshot group value: {error}"
                 )))?;
-            groups.push(info);
+            groups.push((key.group, info));
         }
 
         Ok(groups)
@@ -126,12 +130,14 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::{
-        CommitteeBitmap, SnapshotChunkMeta, SnapshotEpochInfo, SnapshotEpochStatus,
-        SnapshotGroupBitmap, SnapshotGroupInfo, SnapshotGroupStatus,
+    use tape_core::snapshot::chunk::SnapshotChunkMeta;
+    use tape_core::snapshot::info::{
+        SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
     };
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{
+        CommitteeBitmap, SnapshotGroupBitmap, StorageUnits, StripeCount, TrackNumber,
+    };
     use tape_crypto::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -140,19 +146,15 @@ mod tests {
 
     fn epoch_info(epoch: EpochNumber) -> SnapshotEpochInfo {
         SnapshotEpochInfo {
-            epoch,
             parent_epoch: epoch - EpochNumber(1),
-            tape: [1u8; 32].into(),
             status: SnapshotEpochStatus::Initialized,
             certified_groups: SnapshotGroupBitmap::from_indices(&[0, 2], SPOOL_GROUP_COUNT),
         }
     }
 
     fn group_info(epoch: EpochNumber, group: SpoolGroup) -> SnapshotGroupInfo {
+        let _ = (epoch, group);
         SnapshotGroupInfo {
-            epoch,
-            parent_epoch: epoch - EpochNumber(1),
-            group,
             status: SnapshotGroupStatus::Built,
             meta: SnapshotChunkMeta {
                 commitment: Hash::new_unique(),
@@ -163,7 +165,6 @@ mod tests {
             leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], MEMBER_COUNT),
             signature: BlsSignature::zeroed(),
-            track: Some([2u8; 32].into()),
             track_number: Some(TrackNumber(7)),
         }
     }
@@ -172,23 +173,26 @@ mod tests {
     fn epoch_info_roundtrip() {
         let store = test_store();
         let info = epoch_info(EpochNumber(42));
+        let epoch = EpochNumber(42);
 
-        assert!(store.get_epoch_info(info.epoch).unwrap().is_none());
-        store.put_epoch_info(info).unwrap();
+        assert!(store.get_epoch_info(epoch).unwrap().is_none());
+        store.put_epoch_info(epoch, info).unwrap();
 
-        let recovered = store.get_epoch_info(info.epoch).unwrap().unwrap();
+        let recovered = store.get_epoch_info(epoch).unwrap().unwrap();
         assert_eq!(recovered, info);
     }
 
     #[test]
     fn group_info_roundtrip() {
         let store = test_store();
-        let info = group_info(EpochNumber(42), SpoolGroup(3));
+        let epoch = EpochNumber(42);
+        let group = SpoolGroup(3);
+        let info = group_info(epoch, group);
 
-        assert!(store.get_group_info(info.epoch, info.group).unwrap().is_none());
-        store.put_group_info(info).unwrap();
+        assert!(store.get_group_info(epoch, group).unwrap().is_none());
+        store.put_group_info(epoch, group, info).unwrap();
 
-        let recovered = store.get_group_info(info.epoch, info.group).unwrap().unwrap();
+        let recovered = store.get_group_info(epoch, group).unwrap().unwrap();
         assert_eq!(recovered, info);
     }
 
@@ -200,12 +204,12 @@ mod tests {
         let group_0 = group_info(epoch, SpoolGroup(0));
         let group_1 = group_info(epoch, SpoolGroup(1));
 
-        store.put_group_info(group_2).unwrap();
-        store.put_group_info(group_0).unwrap();
-        store.put_group_info(group_1).unwrap();
+        store.put_group_info(epoch, SpoolGroup(2), group_2).unwrap();
+        store.put_group_info(epoch, SpoolGroup(0), group_0).unwrap();
+        store.put_group_info(epoch, SpoolGroup(1), group_1).unwrap();
 
         let groups = store.iter_groups_for_epoch(epoch).unwrap();
-        let ordered: Vec<SpoolGroup> = groups.iter().map(|info| info.group).collect();
+        let ordered: Vec<SpoolGroup> = groups.into_iter().map(|(group, _)| group).collect();
         assert_eq!(ordered, vec![SpoolGroup(0), SpoolGroup(1), SpoolGroup(2)]);
     }
 
@@ -233,10 +237,14 @@ mod tests {
         let epoch_a = EpochNumber(41);
         let epoch_b = EpochNumber(42);
 
-        store.put_epoch_info(epoch_a_info()).unwrap();
-        store.put_epoch_info(epoch_b_info()).unwrap();
-        store.put_group_info(group_info(epoch_a, SpoolGroup(0))).unwrap();
-        store.put_group_info(group_info(epoch_b, SpoolGroup(0))).unwrap();
+        store.put_epoch_info(epoch_a, epoch_a_info()).unwrap();
+        store.put_epoch_info(epoch_b, epoch_b_info()).unwrap();
+        store
+            .put_group_info(epoch_a, SpoolGroup(0), group_info(epoch_a, SpoolGroup(0)))
+            .unwrap();
+        store
+            .put_group_info(epoch_b, SpoolGroup(0), group_info(epoch_b, SpoolGroup(0)))
+            .unwrap();
         store
             .put_group_slice(epoch_a, SpoolGroup(0), 1, vec![1, 2, 3])
             .unwrap();

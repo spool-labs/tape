@@ -1,12 +1,10 @@
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::prelude::*;
-use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_solana::*;
+use tape_core::types::SnapshotGroupBitmap;
 
 use super::AccountType;
-
-pub type SnapshotGroupBitmap = Bitmap<{ (SPOOL_GROUP_COUNT + 7) / 8 }>;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
@@ -45,25 +43,19 @@ impl SnapshotChunkRecord {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotManifest {
-    pub epoch: EpochNumber,
     pub parent_epoch: EpochNumber,
-    pub tape: Address,
-    pub certified_count: SpoolCount,
     pub group_bitmap: SnapshotGroupBitmap,
-    // Explicit padding keeps the account POD-safe before the 8-byte-aligned group array.
-    pub reserved: [u8; 7],
     pub groups: [SnapshotChunkRecord; SPOOL_GROUP_COUNT],
 }
 
-unsafe impl Zeroable for SnapshotManifest {}
 unsafe impl Pod for SnapshotManifest {}
+unsafe impl Zeroable for SnapshotManifest {}
 
 tape_solana::state!(AccountType, SnapshotManifest);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::program::tapedrive::snapshot_tape_pda;
 
     #[test]
     fn snapshot_state_pack_roundtrip() {
@@ -96,7 +88,6 @@ mod tests {
 
     #[test]
     fn snapshot_manifest_pack_roundtrip() {
-        let (tape, _) = snapshot_tape_pda(EpochNumber(12));
         let mut group_bitmap = SnapshotGroupBitmap::zeroed();
         group_bitmap.set(3);
 
@@ -110,12 +101,8 @@ mod tests {
         };
 
         let manifest = SnapshotManifest {
-            epoch: EpochNumber(12),
             parent_epoch: EpochNumber(11),
-            tape,
-            certified_count: 1,
             group_bitmap,
-            reserved: [0; 7],
             groups,
         };
 

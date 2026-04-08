@@ -12,11 +12,11 @@ use crate::context::NodeContext;
 
 pub async fn submit_init_snapshot_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    snapshot_epoch: EpochNumber,
+    epoch: EpochNumber,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
 
-    let ix = build_init_snapshot_epoch_ix(fee_payer, snapshot_epoch);
+    let ix = build_init_snapshot_epoch_ix(fee_payer, epoch);
 
     ctx.rpc
         .send_instructions_with_compute_unit_limit(ctx.signer(), INIT_SNAPSHOT_EPOCH_CU, vec![ix])

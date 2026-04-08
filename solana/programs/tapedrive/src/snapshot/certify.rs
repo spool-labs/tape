@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::snapshot::chunk::snapshot_chunk_key;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_crypto::bls12254::min_sig::{verify_aggregate, G1Point};
@@ -34,7 +35,7 @@ pub fn process_certify_snapshot_group(
         .is_snapshot_state()?
         .as_account::<SnapshotState>(&tapedrive::ID)?;
 
-    let snapshot_epoch = EpochNumber::unpack(args.snapshot_epoch);
+    let snapshot_epoch = EpochNumber::unpack(args.epoch);
     let current_epoch = current_epoch(epoch);
     let expected_epoch = required_snapshot_epoch(current_epoch)?;
     let expected_parent = snapshot_state
@@ -72,7 +73,7 @@ pub fn process_certify_snapshot_group(
         .has_address(&snapshot_tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if manifest.tape != snapshot_tape_address || snapshot_tape.authority != system_address {
+    if snapshot_tape.authority != system_address {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -130,10 +131,6 @@ pub fn process_certify_snapshot_group(
     snapshot_tape.write_track(&track)?;
 
     manifest.group_bitmap.set(group_index);
-    manifest.certified_count = manifest
-        .certified_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
     manifest.groups[group_index] = SnapshotChunkRecord {
         commitment: args.commitment,
         track_number,
@@ -143,14 +140,11 @@ pub fn process_certify_snapshot_group(
     };
 
     let signer_count = indices.len() as u64;
-    let track_address = track_pda(snapshot_tape_address, track_number).0;
 
-    SnapshotGroupCertified {
+    SnapshotCertified {
         epoch: snapshot_epoch,
         group,
-        tape: snapshot_tape_address,
-        track: track_address,
-        track_number,
+        track: track_number,
         commitment: args.commitment,
         signer_count: signer_count.to_le_bytes(),
         signer_weight: signer_weight.to_le_bytes(),
@@ -173,11 +167,12 @@ fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, Pr
 #[cfg(test)]
 mod tests {
     use tape_api::prelude::{BlsPrivateKey, BlsPubkey, BlsSignature};
-    use tape_core::snapshot::chunk::{SnapshotChunkMeta, snapshot_chunk_value_hash};
+    use tape_core::snapshot::chunk::{snapshot_chunk_value_hash, SnapshotChunkMeta};
     use tape_core::track::store::TrackStore;
+    use tape_core::types::{CommitteeBitmap, SnapshotGroupBitmap};
     use tape_crypto::Hash;
-    use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_crypto::merkle::MerkleTree;
+    use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_spooler::dhondt_allocate;
     use tape_test::*;
 
@@ -231,12 +226,8 @@ mod tests {
             tail_epoch: EpochNumber(41),
         };
         let manifest = SnapshotManifest {
-            epoch: snapshot_epoch,
             parent_epoch: EpochNumber(41),
-            tape: snapshot_tape_address,
-            certified_count: 0,
             group_bitmap: SnapshotGroupBitmap::zeroed(),
-            reserved: [0; 7],
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
         let tape = Tape {
@@ -348,7 +339,6 @@ mod tests {
                 Check::account(&Pubkey::from(manifest_address))
                     .data(
                         SnapshotManifest {
-                            certified_count: 1,
                             group_bitmap: expected_group_bitmap,
                             groups: expected_groups,
                             ..manifest
@@ -428,12 +418,8 @@ mod tests {
             pda(
                 manifest_address,
                 SnapshotManifest {
-                    epoch: snapshot_epoch,
                     parent_epoch: EpochNumber(41),
-                    tape: snapshot_tape_address,
-                    certified_count: 1,
                     group_bitmap,
-                    reserved: [0; 7],
                     groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
                 }
                 .pack(),

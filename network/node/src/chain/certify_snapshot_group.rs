@@ -4,12 +4,11 @@ use rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::compute::CERTIFY_SNAPSHOT_GROUP_CU;
 use tape_api::instruction::build_certify_snapshot_group_ix;
-use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_core::bls::BlsSignature;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
+use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
 use tape_crypto::Hash;
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
@@ -18,7 +17,7 @@ use crate::context::NodeContext;
 
 pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    snapshot_epoch: EpochNumber,
+    epoch: EpochNumber,
     signing_epoch: EpochNumber,
     group: SpoolGroup,
     commitment: Hash,
@@ -33,7 +32,7 @@ pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: 
 
     let ix = build_certify_snapshot_group_ix(
         fee_payer,
-        snapshot_epoch,
+        epoch,
         signing_epoch,
         group,
         commitment,
@@ -59,14 +58,14 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::errors::TapeError;
     use tape_api::prelude::tapedrive;
-    use tape_api::program::tapedrive::{CommitteeBitmap, snapshot_state_pda};
+    use tape_api::program::tapedrive::snapshot_state_pda;
     use tape_api::state::SnapshotState;
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
-    use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
+    use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
 

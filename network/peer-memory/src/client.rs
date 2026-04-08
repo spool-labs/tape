@@ -118,11 +118,9 @@ impl Api for MemoryApi {
             self,
             node,
             SignSnapshotReq {
-                snapshot_epoch: req.snapshot_epoch,
-                signing_epoch: req.signing_epoch,
+                epoch: req.epoch,
                 group: req.group,
                 commitment: req.commitment,
-                parent_epoch: req.parent_epoch,
             },
             SignSnapshot
         )
@@ -170,7 +168,7 @@ mod tests {
                 SignSnapshotRes {
                     signature: signature.clone(),
                     node_id: node,
-                    epoch: req.signing_epoch,
+                    epoch: EpochNumber(req.epoch.0 + 1),
                 },
             )),
             _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
@@ -189,15 +187,13 @@ mod tests {
         let client = MemoryApi::new(move |node, req| match req {
             PeerReq::SignSnapshot(req) => {
                 assert_eq!(node, NodeId(7));
-                assert_eq!(req.snapshot_epoch, EpochNumber(10));
-                assert_eq!(req.signing_epoch, EpochNumber(11));
+                assert_eq!(req.epoch, EpochNumber(10));
                 assert_eq!(req.group, SpoolGroup(4));
                 assert_eq!(req.commitment, Hash::from([0xAB; 32]));
-                assert_eq!(req.parent_epoch, EpochNumber(9));
                 PeerRes::SignSnapshot(Ok(SignSnapshotRes {
                     signature: signature.clone(),
                     node_id: node,
-                    epoch: req.signing_epoch,
+                    epoch: EpochNumber(11),
                 }))
             }
             _ => PeerRes::SignSnapshot(Err(ApiError::Other("unexpected".into()))),
@@ -207,11 +203,9 @@ mod tests {
             .sign_snapshot(
                 NodeId(7),
                 &SignSnapshotReq {
-                    snapshot_epoch: EpochNumber(10),
-                    signing_epoch: EpochNumber(11),
+                    epoch: EpochNumber(10),
                     group: SpoolGroup(4),
                     commitment: Hash::from([0xAB; 32]),
-                    parent_epoch: EpochNumber(9),
                 },
             )
             .await

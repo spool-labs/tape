@@ -161,11 +161,9 @@ pub struct CertifyRes {
 
 #[derive(Clone, Debug)]
 pub struct SignSnapshotReq {
-    pub snapshot_epoch: EpochNumber,
-    pub signing_epoch: EpochNumber,
+    pub epoch: EpochNumber,
     pub group: SpoolGroup,
     pub commitment: Hash,
-    pub parent_epoch: EpochNumber,
 }
 
 #[derive(Clone, Debug)]

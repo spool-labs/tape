@@ -7,7 +7,7 @@ use tape_core::snapshot::chunk::{SnapshotChunkMeta, snapshot_chunk_value_hash};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{TrackKind, TrackState};
-use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
+use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
@@ -16,20 +16,20 @@ use tape_solana::*;
 use crate::errors::TapeError;
 use crate::program::tapedrive;
 use crate::program::tapedrive::{
-    CommitteeBitmap, archive_pda, epoch_pda, snapshot_manifest_pda, snapshot_state_pda,
-    snapshot_tape_pda, system_pda,
+    archive_pda, epoch_pda, snapshot_manifest_pda, snapshot_state_pda, snapshot_tape_pda,
+    system_pda,
 };
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct InitSnapshotEpoch {
-    pub snapshot_epoch: [u8; 8],
+    pub epoch: [u8; 8],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CertifySnapshotGroup {
-    pub snapshot_epoch: [u8; 8],
+    pub epoch: [u8; 8],
     pub signing_epoch: [u8; 8],
     pub group: [u8; 8],
     pub commitment: Hash,
@@ -44,7 +44,7 @@ pub struct CertifySnapshotGroup {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FinalizeSnapshotEpoch {
-    pub snapshot_epoch: [u8; 8],
+    pub epoch: [u8; 8],
 }
 
 pub fn get_snapshot_track_meta(args: &CertifySnapshotGroup) -> Result<TrackMeta, ProgramError> {
@@ -75,14 +75,14 @@ pub fn get_snapshot_track_meta(args: &CertifySnapshotGroup) -> Result<TrackMeta,
 
 pub fn build_init_snapshot_epoch_ix(
     fee_payer: Address,
-    snapshot_epoch: EpochNumber,
+    epoch: EpochNumber,
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (archive_address, _) = archive_pda();
     let (snapshot_state_address, _) = snapshot_state_pda();
-    let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
-    let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
+    let (manifest_address, _) = snapshot_manifest_pda(epoch);
+    let (snapshot_tape_address, _) = snapshot_tape_pda(epoch);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -98,7 +98,7 @@ pub fn build_init_snapshot_epoch_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: InitSnapshotEpoch {
-            snapshot_epoch: snapshot_epoch.pack(),
+            epoch: epoch.pack(),
         }
         .to_bytes(),
     }
@@ -106,7 +106,7 @@ pub fn build_init_snapshot_epoch_ix(
 
 pub fn build_certify_snapshot_group_ix(
     fee_payer: Address,
-    snapshot_epoch: EpochNumber,
+    epoch: EpochNumber,
     signing_epoch: EpochNumber,
     group: SpoolGroup,
     commitment: Hash,
@@ -120,8 +120,8 @@ pub fn build_certify_snapshot_group_ix(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (snapshot_state_address, _) = snapshot_state_pda();
-    let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
-    let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
+    let (manifest_address, _) = snapshot_manifest_pda(epoch);
+    let (snapshot_tape_address, _) = snapshot_tape_pda(epoch);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -134,7 +134,7 @@ pub fn build_certify_snapshot_group_ix(
             AccountMeta::new(snapshot_tape_address.into(), false),
         ],
         data: CertifySnapshotGroup {
-            snapshot_epoch: snapshot_epoch.pack(),
+            epoch: epoch.pack(),
             signing_epoch: signing_epoch.pack(),
             group: group.pack(),
             commitment,
@@ -151,11 +151,11 @@ pub fn build_certify_snapshot_group_ix(
 
 pub fn build_finalize_snapshot_epoch_ix(
     fee_payer: Address,
-    snapshot_epoch: EpochNumber,
+    epoch: EpochNumber,
 ) -> Instruction {
     let (epoch_address, _) = epoch_pda();
     let (snapshot_state_address, _) = snapshot_state_pda();
-    let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
+    let (manifest_address, _) = snapshot_manifest_pda(epoch);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -166,7 +166,7 @@ pub fn build_finalize_snapshot_epoch_ix(
             AccountMeta::new_readonly(manifest_address.into(), false),
         ],
         data: FinalizeSnapshotEpoch {
-            snapshot_epoch: snapshot_epoch.pack(),
+            epoch: epoch.pack(),
         }
         .to_bytes(),
     }
@@ -181,7 +181,7 @@ mod tests {
     fn snapshot_track_meta_uses_compact_hashing() {
         let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
         let args = CertifySnapshotGroup {
-            snapshot_epoch: EpochNumber(9).pack(),
+            epoch: EpochNumber(9).pack(),
             signing_epoch: EpochNumber(10).pack(),
             group: SpoolGroup(3).pack(),
             commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),

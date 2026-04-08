@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_core::types::SnapshotGroupBitmap;
 
 use crate::error::*;
 
@@ -36,7 +37,7 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .is_snapshot_state()?
         .as_account::<SnapshotState>(&tapedrive::ID)?;
 
-    let snapshot_epoch = EpochNumber::unpack(args.snapshot_epoch);
+    let snapshot_epoch = EpochNumber::unpack(args.epoch);
     let current_epoch = current_epoch(epoch);
     let expected_epoch = required_snapshot_epoch(current_epoch)?;
     let expected_parent = snapshot_state
@@ -93,18 +94,13 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     snapshot_tape.used = StorageUnits::zero();
 
     let manifest = manifest_info.as_account_mut::<SnapshotManifest>(&tapedrive::ID)?;
-    manifest.epoch = snapshot_epoch;
     manifest.parent_epoch = snapshot_state.tail_epoch;
-    manifest.tape = snapshot_tape_address;
-    manifest.certified_count = 0;
     manifest.group_bitmap = SnapshotGroupBitmap::zeroed();
-    manifest.reserved = [0; 7];
     manifest.groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
 
-    SnapshotEpochInitialized {
-        epoch: snapshot_epoch,
-        parent_epoch: manifest.parent_epoch,
-        tape: snapshot_tape_address,
+    SnapshotInit {
+        parent: manifest.parent_epoch,
+        current: snapshot_epoch,
     }
     .log();
 
@@ -165,12 +161,8 @@ mod tests {
         ];
 
         let expected_manifest = SnapshotManifest {
-            epoch: snapshot_epoch,
             parent_epoch: EpochNumber(0),
-            tape: snapshot_tape_address,
-            certified_count: 0,
             group_bitmap: SnapshotGroupBitmap::zeroed(),
-            reserved: [0; 7],
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
 

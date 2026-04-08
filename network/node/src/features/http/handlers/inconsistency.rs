@@ -8,12 +8,11 @@ use bytemuck::cast;
 
 use rpc::Rpc;
 use store::Store;
-use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_core::bft::is_supermajority;
 use tape_core::cert::InvalidateMessage;
 use tape_core::erasure::{SPOOL_GROUP_SIZE, group_for_spool};
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::EpochNumber;
+use tape_core::types::{CommitteeBitmap, EpochNumber};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{

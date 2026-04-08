@@ -17,14 +17,13 @@ use tape_crypto::address::Address;
 use thiserror::Error;
 
 use tape_api::instruction::build_certify_track_ix;
-use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_api::state::System;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrackProof;
-use tape_core::types::{EpochNumber, NodeId};
+use tape_core::types::{CommitteeBitmap, EpochNumber, NodeId};
 use tape_retry::{retry, RetryConfig};
 use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
 

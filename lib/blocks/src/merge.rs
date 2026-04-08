@@ -54,9 +54,9 @@ pub fn merge(
 
             RawInstruction::InitSnapshotEpoch => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::SnapshotInitialized(e)) => e,
+                    Some(TapedriveEvent::SnapshotInit(e)) => e,
                     _ => {
-                        return Err(ParseError::EventMismatch("expected SnapshotInitialized event"))
+                        return Err(ParseError::EventMismatch("expected SnapshotInit event"))
                     }
                 };
                 ParsedInstruction::InitSnapshotEpoch { event }
@@ -229,7 +229,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::event::{
         EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced,
-        SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified, TapeDestroyed,
+        SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeDestroyed,
         TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
     };
     use tape_core::prelude::*;
@@ -271,25 +271,21 @@ mod tests {
 
     #[test]
     fn test_merge_snapshot_events() {
-        let init = SnapshotEpochInitialized {
-            epoch: EpochNumber(7),
-            parent_epoch: EpochNumber(6),
-            tape: Address::new_unique(),
+        let init = SnapshotInit {
+            parent: EpochNumber(6),
+            current: EpochNumber(7),
         };
-        let cert = SnapshotGroupCertified {
+        let cert = SnapshotCertified {
             epoch: EpochNumber(7),
             group: SpoolGroup(3),
-            tape: Address::new_unique(),
-            track: Address::new_unique(),
-            track_number: TrackNumber(9),
+            track: TrackNumber(9),
             commitment: Hash::from([0x44; 32]),
             signer_count: [2; 8],
             signer_weight: [3; 8],
         };
-        let finalized = SnapshotEpochFinalized {
-            epoch: EpochNumber(7),
-            parent_epoch: EpochNumber(6),
-            tail_epoch: EpochNumber(7),
+        let finalized = SnapshotFinalized {
+            parent: EpochNumber(6),
+            current: EpochNumber(7),
         };
 
         let merged = merge(
@@ -299,7 +295,7 @@ mod tests {
                 RawInstruction::FinalizeSnapshotEpoch,
             ],
             vec![
-                TapedriveEvent::SnapshotInitialized(init),
+                TapedriveEvent::SnapshotInit(init),
                 TapedriveEvent::SnapshotCertified(cert),
                 TapedriveEvent::SnapshotFinalized(finalized),
             ],
@@ -312,18 +308,14 @@ mod tests {
                 ParsedInstruction::InitSnapshotEpoch { event: decoded_init },
                 ParsedInstruction::CertifySnapshotGroup { event: decoded_cert },
                 ParsedInstruction::FinalizeSnapshotEpoch { event: decoded_finalized },
-            ] if decoded_init.epoch == init.epoch
-                && decoded_init.parent_epoch == init.parent_epoch
-                && decoded_init.tape == init.tape
+            ] if decoded_init.parent == init.parent
+                && decoded_init.current == init.current
                 && decoded_cert.epoch == cert.epoch
                 && decoded_cert.group == cert.group
-                && decoded_cert.tape == cert.tape
                 && decoded_cert.track == cert.track
-                && decoded_cert.track_number == cert.track_number
                 && decoded_cert.commitment == cert.commitment
-                && decoded_finalized.epoch == finalized.epoch
-                && decoded_finalized.parent_epoch == finalized.parent_epoch
-                && decoded_finalized.tail_epoch == finalized.tail_epoch
+                && decoded_finalized.parent == finalized.parent
+                && decoded_finalized.current == finalized.current
         ));
     }
 

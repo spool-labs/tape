@@ -3,11 +3,11 @@
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified, TapeDestroyed,
-    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
+    SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeDestroyed, TapeReserved,
+    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
-use tape_api::program::tapedrive::{track_pda, ID as TAPE_DRIVE_PROGRAM_ID};
+use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
 use tape_core::track::data::{TrackData, TrackDataSlice};
 use tape_crypto::address::Address;
@@ -76,13 +76,13 @@ pub enum ParsedInstruction {
         event: NodeSynced,
     },
     InitSnapshotEpoch {
-        event: SnapshotEpochInitialized,
+        event: SnapshotInit,
     },
     CertifySnapshotGroup {
-        event: SnapshotGroupCertified,
+        event: SnapshotCertified,
     },
     FinalizeSnapshotEpoch {
-        event: SnapshotEpochFinalized,
+        event: SnapshotFinalized,
     },
     AdvancePool {
         node: Address,
@@ -151,7 +151,7 @@ pub fn parse_raw_instruction(
         .map_err(|_| ParseError::InvalidPubkey)?;
 
     // Only process tapedrive program instructions
-    if program_id != Address::from(TAPE_DRIVE_PROGRAM_ID) {
+    if program_id != Address::from(TAPE_PROGRAM_ID) {
         return Ok(None);
     }
 
@@ -277,23 +277,23 @@ mod tests {
     use solana_sdk::instruction::Instruction;
     use solana_transaction_status::UiCompiledInstruction;
     use tape_api::event::{
-        SnapshotEpochFinalized, SnapshotEpochInitialized, SnapshotGroupCertified,
+        SnapshotCertified, SnapshotFinalized, SnapshotInit,
     };
     use tape_api::instruction::{
         build_certify_snapshot_group_ix, build_finalize_snapshot_epoch_ix,
         build_init_snapshot_epoch_ix,
     };
-    use tape_api::program::tapedrive::{CommitteeBitmap, ID as TAPE_DRIVE_PROGRAM_ID};
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
+    use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
 
     fn compiled_instruction(instruction: &Instruction) -> (UiCompiledInstruction, Vec<String>) {
-        let account_keys = vec![TAPE_DRIVE_PROGRAM_ID.to_string()];
+        let account_keys = vec![TAPE_PROGRAM_ID.to_string()];
         (
             UiCompiledInstruction {
                 program_id_index: 0,
@@ -346,25 +346,21 @@ mod tests {
 
     #[test]
     fn parses_snapshot_events() {
-        let init = SnapshotEpochInitialized {
-            epoch: EpochNumber(7),
-            parent_epoch: EpochNumber(6),
-            tape: Address::new_unique(),
+        let init = SnapshotInit {
+            parent: EpochNumber(6),
+            current: EpochNumber(7),
         };
-        let cert = SnapshotGroupCertified {
+        let cert = SnapshotCertified {
             epoch: EpochNumber(7),
             group: SpoolGroup(4),
-            tape: Address::new_unique(),
-            track: Address::new_unique(),
-            track_number: TrackNumber(9),
+            track: TrackNumber(9),
             commitment: Hash::from([0x44; 32]),
             signer_count: [2; 8],
             signer_weight: [3; 8],
         };
-        let finalized = SnapshotEpochFinalized {
-            epoch: EpochNumber(7),
-            parent_epoch: EpochNumber(6),
-            tail_epoch: EpochNumber(7),
+        let finalized = SnapshotFinalized {
+            parent: EpochNumber(6),
+            current: EpochNumber(7),
         };
 
         let instructions = vec![
@@ -373,7 +369,7 @@ mod tests {
             RawInstruction::FinalizeSnapshotEpoch,
         ];
         let events = vec![
-            TapedriveEvent::SnapshotInitialized(init),
+            TapedriveEvent::SnapshotInit(init),
             TapedriveEvent::SnapshotCertified(cert),
             TapedriveEvent::SnapshotFinalized(finalized),
         ];
@@ -386,18 +382,14 @@ mod tests {
                 ParsedInstruction::InitSnapshotEpoch { event: decoded_init },
                 ParsedInstruction::CertifySnapshotGroup { event: decoded_cert },
                 ParsedInstruction::FinalizeSnapshotEpoch { event: decoded_finalized },
-            ] if decoded_init.epoch == init.epoch
-                && decoded_init.parent_epoch == init.parent_epoch
-                && decoded_init.tape == init.tape
+            ] if decoded_init.parent == init.parent
+                && decoded_init.current == init.current
                 && decoded_cert.epoch == cert.epoch
                 && decoded_cert.group == cert.group
-                && decoded_cert.tape == cert.tape
                 && decoded_cert.track == cert.track
-                && decoded_cert.track_number == cert.track_number
                 && decoded_cert.commitment == cert.commitment
-                && decoded_finalized.epoch == finalized.epoch
-                && decoded_finalized.parent_epoch == finalized.parent_epoch
-                && decoded_finalized.tail_epoch == finalized.tail_epoch
+                && decoded_finalized.parent == finalized.parent
+                && decoded_finalized.current == finalized.current
         ));
     }
 }
