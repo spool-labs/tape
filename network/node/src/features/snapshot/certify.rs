@@ -1,15 +1,105 @@
+//! Snapshot group certification submission.
+//!
+//! For each spool group this node is responsible for, collects peer
+//! signatures and submits `CertifySnapshotGroup` on-chain. Races with
+//! other nodes are handled gracefully via `is_already_done()`.
+
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::snapshot::info::SnapshotGroupStatus;
+use tape_core::spooler::SpoolGroup;
+use tape_core::types::EpochNumber;
 use tape_protocol::Api;
+use tape_store::ops::SnapshotOps;
+use tracing::{debug, info, warn};
 
+use crate::chain::submit_certify_snapshot_group;
 use crate::context::NodeContext;
+use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::error::NodeError;
+use crate::features::snapshot::signing::collect_group_signatures;
 
-pub async fn submit_snapshot_group_certification<Db: Store, Cluster: Api, Blockchain: Rpc>(
+/// Certifies all snapshot groups this node is responsible for.
+///
+/// Skips groups that are already certified on-chain or that lack local
+/// build artifacts. Submission failures are logged, not propagated.
+pub async fn certify_snapshot_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    epoch: EpochNumber,
 ) -> Result<(), NodeError> {
-    let _ = context;
-    todo!("snapshot group certification submission")
+    let my_groups = local_groups(context);
+    if my_groups.is_empty() {
+        return Ok(());
+    }
+
+    for group in my_groups {
+        let group_info = context
+            .store
+            .get_group_info(epoch, group)
+            .map_err(|e| NodeError::Store(format!("get_group_info({epoch}, {group}): {e}")))?;
+
+        let Some(group_info) = group_info else {
+            continue;
+        };
+
+        match group_info.status {
+            SnapshotGroupStatus::CertifiedOnChain | SnapshotGroupStatus::Missing => continue,
+            SnapshotGroupStatus::Built | SnapshotGroupStatus::CertifiedLocally => {}
+        }
+
+        let commitment = group_info.meta.commitment;
+        let collected = match collect_group_signatures(context, epoch, group, commitment).await? {
+            Some(collected) => collected,
+            None => {
+                debug!(epoch = epoch.0, group = group.0, "no supermajority, skipping group");
+                continue;
+            }
+        };
+
+        let result = submit_certify_snapshot_group(
+            context,
+            epoch,
+            collected.signing_epoch,
+            group,
+            group_info.meta.commitment,
+            group_info.meta.profile,
+            group_info.meta.stripe_size,
+            group_info.meta.stripe_count,
+            group_info.leaves,
+            collected.bitmap,
+            collected.signature,
+        )
+        .await;
+
+        match classify_tx(result) {
+            TxOutcome::Confirmed(txid) => {
+                info!(epoch = epoch.0, group = group.0, ?txid, "snapshot group certified");
+            }
+            TxOutcome::Program(error) if error.is_already_done() => {
+                debug!(epoch = epoch.0, group = group.0, "snapshot group already sealed");
+            }
+            TxOutcome::Program(error) => {
+                warn!(epoch = epoch.0, group = group.0, ?error, "certify program error");
+            }
+            TxOutcome::Transport(error) => {
+                warn!(epoch = epoch.0, group = group.0, ?error, "certify transport error");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns the deduplicated sorted set of spool groups this node owns.
+fn local_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> BTreeSet<SpoolGroup> {
+    context
+        .my_spools()
+        .into_iter()
+        .map(SpoolGroup::of)
+        .collect()
 }

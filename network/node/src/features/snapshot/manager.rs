@@ -5,17 +5,21 @@ use store::Store;
 use tape_protocol::{Api, ProtocolState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use tape_core::snapshot::info::SnapshotEpochStatus;
 use tape_core::types::EpochNumber;
 use tape_store::ops::SnapshotOps;
 
+use crate::chain::submit_init_snapshot_epoch;
 use crate::context::NodeContext;
+use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::snapshot::build::build_snapshot_epoch;
+use crate::features::snapshot::certify::certify_snapshot_groups;
+use crate::features::snapshot::finalize::try_finalize_snapshot;
 use crate::features::snapshot::observe::{observe_block, observe_state};
 
 pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -73,6 +77,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
         if state.epoch >= EpochNumber(2) {
             let snapshot_epoch = state.epoch.saturating_sub(EpochNumber(1));
             self.maybe_build(snapshot_epoch).await?;
+            self.maybe_advance(snapshot_epoch).await?;
         }
 
         Ok(())
@@ -97,7 +102,67 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
     }
 
     async fn handle_block(&self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
-        observe_block(&self.context, block).await
+        observe_block(&self.context, block).await?;
+
+        let state = self.context.state();
+        if state.epoch >= EpochNumber(2) {
+            let snapshot_epoch = state.epoch.saturating_sub(EpochNumber(1));
+            self.maybe_advance(snapshot_epoch).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Drives the snapshot state machine forward based on current epoch status.
+    ///
+    /// Called after both state changes and block observations. Submission
+    /// errors are logged but do not propagate -- the next event re-triggers
+    /// this method for automatic retry.
+    async fn maybe_advance(&self, snapshot_epoch: EpochNumber) -> Result<(), NodeError> {
+        let epoch_info = self
+            .context
+            .store
+            .get_epoch_info(snapshot_epoch)
+            .map_err(|e| NodeError::Store(format!("get_epoch_info({snapshot_epoch}): {e}")))?;
+
+        let Some(info) = epoch_info else {
+            return Ok(());
+        };
+
+        match info.status {
+            SnapshotEpochStatus::Pending | SnapshotEpochStatus::Finalized => return Ok(()),
+            SnapshotEpochStatus::Built => {
+                self.try_init(snapshot_epoch).await;
+            }
+            SnapshotEpochStatus::Initialized | SnapshotEpochStatus::PartiallyCertified => {
+                certify_snapshot_groups(&self.context, snapshot_epoch).await?;
+                try_finalize_snapshot(&self.context, snapshot_epoch).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Submits `InitSnapshotEpoch` for a built epoch.
+    ///
+    /// If another node already initialized the epoch, the resulting
+    /// program error is treated as success.
+    async fn try_init(&self, epoch: EpochNumber) {
+        let result = submit_init_snapshot_epoch(&self.context, epoch).await;
+        match classify_tx(result) {
+            TxOutcome::Confirmed(txid) => {
+                debug!(epoch = epoch.0, ?txid, "snapshot epoch init submitted");
+            }
+            TxOutcome::Program(error) if error.is_already_done() => {
+                debug!(epoch = epoch.0, "snapshot epoch already initialized");
+            }
+            TxOutcome::Program(error) => {
+                warn!(epoch = epoch.0, ?error, "init snapshot program error");
+            }
+            TxOutcome::Transport(error) => {
+                warn!(epoch = epoch.0, ?error, "init snapshot transport error");
+            }
+        }
     }
 
     fn channel_closed_or_cancelled(&self, channel: ChannelName) -> Result<(), NodeError> {
