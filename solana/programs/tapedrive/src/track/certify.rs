@@ -1,11 +1,10 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::TrackCertified;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::track::types::TrackState;
 use tape_crypto::bls12254::min_sig::*;
 
-use crate::error::*;
 
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = parse_certify_track(data)?;

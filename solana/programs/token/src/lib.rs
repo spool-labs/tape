@@ -3,7 +3,7 @@
 pub mod initialize;
 use initialize::*;
 
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::program::token;
 
 pub fn process_instruction(
@@ -36,4 +36,3 @@ pub fn process_instruction(
 }
 
 entrypoint!(process_instruction);
-

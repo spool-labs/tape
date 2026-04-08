@@ -1,7 +1,6 @@
 use tape_solana::*;
 use solana_program::sysvar::rent::Rent;
-use tape_api::prelude::*;
-use crate::error::*;
+use tape_api::program::prelude::*;
 
 pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SwapForSol::try_from_bytes(data)?;

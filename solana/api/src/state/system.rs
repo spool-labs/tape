@@ -1,8 +1,10 @@
 use tape_solana::*;
-use tape_core::prelude::*;
+use tape_core::spooler::SpoolAssignment;
+use tape_core::system::Committee;
+use tape_core::types::{EpochNumber, VersionId};
 use super::AccountType;
 use crate::program::tapedrive::MIN_COMMITTEE_SIZE;
-use tape_core::erasure::MEMBER_COUNT;
+use tape_core::erasure::{MEMBER_COUNT, SPOOL_COUNT};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]

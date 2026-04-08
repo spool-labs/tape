@@ -1,6 +1,5 @@
 use tape_solana::*;
-use tape_api::prelude::*;
-use crate::error::*;
+use tape_api::program::prelude::*;
 
 pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SplitPoolStake::try_from_bytes(data)?;

@@ -1,8 +1,7 @@
 use solana_program::program::invoke;
 #[allow(deprecated)]
 use solana_program::system_instruction;
-use crate::error::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SwapForTape::try_from_bytes(data)?;

@@ -7,11 +7,8 @@ use rpc::Rpc;
 use rpc_client::RpcClient;
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
-use tape_core::track::types::CompressedTrack;
-use tape_core::types::StorageUnits;
-use tape_crypto::address::Address;
-use tape_crypto::ed25519::Keypair;
-use tape_crypto::Hash;
+use tape_core::prelude::{CompressedTrack, StorageUnits};
+use tape_crypto::prelude::{Address, Hash, Keypair};
 use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 

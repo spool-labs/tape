@@ -1,5 +1,4 @@
-use crate::error::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = WithdrawTape::try_from_bytes(data)?;

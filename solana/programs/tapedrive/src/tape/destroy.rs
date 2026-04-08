@@ -1,7 +1,6 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::TapeDestroyed;
-use crate::error::*;
 
 pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = DestroyTape::try_from_bytes(data)?;

@@ -1,6 +1,5 @@
 use tape_solana::*;
-use crate::error::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::NodeRegistered;
 
 pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

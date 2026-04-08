@@ -1,6 +1,5 @@
 use tape_solana::*;
-use tape_api::prelude::*;
-use crate::error::*;
+use tape_api::program::prelude::*;
 
 pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = MergeTape::try_from_bytes(data)?;

@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = Initialize::try_from_bytes(data)?;

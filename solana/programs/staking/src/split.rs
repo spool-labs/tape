@@ -1,4 +1,4 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SplitStake::try_from_bytes(data)?;

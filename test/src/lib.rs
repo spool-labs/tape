@@ -1,4 +1,4 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::program;
 use mollusk_svm::{
     program::{keyed_account_for_system_program, loader_keys::LOADER_V2},

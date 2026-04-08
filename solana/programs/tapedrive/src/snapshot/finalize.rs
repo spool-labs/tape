@@ -1,6 +1,5 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
-use crate::error::*;
 
 pub fn process_finalize_snapshot_epoch(
     accounts: &[AccountInfo<'_>],

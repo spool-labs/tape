@@ -1,5 +1,4 @@
-use crate::error::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::StakeUnlockRequested;
 use solana_program::clock::Clock;
 use solana_program::sysvar::Sysvar;

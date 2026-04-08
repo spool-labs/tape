@@ -1,4 +1,4 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_set_network_address(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetNetworkAddress::try_from_bytes(data)?;

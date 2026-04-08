@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
 pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

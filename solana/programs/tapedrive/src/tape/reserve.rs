@@ -1,8 +1,7 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::TapeReserved;
 use tape_core::tape::tape_reservation_cost;
-use crate::error::*;
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ReserveTape::try_from_bytes(data)?;

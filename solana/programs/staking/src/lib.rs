@@ -10,7 +10,7 @@ use unstake::*;
 use split::*;
 use merge::*;
 
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::program::staking;
 
 pub fn process_instruction(

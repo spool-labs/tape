@@ -1,13 +1,9 @@
 //! Request/response types for peer operations.
 
 use tape_core::bls::BlsSignature;
-use tape_core::spooler::SpoolIndex;
-use tape_core::spooler::SpoolGroup;
-use tape_core::track::data::TrackData;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
-use tape_core::types::{EpochNumber, NodeId, TrackNumber};
-use tape_crypto::address::Address;
-use tape_crypto::Hash;
+use tape_core::prelude::{CompressedTrack, EpochNumber, NodeId, SpoolGroup, SpoolIndex, TrackData, TrackNumber};
+use tape_core::track::types::CompressedTrackProof;
+use tape_crypto::prelude::{Address, Hash};
 use crate::api::types::{
     InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
     SyncTrackEntry,

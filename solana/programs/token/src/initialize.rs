@@ -1,7 +1,7 @@
 use tape_solana::*;
 use solana_program::program_pack::Pack;
 use spl_token::state::Mint;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [

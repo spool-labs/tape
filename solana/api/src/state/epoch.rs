@@ -1,5 +1,6 @@
 use tape_solana::*;
-use tape_core::prelude::*;
+use tape_core::system::EpochState;
+use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
 use super::AccountType;
 

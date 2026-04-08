@@ -1,6 +1,6 @@
 use tape_crypto::address::Address;
 use tape_solana::*;
-use tape_core::prelude::*;
+use tape_core::staking::StakedTape;
 
 use super::AccountType;
 

@@ -19,7 +19,7 @@ pub use swap_tape::*;
 pub use withdraw_sol::*;
 pub use withdraw_tape::*;
 
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -64,7 +64,7 @@ entrypoint!(process_instruction);
 
 #[cfg(test)]
 mod tests {
-    use tape_api::prelude::*;
+    use tape_api::program::prelude::*;
     use tape_test::*;
     use solana_sdk::account::Account;
 

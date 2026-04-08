@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::EpochAdvanced;
 use tape_crypto::hash::Hash;
 

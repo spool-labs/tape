@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_api::event::TrackWritten;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrack;

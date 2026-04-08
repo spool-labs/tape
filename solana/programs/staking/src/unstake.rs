@@ -1,4 +1,4 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = UnstakeTokens::try_from_bytes(data)?;

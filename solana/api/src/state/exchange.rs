@@ -1,6 +1,7 @@
 use tape_crypto::address::Address;
 use tape_solana::*;
-use tape_core::prelude::*;
+use tape_core::system::ExchangeRate;
+use tape_core::types::coin::{Coin, SOL, TAPE};
 
 use super::AccountType;
 

@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_crypto::address::Address;
-use tape_core::prelude::*;
+use tape_core::types::coin::{Coin, TAPE};
 use crate::program::{staking, tapedrive};
 use crate::utils::ata;
 use crate::program::*;

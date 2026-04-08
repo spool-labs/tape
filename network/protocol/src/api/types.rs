@@ -2,17 +2,15 @@
 
 use core::mem::size_of;
 
+use tape_core::prelude::{EpochNumber, NodeId, SpoolIndex, TrackData, TrackNumber};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
-use tape_crypto::Hash;
 use tape_core::{
     bls::BlsSignature,
     erasure::MEMBER_COUNT,
 };
-use tape_core::spooler::SpoolIndex;
-use tape_core::track::data::TrackData;
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
-use tape_core::types::{EpochNumber, NodeId, TrackNumber};
+use tape_crypto::prelude::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::MERKLE_HEIGHT;

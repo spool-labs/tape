@@ -1,6 +1,5 @@
 use tape_solana::*;
-use tape_api::prelude::*;
-use crate::error::*;
+use tape_api::program::prelude::*;
 
 pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = parse_add_to_blacklist(data)?;

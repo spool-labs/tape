@@ -1,7 +1,6 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_core::types::SnapshotGroupBitmap;
 
-use crate::error::*;
 
 pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = InitSnapshotEpoch::try_from_bytes(data)?;

@@ -10,7 +10,7 @@ pub mod staking;
 pub mod tape;
 pub mod track;
 
-use tape_api::prelude::{TapeInstruction, parse_instruction};
+use tape_api::program::prelude::{TapeInstruction, parse_instruction};
 use tape_api::program::tapedrive;
 use tape_solana::{AccountInfo, ProgramError, ProgramResult, Pubkey, TryFromPrimitive, entrypoint};
 

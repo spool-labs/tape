@@ -1,4 +1,4 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 
 pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SplitTapeByEpoch::try_from_bytes(data)?;

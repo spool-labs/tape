@@ -1,6 +1,5 @@
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::TrackDeleted;
-use crate::error::*;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = parse_delete_track(data)?;

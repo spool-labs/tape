@@ -1,6 +1,9 @@
 use tape_crypto::address::Address;
 use tape_solana::*;
-use tape_core::prelude::*;
+use tape_core::staking::StakingPool;
+use tape_core::system::{Blacklist, NodeMetadata, NodePreferences};
+use tape_core::types::EpochNumber;
+use tape_core::types::NodeId;
 
 use super::AccountType;
 use crate::program::{

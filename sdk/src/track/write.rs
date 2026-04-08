@@ -11,14 +11,12 @@ use tape_api::instruction::{
 };
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
-use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::spooler::SpoolGroup;
-use tape_core::track::blob::BlobInfo;
-use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
-use tape_crypto::address::Address;
-use tape_crypto::Hash;
+use tape_core::prelude::{
+    BlobInfo, CompressedTrack, EncodingProfile, EpochNumber, SpoolGroup, StorageUnits,
+    StripeCount,
+};
+use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;

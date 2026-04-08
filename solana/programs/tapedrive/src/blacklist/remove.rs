@@ -1,7 +1,6 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_crypto::Hash;
-use crate::error::*;
 
 pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RemoveFromBlacklist::try_from_bytes(data)?;

@@ -1,7 +1,6 @@
 use tape_solana::*;
-use tape_api::prelude::*;
+use tape_api::program::prelude::*;
 use tape_api::event::NodeSynced;
-use crate::error::*;
 
 pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SyncEpoch::try_from_bytes(data)?;

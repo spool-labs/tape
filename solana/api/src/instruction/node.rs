@@ -5,7 +5,11 @@ use crate::program::tapedrive::*;
 use crate::consts::NAME_LENGTH;
 use crate::utils::to_name;
 use crate::utils::ata;
-use tape_core::prelude::*;
+use tape_core::bls::{BlsPubkey, BlsSignature};
+use tape_core::spooler::{SpoolIndex, get_spool_hash};
+use tape_core::types::network::NetworkAddress;
+use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
+use tape_core::types::coin::{Coin, TAPE};
 use tape_crypto::Hash;
 
 #[repr(C)]

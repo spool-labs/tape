@@ -1,5 +1,7 @@
 use tape_solana::*;
-use tape_core::prelude::*;
+use tape_core::system::EpochSchedule;
+use tape_core::types::StorageUnits;
+use tape_core::types::coin::{Coin, TAPE};
 use super::AccountType;
 use crate::program::FUTURE_EPOCHS;
 
