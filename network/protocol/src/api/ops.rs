@@ -159,7 +159,7 @@ pub struct CertifyRes {
 pub struct SignSnapshotReq {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub commitment: Hash,
+    pub blob_hash: Hash,
 }
 
 #[derive(Clone, Debug)]

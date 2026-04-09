@@ -1,4 +1,5 @@
 use tape_api::program::prelude::*;
+use tape_api::instruction::snapshot_blob_from_certification;
 use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::snapshot::chunk::snapshot_chunk_key;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -10,7 +11,7 @@ pub fn process_certify_snapshot_group(
     accounts: &[AccountInfo<'_>],
     data: &[u8],
 ) -> ProgramResult {
-    let args = CertifySnapshotGroup::try_from_bytes(data)?;
+    let certification = CertifySnapshotGroup::try_from_bytes(data)?;
     let [
         fee_payer_info,
         system_info,
@@ -35,7 +36,7 @@ pub fn process_certify_snapshot_group(
         .is_snapshot_state()?
         .as_account::<SnapshotState>(&tapedrive::ID)?;
 
-    let snapshot_epoch = EpochNumber::unpack(args.epoch);
+    let snapshot_epoch = EpochNumber::unpack(certification.epoch);
     let current_epoch = current_epoch(epoch);
     let expected_epoch = required_snapshot_epoch(current_epoch)?;
     let expected_parent = snapshot_state
@@ -58,7 +59,7 @@ pub fn process_certify_snapshot_group(
         return Err(TapeError::SnapshotParentMismatch.into());
     }
 
-    let group = SpoolGroup::unpack(args.group);
+    let group = SpoolGroup::unpack(certification.group);
     let group_index = group.0 as usize;
     if group_index >= SPOOL_GROUP_COUNT {
         return Err(ProgramError::InvalidArgument);
@@ -77,18 +78,18 @@ pub fn process_certify_snapshot_group(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let signing_epoch = EpochNumber::unpack(args.signing_epoch);
+    let signing_epoch = EpochNumber::unpack(certification.signing_epoch);
     let (committee, spools) = system
         .committee_at(signing_epoch, current_epoch)
         .ok_or(TapeError::BadEpochId)?;
 
-    let signer_weight = spools.group_weight(group, &args.bitmap);
+    let signer_weight = spools.group_weight(group, &certification.bitmap);
     if !is_supermajority(signer_weight, SPOOL_GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
     let committee_size = committee.size();
-    let indices = args.bitmap.indices(committee_size);
+    let indices = certification.bitmap.indices(committee_size);
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
     }
@@ -102,12 +103,14 @@ pub fn process_certify_snapshot_group(
     }
 
     let decompressed_sig =
-        G1Point::try_from(&args.signature.0).map_err(|_| TapeError::BadSignature)?;
+        G1Point::try_from(&certification.signature.0).map_err(|_| TapeError::BadSignature)?;
+    let blob = snapshot_blob_from_certification(certification)?;
+    let blob_hash = blob.get_hash();
     let message = SnapshotMessage::new(
         snapshot_epoch,
         signing_epoch,
         group,
-        args.commitment,
+        blob_hash,
         manifest.parent_epoch,
     )
     .to_bytes();
@@ -115,7 +118,6 @@ pub fn process_certify_snapshot_group(
     verify_aggregate(&message, &pubkeys, &decompressed_sig)
         .map_err(|_| TapeError::BadSignature)?;
 
-    let track_meta = get_snapshot_track_meta(args)?;
     let track_number = snapshot_tape.tracks.next_number();
     let track = CompressedTrack {
         tape: snapshot_tape_address,
@@ -123,20 +125,22 @@ pub fn process_certify_snapshot_group(
         track_number,
         kind: TrackKind::Blob as u64,
         state: TrackState::Certified as u64,
-        size: track_meta.size,
+        size: blob.size,
         spool_group: group,
-        value_hash: track_meta.value_hash,
+        value_hash: blob_hash,
     };
 
     snapshot_tape.write_track(&track)?;
 
     manifest.group_bitmap.set(group_index);
     manifest.groups[group_index] = SnapshotChunkRecord {
-        commitment: args.commitment,
+        size: blob.size,
+        value_hash: blob_hash,
+        commitment: blob.commitment,
         track_number,
-        profile: EncodingProfile::unpack(args.profile),
-        stripe_size: StorageUnits::unpack(args.stripe_size),
-        stripe_count: StripeCount::unpack(args.stripe_count),
+        profile: blob.profile,
+        stripe_size: blob.stripe_size,
+        stripe_count: blob.stripe_count,
     };
 
     let signer_count = indices.len() as u64;
@@ -145,7 +149,7 @@ pub fn process_certify_snapshot_group(
         epoch: snapshot_epoch,
         group,
         track: track_number,
-        commitment: args.commitment,
+        commitment: certification.commitment,
         signer_count: signer_count.to_le_bytes(),
         signer_weight: signer_weight.to_le_bytes(),
     }
@@ -167,7 +171,8 @@ fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, Pr
 #[cfg(test)]
 mod tests {
     use tape_api::prelude::{BlsPrivateKey, BlsPubkey, BlsSignature};
-    use tape_core::snapshot::chunk::{snapshot_chunk_value_hash, SnapshotChunkMeta};
+    use tape_core::snapshot::chunk::snapshot_chunk_root;
+    use tape_core::track::blob::BlobInfo;
     use tape_core::track::store::TrackStore;
     use tape_core::types::{CommitteeBitmap, SnapshotGroupBitmap};
     use tape_crypto::Hash;
@@ -246,6 +251,17 @@ mod tests {
 
         let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let chunk_size = StorageUnits::from_bytes(1_537);
+        let root = snapshot_chunk_root(b"snapshot chunk");
+        let blob = BlobInfo {
+            size: chunk_size,
+            root,
+            commitment,
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+            leaves,
+        };
 
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, system.committee.size());
@@ -253,7 +269,7 @@ mod tests {
             snapshot_epoch,
             signing_epoch,
             group,
-            commitment,
+            blob.get_hash(),
             EpochNumber(41),
         )
         .to_bytes();
@@ -280,6 +296,8 @@ mod tests {
             snapshot_epoch,
             signing_epoch,
             group,
+            chunk_size,
+            root,
             commitment,
             EncodingProfile::basic_default(),
             StorageUnits::from_bytes(512),
@@ -295,14 +313,9 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
-            size: StorageUnits::from_bytes(2048),
+            size: chunk_size,
             spool_group: group,
-            value_hash: snapshot_chunk_value_hash(&SnapshotChunkMeta {
-                commitment,
-                profile: EncodingProfile::basic_default(),
-                stripe_size: StorageUnits::from_bytes(512),
-                stripe_count: StripeCount(4),
-            }),
+            value_hash: blob.get_hash(),
         };
         let mut expected_tree = MerkleTree::new();
         expected_tree
@@ -323,6 +336,8 @@ mod tests {
 
         let mut expected_groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
         expected_groups[group.0 as usize] = SnapshotChunkRecord {
+            size: chunk_size,
+            value_hash: blob.get_hash(),
             commitment,
             track_number: TrackNumber(0),
             profile: EncodingProfile::basic_default(),
@@ -350,7 +365,7 @@ mod tests {
                 Check::account(&Pubkey::from(snapshot_tape_address))
                     .data(
                         Tape {
-                            used: StorageUnits::from_bytes(2048),
+                            used: chunk_size,
                             tracks: TrackStore {
                                 tree: expected_tree,
                                 next_number: TrackNumber(1),
@@ -386,6 +401,8 @@ mod tests {
             snapshot_epoch,
             signing_epoch,
             group,
+            StorageUnits::from_bytes(1_024),
+            snapshot_chunk_root(b"sealed-group"),
             Hash::from([0x22; 32]),
             EncodingProfile::basic_default(),
             StorageUnits::from_bytes(512),

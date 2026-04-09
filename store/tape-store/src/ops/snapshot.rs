@@ -130,11 +130,11 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::chunk::SnapshotChunkMeta;
     use tape_core::snapshot::info::{
         SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
     };
     use tape_core::spooler::SpoolGroup;
+    use tape_core::track::blob::BlobInfo;
     use tape_core::types::{
         CommitteeBitmap, SnapshotGroupBitmap, StorageUnits, StripeCount, TrackNumber,
     };
@@ -156,13 +156,15 @@ mod tests {
         let _ = (epoch, group);
         SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
-            meta: SnapshotChunkMeta {
+            blob: BlobInfo {
+                size: StorageUnits::from_bytes(4_096),
+                root: Hash::new_unique(),
                 commitment: Hash::new_unique(),
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(1024),
                 stripe_count: StripeCount(4),
+                leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             },
-            leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], MEMBER_COUNT),
             signature: BlsSignature::zeroed(),
             track_number: Some(TrackNumber(7)),

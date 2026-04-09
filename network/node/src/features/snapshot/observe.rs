@@ -4,17 +4,24 @@ use bytemuck::Zeroable;
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::{SnapshotCertified, SnapshotFinalized, SnapshotInit};
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_core::bls::BlsSignature;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::snapshot::chunk::SnapshotChunkMeta;
+use tape_core::snapshot::chunk::snapshot_chunk_key;
 use tape_core::snapshot::info::{
     SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
 };
-use tape_core::types::{CommitteeBitmap, EpochNumber, SnapshotGroupBitmap};
-use tape_crypto::hash::Hash;
+use tape_core::track::blob::BlobInfo;
+use tape_core::track::data::TrackData;
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::types::{
+    CommitteeBitmap, EpochNumber, NodeId, SlotNumber, SnapshotGroupBitmap, TrackNumber,
+};
 use tape_protocol::Api;
 use tape_protocol::ProtocolState;
-use tape_store::ops::SnapshotOps;
+use tape_store::ops::{
+    ObjectInfoOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps,
+};
+use tape_store::types::{ObjectInfo, TapeInfo};
 use tracing::debug;
 
 use crate::context::NodeContext;
@@ -81,7 +88,7 @@ where
                 handle_snapshot_init(context, event)?;
             }
             ParsedInstruction::CertifySnapshotGroup { event } => {
-                handle_snapshot_certified(context, event)?;
+                handle_snapshot_certified(context, block.slot, event)?;
             }
             ParsedInstruction::FinalizeSnapshotEpoch { event } => {
                 handle_snapshot_finalized(context, event)?;
@@ -141,6 +148,7 @@ where
 
 fn handle_snapshot_certified<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
+    slot: SlotNumber,
     event: &SnapshotCertified,
 ) -> Result<(), NodeError>
 where
@@ -148,47 +156,57 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let mut epoch_info = context
+    let mut snapshot_epoch = context
         .store
         .get_epoch_info(event.epoch)
         .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?
         .unwrap_or(SnapshotEpochInfo {
-            parent_epoch: EpochNumber(0),
+            parent_epoch: inferred_parent_epoch(event.epoch),
             status: SnapshotEpochStatus::PartiallyCertified,
             certified_groups: SnapshotGroupBitmap::zeroed(),
         });
 
-    epoch_info.certified_groups.set(event.group.0 as usize);
-    if epoch_info.status != SnapshotEpochStatus::Finalized {
-        epoch_info.status = SnapshotEpochStatus::PartiallyCertified;
+    snapshot_epoch.certified_groups.set(event.group.0 as usize);
+    if snapshot_epoch.status != SnapshotEpochStatus::Finalized {
+        snapshot_epoch.status = SnapshotEpochStatus::PartiallyCertified;
     }
 
     context
         .store
-        .put_epoch_info(event.epoch, epoch_info)
+        .put_epoch_info(event.epoch, snapshot_epoch)
         .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
 
-    let mut group_info = context
+    let mut snapshot_group = context
         .store
         .get_group_info(event.epoch, event.group)
         .map_err(|e| NodeError::Store(format!("get_group_info: {e}")))?
-        .unwrap_or(SnapshotGroupInfo {
-            status: SnapshotGroupStatus::Missing,
-            meta: SnapshotChunkMeta::zeroed(),
-            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
-            bitmap: CommitteeBitmap::zeroed(),
-            signature: BlsSignature::zeroed(),
-            track_number: None,
-        });
+        .unwrap_or_else(missing_snapshot_group);
 
-    group_info.status = SnapshotGroupStatus::CertifiedOnChain;
-    group_info.track_number = Some(event.track);
-    group_info.meta.commitment = event.commitment;
+    let has_local_artifacts = matches!(
+        snapshot_group.status,
+        SnapshotGroupStatus::Built | SnapshotGroupStatus::CertifiedLocally
+    );
+    if has_local_artifacts && snapshot_group.blob.commitment != event.commitment {
+        return Err(NodeError::Store(format!(
+            "snapshot group commitment mismatch for epoch {} group {}",
+            event.epoch.0, event.group.0
+        )));
+    }
+
+    snapshot_group.status = SnapshotGroupStatus::CertifiedOnChain;
+    snapshot_group.track_number = Some(event.track);
+    if !has_local_artifacts {
+        snapshot_group.blob.commitment = event.commitment;
+    }
 
     context
         .store
-        .put_group_info(event.epoch, event.group, group_info)
+        .put_group_info(event.epoch, event.group, snapshot_group)
         .map_err(|e| NodeError::Store(format!("put_group_info: {e}")))?;
+
+    if has_local_artifacts {
+        materialize_snapshot_track(context, slot, &snapshot_epoch, event, snapshot_group)?;
+    }
 
     debug!(
         node_id = context.node_id().0,
@@ -210,7 +228,7 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let mut epoch_info = context
+    let mut snapshot_epoch = context
         .store
         .get_epoch_info(event.current)
         .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?
@@ -220,11 +238,11 @@ where
             certified_groups: SnapshotGroupBitmap::zeroed(),
         });
 
-    epoch_info.status = SnapshotEpochStatus::Finalized;
+    snapshot_epoch.status = SnapshotEpochStatus::Finalized;
 
     context
         .store
-        .put_epoch_info(event.current, epoch_info)
+        .put_epoch_info(event.current, snapshot_epoch)
         .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
 
     debug!(
@@ -238,7 +256,7 @@ where
 }
 
 fn locally_pending_snapshot_epoch(
-    node_id: tape_core::types::NodeId,
+    node_id: NodeId,
     state: &ProtocolState,
 ) -> Option<EpochNumber> {
     if state.epoch < EpochNumber(2) {
@@ -256,19 +274,140 @@ fn inferred_parent_epoch(snapshot_epoch: EpochNumber) -> EpochNumber {
     snapshot_epoch.saturating_sub(EpochNumber(1))
 }
 
+fn missing_snapshot_group() -> SnapshotGroupInfo {
+    SnapshotGroupInfo {
+        status: SnapshotGroupStatus::Missing,
+        blob: BlobInfo::zeroed(),
+        bitmap: CommitteeBitmap::zeroed(),
+        signature: BlsSignature::zeroed(),
+        track_number: None,
+    }
+}
+
+fn materialize_snapshot_track<Db, Cluster, Blockchain>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    slot: SlotNumber,
+    snapshot_epoch: &SnapshotEpochInfo,
+    event: &SnapshotCertified,
+    snapshot_group: SnapshotGroupInfo,
+) -> Result<(), NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let mut owned_spools = context
+        .my_spools()
+        .into_iter()
+        .filter(|spool| event.group.contains(*spool))
+        .collect::<Vec<_>>();
+    if owned_spools.is_empty() {
+        return Ok(());
+    }
+    owned_spools.sort_unstable();
+
+    let (snapshot_tape, _) = snapshot_tape_pda(event.epoch);
+    let track_address = track_pda(snapshot_tape, event.track).0;
+    let next_track_number = TrackNumber(event.track.0.saturating_add(1));
+
+    let mut snapshot_tape_record = context
+        .store
+        .get_tape(snapshot_tape)
+        .map_err(|e| NodeError::Store(format!("get_tape: {e}")))?
+        .unwrap_or(TapeInfo {
+            end_epoch: EpochNumber(u64::MAX),
+            next_track_number,
+        });
+    if snapshot_tape_record.next_track_number.0 < next_track_number.0 {
+        snapshot_tape_record.next_track_number = next_track_number;
+    }
+    snapshot_tape_record.end_epoch = EpochNumber(u64::MAX);
+    context
+        .store
+        .put_tape(snapshot_tape, snapshot_tape_record)
+        .map_err(|e| NodeError::Store(format!("put_tape: {e}")))?;
+
+    let track = CompressedTrack {
+        tape: snapshot_tape,
+        key: snapshot_chunk_key(event.epoch, event.group, snapshot_epoch.parent_epoch),
+        track_number: event.track,
+        kind: TrackKind::Blob as u64,
+        state: TrackState::Certified as u64,
+        size: snapshot_group.blob.size,
+        spool_group: event.group,
+        value_hash: snapshot_group.blob.get_hash(),
+    };
+    context
+        .store
+        .put_track(track_address, track)
+        .map_err(|e| NodeError::Store(format!("put_track: {e}")))?;
+    context
+        .store
+        .put_track_data(track_address, TrackData::Blob(snapshot_group.blob))
+        .map_err(|e| NodeError::Store(format!("put_track_data: {e}")))?;
+    context
+        .store
+        .put_object_info(
+            track_address,
+            ObjectInfo::Valid {
+                track_address,
+                registered_epoch: event.epoch,
+                certified_epoch: Some(event.epoch),
+                slot,
+            },
+        )
+        .map_err(|e| NodeError::Store(format!("put_object_info: {e}")))?;
+
+    for spool in owned_spools {
+        let Some(slice_position) = event.group.slice_of(spool) else {
+            continue;
+        };
+        let slice = context
+            .store
+            .get_group_slice(event.epoch, event.group, slice_position)
+            .map_err(|e| NodeError::Store(format!("get_group_slice: {e}")))?
+            .ok_or_else(|| {
+                NodeError::Store(format!(
+                    "missing snapshot slice for epoch {} group {} slice {}",
+                    event.epoch.0, event.group.0, slice_position
+                ))
+            })?;
+        context
+            .store
+            .put_slice(spool, track_address, slice)
+            .map_err(|e| NodeError::Store(format!("put_slice: {e}")))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
+    use bytemuck::Zeroable;
     use tape_api::event::{SnapshotCertified, SnapshotFinalized, SnapshotInit};
+    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
+    use tape_blocks::ParsedInstruction;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_COUNT, SPOOL_GROUP_SIZE};
     use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupStatus};
+    use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
-    use tape_core::spooler::SpoolGroup;
-    use tape_core::types::{EpochNumber, SnapshotGroupBitmap, SlotNumber, TrackNumber};
+    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::data::TrackData;
+    use tape_core::types::{
+        CommitteeBitmap, EpochNumber, NodeId, SnapshotGroupBitmap, SlotNumber, StorageUnits,
+        StripeCount, TrackNumber,
+    };
     use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::hash::Hash;
+    use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::ProtocolState;
-    use tape_store::ops::SnapshotOps;
+    use tape_store::ops::{
+        ObjectInfoOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps,
+    };
+    use tape_store::types::ObjectInfo;
 
     use super::{observe_block, observe_state};
     use crate::context::test_utils::test_context;
@@ -282,12 +421,12 @@ mod tests {
 
         if local_member {
             state.committee.push(CommitteeMember::new(
-                tape_core::types::NodeId(0),
+                NodeId(0),
                 Coin::<TAPE>::new(1_000),
             ));
         } else {
             state.committee.push(CommitteeMember::new(
-                tape_core::types::NodeId(7),
+                NodeId(7),
                 Coin::<TAPE>::new(1_000),
             ));
         }
@@ -295,10 +434,40 @@ mod tests {
         Arc::new(state)
     }
 
+    fn state_with_owned_spool(epoch: EpochNumber, spool: u16) -> Arc<ProtocolState> {
+        let mut state = ProtocolState {
+            epoch,
+            ..ProtocolState::default()
+        };
+        state.committee = vec![
+            CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1_000)),
+            CommitteeMember::new(NodeId(1), Coin::<TAPE>::new(1_000)),
+        ];
+
+        let mut spools = [1u8; SPOOL_COUNT];
+        spools[spool as usize] = 0;
+        state.spools = SpoolAssignment::new(spools);
+
+        Arc::new(state)
+    }
+
+    fn local_blob() -> BlobInfo {
+        let leaves = [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
+        BlobInfo {
+            size: StorageUnits::from_bytes(1_537),
+            root: Hash::from([0x55; 32]),
+            commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+            leaves,
+        }
+    }
+
     fn init_block(parent: EpochNumber, current: EpochNumber) -> Arc<ParsedBlock> {
         Arc::new(ParsedBlock {
             slot: SlotNumber(current.0 * 10),
-            instructions: vec![tape_blocks::ParsedInstruction::InitSnapshotEpoch {
+            instructions: vec![ParsedInstruction::InitSnapshotEpoch {
                 event: SnapshotInit { parent, current },
             }],
         })
@@ -312,7 +481,7 @@ mod tests {
     ) -> Arc<ParsedBlock> {
         Arc::new(ParsedBlock {
             slot: SlotNumber(epoch.0 * 10 + 1),
-            instructions: vec![tape_blocks::ParsedInstruction::CertifySnapshotGroup {
+            instructions: vec![ParsedInstruction::CertifySnapshotGroup {
                 event: SnapshotCertified {
                     epoch,
                     group,
@@ -328,7 +497,7 @@ mod tests {
     fn finalize_block(parent: EpochNumber, current: EpochNumber) -> Arc<ParsedBlock> {
         Arc::new(ParsedBlock {
             slot: SlotNumber(current.0 * 10 + 2),
-            instructions: vec![tape_blocks::ParsedInstruction::FinalizeSnapshotEpoch {
+            instructions: vec![ParsedInstruction::FinalizeSnapshotEpoch {
                 event: SnapshotFinalized { parent, current },
             }],
         })
@@ -483,7 +652,7 @@ mod tests {
             .unwrap();
         assert_eq!(group.status, SnapshotGroupStatus::CertifiedOnChain);
         assert_eq!(group.track_number, Some(TrackNumber(7)));
-        assert_eq!(group.meta.commitment, commitment);
+        assert_eq!(group.blob.commitment, commitment);
     }
 
     // Certify works when epoch/group info doesn't exist yet.
@@ -510,67 +679,89 @@ mod tests {
             .unwrap();
         assert_eq!(group.status, SnapshotGroupStatus::CertifiedOnChain);
         assert_eq!(group.track_number, Some(TrackNumber(3)));
+        assert_eq!(group.blob.commitment, commitment);
     }
 
-    // Certify keeps locally-built fields when group was Built.
+    // Certify materializes a local blob track into the generic store.
     #[tokio::test]
-    async fn certify_preserves_local() {
-        use bytemuck::Zeroable;
-        use tape_core::bls::BlsSignature;
-        use tape_core::encoding::EncodingProfile;
-        use tape_core::erasure::SPOOL_GROUP_SIZE;
-        use tape_core::snapshot::chunk::SnapshotChunkMeta;
-        use tape_core::snapshot::info::SnapshotGroupInfo;
-        use tape_core::types::{CommitteeBitmap, StorageUnits, StripeCount};
-
+    async fn certify_materializes_local_track() {
         let ctx = test_context();
-        let local_commitment = Hash::new_unique();
-        let local_leaves = [Hash::new_unique(); SPOOL_GROUP_SIZE];
+        let group = SpoolGroup(2);
+        let owned_spool = group.spool_at(5);
+        let blob = local_blob();
+        let slice_bytes = vec![0xAB; 96];
+        let epoch = EpochNumber(5);
+        let parent_epoch = EpochNumber(4);
+        let track_number = TrackNumber(9);
 
-        // Seed a Built group with local data.
+        ctx.set_state(state_with_owned_spool(EpochNumber(6), owned_spool))
+            .unwrap();
+
+        ctx.store
+            .put_epoch_info(
+                epoch,
+                SnapshotEpochInfo {
+                    parent_epoch,
+                    status: SnapshotEpochStatus::Built,
+                    certified_groups: SnapshotGroupBitmap::zeroed(),
+                },
+            )
+            .unwrap();
         let built = SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
-            meta: SnapshotChunkMeta {
-                commitment: local_commitment,
-                profile: EncodingProfile::basic_default(),
-                stripe_size: StorageUnits::from_bytes(1024),
-                stripe_count: StripeCount(4),
-            },
-            leaves: local_leaves,
+            blob,
             bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], 128),
-            signature: BlsSignature::zeroed(),
+            signature: Zeroable::zeroed(),
             track_number: None,
         };
         ctx.store
-            .put_group_info(EpochNumber(5), SpoolGroup(2), built)
+            .put_group_info(epoch, group, built)
+            .unwrap();
+        ctx.store
+            .put_group_slice(epoch, group, group.slice_of(owned_spool).unwrap(), slice_bytes.clone())
             .unwrap();
 
-        observe_block(&ctx, init_block(EpochNumber(4), EpochNumber(5)))
-            .await
-            .unwrap();
-        observe_block(
-            &ctx,
-            certify_block(
-                EpochNumber(5),
-                SpoolGroup(2),
-                TrackNumber(9),
-                local_commitment,
-            ),
-        )
+        observe_block(&ctx, init_block(parent_epoch, epoch)).await.unwrap();
+        observe_block(&ctx, certify_block(epoch, group, track_number, blob.commitment))
         .await
         .unwrap();
 
         let group = ctx
             .store
-            .get_group_info(EpochNumber(5), SpoolGroup(2))
+            .get_group_info(epoch, group)
             .unwrap()
             .unwrap();
         assert_eq!(group.status, SnapshotGroupStatus::CertifiedOnChain);
-        assert_eq!(group.track_number, Some(TrackNumber(9)));
-        // Locally built fields preserved.
-        assert_eq!(group.leaves, local_leaves);
-        assert_eq!(group.meta.profile, EncodingProfile::basic_default());
-        assert_eq!(group.meta.stripe_size, StorageUnits::from_bytes(1024));
+        assert_eq!(group.track_number, Some(track_number));
+        assert_eq!(group.blob, blob);
+
+        let (snapshot_tape, _) = snapshot_tape_pda(epoch);
+        let track_address = track_pda(snapshot_tape, track_number).0;
+        let tape = ctx.store.get_tape(snapshot_tape).unwrap().unwrap();
+        assert_eq!(tape.next_track_number, TrackNumber(10));
+
+        let track = ctx.store.get_track(track_address).unwrap().unwrap();
+        assert_eq!(track.tape, snapshot_tape);
+        assert_eq!(track.track_number, track_number);
+        assert_eq!(track.size, blob.size);
+        assert_eq!(track.value_hash, blob.get_hash());
+
+        let track_data = ctx.store.get_track_data(track_address).unwrap().unwrap();
+        assert_eq!(track_data, TrackData::Blob(blob));
+
+        let object = ctx.store.get_object_info(track_address).unwrap().unwrap();
+        assert_eq!(
+            object,
+            ObjectInfo::Valid {
+                track_address,
+                registered_epoch: epoch,
+                certified_epoch: Some(epoch),
+                slot: SlotNumber(epoch.0 * 10 + 1),
+            }
+        );
+
+        let copied_slice = ctx.store.get_slice(owned_spool, track_address).unwrap().unwrap();
+        assert_eq!(copied_slice, slice_bytes);
     }
 
     // FinalizeSnapshotEpoch sets status to Finalized.

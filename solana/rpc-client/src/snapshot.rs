@@ -73,6 +73,8 @@ mod tests {
     fn snapshot_manifest(epoch: EpochNumber) -> SnapshotManifest {
         let mut groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
         groups[7] = SnapshotChunkRecord {
+            size: StorageUnits::from_bytes(1_537),
+            value_hash: Hash::from([0x33; 32]),
             commitment: Hash::from([0x44; 32]),
             track_number: TrackNumber(3),
             profile: EncodingProfile::basic_default(),

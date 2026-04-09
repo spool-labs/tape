@@ -1,12 +1,9 @@
-use crate::bls::BlsSignature;
-use crate::erasure::SPOOL_GROUP_SIZE;
-use crate::types::{CommitteeBitmap, EpochNumber, SnapshotGroupBitmap, TrackNumber};
-use tape_crypto::hash::Hash;
-
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-use super::chunk::SnapshotChunkMeta;
+use crate::bls::BlsSignature;
+use crate::track::blob::BlobInfo;
+use crate::types::{CommitteeBitmap, EpochNumber, SnapshotGroupBitmap, TrackNumber};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
@@ -39,24 +36,22 @@ pub struct SnapshotEpochInfo {
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct SnapshotGroupInfo {
     pub status: SnapshotGroupStatus,
-    pub meta: SnapshotChunkMeta,
-    pub leaves: [Hash; SPOOL_GROUP_SIZE],
+    pub blob: BlobInfo,
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
     pub track_number: Option<TrackNumber>,
 }
 
 #[cfg(test)]
+#[cfg(feature = "wincode")]
 mod tests {
     use super::*;
-    #[cfg(feature = "wincode")]
     use crate::encoding::EncodingProfile;
-    #[cfg(feature = "wincode")]
-    use crate::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT};
-    #[cfg(feature = "wincode")]
+    use crate::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
+    use crate::track::blob::BlobInfo;
     use crate::types::{StorageUnits, StripeCount};
-    #[cfg(feature = "wincode")]
     use bytemuck::Zeroable;
+    use tape_crypto::hash::Hash;
 
     #[test]
     fn status_variants_exist() {
@@ -67,7 +62,6 @@ mod tests {
         assert_ne!(group, SnapshotGroupStatus::Missing);
     }
 
-    #[cfg(feature = "wincode")]
     #[test]
     fn snapshot_info_roundtrip() {
         let epoch = SnapshotEpochInfo {
@@ -78,13 +72,15 @@ mod tests {
 
         let group = SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
-            meta: SnapshotChunkMeta {
+            blob: BlobInfo {
+                size: StorageUnits::from_bytes(4_096),
+                root: Hash::new_unique(),
                 commitment: Hash::new_unique(),
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(1024),
                 stripe_count: StripeCount(4),
+                leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             },
-            leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], MEMBER_COUNT),
             signature: BlsSignature::zeroed(),
             track_number: Some(TrackNumber(7)),

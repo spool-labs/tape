@@ -36,22 +36,22 @@ pub async fn certify_snapshot_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     for group in my_groups {
-        let group_info = context
+        let snapshot_group = context
             .store
             .get_group_info(epoch, group)
             .map_err(|e| NodeError::Store(format!("get_group_info({epoch}, {group}): {e}")))?;
 
-        let Some(group_info) = group_info else {
+        let Some(snapshot_group) = snapshot_group else {
             continue;
         };
 
-        match group_info.status {
+        match snapshot_group.status {
             SnapshotGroupStatus::CertifiedOnChain | SnapshotGroupStatus::Missing => continue,
             SnapshotGroupStatus::Built | SnapshotGroupStatus::CertifiedLocally => {}
         }
 
-        let commitment = group_info.meta.commitment;
-        let collected = match collect_group_signatures(context, epoch, group, commitment).await? {
+        let blob_hash = snapshot_group.blob.get_hash();
+        let collected = match collect_group_signatures(context, epoch, group, blob_hash).await? {
             Some(collected) => collected,
             None => {
                 debug!(epoch = epoch.0, group = group.0, "no supermajority, skipping group");
@@ -64,11 +64,13 @@ pub async fn certify_snapshot_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
             epoch,
             collected.signing_epoch,
             group,
-            group_info.meta.commitment,
-            group_info.meta.profile,
-            group_info.meta.stripe_size,
-            group_info.meta.stripe_count,
-            group_info.leaves,
+            snapshot_group.blob.size,
+            snapshot_group.blob.root,
+            snapshot_group.blob.commitment,
+            snapshot_group.blob.profile,
+            snapshot_group.blob.stripe_size,
+            snapshot_group.blob.stripe_count,
+            snapshot_group.blob.leaves,
             collected.bitmap,
             collected.signature,
         )

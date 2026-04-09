@@ -1,7 +1,7 @@
 //! Peer BLS signature collection for snapshot group certification.
 //!
 //! Iterates group peers, requests their BLS signatures for a snapshot
-//! chunk commitment, and aggregates them until a spool-weighted
+//! chunk blob hash, and aggregates them until a spool-weighted
 //! supermajority is reached.
 
 use std::collections::BTreeMap;
@@ -40,7 +40,7 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     group: SpoolGroup,
-    commitment: Hash,
+    blob_hash: Hash,
 ) -> Result<Option<CollectedSignatures>, NodeError> {
     let state = context.state();
     let signing_epoch = state.epoch;
@@ -55,7 +55,7 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
         epoch,
         signing_epoch,
         group,
-        commitment,
+        blob_hash,
         epoch_info.parent_epoch,
     );
     let message_bytes = message.to_bytes();
@@ -98,7 +98,7 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let request = SignSnapshotReq {
         epoch,
         group,
-        commitment,
+        blob_hash,
     };
 
     for (&node_id, &member_index) in &peer_members {

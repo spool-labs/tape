@@ -1,28 +1,13 @@
-use bytemuck::{Pod, Zeroable};
+#[cfg(test)]
+use bytemuck::bytes_of;
+
 use tape_crypto::Hash;
-use tape_crypto::hash::{hashv, hash};
+use tape_crypto::hash::{hash, hashv};
 
-use crate::encoding::EncodingProfile;
 use crate::spooler::SpoolGroup;
-use crate::types::{EpochNumber, StorageUnits, StripeCount};
-
-#[cfg(feature = "wincode")]
-use serde::{Deserialize, Serialize};
-#[cfg(feature = "wincode")]
-use wincode_derive::{SchemaRead, SchemaWrite};
+use crate::types::EpochNumber;
 
 pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
-pub const SNAPSHOT_CHUNK_VALUE_V1: &[u8; 24] = b"SNAPSHOT_CHUNK_VALUE_V1\0";
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
-pub struct SnapshotChunkMeta {
-    pub commitment: Hash,
-    pub profile: EncodingProfile,
-    pub stripe_size: StorageUnits,
-    pub stripe_count: StripeCount,
-}
 
 #[inline]
 pub fn snapshot_chunk_key(
@@ -39,26 +24,29 @@ pub fn snapshot_chunk_key(
 }
 
 #[inline]
-pub fn snapshot_chunk_value_hash(chunk_meta: &SnapshotChunkMeta) -> Hash {
-    hashv(&[SNAPSHOT_CHUNK_VALUE_V1, bytemuck::bytes_of(chunk_meta)])
-}
-
-#[inline]
-pub fn snapshot_chunk_meta_hash(chunk_meta: &SnapshotChunkMeta) -> Hash {
-    hash(bytemuck::bytes_of(chunk_meta))
+pub fn snapshot_chunk_root(chunk: &[u8]) -> Hash {
+    hash(chunk)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::EncodingProfile;
+    use crate::erasure::SPOOL_GROUP_SIZE;
+    use crate::track::blob::BlobInfo;
+    use crate::types::{StorageUnits, StripeCount};
 
     #[test]
     fn snapshot_chunk_hashing_is_stable() {
-        let chunk_meta = SnapshotChunkMeta {
+        let chunk = b"snapshot chunk";
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(chunk.len() as u64),
+            root: snapshot_chunk_root(chunk),
             commitment: Hash::from([0x11; 32]),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
             stripe_count: StripeCount(4),
+            leaves: [Hash::from([0x22; 32]); SPOOL_GROUP_SIZE],
         };
 
         assert_eq!(
@@ -70,19 +58,16 @@ mod tests {
         );
 
         assert_eq!(
-            snapshot_chunk_value_hash(&chunk_meta),
+            snapshot_chunk_root(chunk),
             Hash::from([
-                99, 152, 138, 33, 214, 128, 127, 141, 89, 20, 227, 243, 203, 56, 198, 244,
-                223, 150, 19, 71, 153, 11, 142, 228, 237, 105, 165, 249, 119, 1, 16, 28,
+                145, 144, 29, 44, 174, 99, 32, 191, 231, 195, 102, 212, 194, 107, 145, 137,
+                27, 96, 221, 173, 145, 123, 4, 2, 196, 158, 174, 124, 114, 52, 68, 130,
             ]),
         );
 
         assert_eq!(
-            snapshot_chunk_meta_hash(&chunk_meta),
-            Hash::from([
-                204, 112, 35, 90, 255, 199, 43, 254, 131, 177, 235, 16, 252, 169, 20, 94, 51,
-                241, 159, 185, 220, 224, 4, 146, 253, 144, 13, 120, 160, 90, 20, 58,
-            ]),
+            blob.get_hash(),
+            hash(bytes_of(&blob)),
         );
     }
 }

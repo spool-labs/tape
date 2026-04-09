@@ -120,7 +120,7 @@ impl Api for MemoryApi {
             SignSnapshotReq {
                 epoch: req.epoch,
                 group: req.group,
-                commitment: req.commitment,
+                blob_hash: req.blob_hash,
             },
             SignSnapshot
         )
@@ -189,7 +189,7 @@ mod tests {
                 assert_eq!(node, NodeId(7));
                 assert_eq!(req.epoch, EpochNumber(10));
                 assert_eq!(req.group, SpoolGroup(4));
-                assert_eq!(req.commitment, Hash::from([0xAB; 32]));
+                assert_eq!(req.blob_hash, Hash::from([0xAB; 32]));
                 PeerRes::SignSnapshot(Ok(SignSnapshotRes {
                     signature: signature.clone(),
                     node_id: node,
@@ -205,7 +205,7 @@ mod tests {
                 &SignSnapshotReq {
                     epoch: EpochNumber(10),
                     group: SpoolGroup(4),
-                    commitment: Hash::from([0xAB; 32]),
+                    blob_hash: Hash::from([0xAB; 32]),
                 },
             )
             .await

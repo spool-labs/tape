@@ -134,7 +134,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;

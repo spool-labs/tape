@@ -1,10 +1,11 @@
 use bytemuck::{Pod, Zeroable};
 use solana_program::instruction::{AccountMeta, Instruction};
+
 use tape_core::bls::BlsSignature;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
-use tape_core::snapshot::chunk::{SnapshotChunkMeta, snapshot_chunk_value_hash};
 use tape_core::spooler::SpoolGroup;
+use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{TrackKind, TrackState};
 use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
@@ -32,6 +33,8 @@ pub struct CertifySnapshotGroup {
     pub epoch: [u8; 8],
     pub signing_epoch: [u8; 8],
     pub group: [u8; 8],
+    pub size: [u8; 8],
+    pub root: Hash,
     pub commitment: Hash,
     pub profile: [u8; 16],
     pub stripe_size: [u8; 8],
@@ -47,29 +50,35 @@ pub struct FinalizeSnapshotEpoch {
     pub epoch: [u8; 8],
 }
 
-pub fn get_snapshot_track_meta(args: &CertifySnapshotGroup) -> Result<TrackMeta, ProgramError> {
-    let computed_root = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&args.leaves);
-    if computed_root != args.commitment {
+pub fn snapshot_blob_from_certification(
+    certification: &CertifySnapshotGroup,
+) -> Result<BlobInfo, ProgramError> {
+    let computed_root = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&certification.leaves);
+    if computed_root != certification.commitment {
         return Err(TapeError::InvalidCommitment.into());
     }
 
-    let stripe_size = StorageUnits::unpack(args.stripe_size);
-    let stripe_count = StripeCount::unpack(args.stripe_count);
-    let chunk_meta = SnapshotChunkMeta {
-        commitment: args.commitment,
-        profile: EncodingProfile::unpack(args.profile),
-        stripe_size,
-        stripe_count,
-    };
-    let size = stripe_size
-        .checked_mul(StorageUnits::from_bytes(stripe_count.as_u64()))
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    Ok(BlobInfo {
+        size: StorageUnits::unpack(certification.size),
+        root: certification.root,
+        commitment: certification.commitment,
+        profile: EncodingProfile::unpack(certification.profile),
+        stripe_size: StorageUnits::unpack(certification.stripe_size),
+        stripe_count: StripeCount::unpack(certification.stripe_count),
+        leaves: certification.leaves,
+    })
+}
+
+pub fn get_snapshot_track_meta(
+    certification: &CertifySnapshotGroup,
+) -> Result<TrackMeta, ProgramError> {
+    let blob = snapshot_blob_from_certification(certification)?;
 
     Ok(TrackMeta {
         kind: TrackKind::Blob,
-        size,
+        size: blob.size,
         initial_state: TrackState::Certified,
-        value_hash: snapshot_chunk_value_hash(&chunk_meta),
+        value_hash: blob.get_hash(),
     })
 }
 
@@ -109,6 +118,8 @@ pub fn build_certify_snapshot_group_ix(
     epoch: EpochNumber,
     signing_epoch: EpochNumber,
     group: SpoolGroup,
+    size: StorageUnits,
+    root: Hash,
     commitment: Hash,
     profile: EncodingProfile,
     stripe_size: StorageUnits,
@@ -137,6 +148,8 @@ pub fn build_certify_snapshot_group_ix(
             epoch: epoch.pack(),
             signing_epoch: signing_epoch.pack(),
             group: group.pack(),
+            size: size.pack(),
+            root,
             commitment,
             profile: profile.pack(),
             stripe_size: stripe_size.pack(),
@@ -176,14 +189,19 @@ pub fn build_finalize_snapshot_epoch_ix(
 mod tests {
     use super::*;
     use crate::instruction::TapeInstruction;
+    use tape_core::track::blob::BlobInfo;
 
     #[test]
-    fn snapshot_track_meta_uses_compact_hashing() {
+    fn snapshot_track_meta_uses_blob_hashing() {
         let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
-        let args = CertifySnapshotGroup {
+        let size = StorageUnits::from_bytes(1_537);
+        let root = Hash::from([0x22; 32]);
+        let certification = CertifySnapshotGroup {
             epoch: EpochNumber(9).pack(),
             signing_epoch: EpochNumber(10).pack(),
             group: SpoolGroup(3).pack(),
+            size: size.pack(),
+            root,
             commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
             profile: EncodingProfile::basic_default().pack(),
             stripe_size: StorageUnits::from_bytes(512).pack(),
@@ -193,19 +211,23 @@ mod tests {
             signature: BlsSignature::zeroed(),
         };
 
-        let meta = get_snapshot_track_meta(&args).expect("snapshot track meta");
+        let meta = get_snapshot_track_meta(&certification).expect("snapshot track meta");
 
         assert_eq!(meta.kind, TrackKind::Blob);
         assert_eq!(meta.initial_state, TrackState::Certified);
-        assert_eq!(meta.size, StorageUnits::from_bytes(2048));
+        assert_eq!(meta.size, size);
         assert_eq!(
             meta.value_hash,
-            snapshot_chunk_value_hash(&SnapshotChunkMeta {
-                commitment: args.commitment,
+            BlobInfo {
+                size,
+                root,
+                commitment: certification.commitment,
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(512),
                 stripe_count: StripeCount(4),
-            }),
+                leaves,
+            }
+            .get_hash(),
         );
     }
 
@@ -225,6 +247,8 @@ mod tests {
             EpochNumber(7),
             EpochNumber(8),
             SpoolGroup(2),
+            StorageUnits::from_bytes(1_025),
+            Hash::from([0x33; 32]),
             Hash::from([0x44; 32]),
             EncodingProfile::basic_default(),
             StorageUnits::from_bytes(512),

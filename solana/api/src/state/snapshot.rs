@@ -1,8 +1,9 @@
+use bytemuck::{bytes_of, bytes_of_mut};
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::prelude::*;
+use tape_core::types::SnapshotGroupBitmap;
 use tape_crypto::Hash;
 use tape_solana::*;
-use tape_core::types::SnapshotGroupBitmap;
 
 use super::AccountType;
 
@@ -17,6 +18,8 @@ tape_solana::state!(AccountType, SnapshotState);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub struct SnapshotChunkRecord {
+    pub size: StorageUnits,
+    pub value_hash: Hash,
     pub commitment: Hash,
     pub track_number: TrackNumber,
     pub profile: EncodingProfile,
@@ -29,13 +32,13 @@ pub type PackedSnapshotChunkRecord = [u8; core::mem::size_of::<SnapshotChunkReco
 impl SnapshotChunkRecord {
     pub fn pack(&self) -> PackedSnapshotChunkRecord {
         let mut out = [0u8; core::mem::size_of::<Self>()];
-        out.copy_from_slice(bytemuck::bytes_of(self));
+        out.copy_from_slice(bytes_of(self));
         out
     }
 
     pub fn unpack(data: PackedSnapshotChunkRecord) -> Self {
         let mut value = Self::zeroed();
-        bytemuck::bytes_of_mut(&mut value).copy_from_slice(&data);
+        bytes_of_mut(&mut value).copy_from_slice(&data);
         value
     }
 }
@@ -73,6 +76,8 @@ mod tests {
     #[test]
     fn snapshot_chunk_record_pack_roundtrip() {
         let record = SnapshotChunkRecord {
+            size: StorageUnits::from_bytes(2_048),
+            value_hash: Hash::from([0x10; 32]),
             commitment: Hash::from([0x11; 32]),
             track_number: TrackNumber(7),
             profile: EncodingProfile::basic_default(),
@@ -93,6 +98,8 @@ mod tests {
 
         let mut groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
         groups[3] = SnapshotChunkRecord {
+            size: StorageUnits::from_bytes(3_456),
+            value_hash: Hash::from([0x21; 32]),
             commitment: Hash::from([0x22; 32]),
             track_number: TrackNumber(5),
             profile: EncodingProfile::clay_default(),

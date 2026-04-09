@@ -450,7 +450,7 @@ impl Api for HttpApi {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!("{base}{}", api::snapshot_sign_url(req.epoch, req.group));
         let wire_req = SignSnapshotRequest {
-            commitment: req.commitment,
+            blob_hash: req.blob_hash,
         };
         let body = wincode::serialize(&wire_req)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -693,7 +693,7 @@ mod tests {
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
         let request = SignSnapshotRequest {
-            commitment: Hash::from([0xAB; 32]),
+            blob_hash: Hash::from([0xAB; 32]),
         };
         let response = BlsSignResponse {
             signature: BlsPrivateKey::from_random()
@@ -746,7 +746,7 @@ mod tests {
                 &SignSnapshotReq {
                     epoch,
                     group,
-                    commitment: request.commitment,
+                    blob_hash: request.blob_hash,
                 },
             )
             .await

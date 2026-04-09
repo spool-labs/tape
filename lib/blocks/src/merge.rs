@@ -232,8 +232,11 @@ mod tests {
         SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeDestroyed,
         TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
     };
+    use tape_core::bls::BlsPubkey;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::prelude::*;
     use tape_core::spooler::SpoolGroup;
+    use tape_core::system::NodePreferences;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};

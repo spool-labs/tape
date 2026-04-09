@@ -35,7 +35,7 @@ pub struct BlsSignResponse {
 /// Request body for snapshot signing.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SignSnapshotRequest {
-    pub commitment: Hash,
+    pub blob_hash: Hash,
 }
 
 /// Request for inconsistency attestation.
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn sign_snapshot_request() {
         let req = SignSnapshotRequest {
-            commitment: Hash::from([0xAB; 32]),
+            blob_hash: Hash::from([0xAB; 32]),
         };
 
         let bytes = wincode::serialize(&req).unwrap();

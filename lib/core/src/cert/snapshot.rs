@@ -1,4 +1,4 @@
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{Pod, Zeroable, bytes_of, try_from_bytes};
 use tape_crypto::Hash;
 
 use crate::spooler::SpoolGroup;
@@ -19,7 +19,7 @@ pub struct SnapshotMessage {
     pub epoch: EpochNumber,
     pub signing_epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub commitment: Hash,
+    pub blob_hash: Hash,
     pub parent_epoch: EpochNumber,
 }
 
@@ -28,14 +28,14 @@ impl SnapshotMessage {
         epoch: EpochNumber,
         signing_epoch: EpochNumber,
         group: SpoolGroup,
-        commitment: Hash,
+        blob_hash: Hash,
         parent_epoch: EpochNumber,
     ) -> Self {
         Self {
             epoch,
             signing_epoch,
             group,
-            commitment,
+            blob_hash,
             parent_epoch,
         }
     }
@@ -43,7 +43,7 @@ impl SnapshotMessage {
     pub fn to_bytes(&self) -> [u8; SNAPSHOT_MESSAGE_SIZE] {
         let mut buf = [0u8; SNAPSHOT_MESSAGE_SIZE];
         buf[0..8].copy_from_slice(SNAPSHOT_DOMAIN_TAG);
-        buf[8..].copy_from_slice(bytemuck::bytes_of(self));
+        buf[8..].copy_from_slice(bytes_of(self));
         buf
     }
 
@@ -56,7 +56,7 @@ impl SnapshotMessage {
             return None;
         }
 
-        bytemuck::try_from_bytes::<Self>(&bytes[8..]).copied().ok()
+        try_from_bytes::<Self>(&bytes[8..]).copied().ok()
     }
 }
 
@@ -130,19 +130,19 @@ mod tests {
 
     #[test]
     fn test_different_epochs_produce_different_messages() {
-        let commitment = Hash::from([0xAA; 32]);
+        let blob_hash = Hash::from([0xAA; 32]);
         let msg1 = SnapshotMessage::new(
             EpochNumber(1),
             EpochNumber(2),
             SpoolGroup(3),
-            commitment,
+            blob_hash,
             EpochNumber(0),
         );
         let msg2 = SnapshotMessage::new(
             EpochNumber(2),
             EpochNumber(2),
             SpoolGroup(3),
-            commitment,
+            blob_hash,
             EpochNumber(0),
         );
 

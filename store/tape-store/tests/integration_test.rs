@@ -1,7 +1,9 @@
 //! Integration tests for TapeStore with RocksDB backend
 
+use tape_core::spooler::SpoolGroup;
+use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_store::{ops::*, types::*, TapeStore};

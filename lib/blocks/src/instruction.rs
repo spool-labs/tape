@@ -316,19 +316,23 @@ mod tests {
             Some(RawInstruction::InitSnapshotEpoch)
         ));
 
-        let (ix, keys) = compiled_instruction(&build_certify_snapshot_group_ix(
-            Address::new_unique(),
-            EpochNumber(7),
-            EpochNumber(8),
-            SpoolGroup(3),
-            Hash::from([0x11; 32]),
-            EncodingProfile::basic_default(),
-            StorageUnits::from_bytes(512),
-            StripeCount(4),
-            [Hash::from([0x22; 32]); SPOOL_GROUP_SIZE],
-            CommitteeBitmap::zeroed(),
-            BlsSignature::zeroed(),
-        ));
+        let (ix, keys) = compiled_instruction(
+            &build_certify_snapshot_group_ix(
+                Address::new_unique(),
+                EpochNumber(7),
+                EpochNumber(8),
+                SpoolGroup(3),
+                StorageUnits::from_bytes(1_025),
+                Hash::from([0x10; 32]),
+                Hash::from([0x11; 32]),
+                EncodingProfile::basic_default(),
+                StorageUnits::from_bytes(512),
+                StripeCount(4),
+                [Hash::from([0x22; 32]); SPOOL_GROUP_SIZE],
+                CommitteeBitmap::zeroed(),
+                BlsSignature::zeroed(),
+            ));
+
         assert!(matches!(
             parse_raw_instruction(&ix, &keys).unwrap(),
             Some(RawInstruction::CertifySnapshotGroup)

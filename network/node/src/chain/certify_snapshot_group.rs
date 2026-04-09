@@ -20,6 +20,8 @@ pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: 
     epoch: EpochNumber,
     signing_epoch: EpochNumber,
     group: SpoolGroup,
+    size: StorageUnits,
+    root: Hash,
     commitment: Hash,
     profile: EncodingProfile,
     stripe_size: StorageUnits,
@@ -35,6 +37,8 @@ pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: 
         epoch,
         signing_epoch,
         group,
+        size,
+        root,
         commitment,
         profile,
         stripe_size,
@@ -63,6 +67,7 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::snapshot::chunk::snapshot_chunk_root;
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
     use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
@@ -112,6 +117,8 @@ mod tests {
                 SNAPSHOT_EPOCH,
                 EPOCH,
                 SpoolGroup(0),
+                StorageUnits::from_bytes(2_048),
+                snapshot_chunk_root(b"snapshot-certify"),
                 commitment,
                 EncodingProfile::basic_default(),
                 StorageUnits::from_bytes(512),

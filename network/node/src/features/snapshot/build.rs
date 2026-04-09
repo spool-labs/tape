@@ -12,12 +12,13 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-use tape_core::snapshot::chunk::SnapshotChunkMeta;
+use tape_core::snapshot::chunk::snapshot_chunk_root;
 use tape_core::snapshot::info::{
     SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
 };
 use tape_core::snapshot::types::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
+use tape_core::track::blob::BlobInfo;
 use tape_core::types::{
     CommitteeBitmap, EpochNumber, SlotNumber, SnapshotGroupBitmap, StorageUnits, StripeCount,
 };
@@ -150,11 +151,14 @@ fn encode_group<Db: Store>(
     let stripe_size = slicer.stripe_size();
     let stripe_count = num_stripes(chunk.len(), stripe_size);
 
-    let meta = SnapshotChunkMeta {
+    let blob = BlobInfo {
+        size: StorageUnits::from_bytes(chunk.len() as u64),
+        root: snapshot_chunk_root(chunk),
         commitment,
         profile: slicer.profile(),
         stripe_size: StorageUnits::from_bytes(stripe_size as u64),
         stripe_count: StripeCount(stripe_count as u64),
+        leaves,
     };
 
     for (spool_index, slice) in slices.into_iter().enumerate() {
@@ -167,8 +171,7 @@ fn encode_group<Db: Store>(
 
     let group_info = SnapshotGroupInfo {
         status: SnapshotGroupStatus::Built,
-        meta,
-        leaves,
+        blob,
         bitmap: CommitteeBitmap::zeroed(),
         signature: BlsSignature::zeroed(),
         track_number: None,
@@ -223,7 +226,7 @@ mod tests {
                 .expect("get")
                 .expect("group exists");
             assert_eq!(group.status, SnapshotGroupStatus::Built);
-            assert_ne!(group.meta.commitment, Hash::default());
+            assert_ne!(group.blob.commitment, Hash::default());
 
             for s in 0..SPOOL_GROUP_SIZE as u16 {
                 assert!(
@@ -275,14 +278,14 @@ mod tests {
             .get_group_info(epoch, SpoolGroup(0))
             .expect("get")
             .expect("exists")
-            .meta
+            .blob
             .commitment;
         let c1 = ctx
             .store
             .get_group_info(epoch, SpoolGroup(1))
             .expect("get")
             .expect("exists")
-            .meta
+            .blob
             .commitment;
 
         // chunk_index differentiates commitments across groups
@@ -337,7 +340,7 @@ mod tests {
             .get_group_info(epoch, SpoolGroup(0))
             .expect("get")
             .expect("exists")
-            .meta
+            .blob
             .commitment;
 
         // Reset to Pending and rebuild
@@ -359,7 +362,7 @@ mod tests {
             .get_group_info(epoch, SpoolGroup(0))
             .expect("get")
             .expect("exists")
-            .meta
+            .blob
             .commitment;
 
         assert_eq!(first, second);
