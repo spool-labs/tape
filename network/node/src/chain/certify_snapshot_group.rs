@@ -4,48 +4,32 @@ use rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::compute::CERTIFY_SNAPSHOT_GROUP_CU;
 use tape_api::instruction::build_certify_snapshot_group_ix;
-use tape_core::bls::BlsSignature;
-use tape_core::encoding::EncodingProfile;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
-use tape_crypto::Hash;
+use tape_core::track::blob::BlobInfo;
+use tape_core::types::EpochNumber;
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 
 use crate::context::NodeContext;
+use crate::features::snapshot::signing::SnapshotGroupCert;
 
 pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
-    signing_epoch: EpochNumber,
     group: SpoolGroup,
-    size: StorageUnits,
-    root: Hash,
-    commitment: Hash,
-    profile: EncodingProfile,
-    stripe_size: StorageUnits,
-    stripe_count: StripeCount,
-    leaves: [Hash; SPOOL_GROUP_SIZE],
-    bitmap: CommitteeBitmap,
-    signature: BlsSignature,
+    blob: &BlobInfo,
+    cert: &SnapshotGroupCert,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
 
     let ix = build_certify_snapshot_group_ix(
         fee_payer,
         epoch,
-        signing_epoch,
+        cert.signing_epoch,
         group,
-        size,
-        root,
-        commitment,
-        profile,
-        stripe_size,
-        stripe_count,
-        leaves,
-        bitmap,
-        signature,
+        blob,
+        cert.bitmap,
+        cert.signature,
     );
 
     ctx.rpc
@@ -70,6 +54,7 @@ mod tests {
     use tape_core::snapshot::chunk::snapshot_chunk_root;
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
+    use tape_core::track::blob::BlobInfo;
     use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
@@ -77,6 +62,7 @@ mod tests {
     use super::submit_certify_snapshot_group;
     use crate::chain::submit_init_snapshot_epoch;
     use crate::core::chain_tx::{TxOutcome, classify_tx};
+    use crate::features::snapshot::signing::SnapshotGroupCert;
     use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
@@ -109,23 +95,28 @@ mod tests {
             .await
             .expect("init snapshot epoch");
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
-        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(2_048),
+            root: snapshot_chunk_root(b"snapshot-certify"),
+            commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+            leaves,
+        };
+        let cert = SnapshotGroupCert {
+            signing_epoch: EPOCH,
+            bitmap: CommitteeBitmap::zeroed(),
+            signature: BlsSignature::zeroed(),
+        };
 
         let outcome = classify_tx(
             submit_certify_snapshot_group(
                 &ctx,
                 SNAPSHOT_EPOCH,
-                EPOCH,
                 SpoolGroup(0),
-                StorageUnits::from_bytes(2_048),
-                snapshot_chunk_root(b"snapshot-certify"),
-                commitment,
-                EncodingProfile::basic_default(),
-                StorageUnits::from_bytes(512),
-                StripeCount(4),
-                leaves,
-                CommitteeBitmap::zeroed(),
-                BlsSignature::zeroed(),
+                &blob,
+                &cert,
             )
             .await,
         );

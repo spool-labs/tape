@@ -51,8 +51,8 @@ pub async fn certify_snapshot_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         let blob_hash = snapshot_group.blob.get_hash();
-        let collected = match collect_group_signatures(context, epoch, group, blob_hash).await? {
-            Some(collected) => collected,
+        let cert = match collect_group_signatures(context, epoch, group, blob_hash).await? {
+            Some(cert) => cert,
             None => {
                 debug!(epoch = epoch.0, group = group.0, "no supermajority, skipping group");
                 continue;
@@ -62,17 +62,9 @@ pub async fn certify_snapshot_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
         let result = submit_certify_snapshot_group(
             context,
             epoch,
-            collected.signing_epoch,
             group,
-            snapshot_group.blob.size,
-            snapshot_group.blob.root,
-            snapshot_group.blob.commitment,
-            snapshot_group.blob.profile,
-            snapshot_group.blob.stripe_size,
-            snapshot_group.blob.stripe_count,
-            snapshot_group.blob.leaves,
-            collected.bitmap,
-            collected.signature,
+            &snapshot_group.blob,
+            &cert,
         )
         .await;
 

@@ -2,16 +2,12 @@ use bytemuck::{Pod, Zeroable};
 use solana_program::instruction::{AccountMeta, Instruction};
 
 use tape_core::bls::BlsSignature;
-use tape_core::encoding::EncodingProfile;
-use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{TrackKind, TrackState};
-use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
+use tape_core::types::{CommitteeBitmap, EpochNumber};
 use tape_crypto::address::Address;
-use tape_crypto::Hash;
-use tape_crypto::merkle::root_from_leaf_hashes;
 use tape_solana::*;
 
 use crate::errors::TapeError;
@@ -33,13 +29,7 @@ pub struct CertifySnapshotGroup {
     pub epoch: [u8; 8],
     pub signing_epoch: [u8; 8],
     pub group: [u8; 8],
-    pub size: [u8; 8],
-    pub root: Hash,
-    pub commitment: Hash,
-    pub profile: [u8; 16],
-    pub stripe_size: [u8; 8],
-    pub stripe_count: [u8; 8],
-    pub leaves: [Hash; SPOOL_GROUP_SIZE],
+    pub blob: BlobInfo,
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
 }
@@ -53,20 +43,11 @@ pub struct FinalizeSnapshotEpoch {
 pub fn snapshot_blob_from_certification(
     certification: &CertifySnapshotGroup,
 ) -> Result<BlobInfo, ProgramError> {
-    let computed_root = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&certification.leaves);
-    if computed_root != certification.commitment {
+    let blob = certification.blob;
+    if blob.commitment_root() != blob.commitment {
         return Err(TapeError::InvalidCommitment.into());
     }
-
-    Ok(BlobInfo {
-        size: StorageUnits::unpack(certification.size),
-        root: certification.root,
-        commitment: certification.commitment,
-        profile: EncodingProfile::unpack(certification.profile),
-        stripe_size: StorageUnits::unpack(certification.stripe_size),
-        stripe_count: StripeCount::unpack(certification.stripe_count),
-        leaves: certification.leaves,
-    })
+    Ok(blob)
 }
 
 pub fn get_snapshot_track_meta(
@@ -118,13 +99,7 @@ pub fn build_certify_snapshot_group_ix(
     epoch: EpochNumber,
     signing_epoch: EpochNumber,
     group: SpoolGroup,
-    size: StorageUnits,
-    root: Hash,
-    commitment: Hash,
-    profile: EncodingProfile,
-    stripe_size: StorageUnits,
-    stripe_count: StripeCount,
-    leaves: [Hash; SPOOL_GROUP_SIZE],
+    blob: &BlobInfo,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
 ) -> Instruction {
@@ -148,13 +123,7 @@ pub fn build_certify_snapshot_group_ix(
             epoch: epoch.pack(),
             signing_epoch: signing_epoch.pack(),
             group: group.pack(),
-            size: size.pack(),
-            root,
-            commitment,
-            profile: profile.pack(),
-            stripe_size: stripe_size.pack(),
-            stripe_count: stripe_count.pack(),
-            leaves,
+            blob: *blob,
             bitmap,
             signature,
         }
@@ -189,24 +158,30 @@ pub fn build_finalize_snapshot_epoch_ix(
 mod tests {
     use super::*;
     use crate::instruction::TapeInstruction;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::track::blob::BlobInfo;
+    use tape_core::types::{StorageUnits, StripeCount};
+    use tape_crypto::Hash;
+    use tape_crypto::merkle::root_from_leaf_hashes;
 
     #[test]
     fn snapshot_track_meta_uses_blob_hashing() {
         let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
-        let size = StorageUnits::from_bytes(1_537);
-        let root = Hash::from([0x22; 32]);
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(1_537),
+            root: Hash::from([0x22; 32]),
+            commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+            leaves,
+        };
         let certification = CertifySnapshotGroup {
             epoch: EpochNumber(9).pack(),
             signing_epoch: EpochNumber(10).pack(),
             group: SpoolGroup(3).pack(),
-            size: size.pack(),
-            root,
-            commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
-            profile: EncodingProfile::basic_default().pack(),
-            stripe_size: StorageUnits::from_bytes(512).pack(),
-            stripe_count: StripeCount(4).pack(),
-            leaves,
+            blob,
             bitmap: CommitteeBitmap::zeroed(),
             signature: BlsSignature::zeroed(),
         };
@@ -215,20 +190,8 @@ mod tests {
 
         assert_eq!(meta.kind, TrackKind::Blob);
         assert_eq!(meta.initial_state, TrackState::Certified);
-        assert_eq!(meta.size, size);
-        assert_eq!(
-            meta.value_hash,
-            BlobInfo {
-                size,
-                root,
-                commitment: certification.commitment,
-                profile: EncodingProfile::basic_default(),
-                stripe_size: StorageUnits::from_bytes(512),
-                stripe_count: StripeCount(4),
-                leaves,
-            }
-            .get_hash(),
-        );
+        assert_eq!(meta.size, blob.size);
+        assert_eq!(meta.value_hash, blob.get_hash());
     }
 
     #[test]
@@ -242,18 +205,22 @@ mod tests {
 
     #[test]
     fn build_certify_snapshot_group_ix_smoke() {
+        let leaves = [Hash::from([0x55; 32]); SPOOL_GROUP_SIZE];
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(1_025),
+            root: Hash::from([0x33; 32]),
+            commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(3),
+            leaves,
+        };
         let instruction = build_certify_snapshot_group_ix(
             Address::new_unique(),
             EpochNumber(7),
             EpochNumber(8),
             SpoolGroup(2),
-            StorageUnits::from_bytes(1_025),
-            Hash::from([0x33; 32]),
-            Hash::from([0x44; 32]),
-            EncodingProfile::basic_default(),
-            StorageUnits::from_bytes(512),
-            StripeCount(3),
-            [Hash::from([0x55; 32]); SPOOL_GROUP_SIZE],
+            &blob,
             CommitteeBitmap::zeroed(),
             BlsSignature::zeroed(),
         );

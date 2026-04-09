@@ -149,7 +149,7 @@ pub fn process_certify_snapshot_group(
         epoch: snapshot_epoch,
         group,
         track: track_number,
-        commitment: certification.commitment,
+        commitment: blob.commitment,
         signer_count: signer_count.to_le_bytes(),
         signer_weight: signer_weight.to_le_bytes(),
     }
@@ -292,17 +292,12 @@ mod tests {
             .collect();
         let aggregate_signature = BlsSignature::aggregate(&partials).expect("aggregate");
 
-        let instruction = build_certify_snapshot_group_ix(fee_payer.into(),
+        let instruction = build_certify_snapshot_group_ix(
+            fee_payer.into(),
             snapshot_epoch,
             signing_epoch,
             group,
-            chunk_size,
-            root,
-            commitment,
-            EncodingProfile::basic_default(),
-            StorageUnits::from_bytes(512),
-            StripeCount(4),
-            leaves,
+            &blob,
             bitmap,
             aggregate_signature,
         );
@@ -397,17 +392,22 @@ mod tests {
         let mut group_bitmap = SnapshotGroupBitmap::zeroed();
         group_bitmap.set(group.0 as usize);
 
-        let instruction = build_certify_snapshot_group_ix(fee_payer.into(),
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(1_024),
+            root: snapshot_chunk_root(b"sealed-group"),
+            commitment: Hash::from([0x22; 32]),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+            leaves: [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE],
+        };
+
+        let instruction = build_certify_snapshot_group_ix(
+            fee_payer.into(),
             snapshot_epoch,
             signing_epoch,
             group,
-            StorageUnits::from_bytes(1_024),
-            snapshot_chunk_root(b"sealed-group"),
-            Hash::from([0x22; 32]),
-            EncodingProfile::basic_default(),
-            StorageUnits::from_bytes(512),
-            StripeCount(4),
-            [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE],
+            &blob,
             CommitteeBitmap::zeroed(),
             BlsSignature::zeroed(),
         );

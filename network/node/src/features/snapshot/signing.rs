@@ -25,11 +25,11 @@ use tracing::{debug, warn};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
-/// Aggregated BLS signatures for a single snapshot group.
-pub struct CollectedSignatures {
+/// Aggregated BLS quorum certificate for a single snapshot group.
+pub struct SnapshotGroupCert {
+    pub signing_epoch: EpochNumber,
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
-    pub signing_epoch: EpochNumber,
 }
 
 /// Collects BLS signatures from group peers for a snapshot chunk.
@@ -41,7 +41,7 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     group: SpoolGroup,
     blob_hash: Hash,
-) -> Result<Option<CollectedSignatures>, NodeError> {
+) -> Result<Option<SnapshotGroupCert>, NodeError> {
     let state = context.state();
     let signing_epoch = state.epoch;
 
@@ -153,13 +153,13 @@ fn aggregate_and_return(
     partials: &[BlsSignature],
     bitmap: CommitteeBitmap,
     signing_epoch: EpochNumber,
-) -> Result<Option<CollectedSignatures>, NodeError> {
+) -> Result<Option<SnapshotGroupCert>, NodeError> {
     let signature = BlsSignature::aggregate(partials)
         .map_err(|e| NodeError::Store(format!("bls aggregate: {e:?}")))?;
 
-    Ok(Some(CollectedSignatures {
+    Ok(Some(SnapshotGroupCert {
+        signing_epoch,
         bitmap,
         signature,
-        signing_epoch,
     }))
 }

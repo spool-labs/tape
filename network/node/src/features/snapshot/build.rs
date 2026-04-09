@@ -89,7 +89,6 @@ pub async fn build_snapshot_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
             epoch,
             SpoolGroup(group_index as u64),
             chunk,
-            group_index as u64,
         )?;
     }
 
@@ -136,14 +135,13 @@ fn encode_group<Db: Store>(
     epoch: EpochNumber,
     group: SpoolGroup,
     chunk: &[u8],
-    group_index: u64,
 ) -> Result<(), NodeError> {
     let mut slicer = Slicer::clay_default();
-    slicer.set_chunk_index(group_index);
+    slicer.set_chunk_index(group.0);
 
     let slices = slicer
         .encode(chunk)
-        .map_err(|e| NodeError::Store(format!("inner encode({epoch}, group {group_index}): {e}")))?;
+        .map_err(|e| NodeError::Store(format!("inner encode({epoch}, group {group}): {e}")))?;
 
     let leaves: [Hash; SPOOL_GROUP_SIZE] = core::array::from_fn(|i| hash_leaf(&slices[i]));
     let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
@@ -165,7 +163,7 @@ fn encode_group<Db: Store>(
         store
             .put_group_slice(epoch, group, spool_index as u16, slice)
             .map_err(|e| NodeError::Store(format!(
-                "put_group_slice({epoch}, group {group_index}, spool {spool_index}): {e}"
+                "put_group_slice({epoch}, group {group}, spool {spool_index}): {e}"
             )))?;
     }
 
@@ -179,7 +177,7 @@ fn encode_group<Db: Store>(
 
     store
         .put_group_info(epoch, group, group_info)
-        .map_err(|e| NodeError::Store(format!("put_group_info({epoch}, group {group_index}): {e}")))?;
+        .map_err(|e| NodeError::Store(format!("put_group_info({epoch}, group {group}): {e}")))?;
 
     Ok(())
 }

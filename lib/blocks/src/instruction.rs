@@ -287,6 +287,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::spooler::SpoolGroup;
+    use tape_core::track::blob::BlobInfo;
     use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -316,19 +317,22 @@ mod tests {
             Some(RawInstruction::InitSnapshotEpoch)
         ));
 
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(1_025),
+            root: Hash::from([0x10; 32]),
+            commitment: Hash::from([0x11; 32]),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+            leaves: [Hash::from([0x22; 32]); SPOOL_GROUP_SIZE],
+        };
         let (ix, keys) = compiled_instruction(
             &build_certify_snapshot_group_ix(
                 Address::new_unique(),
                 EpochNumber(7),
                 EpochNumber(8),
                 SpoolGroup(3),
-                StorageUnits::from_bytes(1_025),
-                Hash::from([0x10; 32]),
-                Hash::from([0x11; 32]),
-                EncodingProfile::basic_default(),
-                StorageUnits::from_bytes(512),
-                StripeCount(4),
-                [Hash::from([0x22; 32]); SPOOL_GROUP_SIZE],
+                &blob,
                 CommitteeBitmap::zeroed(),
                 BlsSignature::zeroed(),
             ));
