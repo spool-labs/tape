@@ -2,7 +2,7 @@ use tape_solana::*;
 use tape_crypto::address::Address;
 
 use crate::program::tapedrive;
-use crate::program::tapedrive::{archive_ata, archive_pda, epoch_pda, snapshot_state_pda, system_pda};
+use crate::program::tapedrive::{archive_ata, archive_pda, epoch_pda, system_pda};
 use crate::program::token::mint_pda;
 
 #[repr(C)]
@@ -64,7 +64,6 @@ pub fn build_initialize_ix(
     let (epoch_address, _) = epoch_pda();
     let (archive_address, _) = archive_pda();
     let (archive_ata, _) = archive_ata();
-    let (snapshot_state_address, _) = snapshot_state_pda();
     let (mint_address, _) = mint_pda();
 
     Instruction {
@@ -77,7 +76,6 @@ pub fn build_initialize_ix(
             AccountMeta::new(epoch_address.into(), false),
             AccountMeta::new(archive_address.into(), false),
             AccountMeta::new(archive_ata.into(), false),
-            AccountMeta::new(snapshot_state_address.into(), false),
 
             AccountMeta::new_readonly(mint_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),

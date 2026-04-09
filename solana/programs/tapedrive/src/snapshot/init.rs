@@ -9,7 +9,6 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         system_info,
         epoch_info,
         archive_info,
-        snapshot_state_info,
         manifest_info,
         snapshot_tape_info,
         system_program_info,
@@ -32,21 +31,26 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .is_writable()?
         .is_archive()?
         .as_account_mut::<Archive>(&tapedrive::ID)?;
-    let snapshot_state = snapshot_state_info
-        .is_snapshot_state()?
-        .as_account::<SnapshotState>(&tapedrive::ID)?;
 
+    // Snapshot epochs are derived from the current chain epoch:
+    //   snapshot_epoch == current_epoch - 1
+    // and the manifest's parent_epoch is one more step back:
+    //   parent_epoch == current_epoch - 2
+    // The advance_epoch gate guarantees that, when we reach `current_epoch`,
+    // the manifest for `current_epoch - 2` is already fully sealed, so we can
+    // safely chain the new manifest's parent to it without an explicit lookup.
     let snapshot_epoch = EpochNumber::unpack(args.epoch);
     let current_epoch = current_epoch(epoch);
-    let expected_epoch = required_snapshot_epoch(current_epoch)?;
-    let expected_parent = snapshot_state
-        .tail_epoch
-        .checked_add(EpochNumber(1))
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    if snapshot_epoch != expected_epoch || snapshot_epoch != expected_parent {
+    if current_epoch <= EpochNumber(1) {
         return Err(TapeError::SnapshotEpochClosed.into());
     }
+    let expected_epoch = current_epoch - EpochNumber(1);
+    if snapshot_epoch != expected_epoch {
+        return Err(TapeError::SnapshotEpochClosed.into());
+    }
+    let expected_parent = current_epoch
+        .checked_sub(EpochNumber(2))
+        .unwrap_or(EpochNumber(0));
 
     let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
     manifest_info
@@ -93,8 +97,9 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     snapshot_tape.used = StorageUnits::zero();
 
     let manifest = manifest_info.as_account_mut::<SnapshotManifest>(&tapedrive::ID)?;
-    manifest.parent_epoch = snapshot_state.tail_epoch;
+    manifest.parent_epoch = expected_parent;
     manifest.group_bitmap = SnapshotGroupBitmap::zeroed();
+    manifest.chunk_size = StorageUnits::zero();
     manifest.groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
 
     SnapshotInit {
@@ -104,16 +109,6 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     .log();
 
     Ok(())
-}
-
-fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, ProgramError> {
-    if current_epoch <= EpochNumber(1) {
-        return Err(TapeError::SnapshotEpochClosed.into());
-    }
-
-    current_epoch
-        .checked_sub(EpochNumber(1))
-        .ok_or(TapeError::SnapshotEpochClosed.into())
 }
 
 #[cfg(test)]
@@ -129,7 +124,6 @@ mod tests {
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
-        let (snapshot_state_address, _) = snapshot_state_pda();
         let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
         let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
 
@@ -141,9 +135,6 @@ mod tests {
             tape_count: 4,
             ..Archive::zeroed()
         };
-        let snapshot_state = SnapshotState {
-            tail_epoch: EpochNumber(0),
-        };
 
         let instruction = build_init_snapshot_epoch_ix(fee_payer.into(), snapshot_epoch);
 
@@ -152,16 +143,17 @@ mod tests {
             pda(system_address, System::zeroed().pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             empty(manifest_address),
             empty(snapshot_tape_address),
             system_program(),
             rent_sysvar(),
         ];
 
+        // current_epoch = 2, so parent_epoch = current - 2 = 0.
         let expected_manifest = SnapshotManifest {
             parent_epoch: EpochNumber(0),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
+            chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
 
@@ -203,22 +195,19 @@ mod tests {
 
     #[test]
     fn test_init_snapshot_epoch_rejects_closed_epoch() {
+        // current_epoch = 3 → expected snapshot_epoch = 2, but we submit 1.
         let fee_payer = Pubkey::new_unique();
         let snapshot_epoch = EpochNumber(1);
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
-        let (snapshot_state_address, _) = snapshot_state_pda();
         let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
         let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
 
         let epoch = Epoch {
             id: EpochNumber(3),
             ..Epoch::zeroed()
-        };
-        let snapshot_state = SnapshotState {
-            tail_epoch: EpochNumber(1),
         };
 
         let instruction = build_init_snapshot_epoch_ix(fee_payer.into(), snapshot_epoch);
@@ -228,7 +217,6 @@ mod tests {
             pda(system_address, System::zeroed().pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
-            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             empty(manifest_address),
             empty(snapshot_tape_address),
             system_program(),

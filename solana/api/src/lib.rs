@@ -19,11 +19,11 @@ pub mod prelude {
     pub use crate::program::{exchange, staking, tapedrive, token};
     pub use crate::program::{
         archive_ata, archive_pda, cert_pda, epoch_pda, exchange_ata, exchange_pda, history_pda,
-        metadata_pda, mint_pda, node_pda, snapshot_manifest_pda, snapshot_state_pda,
-        snapshot_tape_pda, stake_pda, system_pda, tape_pda, track_pda, treasury_pda, vault_pda,
+        metadata_pda, mint_pda, node_pda, snapshot_manifest_pda, snapshot_tape_pda, stake_pda,
+        system_pda, tape_pda, track_pda, treasury_pda, vault_pda,
     };
     pub use crate::state::{
-        AccountType, Archive, Epoch, Exchange, History, Node, SnapshotManifest, SnapshotState,
-        Stake, System, Tape, Treasury,
+        AccountType, Archive, Epoch, Exchange, History, Node, SnapshotManifest, Stake, System,
+        Tape, Treasury,
     };
 }

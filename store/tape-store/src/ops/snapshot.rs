@@ -125,19 +125,15 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytemuck::Zeroable;
     use store_memory::MemoryStore;
-    use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
     use tape_core::snapshot::info::{
         SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
     };
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
-    use tape_core::types::{
-        CommitteeBitmap, SnapshotGroupBitmap, StorageUnits, StripeCount, TrackNumber,
-    };
+    use tape_core::types::{SnapshotGroupBitmap, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -165,8 +161,6 @@ mod tests {
                 stripe_count: StripeCount(4),
                 leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             },
-            bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], MEMBER_COUNT),
-            signature: BlsSignature::zeroed(),
             track_number: Some(TrackNumber(7)),
         }
     }

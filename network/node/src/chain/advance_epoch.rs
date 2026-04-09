@@ -14,7 +14,9 @@ pub async fn submit_advance_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
     let authority = ctx.pubkey().into();
-    let ix = build_advance_epoch_ix(fee_payer, authority);
+    let current_epoch = ctx.state().epoch;
+
+    let ix = build_advance_epoch_ix(fee_payer, authority, current_epoch);
 
     ctx.rpc
         .send_instructions_with_compute_unit_limit(ctx.signer(), ADVANCE_EPOCH_CU, vec![ix])

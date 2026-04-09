@@ -195,9 +195,14 @@ impl<'a> SimnetScenario<'a> {
             .node(authority_node_index)
             .context("authority node missing")?;
 
+        // Fetch the current epoch first so the ix-builder can pin the
+        // previous-epoch snapshot manifest PDA into the account list.
+        let epoch = self.read_epoch().await?;
+
         let ix = build_advance_epoch_ix(
             authority.authority().into(),
             authority.authority().into(),
+            epoch.id,
         );
 
         self.harness

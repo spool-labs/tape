@@ -8,23 +8,25 @@ use tape_solana::*;
 use super::AccountType;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-pub struct SnapshotState {
-    pub tail_epoch: EpochNumber,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotManifest {
+    pub parent_epoch: EpochNumber,
+    pub group_bitmap: SnapshotGroupBitmap,
+    pub chunk_size: StorageUnits,
+    pub groups: [SnapshotChunkRecord; SPOOL_GROUP_COUNT],
 }
 
-tape_solana::state!(AccountType, SnapshotState);
+unsafe impl Pod for SnapshotManifest {}
+unsafe impl Zeroable for SnapshotManifest {}
+
+tape_solana::state!(AccountType, SnapshotManifest);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub struct SnapshotChunkRecord {
-    pub size: StorageUnits,
     pub value_hash: Hash,
     pub commitment: Hash,
     pub track_number: TrackNumber,
-    pub profile: EncodingProfile,
-    pub stripe_size: StorageUnits,
-    pub stripe_count: StripeCount,
 }
 
 pub type PackedSnapshotChunkRecord = [u8; core::mem::size_of::<SnapshotChunkRecord>()];
@@ -43,46 +45,16 @@ impl SnapshotChunkRecord {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SnapshotManifest {
-    pub parent_epoch: EpochNumber,
-    pub group_bitmap: SnapshotGroupBitmap,
-    pub groups: [SnapshotChunkRecord; SPOOL_GROUP_COUNT],
-}
-
-unsafe impl Pod for SnapshotManifest {}
-unsafe impl Zeroable for SnapshotManifest {}
-
-tape_solana::state!(AccountType, SnapshotManifest);
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_state_pack_roundtrip() {
-        let state = SnapshotState {
-            tail_epoch: EpochNumber(9),
-        };
-
-        let packed = state.pack();
-        let unpacked =
-            SnapshotState::unpack_with_discriminator(&packed).expect("unpack snapshot state");
-
-        assert_eq!(unpacked, &state);
-    }
-
-    #[test]
     fn snapshot_chunk_record_pack_roundtrip() {
         let record = SnapshotChunkRecord {
-            size: StorageUnits::from_bytes(2_048),
             value_hash: Hash::from([0x10; 32]),
             commitment: Hash::from([0x11; 32]),
             track_number: TrackNumber(7),
-            profile: EncodingProfile::basic_default(),
-            stripe_size: StorageUnits::from_bytes(512),
-            stripe_count: StripeCount(4),
         };
 
         let packed = record.pack();
@@ -97,27 +69,27 @@ mod tests {
         group_bitmap.set(3);
 
         let mut groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
+
         groups[3] = SnapshotChunkRecord {
-            size: StorageUnits::from_bytes(3_456),
             value_hash: Hash::from([0x21; 32]),
             commitment: Hash::from([0x22; 32]),
             track_number: TrackNumber(5),
-            profile: EncodingProfile::clay_default(),
-            stripe_size: StorageUnits::from_bytes(4096),
-            stripe_count: StripeCount(8),
         };
 
         let manifest = SnapshotManifest {
             parent_epoch: EpochNumber(11),
             group_bitmap,
+            chunk_size: StorageUnits::from_bytes(3_456),
             groups,
         };
 
         let packed = manifest.pack();
         let unpacked =
-            SnapshotManifest::unpack_with_discriminator(&packed).expect("unpack snapshot manifest");
+            SnapshotManifest::unpack_with_discriminator(&packed)
+            .expect("unpack snapshot manifest");
 
         assert_eq!(unpacked, &manifest);
         assert!(unpacked.group_bitmap.is_set(3));
+        assert_eq!(unpacked.chunk_size, StorageUnits::from_bytes(3_456));
     }
 }

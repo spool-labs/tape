@@ -6,15 +6,18 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use tape_api::program::tapedrive::{
-    archive_pda, epoch_pda, history_pda, node_pda, snapshot_state_pda, system_pda,
+    archive_pda, epoch_pda, history_pda, node_pda, snapshot_manifest_pda, system_pda,
 };
-use tape_api::state::{Archive, Epoch, History, Node, SnapshotState, System};
+use tape_api::state::{
+    Archive, Epoch, History, Node, SnapshotChunkRecord, SnapshotManifest, System,
+};
 use tape_core::bls::BlsPrivateKey;
+use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::prelude::NodeId;
 use tape_core::spooler::SpoolAssignment;
 use tape_core::staking::{PoolHistory, StakingPool};
 use tape_core::system::{Committee, CommitteeMember, EpochSchedule, NodeMetadata, NodePreferences};
-use tape_core::types::{ShareAmount, VersionId};
+use tape_core::types::{EpochNumber, ShareAmount, SnapshotGroupBitmap, StorageUnits, VersionId};
 use tape_crypto::Hash;
 use tape_protocol::ProtocolState;
 
@@ -31,7 +34,10 @@ pub(crate) struct SeededWorld {
     pub system: SeedAccount<System>,
     pub epoch: SeedAccount<Epoch>,
     pub archive: SeedAccount<Archive>,
-    pub snapshot_state: SeedAccount<SnapshotState>,
+    /// Fully-sealed snapshot manifest at `spec.epoch - 1`. Required by the
+    /// `advance_epoch` gate for any non-bootstrap epoch (`spec.epoch > 1`).
+    /// Set to `None` when `spec.epoch <= 1`.
+    pub prev_snapshot_manifest: Option<SeedAccount<SnapshotManifest>>,
     pub nodes: Vec<HarnessNode>,
     pub node_accounts: Vec<SeedAccount<Node>>,
     pub history_accounts: Vec<SeedAccount<History>>,
@@ -79,10 +85,33 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         ..Archive::zeroed()
     };
 
-    let (snapshot_state_address, _) = snapshot_state_pda();
-    let snapshot_state = SnapshotState {
-        tail_epoch: previous_epoch(spec.epoch),
-        ..SnapshotState::zeroed()
+    // For any non-bootstrap epoch the on-chain `advance_epoch` gate requires
+    // the previous epoch's snapshot manifest to be fully sealed. We seed a
+    // synthetic fully-sealed manifest at `spec.epoch - 1` so the harness can
+    // exercise the advance path without first running the actual snapshot
+    // build/init/certify/finalize flow. Tests that exercise the snapshot
+    // pipeline itself opt out via `seed_prev_snapshot_manifest = false`, so
+    // the manifest PDA is empty when init tries to create it.
+    let prev_snapshot_manifest = if spec.seed_prev_snapshot_manifest && spec.epoch > EpochNumber(1)
+    {
+        let prev_epoch = spec.epoch - EpochNumber(1);
+        let (manifest_address, _) = snapshot_manifest_pda(prev_epoch);
+        let mut group_bitmap = SnapshotGroupBitmap::zeroed();
+        for group_index in 0..SPOOL_GROUP_COUNT {
+            group_bitmap.set(group_index);
+        }
+        let manifest = SnapshotManifest {
+            parent_epoch: prev_epoch.checked_sub(EpochNumber(1)).unwrap_or(EpochNumber(0)),
+            group_bitmap,
+            chunk_size: StorageUnits::from_bytes(1_024),
+            groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
+        };
+        Some(SeedAccount {
+            address: manifest_address.into(),
+            data: manifest,
+        })
+    } else {
+        None
     };
 
     let mut nodes = Vec::with_capacity(spec.nodes.len());
@@ -178,10 +207,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             address: archive_address.into(),
             data: archive,
         },
-        snapshot_state: SeedAccount {
-            address: snapshot_state_address.into(),
-            data: snapshot_state,
-        },
+        prev_snapshot_manifest,
         nodes,
         node_accounts,
         history_accounts,

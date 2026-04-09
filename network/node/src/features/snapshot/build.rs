@@ -10,7 +10,6 @@ use std::sync::Arc;
 use bytemuck::Zeroable;
 use rpc::Rpc;
 use store::Store;
-use tape_core::bls::BlsSignature;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::info::{
     SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
@@ -18,9 +17,7 @@ use tape_core::snapshot::info::{
 use tape_core::snapshot::types::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{
-    CommitteeBitmap, EpochNumber, SlotNumber, SnapshotGroupBitmap, StorageUnits, StripeCount,
-};
+use tape_core::types::{EpochNumber, SlotNumber, SnapshotGroupBitmap, StorageUnits, StripeCount};
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_protocol::Api;
@@ -171,8 +168,6 @@ fn encode_group<Db: Store>(
     let group_info = SnapshotGroupInfo {
         status: SnapshotGroupStatus::Built,
         blob,
-        bitmap: CommitteeBitmap::zeroed(),
-        signature: BlsSignature::zeroed(),
         track_number: None,
     };
 

@@ -43,10 +43,10 @@ pub enum TapeError {
     SnapshotIncomplete = 0x34,
     #[error("snapshot group already sealed")]
     SnapshotGroupSealed = 0x35,
-    #[error("snapshot parent mismatch")]
-    SnapshotParentMismatch = 0x36,
     #[error("snapshot epoch not open")]
     SnapshotEpochClosed = 0x37,
+    #[error("snapshot chunk size mismatch")]
+    SnapshotChunkSizeMismatch = 0x38,
 
     // Committee (0x40-0x45)
     #[error("no quorum")]
@@ -172,8 +172,8 @@ impl TapeError {
             Self::BadEpochId => "Invalid epoch ID",
             Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
             Self::SnapshotGroupSealed => "Snapshot group already sealed",
-            Self::SnapshotParentMismatch => "Snapshot parent no longer matches the canonical tail",
             Self::SnapshotEpochClosed => "Snapshot epoch is not the currently open snapshot epoch",
+            Self::SnapshotChunkSizeMismatch => "Snapshot chunk size differs from manifest",
             Self::NoQuorum => "Quorum not reached",
             Self::NoSigners => "No signers provided",
             Self::BadMember => "Invalid committee member",

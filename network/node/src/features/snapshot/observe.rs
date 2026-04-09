@@ -5,7 +5,6 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::event::{SnapshotCertified, SnapshotFinalized, SnapshotInit};
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-use tape_core::bls::BlsSignature;
 use tape_core::snapshot::chunk::snapshot_chunk_key;
 use tape_core::snapshot::info::{
     SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
@@ -13,9 +12,7 @@ use tape_core::snapshot::info::{
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{
-    CommitteeBitmap, EpochNumber, NodeId, SlotNumber, SnapshotGroupBitmap, TrackNumber,
-};
+use tape_core::types::{EpochNumber, NodeId, SlotNumber, SnapshotGroupBitmap, TrackNumber};
 use tape_protocol::Api;
 use tape_protocol::ProtocolState;
 use tape_store::ops::{
@@ -182,10 +179,7 @@ where
         .map_err(|e| NodeError::Store(format!("get_group_info: {e}")))?
         .unwrap_or_else(missing_snapshot_group);
 
-    let has_local_artifacts = matches!(
-        snapshot_group.status,
-        SnapshotGroupStatus::Built | SnapshotGroupStatus::CertifiedLocally
-    );
+    let has_local_artifacts = matches!(snapshot_group.status, SnapshotGroupStatus::Built);
     if has_local_artifacts && snapshot_group.blob.commitment != event.commitment {
         return Err(NodeError::Store(format!(
             "snapshot group commitment mismatch for epoch {} group {}",
@@ -278,8 +272,6 @@ fn missing_snapshot_group() -> SnapshotGroupInfo {
     SnapshotGroupInfo {
         status: SnapshotGroupStatus::Missing,
         blob: BlobInfo::zeroed(),
-        bitmap: CommitteeBitmap::zeroed(),
-        signature: BlsSignature::zeroed(),
         track_number: None,
     }
 }
@@ -399,8 +391,8 @@ mod tests {
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::types::{
-        CommitteeBitmap, EpochNumber, NodeId, SnapshotGroupBitmap, SlotNumber, StorageUnits,
-        StripeCount, TrackNumber,
+        EpochNumber, NodeId, SnapshotGroupBitmap, SlotNumber, StorageUnits, StripeCount,
+        TrackNumber,
     };
     use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::hash::Hash;
@@ -712,8 +704,6 @@ mod tests {
         let built = SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
             blob,
-            bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], 128),
-            signature: Zeroable::zeroed(),
             track_number: None,
         };
         ctx.store

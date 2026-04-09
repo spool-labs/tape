@@ -26,9 +26,6 @@ pub async fn submit_init_snapshot_epoch<Db: Store, Cluster: Api, Blockchain: Rpc
 #[cfg(test)]
 mod tests {
     use tape_api::errors::TapeError;
-    use tape_api::prelude::tapedrive;
-    use tape_api::program::tapedrive::snapshot_state_pda;
-    use tape_api::state::SnapshotState;
     use tape_core::system::EpochPhase;
     use tape_core::types::EpochNumber;
 
@@ -46,34 +43,25 @@ mod tests {
             .nodes(25)
             .epoch(EPOCH)
             .phase(EpochPhase::Active)
+            .no_prev_snapshot_manifest()
             .build()
             .await
             .expect("build harness");
+
         let ctx = harness.ctx_for(NODE);
-        let (snapshot_state_address, _) = snapshot_state_pda();
-        ctx.rpc
-            .rpc()
-            .set_account_data(
-                snapshot_state_address,
-                tapedrive::ID,
-                &SnapshotState {
-                    tail_epoch: EpochNumber(1),
-                }
-                .pack(),
-            )
-            .expect("store snapshot state");
 
         submit_init_snapshot_epoch(&ctx, SNAPSHOT_EPOCH)
             .await
             .expect("submit init snapshot epoch");
 
-        let snapshot_state = ctx
+        // The new manifest exists with parent_epoch = current_epoch - 2 = 1.
+        let manifest = ctx
             .rpc
-            .get_snapshot_state()
+            .get_snapshot_manifest(SNAPSHOT_EPOCH)
             .await
-            .expect("fetch snapshot state");
+            .expect("fetch snapshot manifest");
 
-        assert_eq!(snapshot_state.tail_epoch, EpochNumber(1));
+        assert_eq!(manifest.parent_epoch, EpochNumber(1));
     }
 
     #[tokio::test]
@@ -82,9 +70,11 @@ mod tests {
             .nodes(25)
             .epoch(EPOCH)
             .phase(EpochPhase::Active)
+            .no_prev_snapshot_manifest()
             .build()
             .await
             .expect("build harness");
+
         let ctx = harness.ctx_for(NODE);
 
         let outcome = classify_tx(submit_init_snapshot_epoch(&ctx, EPOCH).await);

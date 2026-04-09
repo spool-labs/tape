@@ -41,4 +41,11 @@ mod tests {
         let b = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), EpochNumber(7));
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn snapshot_chunk_key_distinguishes_epoch_pair() {
+        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), EpochNumber(8));
+        let b = snapshot_chunk_key(EpochNumber(10), SpoolGroup(3), EpochNumber(9));
+        assert_ne!(a, b);
+    }
 }

@@ -9,7 +9,6 @@ pub fn process_finalize_snapshot_epoch(
     let [
         fee_payer_info,
         epoch_info,
-        snapshot_state_info,
         manifest_info,
     ] = accounts
     else {
@@ -19,20 +18,17 @@ pub fn process_finalize_snapshot_epoch(
     fee_payer_info.is_signer()?.is_writable()?;
 
     let epoch = epoch_info.is_epoch()?.as_account::<Epoch>(&tapedrive::ID)?;
-    let snapshot_state = snapshot_state_info
-        .is_writable()?
-        .is_snapshot_state()?
-        .as_account_mut::<SnapshotState>(&tapedrive::ID)?;
 
+    // Snapshot finalize is the natural mate of init: same epoch arithmetic,
+    // no SnapshotState singleton to advance. Idempotent — calling finalize
+    // twice on the same fully-sealed manifest just re-emits the event.
     let snapshot_epoch = EpochNumber::unpack(args.epoch);
     let current_epoch = current_epoch(epoch);
-    let expected_epoch = required_snapshot_epoch(current_epoch)?;
-    let expected_parent = snapshot_state
-        .tail_epoch
-        .checked_add(EpochNumber(1))
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    if snapshot_epoch != expected_epoch || snapshot_epoch != expected_parent {
+    if current_epoch <= EpochNumber(1) {
+        return Err(TapeError::SnapshotEpochClosed.into());
+    }
+    let expected_epoch = current_epoch - EpochNumber(1);
+    if snapshot_epoch != expected_epoch {
         return Err(TapeError::SnapshotEpochClosed.into());
     }
 
@@ -42,15 +38,9 @@ pub fn process_finalize_snapshot_epoch(
         .is_snapshot_manifest()?
         .as_account::<SnapshotManifest>(&tapedrive::ID)?;
 
-    if manifest.parent_epoch != snapshot_state.tail_epoch {
-        return Err(TapeError::SnapshotParentMismatch.into());
-    }
-
     if manifest.group_bitmap.count_ones() != SPOOL_GROUP_COUNT {
         return Err(TapeError::SnapshotIncomplete.into());
     }
-
-    snapshot_state.tail_epoch = snapshot_epoch;
 
     SnapshotFinalized {
         parent: manifest.parent_epoch,
@@ -59,16 +49,6 @@ pub fn process_finalize_snapshot_epoch(
     .log();
 
     Ok(())
-}
-
-fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, ProgramError> {
-    if current_epoch <= EpochNumber(1) {
-        return Err(TapeError::SnapshotEpochClosed.into());
-    }
-
-    current_epoch
-        .checked_sub(EpochNumber(1))
-        .ok_or(TapeError::SnapshotEpochClosed.into())
 }
 
 #[cfg(test)]
@@ -82,6 +62,7 @@ mod tests {
         let manifest = SnapshotManifest {
             parent_epoch: EpochNumber(41),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
+            chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
 
@@ -103,19 +84,16 @@ mod tests {
         let snapshot_epoch = EpochNumber(42);
 
         let (epoch_address, _) = epoch_pda();
-        let (snapshot_state_address, _) = snapshot_state_pda();
         let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
 
         let epoch = Epoch {
             id: EpochNumber(43),
             ..Epoch::zeroed()
         };
-        let snapshot_state = SnapshotState {
-            tail_epoch: EpochNumber(41),
-        };
         let manifest = SnapshotManifest {
             parent_epoch: EpochNumber(41),
             group_bitmap: full_group_bitmap(),
+            chunk_size: StorageUnits::from_bytes(1_024),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
 
@@ -124,7 +102,6 @@ mod tests {
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             pda(manifest_address, manifest.pack(), tapedrive::ID),
         ];
 
@@ -132,18 +109,7 @@ mod tests {
         env.process_instruction(
             &instruction,
             &accounts,
-            &[
-                Check::success(),
-                Check::account(&Pubkey::from(snapshot_state_address))
-                    .data(
-                        SnapshotState {
-                            tail_epoch: snapshot_epoch,
-                        }
-                        .pack()
-                        .as_ref(),
-                    )
-                    .build(),
-            ],
+            &[Check::success()],
         );
     }
 
@@ -153,19 +119,16 @@ mod tests {
         let snapshot_epoch = EpochNumber(42);
 
         let (epoch_address, _) = epoch_pda();
-        let (snapshot_state_address, _) = snapshot_state_pda();
         let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
 
         let epoch = Epoch {
             id: EpochNumber(43),
             ..Epoch::zeroed()
         };
-        let snapshot_state = SnapshotState {
-            tail_epoch: EpochNumber(41),
-        };
         let manifest = SnapshotManifest {
             parent_epoch: EpochNumber(41),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
+            chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
 
@@ -174,7 +137,6 @@ mod tests {
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             pda(manifest_address, manifest.pack(), tapedrive::ID),
         ];
 

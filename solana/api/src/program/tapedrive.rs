@@ -27,18 +27,17 @@ pub const SPL_TOKEN_PROGRAM_ID: [u8; 32] =
 pub const ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID: [u8; 32] =
     unsafe { *(&spl_associated_token_account::ID as *const Pubkey as *const [u8; 32]) };
 
-pub const SYSTEM:          &[u8] = b"system";
-pub const ARCHIVE:         &[u8] = b"archive";
-pub const EPOCH:           &[u8] = b"epoch";
-pub const NODE:            &[u8] = b"node";
-pub const HISTORY:         &[u8] = b"history";
-pub const RESOURCE:        &[u8] = b"resource";
-pub const TRACK:           &[u8] = b"track";
-pub const STAKE:           &[u8] = b"stake";
-pub const CERTIFICATE:     &[u8] = b"certificate";
-pub const SNAPSHOT_STATE:  &[u8] = b"snapshot_state";
-pub const SNAPSHOT_MANIFEST: &[u8] = b"snapshot_manifest";
-pub const SNAPSHOT_TAPE:   &[u8] = b"snapshot_tape";
+pub const SYSTEM:             &[u8] = b"system";
+pub const ARCHIVE:            &[u8] = b"archive";
+pub const EPOCH:              &[u8] = b"epoch";
+pub const NODE:               &[u8] = b"node";
+pub const HISTORY:            &[u8] = b"history";
+pub const RESOURCE:           &[u8] = b"resource";
+pub const TRACK:              &[u8] = b"track";
+pub const STAKE:              &[u8] = b"stake";
+pub const CERTIFICATE:        &[u8] = b"certificate";
+pub const SNAPSHOT_MANIFEST:  &[u8] = b"snapshot_manifest";
+pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
 
 pub const SYSTEM_ADDRESS: Address =
     Address::new(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
@@ -80,12 +79,6 @@ pub const ARCHIVE_ATA_BUMP: u8 =
         &ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     )
     .1;
-
-pub const SNAPSHOT_STATE_ADDRESS: Address =
-    Address::new(ed25519::derive_program_address(&[SNAPSHOT_STATE], &PROGRAM_ID).0);
-
-pub const SNAPSHOT_STATE_BUMP: u8 =
-    ed25519::derive_program_address(&[SNAPSHOT_STATE], &PROGRAM_ID).1;
 
 // ====================================================================
 // PDA Functions
@@ -148,18 +141,6 @@ pub fn archive_ata() -> (Address, u8) {
 #[inline(always)]
 pub fn archive_ata() -> (Address, u8) {
     (ARCHIVE_ATA, ARCHIVE_ATA_BUMP)
-}
-
-#[cfg(debug_assertions)]
-pub fn snapshot_state_pda() -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[SNAPSHOT_STATE], &program_id)
-}
-
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-pub fn snapshot_state_pda() -> (Address, u8) {
-    (SNAPSHOT_STATE_ADDRESS, SNAPSHOT_STATE_BUMP)
 }
 
 #[inline(always)]
@@ -241,10 +222,6 @@ mod tests {
         let (pda, bump) = archive_ata();
         assert_eq!(pda, ARCHIVE_ATA);
         assert_eq!(bump, ARCHIVE_ATA_BUMP);
-
-        let (pda, bump) = snapshot_state_pda();
-        assert_eq!(pda, SNAPSHOT_STATE_ADDRESS);
-        assert_eq!(bump, SNAPSHOT_STATE_BUMP);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use rpc_client::RpcClient;
 use tape_protocol::fetch::fetch_state;
-use tape_api::prelude::{Archive, Epoch, SnapshotState, System};
+use tape_api::prelude::{Archive, Epoch, System};
 use tracing::trace;
 
 use crate::scenario::SimnetScenario;
@@ -22,14 +22,6 @@ impl SimnetScenario<'_> {
     pub async fn read_archive(&self) -> Result<Archive> {
         let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client.get_archive().await.context("read archive")
-    }
-
-    pub async fn read_snapshot_state(&self) -> Result<SnapshotState> {
-        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
-        client
-            .get_snapshot_state()
-            .await
-            .context("read snapshot state")
     }
 
     pub async fn committee_size(&self) -> Result<usize> {

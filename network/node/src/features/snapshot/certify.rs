@@ -47,7 +47,7 @@ pub async fn certify_snapshot_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match snapshot_group.status {
             SnapshotGroupStatus::CertifiedOnChain | SnapshotGroupStatus::Missing => continue,
-            SnapshotGroupStatus::Built | SnapshotGroupStatus::CertifiedLocally => {}
+            SnapshotGroupStatus::Built => {}
         }
 
         let blob_hash = snapshot_group.blob.get_hash();

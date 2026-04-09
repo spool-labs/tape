@@ -11,7 +11,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         epoch_info,
         archive_info,
         archive_ata_info,
-        snapshot_state_info,
 
         mint_info,
         system_program_info,
@@ -62,13 +61,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .is_writable()?
         .has_address(&archive_ata_address.into())?;
 
-    let (snapshot_state_address, _) = snapshot_state_pda();
-
-    snapshot_state_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&snapshot_state_address.into())?;
-
     // Mint must be the program's TAPE mint
     mint_info
         .is_mint()?;
@@ -88,14 +80,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         fee_payer_info,
         &tapedrive::ID,
         &[ARCHIVE],
-    )?;
-
-    create_program_account::<SnapshotState>(
-        snapshot_state_info,
-        system_program_info,
-        fee_payer_info,
-        &tapedrive::ID,
-        &[SNAPSHOT_STATE],
     )?;
 
     // Create Archive ATA
@@ -123,9 +107,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     archive.storage_price = TAPE::from("0.0001");  // 1 TAPE per 1Mb
     archive.schedule = EpochSchedule::new_at(epoch.id);
 
-    let snapshot_state = snapshot_state_info.as_account_mut::<SnapshotState>(&tapedrive::ID)?;
-    snapshot_state.tail_epoch = EpochNumber(0);
-
     Ok(())
 }
 
@@ -147,7 +128,6 @@ mod tests {
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
-        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let system = System::zeroed();
 
@@ -164,7 +144,6 @@ mod tests {
             empty(epoch_address),
             empty(archive_address),
             empty(archive_ata),
-            empty(snapshot_state_address),
 
             // mint and programs
             mint(MAX_SUPPLY),
@@ -196,12 +175,6 @@ mod tests {
                         state: EpochState::active(),
                         last_epoch: 0,
                         nonce: Hash::default(),
-                    }.pack().as_ref()
-                ).build(),
-
-                Check::account(&Pubkey::from(snapshot_state_address)).data(
-                    SnapshotState {
-                        tail_epoch: EpochNumber(0),
                     }.pack().as_ref()
                 ).build(),
 

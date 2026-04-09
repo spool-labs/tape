@@ -16,7 +16,6 @@ pub fn process_certify_snapshot_group(
         fee_payer_info,
         system_info,
         epoch_info,
-        snapshot_state_info,
         manifest_info,
         snapshot_tape_info,
     ] = accounts
@@ -32,19 +31,17 @@ pub fn process_certify_snapshot_group(
         .has_address(&system_address.into())?
         .as_account::<System>(&tapedrive::ID)?;
     let epoch = epoch_info.is_epoch()?.as_account::<Epoch>(&tapedrive::ID)?;
-    let snapshot_state = snapshot_state_info
-        .is_snapshot_state()?
-        .as_account::<SnapshotState>(&tapedrive::ID)?;
 
+    // The currently open snapshot epoch is always `current_epoch - 1`. The
+    // manifest was pinned at init time with `parent_epoch = current_epoch - 2`,
+    // and the advance_epoch gate guarantees that link is canonical.
     let snapshot_epoch = EpochNumber::unpack(certification.epoch);
     let current_epoch = current_epoch(epoch);
-    let expected_epoch = required_snapshot_epoch(current_epoch)?;
-    let expected_parent = snapshot_state
-        .tail_epoch
-        .checked_add(EpochNumber(1))
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    if snapshot_epoch != expected_epoch || snapshot_epoch != expected_parent {
+    if current_epoch <= EpochNumber(1) {
+        return Err(TapeError::SnapshotEpochClosed.into());
+    }
+    let expected_epoch = current_epoch - EpochNumber(1);
+    if snapshot_epoch != expected_epoch {
         return Err(TapeError::SnapshotEpochClosed.into());
     }
 
@@ -55,10 +52,6 @@ pub fn process_certify_snapshot_group(
         .is_snapshot_manifest()?
         .as_account_mut::<SnapshotManifest>(&tapedrive::ID)?;
 
-    if manifest.parent_epoch != snapshot_state.tail_epoch {
-        return Err(TapeError::SnapshotParentMismatch.into());
-    }
-
     let group = SpoolGroup::unpack(certification.group);
     let group_index = group.0 as usize;
     if group_index >= SPOOL_GROUP_COUNT {
@@ -66,6 +59,17 @@ pub fn process_certify_snapshot_group(
     }
     if manifest.group_bitmap.is_set(group_index) {
         return Err(TapeError::SnapshotGroupSealed.into());
+    }
+
+    // chunk_size is hoisted from the per-record fields onto the manifest:
+    // every group in a snapshot epoch has the same chunk size (the outer-RS
+    // encoder pads the snapshot log to a multiple of k_outer). The first
+    // certify of an epoch records it; subsequent certifies must match.
+    let blob = snapshot_blob_from_certification(certification)?;
+    if manifest.group_bitmap.count_ones() == 0 {
+        manifest.chunk_size = blob.size;
+    } else if manifest.chunk_size != blob.size {
+        return Err(TapeError::SnapshotChunkSizeMismatch.into());
     }
 
     let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
@@ -104,7 +108,6 @@ pub fn process_certify_snapshot_group(
 
     let decompressed_sig =
         G1Point::try_from(&certification.signature.0).map_err(|_| TapeError::BadSignature)?;
-    let blob = snapshot_blob_from_certification(certification)?;
     let blob_hash = blob.get_hash();
     let message = SnapshotMessage::new(
         snapshot_epoch,
@@ -134,13 +137,9 @@ pub fn process_certify_snapshot_group(
 
     manifest.group_bitmap.set(group_index);
     manifest.groups[group_index] = SnapshotChunkRecord {
-        size: blob.size,
         value_hash: blob_hash,
         commitment: blob.commitment,
         track_number,
-        profile: blob.profile,
-        stripe_size: blob.stripe_size,
-        stripe_count: blob.stripe_count,
     };
 
     let signer_count = indices.len() as u64;
@@ -156,16 +155,6 @@ pub fn process_certify_snapshot_group(
     .log();
 
     Ok(())
-}
-
-fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, ProgramError> {
-    if current_epoch <= EpochNumber(1) {
-        return Err(TapeError::SnapshotEpochClosed.into());
-    }
-
-    current_epoch
-        .checked_sub(EpochNumber(1))
-        .ok_or(TapeError::SnapshotEpochClosed.into())
 }
 
 #[cfg(test)]
@@ -192,7 +181,6 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (snapshot_state_address, _) = snapshot_state_pda();
         let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
         let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
 
@@ -226,12 +214,10 @@ mod tests {
             id: signing_epoch,
             ..Epoch::zeroed()
         };
-        let snapshot_state = SnapshotState {
-            tail_epoch: EpochNumber(41),
-        };
         let manifest = SnapshotManifest {
             parent_epoch: EpochNumber(41),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
+            chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
         };
         let tape = Tape {
@@ -322,7 +308,6 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             pda(manifest_address, manifest.pack(), tapedrive::ID),
             pda(snapshot_tape_address, tape.pack(), tapedrive::ID),
         ];
@@ -332,13 +317,9 @@ mod tests {
 
         let mut expected_groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
         expected_groups[group.0 as usize] = SnapshotChunkRecord {
-            size: chunk_size,
             value_hash: blob.get_hash(),
             commitment,
             track_number: TrackNumber(0),
-            profile: EncodingProfile::basic_default(),
-            stripe_size: StorageUnits::from_bytes(512),
-            stripe_count: StripeCount(4),
         };
 
         let env = test_env();
@@ -351,6 +332,7 @@ mod tests {
                     .data(
                         SnapshotManifest {
                             group_bitmap: expected_group_bitmap,
+                            chunk_size,
                             groups: expected_groups,
                             ..manifest
                         }
@@ -386,7 +368,6 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (snapshot_state_address, _) = snapshot_state_pda();
         let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
         let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
 
@@ -426,18 +407,11 @@ mod tests {
                 tapedrive::ID,
             ),
             pda(
-                snapshot_state_address,
-                SnapshotState {
-                    tail_epoch: EpochNumber(41),
-                }
-                .pack(),
-                tapedrive::ID,
-            ),
-            pda(
                 manifest_address,
                 SnapshotManifest {
                     parent_epoch: EpochNumber(41),
                     group_bitmap,
+                    chunk_size: StorageUnits::from_bytes(1_024),
                     groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
                 }
                 .pack(),
@@ -459,6 +433,91 @@ mod tests {
             &instruction,
             &accounts,
             &[Check::err(TapeError::SnapshotGroupSealed.into())],
+        );
+    }
+
+    #[test]
+    fn test_certify_snapshot_group_rejects_chunk_size_mismatch() {
+        // Manifest already has one group sealed at chunk_size=2048; submit a
+        // certify with size=4096 → SnapshotChunkSizeMismatch.
+        let fee_payer = Pubkey::new_unique();
+        let snapshot_epoch = EpochNumber(42);
+        let signing_epoch = EpochNumber(43);
+        let group = SpoolGroup(1);
+
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
+        let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
+
+        // Pre-seal a different group so the bitmap is non-empty.
+        let mut group_bitmap = SnapshotGroupBitmap::zeroed();
+        group_bitmap.set(0);
+
+        // The commitment must match commitment_root() over the leaves; the
+        // chunk_size check happens after that validation, so we need a
+        // structurally valid blob to reach it.
+        let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(4_096),
+            root: Hash::from([0x33; 32]),
+            commitment,
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(8),
+            leaves,
+        };
+
+        let instruction = build_certify_snapshot_group_ix(
+            fee_payer.into(),
+            snapshot_epoch,
+            signing_epoch,
+            group,
+            &blob,
+            CommitteeBitmap::zeroed(),
+            BlsSignature::zeroed(),
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_address, System::zeroed().pack(), tapedrive::ID),
+            pda(
+                epoch_address,
+                Epoch {
+                    id: signing_epoch,
+                    ..Epoch::zeroed()
+                }
+                .pack(),
+                tapedrive::ID,
+            ),
+            pda(
+                manifest_address,
+                SnapshotManifest {
+                    parent_epoch: EpochNumber(41),
+                    group_bitmap,
+                    chunk_size: StorageUnits::from_bytes(2_048),
+                    groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
+                }
+                .pack(),
+                tapedrive::ID,
+            ),
+            pda(
+                snapshot_tape_address,
+                Tape {
+                    authority: system_address.into(),
+                    ..Tape::zeroed()
+                }
+                .pack(),
+                tapedrive::ID,
+            ),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::SnapshotChunkSizeMismatch.into())],
         );
     }
 }

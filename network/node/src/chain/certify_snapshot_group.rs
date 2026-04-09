@@ -45,9 +45,6 @@ pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: 
 mod tests {
     use bytemuck::Zeroable;
     use tape_api::errors::TapeError;
-    use tape_api::prelude::tapedrive;
-    use tape_api::program::tapedrive::snapshot_state_pda;
-    use tape_api::state::SnapshotState;
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
@@ -75,26 +72,19 @@ mod tests {
             .nodes(25)
             .epoch(EPOCH)
             .phase(EpochPhase::Active)
+            .no_prev_snapshot_manifest()
             .build()
             .await
             .expect("build harness");
+
         let ctx = harness.ctx_for(NODE);
-        let (snapshot_state_address, _) = snapshot_state_pda();
-        ctx.rpc
-            .rpc()
-            .set_account_data(
-                snapshot_state_address,
-                tapedrive::ID,
-                &SnapshotState {
-                    tail_epoch: EpochNumber(1),
-                }
-                .pack(),
-            )
-            .expect("store snapshot state");
+
         submit_init_snapshot_epoch(&ctx, SNAPSHOT_EPOCH)
             .await
             .expect("init snapshot epoch");
+
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
+
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(2_048),
             root: source_root(b"snapshot-certify", 512),
@@ -104,6 +94,7 @@ mod tests {
             stripe_count: StripeCount(4),
             leaves,
         };
+
         let cert = SnapshotGroupCert {
             signing_epoch: EPOCH,
             bitmap: CommitteeBitmap::zeroed(),

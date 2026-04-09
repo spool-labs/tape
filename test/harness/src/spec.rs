@@ -15,6 +15,12 @@ pub struct HarnessSpec {
     pub next_committee_nodes: Vec<usize>,
     pub current_spool_counts: Vec<SpoolCount>,
     pub prev_spool_counts: Vec<SpoolCount>,
+    /// Whether to seed a fully-sealed snapshot manifest at `epoch - 1`.
+    /// `true` (the default) lets `advance_epoch` transactions pass the
+    /// snapshot gate without first running the snapshot pipeline. Tests that
+    /// exercise the snapshot init/certify/finalize submitters set this to
+    /// `false` so the manifest PDA is empty when init tries to create it.
+    pub seed_prev_snapshot_manifest: bool,
 }
 
 impl HarnessSpec {

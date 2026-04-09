@@ -25,6 +25,7 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<impl IntoResponse, RouteError> {
     let request: SignSnapshotRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("snapshot sign request: {error}")))?;
+
     let epoch = EpochNumber(epoch);
     let group = SpoolGroup(group);
 
@@ -39,6 +40,7 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .group_peers(group)
         .into_iter()
         .any(|(_, node_id)| node_id == state.context.node_id());
+
     if !group_is_local {
         return Err(RouteError::NotResponsible);
     }
@@ -112,11 +114,9 @@ mod tests {
     use axum::body::Bytes;
     use axum::extract::{Path, State};
     use bytemuck::Zeroable;
-    use tape_core::bls::BlsPrivateKey;
-    use tape_core::bls::BlsSignature;
     use tape_core::cert::snapshot::SnapshotMessage;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{MEMBER_COUNT, SPOOL_COUNT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
     use tape_core::snapshot::info::{
         SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupStatus,
     };
@@ -124,7 +124,7 @@ mod tests {
     use tape_core::system::CommitteeMember;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{
-        CommitteeBitmap, EpochNumber, NodeId, SnapshotGroupBitmap, StorageUnits, StripeCount,
+        EpochNumber, NodeId, SnapshotGroupBitmap, StorageUnits, StripeCount,
     };
     use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::Hash;
@@ -132,10 +132,6 @@ mod tests {
 
     use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
-
-    fn snapshot_signature(message: &[u8]) -> BlsSignature {
-        BlsPrivateKey::from_random().sign(message).unwrap()
-    }
 
     fn request(blob_hash: Hash) -> SignSnapshotRequest {
         SignSnapshotRequest {
@@ -167,8 +163,6 @@ mod tests {
         SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
             blob,
-            bitmap: CommitteeBitmap::from_indices(&[0], MEMBER_COUNT),
-            signature: snapshot_signature(b"group-info"),
             track_number: None,
         }
     }

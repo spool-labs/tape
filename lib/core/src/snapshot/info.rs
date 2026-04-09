@@ -1,9 +1,8 @@
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-use crate::bls::BlsSignature;
 use crate::track::blob::BlobInfo;
-use crate::types::{CommitteeBitmap, EpochNumber, SnapshotGroupBitmap, TrackNumber};
+use crate::types::{EpochNumber, SnapshotGroupBitmap, TrackNumber};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
@@ -20,7 +19,6 @@ pub enum SnapshotEpochStatus {
 pub enum SnapshotGroupStatus {
     Missing,
     Built,
-    CertifiedLocally,
     CertifiedOnChain,
 }
 
@@ -37,8 +35,6 @@ pub struct SnapshotEpochInfo {
 pub struct SnapshotGroupInfo {
     pub status: SnapshotGroupStatus,
     pub blob: BlobInfo,
-    pub bitmap: CommitteeBitmap,
-    pub signature: BlsSignature,
     pub track_number: Option<TrackNumber>,
 }
 
@@ -47,10 +43,9 @@ pub struct SnapshotGroupInfo {
 mod tests {
     use super::*;
     use crate::encoding::EncodingProfile;
-    use crate::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
+    use crate::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
     use crate::track::blob::BlobInfo;
     use crate::types::{StorageUnits, StripeCount};
-    use bytemuck::Zeroable;
     use tape_crypto::hash::Hash;
 
     #[test]
@@ -81,8 +76,6 @@ mod tests {
                 stripe_count: StripeCount(4),
                 leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             },
-            bitmap: CommitteeBitmap::from_indices(&[0, 1, 2], MEMBER_COUNT),
-            signature: BlsSignature::zeroed(),
             track_number: Some(TrackNumber(7)),
         };
 

@@ -142,3 +142,143 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    //! Black-box regression tests covering a *projected* snapshot track —
+    //! i.e. a snapshot chunk that was materialised into the generic track/
+    //! slice columns by `materialize_snapshot_track`. The structural argument
+    //! that snapshot tracks are interchangeable with normal blob tracks is
+    //! load-bearing for repair / serve / inconsistency, so we lock it in
+    //! here against future regressions.
+
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::snapshot::chunk::snapshot_chunk_key;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::data::TrackData;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::prelude::{SpoolState, SpoolStatus};
+    use tape_core::types::{
+        EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
+    };
+    use tape_crypto::merkle::root_from_leaf_hashes;
+    use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackDataOps};
+    use tape_store::types::{ObjectInfo, TapeInfo};
+
+    use crate::context::test_utils::test_context;
+    use crate::features::http::state::AppState;
+
+    // Materialise a synthetic projected snapshot track and return the slice
+    // it serves out. Mirrors the writes performed by
+    // `features::snapshot::observe::materialize_snapshot_track`, minus the
+    // observe-block plumbing.
+    fn seed_projected_snapshot_track(
+        ctx: &crate::context::NodeContext<
+            store_memory::MemoryStore,
+            peer_memory::MemoryApi,
+            rpc_litesvm::LiteSvmRpc,
+        >,
+    ) -> (Address, u16, Vec<u8>) {
+        let epoch = EpochNumber(5);
+        let parent_epoch = EpochNumber(4);
+        let group = SpoolGroup(2);
+        let track_number = TrackNumber(9);
+        let owned_spool = group.spool_at(5);
+        let slice_position = group.slice_of(owned_spool).unwrap();
+        let slice_bytes = vec![0xAB; 96];
+
+        // BlobInfo with a leaves array whose merkle root matches commitment.
+        let leaves = [tape_crypto::Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(1_537),
+            root: tape_crypto::Hash::from([0x55; 32]),
+            commitment,
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(512),
+            stripe_count: StripeCount(4),
+            leaves,
+        };
+
+        let (snapshot_tape, _) = snapshot_tape_pda(epoch);
+        let track_address = track_pda(snapshot_tape, track_number).0;
+
+        ctx.store
+            .put_tape(
+                snapshot_tape,
+                TapeInfo {
+                    end_epoch: EpochNumber(u64::MAX),
+                    next_track_number: TrackNumber(track_number.0 + 1),
+                },
+            )
+            .unwrap();
+
+        let track = CompressedTrack {
+            tape: snapshot_tape,
+            key: snapshot_chunk_key(epoch, group, parent_epoch),
+            track_number,
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: blob.size,
+            spool_group: group,
+            value_hash: blob.get_hash(),
+        };
+        ctx.store.put_track(track_address, track).unwrap();
+        ctx.store
+            .put_track_data(track_address, TrackData::Blob(blob))
+            .unwrap();
+        ctx.store
+            .put_object_info(
+                track_address,
+                ObjectInfo::Valid {
+                    track_address,
+                    registered_epoch: epoch,
+                    certified_epoch: Some(epoch),
+                    slot: SlotNumber(epoch.0 * 10 + 1),
+                },
+            )
+            .unwrap();
+        ctx.store
+            .put_slice(owned_spool, track_address, slice_bytes.clone())
+            .unwrap();
+        ctx.store
+            .set_spool_state(
+                owned_spool,
+                SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
+            )
+            .unwrap();
+
+        let _ = slice_position;
+        (track_address, owned_spool, slice_bytes)
+    }
+
+    #[tokio::test]
+    async fn serves_projected_snapshot_slice() {
+        let ctx = test_context();
+        let (track_address, owned_spool, slice_bytes) = seed_projected_snapshot_track(&ctx);
+
+        let result = get_slice(
+            State(AppState {
+                context: ctx.clone(),
+            }),
+            Path((track_address.to_string(), owned_spool)),
+        )
+        .await;
+        let response = match result {
+            Ok(response) => response.into_response(),
+            Err(_) => panic!("get_slice failed for projected snapshot track"),
+        };
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+        assert_eq!(body.as_ref(), slice_bytes.as_slice());
+    }
+}

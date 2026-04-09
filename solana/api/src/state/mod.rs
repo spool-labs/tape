@@ -42,6 +42,5 @@ pub enum AccountType {
 
     Tape,
 
-    SnapshotState,
     SnapshotManifest,
 }

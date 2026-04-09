@@ -197,6 +197,11 @@ impl NodeHarnessBuilder {
         self
     }
 
+    pub fn no_prev_snapshot_manifest(mut self) -> Self {
+        self.chain = self.chain.no_prev_snapshot_manifest();
+        self
+    }
+
     pub async fn build(self) -> Result<NodeHarness> {
         let chain = self.chain.build().await?;
         NodeHarness::from_chain(chain).await

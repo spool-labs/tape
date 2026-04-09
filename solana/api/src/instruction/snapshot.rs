@@ -13,8 +13,7 @@ use tape_solana::*;
 use crate::errors::TapeError;
 use crate::program::tapedrive;
 use crate::program::tapedrive::{
-    archive_pda, epoch_pda, snapshot_manifest_pda, snapshot_state_pda, snapshot_tape_pda,
-    system_pda,
+    archive_pda, epoch_pda, snapshot_manifest_pda, snapshot_tape_pda, system_pda,
 };
 
 #[repr(C)]
@@ -23,13 +22,6 @@ pub struct InitSnapshotEpoch {
     pub epoch: [u8; 8],
 }
 
-/// Wire layout for `CertifySnapshotGroup`.
-///
-/// `blob` is stored as `PackedBlobInfo` (a byte array) rather than `BlobInfo`
-/// directly so the struct keeps alignment 1. Solana hands instruction data to
-/// programs via a slice that starts one byte past the discriminator, and
-/// `bytemuck::try_from_bytes` would reject any struct that requires stricter
-/// alignment than the slice it is given.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CertifySnapshotGroup {
@@ -80,7 +72,6 @@ pub fn build_init_snapshot_epoch_ix(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (archive_address, _) = archive_pda();
-    let (snapshot_state_address, _) = snapshot_state_pda();
     let (manifest_address, _) = snapshot_manifest_pda(epoch);
     let (snapshot_tape_address, _) = snapshot_tape_pda(epoch);
 
@@ -91,7 +82,6 @@ pub fn build_init_snapshot_epoch_ix(
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new_readonly(epoch_address.into(), false),
             AccountMeta::new(archive_address.into(), false),
-            AccountMeta::new_readonly(snapshot_state_address.into(), false),
             AccountMeta::new(manifest_address.into(), false),
             AccountMeta::new(snapshot_tape_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
@@ -115,7 +105,6 @@ pub fn build_certify_snapshot_group_ix(
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
-    let (snapshot_state_address, _) = snapshot_state_pda();
     let (manifest_address, _) = snapshot_manifest_pda(epoch);
     let (snapshot_tape_address, _) = snapshot_tape_pda(epoch);
 
@@ -125,7 +114,6 @@ pub fn build_certify_snapshot_group_ix(
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new_readonly(epoch_address.into(), false),
-            AccountMeta::new_readonly(snapshot_state_address.into(), false),
             AccountMeta::new(manifest_address.into(), false),
             AccountMeta::new(snapshot_tape_address.into(), false),
         ],
@@ -146,7 +134,6 @@ pub fn build_finalize_snapshot_epoch_ix(
     epoch: EpochNumber,
 ) -> Instruction {
     let (epoch_address, _) = epoch_pda();
-    let (snapshot_state_address, _) = snapshot_state_pda();
     let (manifest_address, _) = snapshot_manifest_pda(epoch);
 
     Instruction {
@@ -154,7 +141,6 @@ pub fn build_finalize_snapshot_epoch_ix(
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(epoch_address.into(), false),
-            AccountMeta::new(snapshot_state_address.into(), false),
             AccountMeta::new_readonly(manifest_address.into(), false),
         ],
         data: FinalizeSnapshotEpoch {
@@ -209,7 +195,7 @@ mod tests {
         let instruction = build_init_snapshot_epoch_ix(Address::new_unique(), EpochNumber(7));
 
         assert_eq!(instruction.program_id, tapedrive::ID);
-        assert_eq!(instruction.accounts.len(), 9);
+        assert_eq!(instruction.accounts.len(), 8);
         assert_eq!(instruction.data[0], TapeInstruction::InitSnapshotEpoch as u8);
     }
 
@@ -236,7 +222,7 @@ mod tests {
         );
 
         assert_eq!(instruction.program_id, tapedrive::ID);
-        assert_eq!(instruction.accounts.len(), 6);
+        assert_eq!(instruction.accounts.len(), 5);
         assert_eq!(instruction.data[0], TapeInstruction::CertifySnapshotGroup as u8);
     }
 
@@ -245,7 +231,7 @@ mod tests {
         let instruction = build_finalize_snapshot_epoch_ix(Address::new_unique(), EpochNumber(7));
 
         assert_eq!(instruction.program_id, tapedrive::ID);
-        assert_eq!(instruction.accounts.len(), 4);
+        assert_eq!(instruction.accounts.len(), 3);
         assert_eq!(instruction.data[0], TapeInstruction::FinalizeSnapshotEpoch as u8);
     }
 }

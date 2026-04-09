@@ -30,9 +30,6 @@ pub async fn submit_finalize_snapshot_epoch<Db: Store, Cluster: Api, Blockchain:
 #[cfg(test)]
 mod tests {
     use tape_api::errors::TapeError;
-    use tape_api::prelude::tapedrive;
-    use tape_api::program::tapedrive::snapshot_state_pda;
-    use tape_api::state::SnapshotState;
     use tape_core::system::EpochPhase;
     use tape_core::types::EpochNumber;
 
@@ -47,26 +44,17 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_incomplete_manifest() {
+
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
             .phase(EpochPhase::Active)
+            .no_prev_snapshot_manifest()
             .build()
             .await
             .expect("build harness");
+
         let ctx = harness.ctx_for(NODE);
-        let (snapshot_state_address, _) = snapshot_state_pda();
-        ctx.rpc
-            .rpc()
-            .set_account_data(
-                snapshot_state_address,
-                tapedrive::ID,
-                &SnapshotState {
-                    tail_epoch: EpochNumber(1),
-                }
-                .pack(),
-            )
-            .expect("store snapshot state");
 
         submit_init_snapshot_epoch(&ctx, SNAPSHOT_EPOCH)
             .await

@@ -2,9 +2,9 @@ use tape_solana::*;
 
 use crate::program::{
     tapedrive, ARCHIVE_ADDRESS, ARCHIVE_ATA, EPOCH_ADDRESS, METADATA_ADDRESS, MINT_ADDRESS,
-    SNAPSHOT_STATE_ADDRESS, SYSTEM_ADDRESS, TREASURY_ADDRESS,
+    SYSTEM_ADDRESS, TREASURY_ADDRESS,
 };
-use crate::state::{Archive, Epoch, SnapshotManifest, SnapshotState, System, Treasury};
+use crate::state::{Archive, Epoch, SnapshotManifest, System, Treasury};
 
 pub trait AccountInfoLoader {
     fn is_system(&self) -> Result<&Self, ProgramError>;
@@ -14,7 +14,6 @@ pub trait AccountInfoLoader {
     fn is_mint(&self) -> Result<&Self, ProgramError>;
     fn is_metadata(&self) -> Result<&Self, ProgramError>;
     fn is_treasury(&self) -> Result<&Self, ProgramError>;
-    fn is_snapshot_state(&self) -> Result<&Self, ProgramError>;
     fn is_snapshot_manifest(&self) -> Result<&Self, ProgramError>;
 }
 
@@ -66,13 +65,6 @@ impl AccountInfoLoader for AccountInfo<'_> {
 
         self.has_address(&treasury_address)?
             .is_type::<Treasury>(&tapedrive::ID)
-    }
-
-    fn is_snapshot_state(&self) -> Result<&Self, ProgramError> {
-        let snapshot_state_address: Pubkey = SNAPSHOT_STATE_ADDRESS.into();
-
-        self.has_address(&snapshot_state_address)?
-            .is_type::<SnapshotState>(&tapedrive::ID)
     }
 
     fn is_snapshot_manifest(&self) -> Result<&Self, ProgramError> {

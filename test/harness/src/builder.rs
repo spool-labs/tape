@@ -97,6 +97,7 @@ pub struct ChainHarnessBuilder {
     current_spool_counts: Option<Vec<SpoolCount>>,
     prev_spool_counts: Option<Vec<SpoolCount>>,
     node_specs: Vec<HarnessNodeSpec>,
+    seed_prev_snapshot_manifest: bool,
 }
 
 impl Default for ChainHarnessBuilder {
@@ -115,6 +116,7 @@ impl Default for ChainHarnessBuilder {
             current_spool_counts: None,
             prev_spool_counts: None,
             node_specs: default_node_specs(DEFAULT_NODES, DEFAULT_EPOCH),
+            seed_prev_snapshot_manifest: true,
         }
     }
 }
@@ -233,6 +235,14 @@ impl ChainHarnessBuilder {
         self
     }
 
+    /// Disable seeding of the previous-epoch snapshot manifest. Use this in
+    /// tests that exercise the snapshot init/certify/finalize submitters,
+    /// where init needs the manifest PDA to be empty so it can create it.
+    pub fn no_prev_snapshot_manifest(mut self) -> Self {
+        self.seed_prev_snapshot_manifest = false;
+        self
+    }
+
     pub async fn build(self) -> Result<ChainHarness> {
         let spec = self.finalize_spec()?;
         let fixture = ChainFixture::new();
@@ -299,6 +309,7 @@ impl ChainHarnessBuilder {
             next_committee_nodes,
             current_spool_counts,
             prev_spool_counts,
+            seed_prev_snapshot_manifest: self.seed_prev_snapshot_manifest,
         })
     }
 }
@@ -325,11 +336,14 @@ fn seed_fixture(fixture: &ChainFixture, seeded: &SeededWorld) -> Result<()> {
         &tapedrive::ID,
         &seeded.archive.data.pack(),
     )?;
-    fixture.seed_account(
-        &seeded.snapshot_state.address,
-        &tapedrive::ID,
-        &seeded.snapshot_state.data.pack(),
-    )?;
+
+    if let Some(manifest_account) = &seeded.prev_snapshot_manifest {
+        fixture.seed_account(
+            &manifest_account.address,
+            &tapedrive::ID,
+            &manifest_account.data.pack(),
+        )?;
+    }
 
     for account in &seeded.node_accounts {
         fixture.seed_account(&account.address, &tapedrive::ID, &account.data.pack())?;
