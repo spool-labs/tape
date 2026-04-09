@@ -184,6 +184,7 @@ fn encode_group<Db: Store>(
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::Zeroable;
     use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
     use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupStatus};
     use tape_core::snapshot::types::ReplayableEvent;

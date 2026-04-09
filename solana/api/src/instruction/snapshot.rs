@@ -3,7 +3,7 @@ use solana_program::instruction::{AccountMeta, Instruction};
 
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::SpoolGroup;
-use tape_core::track::blob::BlobInfo;
+use tape_core::track::blob::{BlobInfo, PackedBlobInfo};
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{TrackKind, TrackState};
 use tape_core::types::{CommitteeBitmap, EpochNumber};
@@ -23,16 +23,26 @@ pub struct InitSnapshotEpoch {
     pub epoch: [u8; 8],
 }
 
+/// Wire layout for `CertifySnapshotGroup`.
+///
+/// `blob` is stored as `PackedBlobInfo` (a byte array) rather than `BlobInfo`
+/// directly so the struct keeps alignment 1. Solana hands instruction data to
+/// programs via a slice that starts one byte past the discriminator, and
+/// `bytemuck::try_from_bytes` would reject any struct that requires stricter
+/// alignment than the slice it is given.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug)]
 pub struct CertifySnapshotGroup {
     pub epoch: [u8; 8],
     pub signing_epoch: [u8; 8],
     pub group: [u8; 8],
-    pub blob: BlobInfo,
+    pub blob: PackedBlobInfo,
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
 }
+
+unsafe impl Pod for CertifySnapshotGroup {}
+unsafe impl Zeroable for CertifySnapshotGroup {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -43,7 +53,7 @@ pub struct FinalizeSnapshotEpoch {
 pub fn snapshot_blob_from_certification(
     certification: &CertifySnapshotGroup,
 ) -> Result<BlobInfo, ProgramError> {
-    let blob = certification.blob;
+    let blob = BlobInfo::unpack(certification.blob);
     if blob.commitment_root() != blob.commitment {
         return Err(TapeError::InvalidCommitment.into());
     }
@@ -123,7 +133,7 @@ pub fn build_certify_snapshot_group_ix(
             epoch: epoch.pack(),
             signing_epoch: signing_epoch.pack(),
             group: group.pack(),
-            blob: *blob,
+            blob: blob.pack(),
             bitmap,
             signature,
         }
@@ -181,7 +191,7 @@ mod tests {
             epoch: EpochNumber(9).pack(),
             signing_epoch: EpochNumber(10).pack(),
             group: SpoolGroup(3).pack(),
-            blob,
+            blob: blob.pack(),
             bitmap: CommitteeBitmap::zeroed(),
             signature: BlsSignature::zeroed(),
         };

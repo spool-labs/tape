@@ -170,7 +170,7 @@ fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, Pr
 
 #[cfg(test)]
 mod tests {
-    use tape_api::prelude::{BlsPrivateKey, BlsPubkey, BlsSignature};
+    use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
     use tape_core::snapshot::chunk::snapshot_chunk_root;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::store::TrackStore;

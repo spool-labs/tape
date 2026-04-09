@@ -36,7 +36,9 @@ pub mod prelude {
 
     pub use crate::compute::*;
     pub use crate::consts::*;
-    pub use crate::errors::{ExchangeError, RequiredAction, TapeError};
+    pub use crate::errors::{ExchangeError, TapeError};
+    #[cfg(not(target_os = "solana"))]
+    pub use crate::errors::RequiredAction;
     pub use crate::event::*;
     pub use crate::instruction::*;
     pub use crate::loaders::{AccountInfoHelper, AccountInfoLoader, FromAccountSlice};

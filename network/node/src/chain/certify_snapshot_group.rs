@@ -121,6 +121,14 @@ mod tests {
             .await,
         );
 
-        assert!(matches!(outcome, TxOutcome::Program(TapeError::NoQuorum)));
+        let label = match &outcome {
+            TxOutcome::Confirmed(_) => "Confirmed".into(),
+            TxOutcome::Program(error) => format!("Program({error:?})"),
+            TxOutcome::Transport(error) => format!("Transport({error:?})"),
+        };
+        assert!(
+            matches!(outcome, TxOutcome::Program(TapeError::NoQuorum)),
+            "expected NoQuorum, got {label}",
+        );
     }
 }

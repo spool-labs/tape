@@ -111,6 +111,7 @@ mod tests {
     use super::*;
     use axum::body::Bytes;
     use axum::extract::{Path, State};
+    use bytemuck::Zeroable;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
     use tape_core::cert::snapshot::SnapshotMessage;

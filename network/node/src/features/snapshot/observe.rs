@@ -391,7 +391,9 @@ mod tests {
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupStatus};
+    use tape_core::snapshot::info::{
+        SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
+    };
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
     use tape_core::track::blob::BlobInfo;
@@ -434,7 +436,7 @@ mod tests {
         Arc::new(state)
     }
 
-    fn state_with_owned_spool(epoch: EpochNumber, spool: u16) -> Arc<ProtocolState> {
+    fn state_with_owned_spool(epoch: EpochNumber, spool: u16) -> ProtocolState {
         let mut state = ProtocolState {
             epoch,
             ..ProtocolState::default()
@@ -448,7 +450,7 @@ mod tests {
         spools[spool as usize] = 0;
         state.spools = SpoolAssignment::new(spools);
 
-        Arc::new(state)
+        state
     }
 
     fn local_blob() -> BlobInfo {

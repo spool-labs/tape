@@ -8,7 +8,7 @@ use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signature};
+use solana_sdk::signature::{Keypair as SolanaKeypair, Signature};
 use tape_api::program::{exchange, staking, tapedrive, token};
 use tape_crypto::ed25519::Keypair;
 use tape_crypto::signer::Signer as TapeSigner;
@@ -128,7 +128,7 @@ impl ChainFixture {
 
     pub async fn send_instructions_and_advance(
         &self,
-        payer: &Keypair,
+        payer: &SolanaKeypair,
         instructions: Vec<Instruction>,
         slot_advance_per_tx: u64,
     ) -> Result<Signature> {
@@ -148,9 +148,9 @@ impl ChainFixture {
 
     pub async fn send_instructions_with_signers_and_advance(
         &self,
-        payer: &Keypair,
+        payer: &SolanaKeypair,
         instructions: Vec<Instruction>,
-        signers: &[&Keypair],
+        signers: &[&SolanaKeypair],
         slot_advance_per_tx: u64,
     ) -> Result<Signature> {
         let client = RpcClient::from_rpc(self.rpc.clone());
@@ -182,6 +182,6 @@ impl Default for ChainFixture {
     }
 }
 
-fn crypto_keypair(keypair: &Keypair) -> Result<Keypair> {
+fn crypto_keypair(keypair: &SolanaKeypair) -> Result<Keypair> {
     Keypair::from_solana_keypair(keypair).context("convert Solana keypair")
 }

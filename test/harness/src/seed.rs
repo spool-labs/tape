@@ -10,12 +10,11 @@ use tape_api::program::tapedrive::{
 };
 use tape_api::state::{Archive, Epoch, History, Node, SnapshotState, System};
 use tape_core::bls::BlsPrivateKey;
-use tape_core::prelude::{
-    Committee, CommitteeMember, EpochSchedule, NodeId, PoolHistory, ShareAmount, StakingPool,
-    VersionId,
-};
+use tape_core::prelude::NodeId;
 use tape_core::spooler::SpoolAssignment;
-use tape_core::system::{NodeMetadata, NodePreferences};
+use tape_core::staking::{PoolHistory, StakingPool};
+use tape_core::system::{Committee, CommitteeMember, EpochSchedule, NodeMetadata, NodePreferences};
+use tape_core::types::{ShareAmount, VersionId};
 use tape_crypto::Hash;
 use tape_protocol::ProtocolState;
 
