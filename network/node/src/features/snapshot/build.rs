@@ -12,7 +12,6 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-use tape_core::snapshot::chunk::snapshot_chunk_root;
 use tape_core::snapshot::info::{
     SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
 };
@@ -26,7 +25,7 @@ use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_protocol::Api;
 use tape_slicer::outer::{OuterCoder, DEFAULT_K_OUTER};
-use tape_slicer::{num_stripes, ErasureCoder, Slicer};
+use tape_slicer::{num_stripes, source_root, ErasureCoder, Slicer};
 use tape_store::ops::{EventLogOps, SnapshotOps};
 use tracing::debug;
 
@@ -151,7 +150,9 @@ fn encode_group<Db: Store>(
 
     let blob = BlobInfo {
         size: StorageUnits::from_bytes(chunk.len() as u64),
-        root: snapshot_chunk_root(chunk),
+        // Source-data merkle root over the chunk's stripes. Same definition
+        // and same helper used by normal blob tracks via the SDK encoder.
+        root: source_root(chunk, stripe_size),
         commitment,
         profile: slicer.profile(),
         stripe_size: StorageUnits::from_bytes(stripe_size as u64),

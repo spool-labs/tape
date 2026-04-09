@@ -171,7 +171,6 @@ fn required_snapshot_epoch(current_epoch: EpochNumber) -> Result<EpochNumber, Pr
 #[cfg(test)]
 mod tests {
     use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
-    use tape_core::snapshot::chunk::snapshot_chunk_root;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::store::TrackStore;
     use tape_core::types::{CommitteeBitmap, SnapshotGroupBitmap};
@@ -252,10 +251,12 @@ mod tests {
         let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let chunk_size = StorageUnits::from_bytes(1_537);
-        let root = snapshot_chunk_root(b"snapshot chunk");
+        // Synthetic source-data root: the on-chain certify instruction does
+        // not validate `BlobInfo.root` against anything; the test only needs
+        // a deterministic value so the signed message is reproducible.
         let blob = BlobInfo {
             size: chunk_size,
-            root,
+            root: Hash::from([0x33; 32]),
             commitment,
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
@@ -394,7 +395,7 @@ mod tests {
 
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(1_024),
-            root: snapshot_chunk_root(b"sealed-group"),
+            root: Hash::from([0x33; 32]),
             commitment: Hash::from([0x22; 32]),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),

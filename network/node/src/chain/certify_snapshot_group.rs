@@ -51,13 +51,13 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::chunk::snapshot_chunk_root;
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
+    use tape_slicer::source_root;
 
     use super::submit_certify_snapshot_group;
     use crate::chain::submit_init_snapshot_epoch;
@@ -97,7 +97,7 @@ mod tests {
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(2_048),
-            root: snapshot_chunk_root(b"snapshot-certify"),
+            root: source_root(b"snapshot-certify", 512),
             commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),

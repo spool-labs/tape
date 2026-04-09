@@ -10,8 +10,9 @@ use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, root_from_le
 use tape_crypto::Hash;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, MERKLE_HEIGHT,
-    build_blob_merkle_tree, BlobMerkleRoot, DEFAULT_STRIPE_SIZE,
+    build_blob_merkle_tree, source_root, BlobMerkleRoot, DEFAULT_STRIPE_SIZE,
 };
+use tape_slicer::pick_stripe_size;
 
 use crate::error::UploadError;
 use crate::transfer::uploader::SliceWithProof;
@@ -216,17 +217,25 @@ impl BlobEncoder {
     /// # Returns
     /// Tuple containing:
     /// - Vector of `SliceWithProof` (index, data, leaf_hash, merkle_proof)
-    /// - The blob merkle root (commitment)
+    /// - The slice-leaves merkle root (`BlobInfo.commitment`)
+    /// - The source-data merkle root over stripes (`BlobInfo.root`)
     pub fn encode_with_proofs(
         &mut self,
         data: Vec<u8>,
-    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
+    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, Hash), UploadError> {
         let chunks = self.encode_internal(&data)?;
 
-        // Hash each slice once, then reuse the hashes for the root, proofs,
+        // Source-data merkle root over stripes. Computed after encode_internal
+        // because the slicer auto-selects stripe size via pick_stripe_size, so
+        // we use the same function here to stay consistent with the value the
+        // encoder will store in BlobInfo.stripe_size.
+        let stripe_size = pick_stripe_size(data.len());
+        let source = source_root(&data, stripe_size);
+
+        // Hash each slice once, then reuse the hashes for the commitment, proofs,
         // and per-slice leaf hash stored in the upload payload.
         let leaf_hashes: Vec<Hash> = chunks.iter().map(|chunk| hash_leaf(chunk)).collect();
-        let root = root_from_leaf_hashes::<MERKLE_HEIGHT>(&leaf_hashes);
+        let commitment = root_from_leaf_hashes::<MERKLE_HEIGHT>(&leaf_hashes);
 
         let proofs: Result<Vec<Vec<Hash>>, _> = (0..leaf_hashes.len())
             .map(|idx| create_proof_from_leaf_hashes::<MERKLE_HEIGHT>(&leaf_hashes, idx))
@@ -256,23 +265,30 @@ impl BlobEncoder {
             ));
         }
 
-        Ok((output, root))
+        Ok((output, commitment, source))
     }
 
-    /// Encode a blob and return slices with proofs, root, and leaf hashes.
+    /// Encode a blob and return slices with proofs, both merkle roots, and leaf hashes.
     ///
-    /// Returns the leaf hashes as a fixed-size array suitable for passing
-    /// to the RegisterTrack instruction.
+    /// # Returns
+    /// Tuple containing:
+    /// - Vector of `SliceWithProof`
+    /// - The slice-leaves merkle root (`BlobInfo.commitment`)
+    /// - The source-data merkle root over stripes (`BlobInfo.root`)
+    /// - Per-slice leaf hashes as a fixed-size array (`BlobInfo.leaves`)
     pub fn encode_with_leaves(
         &mut self,
         data: Vec<u8>,
-    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, [Hash; SPOOL_GROUP_SIZE]), UploadError> {
-        let (slices, root) = self.encode_with_proofs(data)?;
+    ) -> Result<
+        (Vec<SliceWithProof>, BlobMerkleRoot, Hash, [Hash; SPOOL_GROUP_SIZE]),
+        UploadError,
+    > {
+        let (slices, commitment, source) = self.encode_with_proofs(data)?;
         let mut leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         for s in &slices {
             leaves[s.index as usize] = s.leaf_hash;
         }
-        Ok((slices, root, leaves))
+        Ok((slices, commitment, source, leaves))
     }
 }
 
@@ -361,15 +377,16 @@ mod tests {
 
         let mut encoder = test_encoder();
         let data = vec![0x42; 20_000];
-        let (slices_with_proofs, root) = encoder.encode_with_proofs(data).unwrap();
+        let (slices_with_proofs, commitment, _source) =
+            encoder.encode_with_proofs(data).unwrap();
 
         assert_eq!(slices_with_proofs.len(), SPOOL_GROUP_SIZE);
 
-        // Verify each proof
+        // Verify each proof against the commitment (slice-leaves) tree.
         for slice in &slices_with_proofs {
             let valid = verify_proof(
                 &slice.data,
-                &root,
+                &commitment,
                 &slice.merkle_proof,
                 slice.index as u64,
                 MERKLE_HEIGHT,
@@ -382,7 +399,7 @@ mod tests {
     fn test_encode_with_proofs_indices_sequential() {
         let mut encoder = test_encoder();
         let data = vec![0xAB; 15_000];
-        let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
+        let (slices_with_proofs, _, _) = encoder.encode_with_proofs(data).unwrap();
 
         // Verify indices are sequential
         for (expected_idx, slice) in slices_with_proofs.iter().enumerate() {
@@ -391,15 +408,29 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_with_proofs_root_matches() {
+    fn test_encode_with_proofs_commitment_matches_root() {
         let mut encoder = test_encoder();
         let data = vec![0xCD; 20_000];
 
-        // encode_with_root and encode_with_proofs should produce same root
+        // encode_with_root and encode_with_proofs should produce the same
+        // slice-leaves commitment (the value of `BlobInfo.commitment`).
         let (_, root1) = encoder.encode_with_root(data.clone()).unwrap();
-        let (_, root2) = encoder.encode_with_proofs(data).unwrap();
+        let (_, commitment, _source) = encoder.encode_with_proofs(data).unwrap();
 
-        assert_eq!(root1, root2);
+        assert_eq!(root1, commitment);
+    }
+
+    #[test]
+    fn test_encode_with_proofs_source_root_distinct_from_commitment() {
+        let mut encoder = test_encoder();
+        let data = vec![0xCD; 20_000];
+
+        let (_, commitment, source) = encoder.encode_with_proofs(data).unwrap();
+
+        // The source-data tree and the slice-leaves tree commit to entirely
+        // different inputs, so they must produce different roots for any
+        // non-trivial blob.
+        assert_ne!(commitment, source);
     }
 
     #[test]
@@ -408,7 +439,7 @@ mod tests {
 
         let mut encoder = test_encoder();
         let data = vec![0xEF; 10_000];
-        let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
+        let (slices_with_proofs, _, _) = encoder.encode_with_proofs(data).unwrap();
 
         // Verify leaf hashes are correctly computed
         for slice in &slices_with_proofs {

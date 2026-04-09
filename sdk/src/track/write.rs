@@ -132,14 +132,17 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
     let profile = EncodingProfile::clay_default();
     let mut encoder = BlobEncoder::with_profile(profile);
-    let (slices, merkle_root, leaves) = encoder
+    let (slices, commitment, source, leaves) = encoder
         .encode_with_leaves(data.to_vec())
         .map_err(|e| TapedriveError::Encoding(e.to_string()))?;
 
     Ok(UploadPlan {
         slices,
-        root_hash: merkle_root.into(),
-        commitment_hash: merkle_root.into(),
+        // root_hash commits to the source-data tree (stripes); commitment_hash
+        // commits to the slice-leaves tree. See lib/core/src/track/blob.rs for
+        // the design rationale.
+        root_hash: source.into(),
+        commitment_hash: commitment.into(),
         storage_units: StorageUnits::from_bytes(data.len() as u64),
         profile,
         stripe_size: pick_stripe_size(data.len()),
