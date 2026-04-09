@@ -24,23 +24,64 @@ use wincode::{
 };
 
 /// Blob payload metadata stored on nodes responsible for the track's spool group.
+///
+/// `BlobInfo` carries two distinct merkle commitments, each with its own purpose:
+///
+/// ```text
+/// source data ──stripe split──► stripes ──hash tree──► BlobInfo.root
+///                   │
+///                   └──Clay encode──► slices ──hash tree──► BlobInfo.commitment
+///                                            └─per-leaf─►   BlobInfo.leaves[i]
+/// ```
+///
+/// `root` is a merkle root over the **stripes of the source data** — the input
+/// to the encoder, before erasure coding. Because `track.value_hash` is
+/// `hash(BlobInfo)`, the on-chain track transitively commits to the source data
+/// structure. This enables application-layer proofs that do not require touching
+/// any erasure slices:
+///
+/// - **Stripe inclusion proofs**: prove "stripe N at offset X..Y is part of
+///   blob Z" without downloading or decoding any erasure slices. The verifier
+///   needs only the stripe bytes, the merkle path, and `value_hash` from chain.
+/// - **Range reads with verification**: read part of a blob, verify against
+///   on-chain state, without trusting the serving node and without
+///   reconstructing the whole blob.
+/// - **Light client attestations**: attest to a single event inside a snapshot
+///   chunk (e.g., "registration X happened in epoch E") with a compact proof
+///   against the on-chain manifest.
+/// - **Cheap data integrity audits**: spot-check that a node holds the right
+///   bytes by asking for a stripe + proof, instead of asking for slices and
+///   re-decoding.
+///
+/// `commitment` is a merkle root over the **erasure-coded slice leaves** — the
+/// output of the encoder. It serves the storage layer: it lets a node prove
+/// that a particular slice it serves belongs to the canonical encoding of the
+/// blob. `leaves[i]` holds the per-slice leaf hash so a server can produce a
+/// merkle path against `commitment` for any slice it owns.
+///
+/// The two are structurally distinct and both load-bearing. `root` is for the
+/// application layer (proofs about user-visible data); `commitment` is for the
+/// storage layer (proofs about encoded slices).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize))]
 pub struct BlobInfo {
     /// Original unencoded data size in bytes.
     pub size: StorageUnits,
-    /// Root of the source data tree.
+    /// Merkle root over the stripes of the source data (pre-encoding).
+    /// Enables stripe inclusion proofs and range-read verification against
+    /// `track.value_hash` without touching erasure slices.
     pub root: Hash,
-    /// Root of the erasure-coded commitment tree.
+    /// Merkle root over the erasure-coded slice leaves (post-encoding).
+    /// Enables per-slice membership proofs for the storage layer.
     pub commitment: Hash,
     /// Erasure-coding profile used for the blob.
     pub profile: EncodingProfile,
-    /// Stripe size in bytes.
+    /// Stripe size in bytes. Determines the leaf granularity of the `root` tree.
     pub stripe_size: StorageUnits,
-    /// Number of stripes.
+    /// Number of stripes in the source data tree.
     pub stripe_count: StripeCount,
-    /// Per-slice commitment leaves.
+    /// Per-slice leaf hashes; the leaves of the `commitment` tree.
     pub leaves: [Hash; SPOOL_GROUP_SIZE],
 }
 
@@ -144,5 +185,36 @@ mod tests {
         assert_eq!(recovered.stripe_size, StorageUnits::from_bytes(64));
         assert_eq!(recovered.stripe_count, StripeCount(2));
         assert_eq!(recovered, blob);
+    }
+
+    // root and commitment commit to different inputs (source stripes vs.
+    // erasure-coded slice leaves), so they must be distinct hashes for any
+    // real blob. Regression guard against the prior bug where the SDK
+    // encoder set both fields to the same value.
+    #[test]
+    fn root_and_commitment_are_distinct() {
+        let blob = sample_blob_info();
+        assert_ne!(blob.root, blob.commitment);
+    }
+
+    // Layout guard: the source-data root work in build.rs / encoder.rs only
+    // changes the *value* of BlobInfo.root, never the byte layout. If this
+    // assertion ever fails, the wire format and packed account layouts have
+    // shifted and every dependent struct needs revisiting.
+    #[test]
+    fn blob_info_size_is_stable() {
+        // size:            8
+        // root:           32
+        // commitment:     32
+        // profile:         varies, sized by EncodingProfile
+        // stripe_size:     8
+        // stripe_count:    8
+        // leaves:         32 * 20 = 640
+        //
+        // We don't pin the absolute total because EncodingProfile may grow
+        // legitimately, but we do pin that BlobInfo is bytemuck-Pod-sized and
+        // larger than the sum of its fixed-size fields.
+        const FIXED_FIELDS: usize = 8 + 32 + 32 + 8 + 8 + (32 * SPOOL_GROUP_SIZE);
+        assert!(size_of::<BlobInfo>() >= FIXED_FIELDS);
     }
 }

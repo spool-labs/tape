@@ -188,10 +188,12 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
     use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupStatus};
-    use tape_core::snapshot::types::ReplayableEvent;
+    use tape_core::snapshot::types::{ReplayableEvent, SnapshotLog};
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::{EpochNumber, SlotNumber, SnapshotGroupBitmap};
     use tape_crypto::hash::Hash;
+    use tape_slicer::outer::{OuterCoder, DEFAULT_K_OUTER};
+    use tape_slicer::{pick_stripe_size, source_root};
     use tape_store::ops::{EventLogOps, SnapshotOps};
 
     use super::build_snapshot_epoch;
@@ -314,6 +316,119 @@ mod tests {
         let info = ctx.store.get_epoch_info(epoch).expect("get").expect("exists");
         assert_eq!(info.status, SnapshotEpochStatus::Initialized);
         assert!(ctx.store.get_group_info(epoch, SpoolGroup(0)).expect("get").is_none());
+    }
+
+    // BlobInfo.root for a built snapshot group equals source_root over the
+    // outer-RS chunk that produced it. Confirms the snapshot path uses the
+    // canonical helper instead of a special-case hash.
+    #[tokio::test]
+    async fn root_matches_source_root() {
+        let ctx = test_context();
+        let epoch = EpochNumber(7);
+        let parent = EpochNumber(6);
+
+        // Seed enough events that the serialized log is non-trivial.
+        for i in 0..32u64 {
+            ctx.store
+                .append_event(
+                    epoch,
+                    SlotNumber(100 + i),
+                    &ReplayableEvent::AdvanceEpoch {
+                        old_epoch: EpochNumber(i),
+                        new_epoch: EpochNumber(i + 1),
+                    },
+                )
+                .expect("append");
+        }
+
+        ctx.store
+            .put_epoch_info(
+                epoch,
+                SnapshotEpochInfo {
+                    parent_epoch: parent,
+                    status: SnapshotEpochStatus::Pending,
+                    certified_groups: SnapshotGroupBitmap::zeroed(),
+                },
+            )
+            .expect("put_epoch_info");
+
+        build_snapshot_epoch(&ctx, epoch).await.expect("build");
+
+        // Recreate the same outer encoding the build path produces, then
+        // recompute source_root over chunk 0 with the same stripe size the
+        // slicer would auto-pick.
+        let entries = ctx.store.get_epoch_events(epoch).expect("events");
+        let log = SnapshotLog {
+            version: 1,
+            epoch,
+            start_slot: entries.first().map(|e| e.slot).unwrap_or(SlotNumber(0)),
+            end_slot: entries.last().map(|e| e.slot).unwrap_or(SlotNumber(0)),
+            entries,
+        };
+        let serialized = log.to_bytes().expect("to_bytes");
+        let mut outer = OuterCoder::new(DEFAULT_K_OUTER);
+        let chunks = outer.encode(&serialized).expect("outer encode");
+
+        let stripe_size = pick_stripe_size(chunks[0].len());
+        let expected_root = source_root(&chunks[0], stripe_size);
+
+        let stored = ctx
+            .store
+            .get_group_info(epoch, SpoolGroup(0))
+            .expect("get")
+            .expect("exists");
+        assert_eq!(stored.blob.root, expected_root);
+        assert_ne!(stored.blob.root, stored.blob.commitment);
+    }
+
+    // Different outer-RS chunks produce different source roots (regression
+    // guard against any future change that accidentally collapses them).
+    #[tokio::test]
+    async fn root_differs_across_groups() {
+        let ctx = test_context();
+        let epoch = EpochNumber(8);
+
+        for i in 0..16u64 {
+            ctx.store
+                .append_event(
+                    epoch,
+                    SlotNumber(200 + i),
+                    &ReplayableEvent::AdvanceEpoch {
+                        old_epoch: EpochNumber(i),
+                        new_epoch: EpochNumber(i + 1),
+                    },
+                )
+                .expect("append");
+        }
+
+        ctx.store
+            .put_epoch_info(
+                epoch,
+                SnapshotEpochInfo {
+                    parent_epoch: EpochNumber(7),
+                    status: SnapshotEpochStatus::Pending,
+                    certified_groups: SnapshotGroupBitmap::zeroed(),
+                },
+            )
+            .expect("put_epoch_info");
+
+        build_snapshot_epoch(&ctx, epoch).await.expect("build");
+
+        let r0 = ctx
+            .store
+            .get_group_info(epoch, SpoolGroup(0))
+            .expect("get")
+            .expect("exists")
+            .blob
+            .root;
+        let r1 = ctx
+            .store
+            .get_group_info(epoch, SpoolGroup(1))
+            .expect("get")
+            .expect("exists")
+            .blob
+            .root;
+        assert_ne!(r0, r1);
     }
 
     // rebuilding produces identical commitments
