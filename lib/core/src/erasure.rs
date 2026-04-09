@@ -16,6 +16,14 @@ pub const SPOOL_GROUP_SIZE: usize = 20;
 /// Derived from SPOOL_GROUP_SIZE: 2^5 = 32 >= 20 leaves.
 pub const COMMITMENT_TREE_HEIGHT: usize = 5;
 
+/// Merkle tree height for source-data trees over blob stripes.
+///
+/// 2^8 = 256 leaves, comfortably above the worst-case stripe count of
+/// `ceil(MAX_BLOB_SIZE / smallest stripe size)`. Increase if `MAX_BLOB_SIZE`
+/// or the slicer's stripe sizing widens. The bound test in this module
+/// will fail loudly if that ever happens.
+pub const STRIPE_TREE_HEIGHT: usize = 8;
+
 /// Number of spool groups in the network.
 pub const SPOOL_GROUP_COUNT: usize = 50;
 
@@ -88,6 +96,31 @@ mod tests {
     fn test_max_slice_size() {
         // With default k=7, max slice is ~143 MiB
         assert_eq!(MAX_SLICE_SIZE, MAX_BLOB_SIZE / 7);
+    }
+
+    #[test]
+    fn stripe_tree_height_covers_max_blob() {
+        // The slicer's pick_stripe_size (lib/slicer/src/adaptive.rs) ties
+        // stripe size to blob size and always pairs blobs > 100 MB with the
+        // largest stripe size (10 MB). Slicer::encode enforces this on every
+        // call, so callers cannot override. The realistic worst-case stripe
+        // count is therefore ceil(MAX_BLOB_SIZE / 10 MB).
+        //
+        // This test is a regression guard: if pick_stripe_size ever shrinks
+        // its largest-regime stripe size or stops enforcing the pairing, the
+        // assertion fails and STRIPE_TREE_HEIGHT must be revisited.
+        //
+        // Mirrored constant — keep in sync with adaptive.rs::STRIPE_SIZES[2].
+        const LARGEST_STRIPE_SIZE: usize = 10_000_000;
+
+        let worst_case_stripes = MAX_BLOB_SIZE.div_ceil(LARGEST_STRIPE_SIZE);
+        let capacity = 1usize << STRIPE_TREE_HEIGHT;
+        assert!(
+            capacity >= worst_case_stripes,
+            "STRIPE_TREE_HEIGHT={STRIPE_TREE_HEIGHT} (capacity {capacity}) \
+             cannot hold worst-case stripe count {worst_case_stripes} \
+             from MAX_BLOB_SIZE={MAX_BLOB_SIZE} / LARGEST_STRIPE_SIZE={LARGEST_STRIPE_SIZE}",
+        );
     }
 
     #[test]
