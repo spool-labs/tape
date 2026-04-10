@@ -416,7 +416,6 @@ mod tests {
                 key: Hash::default(),
                 value: TrackData::Blob(BlobInfo {
                     size: StorageUnits::mb(100),
-                    root: Hash::default(),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
@@ -488,7 +487,6 @@ mod tests {
                 key: Hash::default(),
                 value: TrackData::Blob(BlobInfo {
                     size: StorageUnits::mb(1_024),
-                    root: Hash::default(),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
@@ -568,7 +566,6 @@ mod tests {
                     key: Hash::default(),
                     value: TrackData::Blob(BlobInfo {
                         size: StorageUnits::mb(1_024),
-                        root: Hash::default(),
                         commitment: Hash::default(),
                         profile: EncodingProfile::default(),
                         stripe_size: StorageUnits::from_bytes(64),

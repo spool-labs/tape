@@ -139,7 +139,6 @@ mod tests {
         let authority = Pubkey::new_unique();
         let storage_units = StorageUnits::mb(100);
 
-        let data_root = Hash::new_unique();
         let bucket_hash = Hash::new_unique();
         let profile = EncodingProfile::clay_default();
 
@@ -148,7 +147,6 @@ mod tests {
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: storage_units,
-            root: data_root,
             commitment,
             profile,
             stripe_size: StorageUnits::from_bytes(1024),

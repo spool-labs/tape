@@ -145,62 +145,50 @@ fn store_error(error: impl Display) -> RouteError {
 
 #[cfg(test)]
 mod tests {
-    //! Black-box regression tests covering a *projected* snapshot track —
-    //! i.e. a snapshot chunk that was materialised into the generic track/
-    //! slice columns by `materialize_snapshot_track`. The structural argument
-    //! that snapshot tracks are interchangeable with normal blob tracks is
-    //! load-bearing for repair / serve / inconsistency, so we lock it in
-    //! here against future regressions.
-
-    use super::*;
     use axum::body::to_bytes;
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+
+    use peer_memory::MemoryApi;
+    use rpc_litesvm::LiteSvmRpc;
+    use store_memory::MemoryStore;
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
+    use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackDataOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
 
+    use super::*;
+    use crate::context::NodeContext;
     use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
 
-    // Materialise a synthetic projected snapshot track and return the slice
-    // it serves out. Mirrors the writes performed by
-    // `features::snapshot::observe::materialize_snapshot_track`, minus the
-    // observe-block plumbing.
     fn seed_projected_snapshot_track(
-        ctx: &crate::context::NodeContext<
-            store_memory::MemoryStore,
-            peer_memory::MemoryApi,
-            rpc_litesvm::LiteSvmRpc,
-        >,
+        ctx: &NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>,
     ) -> (Address, u16, Vec<u8>) {
         let epoch = EpochNumber(5);
         let parent_epoch = EpochNumber(4);
         let group = SpoolGroup(2);
         let track_number = TrackNumber(9);
         let owned_spool = group.spool_at(5);
-        let slice_position = group.slice_of(owned_spool).unwrap();
         let slice_bytes = vec![0xAB; 96];
 
-        // BlobInfo with a leaves array whose merkle root matches commitment.
-        let leaves = [tape_crypto::Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
+        let leaves = [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(1_537),
-            root: tape_crypto::Hash::from([0x55; 32]),
             commitment,
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
@@ -219,7 +207,7 @@ mod tests {
                     next_track_number: TrackNumber(track_number.0 + 1),
                 },
             )
-            .unwrap();
+            .expect("seed snapshot tape");
 
         let track = CompressedTrack {
             tape: snapshot_tape,
@@ -231,10 +219,15 @@ mod tests {
             spool_group: group,
             value_hash: blob.get_hash(),
         };
-        ctx.store.put_track(track_address, track).unwrap();
+
+        ctx.store
+            .put_track(track_address, track)
+            .expect("seed track");
+
         ctx.store
             .put_track_data(track_address, TrackData::Blob(blob))
-            .unwrap();
+            .expect("seed track data");
+
         ctx.store
             .put_object_info(
                 track_address,
@@ -242,26 +235,25 @@ mod tests {
                     track_address,
                     registered_epoch: epoch,
                     certified_epoch: Some(epoch),
-                    slot: SlotNumber(epoch.0 * 10 + 1),
+                    slot: SlotNumber(epoch.0),
                 },
             )
-            .unwrap();
+            .expect("seed object info");
         ctx.store
             .put_slice(owned_spool, track_address, slice_bytes.clone())
-            .unwrap();
+            .expect("seed slice");
         ctx.store
             .set_spool_state(
                 owned_spool,
                 SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
             )
-            .unwrap();
+            .expect("set spool state");
 
-        let _ = slice_position;
         (track_address, owned_spool, slice_bytes)
     }
 
     #[tokio::test]
-    async fn serves_projected_snapshot_slice() {
+    async fn serves_slice() {
         let ctx = test_context();
         let (track_address, owned_spool, slice_bytes) = seed_projected_snapshot_track(&ctx);
 
@@ -278,7 +270,11 @@ mod tests {
         };
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+
         assert_eq!(body.as_ref(), slice_bytes.as_slice());
     }
 }

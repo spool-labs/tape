@@ -595,7 +595,6 @@ mod tests {
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         BlobInfo {
             size: StorageUnits::from_bytes(size),
-            root: Hash::new_unique(),
             commitment,
             profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(stripe_size),

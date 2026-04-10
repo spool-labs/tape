@@ -219,8 +219,8 @@ mod tests {
         })
     }
 
-    fn full_group_bitmap() -> tape_core::types::SnapshotGroupBitmap {
-        let mut bitmap = tape_core::types::SnapshotGroupBitmap::zeroed();
+    fn full_group_bitmap() -> SnapshotGroupBitmap {
+        let mut bitmap = SnapshotGroupBitmap::zeroed();
         for i in 0..SPOOL_GROUP_COUNT {
             bitmap.set(i);
         }

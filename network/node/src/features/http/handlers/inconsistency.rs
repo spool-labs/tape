@@ -154,18 +154,10 @@ fn store_error(error: impl Display) -> RouteError {
 
 #[cfg(test)]
 mod tests {
-    //! Black-box test that hits the inconsistency handler against a
-    //! *projected* snapshot track. We exercise the matching-root rejection
-    //! path: same blob, same commitment_root, so the handler must
-    //! short-circuit before any committee/BLS work. The point of the test
-    //! is to confirm that nothing in the snapshot projection breaks the
-    //! lookups (`get_track`, `get_track_data`) or the `commitment_root()`
-    //! comparison the handler relies on.
-
-    use super::*;
     use axum::body::Bytes;
     use axum::extract::{Path, State};
     use bytemuck::{cast, Zeroable};
+
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
@@ -177,32 +169,33 @@ mod tests {
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
+    use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::ProtocolState;
     use tape_protocol::api::{InconsistencyProof, InconsistencyRequest};
     use tape_store::ops::{ObjectInfoOps, TapeOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
 
+    use super::*;
     use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
 
     #[tokio::test]
-    async fn rejects_matching_root_for_projected_snapshot_track() {
+    async fn matching_root_rejected() {
         let ctx = test_context();
         ctx.set_state(ProtocolState {
             epoch: EpochNumber(6),
             ..ProtocolState::default()
         })
-        .unwrap();
+        .expect("set state");
 
         // Build a synthetic snapshot blob whose commitment_root() matches its
         // commitment field — this is the structural invariant the projection
         // path preserves and the handler relies on.
-        let leaves = [tape_crypto::Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
+        let leaves = [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(1_537),
-            root: tape_crypto::Hash::from([0x55; 32]),
             commitment,
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
@@ -225,7 +218,7 @@ mod tests {
                     next_track_number: TrackNumber(track_number.0 + 1),
                 },
             )
-            .unwrap();
+            .expect("seed snapshot tape");
         let track = CompressedTrack {
             tape: snapshot_tape,
             key: snapshot_chunk_key(epoch, group, parent_epoch),
@@ -236,10 +229,15 @@ mod tests {
             spool_group: group,
             value_hash: blob.get_hash(),
         };
-        ctx.store.put_track(track_address, track).unwrap();
+
+        ctx.store
+            .put_track(track_address, track)
+            .expect("seed track");
+
         ctx.store
             .put_track_data(track_address, TrackData::Blob(blob))
-            .unwrap();
+            .expect("seed track data");
+
         ctx.store
             .put_object_info(
                 track_address,
@@ -247,10 +245,10 @@ mod tests {
                     track_address,
                     registered_epoch: epoch,
                     certified_epoch: Some(epoch),
-                    slot: SlotNumber(epoch.0 * 10 + 1),
+                    slot: SlotNumber(epoch.0),
                 },
             )
-            .unwrap();
+            .expect("seed object info");
 
         // Build a proof whose observed_root *matches* commitment_root() — the
         // handler must reject before any quorum or signature work.
@@ -261,7 +259,8 @@ mod tests {
                 signature: BlsSignature::zeroed(),
             },
         };
-        let body = wincode::serialize(&request).unwrap();
+
+        let body = wincode::serialize(&request).expect("serialize request");
 
         let err = invalidate(
             State(AppState {
@@ -275,11 +274,12 @@ mod tests {
         .expect("matching-root inconsistency should be rejected");
 
         match err {
-            RouteError::BadRequest(msg) => assert!(
-                msg.contains("roots match"),
-                "expected 'roots match' message, got {msg}"
-            ),
-            _ => panic!("unexpected RouteError variant"),
+            RouteError::BadRequest(message) => assert!(message.contains("roots match")),
+            RouteError::NotFound
+            | RouteError::NotResponsible
+            | RouteError::NotInCommittee
+            | RouteError::InvalidSignature
+            | RouteError::Internal(_) => panic!("unexpected RouteError variant"),
         }
     }
 }

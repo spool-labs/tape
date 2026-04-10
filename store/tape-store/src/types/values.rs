@@ -70,7 +70,6 @@ mod tests {
     fn test_track_blob_data_roundtrip() {
         let info = BlobInfo {
             size: StorageUnits(512),
-            root: Hash::from([2u8; 32]),
             commitment: Hash::from([3u8; 32]),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(64),
@@ -88,7 +87,6 @@ mod tests {
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         let info = BlobInfo {
             size: StorageUnits(1024),
-            root: Hash::default(),
             commitment: root_from_leaf_hashes::<{ COMMITMENT_TREE_HEIGHT }>(&leaves),
             profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(128),

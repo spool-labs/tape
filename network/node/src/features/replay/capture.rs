@@ -249,7 +249,6 @@ mod tests {
 
         BlobInfo {
             size: StorageUnits::from_bytes(64 * slices.len() as u64),
-            root: Hash::new_unique(),
             commitment,
             profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),

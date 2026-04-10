@@ -40,7 +40,6 @@ pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
 #[derive(Clone)]
 pub struct UploadPlan {
     pub slices: Vec<SliceWithProof>,
-    pub root_hash: Hash,
     pub commitment_hash: Hash,
     pub storage_units: StorageUnits,
     pub profile: EncodingProfile,
@@ -132,17 +131,13 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
     let profile = EncodingProfile::clay_default();
     let mut encoder = BlobEncoder::with_profile(profile);
-    let (slices, commitment, source, leaves) = encoder
+    let (slices, merkle_root, leaves) = encoder
         .encode_with_leaves(data.to_vec())
         .map_err(|e| TapedriveError::Encoding(e.to_string()))?;
 
     Ok(UploadPlan {
         slices,
-        // root_hash commits to the source-data tree (stripes); commitment_hash
-        // commits to the slice-leaves tree. See lib/core/src/track/blob.rs for
-        // the design rationale.
-        root_hash: source.into(),
-        commitment_hash: commitment.into(),
+        commitment_hash: merkle_root.into(),
         storage_units: StorageUnits::from_bytes(data.len() as u64),
         profile,
         stripe_size: pick_stripe_size(data.len()),
@@ -206,7 +201,6 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
         key,
         BlobInfo {
             size: plan.storage_units,
-            root: plan.root_hash,
             commitment: plan.commitment_hash,
             profile: plan.profile,
             stripe_size: StorageUnits::from_bytes(plan.stripe_size as u64),

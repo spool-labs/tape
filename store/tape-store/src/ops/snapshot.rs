@@ -154,7 +154,6 @@ mod tests {
             status: SnapshotGroupStatus::Built,
             blob: BlobInfo {
                 size: StorageUnits::from_bytes(4_096),
-                root: Hash::new_unique(),
                 commitment: Hash::new_unique(),
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(1024),

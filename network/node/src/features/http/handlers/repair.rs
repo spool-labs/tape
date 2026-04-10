@@ -85,17 +85,11 @@ fn store_error(error: impl Display) -> RouteError {
 
 #[cfg(test)]
 mod tests {
-    //! Black-box regression test that runs the repair handler against a
-    //! *projected* snapshot track. The slice bytes here come straight out of
-    //! the production slicer (matching what the snapshot build path emits),
-    //! so this exercises the same Clay metadata + chunk-index path that
-    //! `extract_repair_data` walks for normal blob tracks.
-
-    use super::*;
     use axum::body::{to_bytes, Bytes};
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::prelude::{SpoolState, SpoolStatus};
@@ -107,17 +101,20 @@ mod tests {
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
+    use tape_crypto::Hash;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_protocol::api::{RepairRequest, StripeSubChunkRequest};
     use tape_slicer::{ErasureCoder, Slicer};
     use tape_store::ops::{ObjectInfoOps, SliceOps, TapeOps, TrackDataOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
 
+    use super::*;
     use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
 
+    // repair handler returns sub-chunk bytes for a projected snapshot track
     #[tokio::test]
-    async fn repairs_projected_snapshot_slice() {
+    async fn returns_sub_chunk() {
         let ctx = test_context();
 
         // Build a real Clay-encoded snapshot chunk: 20 slices, each carrying
@@ -129,15 +126,14 @@ mod tests {
 
         let slices = slicer.encode(&chunk).expect("slicer encode");
         let stripe_size = slicer.stripe_size();
-        let stripe_count = (chunk.len() + stripe_size - 1) / stripe_size;
+        let stripe_count = chunk.len().div_ceil(stripe_size);
 
-        let leaves: [tape_crypto::Hash; SPOOL_GROUP_SIZE] =
-            core::array::from_fn(|i| hash_leaf(&slices[i]));
+        let leaves: [Hash; SPOOL_GROUP_SIZE] =
+            core::array::from_fn(|index| hash_leaf(&slices[index]));
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
 
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(chunk.len() as u64),
-            root: tape_crypto::Hash::from([0x55; 32]),
             commitment,
             profile: slicer.profile(),
             stripe_size: StorageUnits::from_bytes(stripe_size as u64),
@@ -145,13 +141,14 @@ mod tests {
             leaves,
         };
 
-        // Project the track. We pick spool index 5 within the group as the
-        // helper; that maps to slice position 5 inside the slice array.
         let epoch = EpochNumber(5);
         let parent_epoch = EpochNumber(4);
         let track_number = TrackNumber(9);
         let helper_spool = group.spool_at(5);
-        let slice_position = group.slice_of(helper_spool).unwrap();
+
+        let slice_position = group
+            .slice_of(helper_spool)
+            .expect("helper slice position");
         let helper_slice = slices[slice_position as usize].clone();
 
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
@@ -165,7 +162,7 @@ mod tests {
                     next_track_number: TrackNumber(track_number.0 + 1),
                 },
             )
-            .unwrap();
+            .expect("seed snapshot tape");
 
         let track = CompressedTrack {
             tape: snapshot_tape,
@@ -178,10 +175,13 @@ mod tests {
             value_hash: blob.get_hash(),
         };
 
-        ctx.store.put_track(track_address, track).unwrap();
+        ctx.store
+            .put_track(track_address, track)
+            .expect("seed track");
+
         ctx.store
             .put_track_data(track_address, TrackData::Blob(blob))
-            .unwrap();
+            .expect("seed track data");
 
         ctx.store
             .put_object_info(
@@ -190,23 +190,24 @@ mod tests {
                     track_address,
                     registered_epoch: epoch,
                     certified_epoch: Some(epoch),
-                    slot: SlotNumber(epoch.0 * 10 + 1),
+                    slot: SlotNumber(epoch.0),
                 },
             )
-            .unwrap();
+            .expect("seed object info");
+
         ctx.store
             .put_slice(helper_spool, track_address, helper_slice)
-            .unwrap();
+            .expect("seed helper slice");
+
         ctx.store
             .set_spool_state(
                 helper_spool,
                 SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
             )
-            .unwrap();
+            .expect("set spool state");
 
-        // Ask for sub-chunk 0 of stripe 0. Any valid (stripe, sub_chunk) pair
-        // would do — we just need extract_repair_data to walk the metadata
-        // path and return non-empty bytes.
+        // Any valid (stripe, sub_chunk) pair will do — the test only needs
+        // extract_repair_data to walk the metadata and return non-empty bytes.
         let request = RepairRequest {
             helper_spool,
             stripes: vec![StripeSubChunkRequest {
@@ -214,7 +215,8 @@ mod tests {
                 sub_chunks: vec![0],
             }],
         };
-        let body = wincode::serialize(&request).unwrap();
+
+        let body = wincode::serialize(&request).expect("serialize repair request");
 
         let result = repair(
             State(AppState {
@@ -230,7 +232,9 @@ mod tests {
         };
 
         assert_eq!(response.status(), StatusCode::OK);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("body");
-        assert!(!bytes.is_empty(), "repair should return at least one sub-chunk");
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        assert!(!bytes.is_empty());
     }
 }

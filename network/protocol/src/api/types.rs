@@ -400,7 +400,6 @@ mod tests {
         let resp = TrackDataResponse {
             data: TrackData::Blob(BlobInfo {
                 size: StorageUnits::from_bytes(2048),
-                root: Hash::from([0x44; 32]),
                 commitment: Hash::from([0x55; 32]),
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(256),

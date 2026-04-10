@@ -319,7 +319,6 @@ mod tests {
 
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(1_025),
-            root: Hash::from([0x10; 32]),
             commitment: Hash::from([0x11; 32]),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),

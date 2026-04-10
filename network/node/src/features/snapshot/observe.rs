@@ -449,7 +449,6 @@ mod tests {
         let leaves = [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
         BlobInfo {
             size: StorageUnits::from_bytes(1_537),
-            root: Hash::from([0x55; 32]),
             commitment: root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),

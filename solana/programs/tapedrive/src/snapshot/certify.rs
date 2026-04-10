@@ -237,12 +237,8 @@ mod tests {
         let leaves = [Hash::from([0x11; 32]); SPOOL_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let chunk_size = StorageUnits::from_bytes(1_537);
-        // Synthetic source-data root: the on-chain certify instruction does
-        // not validate `BlobInfo.root` against anything; the test only needs
-        // a deterministic value so the signed message is reproducible.
         let blob = BlobInfo {
             size: chunk_size,
-            root: Hash::from([0x33; 32]),
             commitment,
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
@@ -376,7 +372,6 @@ mod tests {
 
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(1_024),
-            root: Hash::from([0x33; 32]),
             commitment: Hash::from([0x22; 32]),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
@@ -436,10 +431,9 @@ mod tests {
         );
     }
 
+    // second group certify must match the manifest's recorded chunk_size
     #[test]
-    fn test_certify_snapshot_group_rejects_chunk_size_mismatch() {
-        // Manifest already has one group sealed at chunk_size=2048; submit a
-        // certify with size=4096 → SnapshotChunkSizeMismatch.
+    fn chunk_size_mismatch() {
         let fee_payer = Pubkey::new_unique();
         let snapshot_epoch = EpochNumber(42);
         let signing_epoch = EpochNumber(43);
@@ -461,7 +455,6 @@ mod tests {
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(4_096),
-            root: Hash::from([0x33; 32]),
             commitment,
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),

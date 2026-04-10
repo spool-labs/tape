@@ -5,6 +5,8 @@
 //! be replayed through block processor handlers to reconstruct state without
 //! replaying all Solana blocks from genesis.
 
+#[cfg(feature = "wincode")]
+use crate::snapshot::error::SnapshotError;
 use crate::track::blob::BlobInfo;
 use crate::track::types::CompressedTrack;
 use crate::types::{EpochNumber, NodeId, SlotNumber};
@@ -97,8 +99,11 @@ pub enum ReplayableEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct ReplayTrack {
+    /// Compressed track record (key, kind, state, size, spool group, value hash).
     pub state: CompressedTrack,
+    /// Epoch in which the track was written.
     pub epoch: EpochNumber,
+    /// Blob commitment metadata, present only for blob-kind tracks.
     pub blob: Option<BlobInfo>,
 }
 
@@ -106,17 +111,20 @@ pub struct ReplayTrack {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct SnapshotEntry {
+    /// Slot in which these events occurred.
     pub slot: SlotNumber,
+    /// Events emitted during this slot, in processing order.
     pub events: Vec<ReplayableEvent>,
 }
+
+/// Wire-format version for the framed snapshot binary.
+pub const SNAPSHOT_VERSION: u8 = 1;
 
 /// Complete event log for one epoch, suitable for serialization
 /// and erasure coding across spool groups.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct SnapshotLog {
-    /// Format version (currently 1).
-    pub version: u8,
     /// Epoch this snapshot covers.
     pub epoch: EpochNumber,
     /// First slot in this epoch.
@@ -131,10 +139,15 @@ pub struct SnapshotLog {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct SnapshotHeader {
+    /// Wire-format version; must equal [`SNAPSHOT_VERSION`] on read.
     pub version: u8,
+    /// Epoch this snapshot covers.
     pub epoch: EpochNumber,
+    /// First slot in this epoch.
     pub start_slot: SlotNumber,
+    /// Last slot in this epoch.
     pub end_slot: SlotNumber,
+    /// Number of [`SnapshotEntryFrame`]s following the header.
     pub entry_count: u64,
 }
 
@@ -142,7 +155,9 @@ pub struct SnapshotHeader {
 #[cfg(feature = "wincode")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct SnapshotEntryFrame {
+    /// Length of `data` in bytes.
     pub len: u64,
+    /// Wincode-serialized [`SnapshotEntry`] payload.
     #[wincode(with = "SnapshotFrameBytes")]
     pub data: Vec<u8>,
 }
@@ -154,9 +169,9 @@ impl SnapshotLog {
     /// Each entry is individually serialized with wincode to stay within
     /// the default preallocation limit. The wire format is:
     /// `[SnapshotHeader][SnapshotEntryFrame_0][SnapshotEntryFrame_1]...`
-    pub fn to_bytes(&self) -> wincode::Result<Vec<u8>> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, SnapshotError> {
         let header = SnapshotHeader {
-            version: self.version,
+            version: SNAPSHOT_VERSION,
             epoch: self.epoch,
             start_slot: self.start_slot,
             end_slot: self.end_slot,
@@ -178,8 +193,11 @@ impl SnapshotLog {
     }
 
     /// Deserialize from the framed binary format
-    pub fn from_bytes(data: &[u8]) -> wincode::Result<Self> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, SnapshotError> {
         let header: SnapshotHeader = wincode::deserialize(data)?;
+        if header.version != SNAPSHOT_VERSION {
+            return Err(SnapshotError::UnsupportedVersion(header.version));
+        }
         let header_size = wincode::serialized_size(&header)? as usize;
 
         let mut cursor = header_size;
@@ -195,7 +213,6 @@ impl SnapshotLog {
         }
 
         Ok(SnapshotLog {
-            version: header.version,
             epoch: header.epoch,
             start_slot: header.start_slot,
             end_slot: header.end_slot,
@@ -249,7 +266,6 @@ mod tests {
             epoch: EpochNumber(11),
             blob: Some(BlobInfo {
                 size: StorageUnits::from_bytes(1024),
-                root: Hash::from([5u8; 32]),
                 commitment: Hash::from([6u8; 32]),
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(128),
@@ -309,7 +325,6 @@ mod tests {
     #[test]
     fn test_snapshot_log_construction() {
         let log = SnapshotLog {
-            version: 1,
             epoch: EpochNumber(42),
             start_slot: SlotNumber(100),
             end_slot: SlotNumber(200),
@@ -337,7 +352,6 @@ mod tests {
             ],
         };
 
-        assert_eq!(log.version, 1);
         assert_eq!(log.epoch, EpochNumber(42));
         assert_eq!(log.entries.len(), 2);
         assert_eq!(log.entries[1].events.len(), 2);
@@ -347,7 +361,6 @@ mod tests {
     #[test]
     fn test_snapshot_log_wincode_roundtrip() {
         let log = SnapshotLog {
-            version: 1,
             epoch: EpochNumber(42),
             start_slot: SlotNumber(100),
             end_slot: SlotNumber(200),
@@ -417,7 +430,6 @@ mod tests {
     #[test]
     fn snapshot_framed_roundtrip() {
         let log = SnapshotLog {
-            version: 1,
             epoch: EpochNumber(42),
             start_slot: SlotNumber(100),
             end_slot: SlotNumber(200),
@@ -459,7 +471,6 @@ mod tests {
     #[test]
     fn snapshot_empty_roundtrip() {
         let log = SnapshotLog {
-            version: 1,
             epoch: EpochNumber(5),
             start_slot: SlotNumber(0),
             end_slot: SlotNumber(0),

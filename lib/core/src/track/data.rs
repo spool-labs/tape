@@ -109,7 +109,6 @@ mod tests {
     fn sample_blob_info() -> BlobInfo {
         BlobInfo {
             size: StorageUnits::from_bytes(1024),
-            root: Hash::from([0x11; 32]),
             commitment: Hash::from([0x22; 32]),
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(128),

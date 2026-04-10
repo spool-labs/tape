@@ -262,7 +262,6 @@ mod tests {
     fn make_blob_track(tape: Address, track_number: TrackNumber, epoch: EpochNumber) -> ReplayableEvent {
         let blob = BlobInfo {
             size: StorageUnits::mb(2),
-            root: Hash::new_unique(),
             commitment: Hash::new_unique(),
             profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
