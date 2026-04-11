@@ -48,7 +48,6 @@ where
     }
 
     let info = SnapshotEpochInfo {
-        parent_epoch: inferred_parent_epoch(epoch),
         status: SnapshotEpochStatus::Pending,
         certified_groups: SnapshotGroupBitmap::zeroed(),
     };
@@ -108,7 +107,7 @@ where
 {
     let existing = context
         .store
-        .get_epoch_info(event.current)
+        .get_epoch_info(event.epoch)
         .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?;
 
     if let Some(info) = &existing {
@@ -121,7 +120,6 @@ where
     }
 
     let info = SnapshotEpochInfo {
-        parent_epoch: event.parent,
         status: SnapshotEpochStatus::Initialized,
         certified_groups: existing
             .map(|i| i.certified_groups)
@@ -130,13 +128,12 @@ where
 
     context
         .store
-        .put_epoch_info(event.current, info)
+        .put_epoch_info(event.epoch, info)
         .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
 
     debug!(
         node_id = context.node_id().0,
-        epoch = event.current.0,
-        parent = event.parent.0,
+        epoch = event.epoch.0,
         "snapshot epoch initialized"
     );
 
@@ -158,7 +155,6 @@ where
         .get_epoch_info(event.epoch)
         .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?
         .unwrap_or(SnapshotEpochInfo {
-            parent_epoch: inferred_parent_epoch(event.epoch),
             status: SnapshotEpochStatus::PartiallyCertified,
             certified_groups: SnapshotGroupBitmap::zeroed(),
         });
@@ -199,7 +195,7 @@ where
         .map_err(|e| NodeError::Store(format!("put_group_info: {e}")))?;
 
     if has_local_artifacts {
-        materialize_snapshot_track(context, slot, &snapshot_epoch, event, snapshot_group)?;
+        materialize_snapshot_track(context, slot, event, snapshot_group)?;
     }
 
     debug!(
@@ -224,10 +220,9 @@ where
 {
     let mut snapshot_epoch = context
         .store
-        .get_epoch_info(event.current)
+        .get_epoch_info(event.epoch)
         .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?
         .unwrap_or(SnapshotEpochInfo {
-            parent_epoch: event.parent,
             status: SnapshotEpochStatus::Finalized,
             certified_groups: SnapshotGroupBitmap::zeroed(),
         });
@@ -236,13 +231,12 @@ where
 
     context
         .store
-        .put_epoch_info(event.current, snapshot_epoch)
+        .put_epoch_info(event.epoch, snapshot_epoch)
         .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
 
     debug!(
         node_id = context.node_id().0,
-        epoch = event.current.0,
-        parent = event.parent.0,
+        epoch = event.epoch.0,
         "snapshot epoch finalized"
     );
 
@@ -264,10 +258,6 @@ fn locally_pending_snapshot_epoch(
     Some(state.epoch.saturating_sub(EpochNumber(1)))
 }
 
-fn inferred_parent_epoch(snapshot_epoch: EpochNumber) -> EpochNumber {
-    snapshot_epoch.saturating_sub(EpochNumber(1))
-}
-
 fn missing_snapshot_group() -> SnapshotGroupInfo {
     SnapshotGroupInfo {
         status: SnapshotGroupStatus::Missing,
@@ -279,7 +269,6 @@ fn missing_snapshot_group() -> SnapshotGroupInfo {
 fn materialize_snapshot_track<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     slot: SlotNumber,
-    snapshot_epoch: &SnapshotEpochInfo,
     event: &SnapshotCertified,
     snapshot_group: SnapshotGroupInfo,
 ) -> Result<(), NodeError>
@@ -321,7 +310,7 @@ where
 
     let track = CompressedTrack {
         tape: snapshot_tape,
-        key: snapshot_chunk_key(event.epoch, event.group, snapshot_epoch.parent_epoch),
+        key: snapshot_chunk_key(event.epoch, event.group),
         track_number: event.track,
         kind: TrackKind::Blob as u64,
         state: TrackState::Certified as u64,
@@ -457,11 +446,11 @@ mod tests {
         }
     }
 
-    fn init_block(parent: EpochNumber, current: EpochNumber) -> Arc<ParsedBlock> {
+    fn init_block(epoch: EpochNumber) -> Arc<ParsedBlock> {
         Arc::new(ParsedBlock {
-            slot: SlotNumber(current.0 * 10),
+            slot: SlotNumber(epoch.0 * 10),
             instructions: vec![ParsedInstruction::InitSnapshotEpoch {
-                event: SnapshotInit { parent, current },
+                event: SnapshotInit { epoch },
             }],
         })
     }
@@ -487,11 +476,11 @@ mod tests {
         })
     }
 
-    fn finalize_block(parent: EpochNumber, current: EpochNumber) -> Arc<ParsedBlock> {
+    fn finalize_block(epoch: EpochNumber) -> Arc<ParsedBlock> {
         Arc::new(ParsedBlock {
-            slot: SlotNumber(current.0 * 10 + 2),
+            slot: SlotNumber(epoch.0 * 10 + 2),
             instructions: vec![ParsedInstruction::FinalizeSnapshotEpoch {
-                event: SnapshotFinalized { parent, current },
+                event: SnapshotFinalized { epoch },
             }],
         })
     }
@@ -503,7 +492,6 @@ mod tests {
         observe_state(&ctx, state(EpochNumber(2), true)).await.unwrap();
 
         let info = ctx.store.get_epoch_info(EpochNumber(1)).unwrap().unwrap();
-        assert_eq!(info.parent_epoch, EpochNumber(0));
         assert_eq!(info.status, SnapshotEpochStatus::Pending);
     }
 
@@ -534,7 +522,6 @@ mod tests {
             .put_epoch_info(
                 epoch,
                 SnapshotEpochInfo {
-                    parent_epoch: EpochNumber(1),
                     status: SnapshotEpochStatus::Initialized,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },
@@ -544,7 +531,6 @@ mod tests {
         observe_state(&ctx, state(EpochNumber(4), true)).await.unwrap();
 
         let info = ctx.store.get_epoch_info(epoch).unwrap().unwrap();
-        assert_eq!(info.parent_epoch, EpochNumber(1));
         assert_eq!(info.status, SnapshotEpochStatus::Initialized);
     }
 
@@ -552,12 +538,11 @@ mod tests {
     #[tokio::test]
     async fn init() {
         let ctx = test_context();
-        let block = init_block(EpochNumber(4), EpochNumber(5));
+        let block = init_block(EpochNumber(5));
 
         observe_block(&ctx, block).await.unwrap();
 
         let info = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
-        assert_eq!(info.parent_epoch, EpochNumber(4));
         assert_eq!(info.status, SnapshotEpochStatus::Initialized);
     }
 
@@ -567,7 +552,7 @@ mod tests {
         let ctx = test_context();
 
         // Init then certify a group.
-        observe_block(&ctx, init_block(EpochNumber(4), EpochNumber(5)))
+        observe_block(&ctx, init_block(EpochNumber(5)))
             .await
             .unwrap();
         observe_block(
@@ -583,7 +568,7 @@ mod tests {
         .unwrap();
 
         // Second init should not regress.
-        observe_block(&ctx, init_block(EpochNumber(4), EpochNumber(5)))
+        observe_block(&ctx, init_block(EpochNumber(5)))
             .await
             .unwrap();
 
@@ -602,20 +587,18 @@ mod tests {
             .put_epoch_info(
                 EpochNumber(5),
                 SnapshotEpochInfo {
-                    parent_epoch: EpochNumber(0),
                     status: SnapshotEpochStatus::Pending,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },
             )
             .unwrap();
 
-        observe_block(&ctx, init_block(EpochNumber(4), EpochNumber(5)))
+        observe_block(&ctx, init_block(EpochNumber(5)))
             .await
             .unwrap();
 
         let info = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
         assert_eq!(info.status, SnapshotEpochStatus::Initialized);
-        assert_eq!(info.parent_epoch, EpochNumber(4));
     }
 
     // CertifySnapshotGroup updates epoch bitmap and group status.
@@ -624,7 +607,7 @@ mod tests {
         let ctx = test_context();
         let commitment = Hash::new_unique();
 
-        observe_block(&ctx, init_block(EpochNumber(4), EpochNumber(5)))
+        observe_block(&ctx, init_block(EpochNumber(5)))
             .await
             .unwrap();
         observe_block(
@@ -684,7 +667,6 @@ mod tests {
         let blob = local_blob();
         let slice_bytes = vec![0xAB; 96];
         let epoch = EpochNumber(5);
-        let parent_epoch = EpochNumber(4);
         let track_number = TrackNumber(9);
 
         ctx.set_state(state_with_owned_spool(EpochNumber(6), owned_spool))
@@ -694,7 +676,6 @@ mod tests {
             .put_epoch_info(
                 epoch,
                 SnapshotEpochInfo {
-                    parent_epoch,
                     status: SnapshotEpochStatus::Built,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },
@@ -712,7 +693,7 @@ mod tests {
             .put_group_slice(epoch, group, group.slice_of(owned_spool).unwrap(), slice_bytes.clone())
             .unwrap();
 
-        observe_block(&ctx, init_block(parent_epoch, epoch)).await.unwrap();
+        observe_block(&ctx, init_block(epoch)).await.unwrap();
         observe_block(&ctx, certify_block(epoch, group, track_number, blob.commitment))
         .await
         .unwrap();
@@ -760,16 +741,15 @@ mod tests {
     async fn finalize() {
         let ctx = test_context();
 
-        observe_block(&ctx, init_block(EpochNumber(4), EpochNumber(5)))
+        observe_block(&ctx, init_block(EpochNumber(5)))
             .await
             .unwrap();
-        observe_block(&ctx, finalize_block(EpochNumber(4), EpochNumber(5)))
+        observe_block(&ctx, finalize_block(EpochNumber(5)))
             .await
             .unwrap();
 
         let info = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
         assert_eq!(info.status, SnapshotEpochStatus::Finalized);
-        assert_eq!(info.parent_epoch, EpochNumber(4));
     }
 
     // Init then certify groups then finalize, verify final state.
@@ -777,9 +757,8 @@ mod tests {
     async fn full_lifecycle() {
         let ctx = test_context();
         let epoch = EpochNumber(5);
-        let parent = EpochNumber(4);
 
-        observe_block(&ctx, init_block(parent, epoch)).await.unwrap();
+        observe_block(&ctx, init_block(epoch)).await.unwrap();
 
         for g in 0..3u64 {
             observe_block(
@@ -795,13 +774,12 @@ mod tests {
             .unwrap();
         }
 
-        observe_block(&ctx, finalize_block(parent, epoch))
+        observe_block(&ctx, finalize_block(epoch))
             .await
             .unwrap();
 
         let info = ctx.store.get_epoch_info(epoch).unwrap().unwrap();
         assert_eq!(info.status, SnapshotEpochStatus::Finalized);
-        assert_eq!(info.parent_epoch, parent);
         assert!(info.certified_groups.is_set(0));
         assert!(info.certified_groups.is_set(1));
         assert!(info.certified_groups.is_set(2));

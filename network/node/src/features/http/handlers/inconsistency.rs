@@ -204,7 +204,7 @@ mod tests {
         };
 
         let epoch = EpochNumber(5);
-        let parent_epoch = EpochNumber(4);
+
         let group = SpoolGroup(2);
         let track_number = TrackNumber(9);
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
@@ -221,7 +221,7 @@ mod tests {
             .expect("seed snapshot tape");
         let track = CompressedTrack {
             tape: snapshot_tape,
-            key: snapshot_chunk_key(epoch, group, parent_epoch),
+            key: snapshot_chunk_key(epoch, group),
             track_number,
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,

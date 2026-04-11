@@ -282,16 +282,15 @@ mod tests {
             slot: SlotNumber(7),
             instructions: vec![
                 ParsedInstruction::InitSnapshotEpoch {
-                event: SnapshotInit {
-                    parent: EpochNumber(6),
-                    current: EpochNumber(7),
+                    event: SnapshotInit {
+                        epoch: EpochNumber(7),
+                    },
                 },
-            },
                 ParsedInstruction::CertifySnapshotGroup {
                     event: SnapshotCertified {
-                    epoch: EpochNumber(7),
-                    group: SpoolGroup(3),
-                    track: TrackNumber(9),
+                        epoch: EpochNumber(7),
+                        group: SpoolGroup(3),
+                        track: TrackNumber(9),
                         commitment: Hash::from([0x44; 32]),
                         signer_count: [2; 8],
                         signer_weight: [3; 8],
@@ -299,8 +298,7 @@ mod tests {
                 },
                 ParsedInstruction::FinalizeSnapshotEpoch {
                     event: SnapshotFinalized {
-                        parent: EpochNumber(6),
-                        current: EpochNumber(7),
+                        epoch: EpochNumber(7),
                     },
                 },
             ],

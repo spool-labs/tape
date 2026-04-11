@@ -10,7 +10,6 @@ use super::AccountType;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotManifest {
-    pub parent_epoch: EpochNumber,
     pub group_bitmap: SnapshotGroupBitmap,
     pub chunk_size: StorageUnits,
     pub groups: [SnapshotChunkRecord; SPOOL_GROUP_COUNT],
@@ -77,7 +76,6 @@ mod tests {
         };
 
         let manifest = SnapshotManifest {
-            parent_epoch: EpochNumber(11),
             group_bitmap,
             chunk_size: StorageUnits::from_bytes(3_456),
             groups,

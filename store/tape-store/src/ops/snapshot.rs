@@ -140,9 +140,8 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    fn epoch_info(epoch: EpochNumber) -> SnapshotEpochInfo {
+    fn epoch_info() -> SnapshotEpochInfo {
         SnapshotEpochInfo {
-            parent_epoch: epoch - EpochNumber(1),
             status: SnapshotEpochStatus::Initialized,
             certified_groups: SnapshotGroupBitmap::from_indices(&[0, 2], SPOOL_GROUP_COUNT),
         }
@@ -167,7 +166,7 @@ mod tests {
     #[test]
     fn epoch_info_roundtrip() {
         let store = test_store();
-        let info = epoch_info(EpochNumber(42));
+        let info = epoch_info();
         let epoch = EpochNumber(42);
 
         assert!(store.get_epoch_info(epoch).unwrap().is_none());
@@ -259,10 +258,10 @@ mod tests {
     }
 
     fn epoch_a_info() -> SnapshotEpochInfo {
-        epoch_info(EpochNumber(41))
+        epoch_info()
     }
 
     fn epoch_b_info() -> SnapshotEpochInfo {
-        epoch_info(EpochNumber(42))
+        epoch_info()
     }
 }

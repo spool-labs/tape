@@ -179,7 +179,7 @@ mod tests {
         ctx: &NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>,
     ) -> (Address, u16, Vec<u8>) {
         let epoch = EpochNumber(5);
-        let parent_epoch = EpochNumber(4);
+
         let group = SpoolGroup(2);
         let track_number = TrackNumber(9);
         let owned_spool = group.spool_at(5);
@@ -211,7 +211,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape: snapshot_tape,
-            key: snapshot_chunk_key(epoch, group, parent_epoch),
+            key: snapshot_chunk_key(epoch, group),
             track_number,
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,

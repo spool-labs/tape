@@ -93,7 +93,6 @@ pub async fn build_snapshot_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_epoch_info(epoch)
         .map_err(|e| NodeError::Store(format!("get_epoch_info({epoch}): {e}")))?
         .unwrap_or(SnapshotEpochInfo {
-            parent_epoch: epoch.saturating_sub(EpochNumber(1)),
             status: SnapshotEpochStatus::Pending,
             certified_groups: SnapshotGroupBitmap::zeroed(),
         });
@@ -198,7 +197,6 @@ mod tests {
             .put_epoch_info(
                 epoch,
                 SnapshotEpochInfo {
-                    parent_epoch: EpochNumber(4),
                     status: SnapshotEpochStatus::Pending,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },
@@ -252,7 +250,6 @@ mod tests {
             .put_epoch_info(
                 epoch,
                 SnapshotEpochInfo {
-                    parent_epoch: EpochNumber(2),
                     status: SnapshotEpochStatus::Pending,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },
@@ -293,7 +290,6 @@ mod tests {
             .put_epoch_info(
                 epoch,
                 SnapshotEpochInfo {
-                    parent_epoch: EpochNumber(4),
                     status: SnapshotEpochStatus::Initialized,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },
@@ -317,7 +313,6 @@ mod tests {
             .put_epoch_info(
                 epoch,
                 SnapshotEpochInfo {
-                    parent_epoch: EpochNumber(4),
                     status: SnapshotEpochStatus::Pending,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },
@@ -339,7 +334,6 @@ mod tests {
             .put_epoch_info(
                 epoch,
                 SnapshotEpochInfo {
-                    parent_epoch: EpochNumber(4),
                     status: SnapshotEpochStatus::Pending,
                     certified_groups: SnapshotGroupBitmap::zeroed(),
                 },

@@ -19,7 +19,6 @@ use tape_core::types::{CommitteeBitmap, EpochNumber, NodeId};
 use tape_crypto::hash::Hash;
 use tape_protocol::api::SignSnapshotReq;
 use tape_protocol::Api;
-use tape_store::ops::SnapshotOps;
 use tracing::{debug, warn};
 
 use crate::context::NodeContext;
@@ -27,7 +26,6 @@ use crate::core::error::NodeError;
 
 /// Aggregated BLS quorum certificate for a single snapshot group.
 pub struct SnapshotGroupCert {
-    pub signing_epoch: EpochNumber,
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
 }
@@ -45,19 +43,7 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let state = context.state();
     let signing_epoch = state.epoch;
 
-    let epoch_info = context
-        .store
-        .get_epoch_info(epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info({epoch}): {e}")))?
-        .ok_or_else(|| NodeError::Store(format!("no epoch info for {epoch}")))?;
-
-    let message = SnapshotMessage::new(
-        epoch,
-        signing_epoch,
-        group,
-        blob_hash,
-        epoch_info.parent_epoch,
-    );
+    let message = SnapshotMessage::new(epoch, group, blob_hash);
     let message_bytes = message.to_bytes();
 
     // Build deduplicated peer list: NodeId -> member_index.
@@ -85,7 +71,7 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
                 let weight = state.spools.group_weight(group, &bitmap);
                 if is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
-                    return aggregate_and_return(&partials, bitmap, signing_epoch);
+                    return aggregate_and_return(&partials, bitmap);
                 }
             }
             Err(error) => {
@@ -125,7 +111,7 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
                 let weight = state.spools.group_weight(group, &bitmap);
                 if is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
-                    return aggregate_and_return(&partials, bitmap, signing_epoch);
+                    return aggregate_and_return(&partials, bitmap);
                 }
             }
             Err(error) => {
@@ -152,13 +138,11 @@ pub async fn collect_group_signatures<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn aggregate_and_return(
     partials: &[BlsSignature],
     bitmap: CommitteeBitmap,
-    signing_epoch: EpochNumber,
 ) -> Result<Option<SnapshotGroupCert>, NodeError> {
     let signature = BlsSignature::aggregate(partials)
         .map_err(|e| NodeError::Store(format!("bls aggregate: {e:?}")))?;
 
     Ok(Some(SnapshotGroupCert {
-        signing_epoch,
         bitmap,
         signature,
     }))

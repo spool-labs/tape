@@ -32,9 +32,7 @@ pub fn process_certify_snapshot_group(
         .as_account::<System>(&tapedrive::ID)?;
     let epoch = epoch_info.is_epoch()?.as_account::<Epoch>(&tapedrive::ID)?;
 
-    // The currently open snapshot epoch is always `current_epoch - 1`. The
-    // manifest was pinned at init time with `parent_epoch = current_epoch - 2`,
-    // and the advance_epoch gate guarantees that link is canonical.
+    // The currently open snapshot epoch is always `current_epoch - 1`.
     let snapshot_epoch = EpochNumber::unpack(certification.epoch);
     let current_epoch = current_epoch(epoch);
     if current_epoch <= EpochNumber(1) {
@@ -82,9 +80,8 @@ pub fn process_certify_snapshot_group(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let signing_epoch = EpochNumber::unpack(certification.signing_epoch);
     let (committee, spools) = system
-        .committee_at(signing_epoch, current_epoch)
+        .committee_at(current_epoch, current_epoch)
         .ok_or(TapeError::BadEpochId)?;
 
     let signer_weight = spools.group_weight(group, &certification.bitmap);
@@ -109,14 +106,7 @@ pub fn process_certify_snapshot_group(
     let decompressed_sig =
         G1Point::try_from(&certification.signature.0).map_err(|_| TapeError::BadSignature)?;
     let blob_hash = blob.get_hash();
-    let message = SnapshotMessage::new(
-        snapshot_epoch,
-        signing_epoch,
-        group,
-        blob_hash,
-        manifest.parent_epoch,
-    )
-    .to_bytes();
+    let message = SnapshotMessage::new(snapshot_epoch, group, blob_hash).to_bytes();
 
     verify_aggregate(&message, &pubkeys, &decompressed_sig)
         .map_err(|_| TapeError::BadSignature)?;
@@ -124,7 +114,7 @@ pub fn process_certify_snapshot_group(
     let track_number = snapshot_tape.tracks.next_number();
     let track = CompressedTrack {
         tape: snapshot_tape_address,
-        key: snapshot_chunk_key(snapshot_epoch, group, manifest.parent_epoch),
+        key: snapshot_chunk_key(snapshot_epoch, group),
         track_number,
         kind: TrackKind::Blob as u64,
         state: TrackState::Certified as u64,
@@ -175,7 +165,7 @@ mod tests {
     fn test_certify_snapshot_group() {
         let fee_payer = Pubkey::new_unique();
         let snapshot_epoch = EpochNumber(42);
-        let signing_epoch = EpochNumber(43);
+        let current_epoch = EpochNumber(43);
         let group = SpoolGroup(0);
         const SIGNERS: usize = 75;
 
@@ -211,11 +201,10 @@ mod tests {
         system.spools = SpoolAssignment::try_from_counts(&seat_counts).expect("spools");
 
         let epoch = Epoch {
-            id: signing_epoch,
+            id: current_epoch,
             ..Epoch::zeroed()
         };
         let manifest = SnapshotManifest {
-            parent_epoch: EpochNumber(41),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -248,14 +237,7 @@ mod tests {
 
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, system.committee.size());
-        let message = SnapshotMessage::new(
-            snapshot_epoch,
-            signing_epoch,
-            group,
-            blob.get_hash(),
-            EpochNumber(41),
-        )
-        .to_bytes();
+        let message = SnapshotMessage::new(snapshot_epoch, group, blob.get_hash()).to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
             .map(|member_index| {
@@ -278,7 +260,6 @@ mod tests {
         let instruction = build_certify_snapshot_group_ix(
             fee_payer.into(),
             snapshot_epoch,
-            signing_epoch,
             group,
             &blob,
             bitmap,
@@ -287,7 +268,7 @@ mod tests {
 
         let expected_track = CompressedTrack {
             tape: snapshot_tape_address,
-            key: snapshot_chunk_key(snapshot_epoch, group, EpochNumber(41)),
+            key: snapshot_chunk_key(snapshot_epoch, group),
             track_number: TrackNumber(0),
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
@@ -359,7 +340,7 @@ mod tests {
     fn test_certify_snapshot_group_rejects_sealed_group() {
         let fee_payer = Pubkey::new_unique();
         let snapshot_epoch = EpochNumber(42);
-        let signing_epoch = EpochNumber(43);
+        let current_epoch = EpochNumber(43);
         let group = SpoolGroup(0);
 
         let (system_address, _) = system_pda();
@@ -382,7 +363,6 @@ mod tests {
         let instruction = build_certify_snapshot_group_ix(
             fee_payer.into(),
             snapshot_epoch,
-            signing_epoch,
             group,
             &blob,
             CommitteeBitmap::zeroed(),
@@ -395,7 +375,7 @@ mod tests {
             pda(
                 epoch_address,
                 Epoch {
-                    id: signing_epoch,
+                    id: current_epoch,
                     ..Epoch::zeroed()
                 }
                 .pack(),
@@ -404,7 +384,6 @@ mod tests {
             pda(
                 manifest_address,
                 SnapshotManifest {
-                    parent_epoch: EpochNumber(41),
                     group_bitmap,
                     chunk_size: StorageUnits::from_bytes(1_024),
                     groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -436,7 +415,7 @@ mod tests {
     fn chunk_size_mismatch() {
         let fee_payer = Pubkey::new_unique();
         let snapshot_epoch = EpochNumber(42);
-        let signing_epoch = EpochNumber(43);
+        let current_epoch = EpochNumber(43);
         let group = SpoolGroup(1);
 
         let (system_address, _) = system_pda();
@@ -465,7 +444,6 @@ mod tests {
         let instruction = build_certify_snapshot_group_ix(
             fee_payer.into(),
             snapshot_epoch,
-            signing_epoch,
             group,
             &blob,
             CommitteeBitmap::zeroed(),
@@ -478,7 +456,7 @@ mod tests {
             pda(
                 epoch_address,
                 Epoch {
-                    id: signing_epoch,
+                    id: current_epoch,
                     ..Epoch::zeroed()
                 }
                 .pack(),
@@ -487,7 +465,6 @@ mod tests {
             pda(
                 manifest_address,
                 SnapshotManifest {
-                    parent_epoch: EpochNumber(41),
                     group_bitmap,
                     chunk_size: StorageUnits::from_bytes(2_048),
                     groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

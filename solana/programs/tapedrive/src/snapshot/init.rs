@@ -32,13 +32,6 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .is_archive()?
         .as_account_mut::<Archive>(&tapedrive::ID)?;
 
-    // Snapshot epochs are derived from the current chain epoch:
-    //   snapshot_epoch == current_epoch - 1
-    // and the manifest's parent_epoch is one more step back:
-    //   parent_epoch == current_epoch - 2
-    // The advance_epoch gate guarantees that, when we reach `current_epoch`,
-    // the manifest for `current_epoch - 2` is already fully sealed, so we can
-    // safely chain the new manifest's parent to it without an explicit lookup.
     let snapshot_epoch = EpochNumber::unpack(args.epoch);
     let current_epoch = current_epoch(epoch);
     if current_epoch <= EpochNumber(1) {
@@ -48,9 +41,6 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     if snapshot_epoch != expected_epoch {
         return Err(TapeError::SnapshotEpochClosed.into());
     }
-    let expected_parent = current_epoch
-        .checked_sub(EpochNumber(2))
-        .unwrap_or(EpochNumber(0));
 
     let (manifest_address, _) = snapshot_manifest_pda(snapshot_epoch);
     manifest_info
@@ -97,14 +87,12 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     snapshot_tape.used = StorageUnits::zero();
 
     let manifest = manifest_info.as_account_mut::<SnapshotManifest>(&tapedrive::ID)?;
-    manifest.parent_epoch = expected_parent;
     manifest.group_bitmap = SnapshotGroupBitmap::zeroed();
     manifest.chunk_size = StorageUnits::zero();
     manifest.groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
 
     SnapshotInit {
-        parent: manifest.parent_epoch,
-        current: snapshot_epoch,
+        epoch: snapshot_epoch,
     }
     .log();
 
@@ -149,9 +137,7 @@ mod tests {
             rent_sysvar(),
         ];
 
-        // current_epoch = 2, so parent_epoch = current - 2 = 0.
         let expected_manifest = SnapshotManifest {
-            parent_epoch: EpochNumber(0),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

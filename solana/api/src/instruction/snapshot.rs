@@ -26,7 +26,6 @@ pub struct InitSnapshotEpoch {
 #[derive(Clone, Copy, Debug)]
 pub struct CertifySnapshotGroup {
     pub epoch: [u8; 8],
-    pub signing_epoch: [u8; 8],
     pub group: [u8; 8],
     pub blob: PackedBlobInfo,
     pub bitmap: CommitteeBitmap,
@@ -97,7 +96,6 @@ pub fn build_init_snapshot_epoch_ix(
 pub fn build_certify_snapshot_group_ix(
     fee_payer: Address,
     epoch: EpochNumber,
-    signing_epoch: EpochNumber,
     group: SpoolGroup,
     blob: &BlobInfo,
     bitmap: CommitteeBitmap,
@@ -119,7 +117,6 @@ pub fn build_certify_snapshot_group_ix(
         ],
         data: CertifySnapshotGroup {
             epoch: epoch.pack(),
-            signing_epoch: signing_epoch.pack(),
             group: group.pack(),
             blob: blob.pack(),
             bitmap,
@@ -174,7 +171,6 @@ mod tests {
         };
         let certification = CertifySnapshotGroup {
             epoch: EpochNumber(9).pack(),
-            signing_epoch: EpochNumber(10).pack(),
             group: SpoolGroup(3).pack(),
             blob: blob.pack(),
             bitmap: CommitteeBitmap::zeroed(),
@@ -212,7 +208,6 @@ mod tests {
         let instruction = build_certify_snapshot_group_ix(
             Address::new_unique(),
             EpochNumber(7),
-            EpochNumber(8),
             SpoolGroup(2),
             &blob,
             CommitteeBitmap::zeroed(),

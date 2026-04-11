@@ -54,14 +54,13 @@ mod tests {
             .await
             .expect("submit init snapshot epoch");
 
-        // The new manifest exists with parent_epoch = current_epoch - 2 = 1.
         let manifest = ctx
             .rpc
             .get_snapshot_manifest(SNAPSHOT_EPOCH)
             .await
             .expect("fetch snapshot manifest");
 
-        assert_eq!(manifest.parent_epoch, EpochNumber(1));
+        assert_eq!(manifest.group_bitmap.count_ones(), 0);
     }
 
     #[tokio::test]

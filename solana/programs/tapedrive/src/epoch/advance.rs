@@ -229,9 +229,8 @@ mod tests {
 
     /// A fully-certified snapshot manifest, used to seed the previous epoch's
     /// snapshot account when a test exercises the (non-bootstrap) advance path.
-    fn full_snapshot_manifest(parent_epoch: EpochNumber) -> SnapshotManifest {
+    fn full_snapshot_manifest() -> SnapshotManifest {
         SnapshotManifest {
-            parent_epoch,
             group_bitmap: full_group_bitmap(),
             chunk_size: StorageUnits::from_bytes(1_024),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -291,7 +290,7 @@ mod tests {
         ).expect("reserve capacity");
 
         // Snapshot for epoch 41 must be complete to advance from epoch 42
-        let prev_manifest = full_snapshot_manifest(EpochNumber(40));
+        let prev_manifest = full_snapshot_manifest();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -555,7 +554,7 @@ mod tests {
 
         // Snapshot for epoch 1 must be complete; we want to fail later, on the
         // committee size check.
-        let prev_manifest = full_snapshot_manifest(EpochNumber(0));
+        let prev_manifest = full_snapshot_manifest();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -630,7 +629,7 @@ mod tests {
         ).expect("reserve capacity");
 
         // Snapshot for epoch 9 must be complete to advance from epoch 10.
-        let prev_manifest = full_snapshot_manifest(EpochNumber(8));
+        let prev_manifest = full_snapshot_manifest();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -789,7 +788,7 @@ mod tests {
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
         // Snapshot for epoch 1 must be complete to reach the committee check.
-        let prev_manifest = full_snapshot_manifest(EpochNumber(0));
+        let prev_manifest = full_snapshot_manifest();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -855,7 +854,7 @@ mod tests {
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
         // Snapshot for epoch 4 must be complete to reach the committee check.
-        let prev_manifest = full_snapshot_manifest(EpochNumber(3));
+        let prev_manifest = full_snapshot_manifest();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -917,7 +916,6 @@ mod tests {
         let mut partial_bitmap = tape_core::types::SnapshotGroupBitmap::zeroed();
         partial_bitmap.set(0);
         let prev_manifest = SnapshotManifest {
-            parent_epoch: EpochNumber(3),
             group_bitmap: partial_bitmap,
             chunk_size: StorageUnits::from_bytes(1_024),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

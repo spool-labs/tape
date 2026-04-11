@@ -2,7 +2,7 @@
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::track::blob::BlobInfo;
-use crate::types::{EpochNumber, SnapshotGroupBitmap, TrackNumber};
+use crate::types::{SnapshotGroupBitmap, TrackNumber};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
@@ -25,7 +25,6 @@ pub enum SnapshotGroupStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct SnapshotEpochInfo {
-    pub parent_epoch: EpochNumber,
     pub status: SnapshotEpochStatus,
     pub certified_groups: SnapshotGroupBitmap,
 }
@@ -60,7 +59,6 @@ mod tests {
     #[test]
     fn snapshot_info_roundtrip() {
         let epoch = SnapshotEpochInfo {
-            parent_epoch: EpochNumber(41),
             status: SnapshotEpochStatus::PartiallyCertified,
             certified_groups: SnapshotGroupBitmap::from_indices(&[0, 2, 4], SPOOL_GROUP_COUNT),
         };

@@ -9,34 +9,31 @@ use crate::types::EpochNumber;
 pub const SNAPSHOT_DOMAIN_TAG: &[u8; 8] = b"SNAPSHOT";
 
 /// Size of the snapshot certification message in bytes.
-/// 8 (domain) + 8 + 8 + 8 + 32 + 8 = 72 bytes.
-pub const SNAPSHOT_MESSAGE_SIZE: usize = 72;
+/// 8 (domain) + 8 (epoch) + 8 (group) + 32 (blob_hash) = 56 bytes.
+pub const SNAPSHOT_MESSAGE_SIZE: usize = 56;
 
 /// Message format for snapshot certification BLS signatures.
+///
+/// Only contains fields that aren't derivable from on-chain state:
+/// - `signing_epoch` is always `current_epoch` (enforced by the advance gate)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
 pub struct SnapshotMessage {
     pub epoch: EpochNumber,
-    pub signing_epoch: EpochNumber,
     pub group: SpoolGroup,
     pub blob_hash: Hash,
-    pub parent_epoch: EpochNumber,
 }
 
 impl SnapshotMessage {
     pub const fn new(
         epoch: EpochNumber,
-        signing_epoch: EpochNumber,
         group: SpoolGroup,
         blob_hash: Hash,
-        parent_epoch: EpochNumber,
     ) -> Self {
         Self {
             epoch,
-            signing_epoch,
             group,
             blob_hash,
-            parent_epoch,
         }
     }
 
@@ -66,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_message_size() {
-        assert_eq!(SNAPSHOT_MESSAGE_SIZE, 72);
+        assert_eq!(SNAPSHOT_MESSAGE_SIZE, 56);
     }
 
     #[test]
@@ -79,10 +76,8 @@ mod tests {
     fn test_message_roundtrip() {
         let msg = SnapshotMessage::new(
             EpochNumber(12345),
-            EpochNumber(12346),
             SpoolGroup(7),
             Hash::from([0xCD; 32]),
-            EpochNumber(12344),
         );
         let bytes = msg.to_bytes();
 
@@ -96,19 +91,15 @@ mod tests {
     fn test_message_format() {
         let msg = SnapshotMessage::new(
             EpochNumber(0x0102030405060708),
-            EpochNumber(0x1112131415161718),
             SpoolGroup(0x2122232425262728),
             Hash::from([0x99; 32]),
-            EpochNumber(0x3132333435363738),
         );
         let bytes = msg.to_bytes();
 
         assert_eq!(&bytes[0..8], b"SNAPSHOT");
         assert_eq!(&bytes[8..16], &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
-        assert_eq!(&bytes[16..24], &[0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11]);
-        assert_eq!(&bytes[24..32], &[0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
-        assert_eq!(&bytes[32..64], &[0x99; 32]);
-        assert_eq!(&bytes[64..72], &[0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31]);
+        assert_eq!(&bytes[16..24], &[0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
+        assert_eq!(&bytes[24..56], &[0x99; 32]);
     }
 
     #[test]
@@ -121,10 +112,10 @@ mod tests {
 
     #[test]
     fn test_wrong_length_rejected() {
-        let bytes = [0u8; 47]; // Too short
+        let bytes = [0u8; 47];
         assert!(SnapshotMessage::from_bytes(&bytes).is_none());
 
-        let bytes = [0u8; 49]; // Too long
+        let bytes = [0u8; 65];
         assert!(SnapshotMessage::from_bytes(&bytes).is_none());
     }
 
@@ -133,48 +124,33 @@ mod tests {
         let blob_hash = Hash::from([0xAA; 32]);
         let msg1 = SnapshotMessage::new(
             EpochNumber(1),
-            EpochNumber(2),
             SpoolGroup(3),
             blob_hash,
-            EpochNumber(0),
         );
         let msg2 = SnapshotMessage::new(
             EpochNumber(2),
-            EpochNumber(2),
             SpoolGroup(3),
             blob_hash,
-            EpochNumber(0),
         );
 
         assert_ne!(msg1.to_bytes(), msg2.to_bytes());
     }
 
     #[test]
-    fn test_different_group_or_parent_produce_different_messages() {
+    fn test_different_groups_produce_different_messages() {
+        let blob_hash = Hash::from([0xAA; 32]);
         let msg1 = SnapshotMessage::new(
             EpochNumber(42),
-            EpochNumber(43),
             SpoolGroup(1),
-            Hash::from([0xAA; 32]),
-            EpochNumber(41),
+            blob_hash,
         );
         let msg2 = SnapshotMessage::new(
             EpochNumber(42),
-            EpochNumber(43),
             SpoolGroup(2),
-            Hash::from([0xAA; 32]),
-            EpochNumber(41),
-        );
-        let msg3 = SnapshotMessage::new(
-            EpochNumber(42),
-            EpochNumber(43),
-            SpoolGroup(1),
-            Hash::from([0xAA; 32]),
-            EpochNumber(40),
+            blob_hash,
         );
 
         assert_ne!(msg1.to_bytes(), msg2.to_bytes());
-        assert_ne!(msg1.to_bytes(), msg3.to_bytes());
     }
 
     #[test]
@@ -183,10 +159,8 @@ mod tests {
 
         let snapshot_msg = SnapshotMessage::new(
             EpochNumber(42),
-            EpochNumber(43),
             SpoolGroup(9),
             Hash::from([0xAA; 32]),
-            EpochNumber(41),
         );
         let certify_msg = CertifyMessage::new(EpochNumber(42), [0xAA; 32]);
 

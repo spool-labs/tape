@@ -251,12 +251,10 @@ mod tests {
     #[test]
     fn test_parse_snapshot_epoch_events() {
         let init = SnapshotInit {
-            parent: EpochNumber(19),
-            current: EpochNumber(20),
+            epoch: EpochNumber(20),
         };
         let finalized = SnapshotFinalized {
-            parent: EpochNumber(19),
-            current: EpochNumber(20),
+            epoch: EpochNumber(20),
         };
 
         let init_log = encode_event(EventType::SnapshotInit, &init);
@@ -264,16 +262,14 @@ mod tests {
 
         match parse_event_data(&init_log).unwrap().unwrap() {
             TapedriveEvent::SnapshotInit(decoded) => {
-                assert_eq!(decoded.parent, init.parent);
-                assert_eq!(decoded.current, init.current);
+                assert_eq!(decoded.epoch, init.epoch);
             }
             _ => panic!("Expected SnapshotInit event"),
         }
 
         match parse_event_data(&finalized_log).unwrap().unwrap() {
             TapedriveEvent::SnapshotFinalized(decoded) => {
-                assert_eq!(decoded.parent, finalized.parent);
-                assert_eq!(decoded.current, finalized.current);
+                assert_eq!(decoded.epoch, finalized.epoch);
             }
             _ => panic!("Expected SnapshotFinalized event"),
         }

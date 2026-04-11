@@ -49,8 +49,7 @@ pub enum EventType {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SnapshotInit {
-    pub parent: EpochNumber,
-    pub current: EpochNumber,
+    pub epoch: EpochNumber,
 }
 
 tape_solana::event!(EventType, SnapshotInit);
@@ -74,8 +73,7 @@ tape_solana::event!(EventType, SnapshotCertified);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SnapshotFinalized {
-    pub parent: EpochNumber,
-    pub current: EpochNumber,
+    pub epoch: EpochNumber,
 }
 
 tape_solana::event!(EventType, SnapshotFinalized);

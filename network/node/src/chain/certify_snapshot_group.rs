@@ -25,7 +25,6 @@ pub async fn submit_certify_snapshot_group<Db: Store, Cluster: Api, Blockchain: 
     let ix = build_certify_snapshot_group_ix(
         fee_payer,
         epoch,
-        cert.signing_epoch,
         group,
         blob,
         cert.bitmap,
@@ -94,7 +93,6 @@ mod tests {
         };
 
         let cert = SnapshotGroupCert {
-            signing_epoch: EPOCH,
             bitmap: CommitteeBitmap::zeroed(),
             signature: BlsSignature::zeroed(),
         };

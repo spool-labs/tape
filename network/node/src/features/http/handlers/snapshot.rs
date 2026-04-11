@@ -52,22 +52,9 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
-    let snapshot_epoch = state
-        .context
-        .store
-        .get_epoch_info(epoch)
-        .map_err(store_error)?
-        .ok_or(RouteError::NotFound)?;
-
     validate_snapshot_group(&snapshot_group, &request)?;
 
-    let message = SnapshotMessage::new(
-        epoch,
-        signing_epoch,
-        group,
-        request.blob_hash,
-        snapshot_epoch.parent_epoch,
-    );
+    let message = SnapshotMessage::new(epoch, group, request.blob_hash);
     let signature = state
         .context
         .bls_sign(&message.to_bytes())
@@ -113,18 +100,15 @@ mod tests {
     use super::*;
     use axum::body::Bytes;
     use axum::extract::{Path, State};
-    use bytemuck::Zeroable;
     use tape_core::cert::snapshot::SnapshotMessage;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::info::{
-        SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupStatus,
-    };
+    use tape_core::snapshot::info::SnapshotGroupStatus;
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{
-        EpochNumber, NodeId, SnapshotGroupBitmap, StorageUnits, StripeCount,
+        EpochNumber, NodeId, StorageUnits, StripeCount,
     };
     use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::Hash;
@@ -136,14 +120,6 @@ mod tests {
     fn request(blob_hash: Hash) -> SignSnapshotRequest {
         SignSnapshotRequest {
             blob_hash,
-        }
-    }
-
-    fn snapshot_epoch_state(parent_epoch: EpochNumber) -> SnapshotEpochInfo {
-        SnapshotEpochInfo {
-            parent_epoch,
-            status: SnapshotEpochStatus::Built,
-            certified_groups: SnapshotGroupBitmap::zeroed(),
         }
     }
 
@@ -215,12 +191,7 @@ mod tests {
         let commitment = Hash::from([0xAB; 32]);
         let blob = sample_blob(commitment);
         let blob_hash = blob.get_hash();
-        let parent_epoch = EpochNumber(9);
 
-        context
-            .store
-            .put_epoch_info(epoch, snapshot_epoch_state(parent_epoch))
-            .unwrap();
         context
             .store
             .put_group_info(epoch, group, snapshot_group_state(blob))
@@ -246,13 +217,12 @@ mod tests {
             .expect("body");
         let decoded: BlsSignResponse = wincode::deserialize(&bytes).unwrap();
 
-        let signing_epoch = EpochNumber(11);
-        let message = SnapshotMessage::new(epoch, signing_epoch, group, blob_hash, parent_epoch);
+        let message = SnapshotMessage::new(epoch, group, blob_hash);
         let expected = context.bls_sign(&message.to_bytes()).unwrap();
 
         assert_eq!(decoded.signature, expected);
         assert_eq!(decoded.node_id, context.node_id());
-        assert_eq!(decoded.epoch, signing_epoch);
+        assert_eq!(decoded.epoch, EpochNumber(11));
     }
 
     #[tokio::test]
@@ -287,12 +257,7 @@ mod tests {
         let commitment = Hash::from([0xAB; 32]);
         let blob = sample_blob(commitment);
         let blob_hash = blob.get_hash();
-        let parent_epoch = EpochNumber(9);
 
-        context
-            .store
-            .put_epoch_info(epoch, snapshot_epoch_state(parent_epoch))
-            .unwrap();
         context
             .store
             .put_group_info(epoch, group, snapshot_group_state(blob))
@@ -320,12 +285,7 @@ mod tests {
         let group = SpoolGroup(4);
         let commitment = Hash::from([0xAB; 32]);
         let blob = sample_blob(commitment);
-        let parent_epoch = EpochNumber(9);
 
-        context
-            .store
-            .put_epoch_info(epoch, snapshot_epoch_state(parent_epoch))
-            .unwrap();
         context
             .store
             .put_group_info(epoch, group, snapshot_group_state(blob))

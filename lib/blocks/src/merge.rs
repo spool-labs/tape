@@ -275,8 +275,7 @@ mod tests {
     #[test]
     fn test_merge_snapshot_events() {
         let init = SnapshotInit {
-            parent: EpochNumber(6),
-            current: EpochNumber(7),
+            epoch: EpochNumber(7),
         };
         let cert = SnapshotCertified {
             epoch: EpochNumber(7),
@@ -287,8 +286,7 @@ mod tests {
             signer_weight: [3; 8],
         };
         let finalized = SnapshotFinalized {
-            parent: EpochNumber(6),
-            current: EpochNumber(7),
+            epoch: EpochNumber(7),
         };
 
         let merged = merge(
@@ -311,14 +309,12 @@ mod tests {
                 ParsedInstruction::InitSnapshotEpoch { event: decoded_init },
                 ParsedInstruction::CertifySnapshotGroup { event: decoded_cert },
                 ParsedInstruction::FinalizeSnapshotEpoch { event: decoded_finalized },
-            ] if decoded_init.parent == init.parent
-                && decoded_init.current == init.current
+            ] if decoded_init.epoch == init.epoch
                 && decoded_cert.epoch == cert.epoch
                 && decoded_cert.group == cert.group
                 && decoded_cert.track == cert.track
                 && decoded_cert.commitment == cert.commitment
-                && decoded_finalized.parent == finalized.parent
-                && decoded_finalized.current == finalized.current
+                && decoded_finalized.epoch == finalized.epoch
         ));
     }
 

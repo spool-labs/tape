@@ -329,7 +329,6 @@ mod tests {
             &build_certify_snapshot_group_ix(
                 Address::new_unique(),
                 EpochNumber(7),
-                EpochNumber(8),
                 SpoolGroup(3),
                 &blob,
                 CommitteeBitmap::zeroed(),
@@ -354,8 +353,7 @@ mod tests {
     #[test]
     fn parses_snapshot_events() {
         let init = SnapshotInit {
-            parent: EpochNumber(6),
-            current: EpochNumber(7),
+            epoch: EpochNumber(7),
         };
         let cert = SnapshotCertified {
             epoch: EpochNumber(7),
@@ -366,8 +364,7 @@ mod tests {
             signer_weight: [3; 8],
         };
         let finalized = SnapshotFinalized {
-            parent: EpochNumber(6),
-            current: EpochNumber(7),
+            epoch: EpochNumber(7),
         };
 
         let instructions = vec![
@@ -389,14 +386,12 @@ mod tests {
                 ParsedInstruction::InitSnapshotEpoch { event: decoded_init },
                 ParsedInstruction::CertifySnapshotGroup { event: decoded_cert },
                 ParsedInstruction::FinalizeSnapshotEpoch { event: decoded_finalized },
-            ] if decoded_init.parent == init.parent
-                && decoded_init.current == init.current
+            ] if decoded_init.epoch == init.epoch
                 && decoded_cert.epoch == cert.epoch
                 && decoded_cert.group == cert.group
                 && decoded_cert.track == cert.track
                 && decoded_cert.commitment == cert.commitment
-                && decoded_finalized.parent == finalized.parent
-                && decoded_finalized.current == finalized.current
+                && decoded_finalized.epoch == finalized.epoch
         ));
     }
 }

@@ -43,8 +43,7 @@ pub fn process_finalize_snapshot_epoch(
     }
 
     SnapshotFinalized {
-        parent: manifest.parent_epoch,
-        current: snapshot_epoch,
+        epoch: snapshot_epoch,
     }
     .log();
 
@@ -60,7 +59,6 @@ mod tests {
     #[test]
     fn snapshot_manifest_pack_size_matches_layout() {
         let manifest = SnapshotManifest {
-            parent_epoch: EpochNumber(41),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -91,7 +89,6 @@ mod tests {
             ..Epoch::zeroed()
         };
         let manifest = SnapshotManifest {
-            parent_epoch: EpochNumber(41),
             group_bitmap: full_group_bitmap(),
             chunk_size: StorageUnits::from_bytes(1_024),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -126,7 +123,6 @@ mod tests {
             ..Epoch::zeroed()
         };
         let manifest = SnapshotManifest {
-            parent_epoch: EpochNumber(41),
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

@@ -142,7 +142,7 @@ mod tests {
         };
 
         let epoch = EpochNumber(5);
-        let parent_epoch = EpochNumber(4);
+
         let track_number = TrackNumber(9);
         let helper_spool = group.spool_at(5);
 
@@ -166,7 +166,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape: snapshot_tape,
-            key: snapshot_chunk_key(epoch, group, parent_epoch),
+            key: snapshot_chunk_key(epoch, group),
             track_number,
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
