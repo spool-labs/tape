@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use tape_core::snapshot::info::SnapshotEpochStatus;
+use tape_core::snapshot::info::SnapshotStatus;
 use tape_core::types::EpochNumber;
 use tape_store::ops::SnapshotOps;
 
@@ -87,14 +87,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
         let epoch_info = self
             .context
             .store
-            .get_epoch_info(snapshot_epoch)
-            .map_err(|e| NodeError::Store(format!("get_epoch_info({snapshot_epoch}): {e}")))?;
+            .get_snapshot_info(snapshot_epoch)
+            .map_err(|e| NodeError::Store(format!("get_snapshot_info({snapshot_epoch}): {e}")))?;
 
         let Some(info) = epoch_info else {
             return Ok(());
         };
 
-        if info.status != SnapshotEpochStatus::Pending {
+        if info.status != SnapshotStatus::Pending {
             return Ok(());
         }
 
@@ -122,19 +122,19 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
         let epoch_info = self
             .context
             .store
-            .get_epoch_info(snapshot_epoch)
-            .map_err(|e| NodeError::Store(format!("get_epoch_info({snapshot_epoch}): {e}")))?;
+            .get_snapshot_info(snapshot_epoch)
+            .map_err(|e| NodeError::Store(format!("get_snapshot_info({snapshot_epoch}): {e}")))?;
 
         let Some(info) = epoch_info else {
             return Ok(());
         };
 
         match info.status {
-            SnapshotEpochStatus::Pending | SnapshotEpochStatus::Finalized => return Ok(()),
-            SnapshotEpochStatus::Built => {
+            SnapshotStatus::Pending | SnapshotStatus::Finalized => return Ok(()),
+            SnapshotStatus::Built => {
                 self.try_init(snapshot_epoch).await;
             }
-            SnapshotEpochStatus::Initialized | SnapshotEpochStatus::PartiallyCertified => {
+            SnapshotStatus::Initialized | SnapshotStatus::PartiallyCertified => {
                 certify_snapshot_groups(&self.context, snapshot_epoch).await?;
                 try_finalize_snapshot(&self.context, snapshot_epoch).await?;
             }

@@ -13,8 +13,7 @@ pub use enums::ObjectInfo;
 
 // Re-export key types
 pub use keys::{
-    EpochKey, EventLogKey, SliceKey, SnapshotGroupKey, SnapshotSliceKey, SpoolIndexKey,
-    TrackLookupKey, UnitKey,
+    EpochKey, EventLogKey, SliceKey, SnapshotSliceKey, SpoolIndexKey, TrackLookupKey, UnitKey,
 };
 
 // Re-export value types

@@ -58,7 +58,9 @@ mod tests {
 
     #[test]
     fn snapshot_manifest_pack_size_matches_layout() {
+        let snapshot_epoch = EpochNumber(42);
         let manifest = SnapshotManifest {
+            epoch: snapshot_epoch,
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -89,6 +91,7 @@ mod tests {
             ..Epoch::zeroed()
         };
         let manifest = SnapshotManifest {
+            epoch: snapshot_epoch,
             group_bitmap: full_group_bitmap(),
             chunk_size: StorageUnits::from_bytes(1_024),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -123,6 +126,7 @@ mod tests {
             ..Epoch::zeroed()
         };
         let manifest = SnapshotManifest {
+            epoch: snapshot_epoch,
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

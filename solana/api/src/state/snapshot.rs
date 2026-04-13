@@ -10,6 +10,7 @@ use super::AccountType;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotManifest {
+    pub epoch: EpochNumber,
     pub group_bitmap: SnapshotGroupBitmap,
     pub chunk_size: StorageUnits,
     pub groups: [SnapshotChunkRecord; SPOOL_GROUP_COUNT],
@@ -64,6 +65,7 @@ mod tests {
 
     #[test]
     fn snapshot_manifest_pack_roundtrip() {
+        let epoch = EpochNumber(1);
         let mut group_bitmap = SnapshotGroupBitmap::zeroed();
         group_bitmap.set(3);
 
@@ -76,6 +78,7 @@ mod tests {
         };
 
         let manifest = SnapshotManifest {
+            epoch,
             group_bitmap,
             chunk_size: StorageUnits::from_bytes(3_456),
             groups,
@@ -87,6 +90,7 @@ mod tests {
             .expect("unpack snapshot manifest");
 
         assert_eq!(unpacked, &manifest);
+        assert_eq!(unpacked.epoch, epoch);
         assert!(unpacked.group_bitmap.is_set(3));
         assert_eq!(unpacked.chunk_size, StorageUnits::from_bytes(3_456));
     }

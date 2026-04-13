@@ -1,6 +1,6 @@
 //! Column family definitions for tape-store
 //!
-//! This module defines 17 column families:
+//! This module defines 16 column families:
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
@@ -9,8 +9,7 @@
 //! - `track_lookup`: Tape-local ordered index ((tape, track_number, key) -> ())
 //! - `track_data`: Local track payload data (Address -> TrackData)
 //! - `object_info`: Object metadata (Address -> ObjectInfo)
-//! - `snapshot_epoch`: Per-epoch snapshot progress (EpochKey -> SnapshotEpochInfo)
-//! - `snapshot_group`: Per-group snapshot artifacts (SnapshotGroupKey -> SnapshotGroupInfo)
+//! - `snapshot`: Per-snapshot metadata (EpochKey -> SnapshotInfo)
 //! - `snapshot_slice`: Staging snapshot slice bytes (SnapshotSliceKey -> SliceValue)
 //!
 //! ## Sync Columns
@@ -48,14 +47,14 @@ pub use slice::SliceCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
-pub use snapshot::{SnapshotEpochCol, SnapshotGroupCol, SnapshotSliceCol};
+pub use snapshot::{SnapshotCol, SnapshotSliceCol};
 pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
 pub use track_lookup::TrackLookupCol;
 pub use track_data::TrackDataCol;
 
-/// List of all column family names in the store (17 total)
+/// List of all column family names in the store (16 total)
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
     "tape",
@@ -63,8 +62,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "track_lookup",
     "track_data",
     "object_info",
-    "snapshot_epoch",
-    "snapshot_group",
+    "snapshot",
     "snapshot_slice",
     "sync_cursor",
     "gc",

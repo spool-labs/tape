@@ -36,14 +36,15 @@ pub async fn certify_snapshot_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     for group in my_groups {
-        let snapshot_group = context
+        let snapshot = context
             .store
-            .get_group_info(epoch, group)
-            .map_err(|e| NodeError::Store(format!("get_group_info({epoch}, {group}): {e}")))?;
+            .get_snapshot_info(epoch)
+            .map_err(|e| NodeError::Store(format!("get_snapshot_info({epoch}): {e}")))?;
 
-        let Some(snapshot_group) = snapshot_group else {
+        let Some(snapshot) = snapshot else {
             continue;
         };
+        let snapshot_group = *snapshot.group(group);
 
         match snapshot_group.status {
             SnapshotGroupStatus::CertifiedOnChain | SnapshotGroupStatus::Missing => continue,

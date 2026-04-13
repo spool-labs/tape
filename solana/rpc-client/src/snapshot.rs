@@ -43,7 +43,7 @@ mod tests {
         RpcClient::from_rpc(LiteSvmRpc::new())
     }
 
-    fn snapshot_manifest() -> SnapshotManifest {
+    fn snapshot_manifest(epoch: EpochNumber) -> SnapshotManifest {
         let mut groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
         groups[7] = SnapshotChunkRecord {
             value_hash: Hash::from([0x33; 32]),
@@ -52,6 +52,7 @@ mod tests {
         };
 
         SnapshotManifest {
+            epoch,
             group_bitmap: {
                 let mut bitmap = SnapshotGroupBitmap::zeroed();
                 bitmap.set(7);
@@ -66,7 +67,7 @@ mod tests {
     async fn snapshot_manifest_roundtrip() {
         let client = client();
         let epoch = EpochNumber(22);
-        let manifest = snapshot_manifest();
+        let manifest = snapshot_manifest(epoch);
         let (address, _) = snapshot_manifest_pda(epoch);
 
         client

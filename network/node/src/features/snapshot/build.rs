@@ -7,17 +7,16 @@
 
 use std::sync::Arc;
 
-use bytemuck::Zeroable;
 use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::info::{
-    SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
+    SnapshotGroupInfo, SnapshotGroupStatus, SnapshotInfo, SnapshotStatus,
 };
 use tape_core::snapshot::types::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{EpochNumber, SlotNumber, SnapshotGroupBitmap, StorageUnits, StripeCount};
+use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount};
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_protocol::Api;
@@ -40,17 +39,17 @@ pub async fn build_snapshot_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // Skip if already past Built
     if let Some(existing) = context
         .store
-        .get_epoch_info(epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info({epoch}): {e}")))?
+        .get_snapshot_info(epoch)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_info({epoch}): {e}")))?
     {
         match existing.status {
-            SnapshotEpochStatus::Initialized
-            | SnapshotEpochStatus::PartiallyCertified
-            | SnapshotEpochStatus::Finalized => {
+            SnapshotStatus::Initialized
+            | SnapshotStatus::PartiallyCertified
+            | SnapshotStatus::Finalized => {
                 debug!(epoch = epoch.0, status = ?existing.status, "snapshot already past Built");
                 return Ok(());
             }
-            SnapshotEpochStatus::Pending | SnapshotEpochStatus::Built => {}
+            SnapshotStatus::Pending | SnapshotStatus::Built => {}
         }
     }
 
@@ -78,39 +77,47 @@ pub async fn build_snapshot_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .encode(&serialized)
         .map_err(|e| NodeError::Store(format!("outer encode({epoch}): {e}")))?;
 
+    let mut built_groups = Vec::with_capacity(chunks.len());
     for (group_index, chunk) in chunks.iter().enumerate() {
-        encode_group(
-            context.store.as_ref(),
-            epoch,
-            SpoolGroup(group_index as u64),
-            chunk,
-        )?;
+        let group = SpoolGroup(group_index as u64);
+        let group_info = encode_group(context.store.as_ref(), epoch, group, chunk)?;
+        built_groups.push((group, group_info));
     }
 
-    // Only advance to Built if status hasn't moved past it
-    let mut epoch_info = context
+    let mut snapshot = context
         .store
-        .get_epoch_info(epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info({epoch}): {e}")))?
-        .unwrap_or(SnapshotEpochInfo {
-            status: SnapshotEpochStatus::Pending,
-            certified_groups: SnapshotGroupBitmap::zeroed(),
-        });
+        .get_snapshot_info(epoch)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_info({epoch}): {e}")))?
+        .unwrap_or_else(|| SnapshotInfo::new(SnapshotStatus::Pending));
 
-    match epoch_info.status {
-        SnapshotEpochStatus::Pending | SnapshotEpochStatus::Built => {
-            epoch_info.status = SnapshotEpochStatus::Built;
-            context
-                .store
-                .put_epoch_info(epoch, epoch_info)
-                .map_err(|e| NodeError::Store(format!("put_epoch_info({epoch}): {e}")))?;
-        }
-        SnapshotEpochStatus::Initialized
-        | SnapshotEpochStatus::PartiallyCertified
-        | SnapshotEpochStatus::Finalized => {
-            debug!(epoch = epoch.0, status = ?epoch_info.status, "status advanced during build");
+    for (group, built_group) in built_groups {
+        let existing_group = snapshot.group(group);
+        let certified = existing_group.status == SnapshotGroupStatus::CertifiedOnChain;
+        let track_number = existing_group.track_number;
+
+        *snapshot.group_mut(group) = built_group;
+        if certified {
+            let group_info = snapshot.group_mut(group);
+            group_info.status = SnapshotGroupStatus::CertifiedOnChain;
+            group_info.track_number = track_number;
         }
     }
+
+    match snapshot.status {
+        SnapshotStatus::Pending | SnapshotStatus::Built => {
+            snapshot.status = SnapshotStatus::Built;
+        }
+        SnapshotStatus::Initialized
+        | SnapshotStatus::PartiallyCertified
+        | SnapshotStatus::Finalized => {
+            debug!(epoch = epoch.0, status = ?snapshot.status, "status advanced during build");
+        }
+    }
+
+    context
+        .store
+        .put_snapshot_info(epoch, snapshot)
+        .map_err(|e| NodeError::Store(format!("put_snapshot_info({epoch}): {e}")))?;
 
     debug!(
         node_id = context.node_id().0,
@@ -129,7 +136,7 @@ fn encode_group<Db: Store>(
     epoch: EpochNumber,
     group: SpoolGroup,
     chunk: &[u8],
-) -> Result<(), NodeError> {
+) -> Result<SnapshotGroupInfo, NodeError> {
     let mut slicer = Slicer::clay_default();
     slicer.set_chunk_index(group.0);
 
@@ -154,33 +161,26 @@ fn encode_group<Db: Store>(
 
     for (spool_index, slice) in slices.into_iter().enumerate() {
         store
-            .put_group_slice(epoch, group, spool_index as u16, slice)
+            .put_snapshot_slice(epoch, group, spool_index as u16, slice)
             .map_err(|e| NodeError::Store(format!(
-                "put_group_slice({epoch}, group {group}, spool {spool_index}): {e}"
+                "put_snapshot_slice({epoch}, group {group}, spool {spool_index}): {e}"
             )))?;
     }
 
-    let group_info = SnapshotGroupInfo {
+    Ok(SnapshotGroupInfo {
         status: SnapshotGroupStatus::Built,
         blob,
         track_number: None,
-    };
-
-    store
-        .put_group_info(epoch, group, group_info)
-        .map_err(|e| NodeError::Store(format!("put_group_info({epoch}, group {group}): {e}")))?;
-
-    Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use bytemuck::Zeroable;
     use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupStatus};
+    use tape_core::snapshot::info::{SnapshotGroupStatus, SnapshotInfo, SnapshotStatus};
     use tape_core::snapshot::types::ReplayableEvent;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::{EpochNumber, SlotNumber, SnapshotGroupBitmap};
+    use tape_core::types::{EpochNumber, SlotNumber};
     use tape_crypto::hash::Hash;
     use tape_store::ops::{EventLogOps, SnapshotOps};
 
@@ -194,33 +194,23 @@ mod tests {
         let epoch = EpochNumber(5);
 
         ctx.store
-            .put_epoch_info(
-                epoch,
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Pending,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
-            .expect("put_epoch_info");
+            .put_snapshot_info(epoch, SnapshotInfo::new(SnapshotStatus::Pending))
+            .expect("put_snapshot_info");
 
         build_snapshot_epoch(&ctx, epoch).await.expect("build");
 
-        let info = ctx.store.get_epoch_info(epoch).expect("get").expect("exists");
-        assert_eq!(info.status, SnapshotEpochStatus::Built);
+        let info = ctx.store.get_snapshot_info(epoch).expect("get").expect("exists");
+        assert_eq!(info.status, SnapshotStatus::Built);
 
         for g in 0..SPOOL_GROUP_COUNT as u64 {
-            let group = ctx
-                .store
-                .get_group_info(epoch, SpoolGroup(g))
-                .expect("get")
-                .expect("group exists");
+            let group = info.group(SpoolGroup(g));
             assert_eq!(group.status, SnapshotGroupStatus::Built);
             assert_ne!(group.blob.commitment, Hash::default());
 
             for s in 0..SPOOL_GROUP_SIZE as u16 {
                 assert!(
                     ctx.store
-                        .get_group_slice(epoch, SpoolGroup(g), s)
+                        .get_snapshot_slice(epoch, SpoolGroup(g), s)
                         .expect("get")
                         .is_some(),
                     "missing slice group={g} spool={s}"
@@ -247,34 +237,16 @@ mod tests {
             .expect("append");
 
         ctx.store
-            .put_epoch_info(
-                epoch,
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Pending,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
-            .expect("put_epoch_info");
+            .put_snapshot_info(epoch, SnapshotInfo::new(SnapshotStatus::Pending))
+            .expect("put_snapshot_info");
 
         build_snapshot_epoch(&ctx, epoch).await.expect("build");
 
-        let info = ctx.store.get_epoch_info(epoch).expect("get").expect("exists");
-        assert_eq!(info.status, SnapshotEpochStatus::Built);
+        let info = ctx.store.get_snapshot_info(epoch).expect("get").expect("exists");
+        assert_eq!(info.status, SnapshotStatus::Built);
 
-        let c0 = ctx
-            .store
-            .get_group_info(epoch, SpoolGroup(0))
-            .expect("get")
-            .expect("exists")
-            .blob
-            .commitment;
-        let c1 = ctx
-            .store
-            .get_group_info(epoch, SpoolGroup(1))
-            .expect("get")
-            .expect("exists")
-            .blob
-            .commitment;
+        let c0 = info.group(SpoolGroup(0)).blob.commitment;
+        let c1 = info.group(SpoolGroup(1)).blob.commitment;
 
         // chunk_index differentiates commitments across groups
         assert_ne!(c0, c1);
@@ -287,20 +259,14 @@ mod tests {
         let epoch = EpochNumber(5);
 
         ctx.store
-            .put_epoch_info(
-                epoch,
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Initialized,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
-            .expect("put_epoch_info");
+            .put_snapshot_info(epoch, SnapshotInfo::new(SnapshotStatus::Initialized))
+            .expect("put_snapshot_info");
 
         build_snapshot_epoch(&ctx, epoch).await.expect("build");
 
-        let info = ctx.store.get_epoch_info(epoch).expect("get").expect("exists");
-        assert_eq!(info.status, SnapshotEpochStatus::Initialized);
-        assert!(ctx.store.get_group_info(epoch, SpoolGroup(0)).expect("get").is_none());
+        let info = ctx.store.get_snapshot_info(epoch).expect("get").expect("exists");
+        assert_eq!(info.status, SnapshotStatus::Initialized);
+        assert_eq!(info.group(SpoolGroup(0)).status, SnapshotGroupStatus::Missing);
     }
 
     // rebuilding produces identical commitments
@@ -310,43 +276,34 @@ mod tests {
         let epoch = EpochNumber(5);
 
         ctx.store
-            .put_epoch_info(
-                epoch,
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Pending,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
-            .expect("put_epoch_info");
+            .put_snapshot_info(epoch, SnapshotInfo::new(SnapshotStatus::Pending))
+            .expect("put_snapshot_info");
 
         build_snapshot_epoch(&ctx, epoch).await.expect("first build");
 
         let first = ctx
             .store
-            .get_group_info(epoch, SpoolGroup(0))
+            .get_snapshot_info(epoch)
             .expect("get")
             .expect("exists")
+            .group(SpoolGroup(0))
             .blob
             .commitment;
 
-        // Reset to Pending and rebuild
+        let mut snapshot = ctx.store.get_snapshot_info(epoch).expect("get").expect("exists");
+        snapshot.status = SnapshotStatus::Pending;
         ctx.store
-            .put_epoch_info(
-                epoch,
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Pending,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
-            .expect("put_epoch_info");
+            .put_snapshot_info(epoch, snapshot)
+            .expect("put_snapshot_info");
 
         build_snapshot_epoch(&ctx, epoch).await.expect("second build");
 
         let second = ctx
             .store
-            .get_group_info(epoch, SpoolGroup(0))
+            .get_snapshot_info(epoch)
             .expect("get")
             .expect("exists")
+            .group(SpoolGroup(0))
             .blob
             .commitment;
 

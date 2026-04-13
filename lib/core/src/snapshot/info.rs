@@ -1,12 +1,16 @@
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
+use bytemuck::Zeroable;
+
+use crate::erasure::SPOOL_GROUP_COUNT;
+use crate::spooler::SpoolGroup;
 use crate::track::blob::BlobInfo;
 use crate::types::{SnapshotGroupBitmap, TrackNumber};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
-pub enum SnapshotEpochStatus {
+pub enum SnapshotStatus {
     Pending,
     Built,
     Initialized,
@@ -22,11 +26,30 @@ pub enum SnapshotGroupStatus {
     CertifiedOnChain,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
-pub struct SnapshotEpochInfo {
-    pub status: SnapshotEpochStatus,
+pub struct SnapshotInfo {
+    pub status: SnapshotStatus,
     pub certified_groups: SnapshotGroupBitmap,
+    pub groups: [SnapshotGroupInfo; SPOOL_GROUP_COUNT],
+}
+
+impl SnapshotInfo {
+    pub fn new(status: SnapshotStatus) -> Self {
+        Self {
+            status,
+            certified_groups: SnapshotGroupBitmap::zeroed(),
+            groups: [SnapshotGroupInfo::default(); SPOOL_GROUP_COUNT],
+        }
+    }
+
+    pub fn group(&self, group: SpoolGroup) -> &SnapshotGroupInfo {
+        &self.groups[group.0 as usize]
+    }
+
+    pub fn group_mut(&mut self, group: SpoolGroup) -> &mut SnapshotGroupInfo {
+        &mut self.groups[group.0 as usize]
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,33 +60,40 @@ pub struct SnapshotGroupInfo {
     pub track_number: Option<TrackNumber>,
 }
 
+impl Default for SnapshotGroupInfo {
+    fn default() -> Self {
+        Self {
+            status: SnapshotGroupStatus::Missing,
+            blob: BlobInfo::zeroed(),
+            track_number: None,
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "wincode")]
 mod tests {
     use super::*;
     use crate::encoding::EncodingProfile;
-    use crate::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
+    use crate::erasure::SPOOL_GROUP_SIZE;
     use crate::track::blob::BlobInfo;
     use crate::types::{StorageUnits, StripeCount};
     use tape_crypto::hash::Hash;
 
     #[test]
     fn status_variants_exist() {
-        let epoch = SnapshotEpochStatus::Initialized;
+        let snapshot = SnapshotStatus::Initialized;
         let group = SnapshotGroupStatus::CertifiedOnChain;
 
-        assert_ne!(epoch, SnapshotEpochStatus::Finalized);
+        assert_ne!(snapshot, SnapshotStatus::Finalized);
         assert_ne!(group, SnapshotGroupStatus::Missing);
     }
 
     #[test]
     fn snapshot_info_roundtrip() {
-        let epoch = SnapshotEpochInfo {
-            status: SnapshotEpochStatus::PartiallyCertified,
-            certified_groups: SnapshotGroupBitmap::from_indices(&[0, 2, 4], SPOOL_GROUP_COUNT),
-        };
-
-        let group = SnapshotGroupInfo {
+        let mut snapshot = SnapshotInfo::new(SnapshotStatus::PartiallyCertified);
+        snapshot.certified_groups.set(3);
+        *snapshot.group_mut(SpoolGroup(3)) = SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
             blob: BlobInfo {
                 size: StorageUnits::from_bytes(4_096),
@@ -76,13 +106,9 @@ mod tests {
             track_number: Some(TrackNumber(7)),
         };
 
-        let epoch_bytes = wincode::serialize(&epoch).unwrap();
-        let group_bytes = wincode::serialize(&group).unwrap();
+        let bytes = wincode::serialize(&snapshot).unwrap();
+        let decoded: SnapshotInfo = wincode::deserialize(&bytes).unwrap();
 
-        let decoded_epoch: SnapshotEpochInfo = wincode::deserialize(&epoch_bytes).unwrap();
-        let decoded_group: SnapshotGroupInfo = wincode::deserialize(&group_bytes).unwrap();
-
-        assert_eq!(decoded_epoch, epoch);
-        assert_eq!(decoded_group, group);
+        assert_eq!(decoded, snapshot);
     }
 }

@@ -1,23 +1,16 @@
 //! Snapshot metadata and staging columns.
 
-use crate::types::{EpochKey, SliceValue, SnapshotGroupKey, SnapshotSliceKey};
+use crate::types::{EpochKey, SliceValue, SnapshotSliceKey};
 use store::Column;
-use tape_core::snapshot::info::{SnapshotEpochInfo, SnapshotGroupInfo};
+use tape_core::snapshot::info::SnapshotInfo;
 
-pub struct SnapshotEpochCol;
-pub struct SnapshotGroupCol;
+pub struct SnapshotCol;
 pub struct SnapshotSliceCol;
 
-impl Column for SnapshotEpochCol {
-    const CF_NAME: &'static str = "snapshot_epoch";
+impl Column for SnapshotCol {
+    const CF_NAME: &'static str = "snapshot";
     type Key = EpochKey;
-    type Value = SnapshotEpochInfo;
-}
-
-impl Column for SnapshotGroupCol {
-    const CF_NAME: &'static str = "snapshot_group";
-    type Key = SnapshotGroupKey;
-    type Value = SnapshotGroupInfo;
+    type Value = SnapshotInfo;
 }
 
 impl Column for SnapshotSliceCol {

@@ -1,18 +1,16 @@
 use std::sync::Arc;
 
-use bytemuck::Zeroable;
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::{SnapshotCertified, SnapshotFinalized, SnapshotInit};
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_core::snapshot::chunk::snapshot_chunk_key;
 use tape_core::snapshot::info::{
-    SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
+    SnapshotGroupInfo, SnapshotGroupStatus, SnapshotInfo, SnapshotStatus,
 };
-use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{EpochNumber, NodeId, SlotNumber, SnapshotGroupBitmap, TrackNumber};
+use tape_core::types::{EpochNumber, NodeId, SlotNumber, TrackNumber};
 use tape_protocol::Api;
 use tape_protocol::ProtocolState;
 use tape_store::ops::{
@@ -40,22 +38,17 @@ where
 
     let existing = context
         .store
-        .get_epoch_info(epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?;
+        .get_snapshot_info(epoch)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_info: {e}")))?;
 
     if existing.is_some() {
         return Ok(());
     }
 
-    let info = SnapshotEpochInfo {
-        status: SnapshotEpochStatus::Pending,
-        certified_groups: SnapshotGroupBitmap::zeroed(),
-    };
-
     context
         .store
-        .put_epoch_info(epoch, info)
-        .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
+        .put_snapshot_info(epoch, SnapshotInfo::new(SnapshotStatus::Pending))
+        .map_err(|e| NodeError::Store(format!("put_snapshot_info: {e}")))?;
 
     debug!(
         node_id = context.node_id().0,
@@ -107,29 +100,25 @@ where
 {
     let existing = context
         .store
-        .get_epoch_info(event.epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?;
+        .get_snapshot_info(event.epoch)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_info: {e}")))?;
 
     if let Some(info) = &existing {
         match info.status {
-            SnapshotEpochStatus::Initialized
-            | SnapshotEpochStatus::PartiallyCertified
-            | SnapshotEpochStatus::Finalized => return Ok(()),
-            SnapshotEpochStatus::Pending | SnapshotEpochStatus::Built => {}
+            SnapshotStatus::Initialized
+            | SnapshotStatus::PartiallyCertified
+            | SnapshotStatus::Finalized => return Ok(()),
+            SnapshotStatus::Pending | SnapshotStatus::Built => {}
         }
     }
 
-    let info = SnapshotEpochInfo {
-        status: SnapshotEpochStatus::Initialized,
-        certified_groups: existing
-            .map(|i| i.certified_groups)
-            .unwrap_or_else(SnapshotGroupBitmap::zeroed),
-    };
+    let mut snapshot = existing.unwrap_or_else(|| SnapshotInfo::new(SnapshotStatus::Initialized));
+    snapshot.status = SnapshotStatus::Initialized;
 
     context
         .store
-        .put_epoch_info(event.epoch, info)
-        .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
+        .put_snapshot_info(event.epoch, snapshot)
+        .map_err(|e| NodeError::Store(format!("put_snapshot_info: {e}")))?;
 
     debug!(
         node_id = context.node_id().0,
@@ -150,31 +139,18 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let mut snapshot_epoch = context
+    let mut snapshot = context
         .store
-        .get_epoch_info(event.epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?
-        .unwrap_or(SnapshotEpochInfo {
-            status: SnapshotEpochStatus::PartiallyCertified,
-            certified_groups: SnapshotGroupBitmap::zeroed(),
-        });
+        .get_snapshot_info(event.epoch)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_info: {e}")))?
+        .unwrap_or_else(|| SnapshotInfo::new(SnapshotStatus::PartiallyCertified));
 
-    snapshot_epoch.certified_groups.set(event.group.0 as usize);
-    if snapshot_epoch.status != SnapshotEpochStatus::Finalized {
-        snapshot_epoch.status = SnapshotEpochStatus::PartiallyCertified;
+    snapshot.certified_groups.set(event.group.0 as usize);
+    if snapshot.status != SnapshotStatus::Finalized {
+        snapshot.status = SnapshotStatus::PartiallyCertified;
     }
 
-    context
-        .store
-        .put_epoch_info(event.epoch, snapshot_epoch)
-        .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
-
-    let mut snapshot_group = context
-        .store
-        .get_group_info(event.epoch, event.group)
-        .map_err(|e| NodeError::Store(format!("get_group_info: {e}")))?
-        .unwrap_or_else(missing_snapshot_group);
-
+    let snapshot_group = snapshot.group_mut(event.group);
     let has_local_artifacts = matches!(snapshot_group.status, SnapshotGroupStatus::Built);
     if has_local_artifacts && snapshot_group.blob.commitment != event.commitment {
         return Err(NodeError::Store(format!(
@@ -189,10 +165,11 @@ where
         snapshot_group.blob.commitment = event.commitment;
     }
 
+    let snapshot_group = *snapshot.group(event.group);
     context
         .store
-        .put_group_info(event.epoch, event.group, snapshot_group)
-        .map_err(|e| NodeError::Store(format!("put_group_info: {e}")))?;
+        .put_snapshot_info(event.epoch, snapshot)
+        .map_err(|e| NodeError::Store(format!("put_snapshot_info: {e}")))?;
 
     if has_local_artifacts {
         materialize_snapshot_track(context, slot, event, snapshot_group)?;
@@ -218,21 +195,18 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let mut snapshot_epoch = context
+    let mut snapshot = context
         .store
-        .get_epoch_info(event.epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info: {e}")))?
-        .unwrap_or(SnapshotEpochInfo {
-            status: SnapshotEpochStatus::Finalized,
-            certified_groups: SnapshotGroupBitmap::zeroed(),
-        });
+        .get_snapshot_info(event.epoch)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_info: {e}")))?
+        .unwrap_or_else(|| SnapshotInfo::new(SnapshotStatus::Finalized));
 
-    snapshot_epoch.status = SnapshotEpochStatus::Finalized;
+    snapshot.status = SnapshotStatus::Finalized;
 
     context
         .store
-        .put_epoch_info(event.epoch, snapshot_epoch)
-        .map_err(|e| NodeError::Store(format!("put_epoch_info: {e}")))?;
+        .put_snapshot_info(event.epoch, snapshot)
+        .map_err(|e| NodeError::Store(format!("put_snapshot_info: {e}")))?;
 
     debug!(
         node_id = context.node_id().0,
@@ -256,14 +230,6 @@ fn locally_pending_snapshot_epoch(
     }
 
     Some(state.epoch.saturating_sub(EpochNumber(1)))
-}
-
-fn missing_snapshot_group() -> SnapshotGroupInfo {
-    SnapshotGroupInfo {
-        status: SnapshotGroupStatus::Missing,
-        blob: BlobInfo::zeroed(),
-        track_number: None,
-    }
 }
 
 fn materialize_snapshot_track<Db, Cluster, Blockchain>(
@@ -345,8 +311,8 @@ where
         };
         let slice = context
             .store
-            .get_group_slice(event.epoch, event.group, slice_position)
-            .map_err(|e| NodeError::Store(format!("get_group_slice: {e}")))?
+            .get_snapshot_slice(event.epoch, event.group, slice_position)
+            .map_err(|e| NodeError::Store(format!("get_snapshot_slice: {e}")))?
             .ok_or_else(|| {
                 NodeError::Store(format!(
                     "missing snapshot slice for epoch {} group {} slice {}",
@@ -366,22 +332,20 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use bytemuck::Zeroable;
     use tape_api::event::{SnapshotCertified, SnapshotFinalized, SnapshotInit};
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_COUNT, SPOOL_GROUP_SIZE};
     use tape_core::snapshot::info::{
-        SnapshotEpochInfo, SnapshotEpochStatus, SnapshotGroupInfo, SnapshotGroupStatus,
+        SnapshotGroupInfo, SnapshotGroupStatus, SnapshotInfo, SnapshotStatus,
     };
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::types::{
-        EpochNumber, NodeId, SnapshotGroupBitmap, SlotNumber, StorageUnits, StripeCount,
-        TrackNumber,
+        EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::hash::Hash;
@@ -491,8 +455,8 @@ mod tests {
 
         observe_state(&ctx, state(EpochNumber(2), true)).await.unwrap();
 
-        let info = ctx.store.get_epoch_info(EpochNumber(1)).unwrap().unwrap();
-        assert_eq!(info.status, SnapshotEpochStatus::Pending);
+        let info = ctx.store.get_snapshot_info(EpochNumber(1)).unwrap().unwrap();
+        assert_eq!(info.status, SnapshotStatus::Pending);
     }
 
     #[tokio::test]
@@ -501,7 +465,7 @@ mod tests {
 
         observe_state(&ctx, state(EpochNumber(1), true)).await.unwrap();
 
-        assert!(ctx.store.get_epoch_info(EpochNumber(0)).unwrap().is_none());
+        assert!(ctx.store.get_snapshot_info(EpochNumber(0)).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -510,31 +474,25 @@ mod tests {
 
         observe_state(&ctx, state(EpochNumber(4), false)).await.unwrap();
 
-        assert!(ctx.store.get_epoch_info(EpochNumber(3)).unwrap().is_none());
+        assert!(ctx.store.get_snapshot_info(EpochNumber(3)).unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn state_does_not_regress_existing_epoch_info() {
+    async fn state_does_not_regress_existing_snapshot_info() {
         let ctx = test_context();
         let epoch = EpochNumber(3);
 
         ctx.store
-            .put_epoch_info(
-                epoch,
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Initialized,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
+            .put_snapshot_info(epoch, SnapshotInfo::new(SnapshotStatus::Initialized))
             .unwrap();
 
         observe_state(&ctx, state(EpochNumber(4), true)).await.unwrap();
 
-        let info = ctx.store.get_epoch_info(epoch).unwrap().unwrap();
-        assert_eq!(info.status, SnapshotEpochStatus::Initialized);
+        let info = ctx.store.get_snapshot_info(epoch).unwrap().unwrap();
+        assert_eq!(info.status, SnapshotStatus::Initialized);
     }
 
-    // InitSnapshotEpoch creates epoch info with Initialized status.
+    // InitSnapshotEpoch creates snapshot info with Initialized status.
     #[tokio::test]
     async fn init() {
         let ctx = test_context();
@@ -542,8 +500,8 @@ mod tests {
 
         observe_block(&ctx, block).await.unwrap();
 
-        let info = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
-        assert_eq!(info.status, SnapshotEpochStatus::Initialized);
+        let info = ctx.store.get_snapshot_info(EpochNumber(5)).unwrap().unwrap();
+        assert_eq!(info.status, SnapshotStatus::Initialized);
     }
 
     // Repeated init doesn't regress status or overwrite bitmap.
@@ -551,10 +509,7 @@ mod tests {
     async fn init_idempotent() {
         let ctx = test_context();
 
-        // Init then certify a group.
-        observe_block(&ctx, init_block(EpochNumber(5)))
-            .await
-            .unwrap();
+        observe_block(&ctx, init_block(EpochNumber(5))).await.unwrap();
         observe_block(
             &ctx,
             certify_block(
@@ -567,13 +522,10 @@ mod tests {
         .await
         .unwrap();
 
-        // Second init should not regress.
-        observe_block(&ctx, init_block(EpochNumber(5)))
-            .await
-            .unwrap();
+        observe_block(&ctx, init_block(EpochNumber(5))).await.unwrap();
 
-        let info = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
-        assert_eq!(info.status, SnapshotEpochStatus::PartiallyCertified);
+        let info = ctx.store.get_snapshot_info(EpochNumber(5)).unwrap().unwrap();
+        assert_eq!(info.status, SnapshotStatus::PartiallyCertified);
         assert!(info.certified_groups.is_set(2));
     }
 
@@ -582,34 +534,23 @@ mod tests {
     async fn init_promotes_pending() {
         let ctx = test_context();
 
-        // Seed a Pending epoch info directly.
         ctx.store
-            .put_epoch_info(
-                EpochNumber(5),
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Pending,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
+            .put_snapshot_info(EpochNumber(5), SnapshotInfo::new(SnapshotStatus::Pending))
             .unwrap();
 
-        observe_block(&ctx, init_block(EpochNumber(5)))
-            .await
-            .unwrap();
+        observe_block(&ctx, init_block(EpochNumber(5))).await.unwrap();
 
-        let info = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
-        assert_eq!(info.status, SnapshotEpochStatus::Initialized);
+        let info = ctx.store.get_snapshot_info(EpochNumber(5)).unwrap().unwrap();
+        assert_eq!(info.status, SnapshotStatus::Initialized);
     }
 
-    // CertifySnapshotGroup updates epoch bitmap and group status.
+    // CertifySnapshotGroup updates snapshot bitmap and group status.
     #[tokio::test]
     async fn certify_group() {
         let ctx = test_context();
         let commitment = Hash::new_unique();
 
-        observe_block(&ctx, init_block(EpochNumber(5)))
-            .await
-            .unwrap();
+        observe_block(&ctx, init_block(EpochNumber(5))).await.unwrap();
         observe_block(
             &ctx,
             certify_block(EpochNumber(5), SpoolGroup(3), TrackNumber(7), commitment),
@@ -617,21 +558,17 @@ mod tests {
         .await
         .unwrap();
 
-        let epoch = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
-        assert_eq!(epoch.status, SnapshotEpochStatus::PartiallyCertified);
-        assert!(epoch.certified_groups.is_set(3));
+        let snapshot = ctx.store.get_snapshot_info(EpochNumber(5)).unwrap().unwrap();
+        assert_eq!(snapshot.status, SnapshotStatus::PartiallyCertified);
+        assert!(snapshot.certified_groups.is_set(3));
 
-        let group = ctx
-            .store
-            .get_group_info(EpochNumber(5), SpoolGroup(3))
-            .unwrap()
-            .unwrap();
+        let group = snapshot.group(SpoolGroup(3));
         assert_eq!(group.status, SnapshotGroupStatus::CertifiedOnChain);
         assert_eq!(group.track_number, Some(TrackNumber(7)));
         assert_eq!(group.blob.commitment, commitment);
     }
 
-    // Certify works when epoch/group info doesn't exist yet.
+    // Certify works when snapshot info doesn't exist yet.
     #[tokio::test]
     async fn certify_creates_missing() {
         let ctx = test_context();
@@ -644,15 +581,11 @@ mod tests {
         .await
         .unwrap();
 
-        let epoch = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
-        assert_eq!(epoch.status, SnapshotEpochStatus::PartiallyCertified);
-        assert!(epoch.certified_groups.is_set(1));
+        let snapshot = ctx.store.get_snapshot_info(EpochNumber(5)).unwrap().unwrap();
+        assert_eq!(snapshot.status, SnapshotStatus::PartiallyCertified);
+        assert!(snapshot.certified_groups.is_set(1));
 
-        let group = ctx
-            .store
-            .get_group_info(EpochNumber(5), SpoolGroup(1))
-            .unwrap()
-            .unwrap();
+        let group = snapshot.group(SpoolGroup(1));
         assert_eq!(group.status, SnapshotGroupStatus::CertifiedOnChain);
         assert_eq!(group.track_number, Some(TrackNumber(3)));
         assert_eq!(group.blob.commitment, commitment);
@@ -672,37 +605,24 @@ mod tests {
         ctx.set_state(state_with_owned_spool(EpochNumber(6), owned_spool))
             .unwrap();
 
-        ctx.store
-            .put_epoch_info(
-                epoch,
-                SnapshotEpochInfo {
-                    status: SnapshotEpochStatus::Built,
-                    certified_groups: SnapshotGroupBitmap::zeroed(),
-                },
-            )
-            .unwrap();
-        let built = SnapshotGroupInfo {
+        let mut snapshot = SnapshotInfo::new(SnapshotStatus::Built);
+        *snapshot.group_mut(group) = SnapshotGroupInfo {
             status: SnapshotGroupStatus::Built,
             blob,
             track_number: None,
         };
+        ctx.store.put_snapshot_info(epoch, snapshot).unwrap();
         ctx.store
-            .put_group_info(epoch, group, built)
-            .unwrap();
-        ctx.store
-            .put_group_slice(epoch, group, group.slice_of(owned_spool).unwrap(), slice_bytes.clone())
+            .put_snapshot_slice(epoch, group, group.slice_of(owned_spool).unwrap(), slice_bytes.clone())
             .unwrap();
 
         observe_block(&ctx, init_block(epoch)).await.unwrap();
         observe_block(&ctx, certify_block(epoch, group, track_number, blob.commitment))
-        .await
-        .unwrap();
-
-        let group = ctx
-            .store
-            .get_group_info(epoch, group)
-            .unwrap()
+            .await
             .unwrap();
+
+        let snapshot = ctx.store.get_snapshot_info(epoch).unwrap().unwrap();
+        let group = snapshot.group(group);
         assert_eq!(group.status, SnapshotGroupStatus::CertifiedOnChain);
         assert_eq!(group.track_number, Some(track_number));
         assert_eq!(group.blob, blob);
@@ -741,15 +661,11 @@ mod tests {
     async fn finalize() {
         let ctx = test_context();
 
-        observe_block(&ctx, init_block(EpochNumber(5)))
-            .await
-            .unwrap();
-        observe_block(&ctx, finalize_block(EpochNumber(5)))
-            .await
-            .unwrap();
+        observe_block(&ctx, init_block(EpochNumber(5))).await.unwrap();
+        observe_block(&ctx, finalize_block(EpochNumber(5))).await.unwrap();
 
-        let info = ctx.store.get_epoch_info(EpochNumber(5)).unwrap().unwrap();
-        assert_eq!(info.status, SnapshotEpochStatus::Finalized);
+        let info = ctx.store.get_snapshot_info(EpochNumber(5)).unwrap().unwrap();
+        assert_eq!(info.status, SnapshotStatus::Finalized);
     }
 
     // Init then certify groups then finalize, verify final state.
@@ -774,23 +690,17 @@ mod tests {
             .unwrap();
         }
 
-        observe_block(&ctx, finalize_block(epoch))
-            .await
-            .unwrap();
+        observe_block(&ctx, finalize_block(epoch)).await.unwrap();
 
-        let info = ctx.store.get_epoch_info(epoch).unwrap().unwrap();
-        assert_eq!(info.status, SnapshotEpochStatus::Finalized);
+        let info = ctx.store.get_snapshot_info(epoch).unwrap().unwrap();
+        assert_eq!(info.status, SnapshotStatus::Finalized);
         assert!(info.certified_groups.is_set(0));
         assert!(info.certified_groups.is_set(1));
         assert!(info.certified_groups.is_set(2));
         assert!(!info.certified_groups.is_set(3));
 
         for g in 0..3u64 {
-            let group = ctx
-                .store
-                .get_group_info(epoch, SpoolGroup(g))
-                .unwrap()
-                .unwrap();
+            let group = info.group(SpoolGroup(g));
             assert_eq!(group.status, SnapshotGroupStatus::CertifiedOnChain);
             assert_eq!(group.track_number, Some(TrackNumber(g + 100)));
         }

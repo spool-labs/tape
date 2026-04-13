@@ -16,21 +16,7 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 use crate::hash::Hash;
 
 #[repr(transparent)]
-#[derive(
-    Clone,
-    Copy,
-    Default,
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Pod,
-    Zeroable,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct Address([u8; 32]);
 

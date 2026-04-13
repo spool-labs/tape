@@ -101,6 +101,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             group_bitmap.set(group_index);
         }
         let manifest = SnapshotManifest {
+            epoch: prev_epoch,
             group_bitmap,
             chunk_size: StorageUnits::from_bytes(1_024),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

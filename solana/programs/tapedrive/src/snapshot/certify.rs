@@ -205,6 +205,7 @@ mod tests {
             ..Epoch::zeroed()
         };
         let manifest = SnapshotManifest {
+            epoch: snapshot_epoch,
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -384,6 +385,7 @@ mod tests {
             pda(
                 manifest_address,
                 SnapshotManifest {
+                    epoch: snapshot_epoch,
                     group_bitmap,
                     chunk_size: StorageUnits::from_bytes(1_024),
                     groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
@@ -465,6 +467,7 @@ mod tests {
             pda(
                 manifest_address,
                 SnapshotManifest {
+                    epoch: snapshot_epoch,
                     group_bitmap,
                     chunk_size: StorageUnits::from_bytes(2_048),
                     groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

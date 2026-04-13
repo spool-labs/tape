@@ -48,11 +48,12 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let snapshot_group = state
         .context
         .store
-        .get_group_info(epoch, group)
+        .get_snapshot_info(epoch)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+    let snapshot_group = snapshot_group.group(group);
 
-    validate_snapshot_group(&snapshot_group, &request)?;
+    validate_snapshot_group(snapshot_group, &request)?;
 
     let message = SnapshotMessage::new(epoch, group, request.blob_hash);
     let signature = state
@@ -103,7 +104,7 @@ mod tests {
     use tape_core::cert::snapshot::SnapshotMessage;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::info::SnapshotGroupStatus;
+    use tape_core::snapshot::info::{SnapshotGroupStatus, SnapshotInfo, SnapshotStatus};
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
     use tape_core::track::blob::BlobInfo;
@@ -140,6 +141,12 @@ mod tests {
             blob,
             track_number: None,
         }
+    }
+
+    fn snapshot_info(group: SpoolGroup, blob: BlobInfo) -> SnapshotInfo {
+        let mut snapshot = SnapshotInfo::new(SnapshotStatus::Built);
+        *snapshot.group_mut(group) = snapshot_group_state(blob);
+        snapshot
     }
 
     fn local_state_for_node_0(responsible: bool) -> ProtocolState {
@@ -194,7 +201,7 @@ mod tests {
 
         context
             .store
-            .put_group_info(epoch, group, snapshot_group_state(blob))
+            .put_snapshot_info(epoch, snapshot_info(group, blob))
             .unwrap();
 
         let response = match render(
@@ -260,7 +267,7 @@ mod tests {
 
         context
             .store
-            .put_group_info(epoch, group, snapshot_group_state(blob))
+            .put_snapshot_info(epoch, snapshot_info(group, blob))
             .unwrap();
 
         let err = render(
@@ -288,7 +295,7 @@ mod tests {
 
         context
             .store
-            .put_group_info(epoch, group, snapshot_group_state(blob))
+            .put_snapshot_info(epoch, snapshot_info(group, blob))
             .unwrap();
 
         let err = render(

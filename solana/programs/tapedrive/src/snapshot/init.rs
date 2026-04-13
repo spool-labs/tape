@@ -18,25 +18,35 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    fee_payer_info.is_signer()?.is_writable()?;
+    fee_payer_info
+        .is_signer()?.is_writable()?;
 
-    system_program_info.is_program(&system_program::ID)?;
-    rent_info.is_sysvar(&sysvar::rent::ID)?;
+    system_program_info
+        .is_program(&system_program::ID)?;
+    rent_info
+        .is_sysvar(&sysvar::rent::ID)?;
 
-    let (system_address, _) = system_pda();
-    system_info.is_system()?.has_address(&system_address.into())?;
+    // todo: remove this account, we're not using it
+    system_info
+        .is_system()?;
 
-    let epoch = epoch_info.is_epoch()?.as_account::<Epoch>(&tapedrive::ID)?;
+    let epoch = epoch_info
+        .is_epoch()?
+        .as_account::<Epoch>(&tapedrive::ID)?;
+
     let archive = archive_info
         .is_writable()?
         .is_archive()?
         .as_account_mut::<Archive>(&tapedrive::ID)?;
 
+    // todo: we should be using the epoch from the epoch account, why are we passing it in as an arg.
     let snapshot_epoch = EpochNumber::unpack(args.epoch);
+
     let current_epoch = current_epoch(epoch);
     if current_epoch <= EpochNumber(1) {
         return Err(TapeError::SnapshotEpochClosed.into());
     }
+
     let expected_epoch = current_epoch - EpochNumber(1);
     if snapshot_epoch != expected_epoch {
         return Err(TapeError::SnapshotEpochClosed.into());
@@ -76,6 +86,7 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
             .checked_add(1)
             .ok_or(ProgramError::ArithmeticOverflow)?,
     );
+
     archive.tape_count = tape_id.as_u64();
 
     let snapshot_tape = snapshot_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
@@ -87,6 +98,7 @@ pub fn process_init_snapshot_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     snapshot_tape.used = StorageUnits::zero();
 
     let manifest = manifest_info.as_account_mut::<SnapshotManifest>(&tapedrive::ID)?;
+    manifest.epoch = snapshot_epoch;
     manifest.group_bitmap = SnapshotGroupBitmap::zeroed();
     manifest.chunk_size = StorageUnits::zero();
     manifest.groups = [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT];
@@ -138,6 +150,7 @@ mod tests {
         ];
 
         let expected_manifest = SnapshotManifest {
+            epoch: snapshot_epoch,
             group_bitmap: SnapshotGroupBitmap::zeroed(),
             chunk_size: StorageUnits::zero(),
             groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
-use tape_core::snapshot::info::SnapshotEpochStatus;
+use tape_core::snapshot::info::SnapshotStatus;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
@@ -30,14 +30,14 @@ pub async fn try_finalize_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<(), NodeError> {
     let epoch_info = context
         .store
-        .get_epoch_info(epoch)
-        .map_err(|e| NodeError::Store(format!("get_epoch_info({epoch}): {e}")))?;
+        .get_snapshot_info(epoch)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_info({epoch}): {e}")))?;
 
     let Some(info) = epoch_info else {
         return Ok(());
     };
 
-    if info.status == SnapshotEpochStatus::Finalized {
+    if info.status == SnapshotStatus::Finalized {
         return Ok(());
     }
 
