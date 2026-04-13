@@ -10,6 +10,5 @@ pub const VAULT: &[u8] = b"vault";
 
 #[inline(always)]
 pub fn vault_pda(stake: Address) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[VAULT, stake.as_ref()], &program_id)
+    Address::find_program_address(&[VAULT, stake.as_ref()], id())
 }

@@ -101,15 +101,6 @@ pub enum TapeInstruction {
     //VoteOnFeature,
     //VoteOnSlash,
 
-    // Certificate
-    CreateBlsCert = 0x80,
-    SignBlsCert,
-    GroupSignBlsCert,
-    DestroyBlsCert,
-    //CreateEdwardCert,
-    //SignEdwardCert,
-    //DestroyEdwardCert,
-
     // Tape
     ReserveTape = 0x90,
     DestroyTape,

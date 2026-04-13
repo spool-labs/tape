@@ -12,19 +12,8 @@ use tape_core::types::EpochNumber;
 pub trait SnapshotOps {
     fn get_snapshot_info(&self, snapshot_epoch: EpochNumber) -> Result<Option<SnapshotInfo>>;
     fn put_snapshot_info(&self, snapshot_epoch: EpochNumber, info: SnapshotInfo) -> Result<()>;
-    fn get_snapshot_slice(
-        &self,
-        snapshot_epoch: EpochNumber,
-        group: SpoolGroup,
-        spool: SpoolIndex,
-    ) -> Result<Option<Vec<u8>>>;
-    fn put_snapshot_slice(
-        &self,
-        snapshot_epoch: EpochNumber,
-        group: SpoolGroup,
-        spool: SpoolIndex,
-        data: Vec<u8>,
-    ) -> Result<()>;
+    fn get_snapshot_slice(&self, snapshot_epoch: EpochNumber, group: SpoolGroup, spool: SpoolIndex,) -> Result<Option<Vec<u8>>>;
+    fn put_snapshot_slice(&self, snapshot_epoch: EpochNumber, group: SpoolGroup, spool: SpoolIndex, data: Vec<u8>,) -> Result<()>;
     fn delete_snapshot(&self, snapshot_epoch: EpochNumber) -> Result<()>;
 }
 
@@ -66,6 +55,7 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         let snapshot_key = EpochKey(snapshot_epoch.0);
         let snapshot_key_bytes = wincode::serialize(&snapshot_key)
             .map_err(|error| TapeStoreError::Serialization(format!("snapshot key: {error}")))?;
+
         if raw.contains(SnapshotCol::CF_NAME, &snapshot_key_bytes)? {
             raw.delete(SnapshotCol::CF_NAME, &snapshot_key_bytes)?;
         }
@@ -75,6 +65,7 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
             .iter_prefix(SnapshotSliceCol::CF_NAME, &slice_prefix)?
             .map(|(key, _)| key)
             .collect();
+
         for key in slice_keys {
             raw.delete(SnapshotSliceCol::CF_NAME, &key)?;
         }

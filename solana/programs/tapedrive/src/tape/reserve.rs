@@ -107,6 +107,8 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .map_err(|_| TapeError::UnexpectedState)?;
 
     // Assign tape ID before incrementing count (1-indexed)
+    // TODO: this is broken, we can't be decrementing tape count on destroy if we are using it to
+    // generate tape IDs, we need a different way to generate unique tape IDs.
     let tape_id = TapeNumber(archive.tape_count.checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?);
 

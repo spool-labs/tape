@@ -4,7 +4,6 @@ use tape_core::{
     types::{EpochNumber, TrackNumber},
 };
 use tape_crypto::address::Address;
-use tape_crypto::Hash;
 
 use super::token::MINT_ADDRESS;
 pub const MIN_COMMITTEE_SIZE:     usize = 20;   // 20 for production (matches SPOOL_GROUP_SIZE)
@@ -35,7 +34,6 @@ pub const HISTORY:            &[u8] = b"history";
 pub const RESOURCE:           &[u8] = b"resource";
 pub const TRACK:              &[u8] = b"track";
 pub const STAKE:              &[u8] = b"stake";
-pub const CERTIFICATE:        &[u8] = b"certificate";
 pub const SNAPSHOT_MANIFEST:  &[u8] = b"snapshot_manifest";
 pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
 
@@ -86,8 +84,7 @@ pub const ARCHIVE_ATA_BUMP: u8 =
 
 #[cfg(debug_assertions)]
 pub fn system_pda() -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[SYSTEM], &program_id)
+    Address::find_program_address(&[SYSTEM], id())
 }
 
 #[cfg(not(debug_assertions))]
@@ -98,8 +95,7 @@ pub fn system_pda() -> (Address, u8) {
 
 #[cfg(debug_assertions)]
 pub fn epoch_pda() -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[EPOCH], &program_id)
+    Address::find_program_address(&[EPOCH], id())
 }
 
 #[cfg(not(debug_assertions))]
@@ -112,8 +108,7 @@ pub fn epoch_pda() -> (Address, u8) {
 #[cfg(debug_assertions)]
 #[inline(always)]
 pub fn archive_pda() -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[ARCHIVE], &program_id)
+    Address::find_program_address(&[ARCHIVE], id())
 }
 
 #[cfg(not(debug_assertions))]
@@ -125,15 +120,13 @@ pub fn archive_pda() -> (Address, u8) {
 #[cfg(debug_assertions)]
 #[inline(always)]
 pub fn archive_ata() -> (Address, u8) {
-    let associated_token_account_program_id: Address = spl_associated_token_account::ID.into();
-
     Address::find_program_address(
         &[
             ARCHIVE_ADDRESS.as_ref(),
             spl_token::ID.as_ref(),
             MINT_ADDRESS.as_ref(),
         ],
-        &associated_token_account_program_id,
+        spl_associated_token_account::ID,
     )
 }
 
@@ -145,53 +138,37 @@ pub fn archive_ata() -> (Address, u8) {
 
 #[inline(always)]
 pub fn node_pda(authority: Address) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[NODE, authority.as_ref()], &program_id)
+    Address::find_program_address(&[NODE, authority.as_ref()], id())
 }
 
 #[inline(always)]
 pub fn stake_pda(authority: Address) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[STAKE, authority.as_ref()], &program_id)
+    Address::find_program_address(&[STAKE, authority.as_ref()], id())
 }
 
 #[inline(always)]
 pub fn history_pda(node: Address) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[HISTORY, node.as_ref()], &program_id)
+    Address::find_program_address(&[HISTORY, node.as_ref()], id())
 }
 
 #[inline(always)]
 pub fn tape_pda(authority: Address) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[RESOURCE, authority.as_ref()], &program_id)
+    Address::find_program_address(&[RESOURCE, authority.as_ref()], id())
 }
 
 #[inline(always)]
 pub fn track_pda(tape: Address, track_number: TrackNumber) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[TRACK, tape.as_ref(), &track_number.pack()], &program_id)
-}
-
-#[inline(always)]
-pub fn cert_pda(parent: Address, message: Hash, epoch: EpochNumber) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(
-        &[CERTIFICATE, parent.as_ref(), message.as_ref(), &epoch.pack()],
-        &program_id,
-    )
+    Address::find_program_address(&[TRACK, tape.as_ref(), &track_number.pack()], id())
 }
 
 #[inline(always)]
 pub fn snapshot_manifest_pda(epoch: EpochNumber) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &program_id)
+    Address::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], id())
 }
 
 #[inline(always)]
 pub fn snapshot_tape_pda(epoch: EpochNumber) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &program_id)
+    Address::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], id())
 }
 
 #[cfg(test)]

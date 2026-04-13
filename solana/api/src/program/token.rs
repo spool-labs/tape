@@ -57,8 +57,7 @@ pub const TREASURY_BUMP: u8 =
 
 #[cfg(debug_assertions)]
 pub fn mint_pda() -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[MINT, MINT_SEED], &program_id)
+    Address::find_program_address(&[MINT, MINT_SEED], id())
 }
 
 #[cfg(not(debug_assertions))]
@@ -69,12 +68,11 @@ pub fn mint_pda() -> (Address, u8) {
 
 #[cfg(debug_assertions)]
 pub fn metadata_pda() -> (Address, u8) {
-    let metadata_program_id: Address = mpl_token_metadata::ID.into();
     let (mint, _) = mint_pda();
 
     Address::find_program_address(
         &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref()],
-        &metadata_program_id,
+        mpl_token_metadata::ID,
     )
 }
 
@@ -86,8 +84,7 @@ pub fn metadata_pda() -> (Address, u8) {
 
 #[cfg(debug_assertions)]
 pub fn treasury_pda() -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[TREASURY], &program_id)
+    Address::find_program_address(&[TREASURY], id())
 }
 
 #[cfg(not(debug_assertions))]

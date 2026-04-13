@@ -12,20 +12,17 @@ pub const EXCHANGE: &[u8] = b"exchange";
 
 #[inline(always)]
 pub fn exchange_pda(authority: Address) -> (Address, u8) {
-    let program_id: Address = id().into();
-    Address::find_program_address(&[EXCHANGE, authority.as_ref()], &program_id)
+    Address::find_program_address(&[EXCHANGE, authority.as_ref()], id())
 }
 
 #[inline(always)]
 pub fn exchange_ata(exchange: Address) -> (Address, u8) {
-    let associated_token_account_program_id: Address = spl_associated_token_account::ID.into();
-
     Address::find_program_address(
         &[
             exchange.as_ref(), 
             spl_token::ID.as_ref(),
             MINT_ADDRESS.as_ref(),
         ],
-        &associated_token_account_program_id,
+        spl_associated_token_account::ID,
     )
 }

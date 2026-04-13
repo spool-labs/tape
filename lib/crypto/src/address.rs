@@ -40,17 +40,23 @@ impl Address {
         SolanaPubkey::new_unique().into()
     }
 
-    pub fn find_program_address(seeds: &[&[u8]], program_id: &Self) -> (Self, u8) {
-        let program_id: SolanaPubkey = (*program_id).into();
+    pub fn find_program_address<P>(seeds: &[&[u8]], program_id: P) -> (Self, u8)
+    where
+        P: Into<SolanaPubkey>,
+    {
+        let program_id = program_id.into();
         let (address, bump) = SolanaPubkey::find_program_address(seeds, &program_id);
         (address.into(), bump)
     }
 
-    pub fn create_program_address(
+    pub fn create_program_address<P>(
         seeds: &[&[u8]],
-        program_id: &Self,
-    ) -> Result<Self, SolanaPubkeyError> {
-        let program_id: SolanaPubkey = (*program_id).into();
+        program_id: P,
+    ) -> Result<Self, SolanaPubkeyError>
+    where
+        P: Into<SolanaPubkey>,
+    {
+        let program_id = program_id.into();
         SolanaPubkey::create_program_address(seeds, &program_id).map(Into::into)
     }
 }
