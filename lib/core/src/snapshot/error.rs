@@ -1,5 +1,3 @@
-//! Errors from snapshot framed (de)serialization.
-
 use core::fmt;
 
 #[derive(Debug)]

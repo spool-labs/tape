@@ -13,7 +13,7 @@ use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 use crate::features::store::cleanup::{cleanup_track_slices, delete_tape_local, delete_track_local};
-use crate::features::store::ownership::stores_track_data;
+use crate::features::store::util::is_responsible_for_group;
 
 const DELETE_TAPE_BATCH_SIZE: usize = 100;
 
@@ -82,14 +82,16 @@ fn put_track_object<Db: Store>(
     let (track, _) = track_pda(replay.state.tape, replay.state.track_number);
     let track = Address::from(track);
 
-    store.put_track(track, replay.state).map_err(store_error)?;
+    store.put_track(track, replay.state)
+        .map_err(store_error)?;
 
     if let Some(mut tape_info) = store
         .get_tape(Address::from(replay.state.tape))
         .map_err(store_error)?
     {
         let next_track_number = TrackNumber(replay.state.track_number.0 + 1);
-        if tape_info.next_track_number.0 < next_track_number.0 {
+
+        if tape_info.next_track_number < next_track_number {
             tape_info.next_track_number = next_track_number;
             store
                 .put_tape(Address::from(replay.state.tape), tape_info)
@@ -97,7 +99,7 @@ fn put_track_object<Db: Store>(
         }
     }
 
-    if stores_track_data(store, replay.state.spool_group)? {
+    if is_responsible_for_group(store, replay.state.spool_group)? {
         if let Some(blob) = replay.blob {
             store
                 .put_track_data(track, TrackData::Blob(blob))

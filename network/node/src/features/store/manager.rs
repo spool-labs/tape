@@ -14,7 +14,7 @@ use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::replay::types::{RawTrack, ReplayBatch};
 use crate::features::store::apply::apply_slot;
-use crate::features::store::ownership::stores_track_data;
+use crate::features::store::util::stores_track_data;
 
 pub struct StoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,

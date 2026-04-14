@@ -1,7 +1,6 @@
 mod archive;
 mod epoch;
 mod exchange;
-mod feature;
 mod history;
 mod node;
 mod snapshot;
@@ -33,7 +32,6 @@ pub enum AccountType {
     System,
     Epoch,
     Archive,
-    Feature,
 
     Exchange,
     Node,

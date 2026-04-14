@@ -82,10 +82,15 @@ pub fn cleanup_track_slices<Db: Store>(
         if store.has_slice(spool_id, track).map_err(store_error)? {
             deleted_slices += 1;
         }
-        store.delete_slice(spool_id, track).map_err(store_error)?;
+
+        store
+            .delete_slice(spool_id, track)
+            .map_err(store_error)?;
+
         store
             .remove_pending_repair(spool_id, track)
             .map_err(store_error)?;
+
         store
             .remove_pending_recovery(spool_id, track)
             .map_err(store_error)?;
@@ -101,15 +106,19 @@ pub fn purge_spool_local<Db: Store>(
     store
         .delete_all_slices_for_spool(spool_id)
         .map_err(store_error)?;
+
     store
         .clear_all_pending_repairs(spool_id)
         .map_err(store_error)?;
+
     store
         .clear_all_pending_recoveries(spool_id)
         .map_err(store_error)?;
+
     store
         .remove_spool_sync_cursor(spool_id)
         .map_err(store_error)?;
+
     store.remove_spool_state(spool_id).map_err(store_error)
 }
 

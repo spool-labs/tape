@@ -1,5 +1,3 @@
-//! Ownership checks for track state on a spool group.
-
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
@@ -8,7 +6,7 @@ use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 
-pub fn stores_track_data<Db: Store>(
+pub fn is_responsible_for_group<Db: Store>(
     store: &TapeStore<Db>,
     spool_group: SpoolGroup,
 ) -> Result<bool, NodeError> {

@@ -7,13 +7,12 @@ mod exchange;
 mod node;
 mod pool;
 mod snapshot;
-mod util;
-pub use snapshot::*;
 mod stake;
 mod stream;
 mod tape;
 mod token;
 mod track;
+mod util;
 
 pub use archive::*;
 pub use blacklist::*;
@@ -21,12 +20,13 @@ pub use epoch::*;
 pub use exchange::*;
 pub use node::*;
 pub use pool::*;
+pub use snapshot::*;
 pub use stake::*;
-pub use util::read_instruction_pod;
 pub use stream::*;
 pub use tape::*;
 pub use token::*;
 pub use track::*;
+pub use util::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
@@ -72,8 +72,6 @@ pub enum TapeInstruction {
     ExpandSystem,
     Initialize,
     AdvanceEpoch,
-    //RegisterFeature,
-    //CertifyFeature,
 
     // Pool
     AdvancePool = 0x50,
@@ -139,8 +137,6 @@ tape_solana::instruction!(TapeInstruction, CreateSystem);
 tape_solana::instruction!(TapeInstruction, ExpandSystem);
 tape_solana::instruction!(TapeInstruction, Initialize);
 tape_solana::instruction!(TapeInstruction, AdvanceEpoch);
-//instruction!(TapeInstruction, RegisterFeature);
-//instruction!(TapeInstruction, CertifyFeature);
 
 tape_solana::instruction!(TapeInstruction, AdvancePool);
 tape_solana::instruction!(TapeInstruction, StakeWithPool);
