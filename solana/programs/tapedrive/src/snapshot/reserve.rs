@@ -92,7 +92,59 @@ mod tests {
 
     #[test]
     fn test_reserve_snapshot() {
+        let fee_payer = Pubkey::new_unique();
+        let current_epoch = EpochNumber(10);
+        let snapshot_epoch = EpochNumber(9);
 
-        todo!();
+        let (epoch_address, _) = epoch_pda();
+        let (snapshot_address, _) = snapshot_pda(snapshot_epoch);
+        let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
+
+        let epoch = Epoch {
+            id: current_epoch,
+            ..Epoch::zeroed()
+        };
+
+        let instruction = build_reserve_snapshot_ix(fee_payer.into(), snapshot_epoch);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            empty(snapshot_address),
+            empty(snapshot_tape_address),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let expected_snapshot = Snapshot {
+            epoch: snapshot_epoch,
+            state: SnapshotState::Registered as u64,
+            group_bitmap: GroupBitmap::zeroed(),
+        };
+
+        let expected_tape = Tape {
+            id: TapeNumber(0),
+            authority: SYSTEM_ADDRESS,
+            capacity: StorageUnits(u64::MAX),
+            used: StorageUnits::zero(),
+            active_epoch: snapshot_epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            ..Tape::zeroed()
+        };
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&Pubkey::from(snapshot_address))
+                    .data(expected_snapshot.pack().as_ref())
+                    .build(),
+                Check::account(&Pubkey::from(snapshot_tape_address))
+                    .data(expected_tape.pack().as_ref())
+                    .build(),
+            ],
+        );
     }
 }

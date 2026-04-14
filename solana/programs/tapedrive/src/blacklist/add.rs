@@ -52,7 +52,7 @@ mod tests {
     use super::*;
     use tape_crypto::Hash;
     use tape_core::track::TRACK_TREE_HEIGHT;
-    use tape_core::track::store::TrackArchive;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
     use tape_test::*;
 

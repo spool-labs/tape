@@ -73,8 +73,8 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let committee = system.committee;
-    let spools = system.spools;
+    let committee = &system.committee;
+    let spools = &system.spools;
     let weight = spools.group_weight(track.spool_group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {

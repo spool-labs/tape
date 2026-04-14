@@ -6,15 +6,19 @@ use crate::types::EpochNumber;
 
 pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
 
+/// Derives the track key for a snapshot chunk. A single group may contribute multiple chunks
+/// per epoch — `chunk_index` is a group-local ordinal that disambiguates them.
 #[inline]
 pub fn snapshot_chunk_key(
     epoch: EpochNumber,
     group: SpoolGroup,
+    chunk_index: u64,
 ) -> Hash {
     hashv(&[
         SNAPSHOT_KEY_V1,
         &epoch.pack(),
         &group.pack(),
+        &chunk_index.to_le_bytes(),
     ])
 }
 
@@ -23,20 +27,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_chunk_key_is_stable() {
-        assert_eq!(
-            snapshot_chunk_key(EpochNumber(9), SpoolGroup(3)),
-            Hash::from([
-                125, 24, 57, 155, 139, 250, 226, 142, 58, 117, 91, 0, 187, 177, 4, 238, 250,
-                249, 96, 33, 110, 127, 162, 61, 185, 15, 118, 134, 76, 233, 26, 123,
-            ]),
-        );
+    fn distinguishes_epoch_pair() {
+        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), 0);
+        let b = snapshot_chunk_key(EpochNumber(10), SpoolGroup(3), 0);
+        assert_ne!(a, b);
     }
 
     #[test]
-    fn distinguishes_epoch_pair() {
-        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3));
-        let b = snapshot_chunk_key(EpochNumber(10), SpoolGroup(3));
+    fn distinguishes_group_pair() {
+        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), 0);
+        let b = snapshot_chunk_key(EpochNumber(9), SpoolGroup(4), 0);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn distinguishes_chunk_index() {
+        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), 0);
+        let b = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), 1);
         assert_ne!(a, b);
     }
 }

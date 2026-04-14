@@ -220,8 +220,16 @@ mod tests {
         })
     }
 
-    fn snapshot_manifest(_epoch: EpochNumber) -> Snapshot {
-        todo!();
+    fn snapshot_manifest(epoch: EpochNumber) -> Snapshot {
+        let mut group_bitmap = GroupBitmap::zeroed();
+        for group in 0..SPOOL_GROUP_COUNT {
+            group_bitmap.set(group);
+        }
+        Snapshot {
+            epoch,
+            state: SnapshotState::Finalized as u64,
+            group_bitmap,
+        }
     }
 
     #[test]
@@ -865,6 +873,75 @@ mod tests {
 
     #[test]
     fn test_advance_blocked_snapshot_incomplete() {
-        todo!();
+        // Previous snapshot manifest is still Registered — the snapshot gate must
+        // reject the advance before any committee or schedule state is touched.
+        let env = test_env();
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let e0 = EpochNumber(5);
+        let e100 = e0 + EpochNumber(100);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
+
+        let mut epoch = Epoch::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        let last_epoch = env.now() - (EPOCH_DURATION + 100);
+
+        epoch.id = e0;
+        epoch.state = EpochState::active();
+        epoch.last_epoch = last_epoch;
+
+        // Valid committees so the only failure path is the snapshot gate.
+        let curr_members: Vec<CommitteeMember> = (1..=20)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee = Committee::from_members(&curr_members);
+
+        let prev_members: Vec<CommitteeMember> = (1..=20)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee_prev = Committee::from_members(&prev_members);
+
+        let next_members: Vec<CommitteeMember> = (1..=20)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee_next = Committee::from_members(&next_members);
+
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+        archive.schedule.reserve_capacity(
+            StorageUnits::mb(500), TAPE(1000), e0, e100
+        ).expect("reserve capacity");
+
+        let prev_manifest = Snapshot {
+            epoch: e0 - EpochNumber(1),
+            state: SnapshotState::Registered as u64,
+            group_bitmap: GroupBitmap::zeroed(),
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
+            slot_hashes_account(),
+        ];
+
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::err(TapeError::SnapshotIncomplete.into()),
+            ]
+        );
     }
 }

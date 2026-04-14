@@ -18,15 +18,16 @@ use crate::program::tapedrive::{
 /// epoch.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ReserveSnapshot {} 
-                                          
-                                          
+pub struct ReserveSnapshot {}
+
+
 /// Write a quorum-signed snapshot chunk to the manifest. This instruction is sent by the
 /// SpoolGroup members after they have collected enough signatures for a given snapshot chunk.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct WriteSnapshot {
     pub group: [u8; 8],                   // The SpoolGroup packed as bytes
+    pub chunk_index: [u8; 8],             // Snapshot chunk index
     pub bitmap: SpoolGroupBitmap,         // A bitmap indicating which SpoolGroup members have signed
     pub signature: BlsSignature,          // The aggregated BLS signature from the committee members
     pub snapshot: PackedBlobInfo,         // The BlobInfo for the snapshot chunk being signed
@@ -76,6 +77,7 @@ pub fn build_write_snapshot_ix(
     fee_payer: Address,
     epoch: EpochNumber,
     group: SpoolGroup,
+    chunk_index: u64,
     bitmap: SpoolGroupBitmap,
     signature: BlsSignature,
     blob: &BlobInfo,
@@ -83,6 +85,9 @@ pub fn build_write_snapshot_ix(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (snapshot_address, _) = snapshot_pda(epoch);
+    let (tape_address, _) = snapshot_tape_pda(epoch);
+
+    let chunk_index = chunk_index.to_le_bytes();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -90,10 +95,12 @@ pub fn build_write_snapshot_ix(
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new_readonly(epoch_address.into(), false),
-            AccountMeta::new(snapshot_address.into(), false),
+            AccountMeta::new_readonly(snapshot_address.into(), false),
+            AccountMeta::new(tape_address.into(), false),
         ],
         data: WriteSnapshot {
             group: group.pack(),
+            chunk_index,
             bitmap,
             signature,
             snapshot: blob.pack(),
@@ -112,7 +119,6 @@ pub fn build_sign_snapshot_ix(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (snapshot_address, _) = snapshot_pda(epoch);
-    let (tape_address, _) = snapshot_tape_pda(epoch);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -121,7 +127,6 @@ pub fn build_sign_snapshot_ix(
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new_readonly(epoch_address.into(), false),
             AccountMeta::new(snapshot_address.into(), false),
-            AccountMeta::new(tape_address.into(), false),
         ],
         data: SignSnapshot {
             group: group.pack(),

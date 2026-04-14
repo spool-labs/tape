@@ -99,6 +99,8 @@ pub enum TapeError {
     AlreadyInvalidated = 0x73,
     #[error("already certified")]
     AlreadyCertified = 0x74,
+    #[error("already signed")]
+    AlreadySigned = 0x75,
 }
 
 impl From<TapeError> for solana_program::program_error::ProgramError {
@@ -189,6 +191,7 @@ impl TapeError {
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",
             Self::AlreadyInvalidated => "Track already invalidated",
             Self::AlreadyCertified => "Track already certified",
+            Self::AlreadySigned => "Snapshot group has already signed",
         }
     }
 }
