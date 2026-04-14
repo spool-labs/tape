@@ -14,8 +14,15 @@ use tape_api::program::prelude::{TapeInstruction, parse_instruction};
 use tape_api::program::tapedrive;
 use tape_solana::{AccountInfo, ProgramError, ProgramResult, Pubkey, TryFromPrimitive, entrypoint};
 
-use crate::archive::{process_create_system, process_expand_system, process_initialize};
-use crate::blacklist::{process_add_to_blacklist, process_remove_from_blacklist};
+use crate::archive::{
+    process_create_system, 
+    process_expand_system, 
+    process_initialize
+};
+use crate::blacklist::{
+    process_add_to_blacklist, 
+    process_remove_from_blacklist
+};
 use crate::epoch::process_advance_epoch;
 use crate::node::{
     process_advance_pool, process_claim_commission, process_join_network,
@@ -24,9 +31,11 @@ use crate::node::{
     process_set_network_tls, process_set_storage_capacity, process_set_storage_price,
     process_sync_epoch,
 };
-use snapshot::certify::process_certify_snapshot_group;
-use snapshot::finalize::process_finalize_snapshot_epoch;
-use snapshot::init::process_init_snapshot_epoch;
+use crate::snapshot::{
+    process_reserve_snapshot, 
+    process_write_snapshot,
+    process_sign_snapshot,
+};
 use crate::staking::{
     process_merge_pool_stake, process_request_stake_unlock, process_split_pool_stake,
     process_stake_with_pool, process_unstake_from_pool,
@@ -106,13 +115,9 @@ pub fn process_instruction(
             TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,  // CU 1_400_000
 
             // Snapshot
-            TapeInstruction::InitSnapshotEpoch => process_init_snapshot_epoch(accounts, data)?,
-            TapeInstruction::CertifySnapshotGroup => {
-                process_certify_snapshot_group(accounts, data)?
-            }
-            TapeInstruction::FinalizeSnapshotEpoch => {
-                process_finalize_snapshot_epoch(accounts, data)?
-            }
+            TapeInstruction::ReserveSnapshot => process_reserve_snapshot(accounts, data)?,
+            TapeInstruction::WriteSnapshot => process_write_snapshot(accounts, data)?,
+            TapeInstruction::SignSnapshot => process_sign_snapshot(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

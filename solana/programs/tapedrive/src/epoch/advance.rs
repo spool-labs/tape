@@ -14,7 +14,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         system_info,
         archive_info,
         epoch_info,
-        prev_snapshot_manifest_info,
+        prev_snapshot_info,
         slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -59,13 +59,14 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // certified). The expected manifest PDA is derived here from the live
     // epoch account, so a stale ix payload cannot bypass this check.
     if epoch.id > EpochNumber(1) {
-        let required_epoch = epoch.id - EpochNumber(1);
-        let (expected_pda, _) = snapshot_manifest_pda(required_epoch);
-        let manifest = prev_snapshot_manifest_info
-            .has_address(&expected_pda.into())?
-            .is_snapshot_manifest()?
-            .as_account::<SnapshotManifest>(&tapedrive::ID)?;
-        if manifest.group_bitmap.count_ones() != SPOOL_GROUP_COUNT {
+        let required_epoch = prev_epoch(epoch);
+        let (snapshot_address, _) = snapshot_pda(required_epoch);
+
+        let snapshot = prev_snapshot_info
+            .has_address(&snapshot_address.into())?
+            .as_account::<Snapshot>(&tapedrive::ID)?;
+
+        if snapshot.state != SnapshotState::Finalized as u64 {
             return Err(TapeError::SnapshotIncomplete.into());
         }
     }
@@ -219,23 +220,8 @@ mod tests {
         })
     }
 
-    fn full_group_bitmap() -> SnapshotGroupBitmap {
-        let mut bitmap = SnapshotGroupBitmap::zeroed();
-        for i in 0..SPOOL_GROUP_COUNT {
-            bitmap.set(i);
-        }
-        bitmap
-    }
-
-    /// A fully-certified snapshot manifest, used to seed the previous epoch's
-    /// snapshot account when a test exercises the (non-bootstrap) advance path.
-    fn snapshot_manifest(epoch: EpochNumber) -> SnapshotManifest {
-        SnapshotManifest {
-            epoch,
-            group_bitmap: full_group_bitmap(),
-            chunk_size: StorageUnits::from_bytes(1_024),
-            groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
-        }
+    fn snapshot_manifest(_epoch: EpochNumber) -> Snapshot {
+        todo!();
     }
 
     #[test]
@@ -255,7 +241,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(prev_snapshot_epoch);
+        let (prev_manifest_address, _) = snapshot_pda(prev_snapshot_epoch);
 
         // Setup existing accounts
 
@@ -405,7 +391,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(current_epoch - EpochNumber(1));
+        let (prev_manifest_address, _) = snapshot_pda(current_epoch - EpochNumber(1));
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -464,7 +450,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(current_epoch - EpochNumber(1));
+        let (prev_manifest_address, _) = snapshot_pda(current_epoch - EpochNumber(1));
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -521,7 +507,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(e0 - EpochNumber(1));
+        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -594,7 +580,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(e0 - EpochNumber(1));
+        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -683,7 +669,7 @@ mod tests {
         let (epoch_address, _) = epoch_pda();
         // The bootstrap path skips the snapshot gate entirely. The ix-builder
         // saturates at EpochNumber(0) so the placeholder PDA is well-defined.
-        let (prev_manifest_address, _) = snapshot_manifest_pda(EpochNumber(0));
+        let (prev_manifest_address, _) = snapshot_pda(EpochNumber(0));
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -759,7 +745,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(e0 - EpochNumber(1));
+        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -825,7 +811,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(e0 - EpochNumber(1));
+        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -879,66 +865,6 @@ mod tests {
 
     #[test]
     fn test_advance_blocked_snapshot_incomplete() {
-        // Test that epoch advance is blocked when the previous epoch's snapshot is not done
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let e0 = EpochNumber(5);
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_manifest_pda(e0 - EpochNumber(1));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        let members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee = Committee::from_members(&members);
-        system.committee_prev = Committee::from_members(&members);
-        system.committee_next = Committee::from_members(&members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        // Manifest for epoch 4 exists but only has one group sealed; the
-        // count_ones() != SPOOL_GROUP_COUNT check rejects the advance.
-        let mut partial_bitmap = tape_core::types::SnapshotGroupBitmap::zeroed();
-        partial_bitmap.set(0);
-        let prev_manifest = SnapshotManifest {
-            epoch: e0 - EpochNumber(1),
-            group_bitmap: partial_bitmap,
-            chunk_size: StorageUnits::from_bytes(1_024),
-            groups: [SnapshotChunkRecord::zeroed(); SPOOL_GROUP_COUNT],
-        };
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
-            slot_hashes_account(),
-        ];
-
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::err(TapeError::SnapshotIncomplete.into()),
-            ]
-        );
+        todo!();
     }
 }

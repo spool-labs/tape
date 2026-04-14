@@ -54,7 +54,7 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 mod tests {
     use super::*;
     use tape_core::track::TRACK_TREE_HEIGHT;
-    use tape_core::track::store::TrackStore;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
@@ -98,10 +98,10 @@ mod tests {
             used: size,
             active_epoch: EpochNumber(15),
             expiry_epoch: EpochNumber(100),
-            tracks: TrackStore {
+            tracks: TrackArchive {
                 tree: track_tree,
                 next_number: TrackNumber(1),
-                live_count: 1,
+                num_tracks: 1,
             },
             ..Tape::zeroed()
         };
@@ -126,10 +126,10 @@ mod tests {
                 Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
                         used: StorageUnits(0),
-                        tracks: TrackStore {
+                        tracks: TrackArchive {
                             tree: expected_tree,
                             next_number: TrackNumber(1),
-                            live_count: 0,
+                            num_tracks: 0,
                         },
                         ..tape
                     }.pack().as_ref()

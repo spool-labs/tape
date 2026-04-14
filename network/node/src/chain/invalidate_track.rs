@@ -16,20 +16,19 @@ use crate::context::NodeContext;
 pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     track: CompressedTrackProof,
-    epoch: tape_core::types::EpochNumber,
     bitmap: CommitteeBitmap,
-    signature: tape_core::bls::BlsSignature,
+    signature: BlsSignature,
     observed_root: Hash,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
+
     let ix = build_invalidate_track_ix(
         fee_payer,
         system_address,
         epoch_address,
         track,
-        epoch,
         bitmap,
         signature,
         observed_root,

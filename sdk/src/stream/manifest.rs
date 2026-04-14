@@ -20,7 +20,7 @@ pub const MANIFEST_VERSION: u8 = 1;
 /// uses 64 MiB to leave headroom for stripe padding and metadata suffixes.
 pub const CHUNK_SIZE: usize = 64 * 1024 * 1024;
 
-/// Describes a byte stream stored across one or more chunk tracks on a tape.
+/// Describes a byte stream stored across one or more tracks on a tape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChunkManifest {
     /// Format version for future evolution.

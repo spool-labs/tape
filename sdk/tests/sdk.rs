@@ -12,7 +12,7 @@ use tape_api::state::Tape;
 use tape_core::bls::BlsPubkey;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
-use tape_core::track::store::TrackStore;
+use tape_core::track::store::TrackArchive;
 use tape_core::track::types::{
     CompressedTrack, CompressedTrackProof, TrackKind, TrackState,
 };
@@ -224,7 +224,7 @@ fn make_tape(authority: Address) -> Tape {
     tape.used = StorageUnits::mb(10);
     tape.active_epoch = EpochNumber(1);
     tape.expiry_epoch = EpochNumber(10);
-    tape.tracks = TrackStore::zeroed();
+    tape.tracks = TrackArchive::zeroed();
     tape
 }
 

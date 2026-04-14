@@ -1,25 +1,28 @@
 //! Track protocol types and merkle proofs.
 
 use core::mem::size_of;
-#[cfg(feature = "wincode")]
-use core::mem::MaybeUninit;
-
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+
+#[cfg(feature = "wincode")]
+use core::mem::MaybeUninit;
 #[cfg(feature = "wincode")]
 use serde::{Deserialize, Serialize};
-use tape_crypto::address::Address;
-use tape_crypto::hash::{hashv, Hash};
-use tape_crypto::merkle::{MerkleError, MerkleTree};
 #[cfg(feature = "wincode")]
 use wincode::{
     io::{Reader, Writer},
     ReadResult, SchemaRead, SchemaWrite, WriteResult,
 };
 
+use tape_crypto::address::Address;
+use tape_crypto::hash::{hashv, Hash};
+use tape_crypto::merkle::{MerkleError, MerkleTree};
+
 use crate::spooler::SpoolGroup;
-use crate::track::{TRACK_LEAF_V1, TRACK_TREE_HEIGHT};
 use crate::types::{StorageUnits, TrackNumber};
+use super::archive::TRACK_TREE_HEIGHT;
+
+pub const TRACK_LEAF_V1: &[u8; 8] = b"TRACK_V1";
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]

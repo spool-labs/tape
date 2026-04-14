@@ -5,13 +5,7 @@
 //! be replayed through block processor handlers to reconstruct state without
 //! replaying all Solana blocks from genesis.
 
-#[cfg(feature = "wincode")]
-use crate::snapshot::error::SnapshotError;
-use crate::track::blob::BlobInfo;
-use crate::track::types::CompressedTrack;
-use crate::types::{EpochNumber, NodeId, SlotNumber};
-use tape_crypto::address::Address;
-use tape_crypto::hash::Hash;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[cfg(feature = "wincode")]
 use serde::{Deserialize, Serialize};
@@ -23,9 +17,26 @@ use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[cfg(feature = "wincode")]
+use crate::snapshot::error::SnapshotError;
+use crate::track::blob::BlobInfo;
+use crate::track::types::CompressedTrack;
+use crate::types::{EpochNumber, NodeId, SlotNumber};
+use tape_crypto::address::Address;
+use tape_crypto::hash::Hash;
+
+#[cfg(feature = "wincode")]
 const SNAPSHOT_FRAME_LIMIT: usize = 4 * 1024 * 1024;
 #[cfg(feature = "wincode")]
 type SnapshotFrameBytes = WincodeVec<Pod<u8>, BincodeLen<SNAPSHOT_FRAME_LIMIT>>;
+
+
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+pub enum SnapshotState {
+    Registered = 0,
+    PartiallyCertified,
+    Finalized,
+}
 
 /// Replayable event — mirrors block processing handler parameters.
 ///

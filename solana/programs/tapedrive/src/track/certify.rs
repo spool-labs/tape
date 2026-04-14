@@ -73,11 +73,8 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let cert_epoch = EpochNumber::unpack(args.epoch);
-    let (committee, spools) = system
-        .committee_at(cert_epoch, current_epoch(epoch))
-        .ok_or(TapeError::BadEpochId)?;
-
+    let committee = system.committee;
+    let spools = system.spools;
     let weight = spools.group_weight(track.spool_group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
@@ -102,11 +99,11 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let decompressed_sig = G1Point::try_from(&args.signature.0)
         .map_err(|_| TapeError::BadSignature)?;
 
-    let certify_message = CertifyMessage::new(cert_epoch, old_track_hash.0);
-    let message = certify_message.to_bytes();
+    let message = TrackWriteMessage::new(epoch.id, old_track_hash);
+    let message_bytes = message.to_bytes();
 
     verify_aggregate(
-        &message,
+        &message_bytes,
         &pubkeys,
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
@@ -120,7 +117,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     TrackCertified {
         track: track_address,
-        epoch: cert_epoch,
+        epoch: epoch.id,
         signer_count: signer_count.to_le_bytes(),
         signer_weight: weight.to_le_bytes(),
     }.log();
@@ -132,7 +129,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 mod tests {
     use super::*;
     use tape_core::track::TRACK_TREE_HEIGHT;
-    use tape_core::track::store::TrackStore;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
     use tape_core::types::CommitteeBitmap;
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
@@ -212,10 +209,10 @@ mod tests {
 
         let tape = Tape {
             authority: authority.into(),
-            tracks: TrackStore {
+            tracks: TrackArchive {
                 tree: track_tree,
                 next_number: TrackNumber(1),
-                live_count: 1,
+                num_tracks: 1,
             },
             ..Tape::zeroed()
         };
@@ -232,8 +229,9 @@ mod tests {
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
 
-        let certify_message = CertifyMessage::new(epoch.id, old_track_hash.0);
-        let message = certify_message.to_bytes();
+        let track_message = TrackWriteMessage::new(epoch.id, old_track_hash);
+        let message = track_message.to_bytes();
+
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
             .map(|&i| {
@@ -275,10 +273,10 @@ mod tests {
                 Check::success(),
                 Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
-                        tracks: TrackStore {
+                        tracks: TrackArchive {
                             tree: expected_tree,
                             next_number: TrackNumber(1),
-                            live_count: 1,
+                            num_tracks: 1,
                         },
                         ..tape
                     }.pack().as_ref()

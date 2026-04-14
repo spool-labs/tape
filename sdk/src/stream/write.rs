@@ -144,10 +144,12 @@ fn preflight(
 
     let used_tracks = tape.tracks.next_number();
     let available_tracks = MAX_TRACKS.saturating_sub(used_tracks);
+
     if tracks_needed > available_tracks {
         let chunk_count = tracks_needed
             .checked_sub(TrackNumber(1))
             .ok_or_else(|| stream_error(StreamError::InvalidInput("stream needs no data tracks".into())))?;
+
         return Err(stream_error(StreamError::InsufficientTrackSlots {
             available: available_tracks,
             needed: tracks_needed,
@@ -220,6 +222,7 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     let tape = client.get_tape(&tape_key.address()).await?;
     let entries = build_entries(tape.tracks.next_number(), chunk_count, size)
         .map_err(stream_error)?;
+
     let manifest = build_manifest(key, size, entries).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
     let total_size = size

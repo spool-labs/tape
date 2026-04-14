@@ -98,8 +98,6 @@ pub enum TapeInstruction {
     ClaimCommission,
     AddToBlacklist,
     RemoveFromBlacklist,
-    //VoteOnFeature,
-    //VoteOnSlash,
 
     // Tape
     ReserveTape = 0x90,
@@ -115,17 +113,9 @@ pub enum TapeInstruction {
     InvalidateTrack,
 
     // Snapshot
-    InitSnapshotEpoch = 0xC0,
-    CertifySnapshotGroup,
-    FinalizeSnapshotEpoch,
-
-    // Stream
-    //CreateStream = 0xB0,
-    //RegisterStream,
-    //DeleteStream,
-    //AppendToStream,
-    //UpdateStream,
-    //FinalizeStream,
+    ReserveSnapshot = 0xC0,
+    WriteSnapshot,
+    SignSnapshot,
 }
 
 
@@ -173,7 +163,6 @@ tape_solana::instruction!(TapeInstruction, SetStoragePrice);
 tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);
-//instruction!(TapeInstruction, VoteOnFeature);
 
 tape_solana::instruction!(TapeInstruction, ReserveTape);
 tape_solana::instruction!(TapeInstruction, DestroyTape);
@@ -186,13 +175,6 @@ tape_solana::instruction!(TapeInstruction, DeleteTrack);
 tape_solana::instruction!(TapeInstruction, CertifyTrack);
 tape_solana::instruction!(TapeInstruction, InvalidateTrack);
 
-tape_solana::instruction!(TapeInstruction, InitSnapshotEpoch);
-tape_solana::instruction!(TapeInstruction, CertifySnapshotGroup);
-tape_solana::instruction!(TapeInstruction, FinalizeSnapshotEpoch);
-
-//instruction!(TapeInstruction, CreateStream);
-//instruction!(TapeInstruction, RegisterStream);
-//instruction!(TapeInstruction, DeleteStream);
-//instruction!(TapeInstruction, AppendToStream);
-//instruction!(TapeInstruction, UpdateStream);
-//instruction!(TapeInstruction, FinalizeStream);
+tape_solana::instruction!(TapeInstruction, ReserveSnapshot);
+tape_solana::instruction!(TapeInstruction, WriteSnapshot);
+tape_solana::instruction!(TapeInstruction, SignSnapshot);

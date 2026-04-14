@@ -1,16 +1,28 @@
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 use bytemuck::{Pod, Zeroable};
-use crate::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT};
+use crate::erasure::{MEMBER_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct Bitmap<const BITS: usize, const BYTES: usize>([u8; BYTES]);
 
+/// Bitmap for committee members (up to MEMBER_COUNT), used to determine which node operators have
+/// signed a given message.
 pub type CommitteeBitmap =
     Bitmap<MEMBER_COUNT, { aligned_bytes_for_members(MEMBER_COUNT, 8) }>;
-pub type SnapshotGroupBitmap =
+
+/// Bitmap for SpoolGroup members (up to SPOOL_GROUP_SIZE), used to determine which members of a
+/// SpoolGroup have signed.
+pub type SpoolGroupBitmap =
+    Bitmap<SPOOL_GROUP_SIZE, { aligned_bytes_for_members(SPOOL_GROUP_SIZE, 8) }>;
+
+/// Bitmap for spool groups, used to determine which groups have signed. This is not the same as
+/// the CommitteeBitmap, which tracks signatures from individual node operators rather than groups,
+/// and it not the same as the SpoolGroupBitmap, which tracks signatures from individual members
+/// within a group.
+pub type GroupBitmap =
     Bitmap<SPOOL_GROUP_COUNT, { aligned_bytes_for_members(SPOOL_GROUP_COUNT, 8) }>;
 
 unsafe impl<const BITS: usize, const BYTES: usize> Zeroable for Bitmap<BITS, BYTES> {}

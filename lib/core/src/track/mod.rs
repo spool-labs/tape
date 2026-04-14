@@ -1,9 +1,6 @@
-//! Track domain types and storage metadata.
-
 pub mod blob;
 pub mod data;
-pub mod store;
+pub mod archive;
 pub mod types;
 
-pub const TRACK_TREE_HEIGHT: usize = 16;
-pub const TRACK_LEAF_V1: &[u8; 8] = b"TRACK_V1";
+pub use archive::TRACK_TREE_HEIGHT;

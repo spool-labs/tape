@@ -40,7 +40,6 @@ pub struct CertifyTrack {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct InvalidateTrack {
     pub track: CompressedTrackProof,
-    pub epoch: [u8; 8],
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
     pub computed_root: Hash,
@@ -152,7 +151,6 @@ pub fn build_invalidate_track_ix(
     system_address: Address,
     epoch_address: Address,
     track: CompressedTrackProof,
-    epoch: EpochNumber,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
     computed_root: Hash,
@@ -168,7 +166,6 @@ pub fn build_invalidate_track_ix(
         ],
         data: InvalidateTrack {
             track,
-            epoch: epoch.pack(),
             bitmap,
             signature,
             computed_root,

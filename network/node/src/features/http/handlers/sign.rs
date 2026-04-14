@@ -6,7 +6,7 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::cert::track::CertifyMessage;
+use tape_core::cert::track::TrackWriteMessage;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse};
@@ -32,6 +32,7 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+
     if !track.is_blob() {
         return Err(RouteError::BadRequest(
             "raw tracks do not require certification".into(),
@@ -55,7 +56,7 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::NotFound);
     }
 
-    let message = CertifyMessage::new(epoch, track.get_hash().into());
+    let message = TrackWriteMessage::new(epoch, track.get_hash());
 
     let signature = state
         .context

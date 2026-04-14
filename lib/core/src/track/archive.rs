@@ -1,30 +1,29 @@
-//! Persistent track index metadata for each tape.
-
 use bytemuck::{Pod, Zeroable};
 use tape_crypto::Hash;
 use tape_crypto::merkle::{MerkleError, MerkleTree};
 
 use crate::track::types::{CompressedTrack, CompressedTrackProof};
-use crate::track::TRACK_TREE_HEIGHT;
 use crate::types::TrackNumber;
+
+pub const TRACK_TREE_HEIGHT: usize = 16;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct TrackStore {
-    pub tree: MerkleTree<TRACK_TREE_HEIGHT>,
+pub struct TrackArchive {
+    pub num_tracks: u64,
     pub next_number: TrackNumber,
-    pub live_count: u64,
+    pub tree: MerkleTree<TRACK_TREE_HEIGHT>,
 }
 
-impl TrackStore {
+impl TrackArchive {
     #[inline(always)]
     pub fn next_number(&self) -> TrackNumber {
         self.next_number
     }
 
     #[inline(always)]
-    pub fn live_count(&self) -> u64 {
-        self.live_count
+    pub fn num_tracks(&self) -> u64 {
+        self.num_tracks
     }
 
     #[inline(always)]
@@ -32,30 +31,33 @@ impl TrackStore {
         proof.verify(&self.tree)
     }
 
+    #[inline(always)]
     pub fn append(&mut self, track: &CompressedTrack) -> Result<(), MerkleError> {
+        self.append_hash(track.track_number, track.get_hash())
+    }
+
+    pub fn append_hash(
+        &mut self,
+        track_number: TrackNumber,
+        leaf: Hash,
+    ) -> Result<(), MerkleError> {
         self.tree.ensure_initialized();
 
-        if self.next_number.0 != self.tree.next_index {
+        if self.next_number.as_u64() != self.tree.next_index {
             return Err(MerkleError::InvalidIndex);
         }
 
-        if track.track_number.0 != self.next_number.0 {
+        if track_number != self.next_number {
             return Err(MerkleError::InvalidIndex);
         }
 
-        let inserted_index = self.tree.add_leaf_hash(track.get_hash())?;
-        if inserted_index != track.track_number.0 {
+        let inserted_index = self.tree.add_leaf_hash(leaf)?;
+        if inserted_index != track_number.as_u64() {
             return Err(MerkleError::InvalidIndex);
         }
 
-        self.next_number = TrackNumber(
-            self.next_number
-                .0
-                .checked_add(1)
-                .ok_or(MerkleError::TreeFull)?,
-        );
-        self.live_count = self
-            .live_count
+        self.next_number.increment();
+        self.num_tracks = self.num_tracks
             .checked_add(1)
             .ok_or(MerkleError::TreeFull)?;
 
@@ -91,10 +93,12 @@ impl TrackStore {
             &proof.proof,
             proof.state.get_hash(),
         )?;
-        self.live_count = self
-            .live_count
+
+        self.num_tracks = self
+            .num_tracks
             .checked_sub(1)
             .ok_or(MerkleError::InvalidIndex)?;
+
         Ok(())
     }
 }

@@ -9,7 +9,7 @@ use bytemuck::cast;
 use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
-use tape_core::cert::InvalidateMessage;
+use tape_core::cert::track::TrackInvalidateMessage;
 use tape_core::erasure::{SPOOL_GROUP_SIZE, group_for_spool};
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
@@ -66,10 +66,10 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     verify_inconsistency_proof(&state, &track_info, epoch, &request.proof)?;
 
-    let message = InvalidateMessage::new(
+    let message = TrackInvalidateMessage::new(
         epoch,
-        track_info.get_hash().into(),
-        request.proof.observed_root.into(),
+        track_info.get_hash(),
+        request.proof.observed_root,
     );
     let signature = state
         .context
@@ -135,10 +135,10 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ));
     }
 
-    let message = InvalidateMessage::new(
+    let message = TrackInvalidateMessage::new(
         epoch,
-        track_info.get_hash().into(),
-        proof.observed_root.into(),
+        track_info.get_hash(),
+        proof.observed_root,
     );
     proof
         .signature

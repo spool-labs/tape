@@ -18,6 +18,7 @@ pub mod prelude {
     pub use crate::encoding::EncodingProfile;
     pub use crate::spooler::{SpoolGroup, SpoolIndex};
     pub use crate::system::{EpochPhase, NodeStatus, SpoolState, SpoolStatus};
+    pub use crate::snapshot::types::SnapshotState;
     pub use crate::track::blob::BlobInfo;
     pub use crate::track::data::TrackData;
     pub use crate::track::types::{CompressedTrack, TrackKind, TrackState};

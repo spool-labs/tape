@@ -41,12 +41,6 @@ pub enum TapeError {
     BadEpochId = 0x33,
     #[error("snapshot incomplete")]
     SnapshotIncomplete = 0x34,
-    #[error("snapshot group already sealed")]
-    SnapshotGroupSealed = 0x35,
-    #[error("snapshot epoch not open")]
-    SnapshotEpochClosed = 0x37,
-    #[error("snapshot chunk size mismatch")]
-    SnapshotChunkSizeMismatch = 0x38,
 
     // Committee (0x40-0x45)
     #[error("no quorum")]
@@ -136,7 +130,6 @@ impl TapeError {
                 | Self::AlreadySynced
                 | Self::AlreadyInvalidated
                 | Self::AlreadyCertified
-                | Self::SnapshotGroupSealed
                 | Self::UnexpectedState
         )
     }
@@ -171,9 +164,6 @@ impl TapeError {
             Self::BadSchedule => "Invalid schedule",
             Self::BadEpochId => "Invalid epoch ID",
             Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
-            Self::SnapshotGroupSealed => "Snapshot group already sealed",
-            Self::SnapshotEpochClosed => "Snapshot epoch is not the currently open snapshot epoch",
-            Self::SnapshotChunkSizeMismatch => "Snapshot chunk size differs from manifest",
             Self::NoQuorum => "Quorum not reached",
             Self::NoSigners => "No signers provided",
             Self::BadMember => "Invalid committee member",

@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_core::prelude::*;
-use tape_core::track::store::TrackStore;
+use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;
 
@@ -28,8 +28,8 @@ pub struct Tape {
     /// The epoch when this resource expires.
     pub expiry_epoch: EpochNumber,
 
-    /// Merkle-backed catalog of compressed tracks on this tape.
-    pub tracks: TrackStore,
+    /// A merkle tree of compressed tracks that store the tape data
+    pub tracks: TrackArchive,
 }
 
 impl Tape {

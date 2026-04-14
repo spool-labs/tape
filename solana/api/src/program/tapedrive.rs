@@ -162,7 +162,7 @@ pub fn track_pda(tape: Address, track_number: TrackNumber) -> (Address, u8) {
 }
 
 #[inline(always)]
-pub fn snapshot_manifest_pda(epoch: EpochNumber) -> (Address, u8) {
+pub fn snapshot_pda(epoch: EpochNumber) -> (Address, u8) {
     Address::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], id())
 }
 

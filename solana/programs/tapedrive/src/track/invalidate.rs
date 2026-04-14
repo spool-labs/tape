@@ -59,11 +59,8 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let cert_epoch = EpochNumber::unpack(args.epoch);
-    let (committee, spools) = system
-        .committee_at(cert_epoch, current_epoch(epoch))
-        .ok_or(TapeError::BadEpochId)?;
-
+    let committee = system.committee;
+    let spools = system.spools;
     let weight = spools.group_weight(track.spool_group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
@@ -88,15 +85,15 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let decompressed_sig = G1Point::try_from(&args.signature.0)
         .map_err(|_| TapeError::BadSignature)?;
 
-    let invalidate_message = InvalidateMessage::new(
-        cert_epoch,
-        old_track_hash.0,
-        args.computed_root.0,
+    let message = TrackInvalidateMessage::new(
+        epoch.id,
+        old_track_hash,
+        args.computed_root,
     );
-    let message = invalidate_message.to_bytes();
+    let message_bytes = message.to_bytes();
 
     verify_aggregate(
-        &message,
+        &message_bytes,
         &pubkeys,
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
@@ -108,7 +105,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     TrackInvalidated {
         track: track_address,
-        epoch: cert_epoch,
+        epoch: epoch.id,
     }.log();
 
     Ok(())
@@ -118,7 +115,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 mod tests {
     use super::*;
     use tape_core::track::TRACK_TREE_HEIGHT;
-    use tape_core::track::store::TrackStore;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
     use tape_core::types::CommitteeBitmap;
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
@@ -198,10 +195,10 @@ mod tests {
 
         let tape = Tape {
             authority: authority.into(),
-            tracks: TrackStore {
+            tracks: TrackArchive {
                 tree: track_tree,
                 next_number: TrackNumber(1),
-                live_count: 1,
+                num_tracks: 1,
             },
             ..Tape::zeroed()
         };
@@ -219,10 +216,10 @@ mod tests {
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
 
-        let invalidate_message = InvalidateMessage::new(
+        let invalidate_message = TrackInvalidateMessage::new(
             epoch.id,
-            old_track_hash.0,
-            computed_root.0,
+            old_track_hash,
+            computed_root,
         );
         let message = invalidate_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
@@ -246,7 +243,6 @@ mod tests {
             system_address,
             epoch_address,
             CompressedTrackProof { state: track, proof },
-            epoch.id,
             bitmap,
             agg_sig,
             computed_root,
@@ -268,10 +264,10 @@ mod tests {
                 Check::success(),
                 Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
-                        tracks: TrackStore {
+                        tracks: TrackArchive {
                             tree: expected_tree,
                             next_number: TrackNumber(1),
-                            live_count: 1,
+                            num_tracks: 1,
                         },
                         ..tape
                     }.pack().as_ref()
@@ -342,10 +338,10 @@ mod tests {
 
         let tape = Tape {
             authority: authority.into(),
-            tracks: TrackStore {
+            tracks: TrackArchive {
                 tree: track_tree,
                 next_number: TrackNumber(1),
-                live_count: 1,
+                num_tracks: 1,
             },
             ..Tape::zeroed()
         };
@@ -360,10 +356,10 @@ mod tests {
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, system.committee.size());
         let computed_root = Hash::new_unique();
 
-        let invalidate_message = InvalidateMessage::new(
+        let invalidate_message = TrackInvalidateMessage::new(
             epoch.id,
-            old_track_hash.0,
-            computed_root.0,
+            old_track_hash,
+            computed_root,
         );
         let message = invalidate_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
@@ -381,7 +377,6 @@ mod tests {
             system_address,
             epoch_address,
             CompressedTrackProof { state: track, proof },
-            epoch.id,
             bitmap,
             agg_sig,
             computed_root,

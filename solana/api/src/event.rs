@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use tape_core::bls::BlsPubkey;
+use tape_core::snapshot::types::SnapshotState;
 use tape_core::spooler::SpoolGroup;
 use tape_core::system::NodePreferences;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
@@ -15,9 +16,6 @@ pub enum EventType {
     Unknown = 0,
 
     // Track events (0x10 range)
-    SnapshotInit = 0x10,
-    SnapshotCertified = 0x11,
-    SnapshotFinalized = 0x12,
     TrackCertified = 0x13,
     TrackDeleted = 0x14,
     TrackInvalidated = 0x15,
@@ -43,40 +41,13 @@ pub enum EventType {
 
     // Commission events (0x60 range)
     CommissionClaimed = 0x60,
+
+    // Snapshot events (0x70 range)
+    SnapshotReserved = 0x70,
+    SnapshotWritten = 0x71,
+    SnapshotSigned = 0x72,
 }
 
-/// Emitted when an epoch's snapshot manifest is initialized.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotInit {
-    pub epoch: EpochNumber,
-}
-
-tape_solana::event!(EventType, SnapshotInit);
-
-/// Emitted when a canonical snapshot group is sealed into the manifest/tape.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotCertified {
-    pub epoch: EpochNumber,
-    pub group: SpoolGroup,
-    /// Canonical track number on the epoch's derived snapshot tape.
-    pub track: TrackNumber,
-    pub commitment: Hash,
-    pub signer_count: [u8; 8],
-    pub signer_weight: [u8; 8],
-}
-
-tape_solana::event!(EventType, SnapshotCertified);
-
-/// Emitted when a snapshot epoch becomes the canonical tail.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotFinalized {
-    pub epoch: EpochNumber,
-}
-
-tape_solana::event!(EventType, SnapshotFinalized);
 
 /// Emitted when a track achieves certification quorum.
 #[repr(C)]
@@ -126,11 +97,17 @@ tape_solana::event!(EventType, TrackInvalidated);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackWritten {
+    /// The epoch when the track was written
     pub epoch: EpochNumber,
-    pub track: Address,
+    /// Parent tape address
     pub tape: Address,
+    /// Track account address
+    pub track: Address,
+    /// Track index within the tape
     pub track_number: TrackNumber,
-    pub spool_group: [u8; 8],
+    /// The spool group that is responsible for this track
+    pub spool_group: SpoolGroup,
+    /// The compressed track hash that was added to the tape's merkle tree
     pub track_hash: Hash,
 }
 
@@ -334,29 +311,67 @@ pub struct CommissionClaimed {
 
 tape_solana::event!(EventType, CommissionClaimed);
 
+/// Emitted when a snapshot is reserved for an epoch
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SnapshotReserved {
+    /// The epoch this snapshot is reserved for
+    pub epoch: EpochNumber,
+}
+
+tape_solana::event!(EventType, SnapshotReserved);
+
+/// Emitted when a snapshot blob is written to the tape
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SnapshotWritten {
+    /// The epoch this snapshot is for
+    pub epoch: EpochNumber,
+    /// The SpoolGroup that wrote this snapshot
+    pub group: SpoolGroup,
+    /// Track account address
+    pub track: Address,
+    /// The TrackNumber that contains the snapshot blob info
+    pub track_number: TrackNumber,
+    /// The compressed track hash that was added to the tape's merkle tree
+    pub track_hash: Hash,
+}
+
+tape_solana::event!(EventType, SnapshotWritten);
+
+/// Emitted when a snapshot is certified by a group of signers
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SnapshotSigned {
+    /// The epoch this snapshot is for
+    pub epoch: EpochNumber,   
+    /// The SpoolGroup that signed this snapshot
+    pub group: SpoolGroup,
+    /// The snapshot state (0 = Registered, 1 = PartiallyCertified, 2 = Finalized)
+    pub state: u64,
+}
+
+tape_solana::event!(EventType, SnapshotSigned);
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_event_type_values() {
-        assert_eq!(EventType::SnapshotInit as u8, 0x10);
-        assert_eq!(EventType::SnapshotCertified as u8, 0x11);
-        assert_eq!(EventType::SnapshotFinalized as u8, 0x12);
         assert_eq!(EventType::TrackCertified as u8, 0x13);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
         assert_eq!(EventType::EpochAdvanced as u8, 0x40);
         assert_eq!(EventType::StakeDeposited as u8, 0x50);
         assert_eq!(EventType::CommissionClaimed as u8, 0x60);
+        assert_eq!(EventType::SnapshotReserved as u8, 0x70);
+        assert_eq!(EventType::SnapshotSigned as u8, 0x71);
     }
 
     #[test]
     fn test_event_sizes() {
         // Verify events fit within Solana's 1024-byte log limit
-        assert!(SnapshotInit::size_of() < 1024);
-        assert!(SnapshotCertified::size_of() < 1024);
-        assert!(SnapshotFinalized::size_of() < 1024);
         assert!(TrackCertified::size_of() < 1024);
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
@@ -364,23 +379,7 @@ mod tests {
         assert!(NodeSynced::size_of() < 1024);
         assert!(PoolAdvanced::size_of() < 1024);
         assert!(StakeDeposited::size_of() < 1024);
-    }
-
-    #[test]
-    fn snapshot_certified_layout_preserves_domain_types() {
-        let event = SnapshotCertified {
-            epoch: EpochNumber(7),
-            group: SpoolGroup(3),
-            track: TrackNumber(11),
-            commitment: Hash::from([0x33; 32]),
-            signer_count: 19u64.to_le_bytes(),
-            signer_weight: 42u64.to_le_bytes(),
-        };
-
-        let bytes = event.to_bytes();
-        let recovered = SnapshotCertified::try_from_bytes(&bytes).expect("parse event");
-
-        assert_eq!(recovered.group, SpoolGroup(3));
-        assert_eq!(recovered.track, TrackNumber(11));
+        assert!(SnapshotReserved::size_of() < 1024);
+        assert!(SnapshotSigned::size_of() < 1024);
     }
 }

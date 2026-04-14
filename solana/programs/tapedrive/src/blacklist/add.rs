@@ -52,7 +52,7 @@ mod tests {
     use super::*;
     use tape_crypto::Hash;
     use tape_core::track::TRACK_TREE_HEIGHT;
-    use tape_core::track::store::TrackStore;
+    use tape_core::track::store::TrackArchive;
     use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
     use tape_test::*;
 
@@ -100,10 +100,10 @@ mod tests {
         node.authority = authority.into();
         node.blacklist = Blacklist::new();
         let tape = Tape {
-            tracks: TrackStore {
+            tracks: TrackArchive {
                 tree: track_tree,
                 next_number: TrackNumber(1),
-                live_count: 1,
+                num_tracks: 1,
             },
             ..Tape::zeroed()
         };

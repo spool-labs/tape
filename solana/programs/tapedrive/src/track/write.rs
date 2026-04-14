@@ -9,10 +9,11 @@ use tape_crypto::Hash;
 use crate::error::TapeError;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let (args, payload) = parse_track_write(data)?;
-    let meta = payload
+    let (args, data) = parse_track_write(data)?;
+    let meta = data
         .meta()
         .ok_or(TapeError::InvalidCommitment)?;
+
     let [
         fee_payer_info,
         authority_info,
@@ -72,7 +73,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         epoch: current_epoch(epoch),
         track: track_address,
         tape: tape_address,
-        spool_group: spool_group.0.to_le_bytes(),
+        spool_group,
         track_number,
         track_hash,
     }.log();
@@ -113,7 +114,7 @@ mod tests {
     use super::*;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::blob::BlobInfo;
-    use tape_core::track::store::TrackStore;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{TrackKind, TrackState};
     use solana_sdk::account::Account;
     use tape_crypto::merkle::{MerkleTree, root_from_leaf_hashes};
@@ -172,10 +173,10 @@ mod tests {
             capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
-            tracks: TrackStore {
+            tracks: TrackArchive {
                 tree: MerkleTree::<TRACK_TREE_HEIGHT>::new(),
                 next_number: TrackNumber(0),
-                live_count: 0,
+                num_tracks: 0,
             },
             ..Tape::zeroed()
         };
@@ -217,10 +218,10 @@ mod tests {
                         used: storage_units,
                         active_epoch: tape.active_epoch,
                         expiry_epoch: tape.expiry_epoch,
-                        tracks: TrackStore {
+                        tracks: TrackArchive {
                             tree: expected_tree,
                             next_number: TrackNumber(1),
-                            live_count: 1,
+                            num_tracks: 1,
                         },
                         ..Tape::zeroed()
                     }.pack().as_ref()

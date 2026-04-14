@@ -83,7 +83,7 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
         &self.0[start..end]
     }
 
-    /// Count how many spools in a group are owned by members in the bitmap.
+    /// Count how many of the provided group's member-slots are covered by the bitmap
     ///
     /// # Panics
     /// Panics if `group >= SPOOL_GROUP_COUNT`.
@@ -93,6 +93,7 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
         bitmap: &Bitmap<BITS, BYTES>,
     ) -> u64 {
         assert!((group.0 as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
+
         let start = group.0 as usize * SPOOL_GROUP_SIZE;
         let end = start + SPOOL_GROUP_SIZE;
         let mut weight = 0u64;
