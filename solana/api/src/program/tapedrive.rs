@@ -205,12 +205,12 @@ mod tests {
     fn test_snapshot_epoch_pdas_are_distinct_and_stable() {
         let epoch = EpochNumber(42);
 
-        let (manifest, manifest_bump) = snapshot_manifest_pda(epoch);
+        let (snapshot, snapshot_bump) = snapshot_pda(epoch);
         let (tape, tape_bump) = snapshot_tape_pda(epoch);
 
-        assert_ne!(manifest, tape);
+        assert_ne!(snapshot, tape);
         assert_eq!(
-            (manifest, manifest_bump),
+            (snapshot, snapshot_bump),
             {
                 let (address, bump) =
                     Pubkey::find_program_address(&[SNAPSHOT_MANIFEST, &epoch.pack()], &id());

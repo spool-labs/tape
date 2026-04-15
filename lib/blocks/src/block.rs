@@ -236,6 +236,7 @@ mod tests {
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::hash::Hash as SolanaHash;
     use solana_sdk::sysvar;
+    use tape_core::spooler::SpoolGroup;
     use solana_transaction_status::{
         EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
         UiInnerInstructions, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
@@ -298,7 +299,7 @@ mod tests {
             epoch: 2.into(),
             track: tx2_track,
             tape: Address::new_unique(),
-            spool_group: 0u64.to_le_bytes(),
+            spool_group: SpoolGroup(0),
             track_number: 0u64.into(),
             track_hash: Hash::default(),
         };
@@ -500,7 +501,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            spool_group: 1u64.to_le_bytes(),
+                            spool_group: SpoolGroup(1),
                             track_number: 7u64.into(),
                             track_hash: Hash::new_unique(),
                         },
@@ -514,7 +515,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            spool_group: 2u64.to_le_bytes(),
+                            spool_group: SpoolGroup(2),
                             track_number: 8u64.into(),
                             track_hash: Hash::new_unique(),
                         },

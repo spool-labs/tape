@@ -1,10 +1,10 @@
+use tape_api::program::tapedrive::{snapshot_tape_pda, SYSTEM_ADDRESS};
 use tape_blocks::{ParseError, ParsedInstruction};
-use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
-use tape_core::spooler::SpoolGroup;
+use tape_core::snapshot::chunk::snapshot_chunk_key;
+use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::track::data::TrackData;
-use tape_core::track::types::CompressedTrack;
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{EpochNumber, SlotNumber};
-use tape_crypto::address::Address;
 
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
@@ -92,9 +92,63 @@ fn capture_instruction(
             },
             raw_track: None,
         },
-        ParsedInstruction::InitSnapshotEpoch { .. }
-        | ParsedInstruction::CertifySnapshotGroup { .. }
-        | ParsedInstruction::FinalizeSnapshotEpoch { .. } => return Ok(None),
+        ParsedInstruction::ReserveSnapshot { event } => {
+            let snapshot_tape = snapshot_tape_pda(event.epoch).0;
+            CapturedTrackWrite {
+                event: CapturedEvent {
+                    epoch: event.epoch,
+                    event: ReplayableEvent::ReserveTape {
+                        tape: snapshot_tape,
+                        authority: SYSTEM_ADDRESS,
+                        active_epoch: event.epoch,
+                        expiry_epoch: EpochNumber(u64::MAX),
+                    },
+                },
+                raw_track: None,
+            }
+        }
+        ParsedInstruction::WriteSnapshot {
+            group,
+            chunk_index,
+            blob,
+            event,
+        } => {
+            let snapshot_tape = snapshot_tape_pda(event.epoch).0;
+            let key = snapshot_chunk_key(event.epoch, *group, *chunk_index);
+            let track = CompressedTrack {
+                tape: snapshot_tape,
+                key,
+                track_number: event.track_number,
+                kind: TrackKind::Blob as u64,
+                state: TrackState::Certified as u64,
+                size: blob.size,
+                spool_group: *group,
+                value_hash: blob.get_hash(),
+            };
+
+            // Sanity check: the reconstructed track must commit to the same hash the
+            // program logged. If this fires, capture is drifting from the program's
+            // CompressedTrack derivation.
+            if track.get_hash() != event.track_hash {
+                return Err(ParseError::Deserialization(
+                    "snapshot chunk hash mismatch between capture and program".into(),
+                )
+                .into());
+            }
+
+            CapturedTrackWrite {
+                event: CapturedEvent {
+                    epoch: event.epoch,
+                    event: ReplayableEvent::Track(ReplayTrack {
+                        state: track,
+                        epoch: event.epoch,
+                        blob: Some(*blob),
+                    }),
+                },
+                raw_track: None,
+            }
+        }
+        ParsedInstruction::SignSnapshot { .. } => return Ok(None),
         ParsedInstruction::TrackWrite {
             track,
             key,
@@ -105,8 +159,6 @@ fn capture_instruction(
             let meta = value
                 .meta()
                 .ok_or_else(|| ParseError::Deserialization("invalid track payload".into()))?;
-
-            let spool_group = SpoolGroup::unpack(event.spool_group);
 
             CapturedTrackWrite {
                 event: CapturedEvent {
@@ -119,7 +171,7 @@ fn capture_instruction(
                             kind: meta.kind as u64,
                             state: meta.initial_state as u64,
                             size: meta.size,
-                            spool_group,
+                            spool_group: event.spool_group,
                             value_hash: meta.value_hash,
                         },
                         epoch: event.epoch,
@@ -131,8 +183,8 @@ fn capture_instruction(
                 },
                 raw_track: match value {
                     TrackData::Raw(bytes) => Some(RawTrack {
-                        track: Address::from(*track),
-                        spool_group,
+                        track: *track,
+                        spool_group: event.spool_group,
                         data: bytes.clone(),
                     }),
                     TrackData::Blob(_) => None,
@@ -222,23 +274,24 @@ fn capture_instruction(
 
 #[cfg(test)]
 mod tests {
-    use tape_crypto::address::Address;
     use tape_api::event::{
-        EpochAdvanced, SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeReserved,
+        EpochAdvanced, SnapshotReserved, SnapshotSigned, SnapshotWritten, TapeReserved,
         TrackCertified, TrackWritten,
     };
+    use tape_api::program::tapedrive::{snapshot_tape_pda, SYSTEM_ADDRESS};
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
-    use tape_core::erasure::COMMITMENT_TREE_HEIGHT;
+    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::snapshot::chunk::snapshot_chunk_key;
+    use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::snapshot::types::ReplayableEvent;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
-    use tape_core::track::types::{TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
-    use tape_crypto::Hash;
+    use tape_crypto::address::Address;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
+    use tape_crypto::Hash;
 
     use super::capture_block;
     use crate::features::block::ingestor::ParsedBlock;
@@ -257,48 +310,67 @@ mod tests {
         }
     }
 
-    fn blob_track_write_instruction(track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
+    fn default_blob() -> BlobInfo {
         let payload = vec![vec![0xAA; 64]; SPOOL_GROUP_SIZE];
-        let blob = blob_info(&payload);
+        blob_info(&payload)
+    }
 
+    fn blob_track_write_instruction(track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
         ParsedInstruction::TrackWrite {
             authority: Address::new_unique(),
             track,
             key: Hash::new_unique(),
-            value: TrackData::Blob(blob),
+            value: TrackData::Blob(default_blob()),
             event: TrackWritten {
                 epoch,
                 track,
                 tape,
                 track_number: TrackNumber(7),
-                spool_group: 3u64.to_le_bytes(),
+                spool_group: SpoolGroup(3),
                 track_hash: Hash::new_unique(),
             },
         }
     }
 
-    fn snapshot_block() -> ParsedBlock {
+    fn snapshot_block(epoch: EpochNumber, group: SpoolGroup, chunk_index: u64) -> ParsedBlock {
+        let blob = default_blob();
+        let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
+        let key = snapshot_chunk_key(epoch, group, chunk_index);
+        let track_number = TrackNumber(0);
+        let expected_track = CompressedTrack {
+            tape: snapshot_tape,
+            key,
+            track_number,
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: blob.size,
+            spool_group: group,
+            value_hash: blob.get_hash(),
+        };
+
         ParsedBlock {
             slot: SlotNumber(7),
             instructions: vec![
-                ParsedInstruction::InitSnapshotEpoch {
-                    event: SnapshotInit {
-                        epoch: EpochNumber(7),
+                ParsedInstruction::ReserveSnapshot {
+                    event: SnapshotReserved { epoch },
+                },
+                ParsedInstruction::WriteSnapshot {
+                    group,
+                    chunk_index,
+                    blob,
+                    event: SnapshotWritten {
+                        epoch,
+                        group,
+                        track: Address::new_unique(),
+                        track_number,
+                        track_hash: expected_track.get_hash(),
                     },
                 },
-                ParsedInstruction::CertifySnapshotGroup {
-                    event: SnapshotCertified {
-                        epoch: EpochNumber(7),
-                        group: SpoolGroup(3),
-                        track: TrackNumber(9),
-                        commitment: Hash::from([0x44; 32]),
-                        signer_count: [2; 8],
-                        signer_weight: [3; 8],
-                    },
-                },
-                ParsedInstruction::FinalizeSnapshotEpoch {
-                    event: SnapshotFinalized {
-                        epoch: EpochNumber(7),
+                ParsedInstruction::SignSnapshot {
+                    event: SnapshotSigned {
+                        epoch,
+                        group,
+                        state: 0,
                     },
                 },
             ],
@@ -316,7 +388,7 @@ mod tests {
                 track,
                 tape,
                 track_number: TrackNumber(8),
-                spool_group: 4u64.to_le_bytes(),
+                spool_group: SpoolGroup(4),
                 track_hash: Hash::new_unique(),
             },
         }
@@ -454,11 +526,50 @@ mod tests {
     }
 
     #[test]
-    fn ignores_snapshot_instructions() {
-        let captured = capture_block(EpochNumber(7), &snapshot_block()).unwrap();
+    fn captures_snapshot_chunks() {
+        let epoch = EpochNumber(7);
+        let group = SpoolGroup(3);
+        let chunk_index = 0u64;
 
-        assert!(captured.events.is_empty());
+        let block = snapshot_block(epoch, group, chunk_index);
+        let captured = capture_block(epoch, &block).unwrap();
+
+        // Reserve emits ReserveTape for the snapshot tape, Write emits a Track,
+        // Sign emits nothing.
+        assert_eq!(captured.events.len(), 2);
         assert!(captured.raw_tracks.is_empty());
-        assert_eq!(captured.next_epoch, EpochNumber(7));
+        assert_eq!(captured.next_epoch, epoch);
+
+        let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
+        let expected_key = snapshot_chunk_key(epoch, group, chunk_index);
+
+        match &captured.events[0].event {
+            ReplayableEvent::ReserveTape {
+                tape,
+                authority,
+                active_epoch,
+                expiry_epoch,
+            } => {
+                assert_eq!(*tape, snapshot_tape);
+                assert_eq!(*authority, SYSTEM_ADDRESS);
+                assert_eq!(*active_epoch, epoch);
+                assert_eq!(*expiry_epoch, EpochNumber(u64::MAX));
+            }
+            other => panic!("expected ReserveTape for snapshot tape, got {other:?}"),
+        }
+
+        match &captured.events[1].event {
+            ReplayableEvent::Track(track) => {
+                assert_eq!(track.state.tape, snapshot_tape);
+                assert_eq!(track.state.key, expected_key);
+                assert_eq!(track.state.track_number, TrackNumber(0));
+                assert_eq!(track.state.spool_group, group);
+                assert_eq!(track.state.kind, TrackKind::Blob as u64);
+                assert_eq!(track.state.state, TrackState::Certified as u64);
+                assert_eq!(track.epoch, epoch);
+                assert!(track.blob.is_some());
+            }
+            other => panic!("expected Track event from WriteSnapshot, got {other:?}"),
+        }
     }
 }

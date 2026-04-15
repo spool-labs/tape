@@ -2,7 +2,7 @@
 
 use tape_api::event::{
     EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeDestroyed, TapeReserved,
+    SnapshotReserved, SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
 
@@ -15,9 +15,9 @@ use crate::error::ParseError;
 /// during historical catch-up.
 #[derive(Debug, Clone)]
 pub enum TapedriveEvent {
-    SnapshotInit(SnapshotInit),
-    SnapshotCertified(SnapshotCertified),
-    SnapshotFinalized(SnapshotFinalized),
+    SnapshotReserved(SnapshotReserved),
+    SnapshotWritten(SnapshotWritten),
+    SnapshotSigned(SnapshotSigned),
     EpochAdvanced(EpochAdvanced),
     TrackCertified(TrackCertified),
     TrackDeleted(TrackDeleted),
@@ -55,20 +55,20 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
     let event_data = &data[8..];
 
     match event_type {
-        EventType::SnapshotInit => {
-            let event = bytemuck::try_from_bytes::<SnapshotInit>(event_data)
+        EventType::SnapshotReserved => {
+            let event = bytemuck::try_from_bytes::<SnapshotReserved>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::SnapshotInit(*event)))
+            Ok(Some(TapedriveEvent::SnapshotReserved(*event)))
         }
-        EventType::SnapshotCertified => {
-            let event = bytemuck::try_from_bytes::<SnapshotCertified>(event_data)
+        EventType::SnapshotWritten => {
+            let event = bytemuck::try_from_bytes::<SnapshotWritten>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::SnapshotCertified(*event)))
+            Ok(Some(TapedriveEvent::SnapshotWritten(*event)))
         }
-        EventType::SnapshotFinalized => {
-            let event = bytemuck::try_from_bytes::<SnapshotFinalized>(event_data)
+        EventType::SnapshotSigned => {
+            let event = bytemuck::try_from_bytes::<SnapshotSigned>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::SnapshotFinalized(*event)))
+            Ok(Some(TapedriveEvent::SnapshotSigned(*event)))
         }
         EventType::EpochAdvanced => {
             let event = bytemuck::try_from_bytes::<EpochAdvanced>(event_data)
@@ -134,7 +134,6 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
 mod tests {
     use super::*;
     use tape_core::prelude::*;
-    use tape_api::event::{SnapshotCertified, SnapshotFinalized, SnapshotInit};
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::TrackNumber;
     use tape_crypto::address::Address;
@@ -204,7 +203,7 @@ mod tests {
             epoch: EpochNumber(3),
             track,
             tape,
-            spool_group: 5u64.to_le_bytes(),
+            spool_group: SpoolGroup(5),
             track_number: TrackNumber(7),
             track_hash: Hash::default(),
         };
@@ -218,60 +217,66 @@ mod tests {
                 assert_eq!(e.tape, tape);
                 assert_eq!(e.epoch, EpochNumber(3));
                 assert_eq!(e.track_number, TrackNumber(7));
+                assert_eq!(e.spool_group, SpoolGroup(5));
             }
             _ => panic!("Expected TrackWritten event"),
         }
     }
 
     #[test]
-    fn test_parse_snapshot_group_certified_event() {
-        let event = SnapshotCertified {
+    fn test_parse_snapshot_written_event() {
+        let track = Address::new_unique();
+        let event = SnapshotWritten {
             epoch: EpochNumber(11),
             group: SpoolGroup(4),
-            track: TrackNumber(8),
-            commitment: Hash::from([0x33; 32]),
-            signer_count: [5; 8],
-            signer_weight: [9; 8],
+            track,
+            track_number: TrackNumber(8),
+            track_hash: Hash::from([0x33; 32]),
         };
 
-        let log = encode_event(EventType::SnapshotCertified, &event);
+        let log = encode_event(EventType::SnapshotWritten, &event);
         let parsed = parse_event_data(&log).unwrap().unwrap();
 
         match parsed {
-            TapedriveEvent::SnapshotCertified(decoded) => {
+            TapedriveEvent::SnapshotWritten(decoded) => {
                 assert_eq!(decoded.epoch, event.epoch);
                 assert_eq!(decoded.group, event.group);
                 assert_eq!(decoded.track, event.track);
-                assert_eq!(decoded.commitment, event.commitment);
+                assert_eq!(decoded.track_number, event.track_number);
+                assert_eq!(decoded.track_hash, event.track_hash);
             }
-            _ => panic!("Expected SnapshotCertified event"),
+            _ => panic!("Expected SnapshotWritten event"),
         }
     }
 
     #[test]
-    fn test_parse_snapshot_epoch_events() {
-        let init = SnapshotInit {
+    fn test_parse_snapshot_reserved_and_signed_events() {
+        let reserved = SnapshotReserved {
             epoch: EpochNumber(20),
         };
-        let finalized = SnapshotFinalized {
+        let signed = SnapshotSigned {
             epoch: EpochNumber(20),
+            group: SpoolGroup(3),
+            state: 0,
         };
 
-        let init_log = encode_event(EventType::SnapshotInit, &init);
-        let finalized_log = encode_event(EventType::SnapshotFinalized, &finalized);
+        let reserved_log = encode_event(EventType::SnapshotReserved, &reserved);
+        let signed_log = encode_event(EventType::SnapshotSigned, &signed);
 
-        match parse_event_data(&init_log).unwrap().unwrap() {
-            TapedriveEvent::SnapshotInit(decoded) => {
-                assert_eq!(decoded.epoch, init.epoch);
+        match parse_event_data(&reserved_log).unwrap().unwrap() {
+            TapedriveEvent::SnapshotReserved(decoded) => {
+                assert_eq!(decoded.epoch, reserved.epoch);
             }
-            _ => panic!("Expected SnapshotInit event"),
+            _ => panic!("Expected SnapshotReserved event"),
         }
 
-        match parse_event_data(&finalized_log).unwrap().unwrap() {
-            TapedriveEvent::SnapshotFinalized(decoded) => {
-                assert_eq!(decoded.epoch, finalized.epoch);
+        match parse_event_data(&signed_log).unwrap().unwrap() {
+            TapedriveEvent::SnapshotSigned(decoded) => {
+                assert_eq!(decoded.epoch, signed.epoch);
+                assert_eq!(decoded.group, signed.group);
+                assert_eq!(decoded.state, signed.state);
             }
-            _ => panic!("Expected SnapshotFinalized event"),
+            _ => panic!("Expected SnapshotSigned event"),
         }
     }
 

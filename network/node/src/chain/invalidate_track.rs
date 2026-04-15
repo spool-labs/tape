@@ -5,6 +5,7 @@ use store::Store;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
 use tape_api::program::tapedrive::{epoch_pda, system_pda};
+use tape_core::bls::BlsSignature;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::CommitteeBitmap;
 use tape_crypto::Hash;

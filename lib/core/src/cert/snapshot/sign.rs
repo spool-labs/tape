@@ -55,18 +55,19 @@ impl SnapshotSignMessage {
 #[cfg(test)]
 mod tests {
     use crate::cert::SnapshotWriteMessage;
+    use tape_crypto::Hash;
 
     use super::*;
 
     #[test]
     fn test_message_size() {
-        assert_eq!(SNAPSHOT_SIGN_MESSAGE_SIZE, 56);
+        assert_eq!(SNAPSHOT_SIGN_MESSAGE_SIZE, 24);
     }
 
     #[test]
     fn test_domain_tag() {
         assert_eq!(SNAPSHOT_SIGN_DOMAIN_TAG.len(), 8);
-        assert_eq!(SNAPSHOT_SIGN_DOMAIN_TAG, b"SNAPSHOT");
+        assert_eq!(SNAPSHOT_SIGN_DOMAIN_TAG, b"SNAPSIGN");
     }
 
     #[test]
@@ -91,10 +92,9 @@ mod tests {
         );
         let bytes = msg.to_bytes();
 
-        assert_eq!(&bytes[0..8], b"SNAPSHOT");
+        assert_eq!(&bytes[0..8], b"SNAPSIGN");
         assert_eq!(&bytes[8..16], &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
         assert_eq!(&bytes[16..24], &[0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]);
-        assert_eq!(&bytes[24..56], &[0x99; 32]);
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod tests {
         let msg2 = SnapshotWriteMessage::new(
             EpochNumber(42),
             SpoolGroup(9),
-            Hash([0xAA; 32])
+            Hash::from([0xAA; 32]),
         );
 
         assert_ne!(&msg1.to_bytes()[0..8], &msg2.to_bytes()[0..8]);

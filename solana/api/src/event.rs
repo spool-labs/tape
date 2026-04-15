@@ -366,7 +366,8 @@ mod tests {
         assert_eq!(EventType::StakeDeposited as u8, 0x50);
         assert_eq!(EventType::CommissionClaimed as u8, 0x60);
         assert_eq!(EventType::SnapshotReserved as u8, 0x70);
-        assert_eq!(EventType::SnapshotSigned as u8, 0x71);
+        assert_eq!(EventType::SnapshotWritten as u8, 0x71);
+        assert_eq!(EventType::SnapshotSigned as u8, 0x72);
     }
 
     #[test]

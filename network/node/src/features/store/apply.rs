@@ -1,7 +1,7 @@
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
+use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::system::SpoolStatus;
 use tape_core::track::types::TrackState;
 use tape_core::track::data::TrackData;
@@ -107,13 +107,17 @@ fn put_track_object<Db: Store>(
         }
     }
 
+    let certified_epoch = replay.state
+        .is_certified()
+        .then_some(replay.epoch);
+
     store
         .put_object_info(
             track,
             ObjectInfo::Valid {
                 track_address: track,
                 registered_epoch: replay.epoch,
-                certified_epoch: None,
+                certified_epoch,
                 slot,
             },
         )
@@ -244,7 +248,7 @@ mod tests {
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
-    use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
+    use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -389,6 +393,16 @@ mod tests {
         assert_eq!(track_info.kind, TrackKind::Raw as u64);
         assert_eq!(track_info.state, TrackState::Certified as u64);
         assert_eq!(track_info.size, StorageUnits::from_bytes(4 * 1024));
+
+        assert_eq!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Valid {
+                track_address: track,
+                registered_epoch: EpochNumber(7),
+                certified_epoch: Some(EpochNumber(7)),
+                slot,
+            })
+        );
     }
 
     #[test]

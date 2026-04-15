@@ -52,34 +52,43 @@ pub fn merge(
                 ParsedInstruction::SyncEpoch { event }
             }
 
-            RawInstruction::InitSnapshotEpoch => {
+            RawInstruction::ReserveSnapshot => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::SnapshotInit(e)) => e,
+                    Some(TapedriveEvent::SnapshotReserved(e)) => e,
                     _ => {
-                        return Err(ParseError::EventMismatch("expected SnapshotInit event"))
+                        return Err(ParseError::EventMismatch("expected SnapshotReserved event"))
                     }
                 };
-                ParsedInstruction::InitSnapshotEpoch { event }
+                ParsedInstruction::ReserveSnapshot { event }
             }
 
-            RawInstruction::CertifySnapshotGroup => {
+            RawInstruction::WriteSnapshot {
+                group,
+                chunk_index,
+                blob,
+            } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::SnapshotCertified(e)) => e,
+                    Some(TapedriveEvent::SnapshotWritten(e)) => e,
                     _ => {
-                        return Err(ParseError::EventMismatch("expected SnapshotCertified event"))
+                        return Err(ParseError::EventMismatch("expected SnapshotWritten event"))
                     }
                 };
-                ParsedInstruction::CertifySnapshotGroup { event }
+                ParsedInstruction::WriteSnapshot {
+                    group,
+                    chunk_index,
+                    blob,
+                    event,
+                }
             }
 
-            RawInstruction::FinalizeSnapshotEpoch => {
+            RawInstruction::SignSnapshot => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::SnapshotFinalized(e)) => e,
+                    Some(TapedriveEvent::SnapshotSigned(e)) => e,
                     _ => {
-                        return Err(ParseError::EventMismatch("expected SnapshotFinalized event"))
+                        return Err(ParseError::EventMismatch("expected SnapshotSigned event"))
                     }
                 };
-                ParsedInstruction::FinalizeSnapshotEpoch { event }
+                ParsedInstruction::SignSnapshot { event }
             }
 
             RawInstruction::TrackWrite {
@@ -228,9 +237,9 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_api::event::{
-        EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced,
-        SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeDestroyed,
-        TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
+        EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, SnapshotReserved,
+        SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved, TrackCertified,
+        TrackDeleted, TrackInvalidated, TrackWritten,
     };
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
@@ -274,48 +283,78 @@ mod tests {
 
     #[test]
     fn test_merge_snapshot_events() {
-        let init = SnapshotInit {
+        let reserved = SnapshotReserved {
             epoch: EpochNumber(7),
         };
-        let cert = SnapshotCertified {
+        let written = SnapshotWritten {
             epoch: EpochNumber(7),
             group: SpoolGroup(3),
-            track: TrackNumber(9),
-            commitment: Hash::from([0x44; 32]),
-            signer_count: [2; 8],
-            signer_weight: [3; 8],
+            track: Address::new_unique(),
+            track_number: TrackNumber(9),
+            track_hash: Hash::from([0x44; 32]),
         };
-        let finalized = SnapshotFinalized {
+        let signed = SnapshotSigned {
             epoch: EpochNumber(7),
+            group: SpoolGroup(3),
+            state: 0,
+        };
+
+        let blob = BlobInfo {
+            size: StorageUnits::from_bytes(1_024),
+            commitment: Hash::default(),
+            profile: EncodingProfile::default(),
+            stripe_size: StorageUnits::from_bytes(64),
+            stripe_count: StripeCount(1),
+            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
         };
 
         let merged = merge(
             vec![
-                RawInstruction::InitSnapshotEpoch,
-                RawInstruction::CertifySnapshotGroup,
-                RawInstruction::FinalizeSnapshotEpoch,
+                RawInstruction::ReserveSnapshot,
+                RawInstruction::WriteSnapshot {
+                    group: SpoolGroup(3),
+                    chunk_index: 0,
+                    blob: blob.clone(),
+                },
+                RawInstruction::SignSnapshot,
             ],
             vec![
-                TapedriveEvent::SnapshotInit(init),
-                TapedriveEvent::SnapshotCertified(cert),
-                TapedriveEvent::SnapshotFinalized(finalized),
+                TapedriveEvent::SnapshotReserved(reserved),
+                TapedriveEvent::SnapshotWritten(written),
+                TapedriveEvent::SnapshotSigned(signed),
             ],
         )
         .unwrap();
 
-        assert!(matches!(
-            merged.as_slice(),
-            [
-                ParsedInstruction::InitSnapshotEpoch { event: decoded_init },
-                ParsedInstruction::CertifySnapshotGroup { event: decoded_cert },
-                ParsedInstruction::FinalizeSnapshotEpoch { event: decoded_finalized },
-            ] if decoded_init.epoch == init.epoch
-                && decoded_cert.epoch == cert.epoch
-                && decoded_cert.group == cert.group
-                && decoded_cert.track == cert.track
-                && decoded_cert.commitment == cert.commitment
-                && decoded_finalized.epoch == finalized.epoch
-        ));
+        assert_eq!(merged.len(), 3);
+        match &merged[0] {
+            ParsedInstruction::ReserveSnapshot { event } => {
+                assert_eq!(event.epoch, reserved.epoch);
+            }
+            _ => panic!("Expected ReserveSnapshot"),
+        }
+        match &merged[1] {
+            ParsedInstruction::WriteSnapshot {
+                group,
+                chunk_index,
+                blob: parsed_blob,
+                event,
+            } => {
+                assert_eq!(*group, SpoolGroup(3));
+                assert_eq!(*chunk_index, 0);
+                assert_eq!(*parsed_blob, blob);
+                assert_eq!(event.epoch, written.epoch);
+                assert_eq!(event.track_hash, written.track_hash);
+            }
+            _ => panic!("Expected WriteSnapshot"),
+        }
+        match &merged[2] {
+            ParsedInstruction::SignSnapshot { event } => {
+                assert_eq!(event.epoch, signed.epoch);
+                assert_eq!(event.group, signed.group);
+            }
+            _ => panic!("Expected SignSnapshot"),
+        }
     }
 
     #[test]
@@ -393,7 +432,7 @@ mod tests {
             epoch: EpochNumber(2),
             track: track1,
             tape: Address::new_unique(),
-            spool_group: 0u64.to_le_bytes(),
+            spool_group: SpoolGroup(0),
             track_number: TrackNumber(0),
             track_hash: Hash::default(),
         };
@@ -573,7 +612,7 @@ mod tests {
                     epoch: EpochNumber(2),
                     track: register_track,
                     tape: register_tape,
-                    spool_group: 0u64.to_le_bytes(),
+                    spool_group: SpoolGroup(0),
                     track_number: TrackNumber(0),
                     track_hash: Hash::default(),
                 }),

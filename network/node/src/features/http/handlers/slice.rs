@@ -211,7 +211,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape: snapshot_tape,
-            key: snapshot_chunk_key(epoch, group),
+            key: snapshot_chunk_key(epoch, group, 0),
             track_number,
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,

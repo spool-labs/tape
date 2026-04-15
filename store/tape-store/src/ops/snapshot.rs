@@ -5,7 +5,7 @@ use crate::error::{Result, TapeStoreError};
 use crate::types::{EpochKey, SliceValue, SnapshotSliceKey};
 use crate::TapeStore;
 use store::{Column, Store};
-use tape_core::snapshot::info::SnapshotInfo;
+use tape_core::snapshot::types::SnapshotInfo;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::EpochNumber;
 
@@ -79,22 +79,21 @@ mod tests {
     use super::*;
     use store_memory::MemoryStore;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::info::{
-        SnapshotGroupInfo, SnapshotGroupStatus, SnapshotInfo, SnapshotStatus,
-    };
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::snapshot::types::{SnapshotChunkInfo, SnapshotInfo};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
-    use tape_core::types::{SnapshotGroupBitmap, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
     }
 
-    fn group_info() -> SnapshotGroupInfo {
-        SnapshotGroupInfo {
-            status: SnapshotGroupStatus::Built,
+    fn chunk_info(group: SpoolGroup, track: TrackNumber) -> SnapshotChunkInfo {
+        SnapshotChunkInfo {
+            track,
+            group,
             blob: BlobInfo {
                 size: StorageUnits::from_bytes(4_096),
                 commitment: Hash::new_unique(),
@@ -103,16 +102,17 @@ mod tests {
                 stripe_count: StripeCount(4),
                 leaves: [Hash::new_unique(); SPOOL_GROUP_SIZE],
             },
-            track_number: Some(TrackNumber(7)),
         }
     }
 
     fn snapshot_info() -> SnapshotInfo {
-        let mut snapshot = SnapshotInfo::new(SnapshotStatus::Initialized);
-        snapshot.certified_groups =
-            SnapshotGroupBitmap::from_indices(&[0, 2], SPOOL_GROUP_COUNT);
-        *snapshot.group_mut(SpoolGroup(2)) = group_info();
-        snapshot
+        SnapshotInfo {
+            epoch: EpochNumber(42),
+            chunks: vec![
+                chunk_info(SpoolGroup(0), TrackNumber(0)),
+                chunk_info(SpoolGroup(2), TrackNumber(1)),
+            ],
+        }
     }
 
     #[test]

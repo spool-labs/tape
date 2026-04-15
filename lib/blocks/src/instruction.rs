@@ -3,12 +3,14 @@
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    SnapshotCertified, SnapshotFinalized, SnapshotInit, TapeDestroyed, TapeReserved,
+    SnapshotReserved, SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
 };
-use tape_api::instruction::{self as ix, TapeInstruction};
+use tape_api::instruction::{self as ix, TapeInstruction, WriteSnapshot};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
+use tape_core::spooler::SpoolGroup;
+use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::{TrackData, TrackDataSlice};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -24,9 +26,13 @@ use crate::error::ParseError;
 pub enum RawInstruction {
     AdvanceEpoch,
     SyncEpoch,
-    InitSnapshotEpoch,
-    CertifySnapshotGroup,
-    FinalizeSnapshotEpoch,
+    ReserveSnapshot,
+    WriteSnapshot {
+        group: SpoolGroup,
+        chunk_index: u64,
+        blob: BlobInfo,
+    },
+    SignSnapshot,
     AdvancePool {
         node: Address,
     },
@@ -75,14 +81,17 @@ pub enum ParsedInstruction {
     SyncEpoch {
         event: NodeSynced,
     },
-    InitSnapshotEpoch {
-        event: SnapshotInit,
+    ReserveSnapshot {
+        event: SnapshotReserved,
     },
-    CertifySnapshotGroup {
-        event: SnapshotCertified,
+    WriteSnapshot {
+        group: SpoolGroup,
+        chunk_index: u64,
+        blob: BlobInfo,
+        event: SnapshotWritten,
     },
-    FinalizeSnapshotEpoch {
-        event: SnapshotFinalized,
+    SignSnapshot {
+        event: SnapshotSigned,
     },
     AdvancePool {
         node: Address,
@@ -189,11 +198,22 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::SyncEpoch => Ok(Some(RawInstruction::SyncEpoch)),
 
-        TapeInstruction::InitSnapshotEpoch => Ok(Some(RawInstruction::InitSnapshotEpoch)),
+        TapeInstruction::ReserveSnapshot => Ok(Some(RawInstruction::ReserveSnapshot)),
 
-        TapeInstruction::CertifySnapshotGroup => Ok(Some(RawInstruction::CertifySnapshotGroup)),
+        TapeInstruction::WriteSnapshot => {
+            let args = WriteSnapshot::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("write_snapshot: {e:?}")))?;
+            let group = SpoolGroup::unpack(args.group);
+            let chunk_index = u64::from_le_bytes(args.chunk_index);
+            let blob = BlobInfo::unpack(args.snapshot);
+            Ok(Some(RawInstruction::WriteSnapshot {
+                group,
+                chunk_index,
+                blob,
+            }))
+        }
 
-        TapeInstruction::FinalizeSnapshotEpoch => Ok(Some(RawInstruction::FinalizeSnapshotEpoch)),
+        TapeInstruction::SignSnapshot => Ok(Some(RawInstruction::SignSnapshot)),
 
         TapeInstruction::TrackWrite => {
             let authority = get_account(1)?;
@@ -276,20 +296,19 @@ mod tests {
     use crate::merge::merge;
     use solana_sdk::instruction::Instruction;
     use solana_transaction_status::UiCompiledInstruction;
-    use tape_api::event::{
-        SnapshotCertified, SnapshotFinalized, SnapshotInit,
-    };
     use tape_api::instruction::{
-        build_certify_snapshot_group_ix, build_finalize_snapshot_epoch_ix,
-        build_init_snapshot_epoch_ix,
+        build_reserve_snapshot_ix, build_sign_snapshot_ix, build_write_snapshot_ix,
     };
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
-    use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{
+        EpochNumber, SpoolGroupBitmap, StorageUnits, StripeCount, TrackNumber,
+    };
     use tape_crypto::address::Address;
+    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_crypto::Hash;
     use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
 
@@ -306,92 +325,136 @@ mod tests {
         )
     }
 
+    fn valid_blob() -> BlobInfo {
+        let leaves: [Hash; SPOOL_GROUP_SIZE] =
+            core::array::from_fn(|i| hash_leaf(&vec![i as u8; 64]));
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        BlobInfo {
+            size: StorageUnits::from_bytes(64 * SPOOL_GROUP_SIZE as u64),
+            commitment,
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(64),
+            stripe_count: StripeCount(SPOOL_GROUP_SIZE as u64),
+            leaves,
+        }
+    }
+
     #[test]
     fn parses_snapshot_instructions() {
-        let (ix, keys) = compiled_instruction(&build_init_snapshot_epoch_ix(
+        // ReserveSnapshot
+        let (ix, keys) = compiled_instruction(&build_reserve_snapshot_ix(
             Address::new_unique(),
             EpochNumber(7),
         ));
         assert!(matches!(
             parse_raw_instruction(&ix, &keys).unwrap(),
-            Some(RawInstruction::InitSnapshotEpoch)
+            Some(RawInstruction::ReserveSnapshot)
         ));
 
-        let blob = BlobInfo {
-            size: StorageUnits::from_bytes(1_025),
-            commitment: Hash::from([0x11; 32]),
-            profile: EncodingProfile::basic_default(),
-            stripe_size: StorageUnits::from_bytes(512),
-            stripe_count: StripeCount(4),
-            leaves: [Hash::from([0x22; 32]); SPOOL_GROUP_SIZE],
-        };
-        let (ix, keys) = compiled_instruction(
-            &build_certify_snapshot_group_ix(
-                Address::new_unique(),
-                EpochNumber(7),
-                SpoolGroup(3),
-                &blob,
-                CommitteeBitmap::zeroed(),
-                BlsSignature::zeroed(),
-            ));
-
-        assert!(matches!(
-            parse_raw_instruction(&ix, &keys).unwrap(),
-            Some(RawInstruction::CertifySnapshotGroup)
-        ));
-
-        let (ix, keys) = compiled_instruction(&build_finalize_snapshot_epoch_ix(
+        let blob = valid_blob();
+        let (ix, keys) = compiled_instruction(&build_write_snapshot_ix(
             Address::new_unique(),
             EpochNumber(7),
+            SpoolGroup(3),
+            5,
+            SpoolGroupBitmap::zeroed(),
+            BlsSignature::zeroed(),
+            &blob,
+        ));
+
+        let parsed = parse_raw_instruction(&ix, &keys).unwrap();
+        match parsed {
+            Some(RawInstruction::WriteSnapshot {
+                group,
+                chunk_index,
+                blob: parsed_blob,
+            }) => {
+                assert_eq!(group, SpoolGroup(3));
+                assert_eq!(chunk_index, 5);
+                assert_eq!(parsed_blob, blob);
+            }
+            other => panic!("expected RawInstruction::WriteSnapshot, got {other:?}"),
+        }
+
+        // SignSnapshot
+        let (ix, keys) = compiled_instruction(&build_sign_snapshot_ix(
+            Address::new_unique(),
+            EpochNumber(7),
+            SpoolGroup(3),
+            SpoolGroupBitmap::zeroed(),
+            BlsSignature::zeroed(),
         ));
         assert!(matches!(
             parse_raw_instruction(&ix, &keys).unwrap(),
-            Some(RawInstruction::FinalizeSnapshotEpoch)
+            Some(RawInstruction::SignSnapshot)
         ));
     }
 
     #[test]
     fn parses_snapshot_events() {
-        let init = SnapshotInit {
+        let blob = valid_blob();
+        let reserved = SnapshotReserved {
             epoch: EpochNumber(7),
         };
-        let cert = SnapshotCertified {
+        let written = SnapshotWritten {
             epoch: EpochNumber(7),
             group: SpoolGroup(4),
-            track: TrackNumber(9),
-            commitment: Hash::from([0x44; 32]),
-            signer_count: [2; 8],
-            signer_weight: [3; 8],
+            track: Address::new_unique(),
+            track_number: TrackNumber(9),
+            track_hash: Hash::from([0x44; 32]),
         };
-        let finalized = SnapshotFinalized {
+        let signed = SnapshotSigned {
             epoch: EpochNumber(7),
+            group: SpoolGroup(4),
+            state: 0,
         };
 
         let instructions = vec![
-            RawInstruction::InitSnapshotEpoch,
-            RawInstruction::CertifySnapshotGroup,
-            RawInstruction::FinalizeSnapshotEpoch,
+            RawInstruction::ReserveSnapshot,
+            RawInstruction::WriteSnapshot {
+                group: SpoolGroup(4),
+                chunk_index: 0,
+                blob: blob.clone(),
+            },
+            RawInstruction::SignSnapshot,
         ];
         let events = vec![
-            TapedriveEvent::SnapshotInit(init),
-            TapedriveEvent::SnapshotCertified(cert),
-            TapedriveEvent::SnapshotFinalized(finalized),
+            TapedriveEvent::SnapshotReserved(reserved),
+            TapedriveEvent::SnapshotWritten(written),
+            TapedriveEvent::SnapshotSigned(signed),
         ];
 
         let merged = merge(instructions, events).expect("merge snapshot instructions");
 
-        assert!(matches!(
-            merged.as_slice(),
-            [
-                ParsedInstruction::InitSnapshotEpoch { event: decoded_init },
-                ParsedInstruction::CertifySnapshotGroup { event: decoded_cert },
-                ParsedInstruction::FinalizeSnapshotEpoch { event: decoded_finalized },
-            ] if decoded_init.epoch == init.epoch
-                && decoded_cert.epoch == cert.epoch
-                && decoded_cert.group == cert.group
-                && decoded_cert.track == cert.track
-                && decoded_cert.commitment == cert.commitment
-                && decoded_finalized.epoch == finalized.epoch
-        ));
+        assert_eq!(merged.len(), 3);
+        match &merged[0] {
+            ParsedInstruction::ReserveSnapshot { event } => {
+                assert_eq!(event.epoch, reserved.epoch);
+            }
+            other => panic!("expected ReserveSnapshot, got {other:?}"),
+        }
+        match &merged[1] {
+            ParsedInstruction::WriteSnapshot {
+                group,
+                chunk_index,
+                blob: parsed_blob,
+                event,
+            } => {
+                assert_eq!(*group, SpoolGroup(4));
+                assert_eq!(*chunk_index, 0);
+                assert_eq!(*parsed_blob, blob);
+                assert_eq!(event.epoch, written.epoch);
+                assert_eq!(event.track_number, written.track_number);
+                assert_eq!(event.track_hash, written.track_hash);
+            }
+            other => panic!("expected WriteSnapshot, got {other:?}"),
+        }
+        match &merged[2] {
+            ParsedInstruction::SignSnapshot { event } => {
+                assert_eq!(event.epoch, signed.epoch);
+                assert_eq!(event.group, signed.group);
+            }
+            other => panic!("expected SignSnapshot, got {other:?}"),
+        }
     }
 }

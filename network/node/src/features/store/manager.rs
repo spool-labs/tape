@@ -14,7 +14,7 @@ use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::replay::types::{RawTrack, ReplayBatch};
 use crate::features::store::apply::apply_slot;
-use crate::features::store::util::stores_track_data;
+use crate::features::store::util::is_responsible_for_group;
 
 pub struct StoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -70,7 +70,7 @@ fn persist_raw_tracks<Db: Store>(
     raw_tracks: &[RawTrack],
 ) -> Result<(), NodeError> {
     for raw_track in raw_tracks {
-        if !stores_track_data(store, raw_track.spool_group)? {
+        if !is_responsible_for_group(store, raw_track.spool_group)? {
             continue;
         }
 
@@ -85,7 +85,7 @@ fn persist_raw_tracks<Db: Store>(
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
-    use tape_core::snapshot::types::{ReplayTrack, ReplayableEvent};
+    use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};

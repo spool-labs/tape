@@ -2,7 +2,7 @@
 
 use crate::types::{EpochKey, SliceValue, SnapshotSliceKey};
 use store::Column;
-use tape_core::snapshot::info::SnapshotInfo;
+use tape_core::snapshot::types::SnapshotInfo;
 
 pub struct SnapshotCol;
 pub struct SnapshotSliceCol;
