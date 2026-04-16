@@ -65,9 +65,14 @@ where
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
         let source = event.metadata().target().to_owned();
-        let message = visitor
+        let mut message = visitor
             .message
             .unwrap_or_else(|| source.clone());
+        if let Some(detail) = visitor.detail {
+            message.push_str(" (");
+            message.push_str(&detail);
+            message.push(')');
+        }
         let key = (source, visitor.task, message);
 
         let mut entries = self.entries.lock().expect("log histogram lock poisoned");
@@ -83,6 +88,7 @@ where
 struct MessageVisitor {
     message: Option<String>,
     task: Option<String>,
+    detail: Option<String>,
 }
 
 impl Visit for MessageVisitor {
@@ -91,6 +97,8 @@ impl Visit for MessageVisitor {
             self.message = Some(format!("{value:?}"));
         } else if field.name() == "task" {
             self.task = Some(format!("{value:?}"));
+        } else if matches!(field.name(), "err" | "error") {
+            self.detail = Some(format!("{value:?}"));
         }
     }
 
@@ -99,6 +107,34 @@ impl Visit for MessageVisitor {
             self.message = Some(value.to_owned());
         } else if field.name() == "task" {
             self.task = Some(value.to_owned());
+        } else if matches!(field.name(), "err" | "error") {
+            self.detail = Some(value.to_owned());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing::warn;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Registry;
+
+    use super::LogHistogram;
+
+    #[test]
+    fn preserves_structured_error_detail() {
+        let histogram = LogHistogram::new();
+        let subscriber = Registry::default().with(histogram.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        warn!(
+            err = ?tape_api::errors::TapeError::SnapshotIncomplete,
+            "advance_epoch: program error"
+        );
+
+        let rows = histogram.snapshot_top(10);
+        let message = &rows[0].2;
+        assert!(message.contains("advance_epoch: program error"));
+        assert!(message.contains("SnapshotIncomplete"));
     }
 }

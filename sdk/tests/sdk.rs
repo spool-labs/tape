@@ -12,7 +12,7 @@ use tape_api::state::Tape;
 use tape_core::bls::BlsPubkey;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::data::TrackData;
-use tape_core::track::store::TrackArchive;
+use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
     CompressedTrack, CompressedTrackProof, TrackKind, TrackState,
 };

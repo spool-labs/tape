@@ -37,6 +37,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 
+use crate::chain::reserve_snapshot::submit_reserve_snapshot;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
@@ -157,6 +158,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 "snapshot: no local groups — nothing to build"
             );
             return Ok(());
+        }
+
+        if let Err(error) = submit_reserve_snapshot(&self.context, epoch).await {
+            trace!(
+                ?error,
+                epoch = epoch.0,
+                "snapshot: reserve raced / already exists"
+            );
         }
 
         let chunks = build_snapshot_epoch(self.context.store.as_ref(), epoch)?;

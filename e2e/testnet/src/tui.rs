@@ -108,6 +108,10 @@ impl Drop for TerminalDropGuard {
 
 fn render_frame(frame: &mut Frame<'_>, view: &TestnetView, disconnected: bool) {
     let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Rgb(0, 0, 0))),
+        area,
+    );
 
     let spool_inner_w = area.width.saturating_sub(2) as usize;
     let groups_per_row = ((spool_inner_w + 1) / (GROUP_COLS + 1)).max(1);

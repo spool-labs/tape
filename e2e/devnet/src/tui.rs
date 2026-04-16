@@ -107,6 +107,10 @@ impl Drop for TerminalDropGuard {
 
 fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) {
     let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Rgb(0, 0, 0))),
+        area,
+    );
     let term_h = area.height as usize;
 
     let spool_inner_w = area.width.saturating_sub(2) as usize;

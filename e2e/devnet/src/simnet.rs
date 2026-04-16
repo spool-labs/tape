@@ -893,6 +893,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reserve_tape_succeeds_after_chain_init() {
+        let handle = std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let chain = ChainFixture::new();
+                    let admin = init_chain(&chain).await.expect("init_chain");
+                    let payer = CryptoKeypair::from_solana_keypair(&admin)
+                        .expect("convert admin keypair");
+                    let sdk = Tapedrive::new(chain.rpc().clone(), payer);
+                    let tape_key = TapeKey::generate();
+
+                    let tape = sdk
+                        .reserve(&tape_key, StorageUnits::mb(2), UPLOAD_EPOCHS)
+                        .await
+                        .expect("reserve tape");
+
+                    assert_eq!(tape.authority, tape_key.pubkey().into());
+                    assert_eq!(tape.capacity, StorageUnits::mb(2));
+                    assert_eq!(tape.expiry_epoch.as_u64(), tape.active_epoch.as_u64() + UPLOAD_EPOCHS);
+                });
+            })
+            .expect("spawn reserve test thread");
+
+        handle.join().expect("reserve test thread joins");
+    }
+
+    #[test]
     fn add_20_nodes() {
         let handle = std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)

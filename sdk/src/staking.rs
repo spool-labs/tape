@@ -38,7 +38,7 @@ impl<Blockchain: Rpc, Cluster: Api>
 
         ixs.extend(build_authority_with_tokens_ix(
             payer.pubkey().into(),
-            stake_key.address(),
+            stake_key.pubkey().into(),
             amount,
         )
         .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?);
@@ -46,7 +46,7 @@ impl<Blockchain: Rpc, Cluster: Api>
         ixs.push(
             build_stake_with_pool_ix(
                 payer.pubkey().into(),
-                stake_key.address(),
+                stake_key.pubkey().into(),
                 pool,
                 amount,
             ),
@@ -91,7 +91,7 @@ impl<Blockchain: Rpc, Cluster: Api>
 
         let ix = build_request_stake_unlock_ix(
             payer.pubkey().into(),
-            stake_key.address(),
+            stake_key.pubkey().into(),
             pool,
         );
 
@@ -118,7 +118,7 @@ impl<Blockchain: Rpc, Cluster: Api>
 
         let ix = build_unstake_from_pool_ix(
             payer.pubkey().into(),
-            stake_key.address(),
+            stake_key.pubkey().into(),
             pool,
         );
 

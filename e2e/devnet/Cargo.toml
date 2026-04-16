@@ -12,6 +12,7 @@ tape-e2e-simnet = { path = "../simnet" }
 tape-core.workspace = true
 tape-crypto.workspace = true
 tape-store.workspace = true
+store-memory.workspace = true
 tape-protocol.workspace = true
 peer-http.workspace = true
 tape-api.workspace = true

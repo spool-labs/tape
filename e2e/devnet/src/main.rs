@@ -7,6 +7,7 @@ use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 mod app;
 mod log_layer;
@@ -38,9 +39,12 @@ fn main() {
 
     tracing_subscriber::registry()
         .with(histogram.clone())
-        .with(tracing_subscriber::EnvFilter::new(
-            "devnet=info,tape_e2e_devnet=info,tape_e2e_simnet=info,tape_node=info",
-        ))
+        .with(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| {
+                    EnvFilter::new("devnet=info,tape_e2e_devnet=info,tape_e2e_simnet=info,tape_node=info")
+                })
+        )
         .init();
 
     let snapshot: Arc<ArcSwap<PollSnapshot>> =

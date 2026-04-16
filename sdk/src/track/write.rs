@@ -157,7 +157,7 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     let tape_signer = tape_key.keypair();
     let write_ix = build_track_write_raw_ix(
         payer.pubkey().into(),
-        tape_key.address(),
+        tape_key.pubkey().into(),
         key,
         raw,
     )
@@ -212,7 +212,7 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     };
     let write_ix = build_track_write_blob_ix(
         payer.pubkey().into(),
-        tape_key.address(),
+        tape_key.pubkey().into(),
         key,
         blob,
     )
@@ -376,7 +376,7 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
 
     let certify_ix = build_certify_track_ix(
         payer.pubkey().into(),
-        tape_key.address(),
+        tape_key.pubkey().into(),
         proof,
         EpochNumber(collected.epoch),
         collected.bitmap,

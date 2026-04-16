@@ -9,7 +9,7 @@ use tape_core::system::EpochPhase;
 use peer_http::HttpApi;
 use tape_node::context::NodeContext;
 use tape_node::runtime::NodeRuntimeStatus;
-use tape_store::MemoryStore;
+use store_memory::MemoryStore;
 use tape_store::ops::SpoolOps;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};

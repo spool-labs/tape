@@ -8753,6 +8753,7 @@ dependencies = [
  "rpc-client",
  "rpc-litesvm",
  "solana-sdk",
+ "store-memory",
  "tape-api",
  "tape-core",
  "tape-crypto",
