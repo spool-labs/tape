@@ -1,4 +1,5 @@
 pub mod block;
+pub mod bootstrap;
 pub mod gc;
 pub mod http;
 pub mod lifecycle;

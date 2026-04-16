@@ -4,6 +4,7 @@ use core::fmt;
 pub enum SnapshotError {
     Wincode(wincode::Error),
     UnsupportedVersion(u8),
+    ChunkPayloadTooShort(usize),
 }
 
 impl fmt::Display for SnapshotError {
@@ -12,6 +13,9 @@ impl fmt::Display for SnapshotError {
             Self::Wincode(error) => write!(formatter, "wincode: {error}"),
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported snapshot version: {version}")
+            }
+            Self::ChunkPayloadTooShort(len) => {
+                write!(formatter, "snapshot chunk payload too short: {len} bytes")
             }
         }
     }

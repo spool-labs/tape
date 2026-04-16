@@ -1,12 +1,6 @@
-//! Local snapshot artifact building.
-//!
-//! Pipeline: `SnapshotLog` → lz4 compress → split into pieces sized to fit one
-//! outer RS round → outer RS (k=17, n=50) per piece → inner Clay (k=7, n=20)
-//! per outer symbol. Produces a `Vec<BuiltChunk>` the write driver holds in
-//! memory until each chunk's on-chain track address is known.
-
 use store::Store;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEADER_SIZE};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
@@ -23,19 +17,10 @@ use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 
-/// Maximum compressed bytes fed into a single outer RS round.
-///
-/// Bounded by the SIMD RS encoder's per-shard size limit. Each round produces
-/// one symbol per spool group; the log is split into `ceil(len / MAX_PIECE_BYTES)`
-/// rounds so every symbol stays within the encoder's shard cap.
-pub const MAX_PIECE_BYTES: usize = SNAPSHOT_K_OUTER * MAX_CHUNK_BYTES;
+/// Maximum compressed bytes carried by a single outer RS round's segment.
+pub const MAX_SEGMENT_BYTES: usize = SNAPSHOT_K_OUTER * MAX_CHUNK_BYTES - SEGMENT_HEADER_SIZE;
 
 /// One encoded snapshot chunk, in memory between build and persistence.
-///
-/// Each chunk corresponds to a single outer RS symbol at position
-/// `(group, chunk)`. The 20 slices are ready to be stored in `SliceCol`
-/// under the snapshot chunk's on-chain track address once the program assigns
-/// a track number via `WriteSnapshot`.
 #[derive(Debug, Clone)]
 pub struct BuiltChunk {
     pub group: SpoolGroup,
@@ -45,7 +30,6 @@ pub struct BuiltChunk {
 }
 
 impl BuiltChunk {
-    /// Deterministic BLS message input for `SnapshotWriteMessage`.
     pub fn value_hash(&self) -> Hash {
         self.blob.get_hash()
     }
@@ -54,7 +38,7 @@ impl BuiltChunk {
 /// Build every chunk for an epoch's snapshot.
 ///
 /// Reads the epoch's event log, serializes into a `SnapshotLog`, compresses,
-/// splits into pieces, and runs outer RS + inner Clay to produce all chunks
+/// splits into segments, and runs outer RS + inner Clay to produce all chunks
 /// for all 50 spool groups. Output is fully deterministic given the same
 /// event log.
 pub fn build_snapshot_epoch<Db: Store>(
@@ -80,24 +64,25 @@ pub fn build_snapshot_epoch<Db: Store>(
 
     let compressed = lz4_flex::compress_prepend_size(&serialized);
 
-    let piece_count = compressed.len().div_ceil(MAX_PIECE_BYTES).max(1);
-    let piece_size = compressed.len().div_ceil(piece_count).max(1);
+    let segment_count = compressed.len().div_ceil(MAX_SEGMENT_BYTES).max(1);
+    let segment_size = compressed.len().div_ceil(segment_count).max(1);
 
     let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER);
-    let mut chunks = Vec::with_capacity(piece_count * SPOOL_GROUP_COUNT);
+    let mut chunks = Vec::with_capacity(segment_count * SPOOL_GROUP_COUNT);
 
-    for piece_idx in 0..piece_count {
-        let start = piece_idx * piece_size;
-        let end = start.saturating_add(piece_size).min(compressed.len());
-        let piece = &compressed[start..end];
+    for segment_idx in 0..segment_count {
+        let start = segment_idx * segment_size;
+        let end = start.saturating_add(segment_size).min(compressed.len());
+        let segment = &compressed[start..end];
+        let packed = pack_segment(segment);
 
-        let symbols = outer.encode(piece).map_err(|e| {
+        let symbols = outer.encode(&packed).map_err(|e| {
             NodeError::Store(format!(
-                "outer encode epoch={epoch} piece={piece_idx}: {e}"
+                "outer encode epoch={epoch} segment={segment_idx}: {e}"
             ))
         })?;
 
-        let chunk = ChunkNumber(piece_idx as u64);
+        let chunk = ChunkNumber(segment_idx as u64);
         for (group_index, symbol) in symbols.into_iter().enumerate() {
             let group = SpoolGroup(group_index as u64);
             chunks.push(encode_chunk(epoch, group, chunk, &symbol)?);
@@ -115,10 +100,14 @@ fn encode_chunk(
     chunk: ChunkNumber,
     symbol: &[u8],
 ) -> Result<BuiltChunk, NodeError> {
-    let mut slicer = Slicer::clay_default();
-    slicer.set_chunk_index(ChunkNumber(mix_chunk_index(group, chunk)));
+    let payload = SnapshotChunkPayload {
+        chunk,
+        data: symbol.to_vec(),
+    };
+    let packed = payload.pack();
 
-    let slices = slicer.encode(symbol).map_err(|e| {
+    let mut slicer = Slicer::clay_default();
+    let slices = slicer.encode(&packed).map_err(|e| {
         NodeError::Store(format!(
             "clay encode epoch={epoch} group={group} chunk={chunk}: {e}"
         ))
@@ -155,20 +144,15 @@ fn encode_chunk(
     })
 }
 
-/// (group, chunk) → u64 mapping for the Clay metadata
-/// `chunk` field, ensures identical symbol bytes at different
-/// positions commit to different roots.
-fn mix_chunk_index(group: SpoolGroup, chunk: ChunkNumber) -> u64 {
-    // Headroom for ~1M chunks per group — orders of magnitude above any
-    // realistic epoch size given MAX_PIECE_BYTES ~68 MiB per round.
-    group.0.saturating_mul(1_000_000).saturating_add(chunk.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
     use tape_core::snapshot::replay::{ReplayableEvent, SnapshotEntry};
+    use tape_core::snapshot::replay::ReplayTrack;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::TrackNumber;
+    use tape_crypto::address::Address;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -188,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_epoch_builds_single_piece() {
+    fn empty_epoch_builds_single_segment() {
         let store = test_store();
         let epoch = EpochNumber(5);
 
@@ -244,27 +228,26 @@ mod tests {
     }
 
     #[test]
-    fn multi_piece_split_by_max_piece_bytes() {
-        // Verify the piece-splitting logic produces `piece_count * SPOOL_GROUP_COUNT`
-        // chunks with monotonically increasing chunk per group.
+    fn multi_segment_split_by_max_segment_bytes() {
+        // Verify the segment-splitting logic produces
+        // `segment_count * SPOOL_GROUP_COUNT` chunks with monotonically
+        // increasing `chunk` per group.
         let store = test_store();
         let epoch = EpochNumber(11);
 
-        // Fill the epoch with enough raw-track events to push past MAX_PIECE_BYTES
-        // after compression. Each track event carries a 32-byte key + 32-byte
-        // value_hash + metadata; ~100 bytes serialized. lz4 does compress
-        // well-structured bytes, so push far more than MAX_PIECE_BYTES pre-compress
-        // using distinct random-looking content.
-        use tape_core::snapshot::replay::ReplayTrack;
-        use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-        use tape_core::types::TrackNumber;
-        use tape_crypto::address::Address;
+        // Fill the epoch with enough raw-track events to push past
+        // MAX_SEGMENT_BYTES after compression. Each track event carries a
+        // 32-byte key + 32-byte value_hash + metadata; ~100 bytes serialized.
+        // lz4 does compress well-structured bytes, so push far more than
+        // MAX_SEGMENT_BYTES pre-compress using distinct random-looking
+        // content.
 
-        // Target: push compressed size clearly over MAX_PIECE_BYTES (~68 MiB).
-        // Each ReplayableEvent::Track serializes to ~250 bytes and compresses
-        // poorly when value_hashes/keys are random. Need a lot — but for a unit
-        // test we'd rather bound runtime. Instead, just verify the split math
-        // by faking a smaller MAX and covering the arithmetic.
+        // Target: push compressed size clearly over MAX_SEGMENT_BYTES (~68
+        // MiB). Each ReplayableEvent::Track serializes to ~250 bytes and
+        // compresses poorly when value_hashes/keys are random. Need a lot —
+        // but for a unit test we'd rather bound runtime. Instead, just
+        // verify the split math by faking a smaller MAX and covering the
+        // arithmetic.
         for i in 0..50u64 {
             let mut hash_bytes = [0u8; 32];
             hash_bytes[0..8].copy_from_slice(&i.to_be_bytes());
@@ -294,17 +277,18 @@ mod tests {
         let chunks = build_snapshot_epoch(&store, epoch).unwrap();
 
         assert_eq!(chunks.len() % SPOOL_GROUP_COUNT, 0);
-        let piece_count = chunks.len() / SPOOL_GROUP_COUNT;
-        assert!(piece_count >= 1);
+        let segment_count = chunks.len() / SPOOL_GROUP_COUNT;
+        assert!(segment_count >= 1);
 
-        // Within each group, chunk_indices should be 0..piece_count in order.
+        // Within each group, `chunk` indices should be 0..segment_count in
+        // order.
         for group in 0..SPOOL_GROUP_COUNT as u64 {
             let indices: Vec<u64> = chunks
                 .iter()
                 .filter(|c| c.group == SpoolGroup(group))
                 .map(|c| c.chunk.0)
                 .collect();
-            assert_eq!(indices.len(), piece_count);
+            assert_eq!(indices.len(), segment_count);
             for (i, &idx) in indices.iter().enumerate() {
                 assert_eq!(idx, i as u64);
             }
@@ -332,12 +316,5 @@ mod tests {
         let decompressed = lz4_flex::decompress_size_prepended(&compressed).unwrap();
         assert_eq!(bytes, decompressed);
         assert_eq!(SnapshotLog::from_bytes(&decompressed).unwrap(), log);
-    }
-
-    #[test]
-    fn max_piece_bytes_is_reasonable() {
-        // Guard against accidentally making MAX_PIECE_BYTES smaller than realistic.
-        // With k=17 and 4 MiB per shard this should be ~68 MiB.
-        assert_eq!(MAX_PIECE_BYTES, 17 * 4 * 1024 * 1024);
     }
 }

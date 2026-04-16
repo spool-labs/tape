@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::types::SlotNumber;
 use tape_protocol::fetch::fetch_state;
 use tape_protocol::Api;
 use tape_retry::{retry_if, RetryConfig};
@@ -20,6 +21,7 @@ use crate::core::channels::{downstream_channels, store_channel};
 use crate::core::error::NodeError;
 use crate::core::types::ServiceName;
 use crate::features::block::ingestor::BlockIngestor;
+use crate::features::bootstrap;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::lifecycle::manager::LifecycleManager;
@@ -38,18 +40,21 @@ pub fn init_tracing(logging: &LoggingConfig) -> Result<(), NodeError> {
         .unwrap_or_else(|_| EnvFilter::new(logging.filter.clone()));
 
     match logging.format {
+
         LoggingFormat::Compact => tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_target(true)
             .compact()
             .try_init()
             .map_err(NodeError::TracingInit),
+
         LoggingFormat::Json => tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_target(true)
             .json()
             .try_init()
             .map_err(NodeError::TracingInit),
+
     }
 }
 
@@ -59,6 +64,7 @@ pub fn build_runtime() -> Result<tokio::runtime::Runtime, NodeError> {
     let available_threads = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(MIN_WORKER_THREADS);
+
     let worker_threads = available_threads.max(MIN_WORKER_THREADS);
     let max_blocking_threads = worker_threads.saturating_mul(MAX_BLOCKING_THREAD_MULTIPLIER);
 
@@ -193,6 +199,7 @@ where
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: NodeConfig,
+    start_slot: SlotNumber,
     cancel: CancellationToken,
 ) -> Result<(), NodeError>
 where
@@ -218,7 +225,7 @@ where
         ServiceName::BlockIngestor,
         BlockIngestor::new(
             context.clone(),
-            config.solana.block_start_slot(),
+            start_slot,
             senders,
             cancel.clone()
         ).run(),
@@ -305,7 +312,8 @@ where
 {
     let cancel = CancellationToken::new();
     initialize_context(&context, &cancel).await?;
-    supervise_with_context(context, config, cancel).await
+    let start_slot = bootstrap::run(&context, &config, &cancel).await?;
+    supervise_with_context(context, config, start_slot, cancel).await
 }
 
 pub async fn start_with_context<Db, Cluster, Blockchain>(
@@ -319,6 +327,7 @@ where
 {
     let cancel = CancellationToken::new();
     initialize_context(&context, &cancel).await?;
+    let start_slot = bootstrap::run(&context, &config, &cancel).await?;
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();
     let task_cancel = cancel.clone();
@@ -327,6 +336,7 @@ where
         let result = supervise_with_context(
             context,
             config,
+            start_slot,
             task_cancel,
         )
         .await;
