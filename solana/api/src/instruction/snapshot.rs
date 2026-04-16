@@ -27,7 +27,7 @@ pub struct ReserveSnapshot {}
 #[derive(Clone, Copy, Debug)]
 pub struct WriteSnapshot {
     pub group: [u8; 8],                   // The SpoolGroup packed as bytes
-    pub chunk_index: [u8; 8],             // Snapshot chunk index
+    pub chunk: [u8; 8],             // Snapshot chunk index
     pub bitmap: SpoolGroupBitmap,         // A bitmap indicating which SpoolGroup members have signed
     pub signature: BlsSignature,          // The aggregated BLS signature from the committee members
     pub snapshot: PackedBlobInfo,         // The BlobInfo for the snapshot chunk being signed
@@ -77,7 +77,7 @@ pub fn build_write_snapshot_ix(
     fee_payer: Address,
     epoch: EpochNumber,
     group: SpoolGroup,
-    chunk_index: ChunkNumber,
+    chunk: ChunkNumber,
     bitmap: SpoolGroupBitmap,
     signature: BlsSignature,
     blob: &BlobInfo,
@@ -87,7 +87,7 @@ pub fn build_write_snapshot_ix(
     let (snapshot_address, _) = snapshot_pda(epoch);
     let (tape_address, _) = snapshot_tape_pda(epoch);
 
-    let chunk_index = chunk_index.pack();
+    let chunk = chunk.pack();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -100,7 +100,7 @@ pub fn build_write_snapshot_ix(
         ],
         data: WriteSnapshot {
             group: group.pack(),
-            chunk_index,
+            chunk,
             bitmap,
             signature,
             snapshot: blob.pack(),

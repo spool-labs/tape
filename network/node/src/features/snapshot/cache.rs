@@ -3,7 +3,7 @@
 //! The build pipeline produces encoded slices for local spool groups well
 //! before the chunk's on-chain track address is known (`track_number` is
 //! assigned by the `WriteSnapshot` program). The cache holds the slices
-//! (keyed by `(epoch, group, chunk_index)`) until the matching
+//! (keyed by `(epoch, group, chunk)`) until the matching
 //! `SnapshotWritten` event arrives, at which point the write driver
 //! flushes slices into `SliceCol` under the now-known track address and
 //! drops the entry.
@@ -29,15 +29,15 @@ use tape_crypto::hash::Hash;
 pub struct ChunkKey {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub chunk_index: ChunkNumber,
+    pub chunk: ChunkNumber,
 }
 
 impl ChunkKey {
-    pub const fn new(epoch: EpochNumber, group: SpoolGroup, chunk_index: ChunkNumber) -> Self {
+    pub const fn new(epoch: EpochNumber, group: SpoolGroup, chunk: ChunkNumber) -> Self {
         Self {
             epoch,
             group,
-            chunk_index,
+            chunk,
         }
     }
 }
@@ -168,11 +168,11 @@ mod tests {
         core::array::from_fn(|_| Vec::new())
     }
 
-    fn key(epoch: u64, group: u64, chunk_index: u64) -> ChunkKey {
+    fn key(epoch: u64, group: u64, chunk: u64) -> ChunkKey {
         ChunkKey::new(
             EpochNumber(epoch),
             SpoolGroup(group),
-            ChunkNumber(chunk_index),
+            ChunkNumber(chunk),
         )
     }
 

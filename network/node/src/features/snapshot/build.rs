@@ -11,7 +11,7 @@ use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
 use tape_core::types::{
-    ChunkIndex, ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount,
+    ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount,
 };
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
@@ -33,13 +33,13 @@ pub const MAX_PIECE_BYTES: usize = SNAPSHOT_K_OUTER * MAX_CHUNK_BYTES;
 /// One encoded snapshot chunk, in memory between build and persistence.
 ///
 /// Each chunk corresponds to a single outer RS symbol at position
-/// `(group, chunk_index)`. The 20 slices are ready to be stored in `SliceCol`
+/// `(group, chunk)`. The 20 slices are ready to be stored in `SliceCol`
 /// under the snapshot chunk's on-chain track address once the program assigns
 /// a track number via `WriteSnapshot`.
 #[derive(Debug, Clone)]
 pub struct BuiltChunk {
     pub group: SpoolGroup,
-    pub chunk_index: ChunkNumber,
+    pub chunk: ChunkNumber,
     pub blob: BlobInfo,
     pub slices: [Vec<u8>; SPOOL_GROUP_SIZE],
 }
@@ -97,10 +97,10 @@ pub fn build_snapshot_epoch<Db: Store>(
             ))
         })?;
 
-        let chunk_index = ChunkNumber(piece_idx as u64);
+        let chunk = ChunkNumber(piece_idx as u64);
         for (group_index, symbol) in symbols.into_iter().enumerate() {
             let group = SpoolGroup(group_index as u64);
-            chunks.push(encode_chunk(epoch, group, chunk_index, &symbol)?);
+            chunks.push(encode_chunk(epoch, group, chunk, &symbol)?);
         }
     }
 
@@ -112,15 +112,15 @@ pub fn build_snapshot_epoch<Db: Store>(
 fn encode_chunk(
     epoch: EpochNumber,
     group: SpoolGroup,
-    chunk_index: ChunkNumber,
+    chunk: ChunkNumber,
     symbol: &[u8],
 ) -> Result<BuiltChunk, NodeError> {
     let mut slicer = Slicer::clay_default();
-    slicer.set_chunk_index(ChunkIndex(mix_chunk_index(group, chunk_index)));
+    slicer.set_chunk_index(ChunkNumber(mix_chunk_index(group, chunk)));
 
     let slices = slicer.encode(symbol).map_err(|e| {
         NodeError::Store(format!(
-            "clay encode epoch={epoch} group={group} chunk={chunk_index}: {e}"
+            "clay encode epoch={epoch} group={group} chunk={chunk}: {e}"
         ))
     })?;
 
@@ -149,19 +149,19 @@ fn encode_chunk(
 
     Ok(BuiltChunk {
         group,
-        chunk_index,
+        chunk,
         blob,
         slices,
     })
 }
 
-/// Injective (group, chunk_index) → u64 mapping for the Clay metadata
-/// `chunk_index` field, which ensures identical symbol bytes at different
+/// (group, chunk) → u64 mapping for the Clay metadata
+/// `chunk` field, ensures identical symbol bytes at different
 /// positions commit to different roots.
-fn mix_chunk_index(group: SpoolGroup, chunk_index: ChunkNumber) -> u64 {
+fn mix_chunk_index(group: SpoolGroup, chunk: ChunkNumber) -> u64 {
     // Headroom for ~1M chunks per group — orders of magnitude above any
-    // realistic epoch size given MAX_PIECE_BYTES ≈ 68 MiB per round.
-    group.0.saturating_mul(1_000_000).saturating_add(chunk_index.0)
+    // realistic epoch size given MAX_PIECE_BYTES ~68 MiB per round.
+    group.0.saturating_mul(1_000_000).saturating_add(chunk.0)
 }
 
 #[cfg(test)]
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
         for (i, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.group, SpoolGroup(i as u64));
-            assert_eq!(chunk.chunk_index, ChunkNumber(0));
+            assert_eq!(chunk.chunk, ChunkNumber(0));
             assert_eq!(chunk.slices.len(), SPOOL_GROUP_SIZE);
         }
     }
@@ -211,7 +211,7 @@ mod tests {
         let chunks = build_snapshot_epoch(&store, epoch).unwrap();
 
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
-        // Different groups must produce different commitments (chunk_index mixing).
+        // Different groups must produce different commitments (chunk mixing).
         assert_ne!(chunks[0].blob.commitment, chunks[1].blob.commitment);
         assert_ne!(chunks[0].blob.get_hash(), chunks[1].blob.get_hash());
     }
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(first.len(), second.len());
         for (a, b) in first.iter().zip(second.iter()) {
             assert_eq!(a.group, b.group);
-            assert_eq!(a.chunk_index, b.chunk_index);
+            assert_eq!(a.chunk, b.chunk);
             assert_eq!(a.blob.get_hash(), b.blob.get_hash());
             assert_eq!(a.slices, b.slices);
         }
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn multi_piece_split_by_max_piece_bytes() {
         // Verify the piece-splitting logic produces `piece_count * SPOOL_GROUP_COUNT`
-        // chunks with monotonically increasing chunk_index per group.
+        // chunks with monotonically increasing chunk per group.
         let store = test_store();
         let epoch = EpochNumber(11);
 
@@ -302,7 +302,7 @@ mod tests {
             let indices: Vec<u64> = chunks
                 .iter()
                 .filter(|c| c.group == SpoolGroup(group))
-                .map(|c| c.chunk_index.0)
+                .map(|c| c.chunk.0)
                 .collect();
             assert_eq!(indices.len(), piece_count);
             for (i, &idx) in indices.iter().enumerate() {

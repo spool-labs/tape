@@ -1,4 +1,4 @@
-//! `POST /v1/snapshots/{epoch}/groups/{group}/chunks/{chunk_index}/write`
+//! `POST /v1/snapshots/{epoch}/groups/{group}/chunks/{chunk}/write`
 //!
 //! Peer asks this node for a BLS signature on `SnapshotWriteMessage`. The
 //! signature is only produced if the peer's claimed `value_hash` matches
@@ -17,7 +17,7 @@ use store::Store;
 use tape_core::cert::SnapshotWriteMessage;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkNumber, EpochNumber};
-use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SnapshotWriteRequest};
+use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, GetSnapshotWriteSigRequest};
 use tape_protocol::Api;
 
 use crate::features::http::error::RouteError;
@@ -25,16 +25,16 @@ use crate::features::http::state::{AppState, current_epoch};
 use crate::features::snapshot::cache::ChunkKey;
 
 pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    Path((epoch, group, chunk_index)): Path<(u64, u64, u64)>,
+    Path((epoch, group, chunk)): Path<(u64, u64, u64)>,
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: SnapshotWriteRequest = wincode::deserialize(&body)
+    let request: GetSnapshotWriteSigRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("snapshot write request: {error}")))?;
 
     let epoch = EpochNumber(epoch);
     let group = SpoolGroup(group);
-    let chunk_index = ChunkNumber(chunk_index);
+    let chunk = ChunkNumber(chunk);
 
     let signing_epoch = current_epoch(&state)?;
 
@@ -51,7 +51,7 @@ pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::NotResponsible);
     }
 
-    let key = ChunkKey::new(epoch, group, chunk_index);
+    let key = ChunkKey::new(epoch, group, chunk);
     let local_hash = state
         .context
         .snapshot_cache
@@ -64,7 +64,7 @@ pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ));
     }
 
-    let message = SnapshotWriteMessage::new(epoch, group, chunk_index, request.value_hash);
+    let message = SnapshotWriteMessage::new(epoch, group, chunk, request.value_hash);
     let signature = state
         .context
         .bls_sign(&message.to_bytes())
@@ -109,8 +109,8 @@ mod tests {
     use crate::features::http::state::AppState;
     use crate::features::snapshot::cache::ChunkKey;
 
-    fn request(value_hash: Hash) -> SnapshotWriteRequest {
-        SnapshotWriteRequest { value_hash }
+    fn request(value_hash: Hash) -> GetSnapshotWriteSigRequest {
+        GetSnapshotWriteSigRequest { value_hash }
     }
 
     fn sample_blob(commitment: Hash) -> BlobInfo {
@@ -154,12 +154,12 @@ mod tests {
         >,
         epoch: EpochNumber,
         group: SpoolGroup,
-        chunk_index: ChunkNumber,
-        body: SnapshotWriteRequest,
+        chunk: ChunkNumber,
+        body: GetSnapshotWriteSigRequest,
     ) -> Result<axum::response::Response, RouteError> {
         let bytes = wincode::serialize(&body).unwrap();
         write(
-            Path((epoch.0, group.0, chunk_index.0)),
+            Path((epoch.0, group.0, chunk.0)),
             State(state),
             Bytes::from(bytes),
         )
@@ -174,12 +174,12 @@ mod tests {
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let chunk_index = ChunkNumber(2);
+        let chunk = ChunkNumber(2);
         let blob = sample_blob(Hash::from([0xAB; 32]));
         let value_hash = blob.get_hash();
 
         context.snapshot_cache.insert(
-            ChunkKey::new(epoch, group, chunk_index),
+            ChunkKey::new(epoch, group, chunk),
             blob,
             empty_slices(),
         );
@@ -190,7 +190,7 @@ mod tests {
             },
             epoch,
             group,
-            chunk_index,
+            chunk,
             request(value_hash),
         )
         .await
@@ -202,7 +202,7 @@ mod tests {
             .expect("body");
         let decoded: BlsSignResponse = wincode::deserialize(&bytes).unwrap();
 
-        let message = SnapshotWriteMessage::new(epoch, group, chunk_index, value_hash);
+        let message = SnapshotWriteMessage::new(epoch, group, chunk, value_hash);
         let expected = context.bls_sign(&message.to_bytes()).unwrap();
 
         assert_eq!(decoded.signature, expected);
@@ -217,11 +217,11 @@ mod tests {
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let chunk_index = ChunkNumber(0);
+        let chunk = ChunkNumber(0);
         let blob = sample_blob(Hash::from([0xAB; 32]));
 
         context.snapshot_cache.insert(
-            ChunkKey::new(epoch, group, chunk_index),
+            ChunkKey::new(epoch, group, chunk),
             blob,
             empty_slices(),
         );
@@ -232,7 +232,7 @@ mod tests {
             },
             epoch,
             group,
-            chunk_index,
+            chunk,
             request(Hash::from([0xCD; 32])),
         )
         .await
@@ -247,7 +247,7 @@ mod tests {
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let chunk_index = ChunkNumber(0);
+        let chunk = ChunkNumber(0);
 
         let err = render(
             AppState {
@@ -255,7 +255,7 @@ mod tests {
             },
             epoch,
             group,
-            chunk_index,
+            chunk,
             request(Hash::from([0xAB; 32])),
         )
         .await
@@ -270,12 +270,12 @@ mod tests {
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let chunk_index = ChunkNumber(0);
+        let chunk = ChunkNumber(0);
         let blob = sample_blob(Hash::from([0xAB; 32]));
         let value_hash = blob.get_hash();
 
         context.snapshot_cache.insert(
-            ChunkKey::new(epoch, group, chunk_index),
+            ChunkKey::new(epoch, group, chunk),
             blob,
             empty_slices(),
         );
@@ -286,7 +286,7 @@ mod tests {
             },
             epoch,
             group,
-            chunk_index,
+            chunk,
             request(value_hash),
         )
         .await

@@ -14,7 +14,6 @@ define_numeric_type!(ShareAmount, "shares");
 // Generic types
 define_numeric_type!(BasisPoints, "bps");
 define_numeric_type!(StorageUnits, "units");
-define_numeric_type!(ChunkIndex, "chunk");
 define_numeric_type!(StripeCount, "stripes");
 
 impl BasisPoints {

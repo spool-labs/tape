@@ -8,7 +8,7 @@ use crate::types::{ChunkNumber, EpochNumber};
 pub const SNAPSHOT_WRITE_DOMAIN_TAG: &[u8; 8] = b"SNAPWRIT";
 
 /// Size of the snapshot certification message in bytes.
-/// 8 (domain) + 8 (epoch) + 8 (group) + 8 (chunk_index) + 32 (value_hash) = 64 bytes.
+/// 8 (domain) + 8 (epoch) + 8 (group) + 8 (chunk) + 32 (value_hash) = 64 bytes.
 pub const SNAPSHOT_WRITE_MESSAGE_SIZE: usize = 64;
 
 /// Message format for snapshot certification BLS signatures.
@@ -20,7 +20,7 @@ pub const SNAPSHOT_WRITE_MESSAGE_SIZE: usize = 64;
 pub struct SnapshotWriteMessage {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub chunk_index: ChunkNumber,
+    pub chunk: ChunkNumber,
     pub value_hash: Hash,
 }
 
@@ -28,13 +28,13 @@ impl SnapshotWriteMessage {
     pub const fn new(
         epoch: EpochNumber,
         group: SpoolGroup,
-        chunk_index: ChunkNumber,
+        chunk: ChunkNumber,
         value_hash: Hash,
     ) -> Self {
         Self {
             epoch,
             group,
-            chunk_index,
+            chunk,
             value_hash,
         }
     }

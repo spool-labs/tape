@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use tape_core::encoding::{ClayParams, EncodingProfile};
-use tape_core::types::ChunkIndex;
+use tape_core::types::ChunkNumber;
 
 use crate::adaptive::{pick_stripe_size, DEFAULT_STRIPE_SIZE};
 use crate::clay::ClayCoder;
@@ -128,7 +128,7 @@ pub struct Slicer<C: ErasureCoder> {
     pub profile: EncodingProfile,
     /// Chunk/group index embedded in slice metadata. Ensures that identical
     /// data chunks at different positions produce distinct commitments.
-    pub chunk_index: ChunkIndex,
+    pub chunk_index: ChunkNumber,
 }
 
 impl<C: ErasureCoder> Slicer<C> {
@@ -141,7 +141,7 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size: DEFAULT_STRIPE_SIZE,
             strategy: MappingStrategy::Identity,
             profile: EncodingProfile::clay_default(),
-            chunk_index: ChunkIndex(0),
+            chunk_index: ChunkNumber(0),
         }
     }
 
@@ -154,7 +154,7 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size: DEFAULT_STRIPE_SIZE,
             strategy: MappingStrategy::Rotated,
             profile: EncodingProfile::clay_default(),
-            chunk_index: ChunkIndex(0),
+            chunk_index: ChunkNumber(0),
         }
     }
 
@@ -165,7 +165,7 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size,
             strategy: MappingStrategy::Identity,
             profile: EncodingProfile::clay_default(),
-            chunk_index: ChunkIndex(0),
+            chunk_index: ChunkNumber(0),
         }
     }
 
@@ -176,13 +176,13 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size,
             strategy: if rotated { MappingStrategy::Rotated } else { MappingStrategy::Identity },
             profile,
-            chunk_index: ChunkIndex(0),
+            chunk_index: ChunkNumber(0),
         }
     }
 
     /// Set the chunk index for metadata. Ensures identical data at different
     /// positions produces distinct slice commitments.
-    pub fn set_chunk_index(&mut self, index: ChunkIndex) {
+    pub fn set_chunk_index(&mut self, index: ChunkNumber) {
         self.chunk_index = index;
     }
 
@@ -711,13 +711,13 @@ mod tests {
         let mut slicer_a = Slicer::new(ClayCoder::from_params(
             tape_core::encoding::ClayParams::default(),
         ));
-        slicer_a.set_chunk_index(ChunkIndex(0));
+        slicer_a.set_chunk_index(ChunkNumber(0));
         let slices_a = slicer_a.encode(&zeros).unwrap();
 
         let mut slicer_b = Slicer::new(ClayCoder::from_params(
             tape_core::encoding::ClayParams::default(),
         ));
-        slicer_b.set_chunk_index(ChunkIndex(1));
+        slicer_b.set_chunk_index(ChunkNumber(1));
         let slices_b = slicer_b.encode(&zeros).unwrap();
 
         let root_a = blob_merkle_root(&slices_a);

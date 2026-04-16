@@ -146,16 +146,16 @@ mod tests {
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
 
-        for chunk_index in 0..3 {
-            let key = ChunkKey::new(epoch, group, ChunkNumber(chunk_index));
+        for chunk in 0..3 {
+            let key = ChunkKey::new(epoch, group, ChunkNumber(chunk));
             context.snapshot_cache.insert(
                 key,
-                sample_blob(Hash::from([chunk_index as u8; 32])),
+                sample_blob(Hash::from([chunk as u8; 32])),
                 empty_slices(),
             );
             context
                 .snapshot_cache
-                .mark_posted(&key, Address::from([chunk_index as u8; 32]))
+                .mark_posted(&key, Address::from([chunk as u8; 32]))
                 .expect("cache entry present");
         }
 

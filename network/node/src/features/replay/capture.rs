@@ -109,12 +109,12 @@ fn capture_instruction(
         }
         ParsedInstruction::WriteSnapshot {
             group,
-            chunk_index,
+            chunk,
             blob,
             event,
         } => {
             let snapshot_tape = snapshot_tape_pda(event.epoch).0;
-            let key = snapshot_chunk_key(event.epoch, *group, *chunk_index);
+            let key = snapshot_chunk_key(event.epoch, *group, *chunk);
             let track = CompressedTrack {
                 tape: snapshot_tape,
                 key,
@@ -332,10 +332,10 @@ mod tests {
         }
     }
 
-    fn snapshot_block(epoch: EpochNumber, group: SpoolGroup, chunk_index: ChunkNumber) -> ParsedBlock {
+    fn snapshot_block(epoch: EpochNumber, group: SpoolGroup, chunk: ChunkNumber) -> ParsedBlock {
         let blob = default_blob();
         let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
-        let key = snapshot_chunk_key(epoch, group, chunk_index);
+        let key = snapshot_chunk_key(epoch, group, chunk);
         let track_number = TrackNumber(0);
         let expected_track = CompressedTrack {
             tape: snapshot_tape,
@@ -356,7 +356,7 @@ mod tests {
                 },
                 ParsedInstruction::WriteSnapshot {
                     group,
-                    chunk_index,
+                    chunk,
                     blob,
                     event: SnapshotWritten {
                         epoch,
@@ -529,9 +529,9 @@ mod tests {
     fn captures_snapshot_chunks() {
         let epoch = EpochNumber(7);
         let group = SpoolGroup(3);
-        let chunk_index = ChunkNumber(0);
+        let chunk = ChunkNumber(0);
 
-        let block = snapshot_block(epoch, group, chunk_index);
+        let block = snapshot_block(epoch, group, chunk);
         let captured = capture_block(epoch, &block).unwrap();
 
         // Reserve emits ReserveTape for the snapshot tape, Write emits a Track,
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(captured.next_epoch, epoch);
 
         let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
-        let expected_key = snapshot_chunk_key(epoch, group, chunk_index);
+        let expected_key = snapshot_chunk_key(epoch, group, chunk);
 
         match &captured.events[0].event {
             ReplayableEvent::ReserveTape {

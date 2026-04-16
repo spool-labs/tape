@@ -64,7 +64,7 @@ pub fn merge(
 
             RawInstruction::WriteSnapshot {
                 group,
-                chunk_index,
+                chunk,
                 blob,
             } => {
                 let event = match events.pop_front() {
@@ -75,7 +75,7 @@ pub fn merge(
                 };
                 ParsedInstruction::WriteSnapshot {
                     group,
-                    chunk_index,
+                    chunk,
                     blob,
                     event,
                 }
@@ -314,7 +314,7 @@ mod tests {
                 RawInstruction::ReserveSnapshot,
                 RawInstruction::WriteSnapshot {
                     group: SpoolGroup(3),
-                    chunk_index: ChunkNumber(0),
+                    chunk: ChunkNumber(0),
                     blob: blob.clone(),
                 },
                 RawInstruction::SignSnapshot,
@@ -337,12 +337,12 @@ mod tests {
         match &merged[1] {
             ParsedInstruction::WriteSnapshot {
                 group,
-                chunk_index,
+                chunk,
                 blob: parsed_blob,
                 event,
             } => {
                 assert_eq!(*group, SpoolGroup(3));
-                assert_eq!(*chunk_index, ChunkNumber(0));
+                assert_eq!(*chunk, ChunkNumber(0));
                 assert_eq!(*parsed_blob, blob);
                 assert_eq!(event.epoch, written.epoch);
                 assert_eq!(event.track_hash, written.track_hash);

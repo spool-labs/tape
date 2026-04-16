@@ -20,40 +20,66 @@
 //! drains the snapshot channel without performing work. Filling these in is
 //! the remaining task for the snapshot refactor.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
 use tape_blocks::ParsedInstruction;
-use tape_core::spooler::SpoolGroup;
+use tape_core::snapshot::types::SnapshotState;
+use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::{ChunkNumber, EpochNumber};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
+use tape_store::ops::{EventLogOps, SliceOps};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::snapshot::build::build_snapshot_epoch;
+use crate::features::snapshot::cache::ChunkKey;
+use crate::features::snapshot::{finalize, write};
 
 pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     snapshot_rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
+    /// Parent token for the current snapshot cycle. Cancelled on each new
+    /// `AdvanceEpoch` so every in-flight task tied to the old epoch exits.
+    cycle_cancel: CancellationToken,
+    /// Per-chunk tokens under `cycle_cancel`. Cancelled on `WriteSnapshot`
+    /// so a still-collecting write task exits once its chunk has landed.
+    write_cancels: HashMap<ChunkKey, CancellationToken>,
+    write_tasks: JoinSet<()>,
+    /// Per-group tokens under `cycle_cancel`. Cancelled on `SignSnapshot`
+    /// so a still-collecting finalize task exits once its group has signed.
+    finalize_cancels: HashMap<SpoolGroup, CancellationToken>,
+    finalize_tasks: JoinSet<()>,
 }
 
-impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Blockchain> {
+impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
+    SnapshotManager<Db, Cluster, Blockchain>
+{
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         snapshot_rx: mpsc::Receiver<Arc<ParsedBlock>>,
         cancel: CancellationToken,
     ) -> Self {
+        let cycle_cancel = cancel.child_token();
         Self {
             context,
             snapshot_rx,
             cancel,
+            cycle_cancel,
+            write_cancels: HashMap::new(),
+            write_tasks: JoinSet::new(),
+            finalize_cancels: HashMap::new(),
+            finalize_tasks: JoinSet::new(),
         }
     }
 
@@ -82,7 +108,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
         }
     }
 
-    async fn handle_block(&self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
+    async fn handle_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         for ix in &block.instructions {
             match ix {
                 ParsedInstruction::AdvanceEpoch { event } => {
@@ -90,11 +116,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
                 }
                 ParsedInstruction::WriteSnapshot {
                     group,
-                    chunk_index,
+                    chunk,
                     event,
                     ..
                 } => {
-                    self.on_snapshot_written(event.epoch, *group, *chunk_index, event.track)
+                    self.on_snapshot_written(event.epoch, *group, *chunk, event.track)
                         .await?;
                 }
                 ParsedInstruction::SignSnapshot { event } => {
@@ -106,20 +132,71 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
         Ok(())
     }
 
-    /// Reacts to the previous epoch advance
+    /// Reacts to the previous epoch advance.
     ///
-    /// For each group this node has a spool in, build the chunks deterministically
-    /// from the local event log, stash them in `snapshot_cache`, and start
-    /// per-chunk write-sig collection.
-    async fn on_advance_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
-        trace!(epoch = epoch.0, "snapshot: advance_epoch observed (stub)");
-        // TODO:
-        //   1. let my_groups = local_groups(&self.context) (dedup spools → SpoolGroups)
-        //   2. if my_groups.is_empty() { return Ok(()) }
-        //   3. let chunks = build_snapshot_epoch(&self.context.store, epoch)?;
-        //   4. for each chunk where my_groups.contains(chunk.group):
-        //        self.context.snapshot_cache.insert(key, blob, slices)
-        //   5. spawn per-chunk write driver: collect 14/20 sigs, submit_write_snapshot.
+    /// For each group this node has a spool in, build the chunks
+    /// deterministically from the local event log, stash them in
+    /// `snapshot_cache`, and spawn a per-chunk write task that collects a
+    /// 14-of-20 BLS quorum and submits the on-chain `WriteSnapshot`.
+    ///
+    /// Tasks from any prior snapshot cycle are cancelled via `cycle_cancel`
+    /// before the new cycle begins — the snapshot window only covers one
+    /// epoch at a time and stale work is never resurrected.
+    async fn on_advance_epoch(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
+        self.cycle_cancel.cancel();
+        drain_tasks(&mut self.write_tasks, "snapshot write").await;
+        drain_tasks(&mut self.finalize_tasks, "snapshot finalize").await;
+        self.write_cancels.clear();
+        self.finalize_cancels.clear();
+        self.cycle_cancel = self.cancel.child_token();
+
+        let my_groups = local_groups(&self.context);
+        if my_groups.is_empty() {
+            trace!(
+                epoch = epoch.0,
+                "snapshot: no local groups — nothing to build"
+            );
+            return Ok(());
+        }
+
+        let chunks = build_snapshot_epoch(self.context.store.as_ref(), epoch)?;
+        let mut spawned = 0usize;
+        for chunk in chunks {
+            if !my_groups.contains(&chunk.group) {
+                continue;
+            }
+
+            let key = ChunkKey::new(epoch, chunk.group, chunk.chunk);
+            let blob = chunk.blob;
+            self.context
+                .snapshot_cache
+                .insert(key, blob, chunk.slices);
+
+            let chunk_cancel = self.cycle_cancel.child_token();
+            self.write_cancels.insert(key, chunk_cancel.clone());
+
+            let ctx = self.context.clone();
+            self.write_tasks.spawn(async move {
+                write::run(ctx, epoch, chunk.group, chunk.chunk, blob, chunk_cancel).await;
+            });
+            spawned += 1;
+        }
+
+        if spawned == 0 {
+            debug!(
+                epoch = epoch.0,
+                groups = my_groups.len(),
+                "snapshot: build produced no chunks for local groups"
+            );
+        } else {
+            info!(
+                epoch = epoch.0,
+                chunks = spawned,
+                groups = my_groups.len(),
+                "snapshot: cycle started"
+            );
+        }
+
         Ok(())
     }
 
@@ -130,29 +207,64 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
     /// then drop the cache entry. If this write completes a local group, kick
     /// off finalize-sig collection for that group.
     async fn on_snapshot_written(
-        &self,
+        &mut self,
         epoch: EpochNumber,
         group: SpoolGroup,
-        chunk_index: ChunkNumber,
+        chunk: ChunkNumber,
         track: Address,
     ) -> Result<(), NodeError> {
-        trace!(
-            epoch = epoch.0,
-            group = group.0,
-            chunk = chunk_index.0,
-            ?track,
-            "snapshot: write observed (stub)"
-        );
-        // TODO:
-        //   1. let key = ChunkKey::new(epoch, group, chunk_index);
-        //   2. let Some(slices) = self.context.snapshot_cache.mark_posted(&key, track) else { return Ok(()) };
-        //   3. find this node's single spool in `group` (state.group_peers filter)
-        //      let my_slice_idx = group.slice_of(my_spool)? ;
-        //      self.context.store.put_slice(my_spool, track, slices[my_slice_idx].take())?;
-        //   4. self.context.snapshot_cache.drop_chunk(&key);
-        //   5. if self.context.snapshot_cache.group_progress(epoch, group).is_complete():
-        //        spawn finalize driver: collect 14/20 sigs on SnapshotSignMessage,
-        //        submit_sign_snapshot(ctx, epoch, group, bitmap, signature).
+        let key = ChunkKey::new(epoch, group, chunk);
+
+        // Cancel the write task for this chunk — its submission attempt is
+        // moot now that the on-chain write has landed (whether by us or a
+        // peer).
+        if let Some(token) = self.write_cancels.remove(&key) {
+            token.cancel();
+        }
+
+        let Some(mut slices) = self.context.snapshot_cache.mark_posted(&key, track) else {
+            // We didn't build this chunk — nothing to flush locally.
+            return Ok(());
+        };
+
+        // A node owns at most one spool per group; find its local position.
+        if let Some(my_spool) = my_spool_in_group(&self.context, group) {
+            if let Some(local_idx) = group.slice_of(my_spool) {
+                let data = std::mem::take(&mut slices[local_idx as usize]);
+                if let Err(error) = self
+                    .context
+                    .store
+                    .put_slice(my_spool, track, data)
+                {
+                    warn!(
+                        ?error,
+                        epoch = epoch.0,
+                        group = group.0,
+                        chunk = chunk.0,
+                        ?track,
+                        "snapshot: put_slice failed"
+                    );
+                }
+            }
+        }
+
+        // If every local chunk for this group is posted, kick off finalize.
+        let progress = self.context.snapshot_cache.group_progress(epoch, group);
+        if progress.is_complete() && !self.finalize_cancels.contains_key(&group) {
+            let group_cancel = self.cycle_cancel.child_token();
+            self.finalize_cancels.insert(group, group_cancel.clone());
+            let ctx = self.context.clone();
+            self.finalize_tasks.spawn(async move {
+                finalize::run(ctx, epoch, group, group_cancel).await;
+            });
+            debug!(
+                epoch = epoch.0,
+                group = group.0,
+                chunks = progress.built,
+                "snapshot: finalize cycle started for group"
+            );
+        }
+
         Ok(())
     }
 
@@ -162,22 +274,71 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
     /// have signed), the epoch's event log and any lingering cache state
     /// can be dropped.
     async fn on_snapshot_signed(
-        &self,
+        &mut self,
         epoch: EpochNumber,
         group: SpoolGroup,
         state: u64,
     ) -> Result<(), NodeError> {
-        trace!(
+        // Cancel our own finalize task for this group — another member has
+        // already landed the group's sign instruction.
+        if let Some(token) = self.finalize_cancels.remove(&group) {
+            token.cancel();
+        }
+
+        if SnapshotState::try_from(state) != Ok(SnapshotState::Finalized) {
+            return Ok(());
+        }
+
+        self.context.snapshot_cache.drop_epoch(epoch);
+        if let Err(error) = self.context.store.delete_epoch_events(epoch) {
+            warn!(
+                ?error,
+                epoch = epoch.0,
+                "snapshot: delete_epoch_events failed"
+            );
+        }
+
+        info!(
             epoch = epoch.0,
-            group = group.0,
-            state,
-            "snapshot: sign observed (stub)"
+            last_group = group.0,
+            "snapshot: epoch finalized"
         );
-        // TODO:
-        //   - if SnapshotState::try_from(state) == Ok(SnapshotState::Finalized):
-        //       self.context.snapshot_cache.drop_epoch(epoch);
-        //       self.context.store.delete_epoch_events(epoch)?;
         Ok(())
+    }
+}
+
+fn local_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> HashSet<SpoolGroup> {
+    context
+        .my_spools()
+        .into_iter()
+        .map(SpoolGroup::of)
+        .collect()
+}
+
+/// Which spool this node owns inside a given group. At most one — the
+/// spooler enforces single-slot-per-group membership.
+fn my_spool_in_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    group: SpoolGroup,
+) -> Option<SpoolIndex> {
+    context
+        .my_spools()
+        .into_iter()
+        .find(|spool| group.contains(*spool))
+}
+
+/// Cancel + drain any outstanding tasks in the set. Errors are logged but
+/// don't propagate — we're about to start a fresh cycle regardless.
+async fn drain_tasks(tasks: &mut JoinSet<()>, label: &'static str) {
+    tasks.abort_all();
+    while let Some(result) = tasks.join_next().await {
+        if let Err(error) = result {
+            if !error.is_cancelled() {
+                warn!(?error, label, "snapshot: task drain failed");
+            }
+        }
     }
 }
 

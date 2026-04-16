@@ -12,8 +12,7 @@ pub const INCONSISTENCY_PATH:        &str = "/v1/tracks/{track_id}/inconsistency
 pub const INFO_PATH:                 &str = "/v1/info";
 pub const METRICS_PATH:              &str = "/v1/metrics";
 pub const REPAIR_PATH:               &str = "/v1/tracks/{track_id}/repair";
-pub const SNAPSHOT_WRITE_PATH:       &str =
-    "/v1/snapshots/{epoch}/groups/{group}/chunks/{chunk_index}/write";
+pub const SNAPSHOT_WRITE_PATH:       &str = "/v1/snapshots/{epoch}/groups/{group}/chunks/{chunk}/write";
 pub const SNAPSHOT_FINALIZE_PATH:    &str = "/v1/snapshots/{epoch}/groups/{group}/finalize";
 pub const SIGN_PATH:                 &str = "/v1/tracks/{track_id}/sign";
 pub const SLICE_PATH:                &str = "/v1/tracks/{track_id}/slices/{spool_id}";
@@ -70,12 +69,9 @@ pub fn sign_url(track_id: &str) -> String {
 pub fn snapshot_write_url(
     epoch: EpochNumber,
     group: SpoolGroup,
-    chunk_index: ChunkNumber,
+    chunk: ChunkNumber,
 ) -> String {
-    format!(
-        "/v1/snapshots/{}/groups/{}/chunks/{}/write",
-        epoch.0, group.0, chunk_index.0,
-    )
+    format!( "/v1/snapshots/{}/groups/{}/chunks/{}/write", epoch.0, group.0, chunk.0,)
 }
 
 pub fn snapshot_finalize_url(epoch: EpochNumber, group: SpoolGroup) -> String {

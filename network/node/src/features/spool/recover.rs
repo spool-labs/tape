@@ -442,7 +442,7 @@ mod tests {
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{ChunkIndex, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{ChunkNumber, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
@@ -718,7 +718,7 @@ mod tests {
             true,
             profile,
         );
-        slicer.set_chunk_index(ChunkIndex(42));
+        slicer.set_chunk_index(ChunkNumber(42));
 
         let payload: Vec<u8> = (0..50_000).map(|i| (i % 251) as u8).collect();
         let slices = slicer.encode(&payload).unwrap();

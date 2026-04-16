@@ -30,7 +30,7 @@ pub enum RawInstruction {
     ReserveSnapshot,
     WriteSnapshot {
         group: SpoolGroup,
-        chunk_index: ChunkNumber,
+        chunk: ChunkNumber,
         blob: BlobInfo,
     },
     SignSnapshot,
@@ -87,7 +87,7 @@ pub enum ParsedInstruction {
     },
     WriteSnapshot {
         group: SpoolGroup,
-        chunk_index: ChunkNumber,
+        chunk: ChunkNumber,
         blob: BlobInfo,
         event: SnapshotWritten,
     },
@@ -205,11 +205,11 @@ pub fn parse_raw_instruction(
             let args = WriteSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("write_snapshot: {e:?}")))?;
             let group = SpoolGroup::unpack(args.group);
-            let chunk_index = ChunkNumber::unpack(args.chunk_index);
+            let chunk = ChunkNumber::unpack(args.chunk);
             let blob = BlobInfo::unpack(args.snapshot);
             Ok(Some(RawInstruction::WriteSnapshot {
                 group,
-                chunk_index,
+                chunk,
                 blob,
             }))
         }
@@ -367,11 +367,11 @@ mod tests {
         match parsed {
             Some(RawInstruction::WriteSnapshot {
                 group,
-                chunk_index,
+                chunk,
                 blob: parsed_blob,
             }) => {
                 assert_eq!(group, SpoolGroup(3));
-                assert_eq!(chunk_index, ChunkNumber(5));
+                assert_eq!(chunk, ChunkNumber(5));
                 assert_eq!(parsed_blob, blob);
             }
             other => panic!("expected RawInstruction::WriteSnapshot, got {other:?}"),
@@ -414,7 +414,7 @@ mod tests {
             RawInstruction::ReserveSnapshot,
             RawInstruction::WriteSnapshot {
                 group: SpoolGroup(4),
-                chunk_index: ChunkNumber(0),
+                chunk: ChunkNumber(0),
                 blob: blob.clone(),
             },
             RawInstruction::SignSnapshot,
@@ -437,12 +437,12 @@ mod tests {
         match &merged[1] {
             ParsedInstruction::WriteSnapshot {
                 group,
-                chunk_index,
+                chunk,
                 blob: parsed_blob,
                 event,
             } => {
                 assert_eq!(*group, SpoolGroup(4));
-                assert_eq!(*chunk_index, ChunkNumber(0));
+                assert_eq!(*chunk, ChunkNumber(0));
                 assert_eq!(*parsed_blob, blob);
                 assert_eq!(event.epoch, written.epoch);
                 assert_eq!(event.track_number, written.track_number);

@@ -430,17 +430,17 @@ impl Api for HttpApi {
         })
     }
 
-    async fn snapshot_write(
+    async fn get_snapshot_write_sig(
         &self,
         node: NodeId,
-        req: &SnapshotWriteReq,
-    ) -> Result<SnapshotWriteRes, ApiError> {
+        req: &GetSnapshotWriteSigReq,
+    ) -> Result<GetSnapshotWriteSigRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!(
             "{base}{}",
-            snapshot_write_url(req.epoch, req.group, req.chunk_index)
+            snapshot_write_url(req.epoch, req.group, req.chunk)
         );
-        let wire_req = SnapshotWriteRequest {
+        let wire_req = GetSnapshotWriteSigRequest {
             value_hash: req.value_hash,
         };
         let body = wincode::serialize(&wire_req)
@@ -457,25 +457,25 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("snapshot_write", &resp, start, bytes_sent);
+        self.record("get_snapshot_write_sig", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("snapshot_write", bytes.len() as u64);
+        self.record_rx("get_snapshot_write_sig", bytes.len() as u64);
         let wire: BlsSignResponse = wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
 
-        Ok(SnapshotWriteRes {
+        Ok(GetSnapshotWriteSigRes {
             signature: wire.signature,
             node_id: wire.node_id,
             epoch: wire.epoch,
         })
     }
 
-    async fn snapshot_finalize(
+    async fn get_snapshot_finalize_sig(
         &self,
         node: NodeId,
-        req: &SnapshotFinalizeReq,
-    ) -> Result<SnapshotFinalizeRes, ApiError> {
+        req: &GetSnapshotFinalizeSigReq,
+    ) -> Result<GetSnapshotFinalizeSigRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!("{base}{}", snapshot_finalize_url(req.epoch, req.group));
 
@@ -489,14 +489,14 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("snapshot_finalize", &resp, start, bytes_sent);
+        self.record("get_snapshot_finalize_sig", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("snapshot_finalize", bytes.len() as u64);
+        self.record_rx("get_snapshot_finalize_sig", bytes.len() as u64);
         let wire: BlsSignResponse = wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
 
-        Ok(SnapshotFinalizeRes {
+        Ok(GetSnapshotFinalizeSigRes {
             signature: wire.signature,
             node_id: wire.node_id,
             epoch: wire.epoch,
@@ -717,8 +717,8 @@ mod tests {
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let chunk_index = ChunkNumber(2);
-        let request = SnapshotWriteRequest {
+        let chunk = ChunkNumber(2);
+        let request = GetSnapshotWriteSigRequest {
             value_hash: Hash::from([0xAB; 32]),
         };
         let response = BlsSignResponse {
@@ -741,10 +741,10 @@ mod tests {
                     let expected_request = Arc::clone(&expected_request);
                     let expected_response = Arc::clone(&expected_response);
                     async move {
-                        let decoded: SnapshotWriteRequest = wincode::deserialize(&body).unwrap();
+                        let decoded: GetSnapshotWriteSigRequest = wincode::deserialize(&body).unwrap();
                         assert_eq!(route_epoch, epoch.0);
                         assert_eq!(route_group, group.0);
-                        assert_eq!(route_chunk, chunk_index.0);
+                        assert_eq!(route_chunk, chunk.0);
                         assert_eq!(decoded, *expected_request);
 
                         let body = wincode::serialize(expected_response.as_ref()).unwrap();
@@ -769,12 +769,12 @@ mod tests {
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
         let decoded = api
-            .snapshot_write(
+            .get_snapshot_write_sig(
                 NodeId(7),
-                &SnapshotWriteReq {
+                &GetSnapshotWriteSigReq {
                     epoch,
                     group,
-                    chunk_index,
+                    chunk,
                     value_hash: request.value_hash,
                 },
             )
@@ -833,7 +833,7 @@ mod tests {
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
         let decoded = api
-            .snapshot_finalize(NodeId(7), &SnapshotFinalizeReq { epoch, group })
+            .get_snapshot_finalize_sig(NodeId(7), &GetSnapshotFinalizeSigReq { epoch, group })
             .await
             .unwrap();
 

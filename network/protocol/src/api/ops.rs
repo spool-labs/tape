@@ -158,18 +158,18 @@ pub struct CertifyRes {
 
 /// Request a BLS signature on a snapshot chunk's write message.
 ///
-/// Signs `SnapshotWriteMessage(epoch, group, chunk_index, value_hash)` iff
+/// Signs `SnapshotWriteMessage(epoch, group, chunk, value_hash)` iff
 /// the peer's local build of this chunk produces the same `value_hash`.
 #[derive(Clone, Debug)]
-pub struct SnapshotWriteReq {
+pub struct GetSnapshotWriteSigReq {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub chunk_index: ChunkNumber,
+    pub chunk: ChunkNumber,
     pub value_hash: Hash,
 }
 
 #[derive(Clone, Debug)]
-pub struct SnapshotWriteRes {
+pub struct GetSnapshotWriteSigRes {
     pub signature: BlsSignature,
     pub node_id: NodeId,
     pub epoch: EpochNumber,
@@ -182,13 +182,13 @@ pub struct SnapshotWriteRes {
 /// store via replay). Once every group of an epoch collects this signature,
 /// the on-chain snapshot moves to `Finalized`.
 #[derive(Clone, Debug)]
-pub struct SnapshotFinalizeReq {
+pub struct GetSnapshotFinalizeSigReq {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
 }
 
 #[derive(Clone, Debug)]
-pub struct SnapshotFinalizeRes {
+pub struct GetSnapshotFinalizeSigRes {
     pub signature: BlsSignature,
     pub node_id: NodeId,
     pub epoch: EpochNumber,
@@ -237,8 +237,8 @@ pub enum PeerReq {
     SyncTracks(SyncTracksReq),
     Repair(RepairReq),
     Certify(CertifyReq),
-    SnapshotWrite(SnapshotWriteReq),
-    SnapshotFinalize(SnapshotFinalizeReq),
+    GetSnapshotWriteSig(GetSnapshotWriteSigReq),
+    GetSnapshotFinalizeSig(GetSnapshotFinalizeSigReq),
     Invalidate(InvalidateReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
@@ -257,8 +257,8 @@ pub enum PeerRes {
     SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
-    SnapshotWrite(Result<SnapshotWriteRes, ApiError>),
-    SnapshotFinalize(Result<SnapshotFinalizeRes, ApiError>),
+    GetSnapshotWriteSig(Result<GetSnapshotWriteSigRes, ApiError>),
+    GetSnapshotFinalizeSig(Result<GetSnapshotFinalizeSigRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),

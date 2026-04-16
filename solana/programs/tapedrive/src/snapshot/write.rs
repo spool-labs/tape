@@ -48,7 +48,7 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     }
 
     let spool_group = SpoolGroup::unpack(args.group);
-    let chunk_index = ChunkNumber::unpack(args.chunk_index);
+    let chunk_index = ChunkNumber::unpack(args.chunk);
 
     // verify signature before mutating state
 
