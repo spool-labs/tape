@@ -96,7 +96,7 @@ fn capture_instruction(
             let snapshot_tape = snapshot_tape_pda(event.epoch).0;
             CapturedTrackWrite {
                 event: CapturedEvent {
-                    epoch: event.epoch,
+                    epoch: *current_epoch,
                     event: ReplayableEvent::ReserveTape {
                         tape: snapshot_tape,
                         authority: SYSTEM_ADDRESS,
@@ -138,7 +138,7 @@ fn capture_instruction(
 
             CapturedTrackWrite {
                 event: CapturedEvent {
-                    epoch: event.epoch,
+                    epoch: *current_epoch,
                     event: ReplayableEvent::Track(ReplayTrack {
                         state: track,
                         epoch: event.epoch,
@@ -527,21 +527,21 @@ mod tests {
 
     #[test]
     fn captures_snapshot_chunks() {
-        let epoch = EpochNumber(7);
+        let snapshot_epoch = EpochNumber(7);
         let group = SpoolGroup(3);
         let chunk = ChunkNumber(0);
 
-        let block = snapshot_block(epoch, group, chunk);
-        let captured = capture_block(epoch, &block).unwrap();
+        let block = snapshot_block(snapshot_epoch, group, chunk);
+        let captured = capture_block(snapshot_epoch, &block).unwrap();
 
         // Reserve emits ReserveTape for the snapshot tape, Write emits a Track,
         // Sign emits nothing.
         assert_eq!(captured.events.len(), 2);
         assert!(captured.raw_tracks.is_empty());
-        assert_eq!(captured.next_epoch, epoch);
+        assert_eq!(captured.next_epoch, snapshot_epoch);
 
-        let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
-        let expected_key = snapshot_chunk_key(epoch, group, chunk);
+        let snapshot_tape = Address::from(snapshot_tape_pda(snapshot_epoch).0);
+        let expected_key = snapshot_chunk_key(snapshot_epoch, group, chunk);
 
         match &captured.events[0].event {
             ReplayableEvent::ReserveTape {
@@ -552,7 +552,7 @@ mod tests {
             } => {
                 assert_eq!(*tape, snapshot_tape);
                 assert_eq!(*authority, SYSTEM_ADDRESS);
-                assert_eq!(*active_epoch, epoch);
+                assert_eq!(*active_epoch, snapshot_epoch);
                 assert_eq!(*expiry_epoch, EpochNumber(u64::MAX));
             }
             other => panic!("expected ReserveTape for snapshot tape, got {other:?}"),
@@ -566,10 +566,90 @@ mod tests {
                 assert_eq!(track.state.spool_group, group);
                 assert_eq!(track.state.kind, TrackKind::Blob as u64);
                 assert_eq!(track.state.state, TrackState::Certified as u64);
-                assert_eq!(track.epoch, epoch);
+                assert_eq!(track.epoch, snapshot_epoch);
                 assert!(track.blob.is_some());
             }
             other => panic!("expected Track event from WriteSnapshot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_events_bucket_by_epoch() {
+        // Snapshot-artifact events must be bucketed by epoch, not by
+        // the snapshot epoch they reference. A `ReserveSnapshot` / `WriteSnapshot`
+        // for snapshot N that lands in a block during epoch N+1 goes
+        // into N+1's event log, keeping N's log frozen after `AdvanceEpoch` fires.
+
+        let old_epoch = EpochNumber(7);
+        let new_epoch = EpochNumber(8);
+        let snapshot_epoch = old_epoch;
+        let group = SpoolGroup(3);
+        let chunk = ChunkNumber(0);
+
+        let blob = default_blob();
+        let snapshot_tape = Address::from(snapshot_tape_pda(snapshot_epoch).0);
+        let key = snapshot_chunk_key(snapshot_epoch, group, chunk);
+        let track_number = TrackNumber(0);
+        let expected_track = CompressedTrack {
+            tape: snapshot_tape,
+            key,
+            track_number,
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: blob.size,
+            spool_group: group,
+            value_hash: blob.get_hash(),
+        };
+
+        let block = ParsedBlock {
+            slot: SlotNumber(42),
+            instructions: vec![
+                advance_epoch_instruction(old_epoch, new_epoch),
+                ParsedInstruction::ReserveSnapshot {
+                    event: SnapshotReserved { epoch: snapshot_epoch },
+                },
+                ParsedInstruction::WriteSnapshot {
+                    group,
+                    chunk,
+                    blob,
+                    event: SnapshotWritten {
+                        epoch: snapshot_epoch,
+                        group,
+                        track: Address::new_unique(),
+                        track_number,
+                        track_hash: expected_track.get_hash(),
+                    },
+                },
+            ],
+        };
+
+        let captured = capture_block(old_epoch, &block).unwrap();
+
+        assert_eq!(captured.next_epoch, new_epoch);
+        assert_eq!(captured.events.len(), 3);
+
+        // AdvanceEpoch is tagged with the new epoch (established by the
+        // `rebuckets_events` test).
+        assert_eq!(captured.events[0].epoch, new_epoch);
+
+        // ReserveSnapshot and WriteSnapshot that reference `snapshot_epoch`
+        // must land in `new_epoch`'s bucket, not `snapshot_epoch`'s.
+        assert_eq!(captured.events[1].epoch, new_epoch);
+        assert_eq!(captured.events[2].epoch, new_epoch);
+
+        // Inner event payloads still reference the snapshot epoch — only the
+        // outer bucket shifted.
+        match &captured.events[1].event {
+            ReplayableEvent::ReserveTape { active_epoch, .. } => {
+                assert_eq!(*active_epoch, snapshot_epoch);
+            }
+            other => panic!("expected ReserveTape, got {other:?}"),
+        }
+        match &captured.events[2].event {
+            ReplayableEvent::Track(track) => {
+                assert_eq!(track.epoch, snapshot_epoch);
+            }
+            other => panic!("expected Track, got {other:?}"),
         }
     }
 }

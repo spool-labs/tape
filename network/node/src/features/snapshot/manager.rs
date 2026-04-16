@@ -1,11 +1,14 @@
 //! Drives the snapshot chunk build / post / finalize pipeline for each epoch.
 //!
-//! Consumes the parsed-block stream and reacts to the three on-chain
+//! Consumes the parsed-block stream and reacts to the four on-chain
 //! instructions that shape the snapshot lifecycle:
 //!
-//! - `AdvanceEpoch` — the previous epoch has advanced. Kick off local chunk
-//!   build for every group this node has a spool in, and start collecting
-//!   write signatures for those chunks.
+//! - `AdvanceEpoch` — the previous epoch has advanced. Cancel any stale
+//!   in-flight snapshot work and submit the permissionless `ReserveSnapshot`
+//!   transaction for the just-closed epoch.
+//! - `ReserveSnapshot` — the manifest + tape for one closed epoch now exist
+//!   on-chain. Build local chunks for every group this node owns and start
+//!   collecting write signatures for those chunks.
 //! - `WriteSnapshot` — a chunk has landed on-chain. If we have a matching
 //!   cache entry, persist the one slice we computed for it into the regular
 //!   `SliceCol` under the now-known track address. When every chunk in one
@@ -115,6 +118,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 ParsedInstruction::AdvanceEpoch { event } => {
                     self.on_advance_epoch(event.old_epoch).await?;
                 }
+                ParsedInstruction::ReserveSnapshot { event } => {
+                    self.on_snapshot_reserved(event.epoch).await?;
+                }
                 ParsedInstruction::WriteSnapshot {
                     group,
                     chunk,
@@ -135,14 +141,12 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
     /// Reacts to the previous epoch advance.
     ///
-    /// For each group this node has a spool in, build the chunks
-    /// deterministically from the local event log, stash them in
-    /// `snapshot_cache`, and spawn a per-chunk write task that collects a
-    /// 14-of-20 BLS quorum and submits the on-chain `WriteSnapshot`.
-    ///
     /// Tasks from any prior snapshot cycle are cancelled via `cycle_cancel`
-    /// before the new cycle begins — the snapshot window only covers one
-    /// epoch at a time and stale work is never resurrected.
+    /// before the new cycle begins. Once the epoch is closed, any node may
+    /// reserve the manifest/tape accounts for it. Local chunk build waits for
+    /// the actual `ReserveSnapshot` instruction to appear on-chain so every
+    /// peer signs against a reserved snapshot epoch, not merely against an
+    /// observed epoch transition.
     async fn on_advance_epoch(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
         self.cycle_cancel.cancel();
         drain_tasks(&mut self.write_tasks, "snapshot write").await;
@@ -151,6 +155,33 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         self.finalize_cancels.clear();
         self.cycle_cancel = self.cancel.child_token();
 
+        match submit_reserve_snapshot(&self.context, epoch).await {
+            Ok(txid) => {
+                info!(
+                    epoch = epoch.0,
+                    ?txid,
+                    "snapshot: reserve submitted"
+                );
+            }
+            Err(error) => {
+                debug!(
+                    ?error,
+                    epoch = epoch.0,
+                    "snapshot: reserve raced / already exists"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reacts to the on-chain reservation of one closed epoch's snapshot.
+    ///
+    /// For each group this node has a spool in, build the chunks
+    /// deterministically from the local event log, stash them in
+    /// `snapshot_cache`, and spawn a per-chunk write task that collects a
+    /// 14-of-20 BLS quorum and submits the on-chain `WriteSnapshot`.
+    async fn on_snapshot_reserved(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
         let my_groups = local_groups(&self.context);
         if my_groups.is_empty() {
             trace!(
@@ -158,14 +189,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 "snapshot: no local groups — nothing to build"
             );
             return Ok(());
-        }
-
-        if let Err(error) = submit_reserve_snapshot(&self.context, epoch).await {
-            trace!(
-                ?error,
-                epoch = epoch.0,
-                "snapshot: reserve raced / already exists"
-            );
         }
 
         let chunks = build_snapshot_epoch(self.context.store.as_ref(), epoch)?;
