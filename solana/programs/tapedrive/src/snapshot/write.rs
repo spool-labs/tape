@@ -48,7 +48,7 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     }
 
     let spool_group = SpoolGroup::unpack(args.group);
-    let chunk_index = u64::from_le_bytes(args.chunk_index);
+    let chunk_index = ChunkNumber::unpack(args.chunk_index);
 
     // verify signature before mutating state
 
@@ -196,7 +196,7 @@ mod tests {
         let current_epoch = EpochNumber(10);
         let snapshot_epoch = EpochNumber(9);
         let spool_group = SpoolGroup(0);
-        let chunk_index = 0u64;
+        let chunk_index = ChunkNumber(0);
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();

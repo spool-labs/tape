@@ -55,6 +55,7 @@ impl SnapshotSignMessage {
 #[cfg(test)]
 mod tests {
     use crate::cert::SnapshotWriteMessage;
+    use crate::types::ChunkNumber;
     use tape_crypto::Hash;
 
     use super::*;
@@ -151,7 +152,7 @@ mod tests {
         let msg2 = SnapshotWriteMessage::new(
             EpochNumber(42),
             SpoolGroup(9),
-            0,
+            ChunkNumber(0),
             Hash::from([0xAA; 32]),
         );
 

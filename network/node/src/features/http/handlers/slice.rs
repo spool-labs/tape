@@ -163,7 +163,7 @@ mod tests {
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
+        ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
@@ -211,7 +211,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape: snapshot_tape,
-            key: snapshot_chunk_key(epoch, group, 0),
+            key: snapshot_chunk_key(epoch, group, ChunkNumber(0)),
             track_number,
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,

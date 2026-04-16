@@ -245,6 +245,7 @@ mod tests {
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::prelude::*;
     use tape_core::spooler::SpoolGroup;
+    use tape_core::types::ChunkNumber;
     use tape_core::system::NodePreferences;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
@@ -313,7 +314,7 @@ mod tests {
                 RawInstruction::ReserveSnapshot,
                 RawInstruction::WriteSnapshot {
                     group: SpoolGroup(3),
-                    chunk_index: 0,
+                    chunk_index: ChunkNumber(0),
                     blob: blob.clone(),
                 },
                 RawInstruction::SignSnapshot,
@@ -341,7 +342,7 @@ mod tests {
                 event,
             } => {
                 assert_eq!(*group, SpoolGroup(3));
-                assert_eq!(*chunk_index, 0);
+                assert_eq!(*chunk_index, ChunkNumber(0));
                 assert_eq!(*parsed_blob, blob);
                 assert_eq!(event.epoch, written.epoch);
                 assert_eq!(event.track_hash, written.track_hash);

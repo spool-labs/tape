@@ -99,7 +99,7 @@ mod tests {
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
+        ChunkIndex, ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
@@ -122,7 +122,7 @@ mod tests {
         let chunk = vec![0xCDu8; 2048];
         let group = SpoolGroup(2);
         let mut slicer = Slicer::clay_default();
-        slicer.set_chunk_index(group.0);
+        slicer.set_chunk_index(ChunkIndex(group.0));
 
         let slices = slicer.encode(&chunk).expect("slicer encode");
         let stripe_size = slicer.stripe_size();
@@ -166,7 +166,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape: snapshot_tape,
-            key: snapshot_chunk_key(epoch, group, 0),
+            key: snapshot_chunk_key(epoch, group, ChunkNumber(0)),
             track_number,
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,

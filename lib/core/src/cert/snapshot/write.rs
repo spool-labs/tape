@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable, bytes_of, try_from_bytes};
 use tape_crypto::Hash;
 
 use crate::spooler::SpoolGroup;
-use crate::types::EpochNumber;
+use crate::types::{ChunkNumber, EpochNumber};
 
 /// Domain separation tag for snapshot certification.
 pub const SNAPSHOT_WRITE_DOMAIN_TAG: &[u8; 8] = b"SNAPWRIT";
@@ -20,7 +20,7 @@ pub const SNAPSHOT_WRITE_MESSAGE_SIZE: usize = 64;
 pub struct SnapshotWriteMessage {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub chunk_index: u64,
+    pub chunk_index: ChunkNumber,
     pub value_hash: Hash,
 }
 
@@ -28,7 +28,7 @@ impl SnapshotWriteMessage {
     pub const fn new(
         epoch: EpochNumber,
         group: SpoolGroup,
-        chunk_index: u64,
+        chunk_index: ChunkNumber,
         value_hash: Hash,
     ) -> Self {
         Self {
@@ -81,7 +81,7 @@ mod tests {
         let msg = SnapshotWriteMessage::new(
             EpochNumber(12345),
             SpoolGroup(7),
-            3,
+            ChunkNumber(3),
             Hash::from([0xCD; 32]),
         );
         let bytes = msg.to_bytes();
@@ -97,7 +97,7 @@ mod tests {
         let msg = SnapshotWriteMessage::new(
             EpochNumber(0x0102030405060708),
             SpoolGroup(0x2122232425262728),
-            0x3132333435363738,
+            ChunkNumber(0x3132333435363738),
             Hash::from([0x99; 32]),
         );
         let bytes = msg.to_bytes();
@@ -132,13 +132,13 @@ mod tests {
         let msg1 = SnapshotWriteMessage::new(
             EpochNumber(1),
             SpoolGroup(3),
-            0,
+            ChunkNumber(0),
             value_hash,
         );
         let msg2 = SnapshotWriteMessage::new(
             EpochNumber(2),
             SpoolGroup(3),
-            0,
+            ChunkNumber(0),
             value_hash,
         );
 
@@ -151,13 +151,13 @@ mod tests {
         let msg1 = SnapshotWriteMessage::new(
             EpochNumber(42),
             SpoolGroup(1),
-            0,
+            ChunkNumber(0),
             value_hash,
         );
         let msg2 = SnapshotWriteMessage::new(
             EpochNumber(42),
             SpoolGroup(2),
-            0,
+            ChunkNumber(0),
             value_hash,
         );
 
@@ -169,7 +169,7 @@ mod tests {
         let snapshot_msg = SnapshotWriteMessage::new(
             EpochNumber(42),
             SpoolGroup(9),
-            0,
+            ChunkNumber(0),
             Hash::from([0xAA; 32]),
         );
         let certify_msg = TrackWriteMessage::new(

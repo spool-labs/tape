@@ -288,7 +288,7 @@ mod tests {
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_crypto::Hash;
@@ -332,7 +332,7 @@ mod tests {
         }
     }
 
-    fn snapshot_block(epoch: EpochNumber, group: SpoolGroup, chunk_index: u64) -> ParsedBlock {
+    fn snapshot_block(epoch: EpochNumber, group: SpoolGroup, chunk_index: ChunkNumber) -> ParsedBlock {
         let blob = default_blob();
         let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
         let key = snapshot_chunk_key(epoch, group, chunk_index);
@@ -529,7 +529,7 @@ mod tests {
     fn captures_snapshot_chunks() {
         let epoch = EpochNumber(7);
         let group = SpoolGroup(3);
-        let chunk_index = 0u64;
+        let chunk_index = ChunkNumber(0);
 
         let block = snapshot_block(epoch, group, chunk_index);
         let captured = capture_block(epoch, &block).unwrap();

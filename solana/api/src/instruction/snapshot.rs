@@ -4,7 +4,7 @@ use solana_program::instruction::{AccountMeta, Instruction};
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::{BlobInfo, PackedBlobInfo};
-use tape_core::types::{SpoolGroupBitmap, EpochNumber};
+use tape_core::types::{ChunkNumber, EpochNumber, SpoolGroupBitmap};
 use tape_crypto::address::Address;
 use tape_solana::*;
 
@@ -77,7 +77,7 @@ pub fn build_write_snapshot_ix(
     fee_payer: Address,
     epoch: EpochNumber,
     group: SpoolGroup,
-    chunk_index: u64,
+    chunk_index: ChunkNumber,
     bitmap: SpoolGroupBitmap,
     signature: BlsSignature,
     blob: &BlobInfo,
@@ -87,7 +87,7 @@ pub fn build_write_snapshot_ix(
     let (snapshot_address, _) = snapshot_pda(epoch);
     let (tape_address, _) = snapshot_tape_pda(epoch);
 
-    let chunk_index = chunk_index.to_le_bytes();
+    let chunk_index = chunk_index.pack();
 
     Instruction {
         program_id: tapedrive::ID,

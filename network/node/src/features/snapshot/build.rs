@@ -16,7 +16,7 @@ use tape_core::snapshot::info::{
 use tape_core::snapshot::types::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount};
+use tape_core::types::{ChunkIndex, EpochNumber, SlotNumber, StorageUnits, StripeCount};
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_protocol::Api;
@@ -138,7 +138,7 @@ fn encode_group<Db: Store>(
     chunk: &[u8],
 ) -> Result<SnapshotGroupInfo, NodeError> {
     let mut slicer = Slicer::clay_default();
-    slicer.set_chunk_index(group.0);
+    slicer.set_chunk_index(ChunkIndex(group.0));
 
     let slices = slicer
         .encode(chunk)

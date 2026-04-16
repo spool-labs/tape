@@ -5,6 +5,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use tape_core::encoding::EncodingProfile;
+use tape_core::types::ChunkIndex;
 
 use crate::adaptive::STRIPE_SIZES;
 use crate::errors::DecodeError;
@@ -31,7 +32,7 @@ pub struct SliceMetadata {
     pub profile: EncodingProfile,
     /// Chunk/group index, ensures unique commitments per position even when
     /// multiple outer-RS chunks contain identical data (e.g. zero padding).
-    pub chunk_index: u64,
+    pub chunk_index: ChunkIndex,
 }
 
 impl SliceMetadata {
@@ -53,7 +54,7 @@ impl SliceMetadata {
             blob_len: blob_len as u64,
             stripe_size: stripe_size as u64,
             profile,
-            chunk_index: 0,
+            chunk_index: ChunkIndex(0),
         }
     }
 
@@ -102,7 +103,7 @@ impl SliceMetadata {
     }
 
     /// Get the chunk index.
-    pub fn chunk_index(&self) -> u64 {
+    pub fn chunk_index(&self) -> ChunkIndex {
         self.chunk_index
     }
 }
@@ -119,7 +120,7 @@ mod tests {
     #[test]
     fn test_roundtrip() {
         let mut meta = SliceMetadata::new(12345, STRIPE_SIZES[0]);
-        meta.chunk_index = 42;
+        meta.chunk_index = ChunkIndex(42);
         let bytes = meta.to_bytes();
 
         // Simulate slice with metadata suffix
@@ -130,7 +131,7 @@ mod tests {
         assert_eq!(parsed.blob_len(), 12345);
         assert_eq!(parsed.stripe_size(), STRIPE_SIZES[0]);
         assert_eq!(parsed.version(), SliceMetadata::VERSION);
-        assert_eq!(parsed.chunk_index(), 42);
+        assert_eq!(parsed.chunk_index(), ChunkIndex(42));
     }
 
     #[test]

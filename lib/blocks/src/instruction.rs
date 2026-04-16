@@ -12,6 +12,7 @@ use bs58::decode as bs58_decode;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::{TrackData, TrackDataSlice};
+use tape_core::types::ChunkNumber;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
@@ -29,7 +30,7 @@ pub enum RawInstruction {
     ReserveSnapshot,
     WriteSnapshot {
         group: SpoolGroup,
-        chunk_index: u64,
+        chunk_index: ChunkNumber,
         blob: BlobInfo,
     },
     SignSnapshot,
@@ -86,7 +87,7 @@ pub enum ParsedInstruction {
     },
     WriteSnapshot {
         group: SpoolGroup,
-        chunk_index: u64,
+        chunk_index: ChunkNumber,
         blob: BlobInfo,
         event: SnapshotWritten,
     },
@@ -204,7 +205,7 @@ pub fn parse_raw_instruction(
             let args = WriteSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("write_snapshot: {e:?}")))?;
             let group = SpoolGroup::unpack(args.group);
-            let chunk_index = u64::from_le_bytes(args.chunk_index);
+            let chunk_index = ChunkNumber::unpack(args.chunk_index);
             let blob = BlobInfo::unpack(args.snapshot);
             Ok(Some(RawInstruction::WriteSnapshot {
                 group,
@@ -356,7 +357,7 @@ mod tests {
             Address::new_unique(),
             EpochNumber(7),
             SpoolGroup(3),
-            5,
+            ChunkNumber(5),
             SpoolGroupBitmap::zeroed(),
             BlsSignature::zeroed(),
             &blob,
@@ -370,7 +371,7 @@ mod tests {
                 blob: parsed_blob,
             }) => {
                 assert_eq!(group, SpoolGroup(3));
-                assert_eq!(chunk_index, 5);
+                assert_eq!(chunk_index, ChunkNumber(5));
                 assert_eq!(parsed_blob, blob);
             }
             other => panic!("expected RawInstruction::WriteSnapshot, got {other:?}"),
@@ -413,7 +414,7 @@ mod tests {
             RawInstruction::ReserveSnapshot,
             RawInstruction::WriteSnapshot {
                 group: SpoolGroup(4),
-                chunk_index: 0,
+                chunk_index: ChunkNumber(0),
                 blob: blob.clone(),
             },
             RawInstruction::SignSnapshot,
@@ -441,7 +442,7 @@ mod tests {
                 event,
             } => {
                 assert_eq!(*group, SpoolGroup(4));
-                assert_eq!(*chunk_index, 0);
+                assert_eq!(*chunk_index, ChunkNumber(0));
                 assert_eq!(*parsed_blob, blob);
                 assert_eq!(event.epoch, written.epoch);
                 assert_eq!(event.track_number, written.track_number);
