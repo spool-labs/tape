@@ -6,19 +6,19 @@ use crate::types::{ChunkNumber, EpochNumber};
 
 pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
 
-/// Derives the track key for a snapshot chunk. A single group may contribute multiple chunks
-/// per epoch, `chunk_index` is a group-local ordinal that disambiguates them.
+/// Derives the track key for a snapshot chunk. 
+/// A single group may contribute multiple chunks per epoch.
 #[inline]
 pub fn snapshot_chunk_key(
     epoch: EpochNumber,
     group: SpoolGroup,
-    chunk_index: ChunkNumber,
+    chunk: ChunkNumber,
 ) -> Hash {
     hashv(&[
         SNAPSHOT_KEY_V1,
         &epoch.pack(),
         &group.pack(),
-        &chunk_index.pack(),
+        &chunk.pack(),
     ])
 }
 

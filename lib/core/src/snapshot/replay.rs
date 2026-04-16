@@ -22,14 +22,14 @@ use crate::types::{EpochNumber, NodeId, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 
+/// Wire-format version for the framed snapshot binary.
+pub const SNAPSHOT_VERSION: u8 = 1;
+
 #[cfg(feature = "wincode")]
 const SNAPSHOT_FRAME_LIMIT: usize = 4 * 1024 * 1024;
 
 #[cfg(feature = "wincode")]
 type SnapshotFrameBytes = WincodeVec<Pod<u8>, BincodeLen<SNAPSHOT_FRAME_LIMIT>>;
-
-/// Wire-format version for the framed snapshot binary.
-pub const SNAPSHOT_VERSION: u8 = 1;
 
 /// Replayable event, mirrors block processing handler parameters.
 ///
