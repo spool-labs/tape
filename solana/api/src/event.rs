@@ -1,7 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use tape_core::bls::BlsPubkey;
-use tape_core::snapshot::types::SnapshotState;
 use tape_core::spooler::SpoolGroup;
 use tape_core::system::NodePreferences;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};

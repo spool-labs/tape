@@ -23,6 +23,7 @@ use crate::config::node::NodeConfig;
 use crate::core::error::NodeError;
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
+use crate::features::snapshot::cache::SnapshotBuildCache;
 
 pub type AppContext = Arc<NodeContext<RocksStore, HttpApi, SolanaRpc>>;
 
@@ -34,6 +35,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub metrics: NodeMetrics,
+    pub snapshot_cache: Arc<SnapshotBuildCache>,
 
     node_id: NodeId,
     node_address: Address,
@@ -179,6 +181,7 @@ pub mod test_utils {
             peer_manager,
             api: Arc::new(api),
             metrics: NodeMetrics::default(),
+            snapshot_cache: Arc::new(SnapshotBuildCache::new()),
             reclaim_pending: AtomicBool::new(false),
         })
     }
@@ -258,6 +261,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             peer_manager: self.peer_manager,
             api: self.api,
             metrics: NodeMetrics::default(),
+            snapshot_cache: Arc::new(SnapshotBuildCache::new()),
             reclaim_pending: AtomicBool::new(false),
         }))
     }

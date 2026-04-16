@@ -7,7 +7,8 @@ use tape_protocol::api::{
     GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
     GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
     ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes,
-    SignSnapshotReq, SignSnapshotRes, SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
+    SnapshotFinalizeReq, SnapshotFinalizeRes, SnapshotWriteReq, SnapshotWriteRes,
+    SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
 };
 use tape_core::types::NodeId;
 
@@ -37,7 +38,8 @@ impl MemoryApi {
             PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(not_impl())),
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
-            PeerReq::SignSnapshot(_) => PeerRes::SignSnapshot(Err(not_impl())),
+            PeerReq::SnapshotWrite(_) => PeerRes::SnapshotWrite(Err(not_impl())),
+            PeerReq::SnapshotFinalize(_) => PeerRes::SnapshotFinalize(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
@@ -109,20 +111,37 @@ impl Api for MemoryApi {
         dispatch!(self, node, CertifyReq { track: req.track }, Certify)
     }
 
-    async fn sign_snapshot(
+    async fn snapshot_write(
         &self,
         node: NodeId,
-        req: &SignSnapshotReq,
-    ) -> Result<SignSnapshotRes, ApiError> {
+        req: &SnapshotWriteReq,
+    ) -> Result<SnapshotWriteRes, ApiError> {
         dispatch!(
             self,
             node,
-            SignSnapshotReq {
+            SnapshotWriteReq {
                 epoch: req.epoch,
                 group: req.group,
-                blob_hash: req.blob_hash,
+                chunk_index: req.chunk_index,
+                value_hash: req.value_hash,
             },
-            SignSnapshot
+            SnapshotWrite
+        )
+    }
+
+    async fn snapshot_finalize(
+        &self,
+        node: NodeId,
+        req: &SnapshotFinalizeReq,
+    ) -> Result<SnapshotFinalizeRes, ApiError> {
+        dispatch!(
+            self,
+            node,
+            SnapshotFinalizeReq {
+                epoch: req.epoch,
+                group: req.group,
+            },
+            SnapshotFinalize
         )
     }
 
@@ -145,7 +164,7 @@ mod tests {
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{ChunkNumber, EpochNumber};
     use tape_crypto::Hash;
 
     fn snapshot_signature(message: &[u8]) -> BlsSignature {
@@ -164,8 +183,8 @@ mod tests {
         let signature = snapshot_signature(b"custom-handler");
         let client = MemoryApi::new(move |node, req| match req {
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Ok(GetHealthRes { ok: node.0 == 1 })),
-            PeerReq::SignSnapshot(req) => PeerRes::SignSnapshot(Ok(
-                SignSnapshotRes {
+            PeerReq::SnapshotWrite(req) => PeerRes::SnapshotWrite(Ok(
+                SnapshotWriteRes {
                     signature: signature.clone(),
                     node_id: node,
                     epoch: EpochNumber(req.epoch.0 + 1),
@@ -182,30 +201,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_sign_dispatch() {
-        let signature = snapshot_signature(b"snapshot-sign");
+    async fn snapshot_write_dispatch() {
+        let signature = snapshot_signature(b"snapshot-write");
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::SignSnapshot(req) => {
+            PeerReq::SnapshotWrite(req) => {
                 assert_eq!(node, NodeId(7));
                 assert_eq!(req.epoch, EpochNumber(10));
                 assert_eq!(req.group, SpoolGroup(4));
-                assert_eq!(req.blob_hash, Hash::from([0xAB; 32]));
-                PeerRes::SignSnapshot(Ok(SignSnapshotRes {
+                assert_eq!(req.chunk_index, ChunkNumber(2));
+                assert_eq!(req.value_hash, Hash::from([0xAB; 32]));
+                PeerRes::SnapshotWrite(Ok(SnapshotWriteRes {
                     signature: signature.clone(),
                     node_id: node,
                     epoch: EpochNumber(11),
                 }))
             }
-            _ => PeerRes::SignSnapshot(Err(ApiError::Other("unexpected".into()))),
+            _ => PeerRes::SnapshotWrite(Err(ApiError::Other("unexpected".into()))),
         });
 
         let response = client
-            .sign_snapshot(
+            .snapshot_write(
                 NodeId(7),
-                &SignSnapshotReq {
+                &SnapshotWriteReq {
                     epoch: EpochNumber(10),
                     group: SpoolGroup(4),
-                    blob_hash: Hash::from([0xAB; 32]),
+                    chunk_index: ChunkNumber(2),
+                    value_hash: Hash::from([0xAB; 32]),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.node_id, NodeId(7));
+        assert_eq!(response.epoch, EpochNumber(11));
+        assert_eq!(response.signature, signature);
+    }
+
+    #[tokio::test]
+    async fn snapshot_finalize_dispatch() {
+        let signature = snapshot_signature(b"snapshot-finalize");
+        let client = MemoryApi::new(move |node, req| match req {
+            PeerReq::SnapshotFinalize(req) => {
+                assert_eq!(node, NodeId(7));
+                assert_eq!(req.epoch, EpochNumber(10));
+                assert_eq!(req.group, SpoolGroup(4));
+                PeerRes::SnapshotFinalize(Ok(SnapshotFinalizeRes {
+                    signature: signature.clone(),
+                    node_id: node,
+                    epoch: EpochNumber(11),
+                }))
+            }
+            _ => PeerRes::SnapshotFinalize(Err(ApiError::Other("unexpected".into()))),
+        });
+
+        let response = client
+            .snapshot_finalize(
+                NodeId(7),
+                &SnapshotFinalizeReq {
+                    epoch: EpochNumber(10),
+                    group: SpoolGroup(4),
                 },
             )
             .await

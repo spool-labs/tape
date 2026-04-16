@@ -10,8 +10,7 @@
 use std::mem::MaybeUninit;
 
 use serde::{Deserialize, Serialize};
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_core::types::{EpochNumber, TrackNumber};
+use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::{
@@ -226,59 +225,6 @@ impl<'de> SchemaRead<'de> for TrackLookupKey {
     }
 }
 
-/// Key for snapshot staging slices.
-///
-/// Format: [epoch BE 8 bytes][group BE 8 bytes][spool BE 2 bytes]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SnapshotSliceKey {
-    pub epoch: EpochNumber,
-    pub group: SpoolGroup,
-    pub spool: SpoolIndex,
-}
-
-impl SnapshotSliceKey {
-    pub const SIZE: usize = 18;
-
-    pub fn new(epoch: EpochNumber, group: SpoolGroup, spool: SpoolIndex) -> Self {
-        Self { epoch, group, spool }
-    }
-
-    pub fn epoch_prefix(epoch: EpochNumber) -> [u8; 8] {
-        epoch.0.to_be_bytes()
-    }
-}
-
-impl SchemaWrite for SnapshotSliceKey {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(Self::SIZE)
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&src.epoch.0.to_be_bytes())?;
-        writer.write_exact(&src.group.0.to_be_bytes())?;
-        writer.write_exact(&src.spool.to_be_bytes())?;
-        Ok(())
-    }
-}
-
-impl<'de> SchemaRead<'de> for SnapshotSliceKey {
-    type Dst = Self;
-
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<SnapshotSliceKey>) -> ReadResult<()> {
-        let epoch: [u8; 8] = unsafe { reader.get_t()? };
-        let group: [u8; 8] = unsafe { reader.get_t()? };
-        let spool: [u8; 2] = unsafe { reader.get_t()? };
-        dst.write(SnapshotSliceKey {
-            epoch: EpochNumber(u64::from_be_bytes(epoch)),
-            group: SpoolGroup(u64::from_be_bytes(group)),
-            spool: u16::from_be_bytes(spool),
-        });
-        Ok(())
-    }
-}
-
 impl SchemaWrite for SliceKey {
     type Src = Self;
 
@@ -455,32 +401,6 @@ mod tests {
         let key = SliceKey::new(42, Address::new([0xAB; 32]));
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: SliceKey = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(key, decoded);
-    }
-
-    #[test]
-    fn test_snapshot_slice_key_size() {
-        let key = SnapshotSliceKey::new(EpochNumber(12345), SpoolGroup(7), 9);
-        let bytes = wincode::serialize(&key).unwrap();
-        assert_eq!(bytes.len(), SnapshotSliceKey::SIZE);
-    }
-
-    #[test]
-    fn test_snapshot_slice_key_ordering() {
-        let key1 = SnapshotSliceKey::new(EpochNumber(1), SpoolGroup(1), 1);
-        let key2 = SnapshotSliceKey::new(EpochNumber(1), SpoolGroup(2), 0);
-
-        let bytes1 = wincode::serialize(&key1).unwrap();
-        let bytes2 = wincode::serialize(&key2).unwrap();
-
-        assert!(bytes1 < bytes2);
-    }
-
-    #[test]
-    fn test_snapshot_slice_key_roundtrip() {
-        let key = SnapshotSliceKey::new(EpochNumber(42), SpoolGroup(3), 9);
-        let bytes = wincode::serialize(&key).unwrap();
-        let decoded: SnapshotSliceKey = wincode::deserialize(&bytes).unwrap();
         assert_eq!(key, decoded);
     }
 

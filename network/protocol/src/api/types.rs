@@ -32,10 +32,14 @@ pub struct BlsSignResponse {
     pub epoch: EpochNumber,
 }
 
-/// Request body for snapshot signing.
+/// Body for the snapshot chunk-write signature request.
+///
+/// Asks a peer to sign `SnapshotWriteMessage(epoch, group, chunk_index, value_hash)`.
+/// The peer signs only if its local build of the chunk produces the same
+/// `value_hash`. `epoch`, `group`, and `chunk_index` live in the URL path.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SignSnapshotRequest {
-    pub blob_hash: Hash,
+pub struct SnapshotWriteRequest {
+    pub value_hash: Hash,
 }
 
 /// Request for inconsistency attestation.
@@ -285,13 +289,13 @@ mod tests {
     }
 
     #[test]
-    fn sign_snapshot_request() {
-        let req = SignSnapshotRequest {
-            blob_hash: Hash::from([0xAB; 32]),
+    fn snapshot_write_request() {
+        let req = SnapshotWriteRequest {
+            value_hash: Hash::from([0xAB; 32]),
         };
 
         let bytes = wincode::serialize(&req).unwrap();
-        let decoded: SignSnapshotRequest = wincode::deserialize(&bytes).unwrap();
+        let decoded: SnapshotWriteRequest = wincode::deserialize(&bytes).unwrap();
         assert_eq!(req, decoded);
     }
 

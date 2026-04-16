@@ -24,7 +24,6 @@ use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::lifecycle::manager::LifecycleManager;
 use crate::features::replay::manager::ReplayManager;
-#[cfg(any())]
 use crate::features::snapshot::manager::SnapshotManager;
 use crate::features::spool::manager::SpoolManager;
 use crate::features::store::manager::StoreManager;
@@ -253,7 +252,6 @@ where
         .run(),
     );
 
-    #[cfg(any())]
     supervisor.spawn(
         ServiceName::SnapshotManager,
         SnapshotManager::new(

@@ -1,3 +1,10 @@
+//! `POST /v1/snapshots/{epoch}/groups/{group}/chunks/{chunk_index}/write`
+//!
+//! Peer asks this node for a BLS signature on `SnapshotWriteMessage`. The
+//! signature is only produced if the peer's claimed `value_hash` matches
+//! what this node computed during its own build for the same chunk — the
+//! cached `BlobInfo` is the source of truth.
+
 use std::fmt::Display;
 
 use axum::body::Bytes;
@@ -7,27 +14,27 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::cert::snapshot::SnapshotMessage;
-use tape_core::snapshot::info::{SnapshotGroupInfo, SnapshotGroupStatus};
+use tape_core::cert::SnapshotWriteMessage;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::EpochNumber;
+use tape_core::types::{ChunkNumber, EpochNumber};
+use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SnapshotWriteRequest};
 use tape_protocol::Api;
-use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SignSnapshotRequest};
-use tape_store::ops::SnapshotOps;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
+use crate::features::snapshot::cache::ChunkKey;
 
-pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    Path((epoch, group)): Path<(u64, u64)>,
+pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    Path((epoch, group, chunk_index)): Path<(u64, u64, u64)>,
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: SignSnapshotRequest = wincode::deserialize(&body)
-        .map_err(|error| RouteError::BadRequest(format!("snapshot sign request: {error}")))?;
+    let request: SnapshotWriteRequest = wincode::deserialize(&body)
+        .map_err(|error| RouteError::BadRequest(format!("snapshot write request: {error}")))?;
 
     let epoch = EpochNumber(epoch);
     let group = SpoolGroup(group);
+    let chunk_index = ChunkNumber(chunk_index);
 
     let signing_epoch = current_epoch(&state)?;
 
@@ -40,22 +47,24 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .group_peers(group)
         .into_iter()
         .any(|(_, node_id)| node_id == state.context.node_id());
-
     if !group_is_local {
         return Err(RouteError::NotResponsible);
     }
 
-    let snapshot_group = state
+    let key = ChunkKey::new(epoch, group, chunk_index);
+    let local_hash = state
         .context
-        .store
-        .get_snapshot_info(epoch)
-        .map_err(store_error)?
+        .snapshot_cache
+        .value_hash(&key)
         .ok_or(RouteError::NotFound)?;
-    let snapshot_group = snapshot_group.group(group);
 
-    validate_snapshot_group(snapshot_group, &request)?;
+    if local_hash != request.value_hash {
+        return Err(RouteError::BadRequest(
+            "snapshot chunk value_hash mismatch".into(),
+        ));
+    }
 
-    let message = SnapshotMessage::new(epoch, group, request.blob_hash);
+    let message = SnapshotWriteMessage::new(epoch, group, chunk_index, request.value_hash);
     let signature = state
         .context
         .bls_sign(&message.to_bytes())
@@ -67,31 +76,14 @@ pub async fn sign_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
         epoch: signing_epoch,
     };
 
-    let bytes = wincode::serialize(&response)
-        .map_err(|error| RouteError::Internal(format!(
-            "serialize snapshot sign response: {error}"
-        )))?;
+    let bytes = wincode::serialize(&response).map_err(|error| {
+        RouteError::Internal(format!("serialize snapshot write response: {error}"))
+    })?;
 
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], bytes))
 }
 
-fn validate_snapshot_group(
-    snapshot_group: &SnapshotGroupInfo,
-    request: &SignSnapshotRequest,
-) -> Result<(), RouteError> {
-    if matches!(snapshot_group.status, SnapshotGroupStatus::Missing) {
-        return Err(RouteError::NotFound);
-    }
-
-    if snapshot_group.blob.get_hash() != request.blob_hash {
-        return Err(RouteError::BadRequest(
-            "snapshot group blob hash mismatch".into(),
-        ));
-    }
-
-    Ok(())
-}
-
+#[allow(dead_code)]
 fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
 }
@@ -101,15 +93,13 @@ mod tests {
     use super::*;
     use axum::body::Bytes;
     use axum::extract::{Path, State};
-    use tape_core::cert::snapshot::SnapshotMessage;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
-    use tape_core::snapshot::info::{SnapshotGroupStatus, SnapshotInfo, SnapshotStatus};
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{
-        EpochNumber, NodeId, StorageUnits, StripeCount,
+        ChunkNumber, EpochNumber, NodeId, StorageUnits, StripeCount,
     };
     use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::Hash;
@@ -117,11 +107,10 @@ mod tests {
 
     use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
+    use crate::features::snapshot::cache::ChunkKey;
 
-    fn request(blob_hash: Hash) -> SignSnapshotRequest {
-        SignSnapshotRequest {
-            blob_hash,
-        }
+    fn request(value_hash: Hash) -> SnapshotWriteRequest {
+        SnapshotWriteRequest { value_hash }
     }
 
     fn sample_blob(commitment: Hash) -> BlobInfo {
@@ -135,18 +124,8 @@ mod tests {
         }
     }
 
-    fn snapshot_group_state(blob: BlobInfo) -> SnapshotGroupInfo {
-        SnapshotGroupInfo {
-            status: SnapshotGroupStatus::Built,
-            blob,
-            track_number: None,
-        }
-    }
-
-    fn snapshot_info(group: SpoolGroup, blob: BlobInfo) -> SnapshotInfo {
-        let mut snapshot = SnapshotInfo::new(SnapshotStatus::Built);
-        *snapshot.group_mut(group) = snapshot_group_state(blob);
-        snapshot
+    fn empty_slices() -> [Vec<u8>; SPOOL_GROUP_SIZE] {
+        core::array::from_fn(|_| Vec::new())
     }
 
     fn local_state_for_node_0(responsible: bool) -> ProtocolState {
@@ -175,48 +154,47 @@ mod tests {
         >,
         epoch: EpochNumber,
         group: SpoolGroup,
-        body: SignSnapshotRequest,
+        chunk_index: ChunkNumber,
+        body: SnapshotWriteRequest,
     ) -> Result<axum::response::Response, RouteError> {
         let bytes = wincode::serialize(&body).unwrap();
-        sign_snapshot(
-            Path((epoch.0, group.0)),
+        write(
+            Path((epoch.0, group.0, chunk_index.0)),
             State(state),
             Bytes::from(bytes),
         )
-            .await
-            .map(|response| response.into_response())
+        .await
+        .map(|response| response.into_response())
     }
 
     #[tokio::test]
-    async fn signs_snapshot_group() {
+    async fn signs_matching_chunk() {
         let context = test_context();
-        let state = local_state_for_node_0(true);
-        context.set_state(state).unwrap();
+        context.set_state(local_state_for_node_0(true)).unwrap();
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let commitment = Hash::from([0xAB; 32]);
-        let blob = sample_blob(commitment);
-        let blob_hash = blob.get_hash();
+        let chunk_index = ChunkNumber(2);
+        let blob = sample_blob(Hash::from([0xAB; 32]));
+        let value_hash = blob.get_hash();
 
-        context
-            .store
-            .put_snapshot_info(epoch, snapshot_info(group, blob))
-            .unwrap();
+        context.snapshot_cache.insert(
+            ChunkKey::new(epoch, group, chunk_index),
+            blob,
+            empty_slices(),
+        );
 
-        let response = match render(
+        let response = render(
             AppState {
                 context: context.clone(),
             },
             epoch,
             group,
-            request(blob_hash),
+            chunk_index,
+            request(value_hash),
         )
         .await
-        {
-            Ok(response) => response,
-            Err(_) => panic!("handler success"),
-        };
+        .expect("handler success");
 
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -224,7 +202,7 @@ mod tests {
             .expect("body");
         let decoded: BlsSignResponse = wincode::deserialize(&bytes).unwrap();
 
-        let message = SnapshotMessage::new(epoch, group, blob_hash);
+        let message = SnapshotWriteMessage::new(epoch, group, chunk_index, value_hash);
         let expected = context.bls_sign(&message.to_bytes()).unwrap();
 
         assert_eq!(decoded.signature, expected);
@@ -233,13 +211,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_missing_local_group() {
+    async fn rejects_mismatched_value_hash() {
         let context = test_context();
         context.set_state(local_state_for_node_0(true)).unwrap();
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let request = request(Hash::from([0xAB; 32]));
+        let chunk_index = ChunkNumber(0);
+        let blob = sample_blob(Hash::from([0xAB; 32]));
+
+        context.snapshot_cache.insert(
+            ChunkKey::new(epoch, group, chunk_index),
+            blob,
+            empty_slices(),
+        );
 
         let err = render(
             AppState {
@@ -247,10 +232,34 @@ mod tests {
             },
             epoch,
             group,
-            request,
+            chunk_index,
+            request(Hash::from([0xCD; 32])),
         )
         .await
-        .expect_err("missing group should fail");
+        .expect_err("mismatched value_hash should fail");
+        assert!(matches!(err, RouteError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_chunk() {
+        let context = test_context();
+        context.set_state(local_state_for_node_0(true)).unwrap();
+
+        let epoch = EpochNumber(10);
+        let group = SpoolGroup(4);
+        let chunk_index = ChunkNumber(0);
+
+        let err = render(
+            AppState {
+                context: context.clone(),
+            },
+            epoch,
+            group,
+            chunk_index,
+            request(Hash::from([0xAB; 32])),
+        )
+        .await
+        .expect_err("chunk not in cache should fail");
         assert!(matches!(err, RouteError::NotFound));
     }
 
@@ -261,14 +270,15 @@ mod tests {
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let commitment = Hash::from([0xAB; 32]);
-        let blob = sample_blob(commitment);
-        let blob_hash = blob.get_hash();
+        let chunk_index = ChunkNumber(0);
+        let blob = sample_blob(Hash::from([0xAB; 32]));
+        let value_hash = blob.get_hash();
 
-        context
-            .store
-            .put_snapshot_info(epoch, snapshot_info(group, blob))
-            .unwrap();
+        context.snapshot_cache.insert(
+            ChunkKey::new(epoch, group, chunk_index),
+            blob,
+            empty_slices(),
+        );
 
         let err = render(
             AppState {
@@ -276,38 +286,11 @@ mod tests {
             },
             epoch,
             group,
-            request(blob_hash),
+            chunk_index,
+            request(value_hash),
         )
         .await
         .expect_err("non-responsible node should fail");
         assert!(matches!(err, RouteError::NotResponsible));
-    }
-
-    #[tokio::test]
-    async fn rejects_mismatched_request() {
-        let context = test_context();
-        context.set_state(local_state_for_node_0(true)).unwrap();
-
-        let epoch = EpochNumber(10);
-        let group = SpoolGroup(4);
-        let commitment = Hash::from([0xAB; 32]);
-        let blob = sample_blob(commitment);
-
-        context
-            .store
-            .put_snapshot_info(epoch, snapshot_info(group, blob))
-            .unwrap();
-
-        let err = render(
-            AppState {
-                context: context.clone(),
-            },
-            epoch,
-            group,
-            request(Hash::from([0xCD; 32])),
-        )
-        .await
-        .expect_err("mismatched blob hash should fail");
-        assert!(matches!(err, RouteError::BadRequest(_)));
     }
 }

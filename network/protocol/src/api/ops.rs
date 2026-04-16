@@ -2,6 +2,7 @@
 
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{CompressedTrack, EpochNumber, NodeId, SpoolGroup, SpoolIndex, TrackData, TrackNumber};
+use tape_core::types::ChunkNumber;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 use crate::api::types::{
@@ -155,15 +156,39 @@ pub struct CertifyRes {
     pub epoch: EpochNumber,
 }
 
+/// Request a BLS signature on a snapshot chunk's write message.
+///
+/// Signs `SnapshotWriteMessage(epoch, group, chunk_index, value_hash)` iff
+/// the peer's local build of this chunk produces the same `value_hash`.
 #[derive(Clone, Debug)]
-pub struct SignSnapshotReq {
+pub struct SnapshotWriteReq {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
-    pub blob_hash: Hash,
+    pub chunk_index: ChunkNumber,
+    pub value_hash: Hash,
 }
 
 #[derive(Clone, Debug)]
-pub struct SignSnapshotRes {
+pub struct SnapshotWriteRes {
+    pub signature: BlsSignature,
+    pub node_id: NodeId,
+    pub epoch: EpochNumber,
+}
+
+/// Request a BLS signature on a snapshot group's completion message.
+///
+/// Signs `SnapshotSignMessage(epoch, group)` iff every chunk for this group
+/// has been written on-chain for `epoch` (visible in the peer's local track
+/// store via replay). Once every group of an epoch collects this signature,
+/// the on-chain snapshot moves to `Finalized`.
+#[derive(Clone, Debug)]
+pub struct SnapshotFinalizeReq {
+    pub epoch: EpochNumber,
+    pub group: SpoolGroup,
+}
+
+#[derive(Clone, Debug)]
+pub struct SnapshotFinalizeRes {
     pub signature: BlsSignature,
     pub node_id: NodeId,
     pub epoch: EpochNumber,
@@ -212,7 +237,8 @@ pub enum PeerReq {
     SyncTracks(SyncTracksReq),
     Repair(RepairReq),
     Certify(CertifyReq),
-    SignSnapshot(SignSnapshotReq),
+    SnapshotWrite(SnapshotWriteReq),
+    SnapshotFinalize(SnapshotFinalizeReq),
     Invalidate(InvalidateReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
@@ -231,7 +257,8 @@ pub enum PeerRes {
     SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
-    SignSnapshot(Result<SignSnapshotRes, ApiError>),
+    SnapshotWrite(Result<SnapshotWriteRes, ApiError>),
+    SnapshotFinalize(Result<SnapshotFinalizeRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),

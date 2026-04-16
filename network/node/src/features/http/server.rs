@@ -71,23 +71,23 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             )
             .route(
                 api_routes::TRACK_PATH,
-                get(handlers::track::get_track::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::TRACK_DATA_PATH,
-                get(handlers::track::get_track_data::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track_data::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::TRACK_PROOF_PATH,
-                get(handlers::track::get_track_proof::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track_proof::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::TAPE_TRACK_PATH,
-                get(handlers::track::get_track_by_number::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track_by_number::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::SIGN_PATH,
-                get(handlers::sign::certify::<Db, Cluster, Blockchain>),
+                get(handlers::track::sign::certify::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]
@@ -101,40 +101,43 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let slice_routes = Router::new()
             .route(
                 api_routes::SLICE_PATH,
-                get(handlers::slice::get_slice::<Db, Cluster, Blockchain>)
-                    .put(handlers::slice::put_slice::<Db, Cluster, Blockchain>),
+                get(handlers::track::slice::get_slice::<Db, Cluster, Blockchain>)
+                    .put(handlers::track::slice::put_slice::<Db, Cluster, Blockchain>),
             )
             .layer(DefaultBodyLimit::max(self.config.slice_max_bytes));
 
         let peer_post_routes = Router::new()
             .route(
                 api_routes::TAPE_FIND_TRACK_PATH,
-                post(handlers::track::find_track::<Db, Cluster, Blockchain>),
+                post(handlers::track::catalog::find_track::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::TAPE_LIST_TRACKS_PATH,
-                post(handlers::track::list_tracks_by_tape::<Db, Cluster, Blockchain>),
+                post(handlers::track::catalog::list_tracks_by_tape::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::SYNC_SLICES_PATH,
-                post(handlers::sync::sync_slices::<Db, Cluster, Blockchain>),
+                post(handlers::track::sync::sync_slices::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::SYNC_TRACKS_PATH,
-                post(handlers::sync::sync_tracks::<Db, Cluster, Blockchain>),
+                post(handlers::track::sync::sync_tracks::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::REPAIR_PATH,
-                post(handlers::repair::repair::<Db, Cluster, Blockchain>),
+                post(handlers::track::repair::repair::<Db, Cluster, Blockchain>),
             )
-            // snapshot sign route is gated out while features/snapshot/* is being rewritten.
-            // .route(
-            //     api_routes::SNAPSHOT_SIGN_PATH,
-            //     post(handlers::snapshot::sign_snapshot::<Db, Cluster, Blockchain>),
-            // )
+            .route(
+                api_routes::SNAPSHOT_WRITE_PATH,
+                post(handlers::snapshot::write::write::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SNAPSHOT_FINALIZE_PATH,
+                post(handlers::snapshot::finalize::finalize::<Db, Cluster, Blockchain>),
+            )
             .route(
                 api_routes::INCONSISTENCY_PATH,
-                post(handlers::inconsistency::invalidate::<Db, Cluster, Blockchain>),
+                post(handlers::track::inconsistency::invalidate::<Db, Cluster, Blockchain>),
             )
             .layer(DefaultBodyLimit::max(self.config.peer_max_bytes));
 

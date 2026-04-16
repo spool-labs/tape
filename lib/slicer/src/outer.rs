@@ -13,10 +13,13 @@ use crate::errors::{DecodeError, EncodeError};
 /// 14 of 50 chunks needed for reconstruction = 72% failure tolerance.
 pub const DEFAULT_K_OUTER: usize = 14;
 
-/// Maximum chunk size for outer RS code (4 MiB).
-/// Snapshots are typically much smaller. The encoder/decoder are reset
-/// per-call with the actual chunk size.
-const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+/// Outer RS `k` used by the snapshot pipeline.
+/// 17 of 50 chunks needed for reconstruction = ~1/3 recovery threshold.
+pub const SNAPSHOT_K_OUTER: usize = 17;
+
+/// Maximum per-symbol size for the outer RS coder, set by the
+/// `reed_solomon_simd` shard-size constraint.
+pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// Outer Reed-Solomon coder for snapshot distribution across spool groups.
 ///

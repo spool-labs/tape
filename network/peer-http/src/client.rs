@@ -2,19 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use tape_protocol::api::{
-    self, Api, ApiError, BlsInconsistencyResponse, BlsSignResponse, CertifyReq, CertifyRes,
-    CONTENT_TYPE_JSON, BINARY_CONTENT, FindTrackReq, FindTrackRes, FindTrackRequest,
-    GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes,
-    GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes,
-    GetTrackProofReq, GetTrackProofRes, GetTrackReq, GetTrackRes, InconsistencyRequest,
-    InvalidateReq, InvalidateRes, ListTracksByTapeReq, ListTracksByTapeRequest,
-    ListTracksByTapeRes, ListTracksByTapeResponse, PutSliceReq, PutSliceRes, RepairReq,
-    RepairRequest, RepairRes, SignSnapshotReq, SignSnapshotRes, SignSnapshotRequest,
-    SyncSlicesReq, SyncSlicesRes, SyncSlicesRequest,
-    SyncSlicesResponse, SyncTracksReq, SyncTracksRes, SyncTracksRequest, SyncTracksResponse,
-    TrackDataResponse, TrackProofResponse, TrackResponse,
-};
+use tape_protocol::api::*;
 use peer_manager::PeerManager;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::NodeId;
@@ -70,7 +58,7 @@ impl Api for HttpApi {
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::slice_url(&track_id, req.spool));
+        let url = format!("{base}{}", slice_url(&track_id, req.spool));
         let body =
             wincode::serialize(&req.payload)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -96,7 +84,7 @@ impl Api for HttpApi {
     async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::slice_url(&track_id, req.spool));
+        let url = format!("{base}{}", slice_url(&track_id, req.spool));
 
         let start = Instant::now();
         let resp = self
@@ -118,7 +106,7 @@ impl Api for HttpApi {
     async fn get_track(&self, node: NodeId, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::track_url(&track_id));
+        let url = format!("{base}{}", track_url(&track_id));
 
         let start = Instant::now();
         let resp = self
@@ -147,7 +135,7 @@ impl Api for HttpApi {
     ) -> Result<GetTrackByNumberRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", api::tape_track_url(&tape_id, req.track_number));
+        let url = format!("{base}{}", tape_track_url(&tape_id, req.track_number));
 
         let start = Instant::now();
         let resp = self
@@ -172,7 +160,7 @@ impl Api for HttpApi {
     async fn find_track(&self, node: NodeId, req: &FindTrackReq) -> Result<FindTrackRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", api::find_track_url(&tape_id));
+        let url = format!("{base}{}", find_track_url(&tape_id));
         let wire_req = FindTrackRequest {
             key: req.key,
             version: req.version.clone(),
@@ -211,7 +199,7 @@ impl Api for HttpApi {
     ) -> Result<ListTracksByTapeRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", api::list_tracks_by_tape_url(&tape_id));
+        let url = format!("{base}{}", list_tracks_by_tape_url(&tape_id));
         let wire_req = ListTracksByTapeRequest {
             cursor: req.cursor,
             limit: req.limit,
@@ -256,7 +244,7 @@ impl Api for HttpApi {
     ) -> Result<GetTrackDataRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::track_data_url(&track_id));
+        let url = format!("{base}{}", track_data_url(&track_id));
 
         let start = Instant::now();
         let resp = self
@@ -284,7 +272,7 @@ impl Api for HttpApi {
     ) -> Result<GetTrackProofRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::track_proof_url(&track_id));
+        let url = format!("{base}{}", track_proof_url(&track_id));
 
         let start = Instant::now();
         let resp = self
@@ -309,7 +297,7 @@ impl Api for HttpApi {
 
     async fn sync_slices(&self, node: NodeId, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", api::SYNC_SLICES_PATH);
+        let url = format!("{base}{}", SYNC_SLICES_PATH);
         let wire_req = SyncSlicesRequest {
             spool_index: req.spool_index,
             cursor: req.cursor,
@@ -346,7 +334,7 @@ impl Api for HttpApi {
 
     async fn sync_tracks(&self, node: NodeId, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", api::SYNC_TRACKS_PATH);
+        let url = format!("{base}{}", SYNC_TRACKS_PATH);
         let wire_req = SyncTracksRequest {
             spool_index: req.spool_index,
             cursor: req.cursor,
@@ -384,7 +372,7 @@ impl Api for HttpApi {
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::repair_url(&track_id));
+        let url = format!("{base}{}", repair_url(&track_id));
         let wire_req = RepairRequest {
             helper_spool: req.helper_spool,
             stripes: req.stripes.clone(),
@@ -417,7 +405,7 @@ impl Api for HttpApi {
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::sign_url(&track_id));
+        let url = format!("{base}{}", sign_url(&track_id));
 
         let start = Instant::now();
         let resp = self
@@ -442,15 +430,18 @@ impl Api for HttpApi {
         })
     }
 
-    async fn sign_snapshot(
+    async fn snapshot_write(
         &self,
         node: NodeId,
-        req: &SignSnapshotReq,
-    ) -> Result<SignSnapshotRes, ApiError> {
+        req: &SnapshotWriteReq,
+    ) -> Result<SnapshotWriteRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", api::snapshot_sign_url(req.epoch, req.group));
-        let wire_req = SignSnapshotRequest {
-            blob_hash: req.blob_hash,
+        let url = format!(
+            "{base}{}",
+            snapshot_write_url(req.epoch, req.group, req.chunk_index)
+        );
+        let wire_req = SnapshotWriteRequest {
+            value_hash: req.value_hash,
         };
         let body = wincode::serialize(&wire_req)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -466,14 +457,46 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("sign_snapshot", &resp, start, bytes_sent);
+        self.record("snapshot_write", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("sign_snapshot", bytes.len() as u64);
+        self.record_rx("snapshot_write", bytes.len() as u64);
         let wire: BlsSignResponse = wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
 
-        Ok(SignSnapshotRes {
+        Ok(SnapshotWriteRes {
+            signature: wire.signature,
+            node_id: wire.node_id,
+            epoch: wire.epoch,
+        })
+    }
+
+    async fn snapshot_finalize(
+        &self,
+        node: NodeId,
+        req: &SnapshotFinalizeReq,
+    ) -> Result<SnapshotFinalizeRes, ApiError> {
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let url = format!("{base}{}", snapshot_finalize_url(req.epoch, req.group));
+
+        let bytes_sent = 0u64;
+        let start = Instant::now();
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", BINARY_CONTENT)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("snapshot_finalize", &resp, start, bytes_sent);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("snapshot_finalize", bytes.len() as u64);
+        let wire: BlsSignResponse = wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(SnapshotFinalizeRes {
             signature: wire.signature,
             node_id: wire.node_id,
             epoch: wire.epoch,
@@ -487,7 +510,7 @@ impl Api for HttpApi {
     ) -> Result<InvalidateRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", api::inconsistency_url(&track_id));
+        let url = format!("{base}{}", inconsistency_url(&track_id));
         let wire_req = InconsistencyRequest {
             proof: req.proof.clone(),
         };
@@ -527,7 +550,7 @@ impl Api for HttpApi {
         _req: &GetHealthReq,
     ) -> Result<GetHealthRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", api::HEALTH_PATH);
+        let url = format!("{base}{}", HEALTH_PATH);
 
         let start = Instant::now();
         let resp = self
@@ -549,7 +572,7 @@ impl Api for HttpApi {
         _req: &GetStatsReq,
     ) -> Result<GetStatsRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", api::STATS_PATH);
+        let url = format!("{base}{}", STATS_PATH);
 
         let start = Instant::now();
         let resp = self
@@ -689,15 +712,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_sign_roundtrip() {
+    async fn snapshot_write_roundtrip() {
+        use tape_core::types::ChunkNumber;
+
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let request = SignSnapshotRequest {
-            blob_hash: Hash::from([0xAB; 32]),
+        let chunk_index = ChunkNumber(2);
+        let request = SnapshotWriteRequest {
+            value_hash: Hash::from([0xAB; 32]),
         };
         let response = BlsSignResponse {
             signature: BlsPrivateKey::from_random()
-                .sign(b"snapshot-sign")
+                .sign(b"snapshot-write")
                 .unwrap(),
             node_id: NodeId(7),
             epoch: EpochNumber(11),
@@ -706,17 +732,19 @@ mod tests {
         let expected_request = Arc::new(request.clone());
         let expected_response = Arc::new(response.clone());
         let router = Router::new().route(
-            api::SNAPSHOT_SIGN_PATH,
+            SNAPSHOT_WRITE_PATH,
             post({
                 let expected_request = Arc::clone(&expected_request);
                 let expected_response = Arc::clone(&expected_response);
-                move |Path((epoch, route_group)): Path<(u64, u64)>, body: Bytes| {
+                move |Path((route_epoch, route_group, route_chunk)): Path<(u64, u64, u64)>,
+                      body: Bytes| {
                     let expected_request = Arc::clone(&expected_request);
                     let expected_response = Arc::clone(&expected_response);
                     async move {
-                        let decoded: SignSnapshotRequest = wincode::deserialize(&body).unwrap();
-                        assert_eq!(epoch, EpochNumber(10).0);
+                        let decoded: SnapshotWriteRequest = wincode::deserialize(&body).unwrap();
+                        assert_eq!(route_epoch, epoch.0);
                         assert_eq!(route_group, group.0);
+                        assert_eq!(route_chunk, chunk_index.0);
                         assert_eq!(decoded, *expected_request);
 
                         let body = wincode::serialize(expected_response.as_ref()).unwrap();
@@ -741,14 +769,71 @@ mod tests {
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
         let decoded = api
-            .sign_snapshot(
+            .snapshot_write(
                 NodeId(7),
-                &SignSnapshotReq {
+                &SnapshotWriteReq {
                     epoch,
                     group,
-                    blob_hash: request.blob_hash,
+                    chunk_index,
+                    value_hash: request.value_hash,
                 },
             )
+            .await
+            .unwrap();
+
+        assert_eq!(decoded.signature, response.signature);
+        assert_eq!(decoded.node_id, response.node_id);
+        assert_eq!(decoded.epoch, response.epoch);
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_finalize_roundtrip() {
+        let epoch = EpochNumber(10);
+        let group = SpoolGroup(4);
+        let response = BlsSignResponse {
+            signature: BlsPrivateKey::from_random()
+                .sign(b"snapshot-finalize")
+                .unwrap(),
+            node_id: NodeId(7),
+            epoch: EpochNumber(11),
+        };
+
+        let expected_response = Arc::new(response.clone());
+        let router = Router::new().route(
+            SNAPSHOT_FINALIZE_PATH,
+            post({
+                let expected_response = Arc::clone(&expected_response);
+                move |Path((route_epoch, route_group)): Path<(u64, u64)>| {
+                    let expected_response = Arc::clone(&expected_response);
+                    async move {
+                        assert_eq!(route_epoch, epoch.0);
+                        assert_eq!(route_group, group.0);
+                        let body = wincode::serialize(expected_response.as_ref()).unwrap();
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, BINARY_CONTENT)],
+                            body,
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let peer_manager = Arc::new(PeerManager::new());
+        peer_manager.add_peer(make_peer(7, port));
+        let api = HttpApi::new(reqwest::Client::new(), peer_manager);
+
+        let decoded = api
+            .snapshot_finalize(NodeId(7), &SnapshotFinalizeReq { epoch, group })
             .await
             .unwrap();
 

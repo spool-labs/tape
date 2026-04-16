@@ -1,6 +1,6 @@
 //! Column family definitions for tape-store
 //!
-//! This module defines 16 column families:
+//! This module defines the active column families:
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
@@ -9,8 +9,6 @@
 //! - `track_lookup`: Tape-local ordered index ((tape, track_number, key) -> ())
 //! - `track_data`: Local track payload data (Address -> TrackData)
 //! - `object_info`: Object metadata (Address -> ObjectInfo)
-//! - `snapshot`: Per-snapshot metadata (EpochKey -> SnapshotInfo)
-//! - `snapshot_slice`: Staging snapshot slice bytes (SnapshotSliceKey -> SliceValue)
 //!
 //! ## Sync Columns
 //! - `sync_cursor`: Last processed slot (UnitKey -> SlotNumber)
@@ -24,6 +22,9 @@
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data (SliceKey -> Vec<u8>)
+//!
+//! ## Event Log Column
+//! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
 
 pub mod event_log;
 pub mod gc;
@@ -31,7 +32,6 @@ pub mod meta;
 pub mod object_info;
 pub mod slice;
 pub mod spool;
-pub mod snapshot;
 pub mod sync_cursor;
 pub mod tape;
 pub mod track;
@@ -47,14 +47,13 @@ pub use slice::SliceCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
-pub use snapshot::{SnapshotCol, SnapshotSliceCol};
 pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
 pub use track_lookup::TrackLookupCol;
 pub use track_data::TrackDataCol;
 
-/// List of all column family names in the store (16 total)
+/// List of all column family names in the store.
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
     "tape",
@@ -62,8 +61,6 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "track_lookup",
     "track_data",
     "object_info",
-    "snapshot",
-    "snapshot_slice",
     "sync_cursor",
     "gc",
     "spool_status",

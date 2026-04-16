@@ -1,7 +1,7 @@
 //! Route constants and URL builders for the node API.
 
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::{EpochNumber, TrackNumber};
+use tape_core::types::{ChunkNumber, EpochNumber, TrackNumber};
 
 pub const API_V1: &str = "/v1";
 
@@ -12,7 +12,9 @@ pub const INCONSISTENCY_PATH:        &str = "/v1/tracks/{track_id}/inconsistency
 pub const INFO_PATH:                 &str = "/v1/info";
 pub const METRICS_PATH:              &str = "/v1/metrics";
 pub const REPAIR_PATH:               &str = "/v1/tracks/{track_id}/repair";
-pub const SNAPSHOT_SIGN_PATH:        &str = "/v1/snapshots/{epoch}/groups/{group}/sign";
+pub const SNAPSHOT_WRITE_PATH:       &str =
+    "/v1/snapshots/{epoch}/groups/{group}/chunks/{chunk_index}/write";
+pub const SNAPSHOT_FINALIZE_PATH:    &str = "/v1/snapshots/{epoch}/groups/{group}/finalize";
 pub const SIGN_PATH:                 &str = "/v1/tracks/{track_id}/sign";
 pub const SLICE_PATH:                &str = "/v1/tracks/{track_id}/slices/{spool_id}";
 pub const SLICE_STATUS_PATH:         &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
@@ -65,8 +67,19 @@ pub fn sign_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/sign")
 }
 
-pub fn snapshot_sign_url(epoch: EpochNumber, group: SpoolGroup) -> String {
-    format!("/v1/snapshots/{}/groups/{}/sign", epoch.0, group.0)
+pub fn snapshot_write_url(
+    epoch: EpochNumber,
+    group: SpoolGroup,
+    chunk_index: ChunkNumber,
+) -> String {
+    format!(
+        "/v1/snapshots/{}/groups/{}/chunks/{}/write",
+        epoch.0, group.0, chunk_index.0,
+    )
+}
+
+pub fn snapshot_finalize_url(epoch: EpochNumber, group: SpoolGroup) -> String {
+    format!("/v1/snapshots/{}/groups/{}/finalize", epoch.0, group.0)
 }
 
 pub fn repair_url(track_id: &str) -> String {
@@ -92,8 +105,12 @@ mod tests {
         assert_eq!(list_tracks_by_tape_url("def"), "/v1/tapes/def/tracks/list");
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");
         assert_eq!(
-            snapshot_sign_url(EpochNumber(11), SpoolGroup(4)),
-            "/v1/snapshots/11/groups/4/sign"
+            snapshot_write_url(EpochNumber(11), SpoolGroup(4), ChunkNumber(2)),
+            "/v1/snapshots/11/groups/4/chunks/2/write"
+        );
+        assert_eq!(
+            snapshot_finalize_url(EpochNumber(11), SpoolGroup(4)),
+            "/v1/snapshots/11/groups/4/finalize"
         );
         assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");
