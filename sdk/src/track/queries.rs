@@ -203,15 +203,3 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
     Err(finish_peer_query(last_error, saw_not_found))
 }
 
-pub async fn retry_fetch_track_by_number<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape: &Address,
-    track_number: TrackNumber,
-) -> Result<CompressedTrack, TapedriveError> {
-    tape_retry::retry(
-        tape_retry::RetryConfig::ten(),
-        None,
-        || async { query_track_by_number(client, tape, track_number).await },
-    )
-    .await
-}

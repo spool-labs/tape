@@ -5,6 +5,7 @@ define_numeric_type!(EpochNumber, "epoch");
 define_numeric_type!(SlotNumber, "slot");
 define_numeric_type!(TapeNumber, "tape");
 define_numeric_type!(TrackNumber, "track");
+define_numeric_type!(ChunkNumber, "chunk");
 define_numeric_type!(CommitteeNumber, "committee");
 define_numeric_type!(NodeId, "node");
 define_numeric_type!(VersionId, "version");
@@ -31,20 +32,20 @@ impl BasisPoints {
 }
 
 impl StorageUnits {
-    /// 1 MB in bytes — billing granularity.
+    /// 1 MB in bytes.
     pub const MB: u64 = 1024 * 1024;
     /// 1 GB in bytes.
     pub const GB: u64 = 1024 * Self::MB;
     /// 1 TB in bytes.
     pub const TB: u64 = 1024 * Self::GB;
 
-    /// Create from byte count (identity — StorageUnits stores bytes).
+    /// Create from byte count.
     #[inline]
     pub fn from_bytes(bytes: u64) -> Self {
         Self(bytes)
     }
 
-    /// Byte count (identity — StorageUnits stores bytes).
+    /// Byte count.
     #[inline]
     pub fn to_bytes(&self) -> u64 {
         self.0
@@ -68,7 +69,7 @@ impl StorageUnits {
         Self(terabytes.saturating_mul(Self::TB))
     }
 
-    /// Convert to MB (ceiling). Used for billing granularity.
+    /// Convert to MB (ceiling).
     #[inline]
     pub fn to_mb(&self) -> u64 {
         (self.0 + Self::MB - 1) / Self::MB

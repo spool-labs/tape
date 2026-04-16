@@ -165,7 +165,7 @@ impl SolanaRpc {
             metrics.record_retry(_method, err.category());
         }
 
-        // Try failover if appropriate (best-effort — if exhausted, we still
+        // Try failover if appropriate (best-effort, if exhausted, we still
         // retry on the current endpoint via backoff below)
         if err.should_failover() {
             let _ = self.try_failover().await;

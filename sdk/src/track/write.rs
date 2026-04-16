@@ -16,6 +16,7 @@ use tape_core::prelude::{
     BlobInfo, CompressedTrack, EncodingProfile, EpochNumber, SpoolGroup, StorageUnits,
     StripeCount,
 };
+use tape_core::track::data::TrackDataSlice;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
@@ -173,12 +174,18 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
 
     let written = fetch_track_written_event(client, &signature).await?;
     let track_address: Address = written.track.into();
-    let track = queries::retry_fetch_track_by_number(
-        client,
-        &written.tape,
-        written.track_number,
-    )
-    .await?;
+    let meta = TrackDataSlice::Raw(raw).meta().unwrap();
+    let track = CompressedTrack {
+        tape: written.tape,
+        track_number: written.track_number,
+        key,
+        kind: meta.kind as u64,
+        state: meta.initial_state as u64,
+        size: meta.size,
+        spool_group: written.spool_group,
+        value_hash: meta.value_hash,
+    };
+    debug_assert_eq!(track.get_hash(), written.track_hash);
 
     Ok(WrittenTrack {
         address: track_address,
@@ -195,18 +202,19 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     let plan = prepare_plan(data)?;
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
+    let blob = BlobInfo {
+        size: plan.storage_units,
+        commitment: plan.commitment_hash,
+        profile: plan.profile,
+        stripe_size: StorageUnits::from_bytes(plan.stripe_size as u64),
+        stripe_count: StripeCount(plan.stripe_count as u64),
+        leaves: plan.leaves,
+    };
     let write_ix = build_track_write_blob_ix(
         payer.pubkey().into(),
         tape_key.address(),
         key,
-        BlobInfo {
-            size: plan.storage_units,
-            commitment: plan.commitment_hash,
-            profile: plan.profile,
-            stripe_size: StorageUnits::from_bytes(plan.stripe_size as u64),
-            stripe_count: StripeCount(plan.stripe_count as u64),
-            leaves: plan.leaves,
-        },
+        blob,
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
@@ -221,12 +229,19 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
 
     let written = fetch_track_written_event(client, &signature).await?;
     let track_address: Address = written.track.into();
-    let track = queries::retry_fetch_track_by_number(
-        client,
-        &written.tape,
-        written.track_number,
-    )
-    .await?;
+    let meta = TrackDataSlice::Blob(blob).meta()
+        .ok_or(TapedriveError::InvalidArgument("invalid blob commitment".into()))?;
+    let track = CompressedTrack {
+        tape: written.tape,
+        track_number: written.track_number,
+        key,
+        kind: meta.kind as u64,
+        state: meta.initial_state as u64,
+        size: meta.size,
+        spool_group: written.spool_group,
+        value_hash: meta.value_hash,
+    };
+    debug_assert_eq!(track.get_hash(), written.track_hash);
 
     Ok((
         WrittenTrack {
@@ -447,32 +462,6 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     wait_for_certified_track(client, &tape_key.address(), written.track.track_number).await
 }
 
-#[cfg(test)]
-mod tests {
-    use tape_protocol::api::ApiError;
-
-    use crate::error::TapedriveError;
-
-    use super::SDK_INLINE_RAW_MAX_BYTES;
-    use super::should_retry_certification;
-    use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
-
-    // The SDK inline write limit must always remain below the program limit.
-    #[test]
-    fn sdk_inline_raw_limit_is_below_program_limit() {
-        assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 825);
-        assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
-    }
-
-    // Certification should retry when proof visibility lags behind peer state.
-    #[test]
-    fn certification_retries_stale_track_proof() {
-        assert!(should_retry_certification(&TapedriveError::Peer(
-            ApiError::StaleTrackProof,
-        )));
-    }
-}
-
 async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     signature: &Txid,
@@ -508,3 +497,30 @@ fn extract_track_written_event(
 
     Err(TapedriveError::NotFound)
 }
+
+#[cfg(test)]
+mod tests {
+    use tape_protocol::api::ApiError;
+
+    use crate::error::TapedriveError;
+
+    use super::SDK_INLINE_RAW_MAX_BYTES;
+    use super::should_retry_certification;
+    use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
+
+    // The SDK inline write limit must always remain below the program limit.
+    #[test]
+    fn sdk_inline_raw_limit_is_below_program_limit() {
+        assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 825);
+        assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
+    }
+
+    // Certification should retry when proof visibility lags behind peer state.
+    #[test]
+    fn certification_retries_stale_track_proof() {
+        assert!(should_retry_certification(&TapedriveError::Peer(
+            ApiError::StaleTrackProof,
+        )));
+    }
+}
+

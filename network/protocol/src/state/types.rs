@@ -1,5 +1,3 @@
-//! ProtocolState — snapshot of on-chain protocol state.
-
 use tape_core::erasure::{MEMBER_COUNT, SPOOL_COUNT};
 use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
 use tape_core::system::{Committee, CommitteeMember, EpochPhase};
@@ -9,7 +7,7 @@ use tape_crypto::Hash;
 /// Snapshot of on-chain protocol state.
 ///
 /// Contains committee membership, spool assignments, and epoch info.
-/// Does not include network addresses — those live in `PeerManager`.
+/// Does not include network addresses, those live in `PeerManager`.
 #[derive(Debug, Clone)]
 pub struct ProtocolState {
     pub epoch: EpochNumber,

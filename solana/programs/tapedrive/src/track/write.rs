@@ -64,6 +64,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         spool_group,
         value_hash: meta.value_hash,
     };
+
     let track_address = track_pda(track.tape, track.track_number).0;
     let track_hash = track.get_hash();
 

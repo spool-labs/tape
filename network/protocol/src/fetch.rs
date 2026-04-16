@@ -1,5 +1,3 @@
-//! fetch_state — fetch protocol state from on-chain accounts.
-
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use tape_core::system::EpochPhase;

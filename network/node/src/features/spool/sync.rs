@@ -44,7 +44,7 @@ use crate::features::spool::types::SyncResult;
 // 5. Clear the sync cursor. Return Done.
 //
 // If the previous owner is unreachable we return after retrying.
-// The FSM treats unreachable the same as Done — it moves to Scan,
+// The FSM treats unreachable the same as Done, it moves to Scan,
 // which will identify the gaps, and repair/recover will fetch from
 // the rest of the spool group.
 

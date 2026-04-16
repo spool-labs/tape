@@ -151,6 +151,7 @@ mod tests {
         let msg2 = SnapshotWriteMessage::new(
             EpochNumber(42),
             SpoolGroup(9),
+            0,
             Hash::from([0xAA; 32]),
         );
 

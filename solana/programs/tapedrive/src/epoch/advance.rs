@@ -706,7 +706,7 @@ mod tests {
             StorageUnits::mb(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
 
-        // Epoch 1 — snapshot gate is skipped (bootstrap)
+        // Epoch 1, snapshot gate is skipped (bootstrap)
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_advance_blocked_snapshot_incomplete() {
-        // Previous snapshot manifest is still Registered — the snapshot gate must
+        // Previous snapshot manifest is still Registered, the snapshot gate must
         // reject the advance before any committee or schedule state is touched.
         let env = test_env();
 

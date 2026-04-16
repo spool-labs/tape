@@ -11,7 +11,7 @@ use crate::keys::helpers::{load_ed25519_keypair, HelperError};
 /// A key that controls a tape on the Tapedrive network.
 ///
 /// Each tape has exactly one key, and each key controls exactly one tape.
-/// The tape's on-chain address is derived from this key — you don't need
+/// The tape's on-chain address is derived from this key, you don't need
 /// to store the address separately.
 ///
 /// **Keep this key safe.** Anyone with it can write to, delete from, or
@@ -60,7 +60,7 @@ impl TapeKey {
     }
 
     /// The on-chain address of the tape this key controls.
-    /// This is a PDA derived from the key — safe to share publicly.
+    /// This is a PDA derived from the key, safe to share publicly.
     pub fn address(&self) -> Address {
         tape_pda(self.keypair.address()).0
     }

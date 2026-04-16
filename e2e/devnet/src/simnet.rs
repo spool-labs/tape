@@ -577,7 +577,7 @@ impl SimnetState {
             }
         }
 
-        // Join network — non-fatal if stake is pending activation
+        // Join network non-fatal if stake is pending activation
         let join_ix =
             build_join_network_ix(self.admin.pubkey().into(), authority, node_address);
         let cu_ix2 = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);

@@ -18,7 +18,7 @@ use crate::features::lifecycle::types::{Action, TaskDone};
 //          node's staking pool. This is required for any node that was
 //          in the current or previous committee.
 //
-// AdvancePool is permissionless — anyone can call it. But nodes call it
+// AdvancePool is permissionless, anyone can call it. But nodes call it
 // for themselves because each node needs its pool advanced before it can
 // earn rewards and before JoinNetwork can be called.
 //

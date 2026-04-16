@@ -47,33 +47,10 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         return Err(TapeError::AlreadyCertified.into());
     }
 
-    let tape = snapshot_tape_info
-        .is_writable()?
-        .has_address(&snapshot_tape.into())?
-        .as_account_mut::<Tape>(&tapedrive::ID)?;
-
     let spool_group = SpoolGroup::unpack(args.group);
     let chunk_index = u64::from_le_bytes(args.chunk_index);
-    let key = snapshot_chunk_key(snapshot_epoch, spool_group, chunk_index);
-    let track_number = tape.tracks.next_number();
 
-    let track = CompressedTrack {
-        tape: snapshot_tape,
-        key,
-        track_number,
-        kind: meta.kind as u64,
-        state: meta.initial_state as u64,
-        size: meta.size,
-        spool_group,
-        value_hash: meta.value_hash,
-    };
-
-    let track_address = track_pda(track.tape, track.track_number).0;
-    let track_hash = track.get_hash();
-
-    tape.write_track(&track)?;
-
-    // verify signature
+    // verify signature before mutating state
 
     let committee = &system.committee;
     let weight = args.bitmap.count_ones() as u64;
@@ -90,7 +67,6 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let mut pubkeys = Vec::with_capacity(indices.len());
     let group_offset = spool_group.0 * SPOOL_GROUP_SIZE as u64;
     for member_index in &indices {
-        // convert from group-local indices to committee-wide indices
         let member_index = member_index + group_offset as usize;
         if let Some(member) = committee.member_at(member_index) {
             pubkeys.push(member.key.0);
@@ -105,7 +81,8 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let message = SnapshotWriteMessage::new(
         snapshot_epoch,
         spool_group,
-        track_hash,
+        chunk_index,
+        meta.value_hash,
     );
     let message_bytes = message.to_bytes();
 
@@ -114,6 +91,32 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         &pubkeys,
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
+
+    // assign track number and append to tree
+
+    let tape = snapshot_tape_info
+        .is_writable()?
+        .has_address(&snapshot_tape.into())?
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
+
+    let key = snapshot_chunk_key(snapshot_epoch, spool_group, chunk_index);
+    let track_number = tape.tracks.next_number();
+
+    let track = CompressedTrack {
+        tape: snapshot_tape,
+        track_number,
+        key,
+        kind: meta.kind as u64,
+        state: meta.initial_state as u64,
+        size: meta.size,
+        spool_group,
+        value_hash: meta.value_hash,
+    };
+
+    let track_address = track_pda(track.tape, track.track_number).0;
+    let track_hash = track.get_hash();
+
+    tape.write_track(&track)?;
 
     SnapshotWritten {
         epoch: snapshot_epoch,
@@ -225,22 +228,22 @@ mod tests {
 
         let blob = make_blob();
         let key = snapshot_chunk_key(snapshot_epoch, spool_group, chunk_index);
+        let value_hash = blob.get_hash();
         let expected_track = CompressedTrack {
             tape: snapshot_tape_address,
-            key,
             track_number: TrackNumber(0),
+            key,
             kind: TrackKind::Blob as u64,
             state: TrackState::Registered as u64,
             size: blob.size,
             spool_group,
-            value_hash: blob.get_hash(),
+            value_hash,
         };
-        let track_hash = expected_track.get_hash();
 
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = SpoolGroupBitmap::from_indices(&signed_indices, SPOOL_GROUP_SIZE);
         let message =
-            SnapshotWriteMessage::new(snapshot_epoch, spool_group, track_hash).to_bytes();
+            SnapshotWriteMessage::new(snapshot_epoch, spool_group, chunk_index, value_hash).to_bytes();
 
         let partials: Vec<BlsSignature> = signed_indices
             .iter()

@@ -89,7 +89,7 @@ impl LiteSvmRpc {
 
     /// Advance the SVM slot **and** `confirmed_tip` to `slot`.
     ///
-    /// This is the explicit "harness drives time" path — blocks recorded
+    /// This is the explicit "harness drives time" path, blocks recorded
     /// at slots <= `slot` become immediately visible via `get_block`.
     pub fn warp_to_slot(&self, slot: u64) -> Result<(), RpcError> {
         let mut inner = self

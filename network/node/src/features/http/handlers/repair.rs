@@ -206,8 +206,6 @@ mod tests {
             )
             .expect("set spool state");
 
-        // Any valid (stripe, sub_chunk) pair will do — the test only needs
-        // extract_repair_data to walk the metadata and return non-empty bytes.
         let request = RepairRequest {
             helper_spool,
             stripes: vec![StripeSubChunkRequest {

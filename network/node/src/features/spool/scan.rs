@@ -16,7 +16,7 @@ use crate::features::spool::types::ScanResult;
 // Purpose: Audit local storage to find missing slices that need repair.
 //          Adds to the pending_repairs queue for the Repair task.
 //
-// Scan is local-only (no remote calls) and fast. No cursor needed —
+// Scan is local-only (no remote calls) and fast. No cursor needed,
 // if interrupted, the next scan restarts from the beginning.
 // Adds are idempotent (presence-based queue), so re-scanning is safe.
 //
@@ -33,7 +33,7 @@ use crate::features::spool::types::ScanResult;
 // 2. Return Done { gaps }.
 //
 // Stale entries in pending_repairs (slice already obtained, or track
-// deleted) are harmless — repair skips and removes them.
+// deleted) are harmless, repair skips and removes them.
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -231,9 +231,10 @@ mod tests {
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
 
-        // Run scan twice — same result, no duplicates.
+        // Run scan twice, same result, no duplicates.
         let r1 = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         let r2 = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+
         assert_eq!(r1, ScanResult::Done { gaps: 1 });
         assert_eq!(r2, ScanResult::Done { gaps: 1 });
     }

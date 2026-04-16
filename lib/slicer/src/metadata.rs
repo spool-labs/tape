@@ -29,7 +29,7 @@ pub struct SliceMetadata {
     pub stripe_size: u64,
     /// Encoding profile (type + params).
     pub profile: EncodingProfile,
-    /// Chunk/group index — ensures unique commitments per position even when
+    /// Chunk/group index, ensures unique commitments per position even when
     /// multiple outer-RS chunks contain identical data (e.g. zero padding).
     pub chunk_index: u64,
 }
@@ -39,7 +39,7 @@ impl SliceMetadata {
     pub const VERSION: u64 = 0;
 
     /// Size of serialized metadata in bytes.
-    pub const SIZE: usize = std::mem::size_of::<Self>(); // 48 bytes
+    pub const SIZE: usize = core::mem::size_of::<Self>(); // 48 bytes
 
     /// Create metadata for encoding with default Clay profile.
     pub fn new(blob_len: usize, stripe_size: usize) -> Self {

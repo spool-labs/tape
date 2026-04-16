@@ -15,7 +15,7 @@ use tape_protocol::ProtocolState;
 
 use crate::view::{ClusterView, NodeView, SpoolView, TestnetView};
 
-/// Lightweight node reference — copied under lock, used outside it.
+/// Lightweight node reference, copied under lock, used outside it.
 #[derive(Clone)]
 pub struct NodeRef {
     pub id: usize,
@@ -23,7 +23,7 @@ pub struct NodeRef {
     pub authority: Pubkey,
 }
 
-/// Internal chain state model — not exposed via API.
+/// Internal chain state model, not exposed via API.
 struct ObservedChainState {
     protocol: ProtocolState,
     slot: SlotNumber,

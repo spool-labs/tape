@@ -2,7 +2,7 @@
 //!
 //! The outer code distributes snapshot data across all 50 spool groups,
 //! providing high fault tolerance (72% group failure tolerance with k=14).
-//! This is a single-level RS code — no striping or rotation.
+//! This is a single-level RS code, no striping or rotation.
 
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use tape_core::erasure::SPOOL_GROUP_COUNT;

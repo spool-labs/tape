@@ -44,51 +44,14 @@ pub enum TrackState {
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize))]
 pub struct CompressedTrack {
     pub tape: Address,
-    pub key: Hash,
     pub track_number: TrackNumber,
+    pub key: Hash,
     pub kind: u64,
     pub state: u64,
     pub size: StorageUnits,
     pub spool_group: SpoolGroup,
     pub value_hash: Hash,
 }
-
-#[cfg(feature = "wincode")]
-impl SchemaWrite for CompressedTrack {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(size_of::<Self>())
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&src.pack())?;
-        Ok(())
-    }
-}
-
-#[cfg(feature = "wincode")]
-impl<'de> SchemaRead<'de> for CompressedTrack {
-    type Dst = Self;
-
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        // SAFETY: `PackedTrack` is a byte-aligned repr-specified representation for
-        // `CompressedTrack`, and `reader.get_t()` only reads exactly that size.
-        let packed: PackedTrack = unsafe { reader.get_t()? };
-        dst.write(Self::unpack(packed));
-        Ok(())
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct CompressedTrackProof {
-    pub state: CompressedTrack,
-    pub proof: [Hash; TRACK_TREE_HEIGHT],
-}
-
-pub type PackedTrack = [u8; size_of::<CompressedTrack>()];
-pub type PackedTrackProof = [u8; size_of::<CompressedTrackProof>()];
 
 impl CompressedTrack {
     #[inline(always)]
@@ -128,7 +91,17 @@ impl CompressedTrack {
 
     #[inline(always)]
     pub fn get_hash(&self) -> Hash {
-        hashv(&[TRACK_LEAF_V1, bytemuck::bytes_of(self)])
+        hashv(&[
+            TRACK_LEAF_V1,
+            &self.tape.to_bytes(),
+            &self.track_number.pack(),
+            &self.key.to_bytes(),
+            &self.kind.to_le_bytes(),
+            &self.state.to_le_bytes(),
+            &self.size.pack(),
+            &self.spool_group.pack(),
+            &self.value_hash.to_bytes(),
+        ])
     }
 
     #[inline(always)]
@@ -145,6 +118,43 @@ impl CompressedTrack {
         value
     }
 }
+
+#[cfg(feature = "wincode")]
+impl SchemaWrite for CompressedTrack {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(size_of::<Self>())
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.pack())?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "wincode")]
+impl<'de> SchemaRead<'de> for CompressedTrack {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        // SAFETY: `PackedTrack` is a byte-aligned repr-specified representation for
+        // `CompressedTrack`, and `reader.get_t()` only reads exactly that size.
+        let packed: PackedTrack = unsafe { reader.get_t()? };
+        dst.write(Self::unpack(packed));
+        Ok(())
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct CompressedTrackProof {
+    pub state: CompressedTrack,
+    pub proof: [Hash; TRACK_TREE_HEIGHT],
+}
+
+pub type PackedTrack = [u8; size_of::<CompressedTrack>()];
+pub type PackedTrackProof = [u8; size_of::<CompressedTrackProof>()];
 
 impl CompressedTrackProof {
     #[inline(always)]

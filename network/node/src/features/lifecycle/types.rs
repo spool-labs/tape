@@ -17,7 +17,7 @@ pub enum Action {
 ///   - The cancel token fired (Cancelled)
 ///   - The tx was rejected for a reason the task cannot recover from (Rejected)
 ///
-/// Rejected does NOT mean the manager gives up — the manager re-evaluates
+/// Rejected does NOT mean the manager gives up, the manager re-evaluates
 /// and may respawn the same or a different task depending on current state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskDone {

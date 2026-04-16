@@ -7,7 +7,7 @@ use crate::types::EpochNumber;
 pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
 
 /// Derives the track key for a snapshot chunk. A single group may contribute multiple chunks
-/// per epoch — `chunk_index` is a group-local ordinal that disambiguates them.
+/// per epoch, `chunk_index` is a group-local ordinal that disambiguates them.
 #[inline]
 pub fn snapshot_chunk_key(
     epoch: EpochNumber,

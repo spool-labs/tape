@@ -16,7 +16,7 @@ use crate::track::bootstrap_network_state;
 use crate::transfer::downloader::ParallelDownloader;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
-    /// Read a track's data by address. No key needed — reads are public.
+    /// Read a track's data by address. No key needed, reads are public.
     pub async fn read(&self, track: &Address) -> Result<Vec<u8>, TapedriveError> {
         read_track(self, track).await
     }

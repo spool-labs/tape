@@ -189,9 +189,6 @@ mod tests {
         })
         .expect("set state");
 
-        // Build a synthetic snapshot blob whose commitment_root() matches its
-        // commitment field — this is the structural invariant the projection
-        // path preserves and the handler relies on.
         let leaves = [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
@@ -250,8 +247,6 @@ mod tests {
             )
             .expect("seed object info");
 
-        // Build a proof whose observed_root *matches* commitment_root() — the
-        // handler must reject before any quorum or signature work.
         let request = InconsistencyRequest {
             proof: InconsistencyProof {
                 observed_root: blob.commitment_root(),

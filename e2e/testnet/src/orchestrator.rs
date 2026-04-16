@@ -77,7 +77,6 @@ impl Orchestrator {
             .context("airdrop SOL for node")?;
         info!(id, "airdropped SOL");
 
-        // Spawn process — node will call ensure_registered() during bootstrap
         self.processes
             .spawn_node(id)
             .context("spawn node process")?;
@@ -158,7 +157,6 @@ impl Orchestrator {
             .context("advance pool")?;
         info!(id, "pool advanced");
 
-        // Join next epoch committee (idempotent — tolerates UnexpectedState)
         chain
             .join_network(&setup.authority_keypair)
             .await

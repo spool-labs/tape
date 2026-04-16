@@ -219,16 +219,15 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
         .checked_add(TrackNumber(1))
         .ok_or_else(|| stream_error(StreamError::InvalidInput("stream has too many chunks".into())))?;
 
-    let tape = client.get_tape(&tape_key.address()).await?;
-    let entries = build_entries(tape.tracks.next_number(), chunk_count, size)
+    let entries = build_entries(TrackNumber(0), chunk_count, size)
         .map_err(stream_error)?;
-
     let manifest = build_manifest(key, size, entries).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
     let total_size = size
         .checked_add(StorageUnits::from_bytes(manifest_bytes.len() as u64))
         .ok_or_else(|| stream_error(StreamError::InvalidInput("stream size overflow".into())))?;
 
+    let tape = client.get_tape(&tape_key.address()).await?;
     preflight(&tape, total_size, tracks_needed)?;
     Ok(chunk_count)
 }

@@ -35,7 +35,7 @@ impl Default for NodeStatus {
     }
 }
 
-/// Pure lifecycle status for a spool — no associated data.
+/// Pure lifecycle status for a spool, no associated data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub enum SpoolStatus {

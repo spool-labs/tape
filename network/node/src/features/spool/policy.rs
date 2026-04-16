@@ -8,12 +8,13 @@ use crate::core::error::NodeError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackRequirement {
-    /// Track is certified — repair/recovery work is legitimate.
+    /// Track is certified, repair/recovery work is legitimate.
     Required,
-    /// Track is uncertified, invalid, or blacklisted — pending work can be removed.
+
+    /// Track is uncertified, invalid, or blacklisted, pending work can be removed.
     NotRequired,
-    /// ObjectInfo is missing for a track that exists — local state is inconsistent.
-    /// Callers should treat this as retryable, not as a clean skip.
+
+    /// ObjectInfo is missing for a track that exists, local state is inconsistent.
     Inconsistent,
 }
 

@@ -9,7 +9,7 @@ use tape_crypto::tx::Txid;
 /// to decide whether to retry, return success, or return rejected.
 ///
 /// Transport errors are always retriable (timeout, connection, blockhash).
-/// Program errors require per-task classification — some mean "already done"
+/// Program errors require per-task classification, some mean "already done"
 /// (AlreadySynced, AlreadyAdvanced), some mean "retry later" (TooSoon),
 /// and some mean "rejected" (NotInCommittee, BadSchedule).
 pub enum TxOutcome {

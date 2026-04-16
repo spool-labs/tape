@@ -51,7 +51,7 @@ use crate::features::lifecycle::types::{Action, TaskDone};
 // Note: Multiple nodes may attempt AdvanceEpoch simultaneously.
 // Only the first one to land will succeed. The others will observe
 // the epoch advance via the block stream and the lifecycle manager
-// will reset. This is fine — the on-chain check is idempotent in
+// will reset. This is fine, the on-chain check is idempotent in
 // the sense that a stale AdvanceEpoch attempt simply fails.
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(

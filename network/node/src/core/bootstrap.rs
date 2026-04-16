@@ -213,7 +213,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
             Ok(())
         }
         Err(reg_err) => {
-            // Registration failed — re-fetch to handle concurrent registration.
+            // Registration failed, re-fetch to handle concurrent registration.
             match rpc.get_node(&authority).await {
                 Ok(node) => {
                     info!("node appeared on-chain after failed registration tx");

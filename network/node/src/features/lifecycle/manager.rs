@@ -1,7 +1,7 @@
 // Epoch Lifecycle
 //
 // Pure decision function that determines which epoch action to run next.
-// Not a traditional FSM — it's a single sequential progression through
+// Not a traditional FSM, it's a single sequential progression through
 // epoch phases, gated by both the on-chain phase and local completion state.
 //
 // The lifecycle manager (spawned alongside the StateManager) calls
@@ -43,7 +43,7 @@
 //   spools in a ready state. This is a separate lifecycle action
 //   (WaitSpoolReady) that polls the store until all owned spools are
 //   Active. Once done, the lifecycle advances to SyncEpoch.
-//   Readiness is determined by polling the store (iter_all_spools) —
+//   Readiness is determined by polling the store (iter_all_spools) 
 //   not via a cross-feature channel.
 //
 // ── JoinNetwork timing gate ────────────────────────────────────────
@@ -220,7 +220,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         }
     }
 
-    /// Try to spawn the next pending action — but only if nothing is currently running.
+    /// Try to spawn the next pending action, but only if nothing is currently running.
     fn try_spawn_next(
         &self,
         tasks: &mut JoinSet<TaskDone>,

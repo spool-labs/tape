@@ -76,7 +76,7 @@ impl ClayCoder {
     ///
     /// Uses `min(stripe_size, blob_len)` as the effective input length to handle
     /// small blobs where actual data is less than a full stripe. This is the
-    /// single source of truth for chunk_size computation — used by both the
+    /// single source of truth for chunk_size computation, used by both the
     /// repair planner and the repair HTTP handler.
     pub fn track_chunk_size(&self, stripe_size: usize, blob_len: usize) -> usize {
         let effective_len = stripe_size.min(blob_len);

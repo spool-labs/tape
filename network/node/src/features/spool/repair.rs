@@ -79,7 +79,7 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 //      j. Persist: store.put_slice(spool, track_address, data).
 //         Remove from pending_repairs.
 //
-// 3. Return Done { unrepairable } — count of tracks escalated.
+// 3. Return Done { unrepairable }, count of tracks escalated.
 //
 // NOTE:
 //
@@ -89,7 +89,7 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 //   - group.spool_at(slice) → spool is derived from group + slice
 //
 //   Given a SpoolIndex, you can always derive the SpoolGroup and the SliceIndex within it. So passing
-//   spool, group, AND lost is redundant — any one of these plus spool is computable from the other.
+//   spool, group, AND lost is redundant, any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
 
 pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(

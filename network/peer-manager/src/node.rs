@@ -1,5 +1,3 @@
-//! PeerNode — known, trusted peer node metadata.
-
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
 use tape_core::bls::BlsPubkey;
