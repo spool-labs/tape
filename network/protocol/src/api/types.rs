@@ -32,14 +32,23 @@ pub struct BlsSignResponse {
     pub epoch: EpochNumber,
 }
 
-/// Body for the snapshot chunk write-signature request.
-///
-/// Asks a peer to sign `SnapshotWriteMessage(epoch, group, chunk, value_hash)`.
-/// The peer signs only if its local build of the chunk produces the same
-/// `value_hash`. `epoch`, `group`, and `chunk` live in the URL path.
+/// Body for a pushed snapshot chunk write partial signature.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct GetSnapshotWriteSigRequest {
-    pub value_hash: Hash,
+pub struct PushSnapshotWriteSigRequest {
+    pub epoch: EpochNumber,
+    pub group: tape_core::spooler::SpoolGroup,
+    pub chunk: tape_core::types::ChunkNumber,
+    pub node_id: NodeId,
+    pub signature: BlsSignature,
+}
+
+/// Body for a pushed snapshot finalize partial signature.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct PushSnapshotFinalizeSigRequest {
+    pub epoch: EpochNumber,
+    pub group: tape_core::spooler::SpoolGroup,
+    pub node_id: NodeId,
+    pub signature: BlsSignature,
 }
 
 /// Request for inconsistency attestation.
@@ -289,14 +298,27 @@ mod tests {
     }
 
     #[test]
-    fn get_snapshot_write_sig_request() {
-        let req = GetSnapshotWriteSigRequest {
-            value_hash: Hash::from([0xAB; 32]),
+    fn push_snapshot_requests_roundtrip() {
+        let write_req = PushSnapshotWriteSigRequest {
+            epoch: EpochNumber(11),
+            group: tape_core::spooler::SpoolGroup(4),
+            chunk: tape_core::types::ChunkNumber(2),
+            node_id: NodeId(7),
+            signature: BlsSignature(G1CompressedPoint([0xAB; 32])),
         };
+        let bytes = wincode::serialize(&write_req).unwrap();
+        let decoded: PushSnapshotWriteSigRequest = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(write_req, decoded);
 
-        let bytes = wincode::serialize(&req).unwrap();
-        let decoded: GetSnapshotWriteSigRequest = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(req, decoded);
+        let finalize_req = PushSnapshotFinalizeSigRequest {
+            epoch: EpochNumber(11),
+            group: tape_core::spooler::SpoolGroup(4),
+            node_id: NodeId(7),
+            signature: BlsSignature(G1CompressedPoint([0xCD; 32])),
+        };
+        let bytes = wincode::serialize(&finalize_req).unwrap();
+        let decoded: PushSnapshotFinalizeSigRequest = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(finalize_req, decoded);
     }
 
     #[test]

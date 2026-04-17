@@ -433,18 +433,19 @@ impl Api for HttpApi {
         })
     }
 
-    async fn get_snapshot_write_sig(
+    async fn push_snapshot_write_sig(
         &self,
         node: NodeId,
-        req: &GetSnapshotWriteSigReq,
-    ) -> Result<GetSnapshotWriteSigRes, ApiError> {
+        req: &PushSnapshotWriteSigReq,
+    ) -> Result<PushSnapshotWriteSigRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!(
-            "{base}{}",
-            snapshot_write_url(req.epoch, req.group, req.chunk)
-        );
-        let wire_req = GetSnapshotWriteSigRequest {
-            value_hash: req.value_hash,
+        let url = format!("{base}{}", snapshot_write_url(req.epoch, req.group, req.chunk));
+        let wire_req = PushSnapshotWriteSigRequest {
+            epoch: req.epoch,
+            group: req.group,
+            chunk: req.chunk,
+            node_id: req.node_id,
+            signature: req.signature,
         };
         let body = wincode::serialize(&wire_req)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -461,51 +462,42 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_snapshot_write_sig", &resp, start, bytes_sent);
-        let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_snapshot_write_sig", bytes.len() as u64);
-        let wire: BlsSignResponse = wincode::deserialize(&bytes)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        Ok(GetSnapshotWriteSigRes {
-            signature: wire.signature,
-            node_id: wire.node_id,
-            epoch: wire.epoch,
-        })
+        self.record("push_snapshot_write_sig", &resp, start, bytes_sent);
+        check_status(resp).await?;
+        Ok(PushSnapshotWriteSigRes)
     }
 
-    async fn get_snapshot_finalize_sig(
+    async fn push_snapshot_finalize_sig(
         &self,
         node: NodeId,
-        req: &GetSnapshotFinalizeSigReq,
-    ) -> Result<GetSnapshotFinalizeSigRes, ApiError> {
+        req: &PushSnapshotFinalizeSigReq,
+    ) -> Result<PushSnapshotFinalizeSigRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!("{base}{}", snapshot_finalize_url(req.epoch, req.group));
+        let wire_req = PushSnapshotFinalizeSigRequest {
+            epoch: req.epoch,
+            group: req.group,
+            node_id: req.node_id,
+            signature: req.signature,
+        };
+        let body = wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
 
-        let bytes_sent = 0u64;
+        let bytes_sent = body.len() as u64;
         let start = Instant::now();
         let resp = self
             .client
             .post(&url)
             .timeout(SNAPSHOT_SIG_TIMEOUT)
             .header("content-type", BINARY_CONTENT)
+            .body(body)
             .send()
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_snapshot_finalize_sig", &resp, start, bytes_sent);
-        let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_snapshot_finalize_sig", bytes.len() as u64);
-        let wire: BlsSignResponse = wincode::deserialize(&bytes)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        Ok(GetSnapshotFinalizeSigRes {
-            signature: wire.signature,
-            node_id: wire.node_id,
-            epoch: wire.epoch,
-        })
+        self.record("push_snapshot_finalize_sig", &resp, start, bytes_sent);
+        check_status(resp).await?;
+        Ok(PushSnapshotFinalizeSigRes)
     }
 
     async fn invalidate(
@@ -668,8 +660,7 @@ mod tests {
     use std::sync::Arc;
 
     use axum::body::Bytes;
-    use axum::extract::Path;
-    use axum::http::{header, StatusCode};
+    use axum::http::StatusCode;
     use axum::routing::post;
     use axum::Router;
     use tokio::net::TcpListener;
@@ -677,7 +668,6 @@ mod tests {
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::EpochNumber;
     use tape_crypto::address::Address;
-    use tape_crypto::Hash;
     use peer_manager::PeerNode;
 
     fn make_peer(id: u64, port: u16) -> PeerNode {
@@ -723,41 +713,34 @@ mod tests {
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
         let chunk = ChunkNumber(2);
-        let request = GetSnapshotWriteSigRequest {
-            value_hash: Hash::from([0xAB; 32]),
-        };
-        let response = BlsSignResponse {
+        let request = PushSnapshotWriteSigRequest {
+            epoch,
+            group,
+            chunk,
+            node_id: NodeId(9),
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot-write")
                 .unwrap(),
-            node_id: NodeId(7),
-            epoch: EpochNumber(11),
+        };
+        let api_request = PushSnapshotWriteSigReq {
+            epoch,
+            group,
+            chunk,
+            node_id: NodeId(9),
+            signature: request.signature,
         };
 
         let expected_request = Arc::new(request.clone());
-        let expected_response = Arc::new(response.clone());
         let router = Router::new().route(
             SNAPSHOT_WRITE_PATH,
             post({
                 let expected_request = Arc::clone(&expected_request);
-                let expected_response = Arc::clone(&expected_response);
-                move |Path((route_epoch, route_group, route_chunk)): Path<(u64, u64, u64)>,
-                      body: Bytes| {
+                move |body: Bytes| {
                     let expected_request = Arc::clone(&expected_request);
-                    let expected_response = Arc::clone(&expected_response);
                     async move {
-                        let decoded: GetSnapshotWriteSigRequest = wincode::deserialize(&body).unwrap();
-                        assert_eq!(route_epoch, epoch.0);
-                        assert_eq!(route_group, group.0);
-                        assert_eq!(route_chunk, chunk.0);
+                        let decoded: PushSnapshotWriteSigRequest = wincode::deserialize(&body).unwrap();
                         assert_eq!(decoded, *expected_request);
-
-                        let body = wincode::serialize(expected_response.as_ref()).unwrap();
-                        (
-                            StatusCode::OK,
-                            [(header::CONTENT_TYPE, BINARY_CONTENT)],
-                            body,
-                        )
+                        StatusCode::OK
                     }
                 }
             }),
@@ -773,22 +756,13 @@ mod tests {
         peer_manager.add_peer(make_peer(7, port));
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
-        let decoded = api
-            .get_snapshot_write_sig(
+        api
+            .push_snapshot_write_sig(
                 NodeId(7),
-                &GetSnapshotWriteSigReq {
-                    epoch,
-                    group,
-                    chunk,
-                    value_hash: request.value_hash,
-                },
+                &api_request,
             )
             .await
             .unwrap();
-
-        assert_eq!(decoded.signature, response.signature);
-        assert_eq!(decoded.node_id, response.node_id);
-        assert_eq!(decoded.epoch, response.epoch);
 
         server.abort();
         let _ = server.await;
@@ -798,30 +772,33 @@ mod tests {
     async fn snapshot_finalize_roundtrip() {
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        let response = BlsSignResponse {
+        let request = PushSnapshotFinalizeSigRequest {
+            epoch,
+            group,
+            node_id: NodeId(9),
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot-finalize")
                 .unwrap(),
-            node_id: NodeId(7),
-            epoch: EpochNumber(11),
+        };
+        let api_request = PushSnapshotFinalizeSigReq {
+            epoch,
+            group,
+            node_id: NodeId(9),
+            signature: request.signature,
         };
 
-        let expected_response = Arc::new(response.clone());
+        let expected_request = Arc::new(request.clone());
         let router = Router::new().route(
             SNAPSHOT_FINALIZE_PATH,
             post({
-                let expected_response = Arc::clone(&expected_response);
-                move |Path((route_epoch, route_group)): Path<(u64, u64)>| {
-                    let expected_response = Arc::clone(&expected_response);
+                let expected_request = Arc::clone(&expected_request);
+                move |body: Bytes| {
+                    let expected_request = Arc::clone(&expected_request);
                     async move {
-                        assert_eq!(route_epoch, epoch.0);
-                        assert_eq!(route_group, group.0);
-                        let body = wincode::serialize(expected_response.as_ref()).unwrap();
-                        (
-                            StatusCode::OK,
-                            [(header::CONTENT_TYPE, BINARY_CONTENT)],
-                            body,
-                        )
+                        let decoded: PushSnapshotFinalizeSigRequest =
+                            wincode::deserialize(&body).unwrap();
+                        assert_eq!(decoded, *expected_request);
+                        StatusCode::OK
                     }
                 }
             }),
@@ -837,14 +814,10 @@ mod tests {
         peer_manager.add_peer(make_peer(7, port));
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
-        let decoded = api
-            .get_snapshot_finalize_sig(NodeId(7), &GetSnapshotFinalizeSigReq { epoch, group })
+        api
+            .push_snapshot_finalize_sig(NodeId(7), &api_request)
             .await
             .unwrap();
-
-        assert_eq!(decoded.signature, response.signature);
-        assert_eq!(decoded.node_id, response.node_id);
-        assert_eq!(decoded.epoch, response.epoch);
 
         server.abort();
         let _ = server.await;

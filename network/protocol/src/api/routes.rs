@@ -12,8 +12,8 @@ pub const INCONSISTENCY_PATH:        &str = "/v1/tracks/{track_id}/inconsistency
 pub const INFO_PATH:                 &str = "/v1/info";
 pub const METRICS_PATH:              &str = "/v1/metrics";
 pub const REPAIR_PATH:               &str = "/v1/tracks/{track_id}/repair";
-pub const SNAPSHOT_WRITE_PATH:       &str = "/v1/snapshots/{epoch}/groups/{group}/chunks/{chunk}/write";
-pub const SNAPSHOT_FINALIZE_PATH:    &str = "/v1/snapshots/{epoch}/groups/{group}/finalize";
+pub const SNAPSHOT_WRITE_PATH:       &str = "/v1/snapshots/write";
+pub const SNAPSHOT_FINALIZE_PATH:    &str = "/v1/snapshots/finalize";
 pub const SIGN_PATH:                 &str = "/v1/tracks/{track_id}/sign";
 pub const SLICE_PATH:                &str = "/v1/tracks/{track_id}/slices/{spool_id}";
 pub const SLICE_STATUS_PATH:         &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
@@ -67,15 +67,15 @@ pub fn sign_url(track_id: &str) -> String {
 }
 
 pub fn snapshot_write_url(
-    epoch: EpochNumber,
-    group: SpoolGroup,
-    chunk: ChunkNumber,
+    _epoch: EpochNumber,
+    _group: SpoolGroup,
+    _chunk: ChunkNumber,
 ) -> String {
-    format!( "/v1/snapshots/{}/groups/{}/chunks/{}/write", epoch.0, group.0, chunk.0,)
+    SNAPSHOT_WRITE_PATH.to_string()
 }
 
-pub fn snapshot_finalize_url(epoch: EpochNumber, group: SpoolGroup) -> String {
-    format!("/v1/snapshots/{}/groups/{}/finalize", epoch.0, group.0)
+pub fn snapshot_finalize_url(_epoch: EpochNumber, _group: SpoolGroup) -> String {
+    SNAPSHOT_FINALIZE_PATH.to_string()
 }
 
 pub fn repair_url(track_id: &str) -> String {
@@ -102,11 +102,11 @@ mod tests {
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");
         assert_eq!(
             snapshot_write_url(EpochNumber(11), SpoolGroup(4), ChunkNumber(2)),
-            "/v1/snapshots/11/groups/4/chunks/2/write"
+            "/v1/snapshots/write"
         );
         assert_eq!(
             snapshot_finalize_url(EpochNumber(11), SpoolGroup(4)),
-            "/v1/snapshots/11/groups/4/finalize"
+            "/v1/snapshots/finalize"
         );
         assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");

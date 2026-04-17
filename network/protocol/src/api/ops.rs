@@ -158,41 +158,31 @@ pub struct CertifyRes {
 
 /// Request a BLS signature on a snapshot chunk's write message.
 ///
-/// Signs `SnapshotWriteMessage(epoch, group, chunk, value_hash)` iff
-/// the peer's local build of this chunk produces the same `value_hash`.
+/// Pushes one already-produced partial signature to a peer.
 #[derive(Clone, Debug)]
-pub struct GetSnapshotWriteSigReq {
+pub struct PushSnapshotWriteSigReq {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
     pub chunk: ChunkNumber,
-    pub value_hash: Hash,
-}
-
-#[derive(Clone, Debug)]
-pub struct GetSnapshotWriteSigRes {
-    pub signature: BlsSignature,
     pub node_id: NodeId,
-    pub epoch: EpochNumber,
+    pub signature: BlsSignature,
 }
 
-/// Request a BLS signature on a snapshot group's completion message.
-///
-/// Signs `SnapshotSignMessage(epoch, group)` iff every chunk for this group
-/// has been written on-chain for `epoch` (visible in the peer's local track
-/// store via replay). Once every group of an epoch collects this signature,
-/// the on-chain snapshot moves to `Finalized`.
 #[derive(Clone, Debug)]
-pub struct GetSnapshotFinalizeSigReq {
+pub struct PushSnapshotWriteSigRes;
+
+/// Pushes one already-produced finalize partial signature to a peer.
+///
+#[derive(Clone, Debug)]
+pub struct PushSnapshotFinalizeSigReq {
     pub epoch: EpochNumber,
     pub group: SpoolGroup,
+    pub node_id: NodeId,
+    pub signature: BlsSignature,
 }
 
 #[derive(Clone, Debug)]
-pub struct GetSnapshotFinalizeSigRes {
-    pub signature: BlsSignature,
-    pub node_id: NodeId,
-    pub epoch: EpochNumber,
-}
+pub struct PushSnapshotFinalizeSigRes;
 
 #[derive(Clone, Debug)]
 pub struct InvalidateReq {
@@ -237,8 +227,8 @@ pub enum PeerReq {
     SyncTracks(SyncTracksReq),
     Repair(RepairReq),
     Certify(CertifyReq),
-    GetSnapshotWriteSig(GetSnapshotWriteSigReq),
-    GetSnapshotFinalizeSig(GetSnapshotFinalizeSigReq),
+    PushSnapshotWriteSig(PushSnapshotWriteSigReq),
+    PushSnapshotFinalizeSig(PushSnapshotFinalizeSigReq),
     Invalidate(InvalidateReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
@@ -257,8 +247,8 @@ pub enum PeerRes {
     SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
-    GetSnapshotWriteSig(Result<GetSnapshotWriteSigRes, ApiError>),
-    GetSnapshotFinalizeSig(Result<GetSnapshotFinalizeSigRes, ApiError>),
+    PushSnapshotWriteSig(Result<PushSnapshotWriteSigRes, ApiError>),
+    PushSnapshotFinalizeSig(Result<PushSnapshotFinalizeSigRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),

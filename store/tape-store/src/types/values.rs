@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
+use tape_core::track::blob::BlobInfo;
 use tape_core::types::{EpochNumber, TrackNumber};
+use tape_crypto::address::Address;
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -15,6 +17,22 @@ type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
 /// Stored slice bytes with a widened decode limit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
+
+/// Snapshot build artifact retained until the corresponding `WriteSnapshot`
+/// event lands locally and the staged slice is flushed into `SliceCol`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SnapshotArtifact {
+    pub blob: BlobInfo,
+    #[wincode(with = "SliceBytes")]
+    pub local_slice: Vec<u8>,
+    pub written_track: Option<Address>,
+}
+
+impl SnapshotArtifact {
+    pub fn is_written(&self) -> bool {
+        self.written_track.is_some()
+    }
+}
 
 /// Metadata about a tape (storage allocation)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]

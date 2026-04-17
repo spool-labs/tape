@@ -1,7 +1,5 @@
 pub mod build;
-pub mod cache;
-pub mod debug_journal;
-pub mod finalize;
+pub mod fanout;
+pub mod gc;
 pub mod manager;
 pub mod quorum;
-pub mod write;

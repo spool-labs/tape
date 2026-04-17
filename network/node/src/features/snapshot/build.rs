@@ -1,4 +1,9 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use rpc::Rpc;
 use store::Store;
+use tape_core::cert::{SnapshotSignMessage, SnapshotWriteMessage};
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEADER_SIZE};
 use tape_core::snapshot::replay::SnapshotLog;
@@ -7,15 +12,19 @@ use tape_core::track::blob::BlobInfo;
 use tape_core::types::{
     ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount,
 };
+use tape_protocol::Api;
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_slicer::{
     num_stripes, ErasureCoder, OuterCoder, Slicer, MAX_CHUNK_BYTES, SNAPSHOT_K_OUTER,
 };
-use tape_store::ops::EventLogOps;
+use tape_store::ops::{EventLogOps, SnapshotOps};
+use tape_store::types::SnapshotArtifact;
 use tape_store::TapeStore;
 
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
+use crate::features::snapshot::quorum::bitmap_index_in_group;
 
 /// Maximum compressed bytes carried by a single outer RS round's segment.
 pub const MAX_SEGMENT_BYTES: usize = SNAPSHOT_K_OUTER * MAX_CHUNK_BYTES - SEGMENT_HEADER_SIZE;
@@ -90,6 +99,86 @@ pub fn build_snapshot_epoch<Db: Store>(
     }
 
     Ok(chunks)
+}
+
+#[derive(Debug, Default)]
+pub struct BuildSummary {
+    pub groups: usize,
+    pub chunks: usize,
+}
+
+/// Build the snapshot for one epoch and persist only this node's local group
+/// artifacts and self-produced partial signatures.
+pub fn build_local_snapshot_epoch<Db, Cluster, Blockchain>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    epoch: EpochNumber,
+) -> Result<BuildSummary, NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let state = ctx.state();
+    let my_node_id = ctx.node_id();
+    let chunks = build_snapshot_epoch(ctx.store.as_ref(), epoch)?;
+
+    let mut built_per_group = BTreeMap::new();
+
+    for chunk in chunks {
+        let Some(bitmap_index) = bitmap_index_in_group(&state, chunk.group, my_node_id) else {
+            continue;
+        };
+
+        let artifact = SnapshotArtifact {
+            blob: chunk.blob,
+            local_slice: chunk.slices[bitmap_index as usize].clone(),
+            written_track: None,
+        };
+        ctx.store
+            .put_snapshot_artifact(epoch, chunk.group, chunk.chunk, &artifact)
+            .map_err(|e| NodeError::Store(format!(
+                "put_snapshot_artifact({epoch},{},{}) failed: {e}",
+                chunk.group.0,
+                chunk.chunk.0
+            )))?;
+
+        let write_message =
+            SnapshotWriteMessage::new(epoch, chunk.group, chunk.chunk, artifact.blob.get_hash());
+        let write_sig = ctx
+            .bls_sign(&write_message.to_bytes())
+            .map_err(|e| NodeError::Store(format!("snapshot write bls_sign failed: {e:?}")))?;
+        ctx.store
+            .put_snapshot_write_sig(epoch, chunk.group, chunk.chunk, bitmap_index, &write_sig)
+            .map_err(|e| NodeError::Store(format!(
+                "put_snapshot_write_sig({epoch},{},{},{bitmap_index}) failed: {e}",
+                chunk.group.0,
+                chunk.chunk.0
+            )))?;
+
+        *built_per_group.entry(chunk.group).or_insert(0usize) += 1;
+    }
+
+    for group in built_per_group.keys().copied() {
+        let Some(bitmap_index) = bitmap_index_in_group(&state, group, my_node_id) else {
+            continue;
+        };
+
+        let finalize_message = SnapshotSignMessage::new(epoch, group);
+        let finalize_sig = ctx
+            .bls_sign(&finalize_message.to_bytes())
+            .map_err(|e| NodeError::Store(format!("snapshot finalize bls_sign failed: {e:?}")))?;
+        ctx.store
+            .put_snapshot_finalize_sig(epoch, group, bitmap_index, &finalize_sig)
+            .map_err(|e| NodeError::Store(format!(
+                "put_snapshot_finalize_sig({epoch},{},{bitmap_index}) failed: {e}",
+                group.0
+            )))?;
+    }
+
+    Ok(BuildSummary {
+        groups: built_per_group.len(),
+        chunks: built_per_group.values().sum(),
+    })
 }
 
 /// Clay-encode one outer symbol into its 20 spool-member slices and package

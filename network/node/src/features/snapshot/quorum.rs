@@ -1,306 +1,190 @@
-//! Collects a BLS quorum over a given message from the members of
-//! one spool group. 
+//! Shared helpers for snapshot group membership, partial verification, and
+//! store-backed quorum aggregation.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
 use tape_core::bft::min_correct;
 use tape_core::bls::{BlsPubkey, BlsSignature};
+use tape_core::cert::{SnapshotSignMessage, SnapshotWriteMessage};
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::{ChunkNumber, NodeId, SpoolGroupBitmap};
-use tape_crypto::hash::Hash;
-use tape_protocol::api::ApiError;
+use tape_core::types::{ChunkNumber, EpochNumber, NodeId, SpoolGroupBitmap};
 use tape_protocol::{Api, ProtocolState};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tape_store::ops::SnapshotOps;
 
 use crate::context::NodeContext;
-use crate::features::snapshot::debug_journal::{self, PeerOutcome};
+use crate::core::error::NodeError;
 
-/// Single-peer sign response as consumed by [`collect`]. Both the write-sig
-/// and finalize-sig API responses project into this minimal shape.
-pub struct PeerSig {
+pub struct GroupPeer {
     pub node_id: NodeId,
-    pub signature: BlsSignature,
+    pub bitmap_index: u16,
+    pub pubkey: BlsPubkey,
 }
 
-/// Type-erased per-peer call. Given a `NodeId` and a cancellation token,
-/// returns a future resolving to that peer's `PeerSig` or an `ApiError`.
-pub type PerPeer = Arc<
-    dyn Fn(NodeId, CancellationToken) -> Pin<Box<dyn Future<Output = Result<PeerSig, ApiError>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// Outcome of a quorum collection, ready to feed into a submit instruction.
-pub struct Quorum {
+pub struct AggregatedQuorum {
     pub bitmap: SpoolGroupBitmap,
     pub signature: BlsSignature,
 }
 
-pub async fn collect<Db, Cluster, Blockchain>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    epoch: tape_core::types::EpochNumber,
-    group: SpoolGroup,
-    chunk: Option<ChunkNumber>,
-    value_hash: Option<Hash>,
-    message: &[u8],
-    per_peer: PerPeer,
-    cancel: CancellationToken,
-    label: &'static str,
-) -> Option<Quorum>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    if cancel.is_cancelled() {
-        return None;
-    }
-
-    let quorum_threshold = min_correct(SPOOL_GROUP_SIZE as u64) as usize;
-    let my_node_id = ctx.node_id();
-
-    let my_sig = match ctx.bls_sign(message) {
-        Ok(sig) => sig,
-        Err(error) => {
-            warn!(
-                ?error,
-                label,
-                group = group.0,
-                "snapshot quorum: local bls_sign failed"
-            );
-            return None;
-        }
-    };
-
-    let state = ctx.state();
-    let Some(my_local_idx) = local_index_in_group(&state, group, my_node_id) else {
-        warn!(
-            label,
-            group = group.0,
-            "snapshot quorum: local node not in group — skipping"
-        );
-        return None;
-    };
-
-    debug_journal::sign(
-        my_node_id,
-        label,
-        epoch,
-        group,
-        chunk,
-        my_local_idx,
-        value_hash.as_ref(),
-        message,
-        &my_sig,
-    );
-
-    let mut signatures: Vec<(usize, BlsSignature)> = Vec::with_capacity(SPOOL_GROUP_SIZE);
-    signatures.push((my_local_idx, my_sig));
-
-    if signatures.len() >= quorum_threshold {
-        return finalize(signatures);
-    }
-
-    for peer in other_group_peers(&state, group, my_node_id) {
-        if cancel.is_cancelled() {
-            return None;
-        }
-
-        match per_peer(peer.node_id, cancel.clone()).await {
-            Ok(res) if res.node_id != peer.node_id => {
-                warn!(
-                    expected = peer.node_id.0,
-                    got = res.node_id.0,
-                    label,
-                    group = group.0,
-                    "snapshot quorum: peer node_id mismatch"
-                );
-                debug_journal::peer(
-                    my_node_id,
-                    label,
-                    epoch,
-                    group,
-                    chunk,
-                    peer.node_id,
-                    peer.local_idx,
-                    &peer.pubkey,
-                    Some(&res.signature),
-                    PeerOutcome::NodeIdMismatch { expected: peer.node_id, got: res.node_id },
-                );
-            }
-            Ok(res) if !verify_peer_sig(&peer.pubkey, message, &res.signature) => {
-                warn!(
-                    node_id = peer.node_id.0,
-                    label,
-                    group = group.0,
-                    "snapshot quorum: peer signature failed verification"
-                );
-                debug_journal::peer(
-                    my_node_id,
-                    label,
-                    epoch,
-                    group,
-                    chunk,
-                    peer.node_id,
-                    peer.local_idx,
-                    &peer.pubkey,
-                    Some(&res.signature),
-                    PeerOutcome::BadSig,
-                );
-            }
-            Ok(res) => {
-                debug_journal::peer(
-                    my_node_id,
-                    label,
-                    epoch,
-                    group,
-                    chunk,
-                    peer.node_id,
-                    peer.local_idx,
-                    &peer.pubkey,
-                    Some(&res.signature),
-                    PeerOutcome::Verified,
-                );
-                signatures.push((peer.local_idx, res.signature));
-                if signatures.len() >= quorum_threshold {
-                    return finalize(signatures);
-                }
-            }
-            Err(error) => {
-                let msg = error.to_string();
-                debug!(
-                    node_id = peer.node_id.0,
-                    error = %error,
-                    label,
-                    group = group.0,
-                    "snapshot quorum: peer sig request failed"
-                );
-                debug_journal::peer(
-                    my_node_id,
-                    label,
-                    epoch,
-                    group,
-                    chunk,
-                    peer.node_id,
-                    peer.local_idx,
-                    &peer.pubkey,
-                    None,
-                    PeerOutcome::Err(&msg),
-                );
-            }
-        }
-    }
-
-    warn!(
-        have = signatures.len(),
-        need = quorum_threshold,
-        label,
-        group = group.0,
-        "snapshot quorum: insufficient signatures"
-    );
-    None
+pub fn quorum_threshold() -> usize {
+    min_correct(SPOOL_GROUP_SIZE as u64) as usize
 }
 
-fn finalize(signatures: Vec<(usize, BlsSignature)>) -> Option<Quorum> {
-    let indices: Vec<usize> = signatures.iter().map(|(i, _)| *i).collect();
-    let sigs: Vec<BlsSignature> = signatures.iter().map(|(_, s)| *s).collect();
-    let signature = BlsSignature::aggregate(&sigs).ok()?;
-    let bitmap = SpoolGroupBitmap::from_indices(&indices, SPOOL_GROUP_SIZE);
-    Some(Quorum { bitmap, signature })
+pub fn is_current_snapshot_epoch(state: &ProtocolState, snapshot_epoch: EpochNumber) -> bool {
+    state.epoch.0 == snapshot_epoch.0.saturating_add(1)
 }
 
-struct PeerEntry {
-    node_id: NodeId,
-    local_idx: usize,
-    pubkey: BlsPubkey,
-}
-
-fn local_index_in_group(
+pub fn bitmap_index_in_group(
     state: &ProtocolState,
     group: SpoolGroup,
     node_id: NodeId,
-) -> Option<usize> {
+) -> Option<u16> {
     state
         .group_peers(group)
         .into_iter()
         .find(|(_, peer_id)| *peer_id == node_id)
         .and_then(|(spool, _)| group.slice_of(spool))
-        .map(|s| s as usize)
+        .map(|idx| idx as u16)
 }
 
-fn other_group_peers(
+pub fn group_peer_by_index(
     state: &ProtocolState,
     group: SpoolGroup,
-    me: NodeId,
-) -> Vec<PeerEntry> {
+    bitmap_index: u16,
+) -> Option<GroupPeer> {
+    let spool = group.spool_at(bitmap_index as usize);
+    let node_id = state.spool_owner(spool)?;
+    let (_, member) = state.find_member(node_id)?;
+    Some(GroupPeer {
+        node_id,
+        bitmap_index,
+        pubkey: member.key,
+    })
+}
+
+pub fn group_peers(
+    state: &ProtocolState,
+    group: SpoolGroup,
+) -> Vec<GroupPeer> {
     state
         .group_peers(group)
         .into_iter()
-        .filter(|(_, node_id)| *node_id != me)
         .filter_map(|(spool, node_id)| {
-            let local_idx = group.slice_of(spool)? as usize;
+            let bitmap_index = group.slice_of(spool)? as u16;
             let (_, member) = state.find_member(node_id)?;
-            Some(PeerEntry {
+            Some(GroupPeer {
                 node_id,
-                local_idx,
+                bitmap_index,
                 pubkey: member.key,
             })
         })
         .collect()
 }
 
-fn verify_peer_sig(pubkey: &BlsPubkey, message: &[u8], signature: &BlsSignature) -> bool {
+pub fn verify_partial(
+    pubkey: &BlsPubkey,
+    message: &[u8],
+    signature: &BlsSignature,
+) -> bool {
     signature
         .verify_aggregate(message, std::slice::from_ref(pubkey))
         .is_ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tape_core::erasure::SPOOL_COUNT;
-    use tape_core::spooler::SpoolAssignment;
-    use tape_core::system::CommitteeMember;
-    use tape_core::types::coin::{Coin, TAPE};
-    use tape_core::types::EpochNumber;
+pub fn aggregate_write_quorum<Db, Cluster, Blockchain>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    epoch: EpochNumber,
+    group: SpoolGroup,
+    chunk: ChunkNumber,
+) -> Result<Option<AggregatedQuorum>, NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let Some(artifact) = ctx
+        .store
+        .get_snapshot_artifact(epoch, group, chunk)
+        .map_err(|e| NodeError::Store(format!("get_snapshot_artifact({epoch},{group},{chunk}): {e}")))?
+    else {
+        return Ok(None);
+    };
 
-    fn state_with_node_0_in_group_0() -> ProtocolState {
-        let mut state = ProtocolState::default();
-        state.epoch = EpochNumber(7);
-        state.committee = vec![
-            CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1_000)),
-            CommitteeMember::new(NodeId(1), Coin::<TAPE>::new(1_000)),
-        ];
-        let mut spools = [1u8; SPOOL_COUNT];
-        for pos in 0..SPOOL_GROUP_SIZE {
-            spools[pos] = 0;
+    let message =
+        SnapshotWriteMessage::new(epoch, group, chunk, artifact.blob.get_hash()).to_bytes();
+    aggregate_quorum(
+        &ctx.state(),
+        group,
+        &message,
+        ctx.store
+            .iter_snapshot_write_sigs(epoch, group, chunk)
+            .map_err(|e| NodeError::Store(format!("iter_snapshot_write_sigs({epoch},{group},{chunk}): {e}")))?,
+    )
+}
+
+pub fn aggregate_finalize_quorum<Db, Cluster, Blockchain>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    epoch: EpochNumber,
+    group: SpoolGroup,
+) -> Result<Option<AggregatedQuorum>, NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let message = SnapshotSignMessage::new(epoch, group).to_bytes();
+    aggregate_quorum(
+        &ctx.state(),
+        group,
+        &message,
+        ctx.store
+            .iter_snapshot_finalize_sigs(epoch, group)
+            .map_err(|e| NodeError::Store(format!("iter_snapshot_finalize_sigs({epoch},{group}): {e}")))?,
+    )
+}
+
+fn aggregate_quorum(
+    state: &ProtocolState,
+    group: SpoolGroup,
+    message: &[u8],
+    partials: Vec<(u16, BlsSignature)>,
+) -> Result<Option<AggregatedQuorum>, NodeError> {
+    let mut valid = Vec::with_capacity(partials.len());
+    let mut pubkeys = Vec::with_capacity(partials.len());
+
+    for (bitmap_index, signature) in partials {
+        let Some(peer) = group_peer_by_index(state, group, bitmap_index) else {
+            continue;
+        };
+        if verify_partial(&peer.pubkey, message, &signature) {
+            valid.push((bitmap_index as usize, signature));
+            pubkeys.push(peer.pubkey);
         }
-        state.spools = SpoolAssignment::new(spools);
-        state
     }
 
-    #[test]
-    fn local_index_finds_self() {
-        let state = state_with_node_0_in_group_0();
-        assert_eq!(local_index_in_group(&state, SpoolGroup(0), NodeId(0)), Some(0));
+    if valid.len() < quorum_threshold() {
+        return Ok(None);
     }
 
-    #[test]
-    fn local_index_returns_none_if_absent() {
-        let state = state_with_node_0_in_group_0();
-        assert!(local_index_in_group(&state, SpoolGroup(0), NodeId(42)).is_none());
-    }
+    valid.sort_unstable_by_key(|(bitmap_index, _)| *bitmap_index);
 
-    #[test]
-    fn other_peers_excludes_self() {
-        let state = state_with_node_0_in_group_0();
-        // Node 0 holds every position in group 0 here, so no "other" peers.
-        assert!(other_group_peers(&state, SpoolGroup(0), NodeId(0)).is_empty());
-    }
+    let indices: Vec<usize> = valid.iter().map(|(bitmap_index, _)| *bitmap_index).collect();
+    let signatures: Vec<BlsSignature> = valid.iter().map(|(_, signature)| *signature).collect();
+    let aggregated = BlsSignature::aggregate(&signatures)
+        .map_err(|e| NodeError::Store(format!("aggregate snapshot quorum: {e:?}")))?;
+    let signers: Vec<BlsPubkey> = indices
+        .iter()
+        .filter_map(|bitmap_index| group_peer_by_index(state, group, *bitmap_index as u16).map(|peer| peer.pubkey))
+        .collect();
+
+    aggregated
+        .verify_aggregate(message, &signers)
+        .map_err(|e| NodeError::Store(format!("verify aggregated snapshot quorum: {e:?}")))?;
+
+    Ok(Some(AggregatedQuorum {
+        bitmap: SpoolGroupBitmap::from_indices(&indices, SPOOL_GROUP_SIZE),
+        signature: aggregated,
+    }))
 }

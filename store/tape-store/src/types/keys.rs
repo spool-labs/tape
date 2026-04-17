@@ -6,6 +6,9 @@
 //! - SpoolIndexKey: spool_id BE (2 bytes)
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
 //! - TrackLookupKey: (tape, track_number BE, key) (72 bytes)
+//! - SnapshotArtifactKey: (epoch BE, group BE, chunk BE) (24 bytes)
+//! - SnapshotWriteSigKey: (epoch BE, group BE, chunk BE, bitmap_index BE) (26 bytes)
+//! - SnapshotFinalizeSigKey: (epoch BE, group BE, bitmap_index BE) (18 bytes)
 
 use std::mem::MaybeUninit;
 
@@ -250,6 +253,215 @@ impl<'de> SchemaRead<'de> for SliceKey {
         dst.write(SliceKey {
             spool_id,
             track_address: Address::from(track_bytes),
+        });
+        Ok(())
+    }
+}
+
+/// Key for per-chunk snapshot build artifacts (24 bytes)
+///
+/// Format: [epoch BE 8 bytes][group BE 8 bytes][chunk BE 8 bytes]
+///
+/// Enables:
+/// - Prefix scan by epoch (8 bytes)
+/// - Prefix scan by (epoch, group) (16 bytes)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SnapshotArtifactKey {
+    pub epoch: u64,
+    pub group: u64,
+    pub chunk: u64,
+}
+
+impl SnapshotArtifactKey {
+    pub const SIZE: usize = 24;
+
+    pub fn new(epoch: u64, group: u64, chunk: u64) -> Self {
+        Self { epoch, group, chunk }
+    }
+
+    pub fn epoch_prefix(epoch: u64) -> [u8; 8] {
+        epoch.to_be_bytes()
+    }
+
+    pub fn group_prefix(epoch: u64, group: u64) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        buf[0..8].copy_from_slice(&epoch.to_be_bytes());
+        buf[8..16].copy_from_slice(&group.to_be_bytes());
+        buf
+    }
+}
+
+impl SchemaWrite for SnapshotArtifactKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.epoch.to_be_bytes())?;
+        writer.write_exact(&src.group.to_be_bytes())?;
+        writer.write_exact(&src.chunk.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for SnapshotArtifactKey {
+    type Dst = Self;
+
+    fn read(
+        reader: &mut Reader<'de>,
+        dst: &mut MaybeUninit<SnapshotArtifactKey>,
+    ) -> ReadResult<()> {
+        let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let group_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let chunk_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(SnapshotArtifactKey {
+            epoch: u64::from_be_bytes(epoch_bytes),
+            group: u64::from_be_bytes(group_bytes),
+            chunk: u64::from_be_bytes(chunk_bytes),
+        });
+        Ok(())
+    }
+}
+
+/// Key for snapshot write partial signatures (26 bytes)
+///
+/// Format:
+/// [epoch BE 8 bytes][group BE 8 bytes][chunk BE 8 bytes][bitmap_index BE 2 bytes]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SnapshotWriteSigKey {
+    pub epoch: u64,
+    pub group: u64,
+    pub chunk: u64,
+    pub bitmap_index: u16,
+}
+
+impl SnapshotWriteSigKey {
+    pub const SIZE: usize = 26;
+
+    pub fn new(epoch: u64, group: u64, chunk: u64, bitmap_index: u16) -> Self {
+        Self {
+            epoch,
+            group,
+            chunk,
+            bitmap_index,
+        }
+    }
+
+    pub fn epoch_prefix(epoch: u64) -> [u8; 8] {
+        epoch.to_be_bytes()
+    }
+
+    pub fn group_prefix(epoch: u64, group: u64) -> [u8; 16] {
+        SnapshotArtifactKey::group_prefix(epoch, group)
+    }
+
+    pub fn chunk_prefix(epoch: u64, group: u64, chunk: u64) -> [u8; 24] {
+        let mut buf = [0u8; 24];
+        buf[0..8].copy_from_slice(&epoch.to_be_bytes());
+        buf[8..16].copy_from_slice(&group.to_be_bytes());
+        buf[16..24].copy_from_slice(&chunk.to_be_bytes());
+        buf
+    }
+}
+
+impl SchemaWrite for SnapshotWriteSigKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.epoch.to_be_bytes())?;
+        writer.write_exact(&src.group.to_be_bytes())?;
+        writer.write_exact(&src.chunk.to_be_bytes())?;
+        writer.write_exact(&src.bitmap_index.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for SnapshotWriteSigKey {
+    type Dst = Self;
+
+    fn read(
+        reader: &mut Reader<'de>,
+        dst: &mut MaybeUninit<SnapshotWriteSigKey>,
+    ) -> ReadResult<()> {
+        let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let group_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let chunk_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let bitmap_index_bytes: [u8; 2] = unsafe { reader.get_t()? };
+        dst.write(SnapshotWriteSigKey {
+            epoch: u64::from_be_bytes(epoch_bytes),
+            group: u64::from_be_bytes(group_bytes),
+            chunk: u64::from_be_bytes(chunk_bytes),
+            bitmap_index: u16::from_be_bytes(bitmap_index_bytes),
+        });
+        Ok(())
+    }
+}
+
+/// Key for snapshot finalize partial signatures (18 bytes)
+///
+/// Format: [epoch BE 8 bytes][group BE 8 bytes][bitmap_index BE 2 bytes]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SnapshotFinalizeSigKey {
+    pub epoch: u64,
+    pub group: u64,
+    pub bitmap_index: u16,
+}
+
+impl SnapshotFinalizeSigKey {
+    pub const SIZE: usize = 18;
+
+    pub fn new(epoch: u64, group: u64, bitmap_index: u16) -> Self {
+        Self {
+            epoch,
+            group,
+            bitmap_index,
+        }
+    }
+
+    pub fn epoch_prefix(epoch: u64) -> [u8; 8] {
+        epoch.to_be_bytes()
+    }
+
+    pub fn group_prefix(epoch: u64, group: u64) -> [u8; 16] {
+        SnapshotArtifactKey::group_prefix(epoch, group)
+    }
+}
+
+impl SchemaWrite for SnapshotFinalizeSigKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.epoch.to_be_bytes())?;
+        writer.write_exact(&src.group.to_be_bytes())?;
+        writer.write_exact(&src.bitmap_index.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for SnapshotFinalizeSigKey {
+    type Dst = Self;
+
+    fn read(
+        reader: &mut Reader<'de>,
+        dst: &mut MaybeUninit<SnapshotFinalizeSigKey>,
+    ) -> ReadResult<()> {
+        let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let group_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let bitmap_index_bytes: [u8; 2] = unsafe { reader.get_t()? };
+        dst.write(SnapshotFinalizeSigKey {
+            epoch: u64::from_be_bytes(epoch_bytes),
+            group: u64::from_be_bytes(group_bytes),
+            bitmap_index: u16::from_be_bytes(bitmap_index_bytes),
         });
         Ok(())
     }

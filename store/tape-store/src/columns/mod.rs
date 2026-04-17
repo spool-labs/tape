@@ -25,11 +25,17 @@
 //!
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
+//!
+//! ## Snapshot Coordination Columns
+//! - `snapshot_write_sig`: Per-chunk partial BLS signatures
+//! - `snapshot_finalize_sig`: Per-group partial BLS signatures
+//! - `snapshot_artifact`: Local build artifacts retained until write capture
 
 pub mod event_log;
 pub mod gc;
 pub mod meta;
 pub mod object_info;
+pub mod snapshot;
 pub mod slice;
 pub mod spool;
 pub mod sync_cursor;
@@ -43,6 +49,7 @@ pub use event_log::EventLogCol;
 pub use gc::GcCol;
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
+pub use snapshot::{SnapshotArtifactCol, SnapshotFinalizeSigCol, SnapshotWriteSigCol};
 pub use slice::SliceCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
@@ -69,4 +76,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "slice",
     "spool_sync_cursor",
     "event_log",
+    "snapshot_write_sig",
+    "snapshot_finalize_sig",
+    "snapshot_artifact",
 ];

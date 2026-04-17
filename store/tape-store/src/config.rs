@@ -43,6 +43,11 @@ use rocksdb;
 ///
 /// ## Event Log Column
 /// - `event_log` - 20-byte EventLogKey with 8-byte epoch prefix (BlockBased)
+///
+/// ## Snapshot Coordination Columns
+/// - `snapshot_write_sig` - 26-byte key with 24-byte chunk prefix (BlockBased)
+/// - `snapshot_finalize_sig` - 18-byte key with 16-byte group prefix (BlockBased)
+/// - `snapshot_artifact` - 24-byte key with 16-byte group prefix (BlobDB)
 pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
     vec![
         // Meta - variable-size keys and values, infrequent access
@@ -124,6 +129,24 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .with_prefix_extractor(8)
             .build(),
+
+        // Snapshot write partial signatures - prefix scans by (epoch, group, chunk)
+        ColumnFamilyConfig::new("snapshot_write_sig")
+            .with_block_based()
+            .with_prefix_extractor(24)
+            .build(),
+
+        // Snapshot finalize partial signatures - prefix scans by (epoch, group)
+        ColumnFamilyConfig::new("snapshot_finalize_sig")
+            .with_block_based()
+            .with_prefix_extractor(16)
+            .build(),
+
+        // Snapshot artifacts - staged local slices indexed by (epoch, group, chunk)
+        ColumnFamilyConfig::new("snapshot_artifact")
+            .with_blob_db(256 * 1024)
+            .with_prefix_extractor(16)
+            .build(),
     ]
 }
 
@@ -183,7 +206,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 14);
+        assert_eq!(configs.len(), 17);
     }
 
     #[test]
@@ -206,6 +229,9 @@ mod tests {
             "slice",
             "spool_sync_cursor",
             "event_log",
+            "snapshot_write_sig",
+            "snapshot_finalize_sig",
+            "snapshot_artifact",
         ];
 
         assert_eq!(names, expected);
