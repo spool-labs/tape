@@ -76,6 +76,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         state: spec.epoch_state(),
         last_epoch: spec.last_epoch,
         nonce: Hash::default(),
+        ..Epoch::zeroed()
     };
 
     let (archive_address, _) = archive_pda();

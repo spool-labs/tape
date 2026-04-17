@@ -101,6 +101,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     epoch.id = EpochNumber(1);
     epoch.state = EpochState::active();  // Enable low-quorum mode from the start
     epoch.last_epoch = 0;
+    epoch.start_slot = SlotNumber(Clock::get()?.slot);
 
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.storage_capacity = StorageUnits::tb(100);
@@ -174,6 +175,7 @@ mod tests {
                         id: EpochNumber(1),
                         state: EpochState::active(),
                         last_epoch: 0,
+                        start_slot: SlotNumber(env.slot()),
                         nonce: Hash::default(),
                     }.pack().as_ref()
                 ).build(),

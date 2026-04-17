@@ -279,6 +279,9 @@ impl TestEnv {
         self.mollusk.sysvars.clock.unix_timestamp
     }
 
+    pub fn slot(&self) -> u64 {
+        self.mollusk.sysvars.clock.slot
+    }
 }
 
 

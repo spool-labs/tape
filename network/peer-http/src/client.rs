@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tape_protocol::api::*;
@@ -10,6 +10,9 @@ use tape_core::types::network::NetworkAddress;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
+
+/// Per-request timeout for snapshot signature calls. 
+const SNAPSHOT_SIG_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct HttpApi {
     pub peer_manager: Arc<PeerManager>,
@@ -451,6 +454,7 @@ impl Api for HttpApi {
         let resp = self
             .client
             .post(&url)
+            .timeout(SNAPSHOT_SIG_TIMEOUT)
             .header("content-type", BINARY_CONTENT)
             .body(body)
             .send()
@@ -484,6 +488,7 @@ impl Api for HttpApi {
         let resp = self
             .client
             .post(&url)
+            .timeout(SNAPSHOT_SIG_TIMEOUT)
             .header("content-type", BINARY_CONTENT)
             .send()
             .await

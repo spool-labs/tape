@@ -58,9 +58,9 @@ pub fn process_sign_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let mut pubkeys = Vec::with_capacity(indices.len());
     let group_offset = spool_group.0 * SPOOL_GROUP_SIZE as u64;
     for member_index in &indices {
-        // convert from group-local indices to committee-wide indices
-        let member_index = member_index + group_offset as usize;
-        if let Some(member) = committee.member_at(member_index) {
+        let spool_index = member_index + group_offset as usize;
+        let committee_idx = system.spools.0[spool_index] as usize;
+        if let Some(member) = committee.member_at(committee_idx) {
             pubkeys.push(member.key.0);
         } else {
             return Err(TapeError::BadMember.into());
@@ -127,6 +127,11 @@ mod tests {
 
         let mut system = System::zeroed();
         system.committee = Committee::from_members(&members);
+        // Identity spool → member mapping for group 0 so the verifier's
+        // spool-lookup resolves bit i to member i.
+        for i in 0..SPOOL_GROUP_SIZE {
+            system.spools.0[i] = i as u8;
+        }
 
         (keypairs.into_iter().map(|(sk, _)| sk).collect(), system)
     }

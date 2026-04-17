@@ -166,14 +166,12 @@ impl TestNode {
                     .context("read sync cursor")?
                 {
                     Some(slot) => SlotNumber(slot.0.saturating_add(1)),
-                    None => SlotNumber(
-                        context
-                            .rpc
-                            .get_slot()
-                            .await
-                            .context("read current chain slot")?
-                            .saturating_add(1),
-                    ),
+                    None => context
+                        .rpc
+                        .get_epoch()
+                        .await
+                        .context("read current epoch account")?
+                        .start_slot,
                 };
                 let mut config = self.app_config.clone();
                 config.solana.start_slot = Some(start_slot);

@@ -87,7 +87,7 @@ fn make_per_peer<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 
         Box::pin(async move {
             let res = call_peer(
                 &ctx.peer_manager,
-                RetryConfig::three(),
+                RetryConfig::none(),
                 node_id,
                 Some(&cancel),
                 || ctx.api.get_snapshot_write_sig(node_id, &req),

@@ -67,8 +67,9 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let mut pubkeys = Vec::with_capacity(indices.len());
     let group_offset = spool_group.0 * SPOOL_GROUP_SIZE as u64;
     for member_index in &indices {
-        let member_index = member_index + group_offset as usize;
-        if let Some(member) = committee.member_at(member_index) {
+        let spool_index = member_index + group_offset as usize;
+        let committee_idx = system.spools.0[spool_index] as usize;
+        if let Some(member) = committee.member_at(committee_idx) {
             pubkeys.push(member.key.0);
         } else {
             return Err(TapeError::BadMember.into());
@@ -163,7 +164,9 @@ mod tests {
 
     // Stable, known committee: first SPOOL_GROUP_SIZE members at indices 0..19,
     // equal stakes + ascending NodeId => sort preserves insertion order,
-    // so private_keys[i] signs for committee.member_at(i).
+    // so private_keys[i] signs for committee.member_at(i). Group 0's spool
+    // assignment is an identity mapping so the spool→member indirection in
+    // the verifier resolves bit i in the bitmap to member i.
     fn make_committee() -> (Vec<BlsPrivateKey>, System) {
         let keypairs: Vec<(BlsPrivateKey, BlsPubkey)> = (0..SPOOL_GROUP_SIZE)
             .map(|_| {
@@ -186,6 +189,9 @@ mod tests {
 
         let mut system = System::zeroed();
         system.committee = Committee::from_members(&members);
+        for i in 0..SPOOL_GROUP_SIZE {
+            system.spools.0[i] = i as u8;
+        }
 
         (keypairs.into_iter().map(|(sk, _)| sk).collect(), system)
     }

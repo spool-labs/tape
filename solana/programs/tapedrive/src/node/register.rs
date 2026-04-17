@@ -178,6 +178,7 @@ mod tests {
             state: EpochState::new(),
             last_epoch: 0,
             nonce: Hash::default(),
+            ..Epoch::zeroed()
         };
 
         let accounts = vec![

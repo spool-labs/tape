@@ -16,44 +16,33 @@ use tape_core::spooler::SpoolGroup;
 use tape_core::types::{NodeId, SpoolGroupBitmap};
 use tape_protocol::api::ApiError;
 use tape_protocol::{Api, ProtocolState};
-use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::context::NodeContext;
 
-/// Max concurrent peer sign requests per quorum collection.
-const MAX_CONCURRENT_PEERS: usize = 8;
-
 /// Single-peer sign response as consumed by [`collect`]. Both the write-sig
 /// and finalize-sig API responses project into this minimal shape.
-pub(super) struct PeerSig {
+pub struct PeerSig {
     pub node_id: NodeId,
     pub signature: BlsSignature,
 }
 
 /// Type-erased per-peer call. Given a `NodeId` and a cancellation token,
 /// returns a future resolving to that peer's `PeerSig` or an `ApiError`.
-pub(super) type PerPeer = Arc<
+pub type PerPeer = Arc<
     dyn Fn(NodeId, CancellationToken) -> Pin<Box<dyn Future<Output = Result<PeerSig, ApiError>> + Send>>
         + Send
         + Sync,
 >;
 
 /// Outcome of a quorum collection, ready to feed into a submit instruction.
-pub(super) struct Quorum {
+pub struct Quorum {
     pub bitmap: SpoolGroupBitmap,
     pub signature: BlsSignature,
 }
 
-/// Seed with the local signature, fan out peer calls up to
-/// [`MAX_CONCURRENT_PEERS`] at a time, verify each response against its
-/// sender's BLS pubkey, and return the aggregated signature + bitmap once
-/// the 14-of-20 threshold is reached.
-///
-/// Returns `None` if the local node is not in the group, the local sign
-/// fails, the cancellation token fires, or the group cannot reach quorum.
-pub(super) async fn collect<Db, Cluster, Blockchain>(
+pub async fn collect<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     group: SpoolGroup,
     message: &[u8],
@@ -103,34 +92,12 @@ where
         return finalize(signatures);
     }
 
-    let peers = other_group_peers(&state, group, my_node_id);
-    let mut tasks: JoinSet<(PeerEntry, Result<PeerSig, ApiError>)> = JoinSet::new();
-    let mut peers_iter = peers.into_iter();
-
-    for peer in peers_iter.by_ref().take(MAX_CONCURRENT_PEERS) {
-        spawn_peer(&mut tasks, peer, &per_peer, cancel.clone());
-    }
-
-    while let Some(joined) = tasks.join_next().await {
+    for peer in other_group_peers(&state, group, my_node_id) {
         if cancel.is_cancelled() {
-            tasks.abort_all();
             return None;
         }
 
-        let (peer, result) = match joined {
-            Ok(pair) => pair,
-            Err(error) => {
-                warn!(
-                    ?error,
-                    label,
-                    group = group.0,
-                    "snapshot quorum: peer task panicked"
-                );
-                continue;
-            }
-        };
-
-        match result {
+        match per_peer(peer.node_id, cancel.clone()).await {
             Ok(res) if res.node_id != peer.node_id => {
                 warn!(
                     expected = peer.node_id.0,
@@ -151,7 +118,6 @@ where
             Ok(res) => {
                 signatures.push((peer.local_idx, res.signature));
                 if signatures.len() >= quorum_threshold {
-                    tasks.abort_all();
                     return finalize(signatures);
                 }
             }
@@ -165,39 +131,16 @@ where
                 );
             }
         }
-
-        if let Some(next) = peers_iter.next() {
-            spawn_peer(&mut tasks, next, &per_peer, cancel.clone());
-        }
     }
 
-    if signatures.len() < quorum_threshold {
-        warn!(
-            have = signatures.len(),
-            need = quorum_threshold,
-            label,
-            group = group.0,
-            "snapshot quorum: insufficient signatures"
-        );
-        return None;
-    }
-
-    finalize(signatures)
-}
-
-fn spawn_peer(
-    tasks: &mut JoinSet<(PeerEntry, Result<PeerSig, ApiError>)>,
-    peer: PeerEntry,
-    per_peer: &PerPeer,
-    cancel: CancellationToken,
-) {
-    let per_peer = per_peer.clone();
-    let node_id = peer.node_id;
-
-    tasks.spawn(async move {
-        let result = per_peer(node_id, cancel).await;
-        (peer, result)
-    });
+    warn!(
+        have = signatures.len(),
+        need = quorum_threshold,
+        label,
+        group = group.0,
+        "snapshot quorum: insufficient signatures"
+    );
+    None
 }
 
 fn finalize(signatures: Vec<(usize, BlsSignature)>) -> Option<Quorum> {

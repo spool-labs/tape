@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_core::system::EpochState;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::Hash;
 use super::AccountType;
 
@@ -15,6 +15,9 @@ pub struct Epoch {
 
     /// The timestamp (in seconds) of the last epoch.
     pub last_epoch: i64,
+
+    /// Solana slot at which this epoch began.
+    pub start_slot: SlotNumber,
 
     /// Randomness seed captured from SlotHashes at epoch advance.
     pub nonce: Hash,

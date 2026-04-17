@@ -125,6 +125,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.last_epoch = now;
     epoch.state = EpochState::syncing();
     epoch.nonce = seed;
+    epoch.start_slot = SlotNumber(Clock::get()?.slot);
 
     // Update storage price/capacity from committee preferences
     update_storage_params(archive, &system.committee);
@@ -363,6 +364,7 @@ mod tests {
                         id: e1,
                         state: EpochState::syncing(),
                         last_epoch: env.now(),
+                        start_slot: SlotNumber(env.slot()),
                         nonce: Hash::default(),
                     }.pack().as_ref()
                 ).build(),
@@ -641,6 +643,7 @@ mod tests {
             id: e1,
             state: EpochState::syncing(),
             last_epoch: env.now(),
+            start_slot: SlotNumber(env.slot()),
             nonce: Hash::default(),
         };
 
@@ -722,6 +725,7 @@ mod tests {
             id: e1,
             state: EpochState::syncing(),
             last_epoch: env.now(),
+            start_slot: SlotNumber(env.slot()),
             nonce: Hash::default(),
         };
 
