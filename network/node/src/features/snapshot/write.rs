@@ -23,6 +23,7 @@ use tracing::{info, warn};
 use crate::chain::write_snapshot::submit_write_snapshot;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
+use crate::features::snapshot::debug_journal;
 use crate::features::snapshot::quorum::{self, PeerSig, PerPeer};
 
 pub async fn run<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
@@ -44,11 +45,23 @@ pub async fn run<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 
     });
     let per_peer = make_per_peer(ctx.clone(), req);
 
-    let Some(quorum) = quorum::collect(&ctx, group, &message, per_peer, cancel, "write").await
+    let Some(quorum) = quorum::collect(
+        &ctx,
+        epoch,
+        group,
+        Some(chunk),
+        Some(value_hash),
+        &message,
+        per_peer,
+        cancel,
+        "write",
+    )
+    .await
     else {
         return;
     };
 
+    let node_id = ctx.node_id();
     match submit_write_snapshot(
         &ctx,
         epoch,
@@ -60,20 +73,45 @@ pub async fn run<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 
     )
     .await
     {
-        Ok(txid) => info!(
-            epoch = epoch.0,
-            group = group.0,
-            chunk = chunk.0,
-            ?txid,
-            "snapshot write: chunk posted"
-        ),
-        Err(error) => warn!(
-            error = %error,
-            epoch = epoch.0,
-            group = group.0,
-            chunk = chunk.0,
-            "snapshot write: submit failed (likely raced)"
-        ),
+        Ok(txid) => {
+            info!(
+                epoch = epoch.0,
+                group = group.0,
+                chunk = chunk.0,
+                ?txid,
+                "snapshot write: chunk posted"
+            );
+            debug_journal::submit(
+                node_id,
+                "write",
+                epoch,
+                group,
+                Some(chunk),
+                &quorum.bitmap,
+                &quorum.signature,
+                Ok(()),
+            );
+        }
+        Err(error) => {
+            let msg = error.to_string();
+            warn!(
+                error = %error,
+                epoch = epoch.0,
+                group = group.0,
+                chunk = chunk.0,
+                "snapshot write: submit failed (likely raced)"
+            );
+            debug_journal::submit(
+                node_id,
+                "write",
+                epoch,
+                group,
+                Some(chunk),
+                &quorum.bitmap,
+                &quorum.signature,
+                Err(&msg),
+            );
+        }
     }
 }
 

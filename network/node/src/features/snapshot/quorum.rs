@@ -1,7 +1,5 @@
-//! Collects a 14-of-20 BLS quorum over a given message from the members of
-//! one spool group. Shared by the `write` and `finalize` flows — they only
-//! differ in which message they sign, which peer API they call, and which
-//! on-chain instruction they submit afterwards.
+//! Collects a BLS quorum over a given message from the members of
+//! one spool group. 
 
 use std::future::Future;
 use std::pin::Pin;
@@ -13,13 +11,15 @@ use tape_core::bft::min_correct;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::{NodeId, SpoolGroupBitmap};
+use tape_core::types::{ChunkNumber, NodeId, SpoolGroupBitmap};
+use tape_crypto::hash::Hash;
 use tape_protocol::api::ApiError;
 use tape_protocol::{Api, ProtocolState};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::context::NodeContext;
+use crate::features::snapshot::debug_journal::{self, PeerOutcome};
 
 /// Single-peer sign response as consumed by [`collect`]. Both the write-sig
 /// and finalize-sig API responses project into this minimal shape.
@@ -44,7 +44,10 @@ pub struct Quorum {
 
 pub async fn collect<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    epoch: tape_core::types::EpochNumber,
     group: SpoolGroup,
+    chunk: Option<ChunkNumber>,
+    value_hash: Option<Hash>,
     message: &[u8],
     per_peer: PerPeer,
     cancel: CancellationToken,
@@ -85,6 +88,18 @@ where
         return None;
     };
 
+    debug_journal::sign(
+        my_node_id,
+        label,
+        epoch,
+        group,
+        chunk,
+        my_local_idx,
+        value_hash.as_ref(),
+        message,
+        &my_sig,
+    );
+
     let mut signatures: Vec<(usize, BlsSignature)> = Vec::with_capacity(SPOOL_GROUP_SIZE);
     signatures.push((my_local_idx, my_sig));
 
@@ -106,6 +121,18 @@ where
                     group = group.0,
                     "snapshot quorum: peer node_id mismatch"
                 );
+                debug_journal::peer(
+                    my_node_id,
+                    label,
+                    epoch,
+                    group,
+                    chunk,
+                    peer.node_id,
+                    peer.local_idx,
+                    &peer.pubkey,
+                    Some(&res.signature),
+                    PeerOutcome::NodeIdMismatch { expected: peer.node_id, got: res.node_id },
+                );
             }
             Ok(res) if !verify_peer_sig(&peer.pubkey, message, &res.signature) => {
                 warn!(
@@ -114,20 +141,57 @@ where
                     group = group.0,
                     "snapshot quorum: peer signature failed verification"
                 );
+                debug_journal::peer(
+                    my_node_id,
+                    label,
+                    epoch,
+                    group,
+                    chunk,
+                    peer.node_id,
+                    peer.local_idx,
+                    &peer.pubkey,
+                    Some(&res.signature),
+                    PeerOutcome::BadSig,
+                );
             }
             Ok(res) => {
+                debug_journal::peer(
+                    my_node_id,
+                    label,
+                    epoch,
+                    group,
+                    chunk,
+                    peer.node_id,
+                    peer.local_idx,
+                    &peer.pubkey,
+                    Some(&res.signature),
+                    PeerOutcome::Verified,
+                );
                 signatures.push((peer.local_idx, res.signature));
                 if signatures.len() >= quorum_threshold {
                     return finalize(signatures);
                 }
             }
             Err(error) => {
+                let msg = error.to_string();
                 debug!(
                     node_id = peer.node_id.0,
                     error = %error,
                     label,
                     group = group.0,
                     "snapshot quorum: peer sig request failed"
+                );
+                debug_journal::peer(
+                    my_node_id,
+                    label,
+                    epoch,
+                    group,
+                    chunk,
+                    peer.node_id,
+                    peer.local_idx,
+                    &peer.pubkey,
+                    None,
+                    PeerOutcome::Err(&msg),
                 );
             }
         }

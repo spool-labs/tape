@@ -25,6 +25,7 @@ use tracing::{info, warn};
 use crate::chain::sign_snapshot::submit_sign_snapshot;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
+use crate::features::snapshot::debug_journal;
 use crate::features::snapshot::quorum::{self, PeerSig, PerPeer};
 
 pub async fn run<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
@@ -38,24 +39,61 @@ pub async fn run<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 
     let req = Arc::new(GetSnapshotFinalizeSigReq { epoch, group });
     let per_peer = make_per_peer(ctx.clone(), req);
 
-    let Some(quorum) = quorum::collect(&ctx, group, &message, per_peer, cancel, "finalize").await
+    let Some(quorum) = quorum::collect(
+        &ctx,
+        epoch,
+        group,
+        None,
+        None,
+        &message,
+        per_peer,
+        cancel,
+        "finalize",
+    )
+    .await
     else {
         return;
     };
 
+    let node_id = ctx.node_id();
     match submit_sign_snapshot(&ctx, epoch, group, quorum.bitmap, quorum.signature).await {
-        Ok(txid) => info!(
-            epoch = epoch.0,
-            group = group.0,
-            ?txid,
-            "snapshot finalize: group signed"
-        ),
-        Err(error) => warn!(
-            error = %error,
-            epoch = epoch.0,
-            group = group.0,
-            "snapshot finalize: submit failed (likely raced)"
-        ),
+        Ok(txid) => {
+            info!(
+                epoch = epoch.0,
+                group = group.0,
+                ?txid,
+                "snapshot finalize: group signed"
+            );
+            debug_journal::submit(
+                node_id,
+                "finalize",
+                epoch,
+                group,
+                None,
+                &quorum.bitmap,
+                &quorum.signature,
+                Ok(()),
+            );
+        }
+        Err(error) => {
+            let msg = error.to_string();
+            warn!(
+                error = %error,
+                epoch = epoch.0,
+                group = group.0,
+                "snapshot finalize: submit failed (likely raced)"
+            );
+            debug_journal::submit(
+                node_id,
+                "finalize",
+                epoch,
+                group,
+                None,
+                &quorum.bitmap,
+                &quorum.signature,
+                Err(&msg),
+            );
+        }
     }
 }
 
