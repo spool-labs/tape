@@ -1,6 +1,5 @@
 //! Snapshot coordination operations.
 
-use tape_core::bls::BlsSignature;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkNumber, EpochNumber};
 use tape_crypto::address::Address;
@@ -8,7 +7,10 @@ use store::{Column, Store};
 
 use crate::columns::{SnapshotArtifactCol, SnapshotFinalizeSigCol, SnapshotWriteSigCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{SnapshotArtifact, SnapshotArtifactKey, SnapshotFinalizeSigKey, SnapshotWriteSigKey};
+use crate::types::{
+    SnapshotArtifact, SnapshotArtifactKey, SnapshotFinalizeSigKey, SnapshotFinalizeVote,
+    SnapshotWriteSigKey, SnapshotWriteVote,
+};
 use crate::TapeStore;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,6 +67,12 @@ pub trait SnapshotOps {
         group: SpoolGroup,
     ) -> Result<Vec<(ChunkNumber, SnapshotArtifact)>>;
 
+    fn iter_snapshot_artifact_chunks(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+    ) -> Result<Vec<ChunkNumber>>;
+
     fn snapshot_group_progress(
         &self,
         epoch: EpochNumber,
@@ -77,15 +85,23 @@ pub trait SnapshotOps {
         group: SpoolGroup,
         chunk: ChunkNumber,
         bitmap_index: u16,
-        signature: &BlsSignature,
+        vote: &SnapshotWriteVote,
     ) -> Result<()>;
+
+    fn get_snapshot_write_sig(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+        chunk: ChunkNumber,
+        bitmap_index: u16,
+    ) -> Result<Option<SnapshotWriteVote>>;
 
     fn iter_snapshot_write_sigs(
         &self,
         epoch: EpochNumber,
         group: SpoolGroup,
         chunk: ChunkNumber,
-    ) -> Result<Vec<(u16, BlsSignature)>>;
+    ) -> Result<Vec<(u16, SnapshotWriteVote)>>;
 
     fn count_snapshot_write_sigs(
         &self,
@@ -99,14 +115,21 @@ pub trait SnapshotOps {
         epoch: EpochNumber,
         group: SpoolGroup,
         bitmap_index: u16,
-        signature: &BlsSignature,
+        vote: &SnapshotFinalizeVote,
     ) -> Result<()>;
+
+    fn get_snapshot_finalize_sig(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+        bitmap_index: u16,
+    ) -> Result<Option<SnapshotFinalizeVote>>;
 
     fn iter_snapshot_finalize_sigs(
         &self,
         epoch: EpochNumber,
         group: SpoolGroup,
-    ) -> Result<Vec<(u16, BlsSignature)>>;
+    ) -> Result<Vec<(u16, SnapshotFinalizeVote)>>;
 
     fn count_snapshot_finalize_sigs(
         &self,
@@ -200,6 +223,26 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         Ok(out)
     }
 
+    fn iter_snapshot_artifact_chunks(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+    ) -> Result<Vec<ChunkNumber>> {
+        let prefix = SnapshotArtifactKey::group_prefix(epoch.0, group.0);
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(SnapshotArtifactCol::CF_NAME, &prefix)?;
+
+        let mut out = Vec::new();
+        for (key_bytes, _) in iter {
+            let key: SnapshotArtifactKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("snapshot artifact key: {e}")))?;
+            out.push(ChunkNumber(key.chunk));
+        }
+        Ok(out)
+    }
+
     fn snapshot_group_progress(
         &self,
         epoch: EpochNumber,
@@ -221,11 +264,22 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         group: SpoolGroup,
         chunk: ChunkNumber,
         bitmap_index: u16,
-        signature: &BlsSignature,
+        vote: &SnapshotWriteVote,
     ) -> Result<()> {
         let key = SnapshotWriteSigKey::new(epoch.0, group.0, chunk.0, bitmap_index);
-        self.put::<SnapshotWriteSigCol>(&key, signature)?;
+        self.put::<SnapshotWriteSigCol>(&key, vote)?;
         Ok(())
+    }
+
+    fn get_snapshot_write_sig(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+        chunk: ChunkNumber,
+        bitmap_index: u16,
+    ) -> Result<Option<SnapshotWriteVote>> {
+        let key = SnapshotWriteSigKey::new(epoch.0, group.0, chunk.0, bitmap_index);
+        Ok(self.get::<SnapshotWriteSigCol>(&key)?)
     }
 
     fn iter_snapshot_write_sigs(
@@ -233,7 +287,7 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         epoch: EpochNumber,
         group: SpoolGroup,
         chunk: ChunkNumber,
-    ) -> Result<Vec<(u16, BlsSignature)>> {
+    ) -> Result<Vec<(u16, SnapshotWriteVote)>> {
         let prefix = SnapshotWriteSigKey::chunk_prefix(epoch.0, group.0, chunk.0);
         let iter = self
             .inner()
@@ -244,9 +298,9 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         for (key_bytes, value_bytes) in iter {
             let key: SnapshotWriteSigKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("snapshot write key: {e}")))?;
-            let signature: BlsSignature = wincode::deserialize(&value_bytes)
+            let vote: SnapshotWriteVote = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("snapshot write value: {e}")))?;
-            out.push((key.bitmap_index, signature));
+            out.push((key.bitmap_index, vote));
         }
         Ok(out)
     }
@@ -270,18 +324,28 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         epoch: EpochNumber,
         group: SpoolGroup,
         bitmap_index: u16,
-        signature: &BlsSignature,
+        vote: &SnapshotFinalizeVote,
     ) -> Result<()> {
         let key = SnapshotFinalizeSigKey::new(epoch.0, group.0, bitmap_index);
-        self.put::<SnapshotFinalizeSigCol>(&key, signature)?;
+        self.put::<SnapshotFinalizeSigCol>(&key, vote)?;
         Ok(())
+    }
+
+    fn get_snapshot_finalize_sig(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+        bitmap_index: u16,
+    ) -> Result<Option<SnapshotFinalizeVote>> {
+        let key = SnapshotFinalizeSigKey::new(epoch.0, group.0, bitmap_index);
+        Ok(self.get::<SnapshotFinalizeSigCol>(&key)?)
     }
 
     fn iter_snapshot_finalize_sigs(
         &self,
         epoch: EpochNumber,
         group: SpoolGroup,
-    ) -> Result<Vec<(u16, BlsSignature)>> {
+    ) -> Result<Vec<(u16, SnapshotFinalizeVote)>> {
         let prefix = SnapshotFinalizeSigKey::group_prefix(epoch.0, group.0);
         let iter = self
             .inner()
@@ -292,9 +356,9 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
         for (key_bytes, value_bytes) in iter {
             let key: SnapshotFinalizeSigKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("snapshot finalize key: {e}")))?;
-            let signature: BlsSignature = wincode::deserialize(&value_bytes)
+            let vote: SnapshotFinalizeVote = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("snapshot finalize value: {e}")))?;
-            out.push((key.bitmap_index, signature));
+            out.push((key.bitmap_index, vote));
         }
         Ok(out)
     }
@@ -405,7 +469,7 @@ impl SnapshotEpochKey for SnapshotArtifactKey {
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
-    use tape_core::bls::BlsPrivateKey;
+    use tape_core::bls::{BlsPrivateKey, BlsSignature};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::types::{StorageUnits, StripeCount};
@@ -432,6 +496,20 @@ mod tests {
 
     fn sample_sig(message: &[u8]) -> BlsSignature {
         BlsPrivateKey::from_random().sign(message).unwrap()
+    }
+
+    fn sample_write_vote(message: &[u8]) -> SnapshotWriteVote {
+        SnapshotWriteVote {
+            message: [message[0]; tape_core::cert::SNAPSHOT_WRITE_MESSAGE_SIZE],
+            signature: sample_sig(message),
+        }
+    }
+
+    fn sample_finalize_vote(message: &[u8]) -> SnapshotFinalizeVote {
+        SnapshotFinalizeVote {
+            message: [message[0]; tape_core::cert::SNAPSHOT_SIGN_MESSAGE_SIZE],
+            signature: sample_sig(message),
+        }
     }
 
     #[test]
@@ -474,13 +552,13 @@ mod tests {
         let chunk = ChunkNumber(2);
 
         store
-            .put_snapshot_write_sig(epoch, group, chunk, 1, &sample_sig(b"write-1"))
+            .put_snapshot_write_sig(epoch, group, chunk, 1, &sample_write_vote(b"write-1"))
             .unwrap();
         store
-            .put_snapshot_write_sig(epoch, group, chunk, 7, &sample_sig(b"write-7"))
+            .put_snapshot_write_sig(epoch, group, chunk, 7, &sample_write_vote(b"write-7"))
             .unwrap();
         store
-            .put_snapshot_finalize_sig(epoch, group, 3, &sample_sig(b"finalize-3"))
+            .put_snapshot_finalize_sig(epoch, group, 3, &sample_finalize_vote(b"finalize-3"))
             .unwrap();
 
         assert_eq!(store.count_snapshot_write_sigs(epoch, group, chunk).unwrap(), 2);

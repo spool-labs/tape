@@ -108,7 +108,7 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         track_number,
         key,
         kind: meta.kind as u64,
-        state: meta.initial_state as u64,
+        state: TrackState::Certified as u64,
         size: meta.size,
         spool_group,
         value_hash: meta.value_hash,

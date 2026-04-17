@@ -13,6 +13,7 @@ use tape_core::cert::SnapshotWriteMessage;
 use tape_protocol::api::PushSnapshotWriteSigRequest;
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
+use tape_store::types::SnapshotWriteVote;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
@@ -27,13 +28,15 @@ pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let request: PushSnapshotWriteSigRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("snapshot write request: {error}")))?;
 
-    let _ = current_epoch(&state)?;
+    current_epoch(&state)?;
     let protocol = state.context.state();
+    let message = SnapshotWriteMessage::from_bytes(&request.message)
+        .ok_or_else(|| RouteError::BadRequest("invalid snapshot write message".into()))?;
 
-    if !is_current_snapshot_epoch(&protocol, request.epoch) {
+    if !is_current_snapshot_epoch(&protocol, message.epoch) {
         return Err(RouteError::BadRequest(format!(
             "snapshot epoch {} does not match local epoch {}",
-            request.epoch.0,
+            message.epoch.0,
             protocol.epoch.0
         )));
     }
@@ -42,29 +45,15 @@ pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::NotInCommittee);
     }
 
-    if bitmap_index_in_group(&protocol, request.group, state.context.node_id()).is_none() {
+    if bitmap_index_in_group(&protocol, message.group, state.context.node_id()).is_none() {
         return Err(RouteError::NotResponsible);
     }
 
-    let signer_index = bitmap_index_in_group(&protocol, request.group, request.node_id)
-        .ok_or(RouteError::NotInCommittee)?;
-    let signer = group_peer_by_index(&protocol, request.group, signer_index)
-        .ok_or(RouteError::NotInCommittee)?;
-
-    let artifact = state
-        .context
-        .store
-        .get_snapshot_artifact(request.epoch, request.group, request.chunk)
-        .map_err(|error| RouteError::Internal(format!("get_snapshot_artifact: {error}")))?
-        .ok_or(RouteError::NotFound)?;
-
-    let message = SnapshotWriteMessage::new(
-        request.epoch,
-        request.group,
-        request.chunk,
-        artifact.blob.get_hash(),
-    );
-    if !verify_partial(&signer.pubkey, &message.to_bytes(), &request.signature) {
+    let signer_index =
+        bitmap_index_in_group(&protocol, message.group, request.node_id).ok_or(RouteError::NotInCommittee)?;
+    let signer =
+        group_peer_by_index(&protocol, message.group, signer_index).ok_or(RouteError::NotInCommittee)?;
+    if !verify_partial(&signer.pubkey, &request.message, &request.signature) {
         return Err(RouteError::InvalidSignature);
     }
 
@@ -72,11 +61,14 @@ pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .context
         .store
         .put_snapshot_write_sig(
-            request.epoch,
-            request.group,
-            request.chunk,
+            message.epoch,
+            message.group,
+            message.chunk,
             signer_index,
-            &request.signature,
+            &SnapshotWriteVote {
+                message: request.message,
+                signature: request.signature.clone(),
+            },
         )
         .map_err(|error| RouteError::Internal(format!("put_snapshot_write_sig: {error}")))?;
 
@@ -89,16 +81,13 @@ mod tests {
     use axum::body::Bytes;
     use axum::extract::State;
     use tape_core::bls::BlsPrivateKey;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::SPOOL_COUNT;
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::types::{ChunkNumber, EpochNumber, NodeId, StorageUnits, StripeCount};
+    use tape_core::types::{ChunkNumber, EpochNumber, NodeId};
     use tape_core::types::coin::{Coin, TAPE};
-    use tape_crypto::Hash;
     use tape_protocol::ProtocolState;
-    use tape_store::{ops::SnapshotOps, types::SnapshotArtifact};
+    use tape_store::ops::SnapshotOps;
 
     use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
@@ -115,21 +104,6 @@ mod tests {
         spools[81] = 1; // signer slot 1
         state.spools = SpoolAssignment::new(spools);
         state
-    }
-
-    fn sample_artifact() -> SnapshotArtifact {
-        SnapshotArtifact {
-            blob: BlobInfo {
-                size: StorageUnits::from_bytes(2_048),
-                commitment: Hash::from([0xAA; 32]),
-                profile: EncodingProfile::basic_default(),
-                stripe_size: StorageUnits::from_bytes(512),
-                stripe_count: StripeCount(4),
-                leaves: [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE],
-            },
-            local_slice: vec![7u8; 32],
-            written_track: None,
-        }
     }
 
     async fn render(
@@ -154,11 +128,6 @@ mod tests {
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
         let chunk = ChunkNumber(2);
-        let artifact = sample_artifact();
-        context
-            .store
-            .put_snapshot_artifact(epoch, group, chunk, &artifact)
-            .unwrap();
 
         let signer = BlsPrivateKey::from_random();
         let signer_pubkey = signer.public_key().unwrap();
@@ -166,12 +135,10 @@ mod tests {
         state.committee[1].key = signer_pubkey;
         context.set_state(state).unwrap();
 
-        let message = SnapshotWriteMessage::new(epoch, group, chunk, artifact.blob.get_hash());
+        let message = SnapshotWriteMessage::new(epoch, group, chunk, tape_crypto::Hash::from([0xAB; 32]));
         let request = PushSnapshotWriteSigRequest {
-            epoch,
-            group,
-            chunk,
             node_id: NodeId(1),
+            message: message.to_bytes(),
             signature: signer.sign(&message.to_bytes()).unwrap(),
         };
 
@@ -202,10 +169,14 @@ mod tests {
         let err = render(
             AppState { context },
             PushSnapshotWriteSigRequest {
-                epoch: EpochNumber(9),
-                group: SpoolGroup(4),
-                chunk: ChunkNumber(0),
                 node_id: NodeId(1),
+                message: SnapshotWriteMessage::new(
+                    EpochNumber(9),
+                    SpoolGroup(4),
+                    ChunkNumber(0),
+                    tape_crypto::Hash::from([0xCD; 32]),
+                )
+                .to_bytes(),
                 signature: BlsPrivateKey::from_random().sign(b"bad").unwrap(),
             },
         )

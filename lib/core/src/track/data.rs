@@ -71,7 +71,7 @@ impl<'slice> TrackDataSlice<'slice> {
             Self::Raw(bytes) => Some(TrackMeta {
                 kind: TrackKind::Raw,
                 size: StorageUnits::from_bytes(bytes.len() as u64),
-                initial_state: TrackState::Certified,
+                state: TrackState::Certified,
                 value_hash: hash(bytes),
             }),
             Self::Blob(blob) => {
@@ -82,7 +82,7 @@ impl<'slice> TrackDataSlice<'slice> {
                 Some(TrackMeta {
                     kind: TrackKind::Blob,
                     size: blob.size,
-                    initial_state: TrackState::Registered,
+                    state: TrackState::Registered,
                     value_hash: blob.get_hash(),
                 })
             }
@@ -94,7 +94,7 @@ impl<'slice> TrackDataSlice<'slice> {
 pub struct TrackMeta {
     pub kind: TrackKind,
     pub size: StorageUnits,
-    pub initial_state: TrackState,
+    pub state: TrackState,
     pub value_hash: Hash,
 }
 

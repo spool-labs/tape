@@ -11,7 +11,7 @@ use tape_store::ops::{EventLogOps, SliceOps, SnapshotOps};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
-pub fn clear_stale_snapshot_epochs<Db, Cluster, Blockchain>(
+pub fn clear_snapshot_data<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     keep_epoch: EpochNumber,
 ) -> Result<(), NodeError>

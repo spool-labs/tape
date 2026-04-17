@@ -13,6 +13,7 @@ use tape_core::cert::SnapshotSignMessage;
 use tape_protocol::api::PushSnapshotFinalizeSigRequest;
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
+use tape_store::types::SnapshotFinalizeVote;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
@@ -27,13 +28,15 @@ pub async fn finalize<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let request: PushSnapshotFinalizeSigRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("snapshot finalize request: {error}")))?;
 
-    let _ = current_epoch(&state)?;
+    current_epoch(&state)?;
     let protocol = state.context.state();
+    let message = SnapshotSignMessage::from_bytes(&request.message)
+        .ok_or_else(|| RouteError::BadRequest("invalid snapshot finalize message".into()))?;
 
-    if !is_current_snapshot_epoch(&protocol, request.epoch) {
+    if !is_current_snapshot_epoch(&protocol, message.epoch) {
         return Err(RouteError::BadRequest(format!(
             "snapshot epoch {} does not match local epoch {}",
-            request.epoch.0,
+            message.epoch.0,
             protocol.epoch.0
         )));
     }
@@ -42,33 +45,31 @@ pub async fn finalize<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::NotInCommittee);
     }
 
-    if bitmap_index_in_group(&protocol, request.group, state.context.node_id()).is_none() {
+    if bitmap_index_in_group(&protocol, message.group, state.context.node_id()).is_none() {
         return Err(RouteError::NotResponsible);
     }
 
-    let progress = state
-        .context
-        .store
-        .snapshot_group_progress(request.epoch, request.group)
-        .map_err(|error| RouteError::Internal(format!("snapshot_group_progress: {error}")))?;
-    if progress.is_empty() {
-        return Err(RouteError::NotFound);
-    }
+    let signer_index =
+        bitmap_index_in_group(&protocol, message.group, request.node_id).ok_or(RouteError::NotInCommittee)?;
+    let signer =
+        group_peer_by_index(&protocol, message.group, signer_index).ok_or(RouteError::NotInCommittee)?;
 
-    let signer_index = bitmap_index_in_group(&protocol, request.group, request.node_id)
-        .ok_or(RouteError::NotInCommittee)?;
-    let signer = group_peer_by_index(&protocol, request.group, signer_index)
-        .ok_or(RouteError::NotInCommittee)?;
-
-    let message = SnapshotSignMessage::new(request.epoch, request.group);
-    if !verify_partial(&signer.pubkey, &message.to_bytes(), &request.signature) {
+    if !verify_partial(&signer.pubkey, &request.message, &request.signature) {
         return Err(RouteError::InvalidSignature);
     }
 
     state
         .context
         .store
-        .put_snapshot_finalize_sig(request.epoch, request.group, signer_index, &request.signature)
+        .put_snapshot_finalize_sig(
+            message.epoch,
+            message.group,
+            signer_index,
+            &SnapshotFinalizeVote {
+                message: request.message,
+                signature: request.signature.clone(),
+            },
+        )
         .map_err(|error| RouteError::Internal(format!("put_snapshot_finalize_sig: {error}")))?;
 
     Ok(StatusCode::OK)
@@ -80,16 +81,13 @@ mod tests {
     use axum::body::Bytes;
     use axum::extract::State;
     use tape_core::bls::BlsPrivateKey;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::SPOOL_COUNT;
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::CommitteeMember;
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::types::{ChunkNumber, EpochNumber, NodeId, StorageUnits, StripeCount};
+    use tape_core::types::{EpochNumber, NodeId};
     use tape_core::types::coin::{Coin, TAPE};
-    use tape_crypto::Hash;
     use tape_protocol::ProtocolState;
-    use tape_store::{ops::SnapshotOps, types::SnapshotArtifact};
+    use tape_store::ops::SnapshotOps;
 
     use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
@@ -106,21 +104,6 @@ mod tests {
         spools[81] = 1;
         state.spools = SpoolAssignment::new(spools);
         state
-    }
-
-    fn sample_artifact() -> SnapshotArtifact {
-        SnapshotArtifact {
-            blob: BlobInfo {
-                size: StorageUnits::from_bytes(2_048),
-                commitment: Hash::from([0xAA; 32]),
-                profile: EncodingProfile::basic_default(),
-                stripe_size: StorageUnits::from_bytes(512),
-                stripe_count: StripeCount(4),
-                leaves: [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE],
-            },
-            local_slice: vec![7u8; 32],
-            written_track: None,
-        }
     }
 
     async fn render(
@@ -144,10 +127,6 @@ mod tests {
 
         let epoch = EpochNumber(10);
         let group = SpoolGroup(4);
-        context
-            .store
-            .put_snapshot_artifact(epoch, group, ChunkNumber(0), &sample_artifact())
-            .unwrap();
 
         let signer = BlsPrivateKey::from_random();
         let signer_pubkey = signer.public_key().unwrap();
@@ -157,9 +136,8 @@ mod tests {
 
         let message = SnapshotSignMessage::new(epoch, group);
         let request = PushSnapshotFinalizeSigRequest {
-            epoch,
-            group,
             node_id: NodeId(1),
+            message: message.to_bytes(),
             signature: signer.sign(&message.to_bytes()).unwrap(),
         };
 
@@ -183,21 +161,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_unbuilt_group() {
+    async fn rejects_invalid_message() {
         let context = test_context();
         context.set_state(local_state()).unwrap();
 
         let err = render(
             AppState { context },
             PushSnapshotFinalizeSigRequest {
-                epoch: EpochNumber(10),
-                group: SpoolGroup(4),
                 node_id: NodeId(1),
+                message: [0u8; tape_core::cert::SNAPSHOT_SIGN_MESSAGE_SIZE],
                 signature: BlsPrivateKey::from_random().sign(b"bad").unwrap(),
             },
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, RouteError::NotFound));
+        assert!(matches!(err, RouteError::BadRequest(_)));
     }
 }

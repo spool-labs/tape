@@ -439,12 +439,10 @@ impl Api for HttpApi {
         req: &PushSnapshotWriteSigReq,
     ) -> Result<PushSnapshotWriteSigRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", snapshot_write_url(req.epoch, req.group, req.chunk));
+        let url = format!("{base}{SNAPSHOT_WRITE_PATH}");
         let wire_req = PushSnapshotWriteSigRequest {
-            epoch: req.epoch,
-            group: req.group,
-            chunk: req.chunk,
             node_id: req.node_id,
+            message: req.message,
             signature: req.signature,
         };
         let body = wincode::serialize(&wire_req)
@@ -473,11 +471,10 @@ impl Api for HttpApi {
         req: &PushSnapshotFinalizeSigReq,
     ) -> Result<PushSnapshotFinalizeSigRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", snapshot_finalize_url(req.epoch, req.group));
+        let url = format!("{base}{SNAPSHOT_FINALIZE_PATH}");
         let wire_req = PushSnapshotFinalizeSigRequest {
-            epoch: req.epoch,
-            group: req.group,
             node_id: req.node_id,
+            message: req.message,
             signature: req.signature,
         };
         let body = wincode::serialize(&wire_req)
@@ -664,9 +661,8 @@ mod tests {
     use axum::routing::post;
     use axum::Router;
     use tokio::net::TcpListener;
+    use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
-    use tape_core::spooler::SpoolGroup;
-    use tape_core::types::EpochNumber;
     use tape_crypto::address::Address;
     use peer_manager::PeerNode;
 
@@ -708,25 +704,16 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_write_roundtrip() {
-        use tape_core::types::ChunkNumber;
-
-        let epoch = EpochNumber(10);
-        let group = SpoolGroup(4);
-        let chunk = ChunkNumber(2);
         let request = PushSnapshotWriteSigRequest {
-            epoch,
-            group,
-            chunk,
             node_id: NodeId(9),
+            message: [0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE],
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot-write")
                 .unwrap(),
         };
         let api_request = PushSnapshotWriteSigReq {
-            epoch,
-            group,
-            chunk,
             node_id: NodeId(9),
+            message: request.message,
             signature: request.signature,
         };
 
@@ -770,20 +757,16 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_finalize_roundtrip() {
-        let epoch = EpochNumber(10);
-        let group = SpoolGroup(4);
         let request = PushSnapshotFinalizeSigRequest {
-            epoch,
-            group,
             node_id: NodeId(9),
+            message: [0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE],
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot-finalize")
                 .unwrap(),
         };
         let api_request = PushSnapshotFinalizeSigReq {
-            epoch,
-            group,
             node_id: NodeId(9),
+            message: request.message,
             signature: request.signature,
         };
 

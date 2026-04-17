@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
+use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
 use tape_core::track::blob::BlobInfo;
 use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::address::Address;
@@ -32,6 +33,20 @@ impl SnapshotArtifact {
     pub fn is_written(&self) -> bool {
         self.written_track.is_some()
     }
+}
+
+/// One mutable per-signer vote for a snapshot write message.
+#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SnapshotWriteVote {
+    pub message: [u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
+    pub signature: BlsSignature,
+}
+
+/// One mutable per-signer vote for a snapshot finalize message.
+#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SnapshotFinalizeVote {
+    pub message: [u8; SNAPSHOT_SIGN_MESSAGE_SIZE],
+    pub signature: BlsSignature,
 }
 
 /// Metadata about a tape (storage allocation)

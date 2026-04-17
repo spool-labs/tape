@@ -19,7 +19,7 @@ use tape_slicer::{
     num_stripes, ErasureCoder, OuterCoder, Slicer, MAX_CHUNK_BYTES, SNAPSHOT_K_OUTER,
 };
 use tape_store::ops::{EventLogOps, SnapshotOps};
-use tape_store::types::SnapshotArtifact;
+use tape_store::types::{SnapshotArtifact, SnapshotFinalizeVote, SnapshotWriteVote};
 use tape_store::TapeStore;
 
 use crate::context::NodeContext;
@@ -45,29 +45,33 @@ impl BuiltChunk {
 }
 
 /// Build every chunk for an epoch's snapshot.
-///
-/// Reads the epoch's event log, serializes into a `SnapshotLog`, compresses,
-/// splits into segments, and runs outer RS + inner Clay to produce all chunks
-/// for all 50 spool groups. Output is fully deterministic given the same
-/// event log.
-pub fn build_snapshot_epoch<Db: Store>(
+pub fn build_snapshot<Db: Store>(
     store: &TapeStore<Db>,
     epoch: EpochNumber,
 ) -> Result<Vec<BuiltChunk>, NodeError> {
+
     let entries = store
         .get_epoch_events(epoch)
         .map_err(|e| NodeError::Store(format!("get_epoch_events({epoch}): {e}")))?;
 
-    let start_slot = entries.first().map(|e| e.slot).unwrap_or(SlotNumber(0));
-    let end_slot = entries.last().map(|e| e.slot).unwrap_or(SlotNumber(0));
+    let start_slot = entries
+        .first()
+        .map(|e| e.slot)
+        .unwrap_or(SlotNumber(0)); // todo: this is not okay, we should not be setting it to slot 0 if there are no events
 
-    let log = SnapshotLog {
+    let end_slot = entries
+        .last()
+        .map(|e| e.slot)
+        .unwrap_or(SlotNumber(0)); // todo: this is not okay, we should not be setting it to slot 0 if there are no events
+
+    let snapshot_log = SnapshotLog {
         epoch,
         start_slot,
         end_slot,
         entries,
     };
-    let serialized = log
+
+    let serialized = snapshot_log
         .to_bytes()
         .map_err(|e| NodeError::Store(format!("snapshot log serialize({epoch}): {e}")))?;
 
@@ -120,7 +124,7 @@ where
 {
     let state = ctx.state();
     let my_node_id = ctx.node_id();
-    let chunks = build_snapshot_epoch(ctx.store.as_ref(), epoch)?;
+    let chunks = build_snapshot(ctx.store.as_ref(), epoch)?;
 
     let mut built_per_group = BTreeMap::new();
 
@@ -134,6 +138,7 @@ where
             local_slice: chunk.slices[bitmap_index as usize].clone(),
             written_track: None,
         };
+
         ctx.store
             .put_snapshot_artifact(epoch, chunk.group, chunk.chunk, &artifact)
             .map_err(|e| NodeError::Store(format!(
@@ -144,11 +149,24 @@ where
 
         let write_message =
             SnapshotWriteMessage::new(epoch, chunk.group, chunk.chunk, artifact.blob.get_hash());
+
         let write_sig = ctx
             .bls_sign(&write_message.to_bytes())
             .map_err(|e| NodeError::Store(format!("snapshot write bls_sign failed: {e:?}")))?;
+
+        let write_message = write_message.to_bytes();
+
         ctx.store
-            .put_snapshot_write_sig(epoch, chunk.group, chunk.chunk, bitmap_index, &write_sig)
+            .put_snapshot_write_sig(
+                epoch,
+                chunk.group,
+                chunk.chunk,
+                bitmap_index,
+                &SnapshotWriteVote {
+                    message: write_message,
+                    signature: write_sig,
+                },
+            )
             .map_err(|e| NodeError::Store(format!(
                 "put_snapshot_write_sig({epoch},{},{},{bitmap_index}) failed: {e}",
                 chunk.group.0,
@@ -164,11 +182,23 @@ where
         };
 
         let finalize_message = SnapshotSignMessage::new(epoch, group);
+
         let finalize_sig = ctx
             .bls_sign(&finalize_message.to_bytes())
             .map_err(|e| NodeError::Store(format!("snapshot finalize bls_sign failed: {e:?}")))?;
+
+        let finalize_message = finalize_message.to_bytes();
+
         ctx.store
-            .put_snapshot_finalize_sig(epoch, group, bitmap_index, &finalize_sig)
+            .put_snapshot_finalize_sig(
+                epoch,
+                group,
+                bitmap_index,
+                &SnapshotFinalizeVote {
+                    message: finalize_message,
+                    signature: finalize_sig,
+                },
+            )
             .map_err(|e| NodeError::Store(format!(
                 "put_snapshot_finalize_sig({epoch},{},{bitmap_index}) failed: {e}",
                 group.0
@@ -265,7 +295,7 @@ mod tests {
         let store = test_store();
         let epoch = EpochNumber(5);
 
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        let chunks = build_snapshot(&store, epoch).unwrap();
 
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
         for (i, chunk) in chunks.iter().enumerate() {
@@ -281,7 +311,7 @@ mod tests {
         let epoch = EpochNumber(7);
         append_advance(&store, epoch, 100);
 
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        let chunks = build_snapshot(&store, epoch).unwrap();
 
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
         // Different groups must produce different commitments (chunk mixing).
@@ -304,8 +334,8 @@ mod tests {
             )
             .unwrap();
 
-        let first = build_snapshot_epoch(&store, epoch).unwrap();
-        let second = build_snapshot_epoch(&store, epoch).unwrap();
+        let first = build_snapshot(&store, epoch).unwrap();
+        let second = build_snapshot(&store, epoch).unwrap();
 
         assert_eq!(first.len(), second.len());
         for (a, b) in first.iter().zip(second.iter()) {
@@ -363,7 +393,7 @@ mod tests {
                 .unwrap();
         }
 
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        let chunks = build_snapshot(&store, epoch).unwrap();
 
         assert_eq!(chunks.len() % SPOOL_GROUP_COUNT, 0);
         let segment_count = chunks.len() / SPOOL_GROUP_COUNT;
@@ -394,16 +424,16 @@ mod tests {
                 new_epoch: EpochNumber(1),
             }],
         }];
-        let log = SnapshotLog {
+        let snapshot_log = SnapshotLog {
             epoch: EpochNumber(1),
             start_slot: SlotNumber(42),
             end_slot: SlotNumber(42),
             entries,
         };
-        let bytes = log.to_bytes().unwrap();
+        let bytes = snapshot_log.to_bytes().unwrap();
         let compressed = lz4_flex::compress_prepend_size(&bytes);
         let decompressed = lz4_flex::decompress_size_prepended(&compressed).unwrap();
         assert_eq!(bytes, decompressed);
-        assert_eq!(SnapshotLog::from_bytes(&decompressed).unwrap(), log);
+        assert_eq!(SnapshotLog::from_bytes(&decompressed).unwrap(), snapshot_log);
     }
 }

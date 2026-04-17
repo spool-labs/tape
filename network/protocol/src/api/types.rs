@@ -2,6 +2,7 @@
 
 use core::mem::size_of;
 
+use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
 use tape_core::prelude::{EpochNumber, NodeId, SpoolIndex, TrackData, TrackNumber};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
@@ -35,19 +36,16 @@ pub struct BlsSignResponse {
 /// Body for a pushed snapshot chunk write partial signature.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct PushSnapshotWriteSigRequest {
-    pub epoch: EpochNumber,
-    pub group: tape_core::spooler::SpoolGroup,
-    pub chunk: tape_core::types::ChunkNumber,
     pub node_id: NodeId,
+    pub message: [u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
     pub signature: BlsSignature,
 }
 
 /// Body for a pushed snapshot finalize partial signature.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct PushSnapshotFinalizeSigRequest {
-    pub epoch: EpochNumber,
-    pub group: tape_core::spooler::SpoolGroup,
     pub node_id: NodeId,
+    pub message: [u8; SNAPSHOT_SIGN_MESSAGE_SIZE],
     pub signature: BlsSignature,
 }
 
@@ -300,10 +298,8 @@ mod tests {
     #[test]
     fn push_snapshot_requests_roundtrip() {
         let write_req = PushSnapshotWriteSigRequest {
-            epoch: EpochNumber(11),
-            group: tape_core::spooler::SpoolGroup(4),
-            chunk: tape_core::types::ChunkNumber(2),
             node_id: NodeId(7),
+            message: [0x11; SNAPSHOT_WRITE_MESSAGE_SIZE],
             signature: BlsSignature(G1CompressedPoint([0xAB; 32])),
         };
         let bytes = wincode::serialize(&write_req).unwrap();
@@ -311,9 +307,8 @@ mod tests {
         assert_eq!(write_req, decoded);
 
         let finalize_req = PushSnapshotFinalizeSigRequest {
-            epoch: EpochNumber(11),
-            group: tape_core::spooler::SpoolGroup(4),
             node_id: NodeId(7),
+            message: [0x22; SNAPSHOT_SIGN_MESSAGE_SIZE],
             signature: BlsSignature(G1CompressedPoint([0xCD; 32])),
         };
         let bytes = wincode::serialize(&finalize_req).unwrap();

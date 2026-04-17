@@ -120,10 +120,8 @@ impl Api for MemoryApi {
             self,
             node,
             PushSnapshotWriteSigReq {
-                epoch: req.epoch,
-                group: req.group,
-                chunk: req.chunk,
                 node_id: req.node_id,
+                message: req.message,
                 signature: req.signature,
             },
             PushSnapshotWriteSig
@@ -139,9 +137,8 @@ impl Api for MemoryApi {
             self,
             node,
             PushSnapshotFinalizeSigReq {
-                epoch: req.epoch,
-                group: req.group,
                 node_id: req.node_id,
+                message: req.message,
                 signature: req.signature,
             },
             PushSnapshotFinalizeSig
@@ -166,8 +163,7 @@ mod tests {
     use super::*;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
-    use tape_core::spooler::SpoolGroup;
-    use tape_core::types::{ChunkNumber, EpochNumber};
+    use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
 
     fn snapshot_signature(message: &[u8]) -> BlsSignature {
         BlsPrivateKey::from_random().sign(message).unwrap()
@@ -204,10 +200,8 @@ mod tests {
         let client = MemoryApi::new(move |node, req| match req {
             PeerReq::PushSnapshotWriteSig(req) => {
                 assert_eq!(node, NodeId(7));
-                assert_eq!(req.epoch, EpochNumber(10));
-                assert_eq!(req.group, SpoolGroup(4));
-                assert_eq!(req.chunk, ChunkNumber(2));
                 assert_eq!(req.node_id, NodeId(9));
+                assert_eq!(req.message, [0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE]);
                 assert_eq!(req.signature, signature);
                 PeerRes::PushSnapshotWriteSig(Ok(PushSnapshotWriteSigRes))
             }
@@ -218,10 +212,8 @@ mod tests {
             .push_snapshot_write_sig(
                 NodeId(7),
                 &PushSnapshotWriteSigReq {
-                    epoch: EpochNumber(10),
-                    group: SpoolGroup(4),
-                    chunk: ChunkNumber(2),
                     node_id: NodeId(9),
+                    message: [0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE],
                     signature,
                 },
             )
@@ -235,9 +227,8 @@ mod tests {
         let client = MemoryApi::new(move |node, req| match req {
             PeerReq::PushSnapshotFinalizeSig(req) => {
                 assert_eq!(node, NodeId(7));
-                assert_eq!(req.epoch, EpochNumber(10));
-                assert_eq!(req.group, SpoolGroup(4));
                 assert_eq!(req.node_id, NodeId(9));
+                assert_eq!(req.message, [0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE]);
                 assert_eq!(req.signature, signature);
                 PeerRes::PushSnapshotFinalizeSig(Ok(PushSnapshotFinalizeSigRes))
             }
@@ -248,9 +239,8 @@ mod tests {
             .push_snapshot_finalize_sig(
                 NodeId(7),
                 &PushSnapshotFinalizeSigReq {
-                    epoch: EpochNumber(10),
-                    group: SpoolGroup(4),
                     node_id: NodeId(9),
+                    message: [0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE],
                     signature,
                 },
             )

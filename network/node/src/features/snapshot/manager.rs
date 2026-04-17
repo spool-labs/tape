@@ -8,6 +8,7 @@ use tape_blocks::ParsedInstruction;
 use tape_core::snapshot::types::SnapshotState;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkNumber, EpochNumber};
+use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
@@ -26,9 +27,15 @@ use crate::features::block::ingestor::ParsedBlock;
 use crate::features::snapshot::build::build_local_snapshot_epoch;
 use crate::features::snapshot::fanout;
 use crate::features::snapshot::gc;
-use crate::features::snapshot::quorum::{aggregate_finalize_quorum, aggregate_write_quorum};
+use crate::features::snapshot::quorum::{
+    aggregate_finalize_quorum, aggregate_write_quorum, bitmap_index_in_group,
+    local_write_value_hash, snapshot_chunk_hash, snapshot_written_hashes,
+};
 
-const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(1);
+const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(30);
+
+type WriteKey = (EpochNumber, SpoolGroup, ChunkNumber, Hash);
+type FinalizeKey = (EpochNumber, SpoolGroup);
 
 pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -38,6 +45,10 @@ pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     fanout_task: Option<JoinHandle<()>>,
     active_epoch: Option<EpochNumber>,
     signed_groups: HashSet<SpoolGroup>,
+    inflight_writes: HashSet<WriteKey>,
+    observed_writes: HashSet<WriteKey>,
+    inflight_finalizes: HashSet<FinalizeKey>,
+    observed_finalizes: HashSet<FinalizeKey>,
 }
 
 impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
@@ -57,10 +68,19 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             fanout_task: None,
             active_epoch: None,
             signed_groups: HashSet::new(),
+            inflight_writes: HashSet::new(),
+            observed_writes: HashSet::new(),
+            inflight_finalizes: HashSet::new(),
+            observed_finalizes: HashSet::new(),
         }
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
+        debug!(
+            node_id = self.context.node_id().0,
+            "snapshot manager started"
+        );
+
         let mut heartbeat = tokio::time::interval(SNAPSHOT_HEARTBEAT);
 
         loop {
@@ -78,6 +98,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         };
                     };
                     self.handle_block(block).await?;
+
                 }
                 _ = heartbeat.tick() => {
                     if let Some(epoch) = self.active_epoch {
@@ -97,14 +118,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 ParsedInstruction::ReserveSnapshot { event } => {
                     self.on_snapshot_reserved(event.epoch).await?;
                 }
-                ParsedInstruction::WriteSnapshot {
-                    group,
-                    chunk,
-                    event,
-                    ..
-                } => {
-                    self.on_snapshot_written(event.epoch, *group, *chunk, event.track)
-                        .await?;
+                ParsedInstruction::WriteSnapshot { group, chunk, event, .. } => {
+                    self.on_snapshot_written(event.epoch, *group, *chunk, event.track).await?;
                 }
                 ParsedInstruction::SignSnapshot { event } => {
                     self.on_snapshot_signed(event.epoch, event.group, event.state).await?;
@@ -117,8 +132,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
     async fn on_advance_epoch(&mut self, snapshot_epoch: EpochNumber) -> Result<(), NodeError> {
         self.stop_cycle().await;
+
         self.signed_groups.clear();
-        gc::clear_stale_snapshot_epochs(&self.context, snapshot_epoch)?;
+        self.inflight_writes.clear();
+        self.observed_writes.clear();
+        self.inflight_finalizes.clear();
+        self.observed_finalizes.clear();
+
+        gc::clear_snapshot_data(&self.context, snapshot_epoch)?;
 
         match submit_reserve_snapshot(&self.context, snapshot_epoch).await {
             Ok(txid) => {
@@ -130,19 +151,17 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         }
 
         self.cycle_cancel = self.cancel.child_token();
+
         Ok(())
     }
 
     async fn on_snapshot_reserved(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
         let summary = build_local_snapshot_epoch(&self.context, epoch)?;
+
         if summary.groups == 0 {
             debug!(epoch = epoch.0, "snapshot: no local groups to build");
             return Ok(());
         }
-
-        self.active_epoch = Some(epoch);
-        self.start_fanout(epoch);
-        self.submit_ready(epoch).await?;
 
         info!(
             epoch = epoch.0,
@@ -150,6 +169,11 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             chunks = summary.chunks,
             "snapshot: local build complete"
         );
+
+        self.active_epoch = Some(epoch);
+        self.start_fanout(epoch);
+        self.submit_ready(epoch).await?;
+
         Ok(())
     }
 
@@ -160,6 +184,16 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         chunk: ChunkNumber,
         track: Address,
     ) -> Result<(), NodeError> {
+        let state = self.context.state();
+        if let Some(local_index) = bitmap_index_in_group(&state, group, self.context.node_id()) {
+            if let Some(local_value_hash) =
+                local_write_value_hash(&self.context, epoch, group, chunk, local_index)?
+            {
+                let key = (epoch, group, chunk, local_value_hash);
+                self.inflight_writes.remove(&key);
+                self.observed_writes.insert(key);
+            }
+        }
         gc::flush_snapshot_write(&self.context, epoch, group, chunk, track)?;
         if self.active_epoch == Some(epoch) {
             self.submit_ready(epoch).await?;
@@ -175,6 +209,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     ) -> Result<(), NodeError> {
         if self.active_epoch == Some(epoch) {
             self.signed_groups.insert(group);
+            let key = (epoch, group);
+            self.inflight_finalizes.remove(&key);
+            self.observed_finalizes.insert(key);
         }
 
         if SnapshotState::try_from(state) == Ok(SnapshotState::Finalized) {
@@ -186,22 +223,72 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         Ok(())
     }
 
-    async fn submit_ready(&self, epoch: EpochNumber) -> Result<(), NodeError> {
+    async fn submit_ready(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
+        let written_hashes = snapshot_written_hashes(&self.context, epoch)?;
+        let state = self.context.state();
+        let my_node_id = self.context.node_id();
+
         for group in local_groups(&self.context) {
-            let artifacts = self
+            let Some(local_index) = bitmap_index_in_group(&state, group, my_node_id) else {
+                continue;
+            };
+
+            let chunks = self
                 .context
                 .store
-                .iter_snapshot_artifacts(epoch, group)
-                .map_err(|e| NodeError::Store(format!("iter_snapshot_artifacts({epoch},{group}): {e}")))?;
+                .iter_snapshot_artifact_chunks(epoch, group)
+                .map_err(|e| NodeError::Store(format!("iter_snapshot_artifact_chunks({epoch},{group}): {e}")))?;
 
-            for (chunk, artifact) in &artifacts {
-                if artifact.is_written() {
+            let mut local_chunks = Vec::with_capacity(chunks.len());
+            for chunk in chunks {
+                let Some(local_value_hash) =
+                    local_write_value_hash(&self.context, epoch, group, chunk, local_index)?
+                else {
+                    continue;
+                };
+                local_chunks.push((chunk, local_value_hash));
+            }
+
+            for (chunk, local_value_hash) in &local_chunks {
+                let write_key = (epoch, group, *chunk, *local_value_hash);
+                if self.observed_writes.contains(&write_key)
+                    || self.inflight_writes.contains(&write_key)
+                {
+                    continue;
+                }
+
+                if written_hashes
+                    .get(&snapshot_chunk_hash(epoch, group, *chunk))
+                    .is_some_and(|written_hash| *written_hash == *local_value_hash)
+                {
+                    self.inflight_writes.remove(&write_key);
+                    self.observed_writes.insert(write_key);
                     continue;
                 }
 
                 let Some(quorum) = aggregate_write_quorum(&self.context, epoch, group, *chunk)? else {
                     continue;
                 };
+                if quorum.value_hash != *local_value_hash {
+                    debug!(
+                        epoch = epoch.0,
+                        group = group.0,
+                        chunk = chunk.0,
+                        local_hash = ?local_value_hash,
+                        quorum_hash = ?quorum.value_hash,
+                        "snapshot write: quorum hash does not match local build"
+                    );
+                    continue;
+                }
+                let Some(artifact) = self
+                    .context
+                    .store
+                    .get_snapshot_artifact(epoch, group, *chunk)
+                    .map_err(|e| NodeError::Store(format!("get_snapshot_artifact({epoch},{group},{chunk}): {e}")))?
+                else {
+                    continue;
+                };
+                self.inflight_writes.insert(write_key);
                 match submit_write_snapshot(
                     &self.context,
                     epoch,
@@ -217,6 +304,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         info!(epoch = epoch.0, group = group.0, chunk = chunk.0, ?txid, "snapshot write: submitted");
                     }
                     Err(error) => {
+                        self.inflight_writes.remove(&write_key);
                         debug!(error = %error, epoch = epoch.0, group = group.0, chunk = chunk.0, "snapshot write: submit failed");
                     }
                 }
@@ -226,18 +314,28 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 continue;
             }
 
-            let progress = self
-                .context
-                .store
-                .snapshot_group_progress(epoch, group)
-                .map_err(|e| NodeError::Store(format!("snapshot_group_progress({epoch},{group}): {e}")))?;
-            if !progress.is_complete() {
+            let finalize_key = (epoch, group);
+            if self.observed_finalizes.contains(&finalize_key)
+                || self.inflight_finalizes.contains(&finalize_key)
+            {
                 continue;
             }
 
+            if local_chunks.is_empty() {
+                continue;
+            }
+
+            if !local_chunks.iter().all(|(chunk, local_value_hash)| {
+                written_hashes
+                    .get(&snapshot_chunk_hash(epoch, group, *chunk))
+                    .is_some_and(|written_hash| *written_hash == *local_value_hash)
+            }) {
+                continue;
+            }
             let Some(quorum) = aggregate_finalize_quorum(&self.context, epoch, group)? else {
                 continue;
             };
+            self.inflight_finalizes.insert(finalize_key);
             match submit_sign_snapshot(&self.context, epoch, group, quorum.bitmap, quorum.signature)
                 .await
             {
@@ -245,6 +343,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     info!(epoch = epoch.0, group = group.0, ?txid, "snapshot finalize: submitted");
                 }
                 Err(error) => {
+                    self.inflight_finalizes.remove(&finalize_key);
                     debug!(error = %error, epoch = epoch.0, group = group.0, "snapshot finalize: submit failed");
                 }
             }
@@ -255,6 +354,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
     fn start_fanout(&mut self, epoch: EpochNumber) {
         self.cycle_cancel.cancel();
+
         if let Some(task) = self.fanout_task.take() {
             task.abort();
         }
@@ -262,6 +362,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         self.cycle_cancel = self.cancel.child_token();
         let cancel = self.cycle_cancel.clone();
         let ctx = self.context.clone();
+
         self.fanout_task = Some(tokio::spawn(async move {
             fanout::run(ctx, epoch, cancel).await;
         }));

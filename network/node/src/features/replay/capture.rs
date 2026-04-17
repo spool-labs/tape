@@ -169,7 +169,7 @@ fn capture_instruction(
                             key: *key,
                             track_number: event.track_number,
                             kind: meta.kind as u64,
-                            state: meta.initial_state as u64,
+                            state: meta.state as u64,
                             size: meta.size,
                             spool_group: event.spool_group,
                             value_hash: meta.value_hash,

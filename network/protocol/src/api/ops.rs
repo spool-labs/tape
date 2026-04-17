@@ -1,8 +1,8 @@
 //! Request/response types for peer operations.
 
 use tape_core::bls::BlsSignature;
-use tape_core::prelude::{CompressedTrack, EpochNumber, NodeId, SpoolGroup, SpoolIndex, TrackData, TrackNumber};
-use tape_core::types::ChunkNumber;
+use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
+use tape_core::prelude::{CompressedTrack, EpochNumber, NodeId, SpoolIndex, TrackData, TrackNumber};
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 use crate::api::types::{
@@ -161,10 +161,8 @@ pub struct CertifyRes {
 /// Pushes one already-produced partial signature to a peer.
 #[derive(Clone, Debug)]
 pub struct PushSnapshotWriteSigReq {
-    pub epoch: EpochNumber,
-    pub group: SpoolGroup,
-    pub chunk: ChunkNumber,
     pub node_id: NodeId,
+    pub message: [u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
     pub signature: BlsSignature,
 }
 
@@ -175,9 +173,8 @@ pub struct PushSnapshotWriteSigRes;
 ///
 #[derive(Clone, Debug)]
 pub struct PushSnapshotFinalizeSigReq {
-    pub epoch: EpochNumber,
-    pub group: SpoolGroup,
     pub node_id: NodeId,
+    pub message: [u8; SNAPSHOT_SIGN_MESSAGE_SIZE],
     pub signature: BlsSignature,
 }
 

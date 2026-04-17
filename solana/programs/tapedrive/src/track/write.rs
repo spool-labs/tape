@@ -59,7 +59,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         key: args.key,
         track_number,
         kind: meta.kind as u64,
-        state: meta.initial_state as u64,
+        state: meta.state as u64,
         size: meta.size,
         spool_group,
         value_hash: meta.value_hash,

@@ -18,4 +18,7 @@ pub use keys::{
 };
 
 // Re-export value types
-pub use values::{InvalidationProof, SliceValue, SnapshotArtifact, TapeInfo};
+pub use values::{
+    InvalidationProof, SliceValue, SnapshotArtifact, SnapshotFinalizeVote, SnapshotWriteVote,
+    TapeInfo,
+};
