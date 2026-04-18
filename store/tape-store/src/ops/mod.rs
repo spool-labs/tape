@@ -24,7 +24,7 @@ mod track_data;
 pub use event_log::EventLogOps;
 pub use meta::MetaOps;
 pub use object_info::ObjectInfoOps;
-pub use snapshot::{SnapshotGroupProgress, SnapshotOps};
+pub use snapshot::{ChunkWriteSigs, SnapshotOps};
 pub use slice::SliceOps;
 pub use spool::SpoolOps;
 pub use tape::TapeOps;

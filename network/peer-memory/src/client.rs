@@ -7,7 +7,7 @@ use tape_protocol::api::{
     GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
     GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
     ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes,
-    PushSnapshotFinalizeSigReq, PushSnapshotFinalizeSigRes, PushSnapshotWriteSigReq, PushSnapshotWriteSigRes,
+    SnapshotSigReq, SnapshotSigRes,
     SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
 };
 use tape_core::types::NodeId;
@@ -38,8 +38,7 @@ impl MemoryApi {
             PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(not_impl())),
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
-            PeerReq::PushSnapshotWriteSig(_) => PeerRes::PushSnapshotWriteSig(Err(not_impl())),
-            PeerReq::PushSnapshotFinalizeSig(_) => PeerRes::PushSnapshotFinalizeSig(Err(not_impl())),
+            PeerReq::SnapshotSig(_) => PeerRes::SnapshotSig(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
@@ -111,37 +110,21 @@ impl Api for MemoryApi {
         dispatch!(self, node, CertifyReq { track: req.track }, Certify)
     }
 
-    async fn push_snapshot_write_sig(
+    async fn snapshot_sig(
         &self,
         node: NodeId,
-        req: &PushSnapshotWriteSigReq,
-    ) -> Result<PushSnapshotWriteSigRes, ApiError> {
+        req: &SnapshotSigReq,
+    ) -> Result<SnapshotSigRes, ApiError> {
         dispatch!(
             self,
             node,
-            PushSnapshotWriteSigReq {
+            SnapshotSigReq {
                 node_id: req.node_id,
-                message: req.message,
+                kind: req.kind,
+                message: req.message.clone(),
                 signature: req.signature,
             },
-            PushSnapshotWriteSig
-        )
-    }
-
-    async fn push_snapshot_finalize_sig(
-        &self,
-        node: NodeId,
-        req: &PushSnapshotFinalizeSigReq,
-    ) -> Result<PushSnapshotFinalizeSigRes, ApiError> {
-        dispatch!(
-            self,
-            node,
-            PushSnapshotFinalizeSigReq {
-                node_id: req.node_id,
-                message: req.message,
-                signature: req.signature,
-            },
-            PushSnapshotFinalizeSig
+            SnapshotSig
         )
     }
 
@@ -164,6 +147,7 @@ mod tests {
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
     use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
+    use tape_protocol::api::SignatureKind;
 
     fn snapshot_signature(message: &[u8]) -> BlsSignature {
         BlsPrivateKey::from_random().sign(message).unwrap()
@@ -180,9 +164,9 @@ mod tests {
     async fn custom_handler() {
         let client = MemoryApi::new(move |node, req| match req {
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Ok(GetHealthRes { ok: node.0 == 1 })),
-            PeerReq::PushSnapshotWriteSig(req) => {
+            PeerReq::SnapshotSig(req) => {
                 assert_eq!(req.node_id, NodeId(9));
-                PeerRes::PushSnapshotWriteSig(Ok(PushSnapshotWriteSigRes))
+                PeerRes::SnapshotSig(Ok(SnapshotSigRes))
             }
             _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
         });
@@ -195,25 +179,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_write_dispatch() {
+    async fn snapshot_sig_write_dispatch() {
+        let message = vec![0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE];
         let signature = snapshot_signature(b"snapshot-write");
+        let expected_message = message.clone();
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::PushSnapshotWriteSig(req) => {
+            PeerReq::SnapshotSig(req) => {
                 assert_eq!(node, NodeId(7));
                 assert_eq!(req.node_id, NodeId(9));
-                assert_eq!(req.message, [0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE]);
+                assert_eq!(req.kind, SignatureKind::Write);
+                assert_eq!(req.message, expected_message);
                 assert_eq!(req.signature, signature);
-                PeerRes::PushSnapshotWriteSig(Ok(PushSnapshotWriteSigRes))
+                PeerRes::SnapshotSig(Ok(SnapshotSigRes))
             }
-            _ => PeerRes::PushSnapshotWriteSig(Err(ApiError::Other("unexpected".into()))),
+            _ => PeerRes::SnapshotSig(Err(ApiError::Other("unexpected".into()))),
         });
 
         client
-            .push_snapshot_write_sig(
+            .snapshot_sig(
                 NodeId(7),
-                &PushSnapshotWriteSigReq {
+                &SnapshotSigReq {
                     node_id: NodeId(9),
-                    message: [0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE],
+                    kind: SignatureKind::Write,
+                    message,
                     signature,
                 },
             )
@@ -222,25 +210,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_finalize_dispatch() {
+    async fn snapshot_sig_finalize_dispatch() {
+        let message = vec![0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE];
         let signature = snapshot_signature(b"snapshot-finalize");
+        let expected_message = message.clone();
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::PushSnapshotFinalizeSig(req) => {
+            PeerReq::SnapshotSig(req) => {
                 assert_eq!(node, NodeId(7));
                 assert_eq!(req.node_id, NodeId(9));
-                assert_eq!(req.message, [0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE]);
+                assert_eq!(req.kind, SignatureKind::Finalize);
+                assert_eq!(req.message, expected_message);
                 assert_eq!(req.signature, signature);
-                PeerRes::PushSnapshotFinalizeSig(Ok(PushSnapshotFinalizeSigRes))
+                PeerRes::SnapshotSig(Ok(SnapshotSigRes))
             }
-            _ => PeerRes::PushSnapshotFinalizeSig(Err(ApiError::Other("unexpected".into()))),
+            _ => PeerRes::SnapshotSig(Err(ApiError::Other("unexpected".into()))),
         });
 
         client
-            .push_snapshot_finalize_sig(
+            .snapshot_sig(
                 NodeId(7),
-                &PushSnapshotFinalizeSigReq {
+                &SnapshotSigReq {
                     node_id: NodeId(9),
-                    message: [0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE],
+                    kind: SignatureKind::Finalize,
+                    message,
                     signature,
                 },
             )

@@ -39,8 +39,7 @@ pub trait Api: Send + Sync {
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError>;
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError>;
     async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, ApiError>;
-    async fn push_snapshot_write_sig(&self, node: NodeId, req: &PushSnapshotWriteSigReq) -> Result<PushSnapshotWriteSigRes, ApiError>;
-    async fn push_snapshot_finalize_sig(&self, node: NodeId, req: &PushSnapshotFinalizeSigReq) -> Result<PushSnapshotFinalizeSigRes, ApiError>;
+    async fn snapshot_sig(&self, node: NodeId, req: &SnapshotSigReq) -> Result<SnapshotSigRes, ApiError>;
     async fn get_health(&self, node: NodeId, req: &GetHealthReq) -> Result<GetHealthRes, ApiError>;
     async fn get_stats(&self, node: NodeId, req: &GetStatsReq) -> Result<GetStatsRes, ApiError>;
 }

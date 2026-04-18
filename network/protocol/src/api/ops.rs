@@ -1,13 +1,12 @@
 //! Request/response types for peer operations.
 
 use tape_core::bls::BlsSignature;
-use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
 use tape_core::prelude::{CompressedTrack, EpochNumber, NodeId, SpoolIndex, TrackData, TrackNumber};
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 use crate::api::types::{
-    InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
-    SyncTrackEntry,
+    InconsistencyProof, NodeStats, SignatureKind, SlicePayload, StripeSubChunkRequest,
+    SyncSliceEntry, SyncTrackEntry,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -160,7 +159,7 @@ pub struct CertifyRes {
 pub struct SnapshotSigReq {
     pub node_id: NodeId,
     pub kind: SignatureKind,
-    pub message: [u8; SNAPSHOT_SIGN_MESSAGE_SIZE],
+    pub message: Vec<u8>,
     pub signature: BlsSignature,
 }
 

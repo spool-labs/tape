@@ -2,7 +2,6 @@
 
 use core::mem::size_of;
 
-use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
 use tape_core::prelude::{EpochNumber, NodeId, SpoolIndex, TrackData, TrackNumber};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
@@ -23,7 +22,18 @@ pub const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
 pub const SLICE_BODY_LIMIT: usize =
     size_of::<u64>() + SLICE_BYTES_LIMIT + Hash::LEN + size_of::<u64>() + (MERKLE_HEIGHT * Hash::LEN);
 
+/// Upper bound on the message bytes carried in a snapshot sig push (write = 64, finalize = 24).
+pub const SNAPSHOT_SIG_MESSAGE_LIMIT: usize = 64;
+
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
+type SnapshotSigBytes = WincodeVec<Pod<u8>, BincodeLen<SNAPSHOT_SIG_MESSAGE_LIMIT>>;
+
+/// Kind of snapshot partial signature being pushed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub enum SignatureKind {
+    Write,
+    Finalize,
+}
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -33,12 +43,13 @@ pub struct BlsSignResponse {
     pub epoch: EpochNumber,
 }
 
-/// Body for a pushed snapshot chunk write partial signature.
+/// Body for a pushed snapshot partial signature (write chunk or group finalize).
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SnapshotSigRequest {
     pub node_id: NodeId,
     pub kind: SignatureKind,
-    pub message: [u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
+    #[wincode(with = "SnapshotSigBytes")]
+    pub message: Vec<u8>,
     pub signature: BlsSignature,
 }
 
@@ -290,23 +301,27 @@ mod tests {
     }
 
     #[test]
-    fn push_snapshot_requests_roundtrip() {
-        let write_req = PushSnapshotWriteSigRequest {
+    fn snapshot_sig_request_roundtrip() {
+        use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
+
+        let write_req = SnapshotSigRequest {
             node_id: NodeId(7),
-            message: [0x11; SNAPSHOT_WRITE_MESSAGE_SIZE],
+            kind: SignatureKind::Write,
+            message: vec![0x11; SNAPSHOT_WRITE_MESSAGE_SIZE],
             signature: BlsSignature(G1CompressedPoint([0xAB; 32])),
         };
         let bytes = wincode::serialize(&write_req).unwrap();
-        let decoded: PushSnapshotWriteSigRequest = wincode::deserialize(&bytes).unwrap();
+        let decoded: SnapshotSigRequest = wincode::deserialize(&bytes).unwrap();
         assert_eq!(write_req, decoded);
 
-        let finalize_req = PushSnapshotFinalizeSigRequest {
+        let finalize_req = SnapshotSigRequest {
             node_id: NodeId(7),
-            message: [0x22; SNAPSHOT_SIGN_MESSAGE_SIZE],
+            kind: SignatureKind::Finalize,
+            message: vec![0x22; SNAPSHOT_SIGN_MESSAGE_SIZE],
             signature: BlsSignature(G1CompressedPoint([0xCD; 32])),
         };
         let bytes = wincode::serialize(&finalize_req).unwrap();
-        let decoded: PushSnapshotFinalizeSigRequest = wincode::deserialize(&bytes).unwrap();
+        let decoded: SnapshotSigRequest = wincode::deserialize(&bytes).unwrap();
         assert_eq!(finalize_req, decoded);
     }
 

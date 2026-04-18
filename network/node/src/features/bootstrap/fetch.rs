@@ -397,17 +397,24 @@ fn decode_snapshot_log(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use store_memory::MemoryStore;
+    use tape_core::erasure::SPOOL_GROUP_COUNT;
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::types::SlotNumber;
     use tape_store::ops::EventLogOps;
     use tape_store::TapeStore;
 
     use super::*;
-    use crate::features::snapshot::build::{build_snapshot_epoch, BuiltChunk};
+    use crate::features::snapshot::build::{build_snapshot_chunks, BuiltChunk};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    fn all_groups() -> HashSet<SpoolGroup> {
+        (0..SPOOL_GROUP_COUNT as u64).map(SpoolGroup).collect()
     }
 
     fn append_advance(store: &TapeStore<MemoryStore>, epoch: EpochNumber, slot: u64) {
@@ -448,7 +455,7 @@ mod tests {
         let epoch = EpochNumber(5);
         append_advance(&store, epoch, 100);
 
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        let chunks = build_snapshot_chunks(&store, epoch, &all_groups()).unwrap();
         assert!(!chunks.is_empty());
 
         for built in &chunks {
@@ -462,7 +469,8 @@ mod tests {
     fn clay_decode_fails_below_k_inner() {
         let store = test_store();
         let epoch = EpochNumber(6);
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        append_advance(&store, epoch, 100);
+        let chunks = build_snapshot_chunks(&store, epoch, &all_groups()).unwrap();
         let chunk = &chunks[0];
         let slices = take_k_inner(chunk, K_INNER - 1);
         assert!(clay_decode(&slices).is_err());
@@ -483,7 +491,7 @@ mod tests {
             )
             .unwrap();
 
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        let chunks = build_snapshot_chunks(&store, epoch, &all_groups()).unwrap();
 
         // Clay-decode + unpack every chunk, grouped by segment.
         let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
@@ -528,7 +536,7 @@ mod tests {
         let epoch = EpochNumber(21);
         append_advance(&store, epoch, 100);
 
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        let chunks = build_snapshot_chunks(&store, epoch, &all_groups()).unwrap();
         let segment_count = chunks
             .iter()
             .map(|c| c.chunk.0)
@@ -556,7 +564,8 @@ mod tests {
     fn outer_decode_rejects_insufficient_groups() {
         let store = test_store();
         let epoch = EpochNumber(30);
-        let chunks = build_snapshot_epoch(&store, epoch).unwrap();
+        append_advance(&store, epoch, 100);
+        let chunks = build_snapshot_chunks(&store, epoch, &all_groups()).unwrap();
 
         let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
         // Give segment 0 only K_OUTER-1 symbols.

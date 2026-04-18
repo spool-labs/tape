@@ -433,16 +433,17 @@ impl Api for HttpApi {
         })
     }
 
-    async fn push_snapshot_write_sig(
+    async fn snapshot_sig(
         &self,
         node: NodeId,
-        req: &PushSnapshotWriteSigReq,
-    ) -> Result<PushSnapshotWriteSigRes, ApiError> {
+        req: &SnapshotSigReq,
+    ) -> Result<SnapshotSigRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{SNAPSHOT_WRITE_PATH}");
-        let wire_req = PushSnapshotWriteSigRequest {
+        let url = format!("{base}{SNAPSHOT_SIG_PATH}");
+        let wire_req = SnapshotSigRequest {
             node_id: req.node_id,
-            message: req.message,
+            kind: req.kind,
+            message: req.message.clone(),
             signature: req.signature,
         };
         let body = wincode::serialize(&wire_req)
@@ -460,41 +461,9 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("push_snapshot_write_sig", &resp, start, bytes_sent);
+        self.record("snapshot_sig", &resp, start, bytes_sent);
         check_status(resp).await?;
-        Ok(PushSnapshotWriteSigRes)
-    }
-
-    async fn push_snapshot_finalize_sig(
-        &self,
-        node: NodeId,
-        req: &PushSnapshotFinalizeSigReq,
-    ) -> Result<PushSnapshotFinalizeSigRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{SNAPSHOT_FINALIZE_PATH}");
-        let wire_req = PushSnapshotFinalizeSigRequest {
-            node_id: req.node_id,
-            message: req.message,
-            signature: req.signature,
-        };
-        let body = wincode::serialize(&wire_req)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        let bytes_sent = body.len() as u64;
-        let start = Instant::now();
-        let resp = self
-            .client
-            .post(&url)
-            .timeout(SNAPSHOT_SIG_TIMEOUT)
-            .header("content-type", BINARY_CONTENT)
-            .body(body)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record("push_snapshot_finalize_sig", &resp, start, bytes_sent);
-        check_status(resp).await?;
-        Ok(PushSnapshotFinalizeSigRes)
+        Ok(SnapshotSigRes)
     }
 
     async fn invalidate(
@@ -703,29 +672,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_write_roundtrip() {
-        let request = PushSnapshotWriteSigRequest {
+    async fn snapshot_sig_write_roundtrip() {
+        let request = SnapshotSigRequest {
             node_id: NodeId(9),
-            message: [0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE],
+            kind: SignatureKind::Write,
+            message: vec![0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE],
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot-write")
                 .unwrap(),
         };
-        let api_request = PushSnapshotWriteSigReq {
-            node_id: NodeId(9),
-            message: request.message,
+        let api_request = SnapshotSigReq {
+            node_id: request.node_id,
+            kind: request.kind,
+            message: request.message.clone(),
             signature: request.signature,
         };
 
         let expected_request = Arc::new(request.clone());
         let router = Router::new().route(
-            SNAPSHOT_WRITE_PATH,
+            SNAPSHOT_SIG_PATH,
             post({
                 let expected_request = Arc::clone(&expected_request);
                 move |body: Bytes| {
                     let expected_request = Arc::clone(&expected_request);
                     async move {
-                        let decoded: PushSnapshotWriteSigRequest = wincode::deserialize(&body).unwrap();
+                        let decoded: SnapshotSigRequest = wincode::deserialize(&body).unwrap();
                         assert_eq!(decoded, *expected_request);
                         StatusCode::OK
                     }
@@ -743,43 +714,38 @@ mod tests {
         peer_manager.add_peer(make_peer(7, port));
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
-        api
-            .push_snapshot_write_sig(
-                NodeId(7),
-                &api_request,
-            )
-            .await
-            .unwrap();
+        api.snapshot_sig(NodeId(7), &api_request).await.unwrap();
 
         server.abort();
         let _ = server.await;
     }
 
     #[tokio::test]
-    async fn snapshot_finalize_roundtrip() {
-        let request = PushSnapshotFinalizeSigRequest {
+    async fn snapshot_sig_finalize_roundtrip() {
+        let request = SnapshotSigRequest {
             node_id: NodeId(9),
-            message: [0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE],
+            kind: SignatureKind::Finalize,
+            message: vec![0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE],
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot-finalize")
                 .unwrap(),
         };
-        let api_request = PushSnapshotFinalizeSigReq {
-            node_id: NodeId(9),
-            message: request.message,
+        let api_request = SnapshotSigReq {
+            node_id: request.node_id,
+            kind: request.kind,
+            message: request.message.clone(),
             signature: request.signature,
         };
 
         let expected_request = Arc::new(request.clone());
         let router = Router::new().route(
-            SNAPSHOT_FINALIZE_PATH,
+            SNAPSHOT_SIG_PATH,
             post({
                 let expected_request = Arc::clone(&expected_request);
                 move |body: Bytes| {
                     let expected_request = Arc::clone(&expected_request);
                     async move {
-                        let decoded: PushSnapshotFinalizeSigRequest =
-                            wincode::deserialize(&body).unwrap();
+                        let decoded: SnapshotSigRequest = wincode::deserialize(&body).unwrap();
                         assert_eq!(decoded, *expected_request);
                         StatusCode::OK
                     }
@@ -797,10 +763,7 @@ mod tests {
         peer_manager.add_peer(make_peer(7, port));
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
-        api
-            .push_snapshot_finalize_sig(NodeId(7), &api_request)
-            .await
-            .unwrap();
+        api.snapshot_sig(NodeId(7), &api_request).await.unwrap();
 
         server.abort();
         let _ = server.await;

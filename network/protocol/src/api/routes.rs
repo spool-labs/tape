@@ -1,7 +1,6 @@
 //! Route constants and URL builders for the node API.
 
-use tape_core::spooler::SpoolGroup;
-use tape_core::types::{ChunkNumber, EpochNumber, TrackNumber};
+use tape_core::types::TrackNumber;
 
 pub const API_V1: &str = "/v1";
 
@@ -12,8 +11,7 @@ pub const INCONSISTENCY_PATH:        &str = "/v1/tracks/{track_id}/inconsistency
 pub const INFO_PATH:                 &str = "/v1/info";
 pub const METRICS_PATH:              &str = "/v1/metrics";
 pub const REPAIR_PATH:               &str = "/v1/tracks/{track_id}/repair";
-pub const SNAPSHOT_WRITE_PATH:       &str = "/v1/snapshots/write";
-pub const SNAPSHOT_FINALIZE_PATH:    &str = "/v1/snapshots/finalize";
+pub const SNAPSHOT_SIG_PATH:         &str = "/v1/snapshots/sig";
 pub const SIGN_PATH:                 &str = "/v1/tracks/{track_id}/sign";
 pub const SLICE_PATH:                &str = "/v1/tracks/{track_id}/slices/{spool_id}";
 pub const SLICE_STATUS_PATH:         &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
@@ -66,18 +64,6 @@ pub fn sign_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/sign")
 }
 
-pub fn snapshot_write_url(
-    _epoch: EpochNumber,
-    _group: SpoolGroup,
-    _chunk: ChunkNumber,
-) -> String {
-    SNAPSHOT_WRITE_PATH.to_string()
-}
-
-pub fn snapshot_finalize_url(_epoch: EpochNumber, _group: SpoolGroup) -> String {
-    SNAPSHOT_FINALIZE_PATH.to_string()
-}
-
 pub fn repair_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/repair")
 }
@@ -100,14 +86,7 @@ mod tests {
         assert_eq!(find_track_url("def"), "/v1/tapes/def/tracks/find");
         assert_eq!(list_tracks_by_tape_url("def"), "/v1/tapes/def/tracks/list");
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");
-        assert_eq!(
-            snapshot_write_url(EpochNumber(11), SpoolGroup(4), ChunkNumber(2)),
-            "/v1/snapshots/write"
-        );
-        assert_eq!(
-            snapshot_finalize_url(EpochNumber(11), SpoolGroup(4)),
-            "/v1/snapshots/finalize"
-        );
+        assert_eq!(SNAPSHOT_SIG_PATH, "/v1/snapshots/sig");
         assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");
         assert_eq!(inconsistency_url("abc"), "/v1/tracks/abc/inconsistency");
