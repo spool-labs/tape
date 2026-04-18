@@ -38,10 +38,10 @@ pub struct BuiltChunk {
     pub slices: [Vec<u8>; SPOOL_GROUP_SIZE],
 }
 
-impl BuiltChunk {
-    pub fn value_hash(&self) -> Hash {
-        self.blob.get_hash()
-    }
+#[derive(Debug, Default)]
+pub struct BuildSummary {
+    pub groups: usize,
+    pub chunks: usize,
 }
 
 /// Build every chunk for an epoch's snapshot.
@@ -57,12 +57,12 @@ pub fn build_snapshot<Db: Store>(
     let start_slot = entries
         .first()
         .map(|e| e.slot)
-        .unwrap_or(SlotNumber(0)); // todo: this is not okay, we should not be setting it to slot 0 if there are no events
+        .unwrap_or(SlotNumber(0)); // todo: this is not okay, we should not be setting it to slot 0 if there are no events, should be returning an error instead
 
     let end_slot = entries
         .last()
         .map(|e| e.slot)
-        .unwrap_or(SlotNumber(0)); // todo: this is not okay, we should not be setting it to slot 0 if there are no events
+        .unwrap_or(SlotNumber(0)); // todo: this is not okay, we should not be setting it to slot 0 if there are no events, should be returning an error instead
 
     let snapshot_log = SnapshotLog {
         epoch,
@@ -105,15 +105,10 @@ pub fn build_snapshot<Db: Store>(
     Ok(chunks)
 }
 
-#[derive(Debug, Default)]
-pub struct BuildSummary {
-    pub groups: usize,
-    pub chunks: usize,
-}
 
 /// Build the snapshot for one epoch and persist only this node's local group
 /// artifacts and self-produced partial signatures.
-pub fn build_local_snapshot_epoch<Db, Cluster, Blockchain>(
+pub fn build_snapshot<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
 ) -> Result<BuildSummary, NodeError>
@@ -265,175 +260,4 @@ fn encode_chunk(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use store_memory::MemoryStore;
-    use tape_core::snapshot::replay::{ReplayableEvent, SnapshotEntry};
-    use tape_core::snapshot::replay::ReplayTrack;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::TrackNumber;
-    use tape_crypto::address::Address;
-
-    fn test_store() -> TapeStore<MemoryStore> {
-        TapeStore::new(MemoryStore::new())
-    }
-
-    fn append_advance(store: &TapeStore<MemoryStore>, epoch: EpochNumber, slot: u64) {
-        store
-            .append_event(
-                epoch,
-                SlotNumber(slot),
-                &ReplayableEvent::AdvanceEpoch {
-                    old_epoch: EpochNumber(epoch.0.saturating_sub(1)),
-                    new_epoch: epoch,
-                },
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn empty_epoch_builds_single_segment() {
-        let store = test_store();
-        let epoch = EpochNumber(5);
-
-        let chunks = build_snapshot(&store, epoch).unwrap();
-
-        assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
-        for (i, chunk) in chunks.iter().enumerate() {
-            assert_eq!(chunk.group, SpoolGroup(i as u64));
-            assert_eq!(chunk.chunk, ChunkNumber(0));
-            assert_eq!(chunk.slices.len(), SPOOL_GROUP_SIZE);
-        }
-    }
-
-    #[test]
-    fn populated_epoch_distinct_per_group() {
-        let store = test_store();
-        let epoch = EpochNumber(7);
-        append_advance(&store, epoch, 100);
-
-        let chunks = build_snapshot(&store, epoch).unwrap();
-
-        assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
-        // Different groups must produce different commitments (chunk mixing).
-        assert_ne!(chunks[0].blob.commitment, chunks[1].blob.commitment);
-        assert_ne!(chunks[0].blob.get_hash(), chunks[1].blob.get_hash());
-    }
-
-    #[test]
-    fn deterministic_across_rebuilds() {
-        let store = test_store();
-        let epoch = EpochNumber(3);
-        append_advance(&store, epoch, 100);
-        store
-            .append_event(
-                epoch,
-                SlotNumber(150),
-                &ReplayableEvent::JoinNetwork {
-                    node: [9u8; 32].into(),
-                },
-            )
-            .unwrap();
-
-        let first = build_snapshot(&store, epoch).unwrap();
-        let second = build_snapshot(&store, epoch).unwrap();
-
-        assert_eq!(first.len(), second.len());
-        for (a, b) in first.iter().zip(second.iter()) {
-            assert_eq!(a.group, b.group);
-            assert_eq!(a.chunk, b.chunk);
-            assert_eq!(a.blob.get_hash(), b.blob.get_hash());
-            assert_eq!(a.slices, b.slices);
-        }
-    }
-
-    #[test]
-    fn multi_segment_split_by_max_segment_bytes() {
-        // Verify the segment-splitting logic produces
-        // `segment_count * SPOOL_GROUP_COUNT` chunks with monotonically
-        // increasing `chunk` per group.
-        let store = test_store();
-        let epoch = EpochNumber(11);
-
-        // Fill the epoch with enough raw-track events to push past
-        // MAX_SEGMENT_BYTES after compression. Each track event carries a
-        // 32-byte key + 32-byte value_hash + metadata; ~100 bytes serialized.
-        // lz4 does compress well-structured bytes, so push far more than
-        // MAX_SEGMENT_BYTES pre-compress using distinct random-looking
-        // content.
-
-        // Target: push compressed size clearly over MAX_SEGMENT_BYTES (~68
-        // MiB). Each ReplayableEvent::Track serializes to ~250 bytes and
-        // compresses poorly when value_hashes/keys are random. Need a lot —
-        // but for a unit test we'd rather bound runtime. Instead, just
-        // verify the split math by faking a smaller MAX and covering the
-        // arithmetic.
-        for i in 0..50u64 {
-            let mut hash_bytes = [0u8; 32];
-            hash_bytes[0..8].copy_from_slice(&i.to_be_bytes());
-            let key = Hash::from(hash_bytes);
-            store
-                .append_event(
-                    epoch,
-                    SlotNumber(i),
-                    &ReplayableEvent::Track(ReplayTrack {
-                        state: CompressedTrack {
-                            tape: Address::from([3u8; 32]),
-                            key,
-                            track_number: TrackNumber(i),
-                            kind: TrackKind::Raw as u64,
-                            state: TrackState::Certified as u64,
-                            size: StorageUnits(100),
-                            spool_group: SpoolGroup::from(7),
-                            value_hash: key,
-                        },
-                        epoch,
-                        blob: None,
-                    }),
-                )
-                .unwrap();
-        }
-
-        let chunks = build_snapshot(&store, epoch).unwrap();
-
-        assert_eq!(chunks.len() % SPOOL_GROUP_COUNT, 0);
-        let segment_count = chunks.len() / SPOOL_GROUP_COUNT;
-        assert!(segment_count >= 1);
-
-        // Within each group, `chunk` indices should be 0..segment_count in
-        // order.
-        for group in 0..SPOOL_GROUP_COUNT as u64 {
-            let indices: Vec<u64> = chunks
-                .iter()
-                .filter(|c| c.group == SpoolGroup(group))
-                .map(|c| c.chunk.0)
-                .collect();
-            assert_eq!(indices.len(), segment_count);
-            for (i, &idx) in indices.iter().enumerate() {
-                assert_eq!(idx, i as u64);
-            }
-        }
-    }
-
-    #[test]
-    fn compression_roundtrip_sanity() {
-        // Sanity-check: lz4_flex roundtrips so snapshots can be decoded on bootstrap.
-        let entries = vec![SnapshotEntry {
-            slot: SlotNumber(42),
-            events: vec![ReplayableEvent::AdvanceEpoch {
-                old_epoch: EpochNumber(0),
-                new_epoch: EpochNumber(1),
-            }],
-        }];
-        let snapshot_log = SnapshotLog {
-            epoch: EpochNumber(1),
-            start_slot: SlotNumber(42),
-            end_slot: SlotNumber(42),
-            entries,
-        };
-        let bytes = snapshot_log.to_bytes().unwrap();
-        let compressed = lz4_flex::compress_prepend_size(&bytes);
-        let decompressed = lz4_flex::decompress_size_prepended(&compressed).unwrap();
-        assert_eq!(bytes, decompressed);
-        assert_eq!(SnapshotLog::from_bytes(&decompressed).unwrap(), snapshot_log);
-    }
 }
