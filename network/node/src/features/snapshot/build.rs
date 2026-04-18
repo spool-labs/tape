@@ -12,7 +12,7 @@ use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEA
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount};
+use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount};
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_protocol::Api;
@@ -59,15 +59,14 @@ pub fn build_snapshot_chunks<Db: Store>(
         .get_epoch_events(epoch)
         .map_err(store_err("get_epoch_events"))?;
 
-    if entries.is_empty() {
-        return Err(NodeError::Store(format!(
-            "build_snapshot({epoch}): event log for epoch is empty"
-        )));
-    }
-
-    // Safe: entries is non-empty above.
-    let start_slot = entries.first().unwrap().slot;
-    let end_slot = entries.last().unwrap().slot;
+    let start_slot = entries
+        .first()
+        .map(|e| e.slot)
+        .unwrap_or(SlotNumber(0));
+    let end_slot = entries
+        .last()
+        .map(|e| e.slot)
+        .unwrap_or(SlotNumber(0));
 
     let snapshot_log = SnapshotLog {
         epoch,

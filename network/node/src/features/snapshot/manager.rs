@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_api::event::SnapshotWritten;
+use tape_api::event::{SnapshotSigned, SnapshotWritten};
+use tape_core::snapshot::types::SnapshotState;
 use tape_api::program::tapedrive::snapshot_tape_pda;
 use tape_blocks::ParsedInstruction;
 use tape_core::snapshot::chunk::snapshot_chunk_key;
@@ -85,16 +86,11 @@ where
                 ParsedInstruction::ReserveSnapshot { event } => {
                     self.on_snapshot_reserved(event.epoch).await?;
                 }
-                ParsedInstruction::WriteSnapshot {
-                    group,
-                    chunk,
-                    blob,
-                    event,
-                } => {
+                ParsedInstruction::WriteSnapshot { group, chunk, blob, event, } => {
                     self.on_snapshot_written(*event, *group, *chunk, *blob).await?;
                 }
-                ParsedInstruction::SignSnapshot { .. } => {
-                    // Nothing to do locally; heartbeat handles the rest.
+                ParsedInstruction::SignSnapshot { event } => {
+                    self.on_snapshot_signed(*event).await?;
                 }
                 _ => {}
             }
@@ -102,12 +98,10 @@ where
         Ok(())
     }
 
-    /// On `AdvanceEpoch`: wipe signature/artifact CFs for any epoch other than
-    /// the newly-opened snapshot epoch, drop the old event log, and try to
-    /// reserve the snapshot account.
+    /// On `AdvanceEpoch`: we need to issue a `ReserveSnapshot` for the epoch that just closed
     async fn on_advance_epoch(
         &self,
-        old: EpochNumber,
+        _old: EpochNumber,
         new: EpochNumber,
     ) -> Result<(), NodeError> {
         let snapshot_epoch = EpochNumber(new.0.saturating_sub(1));
@@ -116,10 +110,6 @@ where
             .store
             .delete_snapshot_epochs_except(snapshot_epoch)
             .map_err(|e| NodeError::Store(format!("delete_snapshot_epochs_except: {e}")))?;
-        self.context
-            .store
-            .delete_epoch_events(old)
-            .map_err(|e| NodeError::Store(format!("delete_epoch_events: {e}")))?;
 
         match submit_reserve_snapshot(&self.context, snapshot_epoch).await {
             Ok(txid) => info!(epoch = snapshot_epoch.0, ?txid, "snapshot: reserve submitted"),
@@ -127,6 +117,23 @@ where
                 debug!(?error, epoch = snapshot_epoch.0, "snapshot: reserve raced / already exists")
             }
         }
+
+        Ok(())
+    }
+
+    /// On `SignSnapshot` for a finalized epoch: the snapshot is now immutable and
+    /// we can drop all artifacts, tracks, slices, and events for that epoch.
+    async fn on_snapshot_signed(&self, event: SnapshotSigned) -> Result<(), NodeError> {
+        if event.state != SnapshotState::Finalized as u64 {
+            return Ok(());
+        }
+
+        self.context
+            .store
+            .delete_epoch_events(event.epoch)
+            .map_err(|e| NodeError::Store(format!("delete_epoch_events: {e}")))?;
+
+        debug!(epoch = event.epoch.0, "snapshot: epoch event log dropped");
 
         Ok(())
     }
