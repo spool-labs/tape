@@ -16,10 +16,6 @@ use crate::core::error::NodeError;
 
 /// Compute the ordered range of snapshot epochs this node still needs to
 /// replay, oldest -> newest.
-///
-/// Returns an empty vector when there is nothing to do (no finalized
-/// snapshot on-chain yet, or the cursor is already at or past the chain
-/// tip).
 pub async fn discover_missing_epochs<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Result<Vec<EpochNumber>, NodeError>

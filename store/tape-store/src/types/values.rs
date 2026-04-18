@@ -5,7 +5,6 @@ use tape_core::bls::BlsSignature;
 use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
 use tape_core::track::blob::BlobInfo;
 use tape_core::types::{EpochNumber, TrackNumber};
-use tape_crypto::address::Address;
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -26,13 +25,6 @@ pub struct SnapshotArtifact {
     pub blob: BlobInfo,
     #[wincode(with = "SliceBytes")]
     pub local_slice: Vec<u8>,
-    pub written_track: Option<Address>,
-}
-
-impl SnapshotArtifact {
-    pub fn is_written(&self) -> bool {
-        self.written_track.is_some()
-    }
 }
 
 /// One mutable per-signer vote for a snapshot write message.

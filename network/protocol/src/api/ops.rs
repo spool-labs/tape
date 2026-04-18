@@ -156,30 +156,16 @@ pub struct CertifyRes {
     pub epoch: EpochNumber,
 }
 
-/// Request a BLS signature on a snapshot chunk's write message.
-///
-/// Pushes one already-produced partial signature to a peer.
 #[derive(Clone, Debug)]
-pub struct PushSnapshotWriteSigReq {
+pub struct SnapshotSigReq {
     pub node_id: NodeId,
-    pub message: [u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
-    pub signature: BlsSignature,
-}
-
-#[derive(Clone, Debug)]
-pub struct PushSnapshotWriteSigRes;
-
-/// Pushes one already-produced finalize partial signature to a peer.
-///
-#[derive(Clone, Debug)]
-pub struct PushSnapshotFinalizeSigReq {
-    pub node_id: NodeId,
+    pub kind: SignatureKind,
     pub message: [u8; SNAPSHOT_SIGN_MESSAGE_SIZE],
     pub signature: BlsSignature,
 }
 
 #[derive(Clone, Debug)]
-pub struct PushSnapshotFinalizeSigRes;
+pub struct SnapshotSigRes;
 
 #[derive(Clone, Debug)]
 pub struct InvalidateReq {
@@ -224,9 +210,8 @@ pub enum PeerReq {
     SyncTracks(SyncTracksReq),
     Repair(RepairReq),
     Certify(CertifyReq),
-    PushSnapshotWriteSig(PushSnapshotWriteSigReq),
-    PushSnapshotFinalizeSig(PushSnapshotFinalizeSigReq),
     Invalidate(InvalidateReq),
+    SnapshotSig(SnapshotSigReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -244,8 +229,7 @@ pub enum PeerRes {
     SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
-    PushSnapshotWriteSig(Result<PushSnapshotWriteSigRes, ApiError>),
-    PushSnapshotFinalizeSig(Result<PushSnapshotFinalizeSigRes, ApiError>),
+    SnapshotSig(Result<SnapshotSigRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),

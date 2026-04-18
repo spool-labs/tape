@@ -1,7 +1,3 @@
-//! `POST /v1/snapshots/finalize`
-//!
-//! Accept one pushed partial signature for `SnapshotSignMessage`.
-
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -17,7 +13,7 @@ use tape_store::types::SnapshotFinalizeVote;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
-use crate::features::snapshot::quorum::{
+use crate::features::snapshot::utils::{
     bitmap_index_in_group, group_peer_by_index, is_current_snapshot_epoch, verify_partial,
 };
 
@@ -25,10 +21,11 @@ pub async fn finalize<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: PushSnapshotFinalizeSigRequest = wincode::deserialize(&body)
+    let request: SnapshotSigRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("snapshot finalize request: {error}")))?;
 
     current_epoch(&state)?;
+
     let protocol = state.context.state();
     let message = SnapshotSignMessage::from_bytes(&request.message)
         .ok_or_else(|| RouteError::BadRequest("invalid snapshot finalize message".into()))?;

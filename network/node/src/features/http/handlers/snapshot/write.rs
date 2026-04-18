@@ -1,7 +1,3 @@
-//! `POST /v1/snapshots/write`
-//!
-//! Accept one pushed partial signature for `SnapshotWriteMessage`.
-
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -17,15 +13,18 @@ use tape_store::types::SnapshotWriteVote;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
-use crate::features::snapshot::quorum::{
-    bitmap_index_in_group, group_peer_by_index, is_current_snapshot_epoch, verify_partial,
+use crate::features::snapshot::utils::{
+    bitmap_index_in_group,
+    group_peer_by_index,
+    is_current_snapshot_epoch, 
+    verify_partial,
 };
 
 pub async fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: PushSnapshotWriteSigRequest = wincode::deserialize(&body)
+    let request: SnapshotSigRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("snapshot write request: {error}")))?;
 
     current_epoch(&state)?;

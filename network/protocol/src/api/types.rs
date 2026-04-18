@@ -35,19 +35,13 @@ pub struct BlsSignResponse {
 
 /// Body for a pushed snapshot chunk write partial signature.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct PushSnapshotWriteSigRequest {
+pub struct SnapshotSigRequest {
     pub node_id: NodeId,
+    pub kind: SignatureKind,
     pub message: [u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
     pub signature: BlsSignature,
 }
 
-/// Body for a pushed snapshot finalize partial signature.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct PushSnapshotFinalizeSigRequest {
-    pub node_id: NodeId,
-    pub message: [u8; SNAPSHOT_SIGN_MESSAGE_SIZE],
-    pub signature: BlsSignature,
-}
 
 /// Request for inconsistency attestation.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
