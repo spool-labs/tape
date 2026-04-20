@@ -9,7 +9,8 @@
 #   make run-testnet  - Run testnet against the local validator
 #   make run-testnet-samply - Profile the release testnet orchestrator with samply
 #   make run-testnet-upload-file - Upload a large file against the running testnet
-#   make run-devnet   - Run the in-process devnet TUI (debug build, no profiler)
+#   make run-devnet   - Run the in-process devnet TUI (release build, no profiler)
+#   make run-devnet-debug - Run the devnet TUI with debug symbols, for attaching tapedbg
 #   make run-devnet-samply - Profile the release devnet binary with samply
 #
 # Optional overrides:
@@ -27,7 +28,7 @@ TESTNET_ADMIN_KEYPAIR ?= $(TESTNET_DATA_DIR)/admin.json
 TESTNET_FILE_SIZE_BYTES ?= 1073741824
 TESTNET_UPLOAD_EPOCHS ?= 4
 
-.PHONY: programs node testnet reset run-solana run-testnet run-testnet-samply run-testnet-upload-file run-devnet run-devnet-samply
+.PHONY: programs node testnet reset run-solana run-testnet run-testnet-samply run-testnet-upload-file run-devnet run-devnet-debug run-devnet-samply
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -70,7 +71,15 @@ run-testnet-upload-file:
 		--epochs $(TESTNET_UPLOAD_EPOCHS)
 
 run-devnet:
-	cargo run -p tape-e2e-devnet --bin devnet
+	cargo run --release -p tape-e2e-devnet --bin devnet
+
+# Release optimizations + full DWARF debug info so tapedbg can resolve source
+# breakpoints and read locals. Uses the `debug-release` profile defined in
+# Cargo.toml (separate target dir, won't clobber normal release builds). Once
+# the TUI is up, grab the PID with `pgrep -x devnet` and attach from another
+# shell: `tapedbg attach --pid <pid>`. See tapedbg/CLAUDE.md for the workflow.
+run-devnet-debug:
+	cargo run --profile debug-release -p tape-e2e-devnet --bin devnet
 
 run-devnet-samply:
 	CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p tape-e2e-devnet --bin devnet

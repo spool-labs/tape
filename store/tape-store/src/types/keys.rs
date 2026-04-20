@@ -7,13 +7,13 @@
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
 //! - TrackLookupKey: (tape, track_number BE, key) (72 bytes)
 //! - SnapshotArtifactKey: (epoch BE, group BE, chunk BE) (24 bytes)
-//! - SnapshotWriteSigKey: (epoch BE, group BE, chunk BE, bitmap_index BE) (26 bytes)
-//! - SnapshotFinalizeSigKey: (epoch BE, group BE, bitmap_index BE) (18 bytes)
+//! - SnapshotWriteSigKey: (epoch BE, group BE, chunk BE, signer BE) (32 bytes)
+//! - SnapshotFinalizeSigKey: (epoch BE, group BE, signer BE) (24 bytes)
 
 use std::mem::MaybeUninit;
 
 use serde::{Deserialize, Serialize};
-use tape_core::types::TrackNumber;
+use tape_core::types::{NodeId, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::{
@@ -325,27 +325,31 @@ impl<'de> SchemaRead<'de> for SnapshotArtifactKey {
     }
 }
 
-/// Key for snapshot write partial signatures (26 bytes)
+/// Key for snapshot write partial signatures (32 bytes)
 ///
 /// Format:
-/// [epoch BE 8 bytes][group BE 8 bytes][chunk BE 8 bytes][bitmap_index BE 2 bytes]
+/// [epoch BE 8 bytes][group BE 8 bytes][chunk BE 8 bytes][signer BE 8 bytes]
+///
+/// Keyed by signer `NodeId` (not bitmap position): the signer's position in a
+/// group can drift across epochs, but their NodeId is stable. Bitmap indices
+/// are re-derived from current state at submit time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SnapshotWriteSigKey {
     pub epoch: u64,
     pub group: u64,
     pub chunk: u64,
-    pub bitmap_index: u16,
+    pub signer: NodeId,
 }
 
 impl SnapshotWriteSigKey {
-    pub const SIZE: usize = 26;
+    pub const SIZE: usize = 32;
 
-    pub fn new(epoch: u64, group: u64, chunk: u64, bitmap_index: u16) -> Self {
+    pub fn new(epoch: u64, group: u64, chunk: u64, signer: NodeId) -> Self {
         Self {
             epoch,
             group,
             chunk,
-            bitmap_index,
+            signer,
         }
     }
 
@@ -377,7 +381,7 @@ impl SchemaWrite for SnapshotWriteSigKey {
         writer.write_exact(&src.epoch.to_be_bytes())?;
         writer.write_exact(&src.group.to_be_bytes())?;
         writer.write_exact(&src.chunk.to_be_bytes())?;
-        writer.write_exact(&src.bitmap_index.to_be_bytes())?;
+        writer.write_exact(&src.signer.0.to_be_bytes())?;
         Ok(())
     }
 }
@@ -392,35 +396,39 @@ impl<'de> SchemaRead<'de> for SnapshotWriteSigKey {
         let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
         let group_bytes: [u8; 8] = unsafe { reader.get_t()? };
         let chunk_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        let bitmap_index_bytes: [u8; 2] = unsafe { reader.get_t()? };
+        let signer_bytes: [u8; 8] = unsafe { reader.get_t()? };
         dst.write(SnapshotWriteSigKey {
             epoch: u64::from_be_bytes(epoch_bytes),
             group: u64::from_be_bytes(group_bytes),
             chunk: u64::from_be_bytes(chunk_bytes),
-            bitmap_index: u16::from_be_bytes(bitmap_index_bytes),
+            signer: NodeId(u64::from_be_bytes(signer_bytes)),
         });
         Ok(())
     }
 }
 
-/// Key for snapshot finalize partial signatures (18 bytes)
+/// Key for snapshot finalize partial signatures (24 bytes)
 ///
-/// Format: [epoch BE 8 bytes][group BE 8 bytes][bitmap_index BE 2 bytes]
+/// Format: [epoch BE 8 bytes][group BE 8 bytes][signer BE 8 bytes]
+///
+/// Keyed by signer `NodeId` (not bitmap position): the signer's position in a
+/// group can drift across epochs, but their NodeId is stable. Bitmap indices
+/// are re-derived from current state at submit time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SnapshotFinalizeSigKey {
     pub epoch: u64,
     pub group: u64,
-    pub bitmap_index: u16,
+    pub signer: NodeId,
 }
 
 impl SnapshotFinalizeSigKey {
-    pub const SIZE: usize = 18;
+    pub const SIZE: usize = 24;
 
-    pub fn new(epoch: u64, group: u64, bitmap_index: u16) -> Self {
+    pub fn new(epoch: u64, group: u64, signer: NodeId) -> Self {
         Self {
             epoch,
             group,
-            bitmap_index,
+            signer,
         }
     }
 
@@ -443,7 +451,7 @@ impl SchemaWrite for SnapshotFinalizeSigKey {
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
         writer.write_exact(&src.epoch.to_be_bytes())?;
         writer.write_exact(&src.group.to_be_bytes())?;
-        writer.write_exact(&src.bitmap_index.to_be_bytes())?;
+        writer.write_exact(&src.signer.0.to_be_bytes())?;
         Ok(())
     }
 }
@@ -457,11 +465,11 @@ impl<'de> SchemaRead<'de> for SnapshotFinalizeSigKey {
     ) -> ReadResult<()> {
         let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
         let group_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        let bitmap_index_bytes: [u8; 2] = unsafe { reader.get_t()? };
+        let signer_bytes: [u8; 8] = unsafe { reader.get_t()? };
         dst.write(SnapshotFinalizeSigKey {
             epoch: u64::from_be_bytes(epoch_bytes),
             group: u64::from_be_bytes(group_bytes),
-            bitmap_index: u16::from_be_bytes(bitmap_index_bytes),
+            signer: NodeId(u64::from_be_bytes(signer_bytes)),
         });
         Ok(())
     }

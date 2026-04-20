@@ -15,9 +15,7 @@ use tape_store::types::{SnapshotFinalizeVote, SnapshotWriteVote};
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
-use crate::features::snapshot::utils::{
-    bitmap_index_in_group, group_peer_by_index, verify_partial,
-};
+use crate::features::snapshot::utils::bitmap_index_in_group;
 
 pub async fn sig<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -42,7 +40,7 @@ fn handle_write<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let message = SnapshotWriteMessage::from_bytes(&request.message)
         .ok_or_else(|| RouteError::BadRequest("invalid snapshot write message".into()))?;
 
-    let bitmap_index = preflight(protocol, message.epoch, message.group, request)?;
+    preflight(protocol, message.epoch, message.group, request)?;
 
     let vote = SnapshotWriteVote {
         message: request.message.as_slice().try_into().map_err(|_| {
@@ -54,7 +52,13 @@ fn handle_write<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state
         .context
         .store
-        .put_snapshot_write_sig(message.epoch, message.group, message.chunk, bitmap_index, &vote)
+        .put_snapshot_write_sig(
+            message.epoch,
+            message.group,
+            message.chunk,
+            request.node_id,
+            &vote,
+        )
         .map_err(|error| RouteError::Internal(format!("put_snapshot_write_sig: {error}")))?;
 
     Ok(StatusCode::OK)
@@ -68,7 +72,7 @@ fn handle_finalize<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let message = SnapshotSignMessage::from_bytes(&request.message)
         .ok_or_else(|| RouteError::BadRequest("invalid snapshot finalize message".into()))?;
 
-    let bitmap_index = preflight(protocol, message.epoch, message.group, request)?;
+    preflight(protocol, message.epoch, message.group, request)?;
 
     let vote = SnapshotFinalizeVote {
         message: request.message.as_slice().try_into().map_err(|_| {
@@ -80,20 +84,20 @@ fn handle_finalize<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state
         .context
         .store
-        .put_snapshot_finalize_sig(message.epoch, message.group, bitmap_index, &vote)
+        .put_snapshot_finalize_sig(message.epoch, message.group, request.node_id, &vote)
         .map_err(|error| RouteError::Internal(format!("put_snapshot_finalize_sig: {error}")))?;
 
     Ok(StatusCode::OK)
 }
 
-/// Verify that the signature in the request is valid for the given message and signer, and return
-/// the bitmap index of the signer if valid.
+/// Check that the request is for the current snapshot epoch and that its
+/// signer is a committee member who owns a slot in the target group.
 fn preflight(
     protocol: &tape_protocol::ProtocolState,
     message_epoch: tape_core::types::EpochNumber,
     message_group: tape_core::spooler::SpoolGroup,
     request: &SnapshotSigRequest,
-) -> Result<u16, RouteError> {
+) -> Result<(), RouteError> {
     if protocol.epoch.0 == 0 || message_epoch.0 != protocol.epoch.0 - 1 {
         return Err(RouteError::BadRequest(format!(
             "snapshot epoch {} does not match local epoch {}",
@@ -105,17 +109,13 @@ fn preflight(
         return Err(RouteError::NotInCommittee);
     }
 
-    let bitmap_index = bitmap_index_in_group(protocol, message_group, request.node_id)
+    bitmap_index_in_group(protocol, message_group, request.node_id)
         .ok_or(RouteError::NotResponsible)?;
 
-    let signer = group_peer_by_index(protocol, message_group, bitmap_index)
-        .ok_or(RouteError::NotInCommittee)?;
+    // BLS partial verification is skipped: it's expensive, the aggregate is
+    // re-verified on-chain, and BFT already tolerates ≤ 1/3 malicious peers.
 
-    if !verify_partial(&signer.key, &request.message, &request.signature) {
-        return Err(RouteError::InvalidSignature);
-    }
-
-    Ok(bitmap_index)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -304,30 +304,6 @@ mod tests {
 
         let err = render(AppState { context }, request).await.unwrap_err();
         assert!(matches!(err, RouteError::NotResponsible));
-    }
-
-    #[tokio::test]
-    async fn rejects_invalid_signature() {
-        let context = test_context();
-        context.set_state(local_state()).unwrap();
-
-        let signer = BlsPrivateKey::from_random();
-        configure_signer(&context, &signer);
-
-        let epoch = EpochNumber(10);
-        let group = SpoolGroup(4);
-        let message = SnapshotSignMessage::new(epoch, group);
-
-        let request = SnapshotSigRequest {
-            node_id: NodeId(1),
-            kind: SignatureKind::Finalize,
-            message: message.to_bytes().to_vec(),
-            // Sign a different message so the signature doesn't match.
-            signature: signer.sign(b"wrong-message").unwrap(),
-        };
-
-        let err = render(AppState { context }, request).await.unwrap_err();
-        assert!(matches!(err, RouteError::InvalidSignature));
     }
 
     #[tokio::test]

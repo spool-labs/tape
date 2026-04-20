@@ -6,6 +6,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
 use tape_protocol::api::{SignatureKind, SnapshotSigReq};
 use tape_protocol::Api;
@@ -15,9 +16,7 @@ use tracing::trace;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::snapshot::utils::{
-    bitmap_index_in_group, group_peers_without, local_groups,
-};
+use crate::features::snapshot::utils::group_peers_without;
 
 pub async fn fanout_finalize_sigs<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -47,11 +46,10 @@ where
     let state = ctx.state();
     let me = ctx.node_id();
 
-    for group in local_groups(&state, me) {
-        let Some(my_index) = bitmap_index_in_group(&state, group, me) else {
-            continue;
-        };
+    let Some((member_index, _)) = state.find_member(me) else { return Ok(()); };
 
+    for spool in state.member_spools(member_index) {
+        let group = SpoolGroup::of(spool);
         let sigs = ctx
             .store
             .iter_snapshot_finalize_sigs(epoch, group)
@@ -61,7 +59,7 @@ where
             continue;
         }
 
-        let Some((_, vote)) = sigs.into_iter().find(|(i, _)| *i == my_index) else {
+        let Some((_, vote)) = sigs.into_iter().find(|(id, _)| *id == me) else {
             continue;
         };
 
@@ -76,13 +74,7 @@ where
 
         for peer in &peers {
             if let Err(error) = ctx.api.snapshot_sig(*peer, &req).await {
-                trace!(
-                    ?error,
-                    %peer,
-                    %epoch,
-                    group = group.0,
-                    "fanout: finalize sig push failed"
-                );
+                trace!(?error, %peer, %epoch, group = group.0, "fanout: finalize sig push failed");
             }
         }
     }

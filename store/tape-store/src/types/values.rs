@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
 use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
+use tape_core::spooler::SpoolIndex;
 use tape_core::track::blob::BlobInfo;
 use tape_core::types::{EpochNumber, TrackNumber};
 use wincode::containers::{Pod, Vec as WincodeVec};
@@ -20,11 +21,17 @@ pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
 
 /// Snapshot build artifact retained until the corresponding `WriteSnapshot`
 /// event lands locally and the staged slice is flushed into `SliceCol`.
+///
+/// `spool_index` is the exact key the slice belongs at, captured at build time
+/// so the event handler doesn't re-derive it from protocol state. The bytes in
+/// `slice` are the Clay slice at position (`spool_index - group.base()`); they
+/// verify against `blob.leaves[position]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct SnapshotArtifact {
     pub blob: BlobInfo,
+    pub spool_index: SpoolIndex,
     #[wincode(with = "SliceBytes")]
-    pub local_slice: Vec<u8>,
+    pub slice: Vec<u8>,
 }
 
 /// One mutable per-signer vote for a snapshot write message.

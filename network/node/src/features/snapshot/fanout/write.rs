@@ -9,6 +9,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
 use tape_protocol::api::{SignatureKind, SnapshotSigReq};
 use tape_protocol::Api;
@@ -18,9 +19,7 @@ use tracing::trace;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::snapshot::utils::{
-    bitmap_index_in_group, group_peers_without, local_groups,
-};
+use crate::features::snapshot::utils::group_peers_without;
 
 pub async fn fanout_write_sigs<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -50,10 +49,10 @@ where
     let state = ctx.state();
     let me = ctx.node_id();
 
-    for group in local_groups(&state, me) {
-        let Some(my_index) = bitmap_index_in_group(&state, group, me) else {
-            continue;
-        };
+    let Some((member_index, _)) = state.find_member(me) else { return Ok(()); };
+
+    for spool in state.member_spools(member_index) {
+        let group = SpoolGroup::of(spool);
         let peers = group_peers_without(&state, group, me);
 
         let chunks = ctx
@@ -68,7 +67,7 @@ where
             let Some((_, vote)) = chunk_sigs
                 .votes
                 .into_iter()
-                .find(|(i, _)| *i == my_index)
+                .find(|(id, _)| *id == me)
             else {
                 continue;
             };

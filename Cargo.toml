@@ -183,3 +183,12 @@ once_cell = "1.19"
 
 [profile.release]
 overflow-checks = true
+
+# Release optimizations + full DWARF debug info in a `.dSYM` bundle, for
+# attaching a debugger (tapedbg, samply, lldb). Separate `target/debug-release/`
+# so it doesn't invalidate normal release builds. See `make run-devnet-debug`.
+[profile.debug-release]
+inherits = "release"
+debug = "full"
+split-debuginfo = "packed"
+strip = "none"

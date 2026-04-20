@@ -21,7 +21,8 @@ use tracing::{debug, info};
 use crate::chain::{submit_sign_snapshot, submit_write_snapshot};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::snapshot::utils::local_groups;
+use crate::features::snapshot::utils::bitmap_index_in_group;
+use tape_core::spooler::SpoolGroup;
 
 /// For every group we're a member of, submit the `WriteSnapshot` instruction
 /// for any chunk where we hold a supermajority and still have the local
@@ -54,7 +55,10 @@ where
     let state = ctx.state();
     let me = ctx.node_id();
 
-    for group in local_groups(&state, me) {
+    let Some((member_index, _)) = state.find_member(me) else { return Ok(()); };
+
+    for spool in state.member_spools(member_index) {
+        let group = SpoolGroup::of(spool);
         let chunks = ctx
             .store
             .iter_snapshot_write_sigs(epoch, group)
@@ -62,7 +66,20 @@ where
 
         for chunk_sigs in chunks {
             let chunk = chunk_sigs.chunk;
-            if !is_supermajority(chunk_sigs.votes.len() as u64, SPOOL_GROUP_SIZE as u64) {
+
+            // Re-derive each vote's bitmap position from live committee state;
+            // drop votes from signers no longer in this group.
+            let mut indices: Vec<usize> = Vec::with_capacity(chunk_sigs.votes.len());
+            let mut partials: Vec<BlsSignature> = Vec::with_capacity(chunk_sigs.votes.len());
+            for (signer, vote) in chunk_sigs.votes {
+                let Some(idx) = bitmap_index_in_group(&state, group, signer) else {
+                    continue;
+                };
+                indices.push(idx as usize);
+                partials.push(vote.signature);
+            }
+
+            if !is_supermajority(partials.len() as u64, SPOOL_GROUP_SIZE as u64) {
                 continue;
             }
 
@@ -75,37 +92,17 @@ where
                 continue;
             };
 
-            let indices: Vec<usize> = chunk_sigs
-                .votes
-                .iter()
-                .map(|(i, _)| *i as usize)
-                .collect();
             let bitmap = SpoolGroupBitmap::from_indices(&indices, SPOOL_GROUP_SIZE);
-            let partials: Vec<BlsSignature> = chunk_sigs
-                .votes
-                .into_iter()
-                .map(|(_, vote)| vote.signature)
-                .collect();
             let aggregate = BlsSignature::aggregate(&partials)
                 .map_err(|e| NodeError::Store(format!("aggregate write sigs: {e:?}")))?;
 
-            match submit_write_snapshot(ctx, epoch, group, chunk, bitmap, aggregate, &artifact.blob)
-                .await
-            {
-                Ok(txid) => info!(
-                    %epoch,
-                    group = group.0,
-                    chunk = chunk.0,
-                    ?txid,
-                    "snapshot: write submitted"
-                ),
-                Err(error) => debug!(
-                    ?error,
-                    %epoch,
-                    group = group.0,
-                    chunk = chunk.0,
-                    "snapshot: write submit raced / failed"
-                ),
+            match submit_write_snapshot(ctx, epoch, group, chunk, bitmap, aggregate, &artifact.blob).await {
+                Ok(txid) => {
+                    info!(%epoch, group = group.0, chunk = chunk.0, ?txid, "snapshot: write submitted")
+                },
+                Err(error) => {
+                    debug!(?error, %epoch, group = group.0, chunk = chunk.0, "snapshot: write submit raced / failed")
+                },
             }
         }
     }
@@ -143,35 +140,45 @@ where
     let state = ctx.state();
     let me = ctx.node_id();
 
-    for group in local_groups(&state, me) {
+    let Some((member_index, _)) = state.find_member(me) else {
+        return Ok(());
+    };
+
+    for spool in state.member_spools(member_index) {
+        let group = SpoolGroup::of(spool);
         let sigs = ctx
             .store
             .iter_snapshot_finalize_sigs(epoch, group)
             .map_err(|e| NodeError::Store(format!("iter_snapshot_finalize_sigs: {e}")))?;
 
-        if !is_supermajority(sigs.len() as u64, SPOOL_GROUP_SIZE as u64) {
+        // Re-derive each vote's bitmap position from committee state;
+        // drop votes from signers no longer in this group.
+        let mut indices: Vec<usize> = Vec::with_capacity(sigs.len());
+        let mut partials: Vec<BlsSignature> = Vec::with_capacity(sigs.len());
+
+        for (signer, vote) in sigs {
+            let Some(idx) = bitmap_index_in_group(&state, group, signer) else {
+                continue;
+            };
+            indices.push(idx as usize);
+            partials.push(vote.signature);
+        }
+
+        if !is_supermajority(partials.len() as u64, SPOOL_GROUP_SIZE as u64) {
             continue;
         }
 
-        let indices: Vec<usize> = sigs.iter().map(|(i, _)| *i as usize).collect();
         let bitmap = SpoolGroupBitmap::from_indices(&indices, SPOOL_GROUP_SIZE);
-        let partials: Vec<BlsSignature> = sigs.into_iter().map(|(_, vote)| vote.signature).collect();
         let aggregate = BlsSignature::aggregate(&partials)
             .map_err(|e| NodeError::Store(format!("aggregate finalize sigs: {e:?}")))?;
 
         match submit_sign_snapshot(ctx, epoch, group, bitmap, aggregate).await {
-            Ok(txid) => info!(
-                %epoch,
-                group = group.0,
-                ?txid,
-                "snapshot: finalize submitted"
-            ),
-            Err(error) => debug!(
-                ?error,
-                %epoch,
-                group = group.0,
-                "snapshot: finalize submit raced / failed"
-            ),
+            Ok(txid) => {
+                info!(%epoch, group = group.0, ?txid, "snapshot: finalize submitted")
+            },
+            Err(error) => {
+                debug!(?error, %epoch, group = group.0, "snapshot: finalize submit raced / failed")
+            },
         }
     }
 

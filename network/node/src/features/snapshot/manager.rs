@@ -4,16 +4,20 @@ use std::time::Duration;
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::{SnapshotSigned, SnapshotWritten};
-use tape_core::snapshot::types::SnapshotState;
 use tape_api::program::tapedrive::snapshot_tape_pda;
 use tape_blocks::ParsedInstruction;
 use tape_core::snapshot::chunk::snapshot_chunk_key;
+use tape_core::snapshot::types::SnapshotState;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
+use tape_core::track::data::TrackData;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{ChunkNumber, EpochNumber};
+use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber, TrackNumber};
 use tape_protocol::Api;
-use tape_store::ops::{EventLogOps, SliceOps, SnapshotOps, TrackOps};
+use tape_store::ops::{
+    EventLogOps, ObjectInfoOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps,
+};
+use tape_store::types::ObjectInfo;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -26,7 +30,6 @@ use crate::features::block::ingestor::ParsedBlock;
 use crate::features::snapshot::build::build_snapshot;
 use crate::features::snapshot::fanout::{fanout_finalize_sigs, fanout_write_sigs};
 use crate::features::snapshot::submit::{submit_ready_finalizes, submit_ready_writes};
-use crate::features::snapshot::utils::bitmap_index_in_group;
 
 const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -87,7 +90,7 @@ where
                     self.on_snapshot_reserved(event.epoch).await?;
                 }
                 ParsedInstruction::WriteSnapshot { group, chunk, blob, event, } => {
-                    self.on_snapshot_written(*event, *group, *chunk, *blob).await?;
+                    self.on_snapshot_written(block.slot, *event, *group, *chunk, *blob).await?;
                 }
                 ParsedInstruction::SignSnapshot { event } => {
                     self.on_snapshot_signed(*event).await?;
@@ -98,13 +101,12 @@ where
         Ok(())
     }
 
-    /// On `AdvanceEpoch`: we need to issue a `ReserveSnapshot` for the epoch that just closed
     async fn on_advance_epoch(
         &self,
-        _old: EpochNumber,
-        new: EpochNumber,
+        old: EpochNumber,
+        _new: EpochNumber,
     ) -> Result<(), NodeError> {
-        let snapshot_epoch = EpochNumber(new.0.saturating_sub(1));
+        let snapshot_epoch = old;
 
         self.context
             .store
@@ -112,7 +114,9 @@ where
             .map_err(|e| NodeError::Store(format!("delete_snapshot_epochs_except: {e}")))?;
 
         match submit_reserve_snapshot(&self.context, snapshot_epoch).await {
-            Ok(txid) => info!(epoch = snapshot_epoch.0, ?txid, "snapshot: reserve submitted"),
+            Ok(txid) => {
+                info!(epoch = snapshot_epoch.0, ?txid, "snapshot: reserve submitted")
+            },
             Err(error) => {
                 debug!(?error, epoch = snapshot_epoch.0, "snapshot: reserve raced / already exists")
             }
@@ -121,8 +125,6 @@ where
         Ok(())
     }
 
-    /// On `SignSnapshot` for a finalized epoch: the snapshot is now immutable and
-    /// we can drop all artifacts, tracks, slices, and events for that epoch.
     async fn on_snapshot_signed(&self, event: SnapshotSigned) -> Result<(), NodeError> {
         if event.state != SnapshotState::Finalized as u64 {
             return Ok(());
@@ -138,54 +140,27 @@ where
         Ok(())
     }
 
-    /// On `ReserveSnapshot`: build our local chunks, persist our partials,
-    /// and push them to group peers.
-    async fn on_snapshot_reserved(&self, epoch: EpochNumber) -> Result<(), NodeError> {
+    async fn on_snapshot_reserved(
+        &self,
+        epoch: EpochNumber
+    ) -> Result<(), NodeError> {
+
         build_snapshot(&self.context, epoch, &self.cancel).await?;
         fanout_write_sigs(&self.context, epoch, &self.cancel).await?;
         fanout_finalize_sigs(&self.context, epoch, &self.cancel).await?;
+
         Ok(())
     }
 
-    /// On `WriteSnapshot`: if the chunk is one we staged and the submitted
-    /// blob matches ours, persist the slice + catalog row. Otherwise drop the
-    /// stale artifact.
     async fn on_snapshot_written(
         &self,
+        slot: SlotNumber,
         event: SnapshotWritten,
         group: SpoolGroup,
         chunk: ChunkNumber,
         blob: BlobInfo,
     ) -> Result<(), NodeError> {
         let store = self.context.store.as_ref();
-
-        let Some(artifact) = store
-            .get_snapshot_artifact(event.epoch, group, chunk)
-            .map_err(|e| NodeError::Store(format!("get_snapshot_artifact: {e}")))?
-        else {
-            return Ok(());
-        };
-
-        // Divergence: another submitter put a different blob on-chain. Drop
-        // our artifact and walk away; the chain is the source of truth.
-        if artifact.blob != blob {
-            store
-                .delete_snapshot_artifact(event.epoch, group, chunk)
-                .map_err(|e| NodeError::Store(format!("delete_snapshot_artifact: {e}")))?;
-            return Ok(());
-        }
-
-        let state = self.context.state();
-        let our_node_id = self.context.node_id();
-
-        let Some(my_index) = bitmap_index_in_group(&state, group, our_node_id) else {
-            store
-                .delete_snapshot_artifact(event.epoch, group, chunk)
-                .map_err(|e| NodeError::Store(format!("delete_snapshot_artifact: {e}")))?;
-            return Ok(());
-        };
-
-        let spool_index = group.base() + my_index;
 
         let track = CompressedTrack {
             tape: snapshot_tape_pda(event.epoch).0,
@@ -201,8 +176,60 @@ where
         store
             .put_track(event.track, track)
             .map_err(|e| NodeError::Store(format!("put_track: {e}")))?;
+
+        // Keep the snapshot tape's next_track_number advancing.
+        if let Some(mut tape_info) = store
+            .get_tape(track.tape)
+            .map_err(|e| NodeError::Store(format!("get_tape: {e}")))?
+        {
+            let next = TrackNumber(event.track_number.0 + 1);
+            if tape_info.next_track_number < next {
+                tape_info.next_track_number = next;
+                store
+                    .put_tape(track.tape, tape_info)
+                    .map_err(|e| NodeError::Store(format!("put_tape: {e}")))?;
+            }
+        }
+
+        // Blob metadata (needed for sync/repair/recover to verify slices).
         store
-            .put_slice(spool_index, event.track, artifact.local_slice)
+            .put_track_data(event.track, TrackData::Blob(blob))
+            .map_err(|e| NodeError::Store(format!("put_track_data: {e}")))?;
+
+        // ObjectInfo: certified at this epoch, registered at this epoch.
+        // Without this, spool scan sees a track with no ObjectInfo and gets
+        // stuck returning `TrackRequirement::Inconsistent` → `ScanResult::Retry`.
+        store
+            .put_object_info(
+                event.track,
+                ObjectInfo::Valid {
+                    track_address: event.track,
+                    registered_epoch: event.epoch,
+                    certified_epoch: Some(event.epoch),
+                    slot,
+                },
+            )
+            .map_err(|e| NodeError::Store(format!("put_object_info: {e}")))?;
+
+        let Some(artifact) = store
+            .get_snapshot_artifact(event.epoch, group, chunk)
+            .map_err(|e| NodeError::Store(format!("get_snapshot_artifact: {e}")))?
+        else {
+            return Ok(());
+        };
+
+        // Divergence: another submitter put a different blob on-chain. The
+        // on-chain metadata (written above) is the source of truth; drop our
+        // staged slice.
+        if artifact.blob != blob {
+            store
+                .delete_snapshot_artifact(event.epoch, group, chunk)
+                .map_err(|e| NodeError::Store(format!("delete_snapshot_artifact: {e}")))?;
+            return Ok(());
+        }
+
+        store
+            .put_slice(artifact.spool_index, event.track, artifact.slice)
             .map_err(|e| NodeError::Store(format!("put_slice: {e}")))?;
         store
             .delete_snapshot_artifact(event.epoch, group, chunk)
@@ -211,22 +238,20 @@ where
         Ok(())
     }
 
-    /// Heartbeat tick: check our store for chunks/groups that have crossed
-    /// the supermajority threshold and submit them, then re-push our own
-    /// partials in case peers are still behind.
     async fn on_heartbeat(&self) -> Result<(), NodeError> {
         let state = self.context.state();
-        if state.epoch.0 == 0 {
+        if state.epoch == EpochNumber(0) {
             return Ok(());
         }
 
-        let epoch = EpochNumber(state.epoch.0 - 1);
+        let snapshot_epoch = state.epoch
+            .saturating_sub(EpochNumber(1));
 
-        submit_ready_writes(&self.context, epoch, &self.cancel).await?;
-        submit_ready_finalizes(&self.context, epoch, &self.cancel).await?;
+        submit_ready_writes(&self.context, snapshot_epoch, &self.cancel).await?;
+        submit_ready_finalizes(&self.context, snapshot_epoch, &self.cancel).await?;
 
-        fanout_write_sigs(&self.context, epoch, &self.cancel).await?;
-        fanout_finalize_sigs(&self.context, epoch, &self.cancel).await?;
+        fanout_write_sigs(&self.context, snapshot_epoch, &self.cancel).await?;
+        fanout_finalize_sigs(&self.context, snapshot_epoch, &self.cancel).await?;
 
         Ok(())
     }
