@@ -61,7 +61,7 @@ where
 
         let log = fetch::fetch_and_decode_epoch(context, epoch, cancel).await?;
         replay::apply_snapshot_log(context.store.as_ref(), &log)?;
-        advance_cursor(context, epoch)?;
+        advance_cursors(context, epoch, log.end_slot)?;
         last_end_slot = Some(log.end_slot);
 
         info!(
@@ -86,9 +86,10 @@ where
     Ok(start_slot)
 }
 
-fn advance_cursor<Db, Cluster, Blockchain>(
+fn advance_cursors<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     epoch: EpochNumber,
+    end_slot: SlotNumber,
 ) -> Result<(), NodeError>
 where
     Db: Store,
@@ -98,20 +99,26 @@ where
     context
         .store
         .set_bootstrap_target_epoch(epoch)
-        .map_err(|error| NodeError::Store(format!("set_bootstrap_target_epoch: {error}")))
+        .map_err(|error| NodeError::Store(format!("set_bootstrap_target_epoch: {error}")))?;
+    context
+        .store
+        .set_sync_cursor(end_slot)
+        .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
+    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_store::ops::MetaOps;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     use crate::config::node::NodeConfig;
     use crate::context::test_utils::test_context;
 
-    use super::run;
+    use super::{advance_cursors, run};
 
     #[tokio::test]
     async fn returns_configured_start_slot_when_nothing_to_replay() {
@@ -129,8 +136,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_op_path_leaves_cursor_untouched() {
-        use tape_store::ops::MetaOps;
-
         let context = test_context();
         let config = NodeConfig::default();
         let cancel = CancellationToken::new();
@@ -141,5 +146,20 @@ mod tests {
 
         assert_eq!(before, after);
         assert!(after.is_none());
+    }
+
+    #[test]
+    fn advance_cursors_records_bootstrap_epoch_and_sync_slot() {
+        let context = test_context();
+        let epoch = EpochNumber(5);
+        let end_slot = SlotNumber(1234);
+
+        advance_cursors(&context, epoch, end_slot).unwrap();
+
+        assert_eq!(
+            context.store.get_bootstrap_target_epoch().unwrap(),
+            Some(epoch)
+        );
+        assert_eq!(context.store.get_sync_cursor().unwrap(), Some(end_slot));
     }
 }

@@ -133,6 +133,25 @@ impl LiteSvmRpc {
         Ok(inner.svm.get_sysvar::<Clock>().unix_timestamp)
     }
 
+    pub fn drop_blocks_through(&self, slot: u64) -> Result<usize, RpcError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+
+        let before = inner.slots.len();
+        inner.slots.retain(|recorded_slot, _| *recorded_slot > slot);
+        inner
+            .tx_slot_index
+            .retain(|_, recorded_slot| *recorded_slot > slot);
+
+        if inner.last_recorded_slot.is_some_and(|last| last <= slot) {
+            inner.last_recorded_slot = inner.slots.keys().copied().max();
+        }
+
+        Ok(before.saturating_sub(inner.slots.len()))
+    }
+
     pub fn add_program_from_file(
         &self,
         program_id: impl Into<Pubkey>,

@@ -86,6 +86,20 @@ async fn bootstrap_late_join_inner() {
             .expect("join late node");
     }
 
+    let prune_slot = harness
+        .chain()
+        .current_slot()
+        .await
+        .expect("current slot before pruning blocks");
+    let dropped = harness
+        .chain()
+        .drop_blocks_through(prune_slot)
+        .expect("drop rpc blocks before late bootstrap");
+    assert!(
+        dropped > 0,
+        "late bootstrap test should remove historical rpc blocks"
+    );
+
     harness
         .start_nodes_with_retry(&[late_node], 3, Duration::from_millis(200))
         .await

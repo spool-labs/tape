@@ -126,6 +126,13 @@ impl ChainFixture {
         Ok(target)
     }
 
+    pub fn drop_blocks_through(&self, slot: u64) -> Result<usize> {
+        self.rpc
+            .drop_blocks_through(slot)
+            .map_err(anyhow::Error::from)
+            .context("drop_blocks_through")
+    }
+
     pub async fn send_instructions_and_advance(
         &self,
         payer: &SolanaKeypair,
