@@ -1,7 +1,8 @@
 use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_core::{
-    types::{EpochNumber, TrackNumber},
+    spooler::SpoolGroup,
+    types::{ChunkNumber, EpochNumber, TrackNumber},
 };
 use tape_crypto::address::Address;
 
@@ -31,8 +32,9 @@ pub const ARCHIVE:            &[u8] = b"archive";
 pub const EPOCH:              &[u8] = b"epoch";
 pub const NODE:               &[u8] = b"node";
 pub const HISTORY:            &[u8] = b"history";
-pub const RESOURCE:           &[u8] = b"resource";
+pub const CASSETTE:           &[u8] = b"cassette";
 pub const TRACK:              &[u8] = b"track";
+pub const CHUNK:              &[u8] = b"chunk";
 pub const STAKE:              &[u8] = b"stake";
 pub const SNAPSHOT_MANIFEST:  &[u8] = b"snapshot_manifest";
 pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
@@ -153,7 +155,7 @@ pub fn history_pda(node: Address) -> (Address, u8) {
 
 #[inline(always)]
 pub fn tape_pda(authority: Address) -> (Address, u8) {
-    Address::find_program_address(&[RESOURCE, authority.as_ref()], id())
+    Address::find_program_address(&[CASSETTE, authority.as_ref()], id())
 }
 
 #[inline(always)]
@@ -169,6 +171,11 @@ pub fn snapshot_pda(epoch: EpochNumber) -> (Address, u8) {
 #[inline(always)]
 pub fn snapshot_tape_pda(epoch: EpochNumber) -> (Address, u8) {
     Address::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], id())
+}
+
+#[inline(always)]
+pub fn chunk_pda(epoch: EpochNumber, group: SpoolGroup, chunk: ChunkNumber) -> (Address, u8) {
+    Address::find_program_address(&[CHUNK, &epoch.pack(), &group.pack(), &chunk.pack()], id())
 }
 
 #[cfg(test)]
@@ -222,6 +229,22 @@ mod tests {
             {
                 let (address, bump) =
                     Pubkey::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], &id());
+                (address.into(), bump)
+            },
+        );
+
+        let group = SpoolGroup(7);
+        let chunk = ChunkNumber(3);
+        let (chunk_address, chunk_bump) = chunk_pda(epoch, group, chunk);
+        assert_ne!(snapshot, chunk_address);
+        assert_ne!(tape, chunk_address);
+        assert_eq!(
+            (chunk_address, chunk_bump),
+            {
+                let (address, bump) = Pubkey::find_program_address(
+                    &[CHUNK, &epoch.pack(), &group.pack(), &chunk.pack()],
+                    &id(),
+                );
                 (address.into(), bump)
             },
         );

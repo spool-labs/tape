@@ -120,7 +120,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[RESOURCE, authority_info.key.as_ref()],
+        &[CASSETTE, authority_info.key.as_ref()],
     )?;
 
     let tape = tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;

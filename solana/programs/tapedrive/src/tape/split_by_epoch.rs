@@ -75,7 +75,7 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[RESOURCE, dest_authority_info.key.as_ref()],
+        &[CASSETTE, dest_authority_info.key.as_ref()],
     )?;
 
     let dest_tape = dest_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;

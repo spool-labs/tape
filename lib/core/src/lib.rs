@@ -23,6 +23,7 @@ pub mod prelude {
     pub use crate::track::data::TrackData;
     pub use crate::track::types::{CompressedTrack, TrackKind, TrackState};
     pub use crate::types::{
-        EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+        ChunkNumber, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TapeNumber,
+        TrackNumber,
     };
 }

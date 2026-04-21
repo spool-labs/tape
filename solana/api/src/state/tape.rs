@@ -22,10 +22,10 @@ pub struct Tape {
     /// The amount of storage used.
     pub used: StorageUnits,
 
-    /// The epoch when this resource is active.
+    /// The epoch when this cassette is active.
     pub active_epoch: EpochNumber,
 
-    /// The epoch when this resource expires.
+    /// The epoch when this cassette expires.
     pub expiry_epoch: EpochNumber,
 
     /// A merkle tree of compressed tracks that store the tape data

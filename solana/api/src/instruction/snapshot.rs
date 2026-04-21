@@ -10,7 +10,7 @@ use tape_solana::*;
 
 use crate::program::tapedrive;
 use crate::program::tapedrive::{
-    epoch_pda, snapshot_pda, snapshot_tape_pda, system_pda,
+    chunk_pda, epoch_pda, snapshot_pda, snapshot_tape_pda, system_pda,
 };
 
 /// Permissionless instruction to create the snapshot manifest and tape accounts for each epoch.
@@ -86,6 +86,7 @@ pub fn build_write_snapshot_ix(
     let (epoch_address, _) = epoch_pda();
     let (snapshot_address, _) = snapshot_pda(epoch);
     let (tape_address, _) = snapshot_tape_pda(epoch);
+    let (chunk_address, _) = chunk_pda(epoch, group, chunk);
 
     let chunk = chunk.pack();
 
@@ -97,6 +98,9 @@ pub fn build_write_snapshot_ix(
             AccountMeta::new_readonly(epoch_address.into(), false),
             AccountMeta::new_readonly(snapshot_address.into(), false),
             AccountMeta::new(tape_address.into(), false),
+            AccountMeta::new(chunk_address.into(), false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: WriteSnapshot {
             group: group.pack(),

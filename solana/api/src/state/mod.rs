@@ -41,4 +41,5 @@ pub enum AccountType {
     Tape,
 
     Snapshot,
+    Chunk,
 }
