@@ -42,13 +42,43 @@ where
     Blockchain: Rpc + 'static,
 {
     let tape = Address::from(snapshot_tape_pda(epoch).0);
+    let candidates = list_snapshot_track_candidates(context, tape).await?;
 
-    let tracks = list_snapshot_tracks(context, tape).await?;
-    if tracks.is_empty() {
-        return Err(NodeError::Store(format!(
-            "snapshot tape {tape} for epoch {epoch} has no tracks"
-        )));
+    let mut last_error = None;
+    for (peer, tracks) in candidates {
+        match decode_snapshot_tracks(context, epoch, tracks, cancel).await {
+            Ok(log) => return Ok(log),
+            Err(error) => {
+                warn!(
+                    node = peer.0,
+                    ?error,
+                    "bootstrap: candidate snapshot track list failed"
+                );
+                last_error = Some(error);
+            }
+        }
     }
+
+    Err(last_error.unwrap_or_else(|| {
+        NodeError::Store(format!(
+            "bootstrap: no usable snapshot track list for epoch {epoch}"
+        ))
+    }))
+}
+
+async fn decode_snapshot_tracks<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    epoch: EpochNumber,
+    tracks: Vec<CompressedTrack>,
+    cancel: &CancellationToken,
+) -> Result<SnapshotLog, NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let tape = Address::from(snapshot_tape_pda(epoch).0);
+    validate_snapshot_track_list(epoch, tape, &tracks)?;
 
     debug!(
         epoch = epoch.0,
@@ -91,6 +121,34 @@ where
 
     let segments = outer_decode_segments(&symbols_by_segment, epoch)?;
     decode_snapshot_log(segments, epoch)
+}
+
+fn validate_snapshot_track_list(
+    epoch: EpochNumber,
+    tape: Address,
+    tracks: &[CompressedTrack],
+) -> Result<(), NodeError> {
+    if tracks.is_empty() {
+        return Err(NodeError::Store(format!(
+            "snapshot tape {tape} for epoch {epoch} has no tracks"
+        )));
+    }
+
+    for track in tracks {
+        if track.tape != tape {
+            return Err(NodeError::Store(format!(
+                "bootstrap: peer returned track from wrong tape for epoch {epoch}"
+            )));
+        }
+
+        if !track.is_blob() {
+            return Err(NodeError::Store(format!(
+                "bootstrap: peer returned non-blob snapshot track for epoch {epoch}"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 struct Decoded {
@@ -239,10 +297,10 @@ async fn fetch_blob<Cluster: Api>(
     }))
 }
 
-async fn list_snapshot_tracks<Db, Cluster, Blockchain>(
+async fn list_snapshot_track_candidates<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     tape: Address,
-) -> Result<Vec<CompressedTrack>, NodeError>
+) -> Result<Vec<(NodeId, Vec<CompressedTrack>)>, NodeError>
 where
     Db: Store,
     Cluster: Api,
@@ -260,19 +318,34 @@ where
         ));
     }
 
+    let mut candidates = Vec::new();
     let mut last_error: Option<NodeError> = None;
     for peer in &peers {
         match list_tracks_from_peer(context.api.as_ref(), *peer, tape).await {
-            Ok(tracks) => return Ok(tracks),
+            Ok(tracks) if tracks.is_empty() => {
+                debug!(
+                    node = peer.0,
+                    ?tape,
+                    "bootstrap: peer returned empty snapshot track list"
+                );
+            }
+            Ok(tracks) => candidates.push((*peer, tracks)),
             Err(error) => {
                 warn!(node = peer.0, ?error, "bootstrap: list_tracks_by_tape failed");
                 last_error = Some(error);
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        NodeError::Store("bootstrap: no peer returned snapshot track list".into())
-    }))
+
+    if candidates.is_empty() {
+        Err(last_error.unwrap_or_else(|| {
+            NodeError::Store(format!(
+                "bootstrap: no peer returned snapshot tracks for tape {tape}"
+            ))
+        }))
+    } else {
+        Ok(candidates)
+    }
 }
 
 async fn list_tracks_from_peer<Cluster: Api>(

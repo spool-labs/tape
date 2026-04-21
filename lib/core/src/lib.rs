@@ -12,13 +12,12 @@ pub mod system;
 pub mod types;
 pub mod snapshot;
 pub mod tape;
-pub mod vote;
 mod macros;
 
 pub mod prelude {
     pub use crate::encoding::EncodingProfile;
     pub use crate::spooler::{SpoolGroup, SpoolIndex};
-    pub use crate::system::{EpochPhase, NodeStatus, SpoolState, SpoolStatus};
+    pub use crate::system::{EpochPhase, NodeStatus, SpoolState, SpoolStatus, VoteKind};
     pub use crate::snapshot::types::SnapshotState;
     pub use crate::track::blob::BlobInfo;
     pub use crate::track::data::TrackData;
@@ -27,5 +26,4 @@ pub mod prelude {
         ChunkNumber, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TapeNumber,
         TrackNumber,
     };
-    pub use crate::vote::VoteKind;
 }

@@ -6,6 +6,7 @@ mod node;
 mod rewards;
 mod schedule;
 mod status;
+mod vote;
 
 pub use blacklist::*;
 pub use committee::*;
@@ -15,3 +16,4 @@ pub use node::*;
 pub use rewards::*;
 pub use schedule::*;
 pub use status::*;
+pub use vote::*;

@@ -14,6 +14,9 @@ use tracing::debug;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
+/// Epoch 0 is the bootstrap base and has no snapshot.
+const FIRST_SNAPSHOT_EPOCH: EpochNumber = EpochNumber(1);
+
 /// Compute the ordered range of snapshot epochs this node still needs to
 /// replay, oldest -> newest.
 pub async fn discover_missing_epochs<Db, Cluster, Blockchain>(
@@ -40,7 +43,7 @@ where
 
     let start = match cursor {
         Some(c) => EpochNumber(c.0.saturating_add(1)),
-        None => EpochNumber(0),
+        None => FIRST_SNAPSHOT_EPOCH,
     };
 
     if start > newest {
@@ -163,17 +166,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn range_from_genesis_when_no_cursor() {
+    async fn range_from_first_snapshot_when_no_cursor() {
         let context = test_context();
         set_epoch(&context, EpochNumber(4));
-        // prev (3) is Finalized → newest = 3, no cursor → start = 0.
+        // prev (3) is Finalized → newest = 3, no cursor → start = 1.
         write_snapshot(&context, EpochNumber(3), SnapshotState::Finalized);
 
         let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
         assert_eq!(
             epochs,
             vec![
-                EpochNumber(0),
                 EpochNumber(1),
                 EpochNumber(2),
                 EpochNumber(3),
@@ -191,7 +193,7 @@ mod tests {
 
         let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
         assert_eq!(epochs.last(), Some(&EpochNumber(3)));
-        assert_eq!(epochs.len(), 4);
+        assert_eq!(epochs.len(), 3);
     }
 
     #[tokio::test]
