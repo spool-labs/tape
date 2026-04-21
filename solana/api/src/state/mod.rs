@@ -8,6 +8,7 @@ mod stake;
 mod system;
 mod tape;
 mod treasury;
+mod vote;
 
 pub use archive::*;
 pub use epoch::*;
@@ -19,6 +20,7 @@ pub use stake::*;
 pub use system::*;
 pub use tape::*;
 pub use treasury::*;
+pub use vote::*;
 
 use tape_solana::*;
 
@@ -41,5 +43,5 @@ pub enum AccountType {
     Tape,
 
     Snapshot,
-    Chunk,
+    Vote,
 }

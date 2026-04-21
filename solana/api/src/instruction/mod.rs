@@ -13,6 +13,7 @@ mod tape;
 mod token;
 mod track;
 mod util;
+mod vote;
 
 pub use archive::*;
 pub use blacklist::*;
@@ -27,6 +28,7 @@ pub use tape::*;
 pub use token::*;
 pub use track::*;
 pub use util::*;
+pub use vote::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
@@ -114,6 +116,9 @@ pub enum TapeInstruction {
     ReserveSnapshot = 0xC0,
     WriteSnapshot,
     SignSnapshot,
+
+    // Vote
+    CloseVote = 0xD0,
 }
 
 
@@ -174,3 +179,4 @@ tape_solana::instruction!(TapeInstruction, InvalidateTrack);
 tape_solana::instruction!(TapeInstruction, ReserveSnapshot);
 tape_solana::instruction!(TapeInstruction, WriteSnapshot);
 tape_solana::instruction!(TapeInstruction, SignSnapshot);
+tape_solana::instruction!(TapeInstruction, CloseVote);

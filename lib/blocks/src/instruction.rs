@@ -4,7 +4,7 @@ use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
     SnapshotReserved, SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
+    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteClosed,
 };
 use tape_api::instruction::{self as ix, TapeInstruction, WriteSnapshot};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
@@ -34,6 +34,9 @@ pub enum RawInstruction {
         blob: BlobInfo,
     },
     SignSnapshot,
+    CloseVote {
+        vote: Address,
+    },
     AdvancePool {
         node: Address,
     },
@@ -93,6 +96,10 @@ pub enum ParsedInstruction {
     },
     SignSnapshot {
         event: SnapshotSigned,
+    },
+    CloseVote {
+        vote: Address,
+        event: VoteClosed,
     },
     AdvancePool {
         node: Address,
@@ -216,6 +223,13 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::SignSnapshot => Ok(Some(RawInstruction::SignSnapshot)),
 
+        TapeInstruction::CloseVote => {
+            ix::CloseVote::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("close_vote: {e:?}")))?;
+            let vote = get_account(4)?;
+            Ok(Some(RawInstruction::CloseVote { vote }))
+        }
+
         TapeInstruction::TrackWrite => {
             let authority = get_account(1)?;
             let (header, payload) = ix::parse_track_write(&ix_data[1..])
@@ -298,7 +312,8 @@ mod tests {
     use solana_sdk::instruction::Instruction;
     use solana_transaction_status::UiCompiledInstruction;
     use tape_api::instruction::{
-        build_reserve_snapshot_ix, build_sign_snapshot_ix, build_write_snapshot_ix,
+        build_close_vote_ix, build_reserve_snapshot_ix, build_sign_snapshot_ix,
+        build_write_snapshot_ix,
     };
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
@@ -314,11 +329,19 @@ mod tests {
     use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
 
     fn compiled_instruction(instruction: &Instruction) -> (UiCompiledInstruction, Vec<String>) {
-        let account_keys = vec![TAPE_PROGRAM_ID.to_string()];
+        let mut account_keys = vec![TAPE_PROGRAM_ID.to_string()];
+        let accounts = instruction
+            .accounts
+            .iter()
+            .map(|meta| {
+                account_keys.push(meta.pubkey.to_string());
+                (account_keys.len() - 1) as u8
+            })
+            .collect();
         (
             UiCompiledInstruction {
                 program_id_index: 0,
-                accounts: vec![],
+                accounts,
                 data: bs58::encode(&instruction.data).into_string(),
                 stack_height: None,
             },
@@ -355,6 +378,7 @@ mod tests {
         let blob = valid_blob();
         let (ix, keys) = compiled_instruction(&build_write_snapshot_ix(
             Address::new_unique(),
+            Address::new_unique(),
             EpochNumber(7),
             SpoolGroup(3),
             ChunkNumber(5),
@@ -388,6 +412,22 @@ mod tests {
         assert!(matches!(
             parse_raw_instruction(&ix, &keys).unwrap(),
             Some(RawInstruction::SignSnapshot)
+        ));
+    }
+
+    #[test]
+    fn parses_close_vote_instruction() {
+        let vote = Address::new_unique();
+        let (ix, keys) = compiled_instruction(&build_close_vote_ix(
+            Address::new_unique(),
+            Address::new_unique(),
+            Address::new_unique(),
+            vote,
+        ));
+
+        assert!(matches!(
+            parse_raw_instruction(&ix, &keys).unwrap(),
+            Some(RawInstruction::CloseVote { vote: parsed_vote }) if parsed_vote == vote
         ));
     }
 

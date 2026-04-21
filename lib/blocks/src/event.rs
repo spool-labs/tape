@@ -3,7 +3,7 @@
 use tape_api::event::{
     EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
     SnapshotReserved, SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
+    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteClosed,
 };
 
 use crate::error::ParseError;
@@ -29,6 +29,7 @@ pub enum TapedriveEvent {
     NodeJoinedCommittee(NodeJoinedCommittee),
     NodeSynced(NodeSynced),
     PoolAdvanced(PoolAdvanced),
+    VoteClosed(VoteClosed),
 }
 
 /// Parse event data from a "Program data:" log line.
@@ -124,6 +125,11 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
             let event = bytemuck::try_from_bytes::<PoolAdvanced>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::PoolAdvanced(*event)))
+        }
+        EventType::VoteClosed => {
+            let event = bytemuck::try_from_bytes::<VoteClosed>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::VoteClosed(*event)))
         }
         // Unknown event types are silently skipped
         _ => Ok(None),
@@ -277,6 +283,30 @@ mod tests {
                 assert_eq!(decoded.state, signed.state);
             }
             _ => panic!("Expected SnapshotSigned event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_vote_closed_event() {
+        let vote = Address::new_unique();
+        let event = VoteClosed {
+            epoch: EpochNumber(20),
+            kind: VoteKind::Snapshot as u64,
+            vote,
+            registered_by: NodeId::new(7),
+        };
+
+        let log = encode_event(EventType::VoteClosed, &event);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::VoteClosed(decoded) => {
+                assert_eq!(decoded.epoch, event.epoch);
+                assert_eq!(decoded.kind, event.kind);
+                assert_eq!(decoded.vote, vote);
+                assert_eq!(decoded.registered_by, event.registered_by);
+            }
+            _ => panic!("Expected VoteClosed event"),
         }
     }
 

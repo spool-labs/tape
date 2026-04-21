@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 /// This function matches events to instructions based on their order
 /// in the transaction. Some instructions require events (AdvanceEpoch,
 /// CertifyTrack, SyncEpoch, TrackWrite, DeleteTrack, InvalidateTrack,
-/// ReserveTape, DestroyTape, RegisterNode, JoinNetwork).
+/// ReserveTape, DestroyTape, RegisterNode, JoinNetwork, CloseVote).
 ///
 /// # Arguments
 /// * `instructions` - Raw instructions parsed from the transaction
@@ -89,6 +89,14 @@ pub fn merge(
                     }
                 };
                 ParsedInstruction::SignSnapshot { event }
+            }
+
+            RawInstruction::CloseVote { vote } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::VoteClosed(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected VoteClosed event")),
+                };
+                ParsedInstruction::CloseVote { vote, event }
             }
 
             RawInstruction::TrackWrite {
@@ -239,7 +247,7 @@ mod tests {
     use tape_api::event::{
         EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, SnapshotReserved,
         SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved, TrackCertified,
-        TrackDeleted, TrackInvalidated, TrackWritten,
+        TrackDeleted, TrackInvalidated, TrackWritten, VoteClosed,
     };
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
@@ -552,6 +560,9 @@ mod tests {
             RawInstruction::JoinNetwork {
                 node: Address::new_unique(),
             },
+            RawInstruction::CloseVote {
+                vote: Address::new_unique(),
+            },
         ]
     }
 
@@ -594,6 +605,7 @@ mod tests {
         let destroy_tape = Address::new_unique();
         let register_node = Address::new_unique();
         let join_node = Address::new_unique();
+        let vote = Address::new_unique();
 
         vec![
             (
@@ -689,6 +701,15 @@ mod tests {
                     activation_epoch: EpochNumber(1),
                 }),
             ),
+            (
+                RawInstruction::CloseVote { vote },
+                TapedriveEvent::VoteClosed(VoteClosed {
+                    epoch: EpochNumber(2),
+                    kind: VoteKind::Snapshot as u64,
+                    vote,
+                    registered_by: NodeId::new(3),
+                }),
+            ),
         ]
     }
 
@@ -705,7 +726,8 @@ mod tests {
                 | ParsedInstruction::ReserveTape { .. }
                 | ParsedInstruction::DestroyTape { .. }
                 | ParsedInstruction::RegisterNode { .. }
-                | ParsedInstruction::JoinNetwork { .. } => {}
+                | ParsedInstruction::JoinNetwork { .. }
+                | ParsedInstruction::CloseVote { .. } => {}
                 _ => panic!("expected one of the required instruction variants"),
             }
         }

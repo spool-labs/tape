@@ -9,6 +9,7 @@ pub mod snapshot;
 pub mod staking;
 pub mod tape;
 pub mod track;
+pub mod vote;
 
 use tape_api::program::prelude::{TapeInstruction, parse_instruction};
 use tape_api::program::tapedrive;
@@ -48,6 +49,7 @@ use crate::track::{
     process_certify_track, process_delete_track, process_invalidate_track,
     process_track_write,
 };
+use crate::vote::process_close_vote;
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -118,6 +120,7 @@ pub fn process_instruction(
             TapeInstruction::ReserveSnapshot => process_reserve_snapshot(accounts, data)?,
             TapeInstruction::WriteSnapshot => process_write_snapshot(accounts, data)?,
             TapeInstruction::SignSnapshot => process_sign_snapshot(accounts, data)?,
+            TapeInstruction::CloseVote => process_close_vote(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

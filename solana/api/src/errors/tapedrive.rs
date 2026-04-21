@@ -101,6 +101,8 @@ pub enum TapeError {
     AlreadyCertified = 0x74,
     #[error("already signed")]
     AlreadySigned = 0x75,
+    #[error("vote still active")]
+    VoteStillActive = 0x76,
 }
 
 impl From<TapeError> for solana_program::program_error::ProgramError {
@@ -138,7 +140,13 @@ impl TapeError {
 
     /// Errors that indicate retry later
     pub fn is_retriable(&self) -> bool {
-        matches!(self, Self::TooSoon | Self::InsufficientCommittee | Self::SnapshotIncomplete)
+        matches!(
+            self,
+            Self::TooSoon
+                | Self::InsufficientCommittee
+                | Self::SnapshotIncomplete
+                | Self::VoteStillActive
+        )
     }
 
     /// Action required before retrying
@@ -192,6 +200,7 @@ impl TapeError {
             Self::AlreadyInvalidated => "Track already invalidated",
             Self::AlreadyCertified => "Track already certified",
             Self::AlreadySigned => "Snapshot group has already signed",
+            Self::VoteStillActive => "Vote account is still active",
         }
     }
 }

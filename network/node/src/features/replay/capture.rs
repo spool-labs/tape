@@ -149,6 +149,7 @@ fn capture_instruction(
             }
         }
         ParsedInstruction::SignSnapshot { .. } => return Ok(None),
+        ParsedInstruction::CloseVote { .. } => return Ok(None),
         ParsedInstruction::TrackWrite {
             track,
             key,

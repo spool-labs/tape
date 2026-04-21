@@ -20,7 +20,6 @@ pub mod prelude {
     pub use crate::program::{
         archive_ata,
         archive_pda,
-        chunk_pda,
         epoch_pda,
         exchange_ata,
         exchange_pda,
@@ -30,6 +29,7 @@ pub mod prelude {
         node_pda,
         snapshot_pda,
         snapshot_tape_pda,
+        snapshot_vote_pda,
         stake_pda,
         system_pda,
         tape_pda,
@@ -40,7 +40,6 @@ pub mod prelude {
     pub use crate::state::{
         AccountType,
         Archive,
-        Chunk,
         Epoch,
         Exchange,
         History,
@@ -50,5 +49,6 @@ pub mod prelude {
         System,
         Tape,
         Treasury,
+        Vote,
     };
 }

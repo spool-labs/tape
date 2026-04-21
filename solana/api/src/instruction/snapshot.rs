@@ -10,7 +10,7 @@ use tape_solana::*;
 
 use crate::program::tapedrive;
 use crate::program::tapedrive::{
-    chunk_pda, epoch_pda, snapshot_pda, snapshot_tape_pda, system_pda,
+    epoch_pda, snapshot_pda, snapshot_tape_pda, snapshot_vote_pda, system_pda,
 };
 
 /// Permissionless instruction to create the snapshot manifest and tape accounts for each epoch.
@@ -75,6 +75,7 @@ pub fn build_reserve_snapshot_ix(
 
 pub fn build_write_snapshot_ix(
     fee_payer: Address,
+    node_address: Address,
     epoch: EpochNumber,
     group: SpoolGroup,
     chunk: ChunkNumber,
@@ -86,7 +87,7 @@ pub fn build_write_snapshot_ix(
     let (epoch_address, _) = epoch_pda();
     let (snapshot_address, _) = snapshot_pda(epoch);
     let (tape_address, _) = snapshot_tape_pda(epoch);
-    let (chunk_address, _) = chunk_pda(epoch, group, chunk);
+    let (vote_address, _) = snapshot_vote_pda(epoch, group, chunk);
 
     let chunk = chunk.pack();
 
@@ -94,11 +95,12 @@ pub fn build_write_snapshot_ix(
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(node_address.into(), false),
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new_readonly(epoch_address.into(), false),
             AccountMeta::new_readonly(snapshot_address.into(), false),
             AccountMeta::new(tape_address.into(), false),
-            AccountMeta::new(chunk_address.into(), false),
+            AccountMeta::new(vote_address.into(), false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],

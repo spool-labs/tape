@@ -34,7 +34,8 @@ pub const NODE:               &[u8] = b"node";
 pub const HISTORY:            &[u8] = b"history";
 pub const CASSETTE:           &[u8] = b"cassette";
 pub const TRACK:              &[u8] = b"track";
-pub const CHUNK:              &[u8] = b"chunk";
+pub const VOTE:               &[u8] = b"vote";
+pub const SNAPSHOT_VOTE:      &[u8] = b"snapshot";
 pub const STAKE:              &[u8] = b"stake";
 pub const SNAPSHOT_MANIFEST:  &[u8] = b"snapshot_manifest";
 pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
@@ -174,8 +175,8 @@ pub fn snapshot_tape_pda(epoch: EpochNumber) -> (Address, u8) {
 }
 
 #[inline(always)]
-pub fn chunk_pda(epoch: EpochNumber, group: SpoolGroup, chunk: ChunkNumber) -> (Address, u8) {
-    Address::find_program_address(&[CHUNK, &epoch.pack(), &group.pack(), &chunk.pack()], id())
+pub fn snapshot_vote_pda(epoch: EpochNumber, group: SpoolGroup, chunk: ChunkNumber) -> (Address, u8) {
+    Address::find_program_address(&[VOTE, SNAPSHOT_VOTE, &epoch.pack(), &group.pack(), &chunk.pack()], id())
 }
 
 #[cfg(test)]
@@ -235,14 +236,14 @@ mod tests {
 
         let group = SpoolGroup(7);
         let chunk = ChunkNumber(3);
-        let (chunk_address, chunk_bump) = chunk_pda(epoch, group, chunk);
-        assert_ne!(snapshot, chunk_address);
-        assert_ne!(tape, chunk_address);
+        let (vote_address, vote_bump) = snapshot_vote_pda(epoch, group, chunk);
+        assert_ne!(snapshot, vote_address);
+        assert_ne!(tape, vote_address);
         assert_eq!(
-            (chunk_address, chunk_bump),
+            (vote_address, vote_bump),
             {
                 let (address, bump) = Pubkey::find_program_address(
-                    &[CHUNK, &epoch.pack(), &group.pack(), &chunk.pack()],
+                    &[VOTE, SNAPSHOT_VOTE, &epoch.pack(), &group.pack(), &chunk.pack()],
                     &id(),
                 );
                 (address.into(), bump)

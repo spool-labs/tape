@@ -6,16 +6,18 @@ use tape_core::{
     track::data::TrackDataSlice,
 };
 use tape_crypto::bls12254::min_sig::*;
+use tape_crypto::hash::hash;
 
 pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = WriteSnapshot::try_from_bytes(data)?;
     let [
         fee_payer_info,
+        node_info,
         system_info,
         epoch_info,
         snapshot_info,
         snapshot_tape_info,
-        chunk_info,
+        vote_info,
         system_program_info,
         rent_info,
     ] = accounts else {
@@ -30,6 +32,13 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_program(&system_program::ID)?;
     rent_info
         .is_sysvar(&sysvar::rent::ID)?;
+
+    let node = node_info
+        .as_account::<Node>(&tapedrive::ID)?;
+
+    if node.authority != (*fee_payer_info.key).into() {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     let system = system_info
         .is_system()?
@@ -58,10 +67,10 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let spool_group = SpoolGroup::unpack(args.group);
     let chunk_index = ChunkNumber::unpack(args.chunk);
 
-    let chunk_address = chunk_pda(snapshot_epoch, spool_group, chunk_index).0;
-    chunk_info
+    let vote_address = snapshot_vote_pda(snapshot_epoch, spool_group, chunk_index).0;
+    vote_info
         .is_writable()?
-        .has_address(&chunk_address.into())?
+        .has_address(&vote_address.into())?
         .is_empty()?;
 
     // verify signature before mutating state
@@ -135,22 +144,27 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let track_address = track_pda(track.tape, track.track_number).0;
     let track_hash = track.get_hash();
 
-    create_program_account::<Chunk>(
-        chunk_info,
+    create_program_account::<Vote>(
+        vote_info,
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[CHUNK, &snapshot_epoch.pack(), &spool_group.pack(), &chunk_index.pack()],
+        &[
+            VOTE,
+            SNAPSHOT_VOTE,
+            &snapshot_epoch.pack(),
+            &spool_group.pack(),
+            &chunk_index.pack(),
+        ],
     )?;
 
-    let chunk = chunk_info
-        .as_account_mut::<Chunk>(&tapedrive::ID)?;
+    let vote = vote_info
+        .as_account_mut::<Vote>(&tapedrive::ID)?;
 
-    chunk.epoch = snapshot_epoch;
-    chunk.group = spool_group;
-    chunk.chunk = chunk_index;
-    chunk.track = track_number;
-    chunk.value_hash = meta.value_hash;
+    vote.epoch = snapshot_epoch;
+    vote.kind = VoteKind::Snapshot as u64;
+    vote.message_hash = hash(&message_bytes);
+    vote.registered_by = node.id;
 
     tape.write_track(&track)?;
 
@@ -235,12 +249,19 @@ mod tests {
         let chunk_index = ChunkNumber(0);
 
         let (system_address, _) = system_pda();
+        let (node_address, _) = node_pda(fee_payer.into());
         let (epoch_address, _) = epoch_pda();
         let (snapshot_address, _) = snapshot_pda(snapshot_epoch);
         let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
-        let (chunk_address, _) = chunk_pda(snapshot_epoch, spool_group, chunk_index);
+        let (vote_address, _) = snapshot_vote_pda(snapshot_epoch, spool_group, chunk_index);
 
         let (private_keys, system) = make_committee();
+
+        let node = Node {
+            id: NodeId(0),
+            authority: fee_payer.into(),
+            ..Node::zeroed()
+        };
 
         let epoch = Epoch {
             id: current_epoch,
@@ -290,6 +311,7 @@ mod tests {
 
         let instruction = build_write_snapshot_ix(
             fee_payer.into(),
+            node_address,
             snapshot_epoch,
             spool_group,
             chunk_index,
@@ -300,11 +322,12 @@ mod tests {
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
+            pda(node_address, node.pack(), tapedrive::ID),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(snapshot_address, snapshot.pack(), tapedrive::ID),
             pda(snapshot_tape_address, snapshot_tape.pack(), tapedrive::ID),
-            empty(chunk_address),
+            empty(vote_address),
             system_program(),
             rent_sysvar(),
         ];
@@ -317,12 +340,11 @@ mod tests {
             tracks: expected_tracks,
             ..snapshot_tape
         };
-        let expected_chunk = Chunk {
+        let expected_vote = Vote {
             epoch: snapshot_epoch,
-            group: spool_group,
-            chunk: chunk_index,
-            track: TrackNumber(0),
-            value_hash,
+            kind: VoteKind::Snapshot as u64,
+            message_hash: hash(&message),
+            registered_by: node.id,
         };
 
         let env = test_env();
@@ -337,8 +359,8 @@ mod tests {
                 Check::account(&Pubkey::from(snapshot_tape_address))
                     .data(expected_tape.pack().as_ref())
                     .build(),
-                Check::account(&Pubkey::from(chunk_address))
-                    .data(expected_chunk.pack().as_ref())
+                Check::account(&Pubkey::from(vote_address))
+                    .data(expected_vote.pack().as_ref())
                     .build(),
             ],
         );
@@ -353,12 +375,19 @@ mod tests {
         let chunk_index = ChunkNumber(0);
 
         let (system_address, _) = system_pda();
+        let (node_address, _) = node_pda(fee_payer.into());
         let (epoch_address, _) = epoch_pda();
         let (snapshot_address, _) = snapshot_pda(snapshot_epoch);
         let (snapshot_tape_address, _) = snapshot_tape_pda(snapshot_epoch);
-        let (chunk_address, _) = chunk_pda(snapshot_epoch, spool_group, chunk_index);
+        let (vote_address, _) = snapshot_vote_pda(snapshot_epoch, spool_group, chunk_index);
 
         let (private_keys, system) = make_committee();
+
+        let node = Node {
+            id: NodeId(0),
+            authority: fee_payer.into(),
+            ..Node::zeroed()
+        };
 
         let epoch = Epoch {
             id: current_epoch,
@@ -399,18 +428,17 @@ mod tests {
             tracks,
         };
 
-        let existing_chunk = Chunk {
-            epoch: snapshot_epoch,
-            group: spool_group,
-            chunk: chunk_index,
-            track: TrackNumber(0),
-            value_hash,
-        };
-
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = SpoolGroupBitmap::from_indices(&signed_indices, SPOOL_GROUP_SIZE);
         let message =
             SnapshotWriteMessage::new(snapshot_epoch, spool_group, chunk_index, value_hash).to_bytes();
+
+        let existing_vote = Vote {
+            epoch: snapshot_epoch,
+            kind: VoteKind::Snapshot as u64,
+            message_hash: hash(&message),
+            registered_by: node.id,
+        };
 
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
@@ -421,6 +449,7 @@ mod tests {
 
         let instruction = build_write_snapshot_ix(
             fee_payer.into(),
+            node_address,
             snapshot_epoch,
             spool_group,
             chunk_index,
@@ -431,11 +460,12 @@ mod tests {
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
+            pda(node_address, node.pack(), tapedrive::ID),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(snapshot_address, snapshot.pack(), tapedrive::ID),
             pda(snapshot_tape_address, snapshot_tape.pack(), tapedrive::ID),
-            pda(chunk_address, existing_chunk.pack(), tapedrive::ID),
+            pda(vote_address, existing_vote.pack(), tapedrive::ID),
             system_program(),
             rent_sysvar(),
         ];

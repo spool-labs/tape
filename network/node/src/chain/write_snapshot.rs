@@ -23,9 +23,11 @@ pub async fn submit_write_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     blob: &BlobInfo,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
+    let node_address = ctx.node_address();
 
     let ix = build_write_snapshot_ix(
         fee_payer,
+        node_address,
         snapshot_epoch,
         group,
         chunk,

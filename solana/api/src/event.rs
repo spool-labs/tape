@@ -45,8 +45,10 @@ pub enum EventType {
     SnapshotReserved = 0x70,
     SnapshotWritten = 0x71,
     SnapshotSigned = 0x72,
-}
 
+    // Vote events (0x80 range)
+    VoteClosed = 0x80,
+}
 
 /// Emitted when a track achieves certification quorum.
 #[repr(C)]
@@ -54,10 +56,13 @@ pub enum EventType {
 pub struct TrackCertified {
     /// Track account address
     pub track: Address,
+
     /// Certification epoch
     pub epoch: EpochNumber,
+
     /// Committee members who signed
     pub signer_count: [u8; 8],
+
     /// Total spool weight of signers
     pub signer_weight: [u8; 8],
 }
@@ -70,10 +75,13 @@ tape_solana::event!(EventType, TrackCertified);
 pub struct TrackDeleted {
     /// Track account address
     pub track: Address,
+
     /// Parent tape address
     pub tape: Address,
+
     /// Track key for reference
     pub key: Hash,
+
     /// Storage being freed
     pub size: StorageUnits,
 }
@@ -86,6 +94,7 @@ tape_solana::event!(EventType, TrackDeleted);
 pub struct TrackInvalidated {
     /// Track account address
     pub track: Address,
+
     /// Invalidation epoch
     pub epoch: EpochNumber,
 }
@@ -98,14 +107,19 @@ tape_solana::event!(EventType, TrackInvalidated);
 pub struct TrackWritten {
     /// The epoch when the track was written
     pub epoch: EpochNumber,
+
     /// Parent tape address
     pub tape: Address,
+
     /// Track account address
     pub track: Address,
+
     /// Track index within the tape
     pub track_number: TrackNumber,
+
     /// The spool group that is responsible for this track
     pub spool_group: SpoolGroup,
+
     /// The compressed track hash that was added to the tape's merkle tree
     pub track_hash: Hash,
 }
@@ -118,14 +132,19 @@ tape_solana::event!(EventType, TrackWritten);
 pub struct TapeReserved {
     /// Tape account address
     pub tape: Address,
+
     /// Owner who reserved
     pub authority: Address,
+
     /// Reserved capacity in bytes
     pub capacity: StorageUnits,
+
     /// First active epoch
     pub active_epoch: EpochNumber,
+
     /// Expiration epoch
     pub expiry_epoch: EpochNumber,
+
     /// TAPE flux units paid
     pub cost: [u8; 8],
 }
@@ -138,6 +157,7 @@ tape_solana::event!(EventType, TapeReserved);
 pub struct TapeDestroyed {
     /// Tape account address
     pub tape: Address,
+
     /// Owner who destroyed
     pub authority: Address,
 }
@@ -150,10 +170,13 @@ tape_solana::event!(EventType, TapeDestroyed);
 pub struct NodeRegistered {
     /// Node account address
     pub node: Address,
+
     /// Assigned unique node ID
     pub id: NodeId,
+
     /// Node operator pubkey
     pub authority: Address,
+
     /// Registration epoch
     pub epoch: EpochNumber,
 }
@@ -166,16 +189,22 @@ tape_solana::event!(EventType, NodeRegistered);
 pub struct NodeJoinedCommittee {
     /// Node account address
     pub node: Address,
+
     /// Node ID
     pub id: NodeId,
+
     /// Stake in TAPE flux units
     pub stake: [u8; 8],
+
     /// Current BLS public key used once this node rotates into the active committee
     pub key: BlsPubkey,
+
     /// Total blacklisted storage units carried into committee scoring/rewards
     pub blacklist: StorageUnits,
+
     /// Storage preferences used when the joined committee rotates into active service
     pub preferences: NodePreferences,
+
     /// When node becomes active
     pub activation_epoch: EpochNumber,
 }
@@ -188,12 +217,16 @@ tape_solana::event!(EventType, NodeJoinedCommittee);
 pub struct NodeSynced {
     /// Node account address
     pub node: Address,
+
     /// Node ID
     pub id: NodeId,
+
     /// Synced epoch
     pub epoch: EpochNumber,
+
     /// Hash of spool assignments
     pub spools_hash: Hash,
+
     /// Epoch phase after this sync (Syncing, Settling, or Active)
     pub phase: u64,
 }
@@ -206,10 +239,13 @@ tape_solana::event!(EventType, NodeSynced);
 pub struct PoolAdvanced {
     /// Node account address
     pub node: Address,
+
     /// Node ID
     pub id: NodeId,
+
     /// Current epoch
     pub epoch: EpochNumber,
+
     /// Epoch phase after this advance (Settling or Active)
     pub phase: u64,
 }
@@ -222,20 +258,28 @@ tape_solana::event!(EventType, PoolAdvanced);
 pub struct EpochAdvanced {
     /// Previous epoch
     pub old_epoch: EpochNumber,
+
     /// New epoch
     pub new_epoch: EpochNumber,
+
     /// Unix timestamp
     pub timestamp: [u8; 8],
+
     /// Active committee count
     pub committee_size: [u8; 8],
+
     /// Total staked TAPE
     pub total_stake: [u8; 8],
+
     /// Current price per StorageUnit
     pub storage_price: [u8; 8],
+
     /// Total network capacity
     pub storage_capacity: StorageUnits,
+
     /// Randomness seed for leader schedule
     pub nonce: Hash,
+
     /// Epoch phase after advance (always Syncing)
     pub phase: u64,
 }
@@ -248,12 +292,16 @@ tape_solana::event!(EventType, EpochAdvanced);
 pub struct StakeDeposited {
     /// Stake account address
     pub stake: Address,
+
     /// Staker
     pub authority: Address,
+
     /// Target pool
     pub pool: Address,
+
     /// TAPE flux units
     pub amount: [u8; 8],
+
     /// When stake activates
     pub activation_epoch: EpochNumber,
 }
@@ -266,12 +314,16 @@ tape_solana::event!(EventType, StakeDeposited);
 pub struct StakeUnlockRequested {
     /// Stake account address
     pub stake: Address,
+
     /// Staker
     pub authority: Address,
+
     /// Pool
     pub pool: Address,
+
     /// Amount being unlocked
     pub amount: [u8; 8],
+
     /// When withdrawal available
     pub withdraw_epoch: EpochNumber,
 }
@@ -284,12 +336,16 @@ tape_solana::event!(EventType, StakeUnlockRequested);
 pub struct StakeWithdrawn {
     /// Stake account address
     pub stake: Address,
+
     /// Staker
     pub authority: Address,
+
     /// Pool
     pub pool: Address,
+
     /// Principal returned
     pub principal: [u8; 8],
+
     /// Rewards earned
     pub rewards: [u8; 8],
 }
@@ -302,8 +358,10 @@ tape_solana::event!(EventType, StakeWithdrawn);
 pub struct CommissionClaimed {
     /// Node account address
     pub node: Address,
+
     /// Node operator
     pub authority: Address,
+
     /// TAPE flux units claimed
     pub amount: [u8; 8],
 }
@@ -326,12 +384,16 @@ tape_solana::event!(EventType, SnapshotReserved);
 pub struct SnapshotWritten {
     /// The epoch this snapshot is for
     pub epoch: EpochNumber,
+
     /// The SpoolGroup that wrote this snapshot
     pub group: SpoolGroup,
+
     /// Track account address
     pub track: Address,
+
     /// The TrackNumber that contains the snapshot blob info
     pub track_number: TrackNumber,
+
     /// The compressed track hash that was added to the tape's merkle tree
     pub track_hash: Hash,
 }
@@ -343,14 +405,35 @@ tape_solana::event!(EventType, SnapshotWritten);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SnapshotSigned {
     /// The epoch this snapshot is for
-    pub epoch: EpochNumber,   
+    pub epoch: EpochNumber,
+
     /// The SpoolGroup that signed this snapshot
     pub group: SpoolGroup,
+
     /// The snapshot state (0 = Registered, 1 = PartiallyCertified, 2 = Finalized)
     pub state: u64,
 }
 
 tape_solana::event!(EventType, SnapshotSigned);
+
+/// Emitted when an accepted quorum vote account is closed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct VoteClosed {
+    /// The epoch this vote belonged to
+    pub epoch: EpochNumber,
+
+    /// The protocol vote domain/type
+    pub kind: u64,
+
+    /// Vote account address
+    pub vote: Address,
+
+    /// The node that registered the accepted quorum vote
+    pub registered_by: NodeId,
+}
+
+tape_solana::event!(EventType, VoteClosed);
 
 #[cfg(test)]
 mod tests {
@@ -367,6 +450,7 @@ mod tests {
         assert_eq!(EventType::SnapshotReserved as u8, 0x70);
         assert_eq!(EventType::SnapshotWritten as u8, 0x71);
         assert_eq!(EventType::SnapshotSigned as u8, 0x72);
+        assert_eq!(EventType::VoteClosed as u8, 0x80);
     }
 
     #[test]
@@ -381,5 +465,6 @@ mod tests {
         assert!(StakeDeposited::size_of() < 1024);
         assert!(SnapshotReserved::size_of() < 1024);
         assert!(SnapshotSigned::size_of() < 1024);
+        assert!(VoteClosed::size_of() < 1024);
     }
 }

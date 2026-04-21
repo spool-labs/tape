@@ -12,6 +12,7 @@ pub mod system;
 pub mod types;
 pub mod snapshot;
 pub mod tape;
+pub mod vote;
 mod macros;
 
 pub mod prelude {
@@ -26,4 +27,5 @@ pub mod prelude {
         ChunkNumber, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TapeNumber,
         TrackNumber,
     };
+    pub use crate::vote::VoteKind;
 }
