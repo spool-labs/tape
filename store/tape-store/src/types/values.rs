@@ -70,7 +70,7 @@ pub struct InvalidationProof {
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
     use tape_core::types::{StorageUnits, StripeCount};
@@ -119,7 +119,7 @@ mod tests {
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         let info = BlobInfo {
             size: StorageUnits(1024),
-            commitment: root_from_leaf_hashes::<{ COMMITMENT_TREE_HEIGHT }>(&leaves),
+            commitment: root_from_leaf_hashes::<{ SLICE_TREE_HEIGHT }>(&leaves),
             profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(1),

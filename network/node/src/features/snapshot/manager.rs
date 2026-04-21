@@ -4,20 +4,13 @@ use std::time::Duration;
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::{SnapshotSigned, SnapshotWritten};
-use tape_api::program::tapedrive::snapshot_tape_pda;
 use tape_blocks::ParsedInstruction;
-use tape_core::snapshot::chunk::snapshot_chunk_key;
 use tape_core::snapshot::types::SnapshotState;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::blob::BlobInfo;
-use tape_core::track::data::TrackData;
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber, TrackNumber};
+use tape_core::types::{ChunkNumber, EpochNumber};
 use tape_protocol::Api;
-use tape_store::ops::{
-    EventLogOps, ObjectInfoOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps,
-};
-use tape_store::types::ObjectInfo;
+use tape_store::ops::{EventLogOps, SliceOps, SnapshotOps};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -93,7 +86,7 @@ where
                     self.on_snapshot_reserved(event.epoch).await?;
                 }
                 ParsedInstruction::WriteSnapshot { group, chunk, blob, event, } => {
-                    self.on_snapshot_written(block.slot, *event, *group, *chunk, *blob).await?;
+                    self.on_snapshot_written(*event, *group, *chunk, *blob).await?;
                 }
                 ParsedInstruction::SignSnapshot { event } => {
                     self.on_snapshot_signed(*event).await?;
@@ -155,62 +148,12 @@ where
 
     async fn on_snapshot_written(
         &self,
-        slot: SlotNumber,
         event: SnapshotWritten,
         group: SpoolGroup,
         chunk: ChunkNumber,
         blob: BlobInfo,
     ) -> Result<(), NodeError> {
         let store = self.context.store.as_ref();
-
-        let track = CompressedTrack {
-            tape: snapshot_tape_pda(event.epoch).0,
-            key: snapshot_chunk_key(event.epoch, group, chunk),
-            track_number: event.track_number,
-            kind: TrackKind::Blob as u64,
-            state: TrackState::Certified as u64,
-            size: blob.size,
-            spool_group: group,
-            value_hash: blob.get_hash(),
-        };
-
-        store
-            .put_track(event.track, track)
-            .map_err(|e| NodeError::Store(format!("put_track: {e}")))?;
-
-        // Keep the snapshot tape's next_track_number advancing.
-        if let Some(mut tape_info) = store
-            .get_tape(track.tape)
-            .map_err(|e| NodeError::Store(format!("get_tape: {e}")))?
-        {
-            let next = TrackNumber(event.track_number.0 + 1);
-            if tape_info.next_track_number < next {
-                tape_info.next_track_number = next;
-                store
-                    .put_tape(track.tape, tape_info)
-                    .map_err(|e| NodeError::Store(format!("put_tape: {e}")))?;
-            }
-        }
-
-        // Blob metadata (needed for sync/repair/recover to verify slices).
-        store
-            .put_track_data(event.track, TrackData::Blob(blob))
-            .map_err(|e| NodeError::Store(format!("put_track_data: {e}")))?;
-
-        // ObjectInfo: certified at this epoch, registered at this epoch.
-        // Without this, spool scan sees a track with no ObjectInfo and gets
-        // stuck returning `TrackRequirement::Inconsistent` → `ScanResult::Retry`.
-        store
-            .put_object_info(
-                event.track,
-                ObjectInfo::Valid {
-                    track_address: event.track,
-                    registered_epoch: event.epoch,
-                    certified_epoch: Some(event.epoch),
-                    slot,
-                },
-            )
-            .map_err(|e| NodeError::Store(format!("put_object_info: {e}")))?;
 
         let Some(artifact) = store
             .get_snapshot_artifact(event.epoch, group, chunk)
@@ -219,19 +162,12 @@ where
             return Ok(());
         };
 
-        // Divergence: another submitter put a different blob on-chain. The
-        // on-chain metadata (written above) is the source of truth; drop our
-        // staged slice.
-        if artifact.blob != blob {
+        if artifact.blob == blob {
             store
-                .delete_snapshot_artifact(event.epoch, group, chunk)
-                .map_err(|e| NodeError::Store(format!("delete_snapshot_artifact: {e}")))?;
-            return Ok(());
+                .put_slice(artifact.spool_index, event.track, artifact.slice)
+                .map_err(|e| NodeError::Store(format!("put_slice: {e}")))?;
         }
 
-        store
-            .put_slice(artifact.spool_index, event.track, artifact.slice)
-            .map_err(|e| NodeError::Store(format!("put_slice: {e}")))?;
         store
             .delete_snapshot_artifact(event.epoch, group, chunk)
             .map_err(|e| NodeError::Store(format!("delete_snapshot_artifact: {e}")))?;
@@ -259,4 +195,127 @@ where
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use tape_api::event::SnapshotWritten;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::track::blob::BlobInfo;
+    use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_crypto::address::Address;
+    use tape_crypto::Hash;
+    use tape_store::ops::{ObjectInfoOps, SliceOps, SnapshotOps, TrackDataOps, TrackOps};
+    use tape_store::types::SnapshotArtifact;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use super::SnapshotManager;
+    use crate::context::test_utils::test_context;
+
+    fn blob(tag: u8) -> BlobInfo {
+        BlobInfo {
+            size: StorageUnits::from_bytes(64),
+            commitment: Hash::from([tag; 32]),
+            profile: EncodingProfile::clay_default(),
+            stripe_size: StorageUnits::from_bytes(64),
+            stripe_count: StripeCount(1),
+            leaves: [Hash::from([tag; 32]); SPOOL_GROUP_SIZE],
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_written_promotes_matching_artifact_slice_only() {
+        let ctx = test_context();
+        let (_tx, rx) = mpsc::channel(1);
+        let manager = SnapshotManager::new(ctx.clone(), rx, CancellationToken::new());
+        let epoch = EpochNumber(9);
+        let group = SpoolGroup(0);
+        let chunk = ChunkNumber(0);
+        let track = Address::new_unique();
+        let artifact = SnapshotArtifact {
+            blob: blob(0x11),
+            spool_index: group.spool_at(3),
+            slice: vec![1, 2, 3],
+        };
+
+        ctx.store
+            .put_snapshot_artifact(epoch, group, chunk, &artifact)
+            .unwrap();
+
+        manager
+            .on_snapshot_written(
+                SnapshotWritten {
+                    epoch,
+                    group,
+                    track,
+                    track_number: TrackNumber(7),
+                    track_hash: Hash::new_unique(),
+                },
+                group,
+                chunk,
+                artifact.blob,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ctx.store.get_slice(artifact.spool_index, track).unwrap(),
+            Some(artifact.slice),
+        );
+        assert!(ctx
+            .store
+            .get_snapshot_artifact(epoch, group, chunk)
+            .unwrap()
+            .is_none());
+        assert!(ctx.store.get_track(track).unwrap().is_none());
+        assert!(ctx.store.get_track_data(track).unwrap().is_none());
+        assert!(ctx.store.get_object_info(track).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn snapshot_written_drops_divergent_artifact() {
+        let ctx = test_context();
+        let (_tx, rx) = mpsc::channel(1);
+        let manager = SnapshotManager::new(ctx.clone(), rx, CancellationToken::new());
+        let epoch = EpochNumber(9);
+        let group = SpoolGroup(0);
+        let chunk = ChunkNumber(0);
+        let track = Address::new_unique();
+        let artifact = SnapshotArtifact {
+            blob: blob(0x11),
+            spool_index: group.spool_at(3),
+            slice: vec![1, 2, 3],
+        };
+
+        ctx.store
+            .put_snapshot_artifact(epoch, group, chunk, &artifact)
+            .unwrap();
+
+        manager
+            .on_snapshot_written(
+                SnapshotWritten {
+                    epoch,
+                    group,
+                    track,
+                    track_number: TrackNumber(7),
+                    track_hash: Hash::new_unique(),
+                },
+                group,
+                chunk,
+                blob(0x22),
+            )
+            .await
+            .unwrap();
+
+        assert!(ctx
+            .store
+            .get_snapshot_artifact(epoch, group, chunk)
+            .unwrap()
+            .is_none());
+        assert!(ctx
+            .store
+            .get_slice(artifact.spool_index, track)
+            .unwrap()
+            .is_none());
+    }
+}

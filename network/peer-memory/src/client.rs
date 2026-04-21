@@ -7,7 +7,7 @@ use tape_protocol::api::{
     GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
     GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
     ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes,
-    SnapshotSigReq, SnapshotSigRes,
+    SnapshotVoteReq, SnapshotVoteRes,
     SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
 };
 use tape_core::types::NodeId;
@@ -38,7 +38,7 @@ impl MemoryApi {
             PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(not_impl())),
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
-            PeerReq::SnapshotSig(_) => PeerRes::SnapshotSig(Err(not_impl())),
+            PeerReq::SnapshotVote(_) => PeerRes::SnapshotVote(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
@@ -110,21 +110,21 @@ impl Api for MemoryApi {
         dispatch!(self, node, CertifyReq { track: req.track }, Certify)
     }
 
-    async fn snapshot_sig(
+    async fn snapshot_vote(
         &self,
         node: NodeId,
-        req: &SnapshotSigReq,
-    ) -> Result<SnapshotSigRes, ApiError> {
+        req: &SnapshotVoteReq,
+    ) -> Result<SnapshotVoteRes, ApiError> {
         dispatch!(
             self,
             node,
-            SnapshotSigReq {
+            SnapshotVoteReq {
                 node_id: req.node_id,
                 kind: req.kind,
                 message: req.message.clone(),
                 signature: req.signature,
             },
-            SnapshotSig
+            SnapshotVote
         )
     }
 
@@ -147,9 +147,9 @@ mod tests {
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
     use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
-    use tape_protocol::api::SignatureKind;
+    use tape_protocol::api::SnapshotVoteKind;
 
-    fn snapshot_signature(message: &[u8]) -> BlsSignature {
+    fn snapshot_vote_signature(message: &[u8]) -> BlsSignature {
         BlsPrivateKey::from_random().sign(message).unwrap()
     }
 
@@ -164,9 +164,9 @@ mod tests {
     async fn custom_handler() {
         let client = MemoryApi::new(move |node, req| match req {
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Ok(GetHealthRes { ok: node.0 == 1 })),
-            PeerReq::SnapshotSig(req) => {
+            PeerReq::SnapshotVote(req) => {
                 assert_eq!(req.node_id, NodeId(9));
-                PeerRes::SnapshotSig(Ok(SnapshotSigRes))
+                PeerRes::SnapshotVote(Ok(SnapshotVoteRes))
             }
             _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
         });
@@ -179,28 +179,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_sig_write_dispatch() {
+    async fn snapshot_vote_write_dispatch() {
         let message = vec![0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE];
-        let signature = snapshot_signature(b"snapshot-write");
+        let signature = snapshot_vote_signature(b"snapshot-write");
         let expected_message = message.clone();
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::SnapshotSig(req) => {
+            PeerReq::SnapshotVote(req) => {
                 assert_eq!(node, NodeId(7));
                 assert_eq!(req.node_id, NodeId(9));
-                assert_eq!(req.kind, SignatureKind::Write);
+                assert_eq!(req.kind, SnapshotVoteKind::WriteChunk);
                 assert_eq!(req.message, expected_message);
                 assert_eq!(req.signature, signature);
-                PeerRes::SnapshotSig(Ok(SnapshotSigRes))
+                PeerRes::SnapshotVote(Ok(SnapshotVoteRes))
             }
-            _ => PeerRes::SnapshotSig(Err(ApiError::Other("unexpected".into()))),
+            _ => PeerRes::SnapshotVote(Err(ApiError::Other("unexpected".into()))),
         });
 
         client
-            .snapshot_sig(
+            .snapshot_vote(
                 NodeId(7),
-                &SnapshotSigReq {
+                &SnapshotVoteReq {
                     node_id: NodeId(9),
-                    kind: SignatureKind::Write,
+                    kind: SnapshotVoteKind::WriteChunk,
                     message,
                     signature,
                 },
@@ -210,28 +210,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_sig_finalize_dispatch() {
+    async fn snapshot_vote_complete_group_dispatch() {
         let message = vec![0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE];
-        let signature = snapshot_signature(b"snapshot-finalize");
+        let signature = snapshot_vote_signature(b"snapshot-complete");
         let expected_message = message.clone();
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::SnapshotSig(req) => {
+            PeerReq::SnapshotVote(req) => {
                 assert_eq!(node, NodeId(7));
                 assert_eq!(req.node_id, NodeId(9));
-                assert_eq!(req.kind, SignatureKind::Finalize);
+                assert_eq!(req.kind, SnapshotVoteKind::CompleteGroup);
                 assert_eq!(req.message, expected_message);
                 assert_eq!(req.signature, signature);
-                PeerRes::SnapshotSig(Ok(SnapshotSigRes))
+                PeerRes::SnapshotVote(Ok(SnapshotVoteRes))
             }
-            _ => PeerRes::SnapshotSig(Err(ApiError::Other("unexpected".into()))),
+            _ => PeerRes::SnapshotVote(Err(ApiError::Other("unexpected".into()))),
         });
 
         client
-            .snapshot_sig(
+            .snapshot_vote(
                 NodeId(7),
-                &SnapshotSigReq {
+                &SnapshotVoteReq {
                     node_id: NodeId(9),
-                    kind: SignatureKind::Finalize,
+                    kind: SnapshotVoteKind::CompleteGroup,
                     message,
                     signature,
                 },

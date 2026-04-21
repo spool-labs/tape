@@ -268,7 +268,7 @@ mod tests {
     use tape_core::spooler::SpoolAssignment;
     use tape_core::system::CommitteeMember;
     use tape_core::types::coin::{Coin, TAPE};
-    use tape_slicer::MERKLE_HEIGHT;
+    use tape_slicer::SLICE_TREE_HEIGHT;
     use tape_crypto::address::Address;
 
     fn make_test_slices(count: usize) -> Vec<SliceWithProof> {
@@ -277,7 +277,7 @@ mod tests {
                 index: i as u16,
                 data: vec![i as u8; 100],
                 leaf_hash: Hash::default(),
-                merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+                merkle_proof: [Hash::default(); SLICE_TREE_HEIGHT],
             })
             .collect()
     }
@@ -320,7 +320,7 @@ mod tests {
             index: 42,
             data: vec![0xAB; 500],
             leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+            merkle_proof: [Hash::default(); SLICE_TREE_HEIGHT],
         };
 
         let payload = slice.to_payload();

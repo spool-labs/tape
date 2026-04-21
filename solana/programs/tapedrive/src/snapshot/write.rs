@@ -183,7 +183,7 @@ pub fn process_write_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::COMMITMENT_TREE_HEIGHT;
+    use tape_core::erasure::SLICE_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{SpoolGroupBitmap, StripeCount};
@@ -199,7 +199,7 @@ mod tests {
             .collect();
         let leaves: [Hash; SPOOL_GROUP_SIZE] =
             core::array::from_fn(|i| hash_leaf(&slices[i]));
-        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
         BlobInfo {
             size: StorageUnits::from_bytes(64 * SPOOL_GROUP_SIZE as u64),

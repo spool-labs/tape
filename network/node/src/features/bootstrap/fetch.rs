@@ -60,7 +60,7 @@ where
     // Fan out: fetch + Clay-decode every track in parallel. Each task returns
     // the `(group, chunk, outer-symbol)` triple recovered from the Clay
     // payload. Tasks that fail are logged and skipped; outer RS recovers as
-    // long as ≥K_OUTER groups succeed per segment.
+    // long as >=K_OUTER groups succeed per segment.
     let mut join = JoinSet::new();
     for track in tracks {
         let context = context.clone();

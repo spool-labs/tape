@@ -9,7 +9,7 @@ use tape_core::spooler::SpoolIndex;
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, root_from_leaf_hashes};
 use tape_crypto::Hash;
 use tape_slicer::{
-    ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, MERKLE_HEIGHT,
+    ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, SLICE_TREE_HEIGHT,
     build_blob_merkle_tree, BlobMerkleRoot, DEFAULT_STRIPE_SIZE,
 };
 
@@ -18,9 +18,9 @@ use crate::transfer::uploader::SliceWithProof;
 
 /// Merkle proof for a single slice.
 ///
-/// Contains MERKLE_HEIGHT sibling hashes needed to verify the slice
+/// Contains SLICE_TREE_HEIGHT sibling hashes needed to verify the slice
 /// belongs to a blob with a given merkle root.
-pub type SliceMerkleProof = [Hash; MERKLE_HEIGHT];
+pub type SliceMerkleProof = [Hash; SLICE_TREE_HEIGHT];
 
 /// Encodes blobs into slices for network distribution.
 ///
@@ -226,10 +226,10 @@ impl BlobEncoder {
         // Hash each slice once, then reuse the hashes for the root, proofs,
         // and per-slice leaf hash stored in the upload payload.
         let leaf_hashes: Vec<Hash> = chunks.iter().map(|chunk| hash_leaf(chunk)).collect();
-        let root = root_from_leaf_hashes::<MERKLE_HEIGHT>(&leaf_hashes);
+        let root = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaf_hashes);
 
         let proofs: Result<Vec<Vec<Hash>>, _> = (0..leaf_hashes.len())
-            .map(|idx| create_proof_from_leaf_hashes::<MERKLE_HEIGHT>(&leaf_hashes, idx))
+            .map(|idx| create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaf_hashes, idx))
             .collect();
         let proofs = proofs.map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
 
@@ -243,7 +243,7 @@ impl BlobEncoder {
         {
 
             // Convert Vec<Hash> to fixed-size array
-            let mut proof_arr = [Hash::default(); MERKLE_HEIGHT];
+            let mut proof_arr = [Hash::default(); SLICE_TREE_HEIGHT];
             for (i, h) in proof_vec.into_iter().enumerate() {
                 proof_arr[i] = h;
             }
@@ -372,7 +372,7 @@ mod tests {
                 &root,
                 &slice.merkle_proof,
                 slice.index as u64,
-                MERKLE_HEIGHT,
+                SLICE_TREE_HEIGHT,
             );
             assert!(valid, "Proof verification failed for slice {}", slice.index);
         }

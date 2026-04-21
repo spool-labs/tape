@@ -553,7 +553,7 @@ mod tests {
     use super::*;
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::COMMITMENT_TREE_HEIGHT;
+    use tape_core::erasure::SLICE_TREE_HEIGHT;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
@@ -592,7 +592,7 @@ mod tests {
         let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
         let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
-        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         BlobInfo {
             size: StorageUnits::from_bytes(size),
             commitment,

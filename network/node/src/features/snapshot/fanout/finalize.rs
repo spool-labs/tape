@@ -8,7 +8,7 @@ use tape_core::bft::is_supermajority;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
-use tape_protocol::api::{SignatureKind, SnapshotSigReq};
+use tape_protocol::api::{SnapshotVoteKind, SnapshotVoteReq};
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
 use tokio_util::sync::CancellationToken;
@@ -65,15 +65,15 @@ where
 
         let peers = group_peers_without(&state, group, me);
 
-        let req = SnapshotSigReq {
+        let req = SnapshotVoteReq {
             node_id: me,
-            kind: SignatureKind::Finalize,
+            kind: SnapshotVoteKind::CompleteGroup,
             message: vote.message.to_vec(),
             signature: vote.signature,
         };
 
         for peer in &peers {
-            if let Err(error) = ctx.api.snapshot_sig(*peer, &req).await {
+            if let Err(error) = ctx.api.snapshot_vote(*peer, &req).await {
                 trace!(?error, %peer, %epoch, group = group.0, "fanout: finalize vote push failed");
             }
         }

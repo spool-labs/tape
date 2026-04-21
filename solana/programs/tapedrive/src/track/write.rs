@@ -113,6 +113,7 @@ fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::erasure::SLICE_TREE_HEIGHT;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::archive::TrackArchive;
@@ -146,7 +147,7 @@ mod tests {
 
         let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
         // Compute valid commitment from leaves
-        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: storage_units,
             commitment,

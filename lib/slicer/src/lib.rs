@@ -12,7 +12,7 @@ pub mod repair;
 pub mod slice_index;
 pub mod slicer;
 
-pub use merkle_helpers::MERKLE_HEIGHT;
+pub use tape_core::erasure::SLICE_TREE_HEIGHT;
 pub use errors::{EncodeError, DecodeError, RepairError};
 pub use coder::ErasureCoder;
 pub use clay::ClayCoder;

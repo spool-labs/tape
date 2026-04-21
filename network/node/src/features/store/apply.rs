@@ -13,7 +13,6 @@ use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 use crate::features::store::cleanup::{cleanup_track_slices, delete_tape_local, delete_track_local};
-use crate::features::store::util::is_responsible_for_group;
 
 const DELETE_TAPE_BATCH_SIZE: usize = 100;
 
@@ -99,12 +98,10 @@ fn put_track_object<Db: Store>(
         }
     }
 
-    if is_responsible_for_group(store, replay.state.spool_group)? {
-        if let Some(blob) = replay.blob {
-            store
-                .put_track_data(track, TrackData::Blob(blob))
-                .map_err(store_error)?;
-        }
+    if let Some(blob) = replay.blob {
+        store
+            .put_track_data(track, TrackData::Blob(blob))
+            .map_err(store_error)?;
     }
 
     let certified_epoch = replay.state
@@ -251,10 +248,11 @@ mod tests {
     use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
+    use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
-    use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
+    use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
@@ -360,6 +358,15 @@ mod tests {
         assert_eq!(track_info.state, TrackState::Certified as u64);
         assert_eq!(track_info.size, StorageUnits::mb(2));
         assert_eq!(track_info.spool_group, SpoolGroup::from(4));
+        match &events[1] {
+            ReplayableEvent::Track(replay) => {
+                assert_eq!(
+                    store.get_track_data(track).unwrap(),
+                    Some(TrackData::Blob(replay.blob.unwrap())),
+                );
+            }
+            _ => panic!("expected track event"),
+        }
 
         assert_eq!(
             store.get_object_info(track).unwrap(),

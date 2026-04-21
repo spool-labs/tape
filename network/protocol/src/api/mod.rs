@@ -13,15 +13,11 @@ pub use types::*;
 use async_trait::async_trait;
 use tape_core::types::NodeId;
 
-/// Merkle tree height for blob encoding.
-/// 2^5 = 32 leaves (20 used = SPOOL_GROUP_SIZE).
-pub const MERKLE_HEIGHT: usize = tape_core::erasure::COMMITMENT_TREE_HEIGHT;
-
 /// Content type for binary request/response bodies.
 pub const BINARY_CONTENT: &str = "application/octet-stream";
 
 /// Content type for JSON responses.
-pub const CONTENT_TYPE_JSON: &str = "application/json";
+pub const JSON_CONTENT: &str = "application/json";
 
 
 #[async_trait]
@@ -39,7 +35,7 @@ pub trait Api: Send + Sync {
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError>;
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError>;
     async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, ApiError>;
-    async fn snapshot_sig(&self, node: NodeId, req: &SnapshotSigReq) -> Result<SnapshotSigRes, ApiError>;
+    async fn snapshot_vote(&self, node: NodeId, req: &SnapshotVoteReq) -> Result<SnapshotVoteRes, ApiError>;
     async fn get_health(&self, node: NodeId, req: &GetHealthReq) -> Result<GetHealthRes, ApiError>;
     async fn get_stats(&self, node: NodeId, req: &GetStatsReq) -> Result<GetStatsRes, ApiError>;
 }

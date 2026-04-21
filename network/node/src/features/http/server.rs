@@ -62,11 +62,11 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         #[allow(unused_mut)]
         let mut base_routes = Router::new()
             .route(
-                api_routes::HEALTH_PATH,
+                api_routes::NODE_HEALTH_PATH,
                 get(handlers::health::health::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::STATS_PATH,
+                api_routes::NODE_STATS_PATH,
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
             .route(
@@ -86,21 +86,21 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 get(handlers::track::catalog::get_track_by_number::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::SIGN_PATH,
+                api_routes::TRACK_SIGN_PATH,
                 get(handlers::track::sign::certify::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]
         if self.metrics_enabled {
             base_routes = base_routes.route(
-                api_routes::METRICS_PATH,
+                api_routes::NODE_METRICS_PATH,
                 get(handlers::metrics::metrics),
             );
         }
 
         let slice_routes = Router::new()
             .route(
-                api_routes::SLICE_PATH,
+                api_routes::TRACK_SLICE_PATH,
                 get(handlers::track::slice::get_slice::<Db, Cluster, Blockchain>)
                     .put(handlers::track::slice::put_slice::<Db, Cluster, Blockchain>),
             )
@@ -108,11 +108,11 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         let peer_post_routes = Router::new()
             .route(
-                api_routes::TAPE_FIND_TRACK_PATH,
+                api_routes::TAPE_TRACK_FIND_PATH,
                 post(handlers::track::catalog::find_track::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::TAPE_LIST_TRACKS_PATH,
+                api_routes::TAPE_TRACK_LIST_PATH,
                 post(handlers::track::catalog::list_tracks_by_tape::<Db, Cluster, Blockchain>),
             )
             .route(
@@ -124,15 +124,15 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 post(handlers::track::sync::sync_tracks::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::REPAIR_PATH,
+                api_routes::TRACK_REPAIR_PATH,
                 post(handlers::track::repair::repair::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::SNAPSHOT_SIG_PATH,
-                post(handlers::snapshot::sig::sig::<Db, Cluster, Blockchain>),
+                api_routes::SNAPSHOT_VOTE_PATH,
+                post(handlers::snapshot::vote::vote::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::INCONSISTENCY_PATH,
+                api_routes::TRACK_INCONSISTENCY_PATH,
                 post(handlers::track::inconsistency::invalidate::<Db, Cluster, Blockchain>),
             )
             .layer(DefaultBodyLimit::max(self.config.peer_max_bytes));

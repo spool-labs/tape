@@ -282,7 +282,7 @@ mod tests {
     use tape_api::program::tapedrive::{snapshot_tape_pda, SYSTEM_ADDRESS};
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::SpoolGroup;
@@ -299,7 +299,7 @@ mod tests {
 
     fn blob_info(slices: &[Vec<u8>]) -> BlobInfo {
         let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
-        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
         BlobInfo {
             size: StorageUnits::from_bytes(64 * slices.len() as u64),

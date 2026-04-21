@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use tape_core::track::data::TrackData;
 use tape_crypto::address::Address;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
@@ -110,7 +110,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         &blob.commitment,
         &payload.merkle_proof,
         leaf_pos as u64,
-        COMMITMENT_TREE_HEIGHT,
+        SLICE_TREE_HEIGHT,
     ) {
         return Err(RouteError::BadRequest("invalid merkle proof".into()));
     }
@@ -155,7 +155,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::spooler::SpoolGroup;
@@ -186,7 +186,7 @@ mod tests {
         let slice_bytes = vec![0xAB; 96];
 
         let leaves = [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
-        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(1_537),
             commitment,

@@ -11,8 +11,8 @@ use tape_core::types::network::NetworkAddress;
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
 
-/// Per-request timeout for snapshot signature calls. 
-const SNAPSHOT_SIG_TIMEOUT: Duration = Duration::from_secs(3);
+/// Per-request timeout for snapshot vote calls.
+const SNAPSHOT_VOTE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct HttpApi {
     pub peer_manager: Arc<PeerManager>,
@@ -433,14 +433,14 @@ impl Api for HttpApi {
         })
     }
 
-    async fn snapshot_sig(
+    async fn snapshot_vote(
         &self,
         node: NodeId,
-        req: &SnapshotSigReq,
-    ) -> Result<SnapshotSigRes, ApiError> {
+        req: &SnapshotVoteReq,
+    ) -> Result<SnapshotVoteRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{SNAPSHOT_SIG_PATH}");
-        let wire_req = SnapshotSigRequest {
+        let url = format!("{base}{SNAPSHOT_VOTE_PATH}");
+        let wire_req = SnapshotVoteRequest {
             node_id: req.node_id,
             kind: req.kind,
             message: req.message.clone(),
@@ -454,16 +454,16 @@ impl Api for HttpApi {
         let resp = self
             .client
             .post(&url)
-            .timeout(SNAPSHOT_SIG_TIMEOUT)
+            .timeout(SNAPSHOT_VOTE_TIMEOUT)
             .header("content-type", BINARY_CONTENT)
             .body(body)
             .send()
             .await
             .map_err(map_reqwest)?;
 
-        self.record("snapshot_sig", &resp, start, bytes_sent);
+        self.record("snapshot_vote", &resp, start, bytes_sent);
         check_status(resp).await?;
-        Ok(SnapshotSigRes)
+        Ok(SnapshotVoteRes)
     }
 
     async fn invalidate(
@@ -513,7 +513,7 @@ impl Api for HttpApi {
         _req: &GetHealthReq,
     ) -> Result<GetHealthRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", HEALTH_PATH);
+        let url = format!("{base}{}", NODE_HEALTH_PATH);
 
         let start = Instant::now();
         let resp = self
@@ -535,13 +535,13 @@ impl Api for HttpApi {
         _req: &GetStatsReq,
     ) -> Result<GetStatsRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", STATS_PATH);
+        let url = format!("{base}{}", NODE_STATS_PATH);
 
         let start = Instant::now();
         let resp = self
             .client
             .get(&url)
-            .header("accept", CONTENT_TYPE_JSON)
+            .header("accept", JSON_CONTENT)
             .send()
             .await
             .map_err(map_reqwest)?;
@@ -672,16 +672,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_sig_write_roundtrip() {
-        let request = SnapshotSigRequest {
+    async fn snapshot_vote_write_roundtrip() {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(9),
-            kind: SignatureKind::Write,
+            kind: SnapshotVoteKind::WriteChunk,
             message: vec![0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE],
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot-write")
                 .unwrap(),
         };
-        let api_request = SnapshotSigReq {
+        let api_request = SnapshotVoteReq {
             node_id: request.node_id,
             kind: request.kind,
             message: request.message.clone(),
@@ -690,13 +690,13 @@ mod tests {
 
         let expected_request = Arc::new(request.clone());
         let router = Router::new().route(
-            SNAPSHOT_SIG_PATH,
+            SNAPSHOT_VOTE_PATH,
             post({
                 let expected_request = Arc::clone(&expected_request);
                 move |body: Bytes| {
                     let expected_request = Arc::clone(&expected_request);
                     async move {
-                        let decoded: SnapshotSigRequest = wincode::deserialize(&body).unwrap();
+                        let decoded: SnapshotVoteRequest = wincode::deserialize(&body).unwrap();
                         assert_eq!(decoded, *expected_request);
                         StatusCode::OK
                     }
@@ -714,23 +714,23 @@ mod tests {
         peer_manager.add_peer(make_peer(7, port));
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
-        api.snapshot_sig(NodeId(7), &api_request).await.unwrap();
+        api.snapshot_vote(NodeId(7), &api_request).await.unwrap();
 
         server.abort();
         let _ = server.await;
     }
 
     #[tokio::test]
-    async fn snapshot_sig_finalize_roundtrip() {
-        let request = SnapshotSigRequest {
+    async fn snapshot_vote_complete_group_roundtrip() {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(9),
-            kind: SignatureKind::Finalize,
+            kind: SnapshotVoteKind::CompleteGroup,
             message: vec![0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE],
             signature: BlsPrivateKey::from_random()
-                .sign(b"snapshot-finalize")
+                .sign(b"snapshot-complete")
                 .unwrap(),
         };
-        let api_request = SnapshotSigReq {
+        let api_request = SnapshotVoteReq {
             node_id: request.node_id,
             kind: request.kind,
             message: request.message.clone(),
@@ -739,13 +739,13 @@ mod tests {
 
         let expected_request = Arc::new(request.clone());
         let router = Router::new().route(
-            SNAPSHOT_SIG_PATH,
+            SNAPSHOT_VOTE_PATH,
             post({
                 let expected_request = Arc::clone(&expected_request);
                 move |body: Bytes| {
                     let expected_request = Arc::clone(&expected_request);
                     async move {
-                        let decoded: SnapshotSigRequest = wincode::deserialize(&body).unwrap();
+                        let decoded: SnapshotVoteRequest = wincode::deserialize(&body).unwrap();
                         assert_eq!(decoded, *expected_request);
                         StatusCode::OK
                     }
@@ -763,7 +763,7 @@ mod tests {
         peer_manager.add_peer(make_peer(7, port));
         let api = HttpApi::new(reqwest::Client::new(), peer_manager);
 
-        api.snapshot_sig(NodeId(7), &api_request).await.unwrap();
+        api.snapshot_vote(NodeId(7), &api_request).await.unwrap();
 
         server.abort();
         let _ = server.await;

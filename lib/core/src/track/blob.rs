@@ -10,7 +10,7 @@ use tape_crypto::merkle::hash_leaf;
 
 use crate::encoding::EncodingProfile;
 use crate::spooler::SpoolIndex;
-use crate::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+use crate::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use crate::types::{StorageUnits, StripeCount};
 
 #[cfg(feature = "wincode")]
@@ -61,7 +61,7 @@ impl BlobInfo {
 
     /// Recompute the commitment root from stored leaf hashes.
     pub fn commitment_root(&self) -> Hash {
-        root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&self.leaves)
+        root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&self.leaves)
     }
 
     /// Verify a single slice against its stored leaf hash.

@@ -28,7 +28,7 @@ use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::hash;
-use tape_protocol::api::HEALTH_PATH;
+use tape_protocol::api::NODE_HEALTH_PATH;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
@@ -749,7 +749,7 @@ impl SimnetState {
             }
 
             let id = node.id();
-            let url = format!("{}{}", node.base_url(), HEALTH_PATH);
+            let url = format!("{}{}", node.base_url(), NODE_HEALTH_PATH);
             let client = client.clone();
 
             probes.spawn(async move {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tokio_util::sync::CancellationToken;
-use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEADER_SIZE};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
@@ -171,7 +171,7 @@ pub(crate) fn encode_chunk(
     })?;
 
     let leaves: [Hash; SPOOL_GROUP_SIZE] = core::array::from_fn(|i| hash_leaf(&slices[i]));
-    let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+    let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
     let stripe_size = slicer.stripe_size();
     let stripe_count = num_stripes(symbol.len(), stripe_size);

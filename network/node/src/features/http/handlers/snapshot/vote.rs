@@ -1,4 +1,4 @@
-//! Snapshot endpoint for snapshot partial BLS signatures.
+//! Snapshot endpoint for snapshot votes.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::cert::{SnapshotSignMessage, SnapshotWriteMessage};
-use tape_protocol::api::{SignatureKind, SnapshotSigRequest};
+use tape_protocol::api::{SnapshotVoteKind, SnapshotVoteRequest};
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
 use tape_store::types::{SnapshotFinalizeVote, SnapshotWriteVote};
@@ -17,25 +17,25 @@ use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 use crate::features::snapshot::utils::bitmap_index_in_group;
 
-pub async fn sig<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn vote<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: SnapshotSigRequest = wincode::deserialize(&body)
-        .map_err(|error| RouteError::BadRequest(format!("snapshot sig request: {error}")))?;
+    let request: SnapshotVoteRequest = wincode::deserialize(&body)
+        .map_err(|error| RouteError::BadRequest(format!("snapshot vote request: {error}")))?;
 
     let protocol = state.context.state();
 
     match request.kind {
-        SignatureKind::Write => handle_write(&state, &protocol, &request),
-        SignatureKind::Finalize => handle_finalize(&state, &protocol, &request),
+        SnapshotVoteKind::WriteChunk => handle_write(&state, &protocol, &request),
+        SnapshotVoteKind::CompleteGroup => handle_complete(&state, &protocol, &request),
     }
 }
 
 fn handle_write<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     protocol: &tape_protocol::ProtocolState,
-    request: &SnapshotSigRequest,
+    request: &SnapshotVoteRequest,
 ) -> Result<StatusCode, RouteError> {
     let message = SnapshotWriteMessage::from_bytes(&request.message)
         .ok_or_else(|| RouteError::BadRequest("invalid snapshot write message".into()))?;
@@ -64,19 +64,19 @@ fn handle_write<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(StatusCode::OK)
 }
 
-fn handle_finalize<Db: Store, Cluster: Api, Blockchain: Rpc>(
+fn handle_complete<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     protocol: &tape_protocol::ProtocolState,
-    request: &SnapshotSigRequest,
+    request: &SnapshotVoteRequest,
 ) -> Result<StatusCode, RouteError> {
     let message = SnapshotSignMessage::from_bytes(&request.message)
-        .ok_or_else(|| RouteError::BadRequest("invalid snapshot finalize message".into()))?;
+        .ok_or_else(|| RouteError::BadRequest("invalid snapshot complete message".into()))?;
 
     preflight(protocol, message.epoch, message.group, request)?;
 
     let vote = SnapshotFinalizeVote {
         message: request.message.as_slice().try_into().map_err(|_| {
-            RouteError::BadRequest("invalid snapshot finalize message length".into())
+            RouteError::BadRequest("invalid snapshot complete message length".into())
         })?,
         signature: request.signature,
     };
@@ -96,7 +96,7 @@ fn preflight(
     protocol: &tape_protocol::ProtocolState,
     message_epoch: tape_core::types::EpochNumber,
     message_group: tape_core::spooler::SpoolGroup,
-    request: &SnapshotSigRequest,
+    request: &SnapshotVoteRequest,
 ) -> Result<(), RouteError> {
     if protocol.epoch.0 == 0 || message_epoch.0 != protocol.epoch.0 - 1 {
         return Err(RouteError::BadRequest(format!(
@@ -157,10 +157,10 @@ mod tests {
             peer_memory::MemoryApi,
             rpc_litesvm::LiteSvmRpc,
         >,
-        request: SnapshotSigRequest,
+        request: SnapshotVoteRequest,
     ) -> Result<axum::response::Response, RouteError> {
         let bytes = wincode::serialize(&request).unwrap();
-        sig(State(state), Bytes::from(bytes))
+        vote(State(state), Bytes::from(bytes))
             .await
             .map(|response| response.into_response())
     }
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stores_valid_write_partial() {
+    async fn stores_valid_write_vote() {
         let context = test_context();
         context.set_state(local_state()).unwrap();
 
@@ -194,9 +194,9 @@ mod tests {
 
         let message = SnapshotWriteMessage::new(epoch, group, chunk, tape_crypto::Hash::from([0xAB; 32]));
         let message_bytes = message.to_bytes();
-        let request = SnapshotSigRequest {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(1),
-            kind: SignatureKind::Write,
+            kind: SnapshotVoteKind::WriteChunk,
             message: message_bytes.to_vec(),
             signature: signer.sign(&message_bytes).unwrap(),
         };
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stores_valid_finalize_partial() {
+    async fn stores_valid_complete_group_vote() {
         let context = test_context();
         context.set_state(local_state()).unwrap();
 
@@ -223,9 +223,9 @@ mod tests {
 
         let message = SnapshotSignMessage::new(epoch, group);
         let message_bytes = message.to_bytes();
-        let request = SnapshotSigRequest {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(1),
-            kind: SignatureKind::Finalize,
+            kind: SnapshotVoteKind::CompleteGroup,
             message: message_bytes.to_vec(),
             signature: signer.sign(&message_bytes).unwrap(),
         };
@@ -250,9 +250,9 @@ mod tests {
             ChunkNumber(0),
             tape_crypto::Hash::from([0xCD; 32]),
         );
-        let request = SnapshotSigRequest {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(1),
-            kind: SignatureKind::Write,
+            kind: SnapshotVoteKind::WriteChunk,
             message: message.to_bytes().to_vec(),
             signature: BlsPrivateKey::from_random().sign(b"bad").unwrap(),
         };
@@ -271,9 +271,9 @@ mod tests {
         let group = SpoolGroup(4);
         let message = SnapshotSignMessage::new(epoch, group);
 
-        let request = SnapshotSigRequest {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(42), // not in committee
-            kind: SignatureKind::Finalize,
+            kind: SnapshotVoteKind::CompleteGroup,
             message: message.to_bytes().to_vec(),
             signature: signer.sign(&message.to_bytes()).unwrap(),
         };
@@ -295,9 +295,9 @@ mod tests {
         let message = SnapshotSignMessage::new(epoch, group);
         let signer = BlsPrivateKey::from_random();
 
-        let request = SnapshotSigRequest {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(2),
-            kind: SignatureKind::Finalize,
+            kind: SnapshotVoteKind::CompleteGroup,
             message: message.to_bytes().to_vec(),
             signature: signer.sign(&message.to_bytes()).unwrap(),
         };
@@ -311,9 +311,9 @@ mod tests {
         let context = test_context();
         context.set_state(local_state()).unwrap();
 
-        let request = SnapshotSigRequest {
+        let request = SnapshotVoteRequest {
             node_id: NodeId(1),
-            kind: SignatureKind::Finalize,
+            kind: SnapshotVoteKind::CompleteGroup,
             message: vec![0u8; tape_core::cert::SNAPSHOT_SIGN_MESSAGE_SIZE],
             signature: BlsPrivateKey::from_random().sign(b"bad").unwrap(),
         };

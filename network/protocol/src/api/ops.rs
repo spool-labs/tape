@@ -5,7 +5,7 @@ use tape_core::prelude::{CompressedTrack, EpochNumber, NodeId, SpoolIndex, Track
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 use crate::api::types::{
-    InconsistencyProof, NodeStats, SignatureKind, SlicePayload, StripeSubChunkRequest,
+    InconsistencyProof, NodeStats, SnapshotVoteKind, SlicePayload, StripeSubChunkRequest,
     SyncSliceEntry, SyncTrackEntry,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -156,15 +156,15 @@ pub struct CertifyRes {
 }
 
 #[derive(Clone, Debug)]
-pub struct SnapshotSigReq {
+pub struct SnapshotVoteReq {
     pub node_id: NodeId,
-    pub kind: SignatureKind,
+    pub kind: SnapshotVoteKind,
     pub message: Vec<u8>,
     pub signature: BlsSignature,
 }
 
 #[derive(Clone, Debug)]
-pub struct SnapshotSigRes;
+pub struct SnapshotVoteRes;
 
 #[derive(Clone, Debug)]
 pub struct InvalidateReq {
@@ -210,7 +210,7 @@ pub enum PeerReq {
     Repair(RepairReq),
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
-    SnapshotSig(SnapshotSigReq),
+    SnapshotVote(SnapshotVoteReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -228,7 +228,7 @@ pub enum PeerRes {
     SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
-    SnapshotSig(Result<SnapshotSigRes, ApiError>),
+    SnapshotVote(Result<SnapshotVoteRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),

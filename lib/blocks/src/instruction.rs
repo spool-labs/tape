@@ -317,7 +317,7 @@ mod tests {
     };
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{
@@ -352,7 +352,7 @@ mod tests {
     fn valid_blob() -> BlobInfo {
         let leaves: [Hash; SPOOL_GROUP_SIZE] =
             core::array::from_fn(|i| hash_leaf(&vec![i as u8; 64]));
-        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         BlobInfo {
             size: StorageUnits::from_bytes(64 * SPOOL_GROUP_SIZE as u64),
             commitment,

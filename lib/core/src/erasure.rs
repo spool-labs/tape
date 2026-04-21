@@ -12,9 +12,9 @@
 /// Individual encoding profiles may use n ≤ SPOOL_GROUP_SIZE.
 pub const SPOOL_GROUP_SIZE: usize = 20;
 
-/// Merkle tree height for blob commitment trees.
+/// Merkle tree height for slice commitments.
 /// Derived from SPOOL_GROUP_SIZE: 2^5 = 32 >= 20 leaves.
-pub const COMMITMENT_TREE_HEIGHT: usize = 5;
+pub const SLICE_TREE_HEIGHT: usize = 5;
 
 /// Number of spool groups in the network.
 pub const SPOOL_GROUP_COUNT: usize = 50;
