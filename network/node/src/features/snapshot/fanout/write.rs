@@ -1,6 +1,6 @@
-//! Push our own snapshot write partials to group peers.
+//! Push our own snapshot write votes to group peers.
 //!
-//! Iterates every chunk we hold a sig for; skips chunks that have already
+//! Iterates every chunk we hold a vote for; skips chunks that have already
 //! reached a supermajority.
 
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::snapshot::utils::group_peers_without;
 
-pub async fn fanout_write_sigs<Db, Cluster, Blockchain>(
+pub async fn fanout_write_votes<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     cancel: &CancellationToken,
@@ -87,7 +87,7 @@ where
                         %epoch,
                         group = group.0,
                         chunk = chunk_sigs.chunk.0,
-                        "fanout: write sig push failed"
+                        "fanout: write vote push failed"
                     );
                 }
             }

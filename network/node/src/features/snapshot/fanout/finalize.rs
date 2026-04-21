@@ -1,4 +1,4 @@
-//! Push our own snapshot finalize partial to group peers (one per group).
+//! Push our own snapshot finalize vote to group peers (one per group).
 
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::snapshot::utils::group_peers_without;
 
-pub async fn fanout_finalize_sigs<Db, Cluster, Blockchain>(
+pub async fn fanout_finalize_votes<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     cancel: &CancellationToken,
@@ -74,7 +74,7 @@ where
 
         for peer in &peers {
             if let Err(error) = ctx.api.snapshot_sig(*peer, &req).await {
-                trace!(?error, %peer, %epoch, group = group.0, "fanout: finalize sig push failed");
+                trace!(?error, %peer, %epoch, group = group.0, "fanout: finalize vote push failed");
             }
         }
     }

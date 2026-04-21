@@ -28,8 +28,11 @@ use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::snapshot::build::build_snapshot;
-use crate::features::snapshot::fanout::{fanout_finalize_sigs, fanout_write_sigs};
+use crate::features::snapshot::fanout::{fanout_finalize_votes, fanout_write_votes};
 use crate::features::snapshot::submit::{submit_ready_finalizes, submit_ready_writes};
+use crate::features::snapshot::vote::{
+    create_snapshot_finalize_votes, create_snapshot_write_votes,
+};
 
 const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -140,14 +143,12 @@ where
         Ok(())
     }
 
-    async fn on_snapshot_reserved(
-        &self,
-        epoch: EpochNumber
-    ) -> Result<(), NodeError> {
-
+    async fn on_snapshot_reserved(&self, epoch: EpochNumber) -> Result<(), NodeError> {
         build_snapshot(&self.context, epoch, &self.cancel).await?;
-        fanout_write_sigs(&self.context, epoch, &self.cancel).await?;
-        fanout_finalize_sigs(&self.context, epoch, &self.cancel).await?;
+        create_snapshot_write_votes(&self.context, epoch, &self.cancel).await?;
+        create_snapshot_finalize_votes(&self.context, epoch, &self.cancel).await?;
+        fanout_write_votes(&self.context, epoch, &self.cancel).await?;
+        fanout_finalize_votes(&self.context, epoch, &self.cancel).await?;
 
         Ok(())
     }
@@ -250,8 +251,8 @@ where
         submit_ready_writes(&self.context, snapshot_epoch, &self.cancel).await?;
         submit_ready_finalizes(&self.context, snapshot_epoch, &self.cancel).await?;
 
-        fanout_write_sigs(&self.context, snapshot_epoch, &self.cancel).await?;
-        fanout_finalize_sigs(&self.context, snapshot_epoch, &self.cancel).await?;
+        fanout_write_votes(&self.context, snapshot_epoch, &self.cancel).await?;
+        fanout_finalize_votes(&self.context, snapshot_epoch, &self.cancel).await?;
 
         Ok(())
     }

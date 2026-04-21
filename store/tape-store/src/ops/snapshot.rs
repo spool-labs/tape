@@ -76,6 +76,13 @@ pub trait SnapshotOps {
         chunk: ChunkNumber,
     ) -> Result<Option<SnapshotArtifact>>;
 
+    /// Local staged artifacts for a group, ordered by ascending chunk number.
+    fn iter_snapshot_artifacts(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+    ) -> Result<Vec<(ChunkNumber, SnapshotArtifact)>>;
+
     fn delete_snapshot_artifact(
         &self,
         epoch: EpochNumber,
@@ -194,6 +201,30 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
     ) -> Result<Option<SnapshotArtifact>> {
         let key = SnapshotArtifactKey::new(epoch.0, group.0, chunk.0);
         Ok(self.get::<SnapshotArtifactCol>(&key)?)
+    }
+
+    fn iter_snapshot_artifacts(
+        &self,
+        epoch: EpochNumber,
+        group: SpoolGroup,
+    ) -> Result<Vec<(ChunkNumber, SnapshotArtifact)>> {
+        let prefix = SnapshotArtifactKey::group_prefix(epoch.0, group.0);
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(SnapshotArtifactCol::CF_NAME, &prefix)?;
+
+        let mut out = Vec::new();
+        for (key_bytes, value_bytes) in iter {
+            let key: SnapshotArtifactKey = wincode::deserialize(&key_bytes).map_err(|e| {
+                TapeStoreError::Serialization(format!("snapshot artifact key: {e}"))
+            })?;
+            let artifact: SnapshotArtifact = wincode::deserialize(&value_bytes).map_err(|e| {
+                TapeStoreError::Serialization(format!("snapshot artifact value: {e}"))
+            })?;
+            out.push((ChunkNumber(key.chunk), artifact));
+        }
+        Ok(out)
     }
 
     fn delete_snapshot_artifact(
@@ -376,6 +407,33 @@ mod tests {
             .get_snapshot_artifact(epoch, group, chunk)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn artifacts_iter_by_chunk() {
+        let store = test_store();
+        let epoch = EpochNumber(9);
+        let group = SpoolGroup(2);
+        let other_group = SpoolGroup(3);
+
+        store
+            .put_snapshot_artifact(epoch, group, ChunkNumber(2), &artifact(0x22))
+            .unwrap();
+        store
+            .put_snapshot_artifact(epoch, group, ChunkNumber(0), &artifact(0x00))
+            .unwrap();
+        store
+            .put_snapshot_artifact(epoch, group, ChunkNumber(1), &artifact(0x11))
+            .unwrap();
+        store
+            .put_snapshot_artifact(epoch, other_group, ChunkNumber(0), &artifact(0x33))
+            .unwrap();
+
+        let rows = store.iter_snapshot_artifacts(epoch, group).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], (ChunkNumber(0), artifact(0x00)));
+        assert_eq!(rows[1], (ChunkNumber(1), artifact(0x11)));
+        assert_eq!(rows[2], (ChunkNumber(2), artifact(0x22)));
     }
 
     #[test]

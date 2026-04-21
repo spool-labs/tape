@@ -5,7 +5,6 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tokio_util::sync::CancellationToken;
-use tape_core::cert::{SnapshotSignMessage, SnapshotWriteMessage};
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEADER_SIZE};
 use tape_core::snapshot::replay::SnapshotLog;
@@ -19,7 +18,7 @@ use tape_slicer::{
     num_stripes, ErasureCoder, OuterCoder, Slicer, MAX_CHUNK_BYTES, SNAPSHOT_K_OUTER,
 };
 use tape_store::ops::{EventLogOps, SnapshotOps};
-use tape_store::types::{SnapshotArtifact, SnapshotFinalizeVote, SnapshotWriteVote};
+use tape_store::types::SnapshotArtifact;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -42,8 +41,7 @@ pub struct BuildSummary {
     pub chunks: usize,
 }
 
-/// Build the snapshot for one epoch and persist this node's local group
-/// artifacts and self-produced partial signatures.
+/// Build the snapshot for one epoch and persist this node's local group artifacts.
 pub async fn build_snapshot<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
@@ -133,47 +131,8 @@ where
                 .put_snapshot_artifact(epoch, group, chunk, &artifact)
                 .map_err(store_err("put_snapshot_artifact"))?;
 
-            let write_message =
-                SnapshotWriteMessage::new(
-                    epoch, group, chunk, artifact.blob.get_hash())
-                    .to_bytes();
-
-            let write_sig = ctx
-                .bls_sign(&write_message)
-                .map_err(|e| NodeError::Store(format!("write bls_sign: {e:?}")))?;
-
-            ctx.store
-                .put_snapshot_write_sig(
-                    epoch, group, chunk, me,
-                    &SnapshotWriteVote {
-                        message: write_message,
-                        signature: write_sig,
-                    },
-                )
-                .map_err(store_err("put_snapshot_write_sig"))?;
-
             chunk_count += 1;
         }
-    }
-
-    // One finalize per group
-    for &spool_index in &our_spools {
-        let group = SpoolGroup::of(spool_index);
-
-        let finalize_message = SnapshotSignMessage::new(epoch, group).to_bytes();
-        let finalize_sig = ctx
-            .bls_sign(&finalize_message)
-            .map_err(|e| NodeError::Store(format!("finalize bls_sign: {e:?}")))?;
-
-        ctx.store
-            .put_snapshot_finalize_sig(
-                epoch, group, me,
-                &SnapshotFinalizeVote {
-                    message: finalize_message,
-                    signature: finalize_sig,
-                },
-            )
-            .map_err(store_err("put_snapshot_finalize_sig"))?;
     }
 
     Ok(BuildSummary {
