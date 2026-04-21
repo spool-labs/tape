@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use tokio::task::JoinHandle;
@@ -86,27 +86,8 @@ impl SimnetBuilder {
         }
 
         let mut nodes = Vec::with_capacity(self.config.node_count);
-
         for i in 0..self.config.node_count {
-            let bind_addr = if self.config.base_port == 0 {
-                tls::pick_bind(i as u64)?
-            } else {
-                let port = self
-                    .config
-                    .base_port
-                    .saturating_add(i.try_into().unwrap_or(u16::MAX));
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
-            };
-            let port = bind_addr.port();
-
-            nodes.push(TestNode::new(
-                i,
-                chain.rpc().clone(),
-                self.config.runtime_mode,
-                bind_addr,
-                port,
-                self.config.stop_timeout,
-            )?);
+            nodes.push(make_node(&self.config, &chain, i)?);
         }
 
         let admin = Keypair::new();
@@ -172,15 +153,19 @@ impl SimnetHarness {
         SimnetScenario::new(self)
     }
 
+    pub fn add_node(&mut self) -> Result<usize> {
+        let id = self.nodes.len();
+        let node = make_node(&self.config, &self.chain, id)?;
+        self.nodes.push(node);
+        self.config.node_count = self.nodes.len();
+        Ok(id)
+    }
+
     pub async fn start_all(&mut self) -> Result<()> {
         for node in &mut self.nodes {
             node.start().await?;
         }
-        if self.block_producer.is_none() {
-            self.block_producer = Some(
-                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL),
-            );
-        }
+        self.ensure_block_producer();
         Ok(())
     }
 
@@ -215,16 +200,85 @@ impl SimnetHarness {
                 .ok_or_else(|| anyhow!("node {i} out of range"))?;
             node.start().await?;
         }
+        self.ensure_block_producer();
         Ok(())
+    }
+
+    pub async fn start_nodes_with_retry(
+        &mut self,
+        indices: &[usize],
+        tries: usize,
+        delay: Duration,
+    ) -> Result<()> {
+        let tries = tries.max(1);
+
+        for _ in 0..tries {
+            self.start_nodes(indices).await?;
+            if indices.iter().all(|&i| {
+                self.nodes
+                    .get(i)
+                    .is_some_and(|node| node.is_running())
+            }) {
+                return Ok(());
+            }
+            tokio::time::sleep(delay).await;
+        }
+
+        let failed: Vec<_> = indices
+            .iter()
+            .copied()
+            .filter(|&i| {
+                self.nodes
+                    .get(i)
+                    .map_or(true, |node| !node.is_running())
+            })
+            .collect();
+        bail!("failed to start runtime on nodes: {failed:?}");
     }
 
     pub async fn stop_all(&mut self) -> Result<()> {
         if let Some(handle) = self.block_producer.take() {
             handle.abort();
         }
+        let mut first_error = None;
         for node in &mut self.nodes {
-            node.stop().await?;
+            if let Err(error) = node.stop().await {
+                first_error.get_or_insert(error);
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
         }
         Ok(())
     }
+
+    fn ensure_block_producer(&mut self) {
+        if self.block_producer.is_none() {
+            self.block_producer = Some(
+                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL),
+            );
+        }
+    }
+}
+
+fn make_node(config: &SimnetConfig, chain: &ChainFixture, id: usize) -> Result<TestNode> {
+    let bind_addr = if config.base_port == 0 {
+        tls::pick_bind(id as u64)?
+    } else {
+        let port = config
+            .base_port
+            .saturating_add(id.try_into().unwrap_or(u16::MAX));
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    };
+    let port = bind_addr.port();
+
+    TestNode::new(
+        id,
+        chain.rpc().clone(),
+        config.runtime_mode,
+        bind_addr,
+        port,
+        config.stop_timeout,
+    )
 }

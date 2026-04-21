@@ -116,51 +116,72 @@ impl<'a> SimnetScenario<'a> {
         Ok(())
     }
 
-    pub async fn register_nodes(&self, commission: BasisPoints) -> Result<Vec<Signature>> {
-        let mut sigs = Vec::with_capacity(self.harness.nodes().len());
+    pub async fn register_node(
+        &self,
+        node_index: usize,
+        commission: BasisPoints,
+    ) -> Result<Signature> {
         let slot_bump = self.harness.config().slot_advance_per_tx;
+        let node = self
+            .harness
+            .node(node_index)
+            .with_context(|| format!("node {node_index} missing"))?;
 
-        for node in self.harness.nodes() {
-            self.harness
-                .chain()
-                .airdrop(&node.authority(), 10_000_000_000)
-                .with_context(|| format!("airdrop node {}", node.id()))?;
+        self.harness
+            .chain()
+            .airdrop(&node.authority(), 10_000_000_000)
+            .with_context(|| format!("airdrop node {}", node.id()))?;
 
-            let name = node_name(node.id());
-            let network_address: NetworkAddress = node.network_address();
-            let network_tls = node.authority();
+        let name = node_name(node.id());
+        let network_address: NetworkAddress = node.network_address();
+        let network_tls = node.authority();
 
-            let bls_pubkey = node
-                .bls_keypair()
-                .public_key()
-                .map_err(|e| anyhow::anyhow!("bls public_key: {e:?}"))?;
-            let bls_pop = node
-                .bls_keypair()
-                .proof_of_possession()
-                .map_err(|e| anyhow::anyhow!("bls pop: {e:?}"))?;
+        let bls_pubkey = node
+            .bls_keypair()
+            .public_key()
+            .map_err(|e| anyhow::anyhow!("bls public_key: {e:?}"))?;
+        let bls_pop = node
+            .bls_keypair()
+            .proof_of_possession()
+            .map_err(|e| anyhow::anyhow!("bls pop: {e:?}"))?;
 
-            let ix = build_register_node_ix(
-                node.authority().into(),
-                node.authority().into(),
-                name,
-                commission,
-                network_address,
-                network_tls.into(),
-                bls_pubkey,
-                bls_pop,
+        let ix = build_register_node_ix(
+            node.authority().into(),
+            node.authority().into(),
+            name,
+            commission,
+            network_address,
+            network_tls.into(),
+            bls_pubkey,
+            bls_pop,
+        );
+
+        self.harness
+            .chain()
+            .send_instructions_and_advance(node.keypair(), vec![ix], slot_bump)
+            .await
+            .with_context(|| format!("register_node {}", node.id()))
+    }
+
+    pub async fn register_many(
+        &self,
+        node_indices: &[usize],
+        commission: BasisPoints,
+    ) -> Result<Vec<Signature>> {
+        let mut sigs = Vec::with_capacity(node_indices.len());
+        for &i in node_indices {
+            sigs.push(
+                self.register_node(i, commission)
+                    .await
+                    .with_context(|| format!("register node {i}"))?,
             );
-
-            let sig = self
-                .harness
-                .chain()
-                .send_instructions_and_advance(node.keypair(), vec![ix], slot_bump)
-                .await
-                .with_context(|| format!("register_node {}", node.id()))?;
-
-            sigs.push(sig);
         }
-
         Ok(sigs)
+    }
+
+    pub async fn register_nodes(&self, commission: BasisPoints) -> Result<Vec<Signature>> {
+        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
+        self.register_many(&all, commission).await
     }
 
     pub async fn join_network(&self) -> Vec<JoinResult> {
