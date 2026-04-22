@@ -42,9 +42,9 @@ pub mod spki;
 pub mod verifier;
 
 pub use cert::{SelfSignedCert, self_signed_cert};
-pub use client::{apply_pinned_tls, apply_webpki_tls, pinned_client};
+pub use client::{apply_pinned_tls, apply_pinned_tls_with_identity, apply_webpki_tls, pinned_client};
 pub use error::TlsError;
 pub use provider::install_default as install_default_provider;
-pub use server::build_server_config;
+pub use server::{build_server_config, build_server_config_with_peer_auth};
 pub use spki::{ED25519_SPKI_LEN, decode_ed25519_spki, encode_ed25519_spki};
-pub use verifier::{PinnedVerifier, TlsVerifier};
+pub use verifier::{PeerClientVerifier, PinnedVerifier, TlsVerifier};

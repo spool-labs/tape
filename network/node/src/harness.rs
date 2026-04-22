@@ -41,7 +41,7 @@ impl NodeHarness {
             let api = Arc::new(MemoryApi::noop());
 
             let mut rng = rand::thread_rng();
-            let tls = tape_crypto::ed25519::Keypair::new(&mut rng);
+            let tls = Arc::new(tape_crypto::ed25519::Keypair::new(&mut rng));
 
             let ctx = NodeContextBuilder::new(
                 test_config(),

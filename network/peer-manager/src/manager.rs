@@ -146,6 +146,17 @@ impl PeerManager {
         self.peers.load().get(&node_id).cloned()
     }
 
+    /// Reverse lookup: find the NodeId whose on-chain `network_tls` matches
+    /// the given Ed25519 pubkey. Used by the peer-auth middleware to map an
+    /// mTLS client cert's SPKI back to a known committee member.
+    pub fn node_for_tls_pubkey(&self, tls_pubkey: tape_crypto::address::Address) -> Option<NodeId> {
+        self.peers
+            .load()
+            .values()
+            .find(|peer| peer.tls_pubkey == tls_pubkey)
+            .map(|peer| peer.node_id)
+    }
+
     /// Check if a node is in the trusted set.
     pub fn contains(&self, node_id: NodeId) -> bool {
         self.peers.load().contains_key(&node_id)

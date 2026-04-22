@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use peer_manager::PeerManager;
+use tape_crypto::ed25519::Keypair;
 
 use crate::HttpApi;
 use crate::metrics::ApiMetrics;
@@ -11,6 +12,7 @@ pub struct HttpApiBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
     metrics: Option<Arc<ApiMetrics>>,
+    local_identity: Option<Arc<Keypair>>,
 }
 
 impl Default for HttpApiBuilder {
@@ -25,6 +27,7 @@ impl HttpApiBuilder {
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
             metrics: None,
+            local_identity: None,
         }
     }
 
@@ -43,6 +46,11 @@ impl HttpApiBuilder {
         self
     }
 
+    pub fn local_identity(mut self, identity: Arc<Keypair>) -> Self {
+        self.local_identity = Some(identity);
+        self
+    }
+
     pub fn build(self, peer_manager: Arc<PeerManager>) -> Result<HttpApi, peer_tls::TlsError> {
         peer_tls::install_default_provider();
         Ok(HttpApi {
@@ -51,6 +59,7 @@ impl HttpApiBuilder {
             metrics: self.metrics,
             connect_timeout: self.connect_timeout,
             request_timeout: self.request_timeout,
+            local_identity: self.local_identity,
         })
     }
 }

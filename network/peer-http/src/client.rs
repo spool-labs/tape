@@ -9,6 +9,7 @@ use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
@@ -32,6 +33,7 @@ pub struct HttpApi {
     pub metrics: Option<Arc<ApiMetrics>>,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
+    pub local_identity: Option<Arc<Keypair>>,
 }
 
 impl HttpApi {
@@ -73,8 +75,14 @@ impl HttpApi {
         let builder = reqwest::Client::builder()
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout);
-        let builder = peer_tls::apply_pinned_tls(builder, tls_pubkey)
-            .map_err(|e| ApiError::Other(format!("tls build: {e}")))?;
+        let builder = match &self.local_identity {
+            Some(identity) => {
+                peer_tls::apply_pinned_tls_with_identity(builder, tls_pubkey, identity.as_ref())
+                    .map_err(|e| ApiError::Other(format!("tls build: {e}")))?
+            }
+            None => peer_tls::apply_pinned_tls(builder, tls_pubkey)
+                .map_err(|e| ApiError::Other(format!("tls build: {e}")))?,
+        };
         builder
             .build()
             .map_err(|e| ApiError::Other(format!("client build: {e}")))

@@ -20,6 +20,7 @@ use crate::view::{ClusterView, NodeView, SpoolView, TestnetView};
 pub struct NodeRef {
     pub id: usize,
     pub port: u16,
+    pub plaintext_port: u16,
     pub authority: Pubkey,
 }
 
@@ -93,6 +94,10 @@ impl Observer {
 
     /// Scrape a single node concurrently: health, stats, and metrics
     /// fire in parallel so a dead node costs one timeout (~2s), not three.
+    ///
+    /// Uses the node's loopback plain-HTTP listener so we don't have to do
+    /// a TLS handshake + pinning dance for every scrape tick. The main TLS
+    /// port is for peer traffic; the loopback port is for local ops tooling.
     async fn scrape_node(&self, port: u16) -> NodeScrape {
         let base = format!("http://127.0.0.1:{port}");
 
@@ -128,7 +133,7 @@ impl Observer {
     }
 
     async fn observe_node(&self, node: &NodeRef) -> NodeView {
-        let scrape_fut = self.scrape_node(node.port);
+        let scrape_fut = self.scrape_node(node.plaintext_port);
         let authority = Address::from(node.authority);
         let chain_fut = self.rpc.get_node(&authority);
         let (scrape, onchain) = tokio::join!(scrape_fut, chain_fut);

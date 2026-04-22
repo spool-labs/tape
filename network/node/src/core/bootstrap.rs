@@ -54,6 +54,7 @@ fn build_peer_api(
     #[cfg_attr(not(feature = "metrics"), allow(unused))]
     config: &NodeConfig,
     peer_manager: Arc<PeerManager>,
+    tls_identity: Arc<Keypair>,
 ) -> Result<Arc<HttpApi>, NodeError> {
     #[cfg(feature = "metrics")]
     if config.metrics.enabled {
@@ -63,12 +64,16 @@ fn build_peer_api(
             );
             let api = peer_http::HttpApiBuilder::new()
                 .metrics(metrics)
+                .local_identity(tls_identity)
                 .build(peer_manager)?;
             return Ok(Arc::new(api));
         }
     }
 
-    Ok(Arc::new(HttpApi::with_default_timeouts(peer_manager)))
+    let api = peer_http::HttpApiBuilder::new()
+        .local_identity(tls_identity)
+        .build(peer_manager)?;
+    Ok(Arc::new(api))
 }
 
 fn init_metrics(config: &NodeConfig) {
@@ -101,13 +106,15 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
     ensure_registered(config, &rpc, &keypair, &bls_keypair, &tls_keypair).await?;
 
     let peer_manager = Arc::new(PeerManager::new());
-    let api = build_peer_api(config, peer_manager.clone())?;
+    let tls_identity = Arc::new(tls_keypair);
+
+    let api = build_peer_api(config, peer_manager.clone(), tls_identity.clone())?;
 
     NodeContextBuilder::new(
         config.clone(),
         keypair,
         bls_keypair,
-        tls_keypair,
+        tls_identity,
         store,
         rpc,
         peer_manager,

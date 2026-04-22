@@ -4,7 +4,10 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
-use peer_tls::{TlsVerifier, build_server_config, install_default_provider};
+use peer_tls::{
+    TlsVerifier, apply_pinned_tls_with_identity, build_server_config,
+    build_server_config_with_peer_auth, install_default_provider,
+};
 use rand::thread_rng;
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
@@ -99,4 +102,60 @@ async fn pinned_verifier_exposes_expected_key_via_public_api() {
         TlsVerifier::PinnedPublicKey(p) => assert_eq!(p.expected_key(), addr),
         _ => panic!("expected PinnedPublicKey"),
     }
+}
+
+#[tokio::test]
+async fn mtls_handshake_captures_client_cert() {
+    init();
+    let mut rng = thread_rng();
+    let server_kp = EdKeypair::new(&mut rng);
+    let client_kp = EdKeypair::new(&mut rng);
+    let expected_client_spki = client_kp.address();
+
+    let server_config = build_server_config_with_peer_auth(
+        &server_kp,
+        &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+    )
+    .expect("server cfg");
+    let acceptor = TlsAcceptor::from(server_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+
+    let captured: Arc<tokio::sync::Mutex<Option<Address>>> = Arc::new(tokio::sync::Mutex::new(None));
+    let captured_clone = captured.clone();
+
+    let server_task = tokio::spawn(async move {
+        use x509_parser::prelude::FromDer;
+        let (tcp, _) = listener.accept().await.expect("accept");
+        let mut stream = acceptor.accept(tcp).await.expect("tls accept");
+        {
+            let (_io, conn) = stream.get_ref();
+            let certs = conn.peer_certificates().expect("client cert present");
+            let (_, parsed) =
+                x509_parser::certificate::X509Certificate::from_der(certs[0].as_ref())
+                    .expect("parse");
+            let spki =
+                peer_tls::decode_ed25519_spki(parsed.public_key().raw).expect("ed25519 spki");
+            *captured_clone.lock().await = Some(spki);
+        }
+        stream.write_all(b"ack").await.expect("write");
+        stream.shutdown().await.expect("shutdown");
+    });
+
+    let builder = reqwest::Client::builder();
+    let builder = apply_pinned_tls_with_identity(builder, server_kp.address(), &client_kp)
+        .expect("client tls");
+    let client = builder.build().expect("build");
+    let url = format!("https://{addr}/");
+    // We expect the request itself to fail because there's no HTTP server on
+    // the other end — but the TLS handshake must complete and populate
+    // peer_certificates before the task drops. Reqwest gives us a connection
+    // error after send, which is fine.
+    let _ = client.get(&url).send().await;
+
+    server_task.await.expect("server join");
+
+    let locked = captured.lock().await;
+    assert_eq!(*locked, Some(expected_client_spki));
 }

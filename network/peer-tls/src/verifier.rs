@@ -199,6 +199,99 @@ impl fmt::Display for WebPkiBuildError {
 
 impl std::error::Error for WebPkiBuildError {}
 
+/// Server-side verifier for optional peer mTLS.
+///
+/// Accepts any well-formed Ed25519 client certificate. The TLS layer proves
+/// key possession via `verify_tls1x_signature`; the caller's identity (the
+/// cert's SPKI) is then available from `ServerConnection::peer_certificates()`
+/// and can be mapped to a committee member at the application layer.
+///
+/// `client_auth_mandatory = false` so CLI clients that don't present a cert
+/// can still connect for public endpoints.
+pub struct PeerClientVerifier {
+    provider: Arc<CryptoProvider>,
+    root_hints: Vec<rustls::DistinguishedName>,
+}
+
+impl fmt::Debug for PeerClientVerifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PeerClientVerifier").finish()
+    }
+}
+
+impl PeerClientVerifier {
+    pub fn new() -> Self {
+        Self {
+            provider: ring_provider(),
+            root_hints: Vec::new(),
+        }
+    }
+}
+
+impl Default for PeerClientVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl rustls::server::danger::ClientCertVerifier for PeerClientVerifier {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &self.root_hints
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, RustlsError> {
+        let (_, parsed) = X509Certificate::from_der(end_entity.as_ref()).map_err(|_| {
+            RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding)
+        })?;
+
+        // Reject anything that isn't Ed25519 so we don't open ourselves up to
+        // curve algorithms we haven't audited. The SPKI check upstream relies
+        // on exact Ed25519 encoding.
+        if crate::spki::decode_ed25519_spki(parsed.public_key().raw).is_none() {
+            return Err(RustlsError::InvalidCertificate(
+                rustls::CertificateError::BadSignature,
+            ));
+        }
+
+        Ok(rustls::server::danger::ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};

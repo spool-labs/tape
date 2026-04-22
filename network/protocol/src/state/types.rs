@@ -75,6 +75,22 @@ impl ProtocolState {
             .find(|(_, m)| m.id == node_id)
     }
 
+    /// Find a member in the previous committee by NodeId.
+    pub fn find_member_prev(&self, node_id: NodeId) -> Option<(usize, &CommitteeMember)> {
+        self.committee_prev
+            .iter()
+            .enumerate()
+            .find(|(_, m)| m.id == node_id)
+    }
+
+    /// True if `node_id` is in the current, previous, or next committee.
+    /// Used for authorizing peer-only API endpoints.
+    pub fn is_committee_peer(&self, node_id: NodeId) -> bool {
+        self.find_member(node_id).is_some()
+            || self.find_member_prev(node_id).is_some()
+            || self.find_member_next(node_id).is_some()
+    }
+
     /// Build a fixed-size Committee array from the current committee Vec.
     pub fn committee_as_array(&self) -> Committee<MEMBER_COUNT> {
         let mut committee = Committee::new();

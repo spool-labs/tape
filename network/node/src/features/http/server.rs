@@ -11,9 +11,11 @@ use axum::routing::{get, post};
 use axum::response::Response;
 use axum::{BoxError, Router};
 
-use axum_server::tls_rustls::RustlsConfig;
+use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use axum_server::Handle;
-use peer_tls::{build_server_config, install_default_provider};
+use peer_tls::{build_server_config_with_peer_auth, install_default_provider};
+
+use crate::features::http::peer_identity::PeerIdentityAcceptor;
 use rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
@@ -63,14 +65,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         };
 
         #[allow(unused_mut)]
-        let mut base_routes = Router::new()
+        let mut public_routes = Router::new()
             .route(
                 api_routes::NODE_HEALTH_PATH,
                 get(handlers::health::health::<Db, Cluster, Blockchain>),
-            )
-            .route(
-                api_routes::NODE_STATS_PATH,
-                get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::TRACK_PATH,
@@ -95,7 +93,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         #[cfg(feature = "metrics")]
         if self.metrics_enabled {
-            base_routes = base_routes.route(
+            public_routes = public_routes.route(
                 api_routes::NODE_METRICS_PATH,
                 get(handlers::metrics::metrics),
             );
@@ -109,7 +107,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             )
             .layer(DefaultBodyLimit::max(self.config.slice_max_bytes));
 
-        let peer_post_routes = Router::new()
+        let public_post_routes = Router::new()
             .route(
                 api_routes::TAPE_TRACK_FIND_PATH,
                 post(handlers::track::catalog::find_track::<Db, Cluster, Blockchain>),
@@ -117,6 +115,21 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::TAPE_TRACK_LIST_PATH,
                 post(handlers::track::catalog::list_tracks_by_tape::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::TRACK_REPAIR_PATH,
+                post(handlers::track::repair::repair::<Db, Cluster, Blockchain>),
+            )
+            .layer(DefaultBodyLimit::max(self.config.peer_max_bytes));
+
+        // Peer-only routes: gated by the committee-membership middleware so
+        // that only nodes in the current/prev/next committee (authenticated
+        // via mTLS) may call them. Anonymous CLI connections and non-peer
+        // clients are rejected with 403.
+        let peer_only_routes = Router::new()
+            .route(
+                api_routes::NODE_STATS_PATH,
+                get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::SYNC_SLICES_PATH,
@@ -127,10 +140,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 post(handlers::track::sync::sync_tracks::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::TRACK_REPAIR_PATH,
-                post(handlers::track::repair::repair::<Db, Cluster, Blockchain>),
-            )
-            .route(
                 api_routes::SNAPSHOT_VOTE_PATH,
                 post(handlers::snapshot::vote::vote::<Db, Cluster, Blockchain>),
             )
@@ -138,11 +147,16 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 api_routes::TRACK_INCONSISTENCY_PATH,
                 post(handlers::track::inconsistency::invalidate::<Db, Cluster, Blockchain>),
             )
-            .layer(DefaultBodyLimit::max(self.config.peer_max_bytes));
+            .layer(DefaultBodyLimit::max(self.config.peer_max_bytes))
+            .layer(from_fn_with_state(
+                state.clone(),
+                require_committee_peer::<Db, Cluster, Blockchain>,
+            ));
 
-        base_routes
+        public_routes
             .merge(slice_routes)
-            .merge(peer_post_routes)
+            .merge(public_post_routes)
+            .merge(peer_only_routes)
             .with_state(state)
             .layer(from_fn_with_state(
                 AppState {
@@ -197,9 +211,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let listen_ip = self.config.listen.ip();
         let san_ips = cert_san_ips(listen_ip);
 
-        let server_config = build_server_config(self.context.tls_keypair(), &san_ips)
+        let server_config = build_server_config_with_peer_auth(self.context.tls_keypair(), &san_ips)
             .map_err(|e| NodeError::Config(format!("tls server config: {e}")))?;
         let rustls_config = RustlsConfig::from_config(server_config);
+        let acceptor = PeerIdentityAcceptor::new(RustlsAcceptor::new(rustls_config));
 
         let app = self.build_router();
 
@@ -245,7 +260,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             None => None,
         };
 
-        let result = axum_server::bind_rustls(self.config.listen, rustls_config)
+        let result = axum_server::bind(self.config.listen)
+            .acceptor(acceptor)
             .handle(handle)
             .serve(app.into_make_service())
             .await
@@ -289,4 +305,36 @@ async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Response {
     state.context.metrics.inc_requests_total();
     next.run(req).await
+}
+
+/// Middleware for peer-only routes. Rejects anonymous requests (no client
+/// cert) and requests from pubkeys that don't match any node in the current,
+/// previous, or next committee. The mTLS handshake has already proven key
+/// possession; this is the authorization layer.
+async fn require_committee_peer<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    use crate::features::http::peer_identity::PeerIdentity;
+
+    let identity = req
+        .extensions()
+        .get::<PeerIdentity>()
+        .copied()
+        .unwrap_or_default();
+
+    let Some(tls_pubkey) = identity.pubkey() else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    let Some(node_id) = state.context.peer_manager.node_for_tls_pubkey(tls_pubkey) else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    if !state.context.state().is_committee_peer(node_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(next.run(req).await)
 }

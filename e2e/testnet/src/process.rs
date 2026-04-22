@@ -32,12 +32,16 @@ impl std::fmt::Display for RemoveNodeError {
 pub struct NodeHandle {
     pub id: usize,
     pub port: u16,
+    pub plaintext_port: u16,
     pub authority: Keypair,
     pub bls_keypair: BlsPrivateKey,
     pub config_path: PathBuf,
     pub data_dir: PathBuf,
     child: Option<Child>,
 }
+
+/// Offset added to each node's TLS port to derive its loopback plain-HTTP port.
+const PLAINTEXT_PORT_OFFSET: u16 = 10_000;
 
 pub struct ProcessSupervisor {
     node_binary: PathBuf,
@@ -111,6 +115,7 @@ impl ProcessSupervisor {
             .map(|h| NodeRef {
                 id: h.id,
                 port: h.port,
+                plaintext_port: h.plaintext_port,
                 authority: h.authority.pubkey(),
             })
             .collect()
@@ -146,6 +151,7 @@ impl ProcessSupervisor {
     pub fn prepare_node(&mut self) -> Result<usize> {
         let id = self.nodes.len();
         let port = self.base_port + id as u16;
+        let plaintext_port = port + PLAINTEXT_PORT_OFFSET;
         let node_dir = self.data_root.join(format!("node-{id}"));
         if node_dir.exists() {
             anyhow::bail!(
@@ -174,6 +180,7 @@ impl ProcessSupervisor {
         let yaml = build_node_yaml(
             id,
             port,
+            plaintext_port,
             &keypair_path,
             &bls_path,
             &tls_path,
@@ -186,6 +193,7 @@ impl ProcessSupervisor {
         self.nodes.push(NodeHandle {
             id,
             port,
+            plaintext_port,
             authority,
             bls_keypair,
             config_path,
@@ -269,7 +277,7 @@ impl ProcessSupervisor {
     }
 
     pub async fn health_check(&self, id: usize) -> bool {
-        let port = self.nodes[id].port;
+        let port = self.nodes[id].plaintext_port;
         let url = format!("http://127.0.0.1:{port}/v1/health");
 
         let client = match reqwest::Client::builder()
@@ -339,9 +347,11 @@ impl ProcessSupervisor {
             anyhow::bail!("missing config file: {}", config_path.display());
         }
 
+        let port = self.base_port + id as u16;
         Ok(NodeHandle {
             id,
-            port: self.base_port + id as u16,
+            port,
+            plaintext_port: port + PLAINTEXT_PORT_OFFSET,
             authority,
             bls_keypair,
             config_path,
@@ -366,6 +376,7 @@ fn write_bls_keypair(path: &Path, key: &BlsPrivateKey) -> Result<()> {
 fn build_node_yaml(
     id: usize,
     port: u16,
+    plaintext_port: u16,
     keypair_path: &Path,
     bls_path: &Path,
     tls_path: &Path,
@@ -401,7 +412,7 @@ logging:
 
 tls:
   identity_keypair: "{tls}"
-  self_signed: true
+  local_plaintext_listen: "127.0.0.1:{plaintext_port}"
 "#,
         keypair = keypair_path.display(),
         bls = bls_path.display(),

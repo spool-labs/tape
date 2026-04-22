@@ -223,13 +223,21 @@ impl TestNode {
         let store = TapeStore::new(MemoryStore::new());
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());
-        let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
+
+        let tls_identity = Arc::new(clone_ed25519_keypair(&self.tls_keypair));
+
+        let api = Arc::new(
+            peer_http::HttpApiBuilder::new()
+                .local_identity(tls_identity.clone())
+                .build(peer_manager.clone())
+                .context("build HttpApi")?,
+        );
 
         let context = NodeContextBuilder::<MemoryStore, HttpApi, LiteSvmRpc>::new(
             self.app_config.clone(),
             clone_keypair(&self.keypair),
             self.bls_keypair.clone(),
-            clone_ed25519_keypair(&self.tls_keypair),
+            tls_identity,
             store,
             rpc,
             peer_manager,

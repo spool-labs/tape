@@ -205,7 +205,7 @@ pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     config: NodeConfig,
     keypair: Keypair,
     bls_keypair: BlsPrivateKey,
-    tls_keypair: Keypair,
+    tls_keypair: Arc<Keypair>,
     store: TapeStore<Db>,
     rpc: RpcClient<Blockchain>,
     peer_manager: Arc<PeerManager>,
@@ -217,7 +217,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
-        tls_keypair: Keypair,
+        tls_keypair: Arc<Keypair>,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
         peer_manager: Arc<PeerManager>,
@@ -262,7 +262,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             config: Arc::new(self.config),
             keypair: Arc::new(self.keypair),
             bls_keypair: Arc::new(self.bls_keypair),
-            tls_keypair: Arc::new(self.tls_keypair),
+            tls_keypair: self.tls_keypair,
             store: Arc::new(self.store),
             rpc: Arc::new(self.rpc),
             state: StateBus::default(),
@@ -303,7 +303,7 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         let mut rng = rand::thread_rng();
-        let tls = Keypair::new(&mut rng);
+        let tls = Arc::new(Keypair::new(&mut rng));
         let ctx = NodeContextBuilder::new(
             test_config(),
             clone_keypair(node.keypair()),

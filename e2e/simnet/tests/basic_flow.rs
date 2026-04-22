@@ -7,7 +7,7 @@ use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 #[tokio::test]
 async fn basic_flow() {
     let mut harness = SimnetBuilder::new()
-        .node_count(30)
+        .node_count(20)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
         .build()

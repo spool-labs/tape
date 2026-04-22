@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use rustls::ClientConfig;
 use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair as EdKeypair;
 
+use crate::cert::self_signed_cert;
 use crate::error::TlsError;
 use crate::provider::ring_provider;
 use crate::verifier::TlsVerifier;
@@ -64,4 +66,33 @@ pub fn apply_webpki_tls(
         .with_no_client_auth();
 
     Ok(builder.use_preconfigured_tls(tls))
+}
+
+/// Apply pinned-server + client-auth TLS. Use when a peer dials another peer:
+/// the server is pinned by the on-chain `network_tls` pubkey, and we present
+/// our own TLS keypair as a client cert so the remote can authenticate us.
+pub fn apply_pinned_tls_with_identity(
+    builder: reqwest::ClientBuilder,
+    expected: Address,
+    identity: &EdKeypair,
+) -> Result<reqwest::ClientBuilder, TlsError> {
+    // Client cert SAN is irrelevant for mTLS; reuse an IPv4 loopback entry
+    // to satisfy rcgen's requirement of a non-empty SAN list.
+    let client_cert = self_signed_cert(
+        identity,
+        &[std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)],
+    )?;
+
+    let verifier = Arc::new(TlsVerifier::pinned(expected));
+    let tls = ClientConfig::builder_with_provider(ring_provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| TlsError::BuildServer(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_auth_cert(vec![client_cert.cert], client_cert.key)
+        .map_err(|e| TlsError::BuildServer(e.to_string()))?;
+
+    Ok(builder
+        .use_preconfigured_tls(tls)
+        .tls_built_in_root_certs(false))
 }
