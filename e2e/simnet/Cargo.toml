@@ -22,6 +22,7 @@ tape-store.workspace = true
 tape-protocol.workspace = true
 peer-manager.workspace = true
 peer-http.workspace = true
+peer-tls.workspace = true
 rpc.workspace = true
 tape-core.workspace = true
 tape-chain-harness.workspace = true
@@ -33,7 +34,7 @@ store-memory.workspace = true
 reqwest.workspace = true
 tape-sdk.workspace = true
 tape-crypto.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
-rand.workspace = true

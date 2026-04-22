@@ -1,16 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use peer_tls::TlsConfig;
+use dashmap::DashMap;
 use peer_manager::PeerManager;
 
-use crate::metrics::ApiMetrics;
 use crate::HttpApi;
+use crate::metrics::ApiMetrics;
 
 pub struct HttpApiBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
-    tls: Option<TlsConfig>,
     metrics: Option<Arc<ApiMetrics>>,
 }
 
@@ -25,7 +24,6 @@ impl HttpApiBuilder {
         Self {
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
-            tls: None,
             metrics: None,
         }
     }
@@ -40,39 +38,19 @@ impl HttpApiBuilder {
         self
     }
 
-    pub fn tls(mut self, config: TlsConfig) -> Self {
-        self.tls = Some(config);
-        self
-    }
-
     pub fn metrics(mut self, metrics: Arc<ApiMetrics>) -> Self {
         self.metrics = Some(metrics);
         self
     }
 
     pub fn build(self, peer_manager: Arc<PeerManager>) -> Result<HttpApi, peer_tls::TlsError> {
-        let mut builder = reqwest::Client::builder()
-            .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout);
-
-        let has_tls_keys = self
-            .tls
-            .as_ref()
-            .is_some_and(|c| !c.server_tls_keys.is_empty());
-
-        if let Some(ref config) = self.tls {
-            builder = peer_tls::configure_tls(builder, config)?;
-        }
-
-        let client = builder.build().map_err(peer_tls::TlsError::Build)?;
-
-        let scheme = if has_tls_keys { "https" } else { "http" };
-
+        peer_tls::install_default_provider();
         Ok(HttpApi {
             peer_manager,
-            client,
+            clients: Arc::new(DashMap::new()),
             metrics: self.metrics,
-            scheme,
+            connect_timeout: self.connect_timeout,
+            request_timeout: self.request_timeout,
         })
     }
 }

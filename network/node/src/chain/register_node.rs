@@ -5,6 +5,7 @@ use tape_api::instruction::build_register_node_ix;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::types::BasisPoints;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair;
 use tape_crypto::tx::Txid;
 
@@ -14,11 +15,11 @@ pub async fn submit_register_node<Blockchain: Rpc>(
     name: [u8; NAME_LENGTH],
     commission: BasisPoints,
     network_address: NetworkAddress,
+    network_tls: Address,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
 ) -> Result<Txid, RpcError> {
     let authority = keypair.address();
-    let network_tls = authority;
 
     let ix = build_register_node_ix(
         authority,
@@ -70,10 +71,12 @@ mod tests {
         let name = to_name("test-register");
         let commission = BasisPoints(500);
         let address = NetworkAddress::new_ipv4([10, 0, 0, 1], 443);
+        let tls_keypair = Keypair::new(&mut rng);
+        let network_tls = tls_keypair.address();
 
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         submit_register_node(
-            &rpc, &keypair, name, commission, address, bls_pubkey, bls_pop,
+            &rpc, &keypair, name, commission, address, network_tls, bls_pubkey, bls_pop,
         )
         .await
         .expect("register node");
@@ -81,6 +84,7 @@ mod tests {
         let node = rpc.get_node(&keypair.address()).await.expect("get node");
         assert_eq!(node.metadata.bls_pubkey, bls_pubkey);
         assert_eq!(node.metadata.network_address, address);
+        assert_eq!(node.metadata.network_tls, network_tls);
         assert_eq!(node.pool.commission_rate, commission);
     }
 }

@@ -6,7 +6,7 @@ use tape_core::bls::BlsPrivateKey;
 use tape_api::consts::NAME_LENGTH;
 use tape_core::types::BasisPoints;
 use tape_crypto::ed25519::Keypair;
-use tape_sdk::keys::helpers::{load_bls_keypair, load_ed25519_keypair};
+use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
 
 use crate::core::error::NodeError;
 use super::{
@@ -158,6 +158,17 @@ impl NodeConfig {
             ))
         })
     }
+
+    /// Load the node's TLS keypair, generating and persisting a fresh one if
+    /// `tls.identity_keypair` does not yet exist.
+    pub fn load_or_generate_tls_keypair(&self) -> Result<Keypair, NodeError> {
+        ensure_ed25519_keypair(&self.tls.identity_keypair).map_err(|error| {
+            NodeError::Keypair(format!(
+                "failed to load TLS keypair from {}: {error}",
+                self.tls.identity_keypair.display()
+            ))
+        })
+    }
 }
 
 /// Operator-facing node identity settings.
@@ -269,12 +280,7 @@ metrics:
   enabled: false
 tls:
   identity_keypair: "/etc/tape/tls.key"
-  certificate_path: "/etc/tape/tls.crt"
-  key_path: "/etc/tape/tls.pem"
-  self_signed: false
-  verify_peer_id: true
-  pin_ttl: 90
-  max_pins: 4
+  auto_update: false
 "#;
 
     #[test]
@@ -310,12 +316,7 @@ tls:
         assert_eq!(config.logging.format, LoggingFormat::Json);
         assert!(!config.metrics.enabled);
         assert_eq!(config.tls.identity_keypair, PathBuf::from("/etc/tape/tls.key"));
-        assert_eq!(config.tls.certificate_path, Some(PathBuf::from("/etc/tape/tls.crt")));
-        assert_eq!(config.tls.key_path, Some(PathBuf::from("/etc/tape/tls.pem")));
-        assert!(!config.tls.self_signed);
-        assert!(config.tls.verify_peer_id);
-        assert_eq!(config.tls.pin_ttl, 90);
-        assert_eq!(config.tls.max_pins, 4);
+        assert!(!config.tls.auto_update);
     }
 
     #[test]

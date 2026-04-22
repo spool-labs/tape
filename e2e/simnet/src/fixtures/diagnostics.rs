@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use reqwest::Client;
+use peer_tls::{apply_pinned_tls, install_default_provider};
 use tape_store::ops::SpoolOps;
 use tape_core::system::{NodeStatus, SpoolState};
 use tracing::trace;
@@ -11,6 +11,8 @@ use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
     pub async fn is_node_healthy(&self, index: usize) -> bool {
+        install_default_provider();
+
         let node = match self.harness.node(index) {
             Some(node) => node,
             None => return false,
@@ -18,8 +20,13 @@ impl SimnetScenario<'_> {
 
         let url = format!("{}/v1/health", node.base_url());
 
-        let client = match Client::builder().timeout(Duration::from_secs(2)).build() {
-            Ok(client) => client,
+        let builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
+        let builder = match apply_pinned_tls(builder, node.tls_pubkey()) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let client = match builder.build() {
+            Ok(c) => c,
             Err(_) => return false,
         };
 

@@ -39,6 +39,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     node_address: Address,
     keypair: Arc<Keypair>,
     bls_keypair: Arc<BlsPrivateKey>,
+    tls_keypair: Arc<Keypair>,
     reclaim_pending: AtomicBool,
 }
 
@@ -69,6 +70,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn bls_sign(&self, message: &[u8]) -> Result<BlsSignature, BLSError> {
         self.bls_keypair.sign(message)
+    }
+
+    pub fn tls_keypair(&self) -> &Keypair {
+        self.tls_keypair.as_ref()
     }
 
     pub fn state(&self) -> Arc<ProtocolState> {
@@ -162,6 +167,7 @@ pub mod test_utils {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
+        let tls = Keypair::new(&mut rng);
         let rpc = RpcClient::from_rpc(rpc);
         let peer_manager = Arc::new(PeerManager::new());
         let store = TapeStore::new(MemoryStore::new());
@@ -173,6 +179,7 @@ pub mod test_utils {
             config: Arc::new(test_config()),
             keypair: Arc::new(keypair),
             bls_keypair: Arc::new(bls),
+            tls_keypair: Arc::new(tls),
             store: Arc::new(store),
             rpc: Arc::new(rpc),
             state: StateBus::default(),
@@ -198,6 +205,7 @@ pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     config: NodeConfig,
     keypair: Keypair,
     bls_keypair: BlsPrivateKey,
+    tls_keypair: Keypair,
     store: TapeStore<Db>,
     rpc: RpcClient<Blockchain>,
     peer_manager: Arc<PeerManager>,
@@ -209,6 +217,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
+        tls_keypair: Keypair,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
         peer_manager: Arc<PeerManager>,
@@ -218,6 +227,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             config,
             keypair,
             bls_keypair,
+            tls_keypair,
             store,
             rpc,
             peer_manager,
@@ -252,6 +262,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             config: Arc::new(self.config),
             keypair: Arc::new(self.keypair),
             bls_keypair: Arc::new(self.bls_keypair),
+            tls_keypair: Arc::new(self.tls_keypair),
             store: Arc::new(self.store),
             rpc: Arc::new(self.rpc),
             state: StateBus::default(),
@@ -291,10 +302,13 @@ mod tests {
         let node = harness.node(7);
         let store = TapeStore::new(MemoryStore::new());
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
+        let mut rng = rand::thread_rng();
+        let tls = Keypair::new(&mut rng);
         let ctx = NodeContextBuilder::new(
             test_config(),
             clone_keypair(node.keypair()),
             *node.bls_keypair(),
+            tls,
             store,
             rpc,
             Arc::new(PeerManager::new()),

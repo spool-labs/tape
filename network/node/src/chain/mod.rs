@@ -4,6 +4,7 @@ pub mod invalidate_track;
 pub mod join_network;
 pub mod register_node;
 pub mod reserve_snapshot;
+pub mod set_network_tls;
 pub mod sign_snapshot;
 pub mod sync_epoch;
 pub mod write_snapshot;

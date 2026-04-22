@@ -16,7 +16,10 @@ async-trait.workspace = true
 reqwest = { workspace = true }
 wincode = { workspace = true }
 prometheus = { workspace = true }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 tokio = { workspace = true }
+rand = { workspace = true }

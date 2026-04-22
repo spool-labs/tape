@@ -156,6 +156,7 @@ async fn async_run(
         upload_retry_in_progress: false,
         upload_tx,
         upload_rx,
+        health_clients: HashMap::new(),
     };
 
     tracing::info!("ready");
@@ -164,10 +165,6 @@ async fn async_run(
     let mut status_interval = tokio::time::interval(Duration::from_millis(250));
     let mut health_interval = tokio::time::interval(HTTP_HEALTH_POLL_INTERVAL);
     health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let http_client = Client::builder()
-        .timeout(HTTP_HEALTH_TIMEOUT)
-        .build()
-        .expect("build devnet health client");
 
     loop {
         tokio::select! {
@@ -376,7 +373,7 @@ async fn async_run(
                 });
             }
             _ = health_interval.tick() => {
-                state.poll_http_health(&http_client).await;
+                state.poll_http_health().await;
             }
         }
     }
@@ -474,6 +471,7 @@ struct SimnetState {
     upload_retry_in_progress: bool,
     upload_tx: mpsc::UnboundedSender<UploadResult>,
     upload_rx: mpsc::UnboundedReceiver<UploadResult>,
+    health_clients: HashMap<usize, Client>,
 }
 
 impl SimnetState {
@@ -505,7 +503,7 @@ impl SimnetState {
             to_name(s)
         };
         let network_address: NetworkAddress = node.network_address();
-        let network_tls = node.authority();
+        let network_tls = node.tls_pubkey();
         let bls_pubkey = node
             .bls_keypair()
             .public_key()
@@ -521,7 +519,7 @@ impl SimnetState {
             name,
             BasisPoints(0),
             network_address,
-            network_tls.into(),
+            network_tls,
             bls_pubkey,
             bls_pop,
         );
@@ -637,7 +635,7 @@ impl SimnetState {
             to_name(s)
         };
         let network_address: NetworkAddress = node.network_address();
-        let network_tls = node.authority();
+        let network_tls = node.tls_pubkey();
         let bls_pubkey = node
             .bls_keypair()
             .public_key()
@@ -653,7 +651,7 @@ impl SimnetState {
             name,
             BasisPoints(0),
             network_address,
-            network_tls.into(),
+            network_tls,
             bls_pubkey,
             bls_pop,
         );
@@ -733,6 +731,7 @@ impl SimnetState {
         if let Some(mut node) = self.nodes.pop() {
             let id = node.id();
             self.poller.send(PollerUpdate::RemoveNode(id));
+            self.health_clients.remove(&id);
             node.stop()
                 .await
                 .with_context(|| format!("stop node {id}"))?;
@@ -740,18 +739,30 @@ impl SimnetState {
         Ok(())
     }
 
-    async fn poll_http_health(&self, client: &Client) {
+    async fn poll_http_health(&mut self) {
+        // Snapshot enough about each running node to build clients without
+        // holding a borrow on `self.nodes` during the cache-mutating call.
+        let snapshots: Vec<(usize, String, tape_crypto::address::Address)> = self
+            .nodes
+            .iter()
+            .filter(|node| node.is_running())
+            .map(|node| {
+                (
+                    node.id(),
+                    format!("{}{}", node.base_url(), NODE_HEALTH_PATH),
+                    node.tls_pubkey(),
+                )
+            })
+            .collect();
+
         let mut probes = JoinSet::new();
-
-        for node in &self.nodes {
-            if !node.is_running() {
+        for (id, url, tls_pubkey) in snapshots {
+            let client = self.health_client_for_key(id, tls_pubkey);
+            let Some(client) = client else {
+                self.poller
+                    .send(PollerUpdate::NodeHttpStatus { id, healthy: false });
                 continue;
-            }
-
-            let id = node.id();
-            let url = format!("{}{}", node.base_url(), NODE_HEALTH_PATH);
-            let client = client.clone();
-
+            };
             probes.spawn(async move {
                 let healthy = match client.get(url).send().await {
                     Ok(response) => response.status().is_success(),
@@ -772,6 +783,36 @@ impl SimnetState {
                 }
             }
         }
+    }
+
+    fn health_client_for_key(
+        &mut self,
+        id: usize,
+        tls_pubkey: tape_crypto::address::Address,
+    ) -> Option<Client> {
+        if let Some(client) = self.health_clients.get(&id) {
+            return Some(client.clone());
+        }
+
+        peer_tls::install_default_provider();
+        let builder = Client::builder().timeout(HTTP_HEALTH_TIMEOUT);
+        let builder = match peer_tls::apply_pinned_tls(builder, tls_pubkey) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!(node = id, error = %err, "failed to configure health TLS pin");
+                return None;
+            }
+        };
+        let client = match builder.build() {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::warn!(node = id, error = %err, "failed to build health client");
+                return None;
+            }
+        };
+
+        self.health_clients.insert(id, client.clone());
+        Some(client)
     }
 
     fn refresh_upload_retry_countdown(&mut self) {
@@ -960,6 +1001,7 @@ mod tests {
                         upload_retry_in_progress: false,
                         upload_tx,
                         upload_rx,
+                        health_clients: HashMap::new(),
                     };
 
                     for i in 0..25 {

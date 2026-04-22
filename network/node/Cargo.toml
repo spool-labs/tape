@@ -39,6 +39,7 @@ serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
 dirs = { workspace = true }
 axum = { workspace = true }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
 tower-http = { version = "0.6", features = ["trace"] }
 bytemuck = { workspace = true }

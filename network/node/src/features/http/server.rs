@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,11 +11,13 @@ use axum::routing::{get, post};
 use axum::response::Response;
 use axum::{BoxError, Router};
 
+use axum_server::tls_rustls::RustlsConfig;
+use axum_server::Handle;
+use peer_tls::{build_server_config, install_default_provider};
 use rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
 use tape_protocol::api::routes as api_routes;
-use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
@@ -159,25 +162,116 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             )
     }
 
+    fn build_loopback_router(&self) -> Router {
+        let state = AppState {
+            context: self.context.clone(),
+        };
+
+        #[allow(unused_mut)]
+        let mut router = Router::new()
+            .route(
+                api_routes::NODE_HEALTH_PATH,
+                get(handlers::health::health::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::NODE_STATS_PATH,
+                get(handlers::health::stats::<Db, Cluster, Blockchain>),
+            );
+
+        #[cfg(feature = "metrics")]
+        if self.metrics_enabled {
+            router = router.route(
+                api_routes::NODE_METRICS_PATH,
+                get(handlers::metrics::metrics),
+            );
+        }
+
+        router.with_state(state)
+    }
+
     pub async fn run(self) -> Result<(), NodeError> {
-        debug!(listen = %self.config.listen, "http server starting");
+        debug!(listen = %self.config.listen, "https server starting");
+
+        install_default_provider();
+
+        let listen_ip = self.config.listen.ip();
+        let san_ips = cert_san_ips(listen_ip);
+
+        let server_config = build_server_config(self.context.tls_keypair(), &san_ips)
+            .map_err(|e| NodeError::Config(format!("tls server config: {e}")))?;
+        let rustls_config = RustlsConfig::from_config(server_config);
 
         let app = self.build_router();
-        let listener = TcpListener::bind(self.config.listen)
-            .await
-            .map_err(NodeError::Io)?;
 
-        info!(listen = %self.config.listen, "http server listening");
+        info!(
+            listen = %self.config.listen,
+            tls_pubkey = %self.context.tls_keypair().address(),
+            "https server listening"
+        );
 
+        let handle = Handle::new();
+        let shutdown_handle = handle.clone();
         let cancel = self.cancel.clone();
+        let shutdown_task = tokio::spawn(async move {
+            cancel.cancelled().await;
+            shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+        });
 
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                cancel.cancelled().await;
-            })
+        let loopback_task = match self.context.config.tls.local_plaintext_listen {
+            Some(addr) if addr.ip().is_loopback() => {
+                let loopback_router = self.build_loopback_router();
+                let cancel = self.cancel.clone();
+                info!(listen = %addr, "loopback plain-http listener starting");
+                Some(tokio::spawn(async move {
+                    match tokio::net::TcpListener::bind(addr).await {
+                        Ok(listener) => {
+                            let _ = axum::serve(listener, loopback_router)
+                                .with_graceful_shutdown(async move {
+                                    cancel.cancelled().await;
+                                })
+                                .await;
+                        }
+                        Err(err) => {
+                            tracing::error!(%addr, error = %err, "loopback listener failed to bind");
+                        }
+                    }
+                }))
+            }
+            Some(addr) => {
+                return Err(NodeError::Config(format!(
+                    "tls.local_plaintext_listen={addr} must be a loopback address (127.0.0.0/8 or ::1)"
+                )));
+            }
+            None => None,
+        };
+
+        let result = axum_server::bind_rustls(self.config.listen, rustls_config)
+            .handle(handle)
+            .serve(app.into_make_service())
             .await
-            .map_err(NodeError::Io)
+            .map_err(NodeError::Io);
+
+        shutdown_task.abort();
+        let _ = shutdown_task.await;
+        if let Some(task) = loopback_task {
+            task.abort();
+            let _ = task.await;
+        }
+        result
     }
+}
+
+/// Expand the cert SAN list. When the server listens on `0.0.0.0`/`::`, include
+/// loopback as well so health checks and local peer dials succeed.
+fn cert_san_ips(listen_ip: IpAddr) -> Vec<IpAddr> {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    let mut sans = vec![listen_ip];
+    if listen_ip.is_unspecified() {
+        sans.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        sans.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+    sans
 }
 
 async fn handle_http_error(error: BoxError) -> StatusCode {

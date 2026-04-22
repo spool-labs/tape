@@ -2,11 +2,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use dashmap::DashMap;
+use peer_manager::{PeerManager, PeerNode};
 use tape_protocol::api::*;
-use peer_manager::PeerManager;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::address::Address;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
@@ -14,27 +16,79 @@ use crate::metrics::ApiMetrics;
 /// Per-request timeout for snapshot vote calls.
 const SNAPSHOT_VOTE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// A reqwest client pinned to a specific peer's TLS public key. Cached on the
+/// `HttpApi` and invalidated when PeerManager observes a change to the peer's
+/// on-chain `network_tls` field.
+#[derive(Clone)]
+pub struct PinnedPeerClient {
+    pub client: reqwest::Client,
+    pub tls_pubkey: Address,
+    pub network_address: NetworkAddress,
+}
+
 pub struct HttpApi {
     pub peer_manager: Arc<PeerManager>,
-    pub client: reqwest::Client,
+    pub clients: Arc<DashMap<NodeId, PinnedPeerClient>>,
     pub metrics: Option<Arc<ApiMetrics>>,
-    pub scheme: &'static str,
+    pub connect_timeout: Duration,
+    pub request_timeout: Duration,
 }
 
 impl HttpApi {
-    pub fn new(http: reqwest::Client, peer_manager: Arc<PeerManager>) -> Self {
-        Self {
-            peer_manager,
-            client: http,
-            metrics: None,
-            scheme: "http",
-        }
-    }
-
+    /// Build an HttpApi with default timeouts. Equivalent to
+    /// `HttpApiBuilder::new().build(peer_manager)` and cannot fail in practice
+    /// since the builder installs the rustls crypto provider once.
     pub fn with_default_timeouts(peer_manager: Arc<PeerManager>) -> Self {
         HttpApiBuilder::new()
             .build(peer_manager)
             .expect("default peer HTTP client config should build")
+    }
+
+    /// Get-or-build a pinned HTTPS client for the given peer. Rebuilds when the
+    /// cached entry's TLS pubkey or network address differ from the current
+    /// PeerNode snapshot (which is how we handle peer key rotations).
+    fn client_for(&self, peer: &PeerNode) -> Result<(reqwest::Client, String), ApiError> {
+        if let Some(entry) = self.clients.get(&peer.node_id) {
+            if entry.tls_pubkey == peer.tls_pubkey
+                && entry.network_address == peer.network_address
+            {
+                let url = https_base_url(entry.network_address)?;
+                return Ok((entry.client.clone(), url));
+            }
+        }
+
+        let client = self.build_pinned_client(peer.tls_pubkey)?;
+        let pinned = PinnedPeerClient {
+            client: client.clone(),
+            tls_pubkey: peer.tls_pubkey,
+            network_address: peer.network_address,
+        };
+        self.clients.insert(peer.node_id, pinned);
+
+        let url = https_base_url(peer.network_address)?;
+        Ok((client, url))
+    }
+
+    fn build_pinned_client(&self, tls_pubkey: Address) -> Result<reqwest::Client, ApiError> {
+        let builder = reqwest::Client::builder()
+            .connect_timeout(self.connect_timeout)
+            .timeout(self.request_timeout);
+        let builder = peer_tls::apply_pinned_tls(builder, tls_pubkey)
+            .map_err(|e| ApiError::Other(format!("tls build: {e}")))?;
+        builder
+            .build()
+            .map_err(|e| ApiError::Other(format!("client build: {e}")))
+    }
+
+    fn resolve(&self, node_id: NodeId) -> Result<(reqwest::Client, String), ApiError> {
+        let peer = self.resolve_peer(node_id)?;
+        self.client_for(&peer)
+    }
+
+    fn resolve_peer(&self, node_id: NodeId) -> Result<PeerNode, ApiError> {
+        self.peer_manager
+            .get(node_id)
+            .ok_or(ApiError::NodeUnresolved(node_id))
     }
 
     fn record(&self, op: &str, resp: &reqwest::Response, start: Instant, bytes_sent: u64) {
@@ -55,11 +109,17 @@ impl HttpApi {
     }
 }
 
+fn https_base_url(addr: NetworkAddress) -> Result<String, ApiError> {
+    let sa = addr
+        .to_socket_addr()
+        .map_err(|e| ApiError::ConnectionFailed(e.to_string()))?;
+    Ok(format!("https://{sa}"))
+}
 
 #[async_trait]
 impl Api for HttpApi {
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
         let body =
@@ -68,8 +128,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .put(&url)
             .header("content-type", BINARY_CONTENT)
             .body(body)
@@ -85,13 +144,12 @@ impl Api for HttpApi {
     }
 
     async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .send()
             .await
@@ -107,13 +165,12 @@ impl Api for HttpApi {
     }
 
     async fn get_track(&self, node: NodeId, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", track_url(&track_id));
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .send()
             .await
@@ -136,13 +193,12 @@ impl Api for HttpApi {
         node: NodeId,
         req: &GetTrackByNumberReq,
     ) -> Result<GetTrackByNumberRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let tape_id = req.tape.to_string();
         let url = format!("{base}{}", tape_track_url(&tape_id, req.track_number));
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .send()
             .await
@@ -161,7 +217,7 @@ impl Api for HttpApi {
     }
 
     async fn find_track(&self, node: NodeId, req: &FindTrackReq) -> Result<FindTrackRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let tape_id = req.tape.to_string();
         let url = format!("{base}{}", find_track_url(&tape_id));
         let wire_req = FindTrackRequest {
@@ -174,8 +230,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .post(&url)
             .header("content-type", BINARY_CONTENT)
             .body(body)
@@ -200,7 +255,7 @@ impl Api for HttpApi {
         node: NodeId,
         req: &ListTracksByTapeReq,
     ) -> Result<ListTracksByTapeRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let tape_id = req.tape.to_string();
         let url = format!("{base}{}", list_tracks_by_tape_url(&tape_id));
         let wire_req = ListTracksByTapeRequest {
@@ -213,8 +268,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .post(&url)
             .header("content-type", BINARY_CONTENT)
             .body(body)
@@ -245,13 +299,12 @@ impl Api for HttpApi {
         node: NodeId,
         req: &GetTrackDataReq,
     ) -> Result<GetTrackDataRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", track_data_url(&track_id));
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .send()
             .await
@@ -273,13 +326,12 @@ impl Api for HttpApi {
         node: NodeId,
         req: &GetTrackProofReq,
     ) -> Result<GetTrackProofRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", track_proof_url(&track_id));
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .send()
             .await
@@ -299,7 +351,7 @@ impl Api for HttpApi {
     }
 
     async fn sync_slices(&self, node: NodeId, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let url = format!("{base}{}", SYNC_SLICES_PATH);
         let wire_req = SyncSlicesRequest {
             spool_index: req.spool_index,
@@ -312,8 +364,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .post(&url)
             .header("content-type", BINARY_CONTENT)
             .body(body)
@@ -336,7 +387,7 @@ impl Api for HttpApi {
     }
 
     async fn sync_tracks(&self, node: NodeId, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let url = format!("{base}{}", SYNC_TRACKS_PATH);
         let wire_req = SyncTracksRequest {
             spool_index: req.spool_index,
@@ -349,8 +400,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .post(&url)
             .header("content-type", BINARY_CONTENT)
             .body(body)
@@ -373,7 +423,7 @@ impl Api for HttpApi {
     }
 
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", repair_url(&track_id));
         let wire_req = RepairRequest {
@@ -387,8 +437,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .post(&url)
             .header("content-type", BINARY_CONTENT)
             .body(body)
@@ -406,13 +455,12 @@ impl Api for HttpApi {
     }
 
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", sign_url(&track_id));
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .send()
             .await
@@ -438,7 +486,7 @@ impl Api for HttpApi {
         node: NodeId,
         req: &SnapshotVoteReq,
     ) -> Result<SnapshotVoteRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let url = format!("{base}{SNAPSHOT_VOTE_PATH}");
         let wire_req = SnapshotVoteRequest {
             node_id: req.node_id,
@@ -451,8 +499,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .post(&url)
             .timeout(SNAPSHOT_VOTE_TIMEOUT)
             .header("content-type", BINARY_CONTENT)
@@ -471,7 +518,7 @@ impl Api for HttpApi {
         node: NodeId,
         req: &InvalidateReq,
     ) -> Result<InvalidateRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", inconsistency_url(&track_id));
         let wire_req = InconsistencyRequest {
@@ -483,8 +530,7 @@ impl Api for HttpApi {
 
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .post(&url)
             .header("content-type", BINARY_CONTENT)
             .body(body)
@@ -512,12 +558,11 @@ impl Api for HttpApi {
         node: NodeId,
         _req: &GetHealthReq,
     ) -> Result<GetHealthRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let url = format!("{base}{}", NODE_HEALTH_PATH);
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .send()
             .await
@@ -534,12 +579,11 @@ impl Api for HttpApi {
         node: NodeId,
         _req: &GetStatsReq,
     ) -> Result<GetStatsRes, ApiError> {
-        let base = resolve(self.scheme, &self.peer_manager, node)?;
+        let (client, base) = self.resolve(node)?;
         let url = format!("{base}{}", NODE_STATS_PATH);
 
         let start = Instant::now();
-        let resp = self
-            .client
+        let resp = client
             .get(&url)
             .header("accept", JSON_CONTENT)
             .send()
@@ -554,18 +598,6 @@ impl Api for HttpApi {
             .map_err(|e| ApiError::Serialization(format!("json: {e}")))?;
         Ok(GetStatsRes { stats })
     }
-}
-
-fn base_url(scheme: &str, addr: NetworkAddress) -> Result<String, ApiError> {
-    let sa = addr
-        .to_socket_addr()
-        .map_err(|e| ApiError::ConnectionFailed(e.to_string()))?;
-    Ok(format!("{scheme}://{sa}"))
-}
-
-fn resolve(scheme: &str, pm: &PeerManager, node: NodeId) -> Result<String, ApiError> {
-    let addr = pm.resolve(node).ok_or(ApiError::NodeUnresolved(node))?;
-    base_url(scheme, addr)
 }
 
 fn map_reqwest(e: reqwest::Error) -> ApiError {
@@ -623,56 +655,86 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
 
     use axum::body::Bytes;
     use axum::http::StatusCode;
     use axum::routing::post;
     use axum::Router;
-    use tokio::net::TcpListener;
-    use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
-    use tape_core::bls::{BlsPrivateKey, BlsPubkey};
-    use tape_crypto::address::Address;
+    use axum_server::tls_rustls::RustlsConfig;
     use peer_manager::PeerNode;
+    use peer_tls::{build_server_config, install_default_provider};
+    use rand::thread_rng;
+    use tape_core::bls::{BlsPrivateKey, BlsPubkey};
+    use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
+    use tape_crypto::ed25519::Keypair as EdKeypair;
+    use tokio::net::TcpListener;
 
-    fn make_peer(id: u64, port: u16) -> PeerNode {
+    fn make_peer(id: u64, port: u16, tls_pubkey: Address) -> PeerNode {
         PeerNode {
             node_id: NodeId(id),
             authority: Address::new_unique(),
             state_address: Address::new_unique(),
             bls_pubkey: BlsPubkey::new_unique(),
-            tls_pubkey: Address::new_unique(),
+            tls_pubkey,
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
         }
     }
 
+    async fn serve_tls(
+        tls_keypair: EdKeypair,
+        router: Router,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let addr = std_listener.local_addr().unwrap();
+
+        let server_config =
+            build_server_config(&tls_keypair, &[IpAddr::V4(Ipv4Addr::LOCALHOST)]).expect("cfg");
+        let rustls = RustlsConfig::from_config(server_config);
+
+        let handle = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(std_listener, rustls)
+                .serve(router.into_make_service())
+                .await
+                .unwrap();
+        });
+        (addr, handle)
+    }
+
     #[test]
     fn resolves_peers_added_after_api_construction() {
+        install_default_provider();
         let peer_manager = Arc::new(PeerManager::new());
-        let api = HttpApi::new(reqwest::Client::new(), peer_manager.clone());
+        let api = HttpApi::with_default_timeouts(peer_manager.clone());
         let node_id = NodeId(7);
 
         assert!(matches!(
-            resolve(api.scheme, api.peer_manager.as_ref(), node_id),
+            api.resolve_peer(node_id),
             Err(ApiError::NodeUnresolved(id)) if id == node_id
         ));
 
-        peer_manager.add_peer(make_peer(7, 8080));
-
-        let base = resolve(api.scheme, api.peer_manager.as_ref(), node_id).unwrap();
-        assert_eq!(base, "http://127.0.0.1:8080");
+        peer_manager.add_peer(make_peer(7, 8080, Address::new_unique()));
+        let peer = api.resolve_peer(node_id).expect("resolve");
+        assert_eq!(peer.node_id, node_id);
     }
 
     #[test]
     fn default_timeout_builder_constructs_http_api() {
+        install_default_provider();
         let peer_manager = Arc::new(PeerManager::new());
         let api = HttpApi::with_default_timeouts(peer_manager.clone());
-        assert_eq!(api.scheme, "http");
         assert!(Arc::ptr_eq(&api.peer_manager, &peer_manager));
     }
 
     #[tokio::test]
-    async fn snapshot_vote_write_roundtrip() {
+    async fn snapshot_vote_write_roundtrip_over_tls() {
+        install_default_provider();
+        let mut rng = thread_rng();
+        let tls = EdKeypair::new(&mut rng);
+        let tls_pubkey = tls.address();
+
         let request = SnapshotVoteRequest {
             node_id: NodeId(9),
             kind: SnapshotVoteKind::WriteChunk,
@@ -704,24 +766,22 @@ mod tests {
             }),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
+        let (addr, _handle) = serve_tls(tls, router).await;
 
         let peer_manager = Arc::new(PeerManager::new());
-        peer_manager.add_peer(make_peer(7, port));
-        let api = HttpApi::new(reqwest::Client::new(), peer_manager);
+        peer_manager.add_peer(make_peer(7, addr.port(), tls_pubkey));
+        let api = HttpApi::with_default_timeouts(peer_manager);
 
         api.snapshot_vote(NodeId(7), &api_request).await.unwrap();
-
-        server.abort();
-        let _ = server.await;
     }
 
     #[tokio::test]
-    async fn snapshot_vote_complete_group_roundtrip() {
+    async fn snapshot_vote_complete_group_roundtrip_over_tls() {
+        install_default_provider();
+        let mut rng = thread_rng();
+        let tls = EdKeypair::new(&mut rng);
+        let tls_pubkey = tls.address();
+
         let request = SnapshotVoteRequest {
             node_id: NodeId(9),
             kind: SnapshotVoteKind::CompleteGroup,
@@ -753,19 +813,54 @@ mod tests {
             }),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
+        let (addr, _handle) = serve_tls(tls, router).await;
 
         let peer_manager = Arc::new(PeerManager::new());
-        peer_manager.add_peer(make_peer(7, port));
-        let api = HttpApi::new(reqwest::Client::new(), peer_manager);
+        peer_manager.add_peer(make_peer(7, addr.port(), tls_pubkey));
+        let api = HttpApi::with_default_timeouts(peer_manager);
 
         api.snapshot_vote(NodeId(7), &api_request).await.unwrap();
-
-        server.abort();
-        let _ = server.await;
     }
+
+    #[tokio::test]
+    async fn rebuilds_client_when_peer_rotates_tls_key() {
+        install_default_provider();
+        let mut rng = thread_rng();
+        let original_tls = EdKeypair::new(&mut rng);
+        let new_tls = EdKeypair::new(&mut rng);
+
+        let router = Router::new().route(
+            SNAPSHOT_VOTE_PATH,
+            post(|_: Bytes| async move { StatusCode::OK }),
+        );
+
+        let (addr, _handle) = serve_tls(original_tls, router).await;
+
+        let peer_manager = Arc::new(PeerManager::new());
+        peer_manager.add_peer(make_peer(7, addr.port(), Address::new_unique()));
+        let api = HttpApi::with_default_timeouts(peer_manager.clone());
+
+        // Snapshot the client with a wrong pin — request should fail.
+        let request = SnapshotVoteReq {
+            node_id: NodeId(9),
+            kind: SnapshotVoteKind::WriteChunk,
+            message: vec![0u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
+            signature: BlsPrivateKey::from_random().sign(b"x").unwrap(),
+        };
+        assert!(api.snapshot_vote(NodeId(7), &request).await.is_err());
+
+        // Rotate the peer's tls_pubkey to an also-wrong key; cache must
+        // reflect the rotation (still mismatched, but the cached entry is
+        // fresh).
+        peer_manager.add_peer(make_peer(7, addr.port(), new_tls.address()));
+        let peer = peer_manager.get(NodeId(7)).unwrap();
+        api.client_for(&peer).expect("build fresh client");
+        let cached = api.clients.get(&NodeId(7)).unwrap();
+        assert_eq!(cached.tls_pubkey, new_tls.address());
+    }
+
+    // Plain-TcpListener warning suppression — tokio's import can otherwise go
+    // unused in test-only builds where only axum_server is used.
+    #[allow(dead_code)]
+    fn _tcp_listener_ref(_: TcpListener) {}
 }

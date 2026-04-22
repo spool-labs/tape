@@ -721,6 +721,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-server"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1ab4a3ec9ea8a657c72d99a03a824af695bd0fb5ec639ccbd9cd3543b41a5f9"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "fs-err",
+ "http 1.4.0",
+ "http-body",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls 0.23.36",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tower-service",
+]
+
+[[package]]
 name = "base64"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2225,6 +2247,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73fde052dbfc920003cfd2c8e2c6e6d4cc7c1091538c3a24226cec0665ab08c0"
+dependencies = [
+ "autocfg",
+ "tokio",
 ]
 
 [[package]]
@@ -3975,9 +4007,12 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
+ "axum-server",
+ "dashmap 6.1.0",
  "peer-manager",
  "peer-tls",
  "prometheus",
+ "rand 0.8.5",
  "reqwest",
  "tape-api",
  "tape-core",
@@ -4020,11 +4055,15 @@ dependencies = [
 name = "peer-tls"
 version = "0.3.0"
 dependencies = [
+ "rand 0.8.5",
+ "rcgen",
  "reqwest",
  "rustls 0.23.36",
- "rustls-pemfile",
  "tape-crypto",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "webpki-roots 0.26.11",
  "x509-parser 0.16.0",
 ]
 
@@ -4035,6 +4074,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8835c273a76a90455d7344889b0964598e3316e2a79ede8e36f16bdcf2228b8"
 dependencies = [
  "base64 0.13.1",
+]
+
+[[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64 0.22.1",
+ "serde_core",
 ]
 
 [[package]]
@@ -4485,6 +4534,19 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem 3.0.6",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
 ]
 
 [[package]]
@@ -7427,7 +7489,7 @@ dependencies = [
  "libc",
  "log",
  "nix 0.30.1",
- "pem",
+ "pem 1.1.1",
  "percentage",
  "quinn",
  "quinn-proto",
@@ -8747,6 +8809,7 @@ dependencies = [
  "arc-swap",
  "crossterm",
  "peer-http",
+ "peer-tls",
  "rand 0.8.5",
  "ratatui",
  "reqwest",
@@ -8775,6 +8838,7 @@ dependencies = [
  "anyhow",
  "peer-http",
  "peer-manager",
+ "peer-tls",
  "rand 0.8.5",
  "reqwest",
  "rpc",
@@ -8843,6 +8907,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
+ "axum-server",
  "bytemuck",
  "clap",
  "dirs",
@@ -9845,6 +9910,15 @@ checksum = "5f20c57d8d7db6d3b86154206ae5d8fba62dd39573114de97c2cb0578251f8e1"
 
 [[package]]
 name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.6",
+]
+
+[[package]]
+name = "webpki-roots"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
@@ -10422,6 +10496,15 @@ dependencies = [
  "oid-registry 0.7.1",
  "rusticata-macros",
  "thiserror 1.0.69",
+ "time",
+]
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
  "time",
 ]
 

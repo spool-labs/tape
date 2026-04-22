@@ -134,7 +134,7 @@ impl<'a> SimnetScenario<'a> {
 
         let name = node_name(node.id());
         let network_address: NetworkAddress = node.network_address();
-        let network_tls = node.authority();
+        let network_tls = node.tls_pubkey();
 
         let bls_pubkey = node
             .bls_keypair()
@@ -151,7 +151,7 @@ impl<'a> SimnetScenario<'a> {
             name,
             commission,
             network_address,
-            network_tls.into(),
+            network_tls,
             bls_pubkey,
             bls_pop,
         );

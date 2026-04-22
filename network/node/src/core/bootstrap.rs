@@ -7,15 +7,18 @@ use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use store_rocks::RocksStore;
+use tape_api::program::tapedrive::node_pda;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair;
 use tape_store::TapeStore;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::chain::register_node::submit_register_node;
+use crate::chain::set_network_tls::submit_set_network_tls;
 use crate::config::node::NodeConfig;
 use crate::context::{AppContext, NodeContextBuilder};
 use crate::core::error::NodeError;
@@ -88,13 +91,14 @@ fn init_metrics(config: &NodeConfig) {
 pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError> {
     let keypair = config.load_node_keypair()?;
     let bls_keypair = config.load_bls_keypair()?;
+    let tls_keypair = config.load_or_generate_tls_keypair()?;
 
     init_metrics(config);
 
     let store = open_primary_store(config)?;
     let rpc = build_rpc_client(config)?;
 
-    ensure_registered(config, &rpc, &keypair, &bls_keypair).await?;
+    ensure_registered(config, &rpc, &keypair, &bls_keypair, &tls_keypair).await?;
 
     let peer_manager = Arc::new(PeerManager::new());
     let api = build_peer_api(config, peer_manager.clone())?;
@@ -103,6 +107,7 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
         config.clone(),
         keypair,
         bls_keypair,
+        tls_keypair,
         store,
         rpc,
         peer_manager,
@@ -134,7 +139,41 @@ pub fn resolve_network_address(config: &NodeConfig) -> Result<NetworkAddress, No
     ))
 }
 
-fn validate_node_metadata<Blockchain: Rpc>(
+async fn reconcile_network_tls<Blockchain: Rpc>(
+    config: &NodeConfig,
+    rpc: &RpcClient<Blockchain>,
+    authority: &Keypair,
+    local_tls_pubkey: Address,
+    on_chain: Address,
+) -> Result<(), NodeError> {
+    if on_chain == local_tls_pubkey {
+        return Ok(());
+    }
+
+    if !config.tls.auto_update {
+        return Err(NodeError::Config(format!(
+            "on-chain network_tls {on_chain} does not match local TLS keypair {local_tls_pubkey}; \
+             rotate on-chain via SetNetworkTls, or enable tls.auto_update to overwrite"
+        )));
+    }
+
+    let (node_address, _) = node_pda(authority.address());
+
+    info!(
+        local = %local_tls_pubkey,
+        on_chain = %on_chain,
+        node = %node_address,
+        "updating on-chain network_tls to match local keypair (tls.auto_update=true)"
+    );
+
+    submit_set_network_tls(rpc, authority, node_address, local_tls_pubkey)
+        .await
+        .map_err(NodeError::Rpc)?;
+
+    Ok(())
+}
+
+fn validate_node_metadata(
     node: &Node,
     config: &NodeConfig,
     bls_keypair: &BlsPrivateKey,
@@ -166,13 +205,24 @@ pub async fn ensure_registered<Blockchain: Rpc>(
     rpc: &RpcClient<Blockchain>,
     keypair: &Keypair,
     bls_keypair: &BlsPrivateKey,
+    tls_keypair: &Keypair,
 ) -> Result<(), NodeError> {
     let authority = keypair.address();
+    let local_tls_pubkey = tls_keypair.address();
 
     match rpc.get_node(&authority).await {
         Ok(node) => {
             info!(authority = %authority, "node already registered on-chain");
-            return validate_node_metadata::<Blockchain>(&node, config, bls_keypair);
+            validate_node_metadata(&node, config, bls_keypair)?;
+            reconcile_network_tls(
+                config,
+                rpc,
+                keypair,
+                local_tls_pubkey,
+                node.metadata.network_tls,
+            )
+            .await?;
+            return Ok(());
         }
         Err(RpcError::AccountNotFound(_)) => {}
         Err(err) => return Err(NodeError::Rpc(err)),
@@ -193,6 +243,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
     info!(
         name = %config.node.name,
         authority = %authority,
+        network_tls = %local_tls_pubkey,
         "registering node on-chain"
     );
 
@@ -202,6 +253,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
         name,
         commission,
         network_address,
+        local_tls_pubkey,
         bls_pubkey,
         bls_pop,
     )
@@ -217,7 +269,23 @@ pub async fn ensure_registered<Blockchain: Rpc>(
             match rpc.get_node(&authority).await {
                 Ok(node) => {
                     info!("node appeared on-chain after failed registration tx");
-                    validate_node_metadata::<Blockchain>(&node, config, bls_keypair)
+                    validate_node_metadata(&node, config, bls_keypair)?;
+                    if node.metadata.network_tls != local_tls_pubkey {
+                        warn!(
+                            on_chain = %node.metadata.network_tls,
+                            local = %local_tls_pubkey,
+                            "node appeared on-chain with different TLS key; attempting reconcile"
+                        );
+                        reconcile_network_tls(
+                            config,
+                            rpc,
+                            keypair,
+                            local_tls_pubkey,
+                            node.metadata.network_tls,
+                        )
+                        .await?;
+                    }
+                    Ok(())
                 }
                 Err(_) => Err(NodeError::Rpc(reg_err)),
             }
@@ -319,6 +387,7 @@ mod tests {
         keypair: &Keypair,
         bls: &BlsPrivateKey,
         address: NetworkAddress,
+        tls_pubkey: tape_crypto::address::Address,
     ) {
         let authority = keypair.to_solana_pubkey();
         harness
@@ -333,6 +402,7 @@ mod tests {
             to_name("test-node"),
             BasisPoints(0),
             address,
+            tls_pubkey,
             bls.public_key().expect("bls pubkey"),
             bls.proof_of_possession().expect("bls pop"),
         )
@@ -358,23 +428,24 @@ mod tests {
             .expect("airdrop");
 
         let bls = BlsPrivateKey::from_random();
+        let tls = Keypair::new(&mut rng);
         let config = test_config_with_address([10, 0, 0, 1], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
 
-        ensure_registered(&config, &rpc, &keypair, &bls)
+        ensure_registered(&config, &rpc, &keypair, &bls, &tls)
             .await
             .expect("ensure_registered");
 
-        // Verify node now exists on chain
         let node = rpc.get_node(&keypair.address()).await.expect("get node");
         assert_eq!(
             node.metadata.bls_pubkey,
             bls.public_key().expect("bls pubkey")
         );
+        assert_eq!(node.metadata.network_tls, tls.address());
     }
 
     #[tokio::test]
-    async fn skips_existing_node() {
+    async fn skips_existing_node_when_tls_matches() {
         let harness = NodeHarness::builder()
             .nodes(20)
             .epoch(EpochNumber(3))
@@ -385,18 +456,82 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
+        let tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );
 
-        register_fresh_node(&harness, &keypair, &bls, address).await;
+        register_fresh_node(&harness, &keypair, &bls, address, tls.address()).await;
 
-        // Second call should succeed without registering again
         let config = test_config_with_address([10, 0, 0, 1], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        ensure_registered(&config, &rpc, &keypair, &bls)
+        ensure_registered(&config, &rpc, &keypair, &bls, &tls)
             .await
             .expect("ensure_registered idempotent");
+    }
+
+    #[tokio::test]
+    async fn auto_updates_network_tls_on_mismatch() {
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EpochNumber(3))
+            .build()
+            .await
+            .expect("build harness");
+
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let bls = BlsPrivateKey::from_random();
+        let old_tls = Keypair::new(&mut rng);
+        let new_tls = Keypair::new(&mut rng);
+        let address = NetworkAddress::from_socket_addr(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
+        );
+
+        register_fresh_node(&harness, &keypair, &bls, address, old_tls.address()).await;
+
+        let mut config = test_config_with_address([10, 0, 0, 1], 443);
+        config.tls.auto_update = true;
+        let rpc = RpcClient::from_rpc(harness.rpc().clone());
+        ensure_registered(&config, &rpc, &keypair, &bls, &new_tls)
+            .await
+            .expect("auto-update");
+
+        let node = rpc.get_node(&keypair.address()).await.expect("get node");
+        assert_eq!(node.metadata.network_tls, new_tls.address());
+    }
+
+    #[tokio::test]
+    async fn rejects_tls_mismatch_when_auto_update_disabled() {
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EpochNumber(3))
+            .build()
+            .await
+            .expect("build harness");
+
+        let mut rng = rand::thread_rng();
+        let keypair = Keypair::new(&mut rng);
+        let bls = BlsPrivateKey::from_random();
+        let old_tls = Keypair::new(&mut rng);
+        let new_tls = Keypair::new(&mut rng);
+        let address = NetworkAddress::from_socket_addr(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
+        );
+
+        register_fresh_node(&harness, &keypair, &bls, address, old_tls.address()).await;
+
+        let mut config = test_config_with_address([10, 0, 0, 1], 443);
+        config.tls.auto_update = false;
+        let rpc = RpcClient::from_rpc(harness.rpc().clone());
+        let err = ensure_registered(&config, &rpc, &keypair, &bls, &new_tls)
+            .await
+            .unwrap_err();
+
+        match err {
+            NodeError::Config(msg) => assert!(msg.contains("network_tls")),
+            other => panic!("expected Config error, got: {other}"),
+        }
     }
 
     #[tokio::test]
@@ -411,17 +546,17 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls_original = BlsPrivateKey::from_random();
+        let tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );
 
-        register_fresh_node(&harness, &keypair, &bls_original, address).await;
+        register_fresh_node(&harness, &keypair, &bls_original, address, tls.address()).await;
 
-        // Call with a different BLS keypair
         let bls_different = BlsPrivateKey::from_random();
         let config = test_config_with_address([10, 0, 0, 1], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        let err = ensure_registered(&config, &rpc, &keypair, &bls_different)
+        let err = ensure_registered(&config, &rpc, &keypair, &bls_different, &tls)
             .await
             .unwrap_err();
 
@@ -443,16 +578,16 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
+        let tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );
 
-        register_fresh_node(&harness, &keypair, &bls, address).await;
+        register_fresh_node(&harness, &keypair, &bls, address, tls.address()).await;
 
-        // Config points to a different IP
         let config = test_config_with_address([10, 0, 0, 2], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        let err = ensure_registered(&config, &rpc, &keypair, &bls)
+        let err = ensure_registered(&config, &rpc, &keypair, &bls, &tls)
             .await
             .unwrap_err();
 

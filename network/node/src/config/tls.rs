@@ -1,50 +1,45 @@
 use serde::Deserialize;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use super::helpers::{deserialize_optional_pathbuf, deserialize_pathbuf};
+use super::helpers::deserialize_pathbuf;
 
-/// TLS and peer pinning configuration.
+/// TLS configuration for peer-to-peer HTTPS.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct TlsConfig {
-    /// Path to the node TLS identity keypair.
-    #[serde(default = "default_identity_keypair", deserialize_with = "deserialize_pathbuf")]
+    /// Path to the node's persistent Ed25519 TLS keypair. Generated on first
+    /// boot if missing; its public key is what gets published on-chain as
+    /// `Node.metadata.network_tls`.
+    #[serde(
+        default = "default_identity_keypair",
+        deserialize_with = "deserialize_pathbuf"
+    )]
     pub identity_keypair: PathBuf,
 
-    /// Path to a PEM certificate file, when externally managed.
-    #[serde(default, deserialize_with = "deserialize_optional_pathbuf")]
-    pub certificate_path: Option<PathBuf>,
+    /// If the on-chain `network_tls` differs from the local keypair's public
+    /// key, automatically emit a `SetNetworkTls` transaction to overwrite it.
+    ///
+    /// Default: `true` (safe for dev/simnet/devnet). Operators running
+    /// testnet/mainnet should set this to `false` and rotate the key via
+    /// explicit `SetNetworkTls` submissions.
+    #[serde(default = "default_auto_update")]
+    pub auto_update: bool,
 
-    /// Path to a PEM private key file, when externally managed.
-    #[serde(default, deserialize_with = "deserialize_optional_pathbuf")]
-    pub key_path: Option<PathBuf>,
-
-    /// Whether to generate a self-signed certificate when files are absent.
-    #[serde(default = "default_self_signed")]
-    pub self_signed: bool,
-
-    /// Whether peer identity should be enforced once TLS is wired.
-    #[serde(default = "default_verify_peer_id")]
-    pub verify_peer_id: bool,
-
-    /// Grace period for retained pins during key rotation.
-    #[serde(default = "default_pin_ttl")]
-    pub pin_ttl: u64,
-
-    /// Maximum number of pins retained per peer.
-    #[serde(default = "default_max_pins")]
-    pub max_pins: usize,
+    /// Optional loopback-only plain-HTTP listener for operator tooling
+    /// (readiness probes, `curl` health checks, local Prometheus scrapes).
+    /// Only serves `/v1/health`, `/v1/stats`, and (when the `metrics` feature
+    /// is enabled) `/metrics`. Rejected at startup if the configured address
+    /// is not loopback.
+    #[serde(default)]
+    pub local_plaintext_listen: Option<SocketAddr>,
 }
 
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
             identity_keypair: default_identity_keypair(),
-            certificate_path: None,
-            key_path: None,
-            self_signed: default_self_signed(),
-            verify_peer_id: default_verify_peer_id(),
-            pin_ttl: default_pin_ttl(),
-            max_pins: default_max_pins(),
+            auto_update: default_auto_update(),
+            local_plaintext_listen: None,
         }
     }
 }
@@ -53,18 +48,6 @@ fn default_identity_keypair() -> PathBuf {
     super::helpers::expand_path("~/.tape/tls.key")
 }
 
-fn default_self_signed() -> bool {
+fn default_auto_update() -> bool {
     true
-}
-
-fn default_verify_peer_id() -> bool {
-    true
-}
-
-fn default_pin_ttl() -> u64 {
-    90
-}
-
-fn default_max_pins() -> usize {
-    2
 }

@@ -14,6 +14,7 @@ use store_memory::MemoryStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::SlotNumber;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{NodeContext, NodeContextBuilder};
@@ -48,6 +49,7 @@ pub struct TestNode {
     public_port: u16,
     keypair: Keypair,
     bls_keypair: BlsPrivateKey,
+    tls_keypair: CryptoKeypair,
     rpc: LiteSvmRpc,
     app_config: NodeConfig,
     context: Option<TestNodeContext>,
@@ -66,6 +68,10 @@ impl TestNode {
     ) -> Result<Self> {
         let keypair = Keypair::new();
         let bls_keypair = BlsPrivateKey::from_random();
+        let tls_keypair = {
+            let mut rng = rand::thread_rng();
+            CryptoKeypair::new(&mut rng)
+        };
         let name = format!("sim-node-{id}");
         let public_host = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let app_config = test_app_config(bind_addr)?;
@@ -78,12 +84,21 @@ impl TestNode {
             public_port,
             keypair,
             bls_keypair,
+            tls_keypair,
             rpc,
             app_config,
             context: None,
             test_config: TestConfig::new(mode, stop_timeout),
             runtime: None,
         })
+    }
+
+    pub fn tls_keypair(&self) -> &CryptoKeypair {
+        &self.tls_keypair
+    }
+
+    pub fn tls_pubkey(&self) -> Address {
+        self.tls_keypair.address()
     }
 
     pub fn id(&self) -> usize {
@@ -107,7 +122,7 @@ impl TestNode {
     }
 
     pub fn base_url(&self) -> String {
-        format!("http://{}:{}", self.public_host, self.public_port)
+        format!("https://{}:{}", self.public_host, self.public_port)
     }
 
     pub fn context(&self) -> TestNodeContext {
@@ -214,6 +229,7 @@ impl TestNode {
             self.app_config.clone(),
             clone_keypair(&self.keypair),
             self.bls_keypair.clone(),
+            clone_ed25519_keypair(&self.tls_keypair),
             store,
             rpc,
             peer_manager,
@@ -240,4 +256,8 @@ fn test_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
 
 fn clone_keypair(keypair: &Keypair) -> CryptoKeypair {
     CryptoKeypair::from_solana_keypair(keypair).expect("clone keypair")
+}
+
+fn clone_ed25519_keypair(keypair: &CryptoKeypair) -> CryptoKeypair {
+    CryptoKeypair::from_keypair_bytes(keypair.to_keypair_bytes()).expect("clone ed25519 keypair")
 }

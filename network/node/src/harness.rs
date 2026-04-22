@@ -40,10 +40,14 @@ impl NodeHarness {
             let peer_manager = Arc::new(PeerManager::new());
             let api = Arc::new(MemoryApi::noop());
 
+            let mut rng = rand::thread_rng();
+            let tls = tape_crypto::ed25519::Keypair::new(&mut rng);
+
             let ctx = NodeContextBuilder::new(
                 test_config(),
                 clone_keypair(node.keypair()),
                 node.bls_keypair().clone(),
+                tls,
                 store,
                 rpc,
                 peer_manager,

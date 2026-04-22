@@ -109,22 +109,47 @@ pub fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey, HelperError> {
     Ok(BlsPrivateKey(tape_crypto::bls12254::min_sig::PrivKey(arr)))
 }
 
-/// Load a TLS keypair from a JSON file.
+/// Load an Ed25519 keypair from `path`, or generate and persist a fresh one
+/// if the file does not exist.
 ///
-/// The file should contain a JSON array of 64 bytes (ed25519 keypair in Solana format).
-///
-/// # Example
-/// ```rust,ignore
-/// let tls_keypair = load_tls_keypair(Path::new("tls.json"))?;
-/// let pubkey = tls_keypair.pubkey();
-/// ```
-pub fn load_tls_keypair(
-    path: &Path,
-) -> Result<solana_sdk::signature::Keypair, HelperError> {
-    let keypair = Keypair::try_load_json_file(path)?;
-    keypair.try_to_solana_keypair().map_err(|error| {
-        KeypairFileError::InvalidKeypair(error.to_string()).into()
-    })
+/// The file format is a JSON array of 64 bytes (Solana-compatible keypair
+/// encoding). Parent directories are created if missing. Generated files are
+/// written with mode 0600 on Unix.
+pub fn ensure_ed25519_keypair(path: &Path) -> Result<Keypair, HelperError> {
+    if path.exists() {
+        return load_ed25519_keypair(path);
+    }
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| HelperError::FileRead {
+                path: parent.display().to_string(),
+                message: e.to_string(),
+            })?;
+        }
+    }
+
+    let mut rng = rand::thread_rng();
+    let keypair = Keypair::new(&mut rng);
+    let bytes: [u8; 64] = keypair.to_keypair_bytes();
+    let json = serde_json::to_vec(&bytes.to_vec()).map_err(|e| HelperError::JsonParse {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+
+    std::fs::write(path, &json).map_err(|e| HelperError::FileRead {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+
+    Ok(keypair)
 }
 
 // ============================================================================

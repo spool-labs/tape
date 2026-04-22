@@ -15,6 +15,7 @@ tape-store.workspace = true
 store-memory.workspace = true
 tape-protocol.workspace = true
 peer-http.workspace = true
+peer-tls.workspace = true
 tape-api.workspace = true
 tape-sdk.workspace = true
 anyhow.workspace = true
