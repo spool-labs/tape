@@ -12,7 +12,7 @@ use tape_protocol::Api;
 use tape_protocol::api::ops::GetSliceReq;
 use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
-use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -20,7 +20,6 @@ use tracing::{debug, warn};
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
-use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::repair::{GroupPeers, group_peers};
 use crate::features::spool::types::RecoverResult;
 
@@ -169,14 +168,15 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             };
 
-            match track_requirement(ctx.store.as_ref(), track_addr) {
-                Ok(TrackRequirement::Required) => {}
-                Ok(TrackRequirement::NotRequired) => {
+            // Only consider certified tracks for recovery
+            match ctx.store.get_object_info(track_addr) {
+                Ok(Some(info)) if info.is_certified() => {}
+                Ok(Some(_)) => {
                     let _ = ctx.store.remove_pending_recovery(spool, track_addr);
                     made_progress = true;
                     continue;
                 }
-                Ok(TrackRequirement::Inconsistent) | Err(_) => {
+                Ok(None) | Err(_) => {
                     warn!(spool, track = %track_addr, "recover: skipping, state inconsistent or unreadable");
                     continue;
                 }

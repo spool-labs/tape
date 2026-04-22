@@ -16,7 +16,7 @@ use tape_protocol::api::ops::RepairReq;
 use tape_protocol::api::types::StripeSubChunkRequest;
 use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
-use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -24,7 +24,6 @@ use tracing::{info, warn};
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
-use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::types::RepairResult;
 
 const REPAIR_FETCH_CONCURRENCY: usize = 4;
@@ -184,13 +183,13 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             };
 
             // Only repair certified tracks.
-            match track_requirement(ctx.store.as_ref(), track) {
-                Ok(TrackRequirement::Required) => {}
-                Ok(TrackRequirement::NotRequired) => {
+            match ctx.store.get_object_info(track) {
+                Ok(Some(info)) if info.is_certified() => {}
+                Ok(Some(_)) => {
                     let _ = ctx.store.remove_pending_repair(spool, track);
                     continue;
                 }
-                Ok(TrackRequirement::Inconsistent) | Err(_) => {
+                Ok(None) | Err(_) => {
                     warn!(spool, track = %track, "repair: skipping, state inconsistent or unreadable");
                     continue;
                 }

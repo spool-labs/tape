@@ -25,6 +25,12 @@ pub enum ObjectInfo {
     },
 }
 
+impl ObjectInfo {
+    pub fn is_certified(&self) -> bool {
+        matches!(self, ObjectInfo::Valid { certified_epoch: Some(_), .. })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tape_crypto::address::Address;

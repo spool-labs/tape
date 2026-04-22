@@ -4,13 +4,12 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_protocol::Api;
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
-use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::types::ScanResult;
 
 // Purpose: Audit local storage to find missing slices that need repair.
@@ -81,16 +80,17 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
-            match track_requirement(ctx.store.as_ref(), *track_addr) {
-                Ok(TrackRequirement::Required) => {}
-                Ok(TrackRequirement::NotRequired) => continue,
-                Ok(TrackRequirement::Inconsistent) => {
+            // Only consider certified tracks for repair
+            match ctx.store.get_object_info(*track_addr) {
+                Ok(Some(info)) if info.is_certified() => {}
+                Ok(Some(_)) => continue,
+                Ok(None) => {
                     warn!(spool, track = %track_addr, "scan: track exists but ObjectInfo missing");
                     had_error = true;
                     continue;
                 }
                 Err(error) => {
-                    warn!(spool, track = %track_addr, %error, "scan track_requirement failed");
+                    warn!(spool, track = %track_addr, %error, "scan get_object_info failed");
                     had_error = true;
                     continue;
                 }
