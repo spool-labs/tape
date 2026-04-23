@@ -1,0 +1,35 @@
+[package]
+name = "tape-network"
+version.workspace = true
+edition.workspace = true
+description = "Tapedrive testnet provisioning and lifecycle tool"
+
+[lib]
+name = "tape_network"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tape-network"
+path = "src/main.rs"
+
+[dependencies]
+# Sibling tool (on-chain admin) — used as a library.
+tape-admin = { path = "../tape-admin" }
+
+# External
+anyhow = { workspace = true }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+hex = { workspace = true }
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "fs", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
