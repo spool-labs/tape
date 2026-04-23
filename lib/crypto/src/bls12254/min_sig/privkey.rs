@@ -23,9 +23,17 @@ impl PrivKey {
     /// Generate a new random private key.
     #[cfg(not(target_os = "solana"))]
     pub fn from_random() -> PrivKey {
+        Self::from_rng(&mut rand::thread_rng())
+    }
+
+    /// Generate a new private key from an explicit RNG, using rejection
+    /// sampling to ensure the scalar is < MODULUS. Exposed so callers can
+    /// drive deterministic keygen from a seeded RNG.
+    #[cfg(not(target_os = "solana"))]
+    pub fn from_rng<R: RngCore>(rng: &mut R) -> PrivKey {
         loop {
             let mut bytes = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut bytes);
+            rng.fill_bytes(&mut bytes);
             let num = dashu::integer::UBig::from_be_bytes(&bytes);
             if num < MODULUS {
                 return Self(bytes);

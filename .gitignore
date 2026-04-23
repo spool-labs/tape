@@ -3,6 +3,11 @@
 /grind
 /deploy
 
+# tape-network operator state
+/settings.yaml
+/work/
+/.env
+
 /test-ledger
 */**/test-ledger
 /db_tapestore*

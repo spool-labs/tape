@@ -3,7 +3,7 @@ use tape_crypto::address::Address;
 
 use super::token::MINT_ADDRESS;
 
-tape_solana::declare_id!("taAfD9hTjxpiVUSjTNx5ezKT6CXW9W2Ya4ky1RMev5f"); 
+tape_solana::declare_id!("359qrbyHY5Qa16Synp3zN57Ljw8jDMbEeh3zES55MCCq");
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };

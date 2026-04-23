@@ -51,10 +51,18 @@ tape-slicer = { workspace = true }
 wincode = { workspace = true }
 lz4_flex = { workspace = true }
 rlimit = "0.10"
+rand = { workspace = true }
+rand_chacha = "0.3"
+hex = { workspace = true }
+serde_json = { workspace = true }
+# Force vendored openssl so zigbuild doesn't need a system libssl for the
+# x86_64-linux cross-compile. Indirect dep via solana-rpc-client → reqwest
+# with native-tls; vendored=1 builds libssl from source via openssl-src.
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-rand = { workspace = true }
+tempfile = "3"
 solana-sdk = { workspace = true }
 rpc-litesvm = { workspace = true }
 peer-memory = { workspace = true }

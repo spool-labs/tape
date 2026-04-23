@@ -8,7 +8,7 @@ use solana_program::{
     program_error::ProgramError,
     pubkey::Pubkey,
 };
-use spl_associated_token_account::instruction::create_associated_token_account;
+use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 use spl_token::instruction::{close_account, transfer_checked};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_crypto::address::Address;
@@ -40,8 +40,9 @@ pub fn build_authority_with_tokens_ix(
     let authority_ata_pubkey: Pubkey = authority_ata.into();
 
     Ok(vec![
-        // Create ATA for authority (fee_payer pays rent)
-        create_associated_token_account(
+        // Create ATA for authority (fee_payer pays rent). Idempotent so
+        // re-running bootstrap against already-funded wallets is a no-op.
+        create_associated_token_account_idempotent(
             &fee_payer_pubkey,
             &authority_pubkey,
             &mint_address,

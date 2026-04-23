@@ -1,27 +1,68 @@
+mod keygen;
+
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tape_node::config::node::{NodeConfig, default_config_path};
 use tape_node::core::limits::check_fd_limit;
 use tape_node::runtime::{build_runtime, init_tracing, run_application};
 use tracing::info;
 
+/// Identifies this build in logs and via `tape-node version`. Built from
+/// the Cargo version plus a short git sha stamped at compile time by
+/// `build.rs` (`-dirty` if the working tree had uncommitted changes).
+const BOOT_MARKER: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("TAPE_BUILD_SHA"),
+    env!("TAPE_BUILD_SUFFIX"),
+);
+
 #[derive(Parser)]
 #[command(name = "tape-node", about = "Tapedrive storage node runtime v2")]
 struct Cli {
-    #[arg(short, long, default_value_t = default_config_path().to_string_lossy().into_owned())]
+    #[arg(short, long, default_value_t = default_config_path().to_string_lossy().into_owned(), global = true)]
     config: String,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     rpc_url: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Generate a fresh per-node key bundle (identity, BLS, TLS) and a
+    /// starter node.yaml. Used by operators and by tape-network.
+    Keygen(keygen::KeygenArgs),
+    /// Print the boot marker (Cargo version + git sha).
+    Version,
 }
 
 fn main() -> ExitCode {
-    check_fd_limit();
-
     let cli = Cli::parse();
 
-    let mut config = match NodeConfig::from_yaml_file(&cli.config) {
+    match cli.command {
+        Some(Command::Keygen(args)) => match keygen::run(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("keygen failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Some(Command::Version) => {
+            println!("{BOOT_MARKER}");
+            ExitCode::SUCCESS
+        }
+        None => run_node(&cli.config, cli.rpc_url),
+    }
+}
+
+fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
+    check_fd_limit();
+
+    let mut config = match NodeConfig::from_yaml_file(config_path) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("configuration failed: {error}");
@@ -29,7 +70,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Some(rpc_url) = cli.rpc_url {
+    if let Some(rpc_url) = rpc_url {
         config.solana.rpc = rpc_url;
     }
 
@@ -45,6 +86,7 @@ fn main() -> ExitCode {
             host = %host,
             port = config.network.port,
             rpc = %config.solana.rpc,
+            boot_marker = BOOT_MARKER,
             "starting node"
         );
     } else {
@@ -52,6 +94,7 @@ fn main() -> ExitCode {
             node_name = %config.node.name,
             listen = %config.http.listen,
             rpc = %config.solana.rpc,
+            boot_marker = BOOT_MARKER,
             "starting node"
         );
     }
