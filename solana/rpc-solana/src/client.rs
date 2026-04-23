@@ -147,6 +147,7 @@ impl SolanaRpc {
         tracing::warn!(
             category = err.category(),
             retriable = err.is_retriable(),
+            error = %err,
             "RPC operation failed"
         );
 

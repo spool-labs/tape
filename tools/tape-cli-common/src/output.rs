@@ -14,8 +14,7 @@ pub enum OutputFormat {
 }
 
 /// A command's result. Must be `Serialize` so JSON mode works, and must
-/// provide a human-readable rendering so text mode works. Every `tape`
-/// subcommand returns one of these.
+/// provide a human-readable rendering so text mode works.
 pub trait CliOutput: Serialize {
     /// Write the human-readable form to stdout. Only called when the user
     /// asked for `--output text` (the default).
@@ -46,5 +45,28 @@ pub struct KeyValue<V: Serialize> {
 impl<V: Serialize + std::fmt::Display> CliOutput for KeyValue<V> {
     fn print_text(&self) {
         println!("{}: {}", self.key, self.value);
+    }
+}
+
+/// Convenience: a command that just succeeded with a user-facing message.
+/// JSON mode emits `{"ok": true, "message": "..."}` so scripts can parse.
+#[derive(Serialize)]
+pub struct OkMessage {
+    pub ok: bool,
+    pub message: String,
+}
+
+impl OkMessage {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            ok: true,
+            message: message.into(),
+        }
+    }
+}
+
+impl CliOutput for OkMessage {
+    fn print_text(&self) {
+        println!("{}", self.message);
     }
 }

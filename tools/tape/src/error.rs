@@ -31,4 +31,10 @@ pub enum Error {
     Other(String),
 }
 
+impl From<tape_cli_common::ConfigError> for Error {
+    fn from(e: tape_cli_common::ConfigError) -> Self {
+        Error::Config(e.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

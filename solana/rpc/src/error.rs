@@ -125,7 +125,15 @@ impl RpcError {
     }
 }
 
-/// Check if error message indicates a retriable condition
+/// Check if error message indicates a retriable condition.
+///
+/// Covers:
+/// - Solana-specific states (blockhash expired, slot skipped, node lag)
+/// - Network conditions (timeouts, connection resets)
+/// - Rate limits and server busy: text forms ("too many requests", "rate
+///   limit", "exceeded") plus raw HTTP status codes (429, 503, 504). The
+///   public devnet RPC typically returns these as plain integers in the
+///   solana-client error string, so both formulations need matching.
 fn is_retriable_message(msg: &str) -> bool {
     let msg = msg.to_lowercase();
     msg.contains("blockhash not found")
@@ -133,10 +141,16 @@ fn is_retriable_message(msg: &str) -> bool {
         || msg.contains("slot was skipped")
         || msg.contains("block not available")
         || msg.contains("timeout")
+        || msg.contains("timed out")
         || msg.contains("too many requests")
         || msg.contains("rate limit")
+        || msg.contains("exceeded")
         || msg.contains("connection")
         || msg.contains("network")
+        || msg.contains("reset by peer")
+        || msg.contains("429")
+        || msg.contains("503")
+        || msg.contains("504")
 }
 
 /// Check if error message suggests trying a different endpoint
@@ -199,6 +213,31 @@ mod tests {
         assert!(RpcError::Request("connection reset".to_string()).is_retriable());
         assert!(RpcError::Request("rate limit exceeded".to_string()).is_retriable());
         assert!(!RpcError::Request("invalid account".to_string()).is_retriable());
+    }
+
+    #[test]
+    fn test_retriable_http_status_codes() {
+        // Public Solana devnet returns these as plain integers in error text.
+        assert!(
+            RpcError::Request("HTTP status code 429".into()).is_retriable(),
+            "429 must be retriable"
+        );
+        assert!(
+            RpcError::Request("status: 503 Service Unavailable".into()).is_retriable(),
+            "503 must be retriable"
+        );
+        assert!(
+            RpcError::Request("Gateway Timeout (504)".into()).is_retriable(),
+            "504 must be retriable"
+        );
+        assert!(
+            RpcError::Request("request timed out".into()).is_retriable(),
+            "timed out variant must be retriable"
+        );
+        assert!(
+            RpcError::Request("compute budget exceeded".into()).is_retriable(),
+            "exceeded limits must be retriable"
+        );
     }
 
     #[test]

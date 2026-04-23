@@ -8726,6 +8726,7 @@ dependencies = [
  "solana-program",
  "solana-sdk",
  "tape-api",
+ "tape-cli-common",
  "tape-core",
  "tape-crypto",
  "tape-sdk",
@@ -8749,6 +8750,7 @@ dependencies = [
  "solana-program",
  "solana-sdk",
  "tape-api",
+ "tape-cli-common",
  "tape-core",
  "tape-crypto",
  "tape-sdk",
@@ -8807,6 +8809,24 @@ dependencies = [
  "tape-crypto",
  "tape-protocol",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "tape-cli-common"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "rpc",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tape-api",
+ "tape-crypto",
+ "tape-sdk",
+ "thiserror 2.0.18",
  "tracing",
 ]
 

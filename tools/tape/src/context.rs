@@ -109,7 +109,8 @@ impl Context {
 
     /// Persist the current in-memory config back to disk.
     pub fn save_config(&self) -> Result<()> {
-        self.config.save(&self.config_path)
+        self.config.save(&self.config_path)?;
+        Ok(())
     }
 }
 

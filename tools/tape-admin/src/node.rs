@@ -83,8 +83,11 @@ pub async fn register(ctx: &Context, params: RegisterParams) -> Result<()> {
 /// Join the network as a registered node, making the node eligible for the
 /// next committee assignment. Called after `register`.
 ///
-/// Tolerates `TapeError::UnexpectedState`, which the program returns when the
-/// node is already joined.
+/// Tolerated errors:
+/// - `UnexpectedState` — node already in `committee_next`
+/// - `NodeStale` — pool hasn't advanced to the current epoch yet; the
+///   node's own lifecycle task will retry join_network after advance_pool
+///   succeeds
 pub async fn join_network(ctx: &Context, identity_path: &Path) -> Result<()> {
     let identity = load_ed25519_keypair(identity_path)
         .map_err(|e| Error::Keypair(e.to_string()))?;
@@ -93,11 +96,19 @@ pub async fn join_network(ctx: &Context, identity_path: &Path) -> Result<()> {
     let ix = build_join_network_ix(authority, authority, node_address);
     match ctx.rpc.send_instructions(&identity, vec![ix]).await {
         Ok(_) => Ok(()),
-        Err(e) if matches!(as_tape_error(&e), Some(TapeError::UnexpectedState)) => {
-            tracing::info!("join_network skipped (likely already joined)");
-            Ok(())
-        }
-        Err(e) => Err(e.into()),
+        Err(e) => match as_tape_error(&e) {
+            Some(TapeError::UnexpectedState) => {
+                tracing::info!("join_network skipped (likely already joined)");
+                Ok(())
+            }
+            Some(TapeError::NodeStale) => {
+                tracing::info!(
+                    "join_network skipped (node stale; waits on pool advance, node lifecycle will retry)"
+                );
+                Ok(())
+            }
+            _ => Err(e.into()),
+        },
     }
 }
 
@@ -136,7 +147,9 @@ pub async fn set_address(ctx: &Context, identity_path: &Path, address: &str) -> 
 }
 
 /// Advance the node's pool to the current epoch. Tolerates
-/// `TapeError::AlreadyAdvanced`, which means the pool is already current.
+/// `TapeError::AlreadyAdvanced` (pool already at current epoch) and
+/// `TapeError::BadEpochState` (epoch hasn't finished its snapshot phase
+/// yet — node lifecycle will retry on its own schedule).
 pub async fn advance_pool(ctx: &Context, identity_path: &Path) -> Result<()> {
     let identity = load_ed25519_keypair(identity_path)
         .map_err(|e| Error::Keypair(e.to_string()))?;
@@ -145,11 +158,19 @@ pub async fn advance_pool(ctx: &Context, identity_path: &Path) -> Result<()> {
     let ix = build_advance_pool_ix(authority, authority, node_address);
     match ctx.rpc.send_instructions(&identity, vec![ix]).await {
         Ok(_) => Ok(()),
-        Err(e) if matches!(as_tape_error(&e), Some(TapeError::AlreadyAdvanced)) => {
-            tracing::info!("advance_pool skipped (already advanced)");
-            Ok(())
-        }
-        Err(e) => Err(e.into()),
+        Err(e) => match as_tape_error(&e) {
+            Some(TapeError::AlreadyAdvanced) => {
+                tracing::info!("advance_pool skipped (already advanced)");
+                Ok(())
+            }
+            Some(TapeError::BadEpochState) => {
+                tracing::info!(
+                    "advance_pool skipped (epoch state not ready; node lifecycle will retry)"
+                );
+                Ok(())
+            }
+            _ => Err(e.into()),
+        },
     }
 }
 

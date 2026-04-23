@@ -18,6 +18,7 @@ tape-api = { workspace = true }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true }
 tape-sdk = { workspace = true }
+tape-cli-common = { path = "../tape-cli-common" }
 rpc = { workspace = true }
 rpc-client = { workspace = true }
 rpc-solana = { workspace = true }

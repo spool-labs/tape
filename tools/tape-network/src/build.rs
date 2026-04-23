@@ -16,10 +16,16 @@ use crate::cloud::{self, Instance};
 use crate::settings::{BuildSource, Settings};
 use crate::ssh;
 
-/// Default size for the builder droplet. 8 vCPU / 16GB is a reasonable
-/// sweet-spot: beefy enough that a cold RocksDB+Solana build takes ~10 min
-/// instead of 40, cheap enough that a throwaway build costs pennies.
-const DEFAULT_BUILDER_SIZE: &str = "s-8vcpu-16gb";
+/// Default size for the builder droplet.
+///
+/// `c-8-intel` is 8 vCPU dedicated Intel at ~$0.32/hr. The shared-CPU
+/// `s-8vcpu-16gb` class we tried first was underpowered — a cold
+/// RocksDB+Solana compile took ~30 min because vCPUs are time-sliced
+/// across tenants. Dedicated CPUs roughly double per-core clock, bringing
+/// builds to ~15 min. Override with `--size` (e.g. `c-16-intel` for 16
+/// vCPU at ~$0.65/hr if you want sub-10-min builds). The AMD `c-8` slug
+/// isn't available in nyc3; pick the `-intel` suffix there.
+const DEFAULT_BUILDER_SIZE: &str = "c-8-intel";
 
 const BUILDER_TAG_SUFFIX: &str = "-builder";
 const REMOTE_SOURCE_DIR: &str = "/root/tapedrive";

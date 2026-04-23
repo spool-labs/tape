@@ -2,18 +2,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use solana_sdk::pubkey::Pubkey;
 use tape_admin::{mint, node, programs, status, treasury, Context, Error};
+use tape_cli_common::{CliOutput, GlobalArgs, OkMessage, emit};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "tape-admin", about = "Tapedrive on-chain admin CLI")]
+#[command(name = "tape-admin", about = "Tapedrive on-chain admin CLI", version)]
 struct Cli {
-    /// Solana RPC endpoint (devnet, testnet, mainnet-beta, or a custom URL).
-    #[arg(long, env = "TAPE_RPC_URL")]
-    rpc_url: String,
-
-    /// Path to the payer/treasury Solana keypair JSON.
-    #[arg(long, env = "TAPE_PAYER")]
-    payer: PathBuf,
+    #[command(flatten)]
+    globals: GlobalArgs,
 
     #[command(subcommand)]
     command: Command,
@@ -117,16 +115,23 @@ enum NodeOp {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    let default_filter = if cli.globals.verbose { "debug" } else { "info" };
     let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )
         .try_init();
 
-    let cli = Cli::parse();
-
-    let ctx = match Context::new(cli.rpc_url, &cli.payer) {
+    let ctx = match Context::from_global_args(
+        cli.globals.rpc_url,
+        cli.globals.keypair,
+        cli.globals.config,
+        cli.globals.output,
+    ) {
         Ok(ctx) => ctx,
         Err(err) => {
             eprintln!("context init failed: {err}");
@@ -134,14 +139,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let result: Result<(), Error> = match cli.command {
-        Command::Programs { op } => run_programs(&ctx, op),
-        Command::Mint { op } => run_mint(&ctx, op).await,
-        Command::Treasury { op } => run_treasury(&ctx, op).await,
-        Command::Node { op } => run_node(&ctx, op).await,
-        Command::Status => status::cluster(&ctx).await,
-    };
-
+    let result = dispatch(&ctx, cli.command).await;
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -151,18 +149,63 @@ async fn main() -> ExitCode {
     }
 }
 
+async fn dispatch(ctx: &Context, command: Command) -> Result<(), Error> {
+    match command {
+        Command::Programs { op } => run_programs(ctx, op),
+        Command::Mint { op } => run_mint(ctx, op).await,
+        Command::Treasury { op } => run_treasury(ctx, op).await,
+        Command::Node { op } => run_node(ctx, op).await,
+        Command::Status => {
+            let out = status::cluster(ctx).await?;
+            emit_output(&out, ctx)
+        }
+    }
+}
+
+fn emit_output<T: CliOutput>(value: &T, ctx: &Context) -> Result<(), Error> {
+    emit(value, ctx.output).map_err(|e| Error::Other(e.to_string()))
+}
+
+#[derive(serde::Serialize)]
+struct ProgramsDeployOutput {
+    programs: Vec<ProgramDeployed>,
+}
+
+#[derive(serde::Serialize)]
+struct ProgramDeployed {
+    name: String,
+    pubkey: String,
+}
+
+impl CliOutput for ProgramsDeployOutput {
+    fn print_text(&self) {
+        for p in &self.programs {
+            println!("{}: {}", p.name, p.pubkey);
+        }
+    }
+}
+
 fn run_programs(ctx: &Context, op: ProgramsOp) -> Result<(), Error> {
     let ProgramsOp::Deploy { program, deploy_dir } = op;
-    let deployed = programs::deploy(ctx, program, &deploy_dir)?;
-    for (name, pubkey) in deployed {
-        println!("{name}: {pubkey}");
-    }
-    Ok(())
+    let deployed: Vec<(String, Pubkey)> = programs::deploy(ctx, program, &deploy_dir)?;
+    let out = ProgramsDeployOutput {
+        programs: deployed
+            .into_iter()
+            .map(|(name, pk)| ProgramDeployed {
+                name,
+                pubkey: pk.to_string(),
+            })
+            .collect(),
+    };
+    emit_output(&out, ctx)
 }
 
 async fn run_mint(ctx: &Context, op: MintOp) -> Result<(), Error> {
     match op {
-        MintOp::Init => mint::init(ctx).await,
+        MintOp::Init => {
+            mint::init(ctx).await?;
+            emit_output(&OkMessage::new("TAPE mint initialized"), ctx)
+        }
     }
 }
 
@@ -172,7 +215,14 @@ async fn run_treasury(ctx: &Context, op: TreasuryOp) -> Result<(), Error> {
             let recipients = treasury::parse_pubkeys_file(&pubkeys_file)?;
             let lamports = (sol * 1e9) as u64;
             let flux = (tape * 1e6) as u64;
-            treasury::fund(ctx, &recipients, lamports, flux).await
+            let count = recipients.len();
+            treasury::fund(ctx, &recipients, lamports, flux).await?;
+            emit_output(
+                &OkMessage::new(format!(
+                    "funded {count} recipients (target: {sol} SOL, {tape} TAPE each)"
+                )),
+                ctx,
+            )
         }
     }
 }
@@ -190,20 +240,34 @@ async fn run_node(ctx: &Context, op: NodeOp) -> Result<(), Error> {
             node::register(
                 ctx,
                 node::RegisterParams {
-                    name,
+                    name: name.clone(),
                     identity_path: identity,
                     bls_path: bls,
                     tls_path: tls,
-                    address,
+                    address: address.clone(),
                     commission_bp,
                 },
             )
-            .await
+            .await?;
+            emit_output(
+                &OkMessage::new(format!("registered {name} at {address}")),
+                ctx,
+            )
         }
-        NodeOp::JoinNetwork { identity } => node::join_network(ctx, &identity).await,
+        NodeOp::JoinNetwork { identity } => {
+            node::join_network(ctx, &identity).await?;
+            emit_output(&OkMessage::new("join_network submitted"), ctx)
+        }
         NodeOp::SetAddress { identity, address } => {
-            node::set_address(ctx, &identity, &address).await
+            node::set_address(ctx, &identity, &address).await?;
+            emit_output(
+                &OkMessage::new(format!("network_address updated to {address}")),
+                ctx,
+            )
         }
-        NodeOp::List => status::list_nodes(ctx).await,
+        NodeOp::List => {
+            let out = status::list_nodes(ctx).await?;
+            emit_output(&out, ctx)
+        }
     }
 }
