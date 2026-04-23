@@ -22,6 +22,7 @@ members = [
   "solana/rpc-solana",
   "solana/rpc-client",
   "solana/rpc-litesvm",
+  "solana/rpc-cache",
   "lib/metrics",
   "network/node",
   "network/peer-manager",

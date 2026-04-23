@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tape_network::{Settings, bootstrap, build, genesis, testnet, upgrade};
+use tape_network::{Settings, bootstrap, build, cache, genesis, testnet, upgrade};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -71,6 +71,28 @@ enum Command {
         /// `target/x86_64-unknown-linux-gnu/release/tape-node`).
         #[arg(long)]
         binary: Option<PathBuf>,
+    },
+    /// Manage the RPC cache droplet that sits in front of the fleet.
+    Cache {
+        #[command(subcommand)]
+        op: CacheOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum CacheOp {
+    /// Provision (or reinstall) the cache droplet and start the service.
+    Deploy,
+    /// Destroy the cache droplet.
+    Destroy,
+    /// Print current state of the cache droplet.
+    Status,
+    /// Tail the cache's systemd journal.
+    Logs {
+        #[arg(long, default_value_t = 200)]
+        tail: usize,
+        #[arg(long, short)]
+        follow: bool,
     },
 }
 
@@ -141,6 +163,7 @@ async fn main() -> ExitCode {
         }
         Command::BuildLinux { keep, size } => build::run(&settings, keep, size).await,
         Command::Upgrade { binary } => upgrade::run(&settings, binary).await,
+        Command::Cache { op } => run_cache(&settings, op).await,
     };
 
     match result {
@@ -174,5 +197,38 @@ fn run_genesis(settings: &Settings, op: GenesisOp) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+async fn run_cache(settings: &Settings, op: CacheOp) -> Result<()> {
+    match op {
+        CacheOp::Deploy => {
+            let st = cache::deploy(settings).await?;
+            println!("cache deployed");
+            if let Some(ip) = st.public_ip {
+                println!("  ip:  {ip}");
+            }
+            if let Some(url) = st.url {
+                println!("  url: {url}");
+            }
+            Ok(())
+        }
+        CacheOp::Destroy => cache::destroy(settings).await,
+        CacheOp::Status => {
+            let st = cache::status(settings).await?;
+            if !st.present {
+                println!("no cache droplet for testbed {}", settings.testbed_id);
+            } else {
+                println!("cache present");
+                if let Some(ip) = st.public_ip {
+                    println!("  ip:  {ip}");
+                }
+                if let Some(url) = st.url {
+                    println!("  url: {url}");
+                }
+            }
+            Ok(())
+        }
+        CacheOp::Logs { tail, follow } => cache::logs(settings, tail, follow).await,
     }
 }

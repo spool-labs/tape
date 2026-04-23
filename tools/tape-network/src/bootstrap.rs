@@ -48,6 +48,13 @@ pub async fn run(
     let binary = find_node_binary(settings)?;
     info!(binary = %binary.display(), "using binary");
 
+    // If an RPC cache droplet exists for this testbed, committee nodes
+    // point at it instead of going to the upstream RPC directly.
+    let rpc_override = discover_cache_url(settings).await?;
+    if let Some(url) = &rpc_override {
+        info!(cache_url = %url, "routing committee nodes through RPC cache");
+    }
+
     info!("step 4+5: install deps and upload bundle on each droplet");
     for (node_dir, droplet) in key_dirs.iter().zip(&droplets) {
         let ip = droplet_ip(droplet)?;
@@ -61,7 +68,7 @@ pub async fn run(
         .await?;
         install_remote(settings, ip).await?;
         upload_bundle(settings, ip, node_dir, &binary).await?;
-        upload_node_yaml(settings, ip, node_dir, &droplet.name).await?;
+        upload_node_yaml(settings, ip, node_dir, &droplet.name, rpc_override.as_deref()).await?;
     }
 
     info!("step 6a: initialize TAPE mint (idempotent)");
@@ -270,8 +277,9 @@ async fn upload_node_yaml(
     host: &str,
     _node_dir: &Path,
     node_name: &str,
+    rpc_override: Option<&str>,
 ) -> Result<()> {
-    let rendered = render_node_yaml(settings, host, node_name);
+    let rendered = render_node_yaml(settings, host, node_name, rpc_override);
     let working = settings.network.working_dir.display();
     let remote = format!("{working}/node.yaml");
     upload_str(settings, host, &rendered, &remote).await?;
@@ -285,10 +293,33 @@ async fn upload_node_yaml(
     Ok(())
 }
 
-fn render_node_yaml(settings: &Settings, public_ip: &str, node_name: &str) -> String {
+async fn discover_cache_url(settings: &Settings) -> Result<Option<String>> {
+    let Some(inst) = crate::cache::discover(settings).await? else {
+        return Ok(None);
+    };
+    let Some(key) = crate::cache::read_api_key(settings)? else {
+        // Droplet exists but we don't have the key locally — can't build
+        // a usable URL. Fall back to the upstream RPC rather than
+        // sending nodes at an endpoint they can't auth to.
+        warn!(
+            "cache droplet present but no api_key file at work/{}/cache-api-key; \
+             nodes will use upstream RPC directly",
+            settings.testbed_id
+        );
+        return Ok(None);
+    };
+    Ok(crate::cache::url_for(&inst, &key))
+}
+
+fn render_node_yaml(
+    settings: &Settings,
+    public_ip: &str,
+    node_name: &str,
+    rpc_override: Option<&str>,
+) -> String {
     let working = settings.network.working_dir.display();
     let data = settings.network.data_dir.display();
-    let rpc = &settings.solana.rpc_url;
+    let rpc = rpc_override.unwrap_or(settings.solana.rpc_url.as_str());
     let commission = settings.genesis.commission_bp;
     format!(
         "node:\n  name: \"{node_name}\"\n  node_keypair: \"{working}/keys/identity.json\"\n  bls_keypair: \"{working}/keys/bls.json\"\n  commission: {commission}\nsolana:\n  rpc: \"{rpc}\"\nnetwork:\n  host: \"{public_ip}\"\n  port: {PEER_PORT}\nhttp:\n  listen: \"0.0.0.0:{HTTP_PORT}\"\nstore:\n  path: \"{data}/store\"\ntls:\n  identity_keypair: \"{working}/keys/tls.json\"\n"
@@ -604,7 +635,7 @@ mod tests {
     #[test]
     fn renders_node_yaml_parseable() {
         let settings = sample_settings();
-        let rendered = render_node_yaml(&settings, "1.2.3.4", "test-node");
+        let rendered = render_node_yaml(&settings, "1.2.3.4", "test-node", None);
         assert!(rendered.contains("name: \"test-node\""));
         assert!(rendered.contains("host: \"1.2.3.4\""));
         assert!(rendered.contains("port: 9000"));

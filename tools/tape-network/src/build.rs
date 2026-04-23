@@ -29,7 +29,24 @@ const DEFAULT_BUILDER_SIZE: &str = "c-8-intel";
 
 const BUILDER_TAG_SUFFIX: &str = "-builder";
 const REMOTE_SOURCE_DIR: &str = "/root/tapedrive";
-const LOCAL_BINARY_REL: &str = "target/x86_64-unknown-linux-gnu/release/tape-node";
+
+/// Binaries we build on every `build-linux` invocation. Kept small and
+/// explicit so adding a new one is a one-line change.
+///
+/// Each entry is `(cargo_package, features, output_relpath)`. Features is
+/// empty when no `--features` flag is needed.
+const BUILD_TARGETS: &[(&str, &[&str], &str)] = &[
+    (
+        "tape-node",
+        &["metrics"],
+        "target/x86_64-unknown-linux-gnu/release/tape-node",
+    ),
+    (
+        "rpc-cache",
+        &[],
+        "target/x86_64-unknown-linux-gnu/release/rpc-cache",
+    ),
+];
 
 pub async fn run(
     settings: &Settings,
@@ -67,11 +84,11 @@ pub async fn run(
     info!("rsyncing source");
     sync_source(settings, host, &source_root)?;
 
-    info!("building tape-node (release, features=metrics)");
+    info!("building linux binaries");
     run_build(settings, host).await?;
 
-    info!("fetching binary back to operator workstation");
-    fetch_binary(settings, host, &source_root)?;
+    info!("fetching binaries back to operator workstation");
+    fetch_binaries(settings, host, &source_root)?;
 
     if keep {
         info!(id = %instance.provider_id, ip = %host, "builder droplet kept (--keep)");
@@ -81,11 +98,9 @@ pub async fn run(
         provider.delete_instance(&instance.provider_id).await?;
     }
 
-    println!(
-        "tape-node binary ready at {}/{}",
-        source_root.display(),
-        LOCAL_BINARY_REL
-    );
+    for (_, _, rel) in BUILD_TARGETS {
+        println!("binary ready at {}/{}", source_root.display(), rel);
+    }
     Ok(())
 }
 
@@ -196,27 +211,32 @@ fn sync_source(settings: &Settings, host: &str, source_root: &Path) -> Result<()
 }
 
 async fn run_build(settings: &Settings, host: &str) -> Result<()> {
-    let cmd = format!(
-        r#"source $HOME/.cargo/env && cd {REMOTE_SOURCE_DIR} && cargo build --release -p tape-node --features metrics 2>&1 | tail -20"#
-    );
-    let output = ssh::exec(
-        &settings.ssh,
-        &settings.cloud.ssh_private_key_file,
-        host,
-        &cmd,
-    )
-    .await?;
-    // Print the tail so the operator sees progress / errors.
-    print!("{output}");
+    // One cargo invocation per target so we can pick per-package
+    // features cleanly. Cargo caches between invocations so this is
+    // almost free once the dep graph is warm.
+    for (package, features, _) in BUILD_TARGETS {
+        let features_flag = if features.is_empty() {
+            String::new()
+        } else {
+            format!(" --features {}", features.join(","))
+        };
+        info!(package = %package, "building");
+        let cmd = format!(
+            r#"source $HOME/.cargo/env && cd {REMOTE_SOURCE_DIR} && cargo build --release -p {package}{features_flag} 2>&1 | tail -10"#
+        );
+        let output = ssh::exec(
+            &settings.ssh,
+            &settings.cloud.ssh_private_key_file,
+            host,
+            &cmd,
+        )
+        .await?;
+        print!("{output}");
+    }
     Ok(())
 }
 
-fn fetch_binary(settings: &Settings, host: &str, source_root: &Path) -> Result<()> {
-    let local = source_root.join(LOCAL_BINARY_REL);
-    if let Some(parent) = local.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
+fn fetch_binaries(settings: &Settings, host: &str, source_root: &Path) -> Result<()> {
     let ssh_flags = vec![
         "-o".to_string(),
         format!("ConnectTimeout={}", settings.ssh.timeout_secs),
@@ -229,18 +249,26 @@ fn fetch_binary(settings: &Settings, host: &str, source_root: &Path) -> Result<(
         "-i".into(),
         settings.cloud.ssh_private_key_file.display().to_string(),
     ];
-    let remote = format!(
-        "{}@{}:{}/target/release/tape-node",
-        settings.ssh.user, host, REMOTE_SOURCE_DIR
-    );
-    let status = StdCommand::new("scp")
-        .args(&ssh_flags)
-        .arg(&remote)
-        .arg(&local)
-        .status()
-        .context("spawning scp")?;
-    if !status.success() {
-        bail!("scp exited {status}");
+
+    for (package, _, rel) in BUILD_TARGETS {
+        let local = source_root.join(rel);
+        if let Some(parent) = local.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let remote = format!(
+            "{}@{}:{}/target/release/{}",
+            settings.ssh.user, host, REMOTE_SOURCE_DIR, package
+        );
+        let status = StdCommand::new("scp")
+            .args(&ssh_flags)
+            .arg(&remote)
+            .arg(&local)
+            .status()
+            .context("spawning scp")?;
+        if !status.success() {
+            bail!("scp of {package} exited {status}");
+        }
     }
     Ok(())
 }

@@ -1,0 +1,37 @@
+[package]
+name = "rpc-cache"
+version.workspace = true
+edition.workspace = true
+description = "Read-through caching proxy for Solana RPC — sits in front of a fleet of tape-nodes and collapses duplicate get_* traffic"
+
+[lib]
+name = "rpc_cache"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rpc-cache"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+tape-cli-common = { path = "../../tools/tape-cli-common" }
+rpc = { workspace = true }
+
+# External
+anyhow = { workspace = true }
+axum = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+humantime = "2"
+humantime-serde = "1"
+moka = { version = "0.12", features = ["future"] }
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
