@@ -1,0 +1,41 @@
+[package]
+name = "tape"
+version.workspace = true
+edition.workspace = true
+description = "Tapedrive user CLI (read, write, cassette management)"
+
+[lib]
+name = "tape_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tape"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+tape-api = { workspace = true }
+tape-core = { workspace = true }
+tape-crypto = { workspace = true }
+tape-sdk = { workspace = true }
+rpc = { workspace = true }
+rpc-client = { workspace = true }
+rpc-solana = { workspace = true }
+peer-http = { workspace = true }
+
+# External
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = { workspace = true }
+hex = { workspace = true }
+indicatif = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+solana-sdk = { workspace = true }
+solana-program = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

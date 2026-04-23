@@ -16,12 +16,13 @@
 # Remote testnet deployment (see tools/tape-network/README.md):
 #   make admin        - Build tape-admin release binary
 #   make network      - Build tape-network release binary
+#   make tape         - Build tape (end-user) CLI release binary
 #   make node-linux   - Cross-compile tape-node for x86_64 Linux (requires cross
 #                       toolchain; on macOS use `tape-network build-linux` instead)
 #   make deploy-tools - All of the above plus the Solana programs
-#   make install      - `cargo install` tape-node, tape-admin, and tape-network
-#                       into ~/.cargo/bin
-#   make uninstall    - Remove the installed tape-node, tape-admin, and tape-network binaries
+#   make install      - `cargo install` tape-node, tape-admin, tape-network, and
+#                       tape into ~/.cargo/bin
+#   make uninstall    - Remove every installed tape binary
 #
 # Optional overrides:
 #   TESTNET_RPC_URL=http://127.0.0.1:8899
@@ -40,7 +41,7 @@ TESTNET_UPLOAD_EPOCHS ?= 4
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node testnet reset run-solana run-testnet run-testnet-samply run-testnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network node-linux deploy-tools install uninstall
+.PHONY: programs node testnet reset run-solana run-testnet run-testnet-samply run-testnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -107,6 +108,9 @@ admin:
 network:
 	cargo build --release -p tape-network
 
+tape:
+	cargo build --release -p tape
+
 # Cross-compile tape-node for x86_64 Linux droplets. On macOS this relies on
 # cargo-zigbuild + zig (see tools/tape-network/README.md). On Linux the
 # standard target triple works via cargo.
@@ -118,17 +122,16 @@ node-linux:
 	cargo zigbuild --release --target x86_64-unknown-linux-gnu --features metrics -p tape-node
 endif
 
-deploy-tools: programs admin network node-linux
+deploy-tools: programs admin network tape node-linux
 
-# Install tape-node, tape-admin, and tape-network into ~/.cargo/bin via
-# `cargo install`. Uses --locked for reproducibility and --force so repeat
-# installs overwrite. tape-node gets the `metrics` feature to match `make node`.
 install:
 	cargo install --locked --force --features metrics --path network/node
 	cargo install --locked --force --path tools/tape-admin
 	cargo install --locked --force --path tools/tape-network
+	cargo install --locked --force --path tools/tape
 
 uninstall:
 	cargo uninstall tape-node
 	cargo uninstall tape-admin
 	cargo uninstall tape-network
+	cargo uninstall tape

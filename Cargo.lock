@@ -8707,6 +8707,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "hex",
+ "indicatif",
+ "peer-http",
+ "rand 0.8.5",
+ "rpc",
+ "rpc-client",
+ "rpc-solana",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "solana-program",
+ "solana-sdk",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "tape-sdk",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tape-admin"
 version = "0.3.0"
 dependencies = [

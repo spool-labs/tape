@@ -35,6 +35,7 @@ members = [
   "e2e/testnet",
   "tools/tape-admin",
   "tools/tape-network",
+  "tools/tape",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
@@ -63,6 +64,7 @@ default-members = [
   "lib/retry",
   "tools/tape-admin",
   "tools/tape-network",
+  "tools/tape",
 ]
 
 [workspace.package]
