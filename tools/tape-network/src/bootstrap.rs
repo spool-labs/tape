@@ -10,8 +10,20 @@ use std::process::Command as StdCommand;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use tokio::time::sleep;
 use tracing::{info, warn};
+
+/// Max parallel ssh sessions during install/upload/service-start. High
+/// because each droplet's work is independent and the operator's
+/// bottleneck is upload bandwidth, not CPU or handshake overhead.
+const SSH_CONCURRENCY: usize = 10;
+
+/// Max parallel on-chain registrations. Lower than ssh concurrency
+/// because every tx hits the shared Solana cluster and bursting can
+/// blow past the upstream RPC's rate limit (the cache can dedupe reads
+/// but not submits).
+const REGISTER_CONCURRENCY: usize = 5;
 
 use crate::cloud::Instance;
 use crate::settings::{BuildSource, Settings};
@@ -48,53 +60,86 @@ pub async fn run(
     let binary = find_node_binary(settings)?;
     info!(binary = %binary.display(), "using binary");
 
-    // If an RPC cache droplet exists for this testbed, committee nodes
-    // point at it instead of going to the upstream RPC directly.
+    // If an RPC cache droplet exists for this testbed, route both the
+    // committee nodes AND this operator's admin-level txs through it.
+    // Admin txs include the step-7 register/stake/join burst: at
+    // concurrency N, that's N parallel sendTransactions/getAccount
+    // calls into the upstream RPC, which hits Helius's per-key rate
+    // limit. The cache's 429 cool-off absorbs those bursts cleanly.
     let rpc_override = discover_cache_url(settings).await?;
-    if let Some(url) = &rpc_override {
-        info!(cache_url = %url, "routing committee nodes through RPC cache");
-    }
+    let admin_rpc: String = match &rpc_override {
+        Some(url) => {
+            info!(cache_url = %url, "routing nodes + admin txs through RPC cache");
+            url.clone()
+        }
+        None => settings.solana.rpc_url.clone(),
+    };
 
-    info!("step 4+5: install deps and upload bundle on each droplet");
-    for (node_dir, droplet) in key_dirs.iter().zip(&droplets) {
-        let ip = droplet_ip(droplet)?;
-        info!(host = %ip, "installing + uploading");
-        ssh::wait_until_reachable(
-            &settings.ssh,
-            &settings.cloud.ssh_private_key_file,
-            ip,
-            Duration::from_secs(120),
-        )
+    info!(
+        concurrency = SSH_CONCURRENCY,
+        "step 4+5: install deps and upload bundle on each droplet"
+    );
+    let binary_ref = binary.as_path();
+    let rpc_override_ref = rpc_override.as_deref();
+    stream::iter(key_dirs.iter().zip(&droplets))
+        .map(move |(node_dir, droplet)| async move {
+            let ip = droplet_ip(droplet)?;
+            info!(host = %ip, "installing + uploading");
+            ssh::wait_until_reachable(
+                &settings.ssh,
+                &settings.cloud.ssh_private_key_file,
+                ip,
+                Duration::from_secs(120),
+            )
+            .await?;
+            install_remote(settings, ip).await?;
+            upload_bundle(settings, ip, node_dir, binary_ref).await?;
+            upload_node_yaml(settings, ip, node_dir, &droplet.name, rpc_override_ref).await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .buffer_unordered(SSH_CONCURRENCY)
+        .try_collect::<Vec<_>>()
         .await?;
-        install_remote(settings, ip).await?;
-        upload_bundle(settings, ip, node_dir, &binary).await?;
-        upload_node_yaml(settings, ip, node_dir, &droplet.name, rpc_override.as_deref()).await?;
-    }
 
     info!("step 6a: initialize TAPE mint (idempotent)");
-    init_mint_if_missing(settings).await?;
+    init_mint_if_missing(settings, &admin_rpc).await?;
 
     info!("step 6a': initialize chain (system + expand + archive/epoch)");
-    init_chain_if_missing(settings).await?;
+    init_chain_if_missing(settings, &admin_rpc).await?;
 
     if options.skip_fund {
         info!("step 6b: skipped (--skip-fund)");
     } else {
         info!("step 6b: fund node wallets from treasury");
-        fund_wallets(settings, &key_dirs).await?;
+        fund_wallets(settings, &admin_rpc, &key_dirs).await?;
     }
 
-    info!("step 7: register each node on-chain and join network");
-    for (node_dir, droplet) in key_dirs.iter().zip(&droplets) {
-        let ip = droplet_ip(droplet)?;
-        register_on_chain(settings, node_dir, ip).await?;
-    }
+    info!(
+        concurrency = REGISTER_CONCURRENCY,
+        "step 7: register each node on-chain and join network"
+    );
+    let admin_rpc_ref = admin_rpc.as_str();
+    stream::iter(key_dirs.iter().zip(&droplets))
+        .map(|(node_dir, droplet)| async move {
+            let ip = droplet_ip(droplet)?;
+            register_on_chain(settings, admin_rpc_ref, node_dir, ip).await
+        })
+        .buffer_unordered(REGISTER_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
 
-    info!("step 8: start systemd service on each droplet");
-    for droplet in &droplets {
-        let ip = droplet_ip(droplet)?;
-        start_service(settings, ip).await?;
-    }
+    info!(
+        concurrency = SSH_CONCURRENCY,
+        "step 8: start systemd service on each droplet"
+    );
+    stream::iter(&droplets)
+        .map(|droplet| async move {
+            let ip = droplet_ip(droplet)?;
+            start_service(settings, ip).await
+        })
+        .buffer_unordered(SSH_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
 
     info!("step 9: verify /v1/health");
     verify_health(&droplets).await?;
@@ -378,9 +423,9 @@ fn rand_suffix() -> String {
 // Step 6a: initialize TAPE mint (idempotent)
 // ========================================================================
 
-async fn init_mint_if_missing(settings: &Settings) -> Result<()> {
+async fn init_mint_if_missing(settings: &Settings, admin_rpc: &str) -> Result<()> {
     let ctx = tape_admin::Context::new(
-        settings.solana.rpc_url.clone(),
+        admin_rpc.to_string(),
         &settings.solana.treasury_keypair,
     )
     .map_err(|e| anyhow!("tape-admin context: {e}"))?;
@@ -401,9 +446,9 @@ async fn init_mint_if_missing(settings: &Settings) -> Result<()> {
     }
 }
 
-async fn init_chain_if_missing(settings: &Settings) -> Result<()> {
+async fn init_chain_if_missing(settings: &Settings, admin_rpc: &str) -> Result<()> {
     let ctx = tape_admin::Context::new(
-        settings.solana.rpc_url.clone(),
+        admin_rpc.to_string(),
         &settings.solana.treasury_keypair,
     )
     .map_err(|e| anyhow!("tape-admin context: {e}"))?;
@@ -416,14 +461,18 @@ async fn init_chain_if_missing(settings: &Settings) -> Result<()> {
 // Step 6b: fund wallets
 // ========================================================================
 
-async fn fund_wallets(settings: &Settings, node_dirs: &[PathBuf]) -> Result<()> {
+async fn fund_wallets(
+    settings: &Settings,
+    admin_rpc: &str,
+    node_dirs: &[PathBuf],
+) -> Result<()> {
     let identity_paths: Vec<PathBuf> =
         node_dirs.iter().map(|d| d.join("identity.json")).collect();
     let pubkeys = tape_admin::treasury::load_pubkeys_from_identities(&identity_paths)
         .map_err(|e| anyhow!("collecting pubkeys: {e}"))?;
 
     let ctx = tape_admin::Context::new(
-        settings.solana.rpc_url.clone(),
+        admin_rpc.to_string(),
         &settings.solana.treasury_keypair,
     )
     .map_err(|e| anyhow!("tape-admin context: {e}"))?;
@@ -442,11 +491,12 @@ async fn fund_wallets(settings: &Settings, node_dirs: &[PathBuf]) -> Result<()> 
 
 async fn register_on_chain(
     settings: &Settings,
+    admin_rpc: &str,
     node_dir: &Path,
     public_ip: &str,
 ) -> Result<()> {
     let ctx = tape_admin::Context::new(
-        settings.solana.rpc_url.clone(),
+        admin_rpc.to_string(),
         &node_dir.join("identity.json"),
     )
     .map_err(|e| anyhow!("tape-admin context: {e}"))?;

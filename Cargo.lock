@@ -9042,6 +9042,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "futures",
  "hex",
  "regex",
  "reqwest",

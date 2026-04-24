@@ -97,7 +97,7 @@ async fn handle(
             }
             forward_raw(&state, &req).await
         }
-        MethodKind::Read { ttl: _ttl } => {
+        MethodKind::Read { ttl } => {
             // Check cache first.
             let key = CacheKey::from_request(method, &params);
             if let Some(cached) = state.cache.get(&key).await {
@@ -114,7 +114,7 @@ async fn handle(
                     if let Some(result) = &envelope.result {
                         state
                             .cache
-                            .insert(key, Arc::new(result.clone()))
+                            .insert(key, Arc::new(result.clone()), ttl)
                             .await;
                     }
                     (

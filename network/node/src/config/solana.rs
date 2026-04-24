@@ -9,6 +9,10 @@ pub struct SolanaConfig {
     pub rpc: String,
 
     /// Optional override for the first slot the ingestor should process.
+    /// When absent the bootstrap phase derives the start slot from
+    /// on-chain state (replay tail → local sync cursor → current
+    /// epoch's `start_slot`). Only set this to override those defaults
+    /// for surgery or testing.
     #[serde(default)]
     pub start_slot: Option<SlotNumber>,
 }
@@ -22,17 +26,6 @@ impl Default for SolanaConfig {
     }
 }
 
-impl SolanaConfig {
-    /// Resolve the block-ingest start slot using the configured override or the default.
-    pub fn block_start_slot(&self) -> SlotNumber {
-        self.start_slot.unwrap_or_else(default_start_slot)
-    }
-}
-
 fn default_rpc() -> String {
     "http://127.0.0.1:8899".to_string()
-}
-
-fn default_start_slot() -> SlotNumber {
-    SlotNumber(1)
 }

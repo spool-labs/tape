@@ -1,5 +1,5 @@
-//! Bootstrap: runs before supervisor and replays missing finalized 
-//! snapshots so the live ingestor can resume at the slot right 
+//! Bootstrap: runs before supervisor and replays missing finalized
+//! snapshots so the live ingestor can resume at the slot right
 //! after the last replayed snapshot's end.
 
 use std::sync::Arc;
@@ -20,9 +20,11 @@ use crate::features::bootstrap::{discovery, fetch, replay};
 /// Run the bootstrap phase and return the slot the live ingestor should
 /// start from.
 ///
-/// Returns `config.solana.block_start_slot()` when there is nothing to
-/// replay (no finalized snapshots on-chain yet, or the cursor is already at
-/// the tip).
+/// When replay runs, the returned slot is the one immediately after the
+/// last replayed snapshot. Otherwise the slot is resolved from (in
+/// order): the explicit `config.solana.start_slot` override, the
+/// persisted `sync_cursor` from prior runs, or the current epoch's
+/// on-chain `start_slot`.
 pub async fn run<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &NodeConfig,
@@ -36,11 +38,11 @@ where
     let epochs = discovery::discover_missing_epochs(context.as_ref()).await?;
 
     if epochs.is_empty() {
-        let start_slot = config.solana.block_start_slot();
+        let start_slot = resolve_no_replay_start(context, config).await?;
         debug!(
             node_id = context.node_id().0,
             start_slot = start_slot.0,
-            "bootstrap: nothing to replay, using configured start slot"
+            "bootstrap: nothing to replay"
         );
         return Ok(start_slot);
     }
@@ -76,7 +78,10 @@ where
     // end, so there's no gap and no double-application at the live boundary.
     let start_slot = match last_end_slot {
         Some(end) => SlotNumber(end.0.saturating_add(1)),
-        None => config.solana.block_start_slot(),
+        // Defensive: if the epochs list was non-empty we must have set
+        // last_end_slot at least once. Fall through to the same
+        // resolver the no-replay path uses rather than assuming.
+        None => resolve_no_replay_start(context, config).await?,
     };
 
     info!(
@@ -84,6 +89,47 @@ where
         "bootstrap: complete, handing start slot to ingestor"
     );
     Ok(start_slot)
+}
+
+/// Pick a start slot when no snapshots need replaying. Order:
+/// 1. Explicit operator override (`config.solana.start_slot`).
+/// 2. Persisted `sync_cursor` from prior runs (resume where we left off).
+/// 3. Current epoch's `start_slot` from chain (fresh first run).
+async fn resolve_no_replay_start<Db, Cluster, Blockchain>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    config: &NodeConfig,
+) -> Result<SlotNumber, NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    if let Some(override_slot) = config.solana.start_slot {
+        debug!(start_slot = override_slot.0, "bootstrap: using configured start_slot override");
+        return Ok(override_slot);
+    }
+
+    let cursor = context
+        .store
+        .get_sync_cursor()
+        .map_err(|error| NodeError::Store(format!("get_sync_cursor: {error}")))?;
+    if let Some(c) = cursor {
+        let resume = SlotNumber(c.0.saturating_add(1));
+        debug!(
+            cursor = c.0,
+            start_slot = resume.0,
+            "bootstrap: resuming from persisted sync_cursor"
+        );
+        return Ok(resume);
+    }
+
+    let epoch = context.rpc.get_epoch().await?;
+    debug!(
+        epoch = epoch.id.0,
+        start_slot = epoch.start_slot.0,
+        "bootstrap: fresh node, using current epoch's start_slot"
+    );
+    Ok(epoch.start_slot)
 }
 
 fn advance_cursors<Db, Cluster, Blockchain>(
@@ -121,9 +167,10 @@ mod tests {
     use super::{advance_cursors, run};
 
     #[tokio::test]
-    async fn returns_configured_start_slot_when_nothing_to_replay() {
+    async fn override_wins_when_nothing_to_replay() {
         let context = test_context();
-        let config = NodeConfig::default();
+        let mut config = NodeConfig::default();
+        config.solana.start_slot = Some(SlotNumber(42));
         let cancel = CancellationToken::new();
 
         let slot = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
@@ -131,13 +178,31 @@ mod tests {
             .expect("bootstrap completed in time")
             .expect("bootstrap returned ok");
 
-        assert_eq!(slot, config.solana.block_start_slot());
+        assert_eq!(slot, SlotNumber(42));
+    }
+
+    #[tokio::test]
+    async fn sync_cursor_used_when_no_override_and_nothing_to_replay() {
+        let context = test_context();
+        let config = NodeConfig::default();
+        let cancel = CancellationToken::new();
+
+        context.store.set_sync_cursor(SlotNumber(999)).unwrap();
+
+        let slot = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
+            .await
+            .expect("bootstrap completed in time")
+            .expect("bootstrap returned ok");
+
+        assert_eq!(slot, SlotNumber(1000));
     }
 
     #[tokio::test]
     async fn no_op_path_leaves_cursor_untouched() {
         let context = test_context();
-        let config = NodeConfig::default();
+        let mut config = NodeConfig::default();
+        // Avoid the chain fetch by forcing the override path.
+        config.solana.start_slot = Some(SlotNumber(1));
         let cancel = CancellationToken::new();
 
         let before = context.store.get_bootstrap_target_epoch().unwrap();

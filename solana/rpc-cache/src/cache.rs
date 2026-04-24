@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use moka::future::Cache;
 use serde_json::Value;
@@ -32,7 +32,11 @@ fn default_ttls() -> HashMap<&'static str, Duration> {
         ("getSlot", sec(2)),
         ("getBlock", sec(300)),
         ("getBlockHeight", sec(2)),
-        ("getLatestBlockhash", sec(30)),
+        // Blockhashes expire on-chain after ~90s of slots; by the time
+        // we serve a cached value, queue it through the node's tx
+        // pipeline, and land it, anything older than a few seconds is
+        // likely to be rejected as BlockhashExpired. Keep this tight.
+        ("getLatestBlockhash", sec(5)),
         ("getAccountInfo", sec(2)),
         ("getMultipleAccounts", sec(2)),
         ("getProgramAccounts", sec(15)),
@@ -52,9 +56,16 @@ const SUBMIT_METHODS: &[&str] = &[
     "simulateTransaction",
 ];
 
-/// Cached value keeps the full `result` field of the upstream JSON-RPC
-/// response. We re-wrap it with the caller's `id` on a hit.
-pub type CachedResult = Arc<Value>;
+/// A cached `result` body plus its freshness deadline. The deadline is
+/// per-entry because TTLs vary by method (e.g. `getLatestBlockhash`
+/// must be short, `getBlock` can be long). moka's built-in
+/// `time_to_live` is per-cache, so we stamp the expiry on insert and
+/// check it on read; the global TTL on the builder is a loose ceiling.
+#[derive(Clone)]
+pub struct CachedEntry {
+    pub value: Arc<Value>,
+    pub expires_at: Instant,
+}
 
 pub struct Policy {
     ttls: HashMap<String, Duration>,
@@ -84,7 +95,7 @@ impl Policy {
 /// Thin wrapper around the `moka` cache. Holding it in its own struct so
 /// the server can inject a test implementation if we ever add one.
 pub struct CacheStore {
-    inner: Cache<CacheKey, CachedResult>,
+    inner: Cache<CacheKey, CachedEntry>,
 }
 
 impl CacheStore {
@@ -92,25 +103,31 @@ impl CacheStore {
         Self {
             inner: Cache::builder()
                 .max_capacity(max_entries)
-                // We set the TTL per-insertion via `insert_with_ttl`;
-                // the default 30s is a belt-and-suspenders bound so
-                // any lingering entries get expired even if policy
-                // logic goofs up.
+                // Ceiling to keep stale entries from hanging around
+                // forever if the read rate drops. Per-entry freshness
+                // is enforced separately via `expires_at`.
                 .time_to_live(Duration::from_secs(3600))
                 .build(),
         }
     }
 
-    pub async fn get(&self, key: &CacheKey) -> Option<CachedResult> {
-        self.inner.get(key).await
+    /// Look up a fresh entry. If the entry is past its per-method TTL
+    /// we treat it as a miss and ask the caller to repopulate.
+    pub async fn get(&self, key: &CacheKey) -> Option<Arc<Value>> {
+        let entry = self.inner.get(key).await?;
+        if Instant::now() >= entry.expires_at {
+            self.inner.invalidate(key).await;
+            return None;
+        }
+        Some(entry.value)
     }
 
-    pub async fn insert(&self, key: CacheKey, value: CachedResult) {
-        // `moka`'s per-entry TTL API isn't on the stable surface; the
-        // eviction policy above is per-cache. We rely on the `Policy`
-        // layer to only serve fresh values (see server.rs). For a v1
-        // this is simpler than hand-rolling eviction.
-        self.inner.insert(key, value).await;
+    pub async fn insert(&self, key: CacheKey, value: Arc<Value>, ttl: Duration) {
+        let entry = CachedEntry {
+            value,
+            expires_at: Instant::now() + ttl,
+        };
+        self.inner.insert(key, entry).await;
     }
 }
 
@@ -134,6 +151,18 @@ mod tests {
     fn classify_unknown() {
         let p = Policy::new(HashMap::new());
         assert_eq!(p.classify("totallyMadeUpMethod"), MethodKind::Unknown);
+    }
+
+    #[tokio::test]
+    async fn entry_expires_after_ttl() {
+        let store = CacheStore::new(16);
+        let key = CacheKey { method: "getLatestBlockhash".into(), params_hash: 0 };
+        store
+            .insert(key.clone(), Arc::new(Value::Null), Duration::from_millis(20))
+            .await;
+        assert!(store.get(&key).await.is_some(), "fresh entry hits");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(store.get(&key).await.is_none(), "stale entry misses");
     }
 
     #[test]

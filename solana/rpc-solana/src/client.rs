@@ -239,7 +239,7 @@ impl SolanaRpc {
 
     /// Convert a ClientError to RpcError.
     fn convert_error(err: ClientError, pubkey: Option<Address>) -> RpcError {
-        let err_str = err.to_string();
+        let err_str = flatten_error(&err);
 
         // Check for specific error types
         if err_str.contains("AccountNotFound") {
@@ -788,6 +788,17 @@ impl Rpc for SolanaRpc {
             }
         }
     }
+}
+
+fn flatten_error(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        out.push_str(": ");
+        out.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    out
 }
 
 #[cfg(test)]

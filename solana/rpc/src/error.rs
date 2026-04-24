@@ -148,6 +148,7 @@ fn is_retriable_message(msg: &str) -> bool {
         || msg.contains("connection")
         || msg.contains("network")
         || msg.contains("reset by peer")
+        || msg.contains("error sending request")
         || msg.contains("429")
         || msg.contains("503")
         || msg.contains("504")
