@@ -13,7 +13,9 @@ use axum::{BoxError, Router};
 
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use axum_server::Handle;
-use peer_tls::{build_server_config_with_peer_auth, install_default_provider};
+use peer_tls::{
+    build_server_config_from_pem, build_server_config_with_peer_auth, install_default_provider,
+};
 
 use crate::features::http::peer_identity::PeerIdentityAcceptor;
 use rpc::Rpc;
@@ -211,8 +213,18 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let listen_ip = self.config.listen.ip();
         let san_ips = cert_san_ips(listen_ip);
 
-        let server_config = build_server_config_with_peer_auth(self.context.tls_keypair(), &san_ips)
-            .map_err(|e| NodeError::Config(format!("tls server config: {e}")))?;
+        let server_config = match &self.context.config.tls.certificate_path {
+            Some(pem_path) => {
+                info!(
+                    cert = %pem_path.display(),
+                    "loading operator-supplied PEM cert for peer TLS"
+                );
+                build_server_config_from_pem(pem_path, self.context.tls_keypair(), true)
+                    .map_err(|e| NodeError::Config(format!("tls server config: {e}")))?
+            }
+            None => build_server_config_with_peer_auth(self.context.tls_keypair(), &san_ips)
+                .map_err(|e| NodeError::Config(format!("tls server config: {e}")))?,
+        };
         let rustls_config = RustlsConfig::from_config(server_config);
         let acceptor = PeerIdentityAcceptor::new(RustlsAcceptor::new(rustls_config));
 
@@ -220,7 +232,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         info!(
             listen = %self.config.listen,
-            tls_pubkey = %self.context.tls_keypair().address(),
+            tls_pubkey = %self.context.tls_pubkey(),
             "https server listening"
         );
 

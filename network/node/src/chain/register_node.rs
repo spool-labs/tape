@@ -5,7 +5,7 @@ use tape_api::instruction::build_register_node_ix;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::types::BasisPoints;
 use tape_core::types::network::NetworkAddress;
-use tape_crypto::address::Address;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair;
 use tape_crypto::tx::Txid;
 
@@ -15,7 +15,7 @@ pub async fn submit_register_node<Blockchain: Rpc>(
     name: [u8; NAME_LENGTH],
     commission: BasisPoints,
     network_address: NetworkAddress,
-    network_tls: Address,
+    network_tls: NetworkTlsPubkey,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
 ) -> Result<Txid, RpcError> {
@@ -42,8 +42,10 @@ mod tests {
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::BasisPoints;
     use tape_core::types::network::NetworkAddress;
+    use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::EpochNumber;
     use tape_crypto::ed25519::Keypair;
+    use tape_crypto::p256::Keypair as P256Keypair;
 
     use super::submit_register_node;
     use crate::harness::NodeHarness;
@@ -71,8 +73,8 @@ mod tests {
         let name = to_name("test-register");
         let commission = BasisPoints(500);
         let address = NetworkAddress::new_ipv4([10, 0, 0, 1], 443);
-        let tls_keypair = Keypair::new(&mut rng);
-        let network_tls = tls_keypair.address();
+        let tls_keypair = P256Keypair::generate(&mut rng);
+        let network_tls = NetworkTlsPubkey::new(tls_keypair.public_key_bytes());
 
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         submit_register_node(

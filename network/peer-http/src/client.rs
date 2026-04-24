@@ -8,8 +8,8 @@ use tape_protocol::api::*;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
-use tape_crypto::address::Address;
-use tape_crypto::ed25519::Keypair;
+use tape_core::types::tls::NetworkTlsPubkey;
+use tape_crypto::p256::Keypair as P256Keypair;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
@@ -23,7 +23,7 @@ const SNAPSHOT_VOTE_TIMEOUT: Duration = Duration::from_secs(3);
 #[derive(Clone)]
 pub struct PinnedPeerClient {
     pub client: reqwest::Client,
-    pub tls_pubkey: Address,
+    pub tls_pubkey: NetworkTlsPubkey,
     pub network_address: NetworkAddress,
 }
 
@@ -33,7 +33,7 @@ pub struct HttpApi {
     pub metrics: Option<Arc<ApiMetrics>>,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
-    pub local_identity: Option<Arc<Keypair>>,
+    pub local_identity: Option<Arc<P256Keypair>>,
 }
 
 impl HttpApi {
@@ -71,7 +71,7 @@ impl HttpApi {
         Ok((client, url))
     }
 
-    fn build_pinned_client(&self, tls_pubkey: Address) -> Result<reqwest::Client, ApiError> {
+    fn build_pinned_client(&self, tls_pubkey: NetworkTlsPubkey) -> Result<reqwest::Client, ApiError> {
         let builder = reqwest::Client::builder()
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout);
@@ -676,10 +676,11 @@ mod tests {
     use rand::thread_rng;
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
-    use tape_crypto::ed25519::Keypair as EdKeypair;
+    use tape_crypto::address::Address;
+    use tape_crypto::p256::Keypair as P256Keypair;
     use tokio::net::TcpListener;
 
-    fn make_peer(id: u64, port: u16, tls_pubkey: Address) -> PeerNode {
+    fn make_peer(id: u64, port: u16, tls_pubkey: NetworkTlsPubkey) -> PeerNode {
         PeerNode {
             node_id: NodeId(id),
             authority: Address::new_unique(),
@@ -690,8 +691,12 @@ mod tests {
         }
     }
 
+    fn pubkey_of(kp: &P256Keypair) -> NetworkTlsPubkey {
+        NetworkTlsPubkey::new(kp.public_key_bytes())
+    }
+
     async fn serve_tls(
-        tls_keypair: EdKeypair,
+        tls_keypair: P256Keypair,
         router: Router,
     ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -723,7 +728,7 @@ mod tests {
             Err(ApiError::NodeUnresolved(id)) if id == node_id
         ));
 
-        peer_manager.add_peer(make_peer(7, 8080, Address::new_unique()));
+        peer_manager.add_peer(make_peer(7, 8080, NetworkTlsPubkey::new_unique()));
         let peer = api.resolve_peer(node_id).expect("resolve");
         assert_eq!(peer.node_id, node_id);
     }
@@ -740,8 +745,8 @@ mod tests {
     async fn snapshot_vote_write_roundtrip_over_tls() {
         install_default_provider();
         let mut rng = thread_rng();
-        let tls = EdKeypair::new(&mut rng);
-        let tls_pubkey = tls.address();
+        let tls = P256Keypair::generate(&mut rng);
+        let tls_pubkey = pubkey_of(&tls);
 
         let request = SnapshotVoteRequest {
             node_id: NodeId(9),
@@ -787,8 +792,8 @@ mod tests {
     async fn snapshot_vote_complete_group_roundtrip_over_tls() {
         install_default_provider();
         let mut rng = thread_rng();
-        let tls = EdKeypair::new(&mut rng);
-        let tls_pubkey = tls.address();
+        let tls = P256Keypair::generate(&mut rng);
+        let tls_pubkey = pubkey_of(&tls);
 
         let request = SnapshotVoteRequest {
             node_id: NodeId(9),
@@ -834,8 +839,8 @@ mod tests {
     async fn rebuilds_client_when_peer_rotates_tls_key() {
         install_default_provider();
         let mut rng = thread_rng();
-        let original_tls = EdKeypair::new(&mut rng);
-        let new_tls = EdKeypair::new(&mut rng);
+        let original_tls = P256Keypair::generate(&mut rng);
+        let new_tls = P256Keypair::generate(&mut rng);
 
         let router = Router::new().route(
             SNAPSHOT_VOTE_PATH,
@@ -845,7 +850,7 @@ mod tests {
         let (addr, _handle) = serve_tls(original_tls, router).await;
 
         let peer_manager = Arc::new(PeerManager::new());
-        peer_manager.add_peer(make_peer(7, addr.port(), Address::new_unique()));
+        peer_manager.add_peer(make_peer(7, addr.port(), NetworkTlsPubkey::new_unique()));
         let api = HttpApi::with_default_timeouts(peer_manager.clone());
 
         // Snapshot the client with a wrong pin — request should fail.
@@ -860,11 +865,11 @@ mod tests {
         // Rotate the peer's tls_pubkey to an also-wrong key; cache must
         // reflect the rotation (still mismatched, but the cached entry is
         // fresh).
-        peer_manager.add_peer(make_peer(7, addr.port(), new_tls.address()));
+        peer_manager.add_peer(make_peer(7, addr.port(), pubkey_of(&new_tls)));
         let peer = peer_manager.get(NodeId(7)).unwrap();
         api.client_for(&peer).expect("build fresh client");
         let cached = api.clients.get(&NodeId(7)).unwrap();
-        assert_eq!(cached.tls_pubkey, new_tls.address());
+        assert_eq!(cached.tls_pubkey, pubkey_of(&new_tls));
     }
 
     // Plain-TcpListener warning suppression — tokio's import can otherwise go

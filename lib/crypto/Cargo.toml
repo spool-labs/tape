@@ -54,5 +54,7 @@ ark-serialize = { version = "0.5.0" }
 rand = { version = "0.8.5", default-features = true }
 # ed25519-consensus brings in curve25519-dalek-ng which has stack size issues on SBF
 ed25519-consensus = "2.1"
+# P-256 for TLS identity keypairs (host-only; on-chain only stores the raw 64-byte pubkey)
+p256 = { version = "0.13", default-features = false, features = ["arithmetic", "pem", "pkcs8", "std"] }
 serde_json = { workspace = true }
 solana-sdk = { workspace = true }

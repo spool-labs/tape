@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
-use tape_crypto::address::Address;
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -13,11 +12,11 @@ pub struct NodeMetadata {
     /// The name of this node storage node.
     pub name: [u8; 32],
 
-    /// The SocketAddr of the node
+    /// The SocketAddr of the node.
     pub network_address: NetworkAddress,
 
-    /// The address used for TLS connections to this node.
-    pub network_tls: Address,
+    /// The TLS public key of this node.
+    pub network_tls: NetworkTlsPubkey,
 
     /// The BLS public key of this node.
     pub bls_pubkey: BlsPubkey,

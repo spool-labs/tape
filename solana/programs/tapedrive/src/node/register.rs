@@ -145,7 +145,7 @@ mod tests {
         let name = to_name("hello, world");
         let commission_rate = BasisPoints(100); // 1%
         let network_address = NetworkAddress::default();
-        let network_tls = Pubkey::new_unique();
+        let network_tls = NetworkTlsPubkey::new_unique();
 
         let secret = BlsPrivateKey::from_random();
         let bls_pubkey = secret.public_key().expect("pubkey");
@@ -155,7 +155,7 @@ mod tests {
             name,
             commission_rate,
             network_address,
-            network_tls.into(),
+            network_tls,
             bls_pubkey,
             bls_pop,
         );
@@ -216,7 +216,7 @@ mod tests {
                         metadata: NodeMetadata {
                             name,
                             network_address,
-                            network_tls: network_tls.into(),
+                            network_tls,
                             bls_pubkey,
                             next_bls_pubkey: bls_pubkey,
                         },

@@ -1,11 +1,11 @@
-//! TLS server-cert verification in two modes:
+//! TLS server/client cert verification in two modes:
 //! - [`TlsVerifier::Webpki`] — standard WebPKI, delegates to rustls for chain
 //!   and name validation.
 //! - [`TlsVerifier::PinnedPublicKey`] — authenticates the peer solely by
 //!   comparing the leaf certificate's SubjectPublicKeyInfo against an expected
-//!   Ed25519 key published on-chain. WebPKI chain/name/expiry are not
-//!   enforced; the TLS handshake-signature check (via the crypto provider)
-//!   still proves possession of the private key.
+//!   P-256 key published on-chain. WebPKI chain/name/expiry are not enforced;
+//!   the TLS handshake-signature check (via the crypto provider) still proves
+//!   possession of the private key.
 
 use std::fmt;
 use std::sync::Arc;
@@ -15,12 +15,12 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as RustlsError, RootCertStore, SignatureScheme};
-use tape_crypto::address::Address;
+use tape_core::types::tls::NetworkTlsPubkey;
 use x509_parser::prelude::FromDer;
 use x509_parser::prelude::X509Certificate;
 
 use crate::provider::ring_provider;
-use crate::spki::{ED25519_SPKI_LEN, encode_ed25519_spki};
+use crate::spki::{P256_SPKI_LEN, encode_p256_spki};
 
 /// Server certificate verifier with two mutually-exclusive modes.
 pub enum TlsVerifier {
@@ -28,7 +28,7 @@ pub enum TlsVerifier {
     /// non-peer HTTPS traffic (public RPC, external services).
     Webpki(Arc<WebPkiServerVerifier>),
 
-    /// Pin the leaf cert to exactly one Ed25519 public key. Use for peer-to-
+    /// Pin the leaf cert to exactly one P-256 public key. Use for peer-to-
     /// peer calls where the pin comes from on-chain `network_tls`.
     PinnedPublicKey(PinnedVerifier),
 }
@@ -37,11 +37,7 @@ impl TlsVerifier {
     /// Build a WebPKI-mode verifier using the Mozilla root store.
     pub fn webpki_with_mozilla_roots() -> Result<Self, RustlsError> {
         let mut roots = RootCertStore::empty();
-        roots.extend(
-            webpki_roots::TLS_SERVER_ROOTS
-                .iter()
-                .cloned(),
-        );
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         Self::webpki(roots)
     }
 
@@ -54,8 +50,8 @@ impl TlsVerifier {
         Ok(Self::Webpki(inner))
     }
 
-    /// Build a pinned verifier for exactly one Ed25519 public key.
-    pub fn pinned(expected: Address) -> Self {
+    /// Build a pinned verifier for exactly one P-256 public key.
+    pub fn pinned(expected: NetworkTlsPubkey) -> Self {
         Self::PinnedPublicKey(PinnedVerifier::new(expected))
     }
 }
@@ -64,7 +60,10 @@ impl fmt::Debug for TlsVerifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Webpki(_) => f.debug_tuple("TlsVerifier::Webpki").finish(),
-            Self::PinnedPublicKey(p) => f.debug_tuple("TlsVerifier::PinnedPublicKey").field(p).finish(),
+            Self::PinnedPublicKey(p) => f
+                .debug_tuple("TlsVerifier::PinnedPublicKey")
+                .field(p)
+                .finish(),
         }
     }
 }
@@ -120,8 +119,8 @@ impl ServerCertVerifier for TlsVerifier {
 
 /// Pinned-public-key verifier. Constructed via [`TlsVerifier::pinned`].
 pub struct PinnedVerifier {
-    expected_spki: [u8; ED25519_SPKI_LEN],
-    expected_key: Address,
+    expected_spki: [u8; P256_SPKI_LEN],
+    expected_key: NetworkTlsPubkey,
     provider: Arc<CryptoProvider>,
 }
 
@@ -134,16 +133,16 @@ impl fmt::Debug for PinnedVerifier {
 }
 
 impl PinnedVerifier {
-    fn new(expected: Address) -> Self {
+    fn new(expected: NetworkTlsPubkey) -> Self {
         Self {
-            expected_spki: encode_ed25519_spki(&expected),
+            expected_spki: encode_p256_spki(&expected),
             expected_key: expected,
             provider: ring_provider(),
         }
     }
 
     /// The pinned public key.
-    pub fn expected_key(&self) -> Address {
+    pub fn expected_key(&self) -> NetworkTlsPubkey {
         self.expected_key
     }
 
@@ -151,9 +150,8 @@ impl PinnedVerifier {
         &self,
         end_entity: &CertificateDer<'_>,
     ) -> Result<ServerCertVerified, RustlsError> {
-        let (_, parsed) = X509Certificate::from_der(end_entity.as_ref()).map_err(|_| {
-            RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding)
-        })?;
+        let (_, parsed) = X509Certificate::from_der(end_entity.as_ref())
+            .map_err(|_| RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
 
         let leaf_spki = parsed.public_key().raw;
         if leaf_spki != self.expected_spki.as_slice() {
@@ -171,7 +169,12 @@ impl PinnedVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -180,11 +183,18 @@ impl PinnedVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -201,7 +211,7 @@ impl std::error::Error for WebPkiBuildError {}
 
 /// Server-side verifier for optional peer mTLS.
 ///
-/// Accepts any well-formed Ed25519 client certificate. The TLS layer proves
+/// Accepts any well-formed P-256 client certificate. The TLS layer proves
 /// key possession via `verify_tls1x_signature`; the caller's identity (the
 /// cert's SPKI) is then available from `ServerConnection::peer_certificates()`
 /// and can be mapped to a committee member at the application layer.
@@ -245,14 +255,13 @@ impl rustls::server::danger::ClientCertVerifier for PeerClientVerifier {
         _intermediates: &[CertificateDer<'_>],
         _now: UnixTime,
     ) -> Result<rustls::server::danger::ClientCertVerified, RustlsError> {
-        let (_, parsed) = X509Certificate::from_der(end_entity.as_ref()).map_err(|_| {
-            RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding)
-        })?;
+        let (_, parsed) = X509Certificate::from_der(end_entity.as_ref())
+            .map_err(|_| RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
 
-        // Reject anything that isn't Ed25519 so we don't open ourselves up to
-        // curve algorithms we haven't audited. The SPKI check upstream relies
-        // on exact Ed25519 encoding.
-        if crate::spki::decode_ed25519_spki(parsed.public_key().raw).is_none() {
+        // Reject anything that isn't P-256 / prime256v1 / uncompressed so we
+        // don't open ourselves up to curve algorithms we haven't audited. The
+        // upstream SPKI compare relies on exact P-256 encoding.
+        if crate::spki::decode_p256_spki(parsed.public_key().raw).is_none() {
             return Err(RustlsError::InvalidCertificate(
                 rustls::CertificateError::BadSignature,
             ));
@@ -267,7 +276,12 @@ impl rustls::server::danger::ClientCertVerifier for PeerClientVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -276,11 +290,18 @@ impl rustls::server::danger::ClientCertVerifier for PeerClientVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 
     fn offer_client_auth(&self) -> bool {
@@ -298,8 +319,8 @@ mod tests {
 
     use rand::thread_rng;
     use rustls::pki_types::CertificateDer;
-    use tape_crypto::address::Address;
-    use tape_crypto::ed25519::Keypair as EdKeypair;
+    use tape_core::types::tls::NetworkTlsPubkey;
+    use tape_crypto::p256::Keypair as P256Keypair;
 
     use super::*;
     use crate::cert::self_signed_cert;
@@ -309,32 +330,38 @@ mod tests {
         install_default();
     }
 
-    fn make_cert(kp: &EdKeypair) -> CertificateDer<'static> {
+    fn make_cert(kp: &P256Keypair) -> CertificateDer<'static> {
         self_signed_cert(kp, &[IpAddr::V4(Ipv4Addr::LOCALHOST)])
             .expect("cert")
             .cert
+    }
+
+    fn pubkey_of(kp: &P256Keypair) -> NetworkTlsPubkey {
+        NetworkTlsPubkey::new(kp.public_key_bytes())
     }
 
     #[test]
     fn pinned_accepts_matching_key() {
         setup();
         let mut rng = thread_rng();
-        let kp = EdKeypair::new(&mut rng);
+        let kp = P256Keypair::generate(&mut rng);
         let cert = make_cert(&kp);
 
-        let verifier = PinnedVerifier::new(kp.address());
-        verifier.verify_server_cert(&cert).expect("accept matching pin");
+        let verifier = PinnedVerifier::new(pubkey_of(&kp));
+        verifier
+            .verify_server_cert(&cert)
+            .expect("accept matching pin");
     }
 
     #[test]
     fn pinned_rejects_wrong_key() {
         setup();
         let mut rng = thread_rng();
-        let kp = EdKeypair::new(&mut rng);
-        let other = EdKeypair::new(&mut rng);
+        let kp = P256Keypair::generate(&mut rng);
+        let other = P256Keypair::generate(&mut rng);
         let cert = make_cert(&kp);
 
-        let verifier = PinnedVerifier::new(other.address());
+        let verifier = PinnedVerifier::new(pubkey_of(&other));
         let err = verifier.verify_server_cert(&cert).unwrap_err();
         assert!(matches!(err, RustlsError::InvalidCertificate(_)));
     }
@@ -343,7 +370,7 @@ mod tests {
     fn pinned_rejects_random_junk_cert() {
         setup();
         let junk = CertificateDer::from(vec![0u8; 16]);
-        let verifier = PinnedVerifier::new(Address::new_unique());
+        let verifier = PinnedVerifier::new(NetworkTlsPubkey::new_unique());
         assert!(verifier.verify_server_cert(&junk).is_err());
     }
 

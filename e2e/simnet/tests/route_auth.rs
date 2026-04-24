@@ -11,7 +11,7 @@ use std::time::Duration;
 use rand::thread_rng;
 use reqwest::StatusCode;
 use tape_core::types::BasisPoints;
-use tape_crypto::ed25519::Keypair as EdKeypair;
+use tape_crypto::p256::Keypair as P256Keypair;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 
 const NODE_COUNT: usize = 5;
@@ -93,8 +93,8 @@ async fn peer_only_routes_reject_non_peers() {
         "anonymous client must be rejected from peer-only /v1/snapshots/vote"
     );
 
-    // Impostor: valid Ed25519 client cert, but key is not on-chain
-    let impostor_key = EdKeypair::new(&mut thread_rng());
+    // Impostor: valid P-256 client cert, but key is not on-chain
+    let impostor_key = P256Keypair::generate(&mut thread_rng());
     let impostor = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
         let builder = peer_tls::apply_pinned_tls_with_identity(builder, pin, &impostor_key)

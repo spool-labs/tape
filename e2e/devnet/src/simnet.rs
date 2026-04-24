@@ -742,7 +742,7 @@ impl SimnetState {
     async fn poll_http_health(&mut self) {
         // Snapshot enough about each running node to build clients without
         // holding a borrow on `self.nodes` during the cache-mutating call.
-        let snapshots: Vec<(usize, String, tape_crypto::address::Address)> = self
+        let snapshots: Vec<(usize, String, tape_core::types::tls::NetworkTlsPubkey)> = self
             .nodes
             .iter()
             .filter(|node| node.is_running())
@@ -788,7 +788,7 @@ impl SimnetState {
     fn health_client_for_key(
         &mut self,
         id: usize,
-        tls_pubkey: tape_crypto::address::Address,
+        tls_pubkey: tape_core::types::tls::NetworkTlsPubkey,
     ) -> Option<Client> {
         if let Some(client) = self.health_clients.get(&id) {
             return Some(client.clone());

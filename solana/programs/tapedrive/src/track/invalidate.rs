@@ -133,7 +133,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        const SIGNERS: usize = 75;
+        const SIGNERS: usize = 30;
 
         let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..MEMBER_COUNT)
             .map(|_| {

@@ -14,8 +14,9 @@ use store_memory::MemoryStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::SlotNumber;
 use tape_core::types::network::NetworkAddress;
-use tape_crypto::address::Address;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
+use tape_crypto::p256::Keypair as P256Keypair;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
@@ -49,7 +50,7 @@ pub struct TestNode {
     public_port: u16,
     keypair: Keypair,
     bls_keypair: BlsPrivateKey,
-    tls_keypair: CryptoKeypair,
+    tls_keypair: P256Keypair,
     rpc: LiteSvmRpc,
     app_config: NodeConfig,
     context: Option<TestNodeContext>,
@@ -70,7 +71,7 @@ impl TestNode {
         let bls_keypair = BlsPrivateKey::from_random();
         let tls_keypair = {
             let mut rng = rand::thread_rng();
-            CryptoKeypair::new(&mut rng)
+            P256Keypair::generate(&mut rng)
         };
         let name = format!("sim-node-{id}");
         let public_host = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -93,12 +94,12 @@ impl TestNode {
         })
     }
 
-    pub fn tls_keypair(&self) -> &CryptoKeypair {
+    pub fn tls_keypair(&self) -> &P256Keypair {
         &self.tls_keypair
     }
 
-    pub fn tls_pubkey(&self) -> Address {
-        self.tls_keypair.address()
+    pub fn tls_pubkey(&self) -> NetworkTlsPubkey {
+        NetworkTlsPubkey::new(self.tls_keypair.public_key_bytes())
     }
 
     pub fn id(&self) -> usize {
@@ -224,7 +225,7 @@ impl TestNode {
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());
 
-        let tls_identity = Arc::new(clone_ed25519_keypair(&self.tls_keypair));
+        let tls_identity = Arc::new(clone_p256_keypair(&self.tls_keypair));
 
         let api = Arc::new(
             peer_http::HttpApiBuilder::new()
@@ -266,6 +267,7 @@ fn clone_keypair(keypair: &Keypair) -> CryptoKeypair {
     CryptoKeypair::from_solana_keypair(keypair).expect("clone keypair")
 }
 
-fn clone_ed25519_keypair(keypair: &CryptoKeypair) -> CryptoKeypair {
-    CryptoKeypair::from_keypair_bytes(keypair.to_keypair_bytes()).expect("clone ed25519 keypair")
+fn clone_p256_keypair(keypair: &P256Keypair) -> P256Keypair {
+    let der = keypair.to_pkcs8_der().expect("encode p256 keypair");
+    P256Keypair::from_pkcs8_der(&der).expect("clone p256 keypair")
 }

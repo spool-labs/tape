@@ -38,17 +38,17 @@ mod tests {
     fn test_set_network_tls() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let old_tls = Pubkey::new_unique();
-        let new_tls = Pubkey::new_unique();
+        let old_tls = NetworkTlsPubkey::new_unique();
+        let new_tls = NetworkTlsPubkey::new_unique();
 
         let (node_address, _) = node_pda(authority.into());
 
-        let instruction = build_set_network_tls_ix(fee_payer.into(), authority.into(), node_address, new_tls.into());
+        let instruction = build_set_network_tls_ix(fee_payer.into(), authority.into(), node_address, new_tls);
 
         let node = Node {
             authority: authority.into(),
             metadata: NodeMetadata {
-                network_tls: old_tls.into(),
+                network_tls: old_tls,
                 ..NodeMetadata::zeroed()
             },
             ..Node::zeroed()
@@ -69,7 +69,7 @@ mod tests {
                 Check::account(&Pubkey::from(node_address))
                     .data(Node {
                         metadata: NodeMetadata {
-                            network_tls: new_tls.into(),
+                            network_tls: new_tls,
                             ..node.metadata
                         },
                         ..node

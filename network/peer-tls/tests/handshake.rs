@@ -1,4 +1,4 @@
-//! End-to-end handshake tests: tokio-rustls server (self-signed Ed25519 cert)
+//! End-to-end handshake tests: tokio-rustls server (self-signed P-256 cert)
 //! and rustls client (pinned-pubkey verifier) negotiate TLS 1.3 over loopback.
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -11,14 +11,18 @@ use peer_tls::{
 use rand::thread_rng;
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
-use tape_crypto::address::Address;
-use tape_crypto::ed25519::Keypair as EdKeypair;
+use tape_core::types::tls::NetworkTlsPubkey;
+use tape_crypto::p256::Keypair as P256Keypair;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 fn init() {
     install_default_provider();
+}
+
+fn pubkey_of(kp: &P256Keypair) -> NetworkTlsPubkey {
+    NetworkTlsPubkey::new(kp.public_key_bytes())
 }
 
 async fn run_server(listener: TcpListener, acceptor: TlsAcceptor, payload: &'static [u8]) {
@@ -30,7 +34,7 @@ async fn run_server(listener: TcpListener, acceptor: TlsAcceptor, payload: &'sta
 
 async fn connect_pinned(
     addr: std::net::SocketAddr,
-    pin: Address,
+    pin: NetworkTlsPubkey,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let verifier = Arc::new(TlsVerifier::pinned(pin));
     let config = ClientConfig::builder_with_provider(Arc::new(
@@ -54,8 +58,8 @@ async fn connect_pinned(
 async fn end_to_end_handshake_with_matching_pin() {
     init();
     let mut rng = thread_rng();
-    let server_kp = EdKeypair::new(&mut rng);
-    let pin = server_kp.address();
+    let server_kp = P256Keypair::generate(&mut rng);
+    let pin = pubkey_of(&server_kp);
 
     let server_config =
         build_server_config(&server_kp, &[IpAddr::V4(Ipv4Addr::LOCALHOST)]).expect("server cfg");
@@ -74,8 +78,8 @@ async fn end_to_end_handshake_with_matching_pin() {
 async fn end_to_end_handshake_rejects_wrong_pin() {
     init();
     let mut rng = thread_rng();
-    let server_kp = EdKeypair::new(&mut rng);
-    let wrong = EdKeypair::new(&mut rng).address();
+    let server_kp = P256Keypair::generate(&mut rng);
+    let wrong = pubkey_of(&P256Keypair::generate(&mut rng));
 
     let server_config =
         build_server_config(&server_kp, &[IpAddr::V4(Ipv4Addr::LOCALHOST)]).expect("server cfg");
@@ -97,9 +101,9 @@ async fn end_to_end_handshake_rejects_wrong_pin() {
 #[tokio::test]
 async fn pinned_verifier_exposes_expected_key_via_public_api() {
     init();
-    let addr = Address::new_unique();
-    match TlsVerifier::pinned(addr) {
-        TlsVerifier::PinnedPublicKey(p) => assert_eq!(p.expected_key(), addr),
+    let pubkey = NetworkTlsPubkey::new_unique();
+    match TlsVerifier::pinned(pubkey) {
+        TlsVerifier::PinnedPublicKey(p) => assert_eq!(p.expected_key(), pubkey),
         _ => panic!("expected PinnedPublicKey"),
     }
 }
@@ -108,9 +112,9 @@ async fn pinned_verifier_exposes_expected_key_via_public_api() {
 async fn mtls_handshake_captures_client_cert() {
     init();
     let mut rng = thread_rng();
-    let server_kp = EdKeypair::new(&mut rng);
-    let client_kp = EdKeypair::new(&mut rng);
-    let expected_client_spki = client_kp.address();
+    let server_kp = P256Keypair::generate(&mut rng);
+    let client_kp = P256Keypair::generate(&mut rng);
+    let expected_client_spki = pubkey_of(&client_kp);
 
     let server_config = build_server_config_with_peer_auth(
         &server_kp,
@@ -122,7 +126,8 @@ async fn mtls_handshake_captures_client_cert() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
 
-    let captured: Arc<tokio::sync::Mutex<Option<Address>>> = Arc::new(tokio::sync::Mutex::new(None));
+    let captured: Arc<tokio::sync::Mutex<Option<NetworkTlsPubkey>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
     let captured_clone = captured.clone();
 
     let server_task = tokio::spawn(async move {
@@ -136,7 +141,7 @@ async fn mtls_handshake_captures_client_cert() {
                 x509_parser::certificate::X509Certificate::from_der(certs[0].as_ref())
                     .expect("parse");
             let spki =
-                peer_tls::decode_ed25519_spki(parsed.public_key().raw).expect("ed25519 spki");
+                peer_tls::decode_p256_spki(parsed.public_key().raw).expect("p256 spki");
             *captured_clone.lock().await = Some(spki);
         }
         stream.write_all(b"ack").await.expect("write");
@@ -144,7 +149,7 @@ async fn mtls_handshake_captures_client_cert() {
     });
 
     let builder = reqwest::Client::builder();
-    let builder = apply_pinned_tls_with_identity(builder, server_kp.address(), &client_kp)
+    let builder = apply_pinned_tls_with_identity(builder, pubkey_of(&server_kp), &client_kp)
         .expect("client tls");
     let client = builder.build().expect("build");
     let url = format!("https://{addr}/");

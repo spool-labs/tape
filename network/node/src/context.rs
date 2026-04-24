@@ -14,8 +14,10 @@ use store_rocks::RocksStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::prelude::{Address, BLSError, Keypair, Signature};
 use tape_crypto::ed25519::Pubkey;
+use tape_crypto::p256::Keypair as P256Keypair;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::{TapeStore, ops::MetaOps};
 
@@ -39,7 +41,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     node_address: Address,
     keypair: Arc<Keypair>,
     bls_keypair: Arc<BlsPrivateKey>,
-    tls_keypair: Arc<Keypair>,
+    tls_keypair: Arc<P256Keypair>,
     reclaim_pending: AtomicBool,
 }
 
@@ -72,8 +74,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.bls_keypair.sign(message)
     }
 
-    pub fn tls_keypair(&self) -> &Keypair {
+    pub fn tls_keypair(&self) -> &P256Keypair {
         self.tls_keypair.as_ref()
+    }
+
+    /// The node's P-256 TLS public key as a `NetworkTlsPubkey` (matches the
+    /// on-chain `Node.metadata.network_tls` field).
+    pub fn tls_pubkey(&self) -> NetworkTlsPubkey {
+        NetworkTlsPubkey::new(self.tls_keypair.public_key_bytes())
     }
 
     pub fn state(&self) -> Arc<ProtocolState> {
@@ -167,7 +175,7 @@ pub mod test_utils {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
-        let tls = Keypair::new(&mut rng);
+        let tls = P256Keypair::generate(&mut rng);
         let rpc = RpcClient::from_rpc(rpc);
         let peer_manager = Arc::new(PeerManager::new());
         let store = TapeStore::new(MemoryStore::new());
@@ -205,7 +213,7 @@ pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     config: NodeConfig,
     keypair: Keypair,
     bls_keypair: BlsPrivateKey,
-    tls_keypair: Arc<Keypair>,
+    tls_keypair: Arc<P256Keypair>,
     store: TapeStore<Db>,
     rpc: RpcClient<Blockchain>,
     peer_manager: Arc<PeerManager>,
@@ -217,7 +225,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
-        tls_keypair: Arc<Keypair>,
+        tls_keypair: Arc<P256Keypair>,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
         peer_manager: Arc<PeerManager>,
@@ -286,6 +294,7 @@ mod tests {
     use tape_chain_harness::ChainHarness;
     use tape_core::types::{EpochNumber, SlotNumber};
     use tape_crypto::ed25519::Keypair;
+    use tape_crypto::p256::Keypair as P256Keypair;
     use tape_store::ops::MetaOps;
     use tape_store::TapeStore;
 
@@ -303,7 +312,7 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         let mut rng = rand::thread_rng();
-        let tls = Arc::new(Keypair::new(&mut rng));
+        let tls = Arc::new(P256Keypair::generate(&mut rng));
         let ctx = NodeContextBuilder::new(
             test_config(),
             clone_keypair(node.keypair()),

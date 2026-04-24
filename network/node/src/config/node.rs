@@ -6,7 +6,8 @@ use tape_core::bls::BlsPrivateKey;
 use tape_api::consts::NAME_LENGTH;
 use tape_core::types::BasisPoints;
 use tape_crypto::ed25519::Keypair;
-use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
+use tape_crypto::p256::Keypair as P256Keypair;
+use tape_sdk::keys::helpers::{ensure_p256_keypair, load_bls_keypair, load_ed25519_keypair};
 
 use crate::core::error::NodeError;
 use super::{
@@ -159,10 +160,10 @@ impl NodeConfig {
         })
     }
 
-    /// Load the node's TLS keypair, generating and persisting a fresh one if
-    /// `tls.identity_keypair` does not yet exist.
-    pub fn load_or_generate_tls_keypair(&self) -> Result<Keypair, NodeError> {
-        ensure_ed25519_keypair(&self.tls.identity_keypair).map_err(|error| {
+    /// Load the node's P-256 TLS keypair, generating and persisting a fresh
+    /// one if `tls.identity_keypair` does not yet exist.
+    pub fn load_or_generate_tls_keypair(&self) -> Result<P256Keypair, NodeError> {
+        ensure_p256_keypair(&self.tls.identity_keypair).map_err(|error| {
             NodeError::Keypair(format!(
                 "failed to load TLS keypair from {}: {error}",
                 self.tls.identity_keypair.display()

@@ -9,6 +9,7 @@ use rpc_client::RpcClient;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_protocol::{ProtocolState, fetch::fetch_state};
 
 use crate::PeerNode;
@@ -147,9 +148,9 @@ impl PeerManager {
     }
 
     /// Reverse lookup: find the NodeId whose on-chain `network_tls` matches
-    /// the given Ed25519 pubkey. Used by the peer-auth middleware to map an
+    /// the given P-256 pubkey. Used by the peer-auth middleware to map an
     /// mTLS client cert's SPKI back to a known committee member.
-    pub fn node_for_tls_pubkey(&self, tls_pubkey: tape_crypto::address::Address) -> Option<NodeId> {
+    pub fn node_for_tls_pubkey(&self, tls_pubkey: NetworkTlsPubkey) -> Option<NodeId> {
         self.peers
             .load()
             .values()
@@ -264,7 +265,7 @@ mod tests {
             authority: Address::new_unique(),
             state_address: Address::new_unique(),
             bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: Address::new_unique(),
+            tls_pubkey: NetworkTlsPubkey::new_unique(),
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
         }
     }

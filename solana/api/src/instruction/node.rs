@@ -8,6 +8,7 @@ use crate::utils::ata;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::spooler::{SpoolIndex, get_spool_hash};
 use tape_core::types::network::NetworkAddress;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_crypto::Hash;
@@ -18,7 +19,7 @@ pub struct RegisterNode {
     pub name: [u8; NAME_LENGTH],
     pub commission_rate: [u8; 8],
     pub network_address: NetworkAddress,
-    pub network_tls: Address,
+    pub network_tls: NetworkTlsPubkey,
     pub bls_pubkey: BlsPubkey,
     pub bls_pop: BlsSignature,
 }
@@ -47,7 +48,7 @@ pub struct SetNetworkAddress {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetNetworkTls {
-    pub network_tls: Address,
+    pub network_tls: NetworkTlsPubkey,
 }
 
 #[repr(C)]
@@ -92,7 +93,7 @@ pub fn build_register_node_ix(
     name: [u8; NAME_LENGTH],
     commission_rate: BasisPoints,
     network_address: NetworkAddress,
-    network_tls: Address,
+    network_tls: NetworkTlsPubkey,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
 ) -> Instruction {
@@ -269,7 +270,7 @@ pub fn build_set_network_tls_ix(
     fee_payer: Address,
     authority: Address,
     node_address: Address,
-    network_tls: Address,
+    network_tls: NetworkTlsPubkey,
 ) -> Instruction {
 
     Instruction {
