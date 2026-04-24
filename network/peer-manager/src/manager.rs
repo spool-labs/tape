@@ -148,7 +148,7 @@ impl PeerManager {
     }
 
     /// Reverse lookup: find the NodeId whose on-chain `network_tls` matches
-    /// the given P-256 pubkey. Used by the peer-auth middleware to map an
+    /// the given Ed25519 pubkey. Used by the peer-auth middleware to map an
     /// mTLS client cert's SPKI back to a known committee member.
     pub fn node_for_tls_pubkey(&self, tls_pubkey: NetworkTlsPubkey) -> Option<NodeId> {
         self.peers

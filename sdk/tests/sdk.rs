@@ -19,6 +19,7 @@ use tape_core::track::types::{
 use tape_core::system::CommitteeMember;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
 use tape_crypto::{hash, Hash};
 use tape_crypto::address::Address;
@@ -208,7 +209,7 @@ fn make_peer(node_id: NodeId, port: u16) -> PeerNode {
         authority: Address::new_unique(),
         state_address: Address::new_unique(),
         bls_pubkey: BlsPubkey::zeroed(),
-        tls_pubkey: Address::new_unique(),
+        tls_pubkey: NetworkTlsPubkey::new_unique(),
         network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
     }
 }

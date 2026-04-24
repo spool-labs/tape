@@ -11,7 +11,7 @@ use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::BasisPoints;
-use tape_sdk::keys::helpers::{ensure_p256_keypair, load_bls_keypair, load_ed25519_keypair};
+use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
 
 use crate::context::Context;
 use crate::error::{as_tape_error, Error, Result};
@@ -45,7 +45,7 @@ pub async fn register(ctx: &Context, params: RegisterParams) -> Result<()> {
         .map_err(|e| Error::Keypair(e.to_string()))?;
     let bls = load_bls_keypair(&params.bls_path)
         .map_err(|e| Error::Keypair(e.to_string()))?;
-    let tls = ensure_p256_keypair(&params.tls_path)
+    let tls = ensure_ed25519_keypair(&params.tls_path)
         .map_err(|e| Error::Keypair(e.to_string()))?;
 
     let bls_pubkey = bls.public_key().map_err(|e| Error::Bls(format!("{e:?}")))?;
@@ -59,7 +59,7 @@ pub async fn register(ctx: &Context, params: RegisterParams) -> Result<()> {
     let name_bytes = pack_name(&params.name)?;
 
     let authority = identity.pubkey().into();
-    let tls_pubkey = NetworkTlsPubkey::new(tls.public_key_bytes());
+    let tls_pubkey = NetworkTlsPubkey::new(tls.pubkey().to_bytes());
     let ix = build_register_node_ix(
         authority,
         authority,

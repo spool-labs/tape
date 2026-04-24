@@ -45,7 +45,6 @@ mod tests {
     use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::EpochNumber;
     use tape_crypto::ed25519::Keypair;
-    use tape_crypto::p256::Keypair as P256Keypair;
 
     use super::submit_register_node;
     use crate::harness::NodeHarness;
@@ -73,8 +72,8 @@ mod tests {
         let name = to_name("test-register");
         let commission = BasisPoints(500);
         let address = NetworkAddress::new_ipv4([10, 0, 0, 1], 443);
-        let tls_keypair = P256Keypair::generate(&mut rng);
-        let network_tls = NetworkTlsPubkey::new(tls_keypair.public_key_bytes());
+        let tls_keypair = Keypair::new(&mut rng);
+        let network_tls = NetworkTlsPubkey::new(tls_keypair.pubkey().to_bytes());
 
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         submit_register_node(

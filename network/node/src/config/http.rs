@@ -10,7 +10,7 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub host: Option<String>,
 
-    /// Public port this node intends to advertise.
+    /// Public port this node intends to advertise (the HTTPS / peer port).
     #[serde(default = "default_port")]
     pub port: u16,
 }
@@ -24,12 +24,17 @@ impl Default for NetworkConfig {
     }
 }
 
-/// HTTP listener and ingress settings.
+/// HTTP listener and request-handling settings. This listener is plaintext,
+/// serves anonymous routes, and is intended for operator tooling (health
+/// probes, Prometheus scrapes) or a reverse proxy terminating a domain-backed
+/// TLS cert. Peer-only routes served on this listener will reject with 403
+/// because they require an mTLS client cert identity, which plaintext cannot
+/// provide.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct HttpConfig {
-    /// Address the node HTTP server binds to.
+    /// Address the plaintext HTTP listener binds to.
     #[serde(
-        default = "default_listen",
+        default = "default_http_listen",
         deserialize_with = "deserialize_socket_addr"
     )]
     pub listen: SocketAddr,
@@ -54,7 +59,7 @@ pub struct HttpConfig {
 impl Default for HttpConfig {
     fn default() -> Self {
         Self {
-            listen: default_listen(),
+            listen: default_http_listen(),
             timeout_secs: default_timeout_secs(),
             concurrency: default_concurrency(),
             slice_max_bytes: default_slice_max_bytes(),
@@ -63,12 +68,21 @@ impl Default for HttpConfig {
     }
 }
 
+/// Default peer port. Matches [`default_https_listen`] and is what peers use
+/// to dial each other over the pinned HTTPS listener when the operator hasn't
+/// overridden `network.port`.
 fn default_port() -> u16 {
-    443
+    default_https_listen().port()
 }
 
-fn default_listen() -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3000)
+/// Default HTTP (plaintext) bind: IBM 3420 reel-to-reel tape unit.
+fn default_http_listen() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3420)
+}
+
+/// Default HTTPS (peer-pinned + mTLS) bind: IBM 3430 magnetic tape subsystem.
+pub fn default_https_listen() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3430)
 }
 
 fn default_timeout_secs() -> u64 {

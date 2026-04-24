@@ -1,22 +1,23 @@
-//! Self-signed P-256 certificate generation.
+//! Self-signed Ed25519 certificate generation.
 //!
-//! Certs are derived from a node's persistent P-256 TLS keypair each time the
+//! Certs are derived from a node's persistent Ed25519 TLS keypair each time the
 //! node boots. Cert lifetime is effectively unbounded (Unix epoch → year 9999)
 //! because pinning, not expiry, is the trust signal for peer clients.
 //!
-//! Operators who own a domain can instead drop in a CA-issued cert (see
-//! [`crate::server::build_server_config_from_pem`]). The CA cert must have
-//! been issued to the same P-256 keypair; the server refuses to start on
-//! mismatch, and the SDK's SPKI pin works identically for both modes.
+//! If an operator wants a browser-trusted domain in front of a node, the
+//! recommended path is a reverse proxy (Caddy/nginx) terminating a real cert
+//! on 443 and forwarding to the node's plaintext HTTP port. The node itself
+//! always serves a self-signed cert on its peer HTTPS port, and SDK/peer
+//! clients pin that on-chain-published key directly.
 
 use std::net::IpAddr;
 
 use rcgen::{
-    CertificateParams, DistinguishedName, DnType, Ia5String, KeyPair, PKCS_ECDSA_P256_SHA256,
-    SanType, date_time_ymd,
+    CertificateParams, DistinguishedName, DnType, Ia5String, KeyPair, PKCS_ED25519, SanType,
+    date_time_ymd,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use tape_crypto::p256::Keypair as P256Keypair;
+use tape_crypto::ed25519::Keypair as EdKeypair;
 
 use crate::error::TlsError;
 
@@ -26,19 +27,17 @@ pub struct SelfSignedCert {
     pub key: PrivateKeyDer<'static>,
 }
 
-/// Build a self-signed P-256 cert from `keypair` with SANs covering every
+/// Build a self-signed Ed25519 cert from `keypair` with SANs covering every
 /// listen IP in `san_ips`. Validity is Unix epoch → year 9999; pinning
 /// verifiers ignore the expiry window when a pin matches.
 pub fn self_signed_cert(
-    keypair: &P256Keypair,
+    keypair: &EdKeypair,
     san_ips: &[IpAddr],
 ) -> Result<SelfSignedCert, TlsError> {
-    let pkcs8 = keypair
-        .to_pkcs8_der()
-        .map_err(|e| TlsError::InvalidKeypair(e.to_string()))?;
+    let pkcs8 = encode_ed25519_pkcs8(keypair);
     let pkcs8_der = PrivatePkcs8KeyDer::from(pkcs8.clone());
 
-    let rcgen_key = KeyPair::from_pkcs8_der_and_sign_algo(&pkcs8_der, &PKCS_ECDSA_P256_SHA256)
+    let rcgen_key = KeyPair::from_pkcs8_der_and_sign_algo(&pkcs8_der, &PKCS_ED25519)
         .map_err(|e| TlsError::InvalidKeypair(e.to_string()))?;
 
     let mut params = CertificateParams::default();
@@ -68,9 +67,27 @@ pub fn self_signed_cert(
     })
 }
 
-/// Derive a stable DNS name from the P-256 pubkey for the cert SAN. Cosmetic.
-fn dns_name_for_key(keypair: &P256Keypair) -> String {
-    let bytes = keypair.public_key_bytes();
+/// PKCS#8 DER encoding of an Ed25519 private key per RFC 5958 / RFC 8410.
+fn encode_ed25519_pkcs8(keypair: &EdKeypair) -> Vec<u8> {
+    let seed = keypair.secret_key().as_bytes();
+    let mut out = Vec::with_capacity(48);
+    // SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 }, OCTET STRING { OCTET STRING <seed> } }
+    out.extend_from_slice(&[
+        0x30, 0x2E, // SEQUENCE, length 46
+        0x02, 0x01, 0x00, // INTEGER 0 (version)
+        0x30, 0x05, // AlgorithmIdentifier SEQUENCE, length 5
+        0x06, 0x03, 0x2B, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
+        0x04, 0x22, // OCTET STRING, length 34
+        0x04, 0x20, // inner OCTET STRING, length 32
+    ]);
+    out.extend_from_slice(seed);
+    debug_assert_eq!(out.len(), 48);
+    out
+}
+
+/// Derive a stable DNS name from the Ed25519 pubkey for the cert SAN. Cosmetic.
+fn dns_name_for_key(keypair: &EdKeypair) -> String {
+    let bytes = keypair.public_key().as_bytes();
     let prefix: [u8; 8] = bytes[..8]
         .try_into()
         .expect("pubkey has at least 8 bytes");
@@ -97,25 +114,25 @@ mod tests {
     use x509_parser::prelude::X509Certificate;
 
     use super::*;
-    use crate::spki::{P256_SPKI_LEN, encode_p256_spki};
+    use crate::spki::{ED25519_SPKI_LEN, encode_ed25519_spki};
 
     #[test]
     fn cert_contains_expected_spki() {
         let mut rng = thread_rng();
-        let kp = P256Keypair::generate(&mut rng);
-        let expected = encode_p256_spki(&NetworkTlsPubkey::new(kp.public_key_bytes()));
+        let kp = EdKeypair::new(&mut rng);
+        let expected = encode_ed25519_spki(&NetworkTlsPubkey::new(kp.pubkey().to_bytes()));
 
         let signed = self_signed_cert(&kp, &[IpAddr::V4(Ipv4Addr::LOCALHOST)]).expect("cert");
         let (_, parsed) = X509Certificate::from_der(signed.cert.as_ref()).expect("parse");
 
-        assert_eq!(parsed.public_key().raw.len(), P256_SPKI_LEN);
+        assert_eq!(parsed.public_key().raw.len(), ED25519_SPKI_LEN);
         assert_eq!(parsed.public_key().raw, expected.as_slice());
     }
 
     #[test]
     fn cert_has_ip_san() {
         let mut rng = thread_rng();
-        let kp = P256Keypair::generate(&mut rng);
+        let kp = EdKeypair::new(&mut rng);
         let signed =
             self_signed_cert(&kp, &[IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]).expect("cert");
         let (_, parsed) = X509Certificate::from_der(signed.cert.as_ref()).expect("parse");

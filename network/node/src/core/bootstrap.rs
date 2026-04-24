@@ -14,7 +14,6 @@ use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair;
-use tape_crypto::p256::Keypair as P256Keypair;
 use tape_store::TapeStore;
 use tracing::{info, warn};
 
@@ -55,7 +54,7 @@ fn build_peer_api(
     #[cfg_attr(not(feature = "metrics"), allow(unused))]
     config: &NodeConfig,
     peer_manager: Arc<PeerManager>,
-    tls_identity: Arc<P256Keypair>,
+    tls_identity: Arc<Keypair>,
 ) -> Result<Arc<HttpApi>, NodeError> {
     #[cfg(feature = "metrics")]
     if config.metrics.enabled {
@@ -158,10 +157,10 @@ async fn reconcile_network_tls<Blockchain: Rpc>(
         return Ok(());
     }
 
-    if !config.tls.auto_update {
+    if !config.https.auto_update {
         return Err(NodeError::Config(format!(
             "on-chain network_tls {on_chain} does not match local TLS keypair {local_tls_pubkey}; \
-             rotate on-chain via SetNetworkTls, or enable tls.auto_update to overwrite"
+             rotate on-chain via SetNetworkTls, or enable https.auto_update to overwrite"
         )));
     }
 
@@ -171,7 +170,7 @@ async fn reconcile_network_tls<Blockchain: Rpc>(
         local = %local_tls_pubkey,
         on_chain = %on_chain,
         node = %node_address,
-        "updating on-chain network_tls to match local keypair (tls.auto_update=true)"
+        "updating on-chain network_tls to match local keypair (https.auto_update=true)"
     );
 
     submit_set_network_tls(rpc, authority, node_address, local_tls_pubkey)
@@ -213,10 +212,10 @@ pub async fn ensure_registered<Blockchain: Rpc>(
     rpc: &RpcClient<Blockchain>,
     keypair: &Keypair,
     bls_keypair: &BlsPrivateKey,
-    tls_keypair: &P256Keypair,
+    tls_keypair: &Keypair,
 ) -> Result<(), NodeError> {
     let authority = keypair.address();
-    let local_tls_pubkey = NetworkTlsPubkey::new(tls_keypair.public_key_bytes());
+    let local_tls_pubkey = NetworkTlsPubkey::new(tls_keypair.pubkey().to_bytes());
 
     match rpc.get_node(&authority).await {
         Ok(node) => {
@@ -313,7 +312,6 @@ mod tests {
     use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::{BasisPoints, EpochNumber, SlotNumber};
     use tape_crypto::ed25519::Keypair;
-    use tape_crypto::p256::Keypair as P256Keypair;
 
     use super::{ensure_registered, resolve_network_address};
     use crate::chain::register_node::submit_register_node;
@@ -321,8 +319,8 @@ mod tests {
     use crate::core::error::NodeError;
     use crate::harness::NodeHarness;
 
-    fn tls_pubkey(kp: &P256Keypair) -> NetworkTlsPubkey {
-        NetworkTlsPubkey::new(kp.public_key_bytes())
+    fn tls_pubkey(kp: &Keypair) -> NetworkTlsPubkey {
+        NetworkTlsPubkey::new(kp.pubkey().to_bytes())
     }
 
     fn test_config_with_address(ip: [u8; 4], port: u16) -> NodeConfig {
@@ -442,7 +440,7 @@ mod tests {
             .expect("airdrop");
 
         let bls = BlsPrivateKey::from_random();
-        let tls = P256Keypair::generate(&mut rng);
+        let tls = Keypair::new(&mut rng);
         let config = test_config_with_address([10, 0, 0, 1], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
 
@@ -470,7 +468,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
-        let tls = P256Keypair::generate(&mut rng);
+        let tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );
@@ -496,8 +494,8 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
-        let old_tls = P256Keypair::generate(&mut rng);
-        let new_tls = P256Keypair::generate(&mut rng);
+        let old_tls = Keypair::new(&mut rng);
+        let new_tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );
@@ -505,7 +503,7 @@ mod tests {
         register_fresh_node(&harness, &keypair, &bls, address, tls_pubkey(&old_tls)).await;
 
         let mut config = test_config_with_address([10, 0, 0, 1], 443);
-        config.tls.auto_update = true;
+        config.https.auto_update = true;
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         ensure_registered(&config, &rpc, &keypair, &bls, &new_tls)
             .await
@@ -527,8 +525,8 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
-        let old_tls = P256Keypair::generate(&mut rng);
-        let new_tls = P256Keypair::generate(&mut rng);
+        let old_tls = Keypair::new(&mut rng);
+        let new_tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );
@@ -536,7 +534,7 @@ mod tests {
         register_fresh_node(&harness, &keypair, &bls, address, tls_pubkey(&old_tls)).await;
 
         let mut config = test_config_with_address([10, 0, 0, 1], 443);
-        config.tls.auto_update = false;
+        config.https.auto_update = false;
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         let err = ensure_registered(&config, &rpc, &keypair, &bls, &new_tls)
             .await
@@ -560,7 +558,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls_original = BlsPrivateKey::from_random();
-        let tls = P256Keypair::generate(&mut rng);
+        let tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );
@@ -592,7 +590,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
         let bls = BlsPrivateKey::from_random();
-        let tls = P256Keypair::generate(&mut rng);
+        let tls = Keypair::new(&mut rng);
         let address = NetworkAddress::from_socket_addr(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
         );

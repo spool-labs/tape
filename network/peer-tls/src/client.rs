@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use rustls::ClientConfig;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_crypto::p256::Keypair as P256Keypair;
+use tape_crypto::ed25519::Keypair as EdKeypair;
 
 use crate::cert::self_signed_cert;
 use crate::error::TlsError;
@@ -12,7 +12,7 @@ use crate::provider::ring_provider;
 use crate::verifier::TlsVerifier;
 
 /// Build a reqwest client that pins the peer's server cert to exactly one
-/// P-256 public key. Use for peer-to-peer calls; the `expected` key comes
+/// Ed25519 public key. Use for peer-to-peer calls; the `expected` key comes
 /// from the peer's on-chain `network_tls` field.
 pub fn pinned_client(expected: NetworkTlsPubkey) -> Result<reqwest::Client, TlsError> {
     let verifier = Arc::new(TlsVerifier::pinned(expected));
@@ -70,12 +70,12 @@ pub fn apply_webpki_tls(
 
 /// Apply pinned-server + client-auth TLS. Use when a peer dials another peer:
 /// the server is pinned by the on-chain `network_tls` pubkey, and we present
-/// our own TLS keypair as a P-256 client cert so the remote can authenticate
-/// us.
+/// our own TLS keypair as an Ed25519 client cert so the remote can
+/// authenticate us.
 pub fn apply_pinned_tls_with_identity(
     builder: reqwest::ClientBuilder,
     expected: NetworkTlsPubkey,
-    identity: &P256Keypair,
+    identity: &EdKeypair,
 ) -> Result<reqwest::ClientBuilder, TlsError> {
     // Client cert SAN is irrelevant for mTLS; reuse an IPv4 loopback entry
     // to satisfy rcgen's requirement of a non-empty SAN list.

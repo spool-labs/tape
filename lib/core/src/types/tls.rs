@@ -2,18 +2,10 @@ use bytemuck::{Pod, Zeroable};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-/// Length of an uncompressed SEC1 P-256 public key (x || y, no 0x04 prefix).
-pub const NETWORK_TLS_PUBKEY_LEN: usize = 64;
+/// The length of a node's TLS public key
+pub const NETWORK_TLS_PUBKEY_LEN: usize = 32;
 
-/// A P-256 (secp256r1) TLS identity key published on-chain in
-/// `Node.metadata.network_tls`.
-///
-/// Stored as the raw uncompressed SEC1 public key: the 32-byte x coordinate
-/// followed by the 32-byte y coordinate, with no leading `0x04` tag byte.
-/// Peer and SDK clients pin the TLS handshake's leaf-cert SubjectPublicKeyInfo
-/// against this value; operators can serve either a self-signed cert derived
-/// from the same keypair or a CA-issued cert issued to the same keypair, and
-/// both satisfy the pin.
+/// A node's TLS public key, stored on-chain as raw Ed25519 public key bytes.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
@@ -52,16 +44,11 @@ impl NetworkTlsPubkey {
         self.data == [0; NETWORK_TLS_PUBKEY_LEN]
     }
 
-    /// A fresh, monotonically-unique value for tests. Not a valid P-256 point;
-    /// just 64 bytes guaranteed distinct from every other `new_unique()`.
     #[cfg(not(target_os = "solana"))]
     pub fn new_unique() -> Self {
-        let a = tape_crypto::address::Address::new_unique();
-        let b = tape_crypto::address::Address::new_unique();
-        let mut data = [0u8; NETWORK_TLS_PUBKEY_LEN];
-        data[..32].copy_from_slice(a.as_bytes());
-        data[32..].copy_from_slice(b.as_bytes());
-        Self { data }
+        Self {
+            data: tape_crypto::address::Address::new_unique().into(),
+        }
     }
 }
 

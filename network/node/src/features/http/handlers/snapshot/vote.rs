@@ -13,12 +13,14 @@ use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
 use tape_store::types::{SnapshotFinalizeVote, SnapshotWriteVote};
 
+use crate::features::http::auth::PeerCommitteeMember;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 use crate::features::snapshot::utils::bitmap_index_in_group;
 
 pub async fn vote<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _peer: PeerCommitteeMember,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     let request: SnapshotVoteRequest = wincode::deserialize(&body)
@@ -160,7 +162,11 @@ mod tests {
         request: SnapshotVoteRequest,
     ) -> Result<axum::response::Response, RouteError> {
         let bytes = wincode::serialize(&request).unwrap();
-        vote(State(state), Bytes::from(bytes))
+        let peer = PeerCommitteeMember {
+            node_id: tape_core::types::NodeId(0),
+            tls_pubkey: tape_core::types::tls::NetworkTlsPubkey::new_unique(),
+        };
+        vote(State(state), peer, Bytes::from(bytes))
             .await
             .map(|response| response.into_response())
     }

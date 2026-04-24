@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 
 use axum_server::accept::Accept;
 use axum_server::tls_rustls::RustlsAcceptor;
-use peer_tls::decode_p256_spki;
+use peer_tls::decode_ed25519_spki;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::server::TlsStream;
@@ -46,7 +46,7 @@ fn identity_from_certs(
     let Ok((_, parsed)) = X509Certificate::from_der(leaf.as_ref()) else {
         return PeerIdentity::anonymous();
     };
-    match decode_p256_spki(parsed.public_key().raw) {
+    match decode_ed25519_spki(parsed.public_key().raw) {
         Some(pubkey) => PeerIdentity::authenticated(pubkey),
         None => PeerIdentity::anonymous(),
     }

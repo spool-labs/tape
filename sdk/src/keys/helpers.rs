@@ -18,7 +18,6 @@ use tape_core::system::Committee;
 use tape_core::types::NodeId;
 use tape_crypto::ed25519::errors::KeypairFileError;
 use tape_crypto::ed25519::Keypair;
-use tape_crypto::p256::Keypair as P256Keypair;
 use tape_crypto::Hash;
 
 /// Errors from helper functions.
@@ -108,61 +107,6 @@ pub fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey, HelperError> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(BlsPrivateKey(tape_crypto::bls12254::min_sig::PrivKey(arr)))
-}
-
-/// Load a P-256 (secp256r1) TLS keypair from `path`, or generate and persist a
-/// fresh one if the file does not exist.
-///
-/// The file format is PKCS#8 PEM (`-----BEGIN PRIVATE KEY-----`), matching what
-/// `openssl` and `certbot` read and write. This makes it possible to point
-/// `certbot` at the same file to issue a CA-signed certificate for a domain
-/// without re-keying. Parent directories are created if missing. Generated
-/// files are written with mode 0600 on Unix.
-pub fn ensure_p256_keypair(path: &Path) -> Result<P256Keypair, HelperError> {
-    if path.exists() {
-        let pem = std::fs::read_to_string(path).map_err(|e| HelperError::FileRead {
-            path: path.display().to_string(),
-            message: e.to_string(),
-        })?;
-        return P256Keypair::from_pkcs8_pem(&pem).map_err(|e| {
-            KeypairFileError::InvalidKeypair(format!(
-                "failed to parse P-256 PEM keypair at {}: {e}",
-                path.display()
-            ))
-            .into()
-        });
-    }
-
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| HelperError::FileRead {
-                path: parent.display().to_string(),
-                message: e.to_string(),
-            })?;
-        }
-    }
-
-    let mut rng = rand::thread_rng();
-    let keypair = P256Keypair::generate(&mut rng);
-    let pem = keypair.to_pkcs8_pem().map_err(|e| {
-        KeypairFileError::InvalidKeypair(format!(
-            "failed to encode generated P-256 keypair: {e}"
-        ))
-    })?;
-
-    std::fs::write(path, pem.as_bytes()).map_err(|e| HelperError::FileRead {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = std::fs::set_permissions(path, perms);
-    }
-
-    Ok(keypair)
 }
 
 /// Load an Ed25519 keypair from `path`, or generate and persist a fresh one

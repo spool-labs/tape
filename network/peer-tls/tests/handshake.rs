@@ -1,4 +1,4 @@
-//! End-to-end handshake tests: tokio-rustls server (self-signed P-256 cert)
+//! End-to-end handshake tests: tokio-rustls server (self-signed Ed25519 cert)
 //! and rustls client (pinned-pubkey verifier) negotiate TLS 1.3 over loopback.
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -12,7 +12,7 @@ use rand::thread_rng;
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_crypto::p256::Keypair as P256Keypair;
+use tape_crypto::ed25519::Keypair as EdKeypair;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -21,8 +21,8 @@ fn init() {
     install_default_provider();
 }
 
-fn pubkey_of(kp: &P256Keypair) -> NetworkTlsPubkey {
-    NetworkTlsPubkey::new(kp.public_key_bytes())
+fn pubkey_of(kp: &EdKeypair) -> NetworkTlsPubkey {
+    NetworkTlsPubkey::new(kp.pubkey().to_bytes())
 }
 
 async fn run_server(listener: TcpListener, acceptor: TlsAcceptor, payload: &'static [u8]) {
@@ -58,7 +58,7 @@ async fn connect_pinned(
 async fn end_to_end_handshake_with_matching_pin() {
     init();
     let mut rng = thread_rng();
-    let server_kp = P256Keypair::generate(&mut rng);
+    let server_kp = EdKeypair::new(&mut rng);
     let pin = pubkey_of(&server_kp);
 
     let server_config =
@@ -78,8 +78,8 @@ async fn end_to_end_handshake_with_matching_pin() {
 async fn end_to_end_handshake_rejects_wrong_pin() {
     init();
     let mut rng = thread_rng();
-    let server_kp = P256Keypair::generate(&mut rng);
-    let wrong = pubkey_of(&P256Keypair::generate(&mut rng));
+    let server_kp = EdKeypair::new(&mut rng);
+    let wrong = pubkey_of(&EdKeypair::new(&mut rng));
 
     let server_config =
         build_server_config(&server_kp, &[IpAddr::V4(Ipv4Addr::LOCALHOST)]).expect("server cfg");
@@ -112,8 +112,8 @@ async fn pinned_verifier_exposes_expected_key_via_public_api() {
 async fn mtls_handshake_captures_client_cert() {
     init();
     let mut rng = thread_rng();
-    let server_kp = P256Keypair::generate(&mut rng);
-    let client_kp = P256Keypair::generate(&mut rng);
+    let server_kp = EdKeypair::new(&mut rng);
+    let client_kp = EdKeypair::new(&mut rng);
     let expected_client_spki = pubkey_of(&client_kp);
 
     let server_config = build_server_config_with_peer_auth(
@@ -141,7 +141,7 @@ async fn mtls_handshake_captures_client_cert() {
                 x509_parser::certificate::X509Certificate::from_der(certs[0].as_ref())
                     .expect("parse");
             let spki =
-                peer_tls::decode_p256_spki(parsed.public_key().raw).expect("p256 spki");
+                peer_tls::decode_ed25519_spki(parsed.public_key().raw).expect("ed25519 spki");
             *captured_clone.lock().await = Some(spki);
         }
         stream.write_all(b"ack").await.expect("write");

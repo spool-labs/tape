@@ -6,19 +6,18 @@ use tape_core::bls::BlsPrivateKey;
 use tape_api::consts::NAME_LENGTH;
 use tape_core::types::BasisPoints;
 use tape_crypto::ed25519::Keypair;
-use tape_crypto::p256::Keypair as P256Keypair;
-use tape_sdk::keys::helpers::{ensure_p256_keypair, load_bls_keypair, load_ed25519_keypair};
+use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
 
 use crate::core::error::NodeError;
 use super::{
     helpers::{deserialize_pathbuf, expand_path},
     http::{HttpConfig, NetworkConfig},
+    https::HttpsConfig,
     logs::LoggingConfig,
     metrics::MetricsConfig,
     recovery::RecoveryConfig,
     solana::SolanaConfig,
     store::StoreConfig,
-    tls::TlsConfig,
 };
 
 /// Error type for configuration loading and validation.
@@ -49,9 +48,13 @@ pub struct NodeConfig {
     #[serde(default)]
     pub network: NetworkConfig,
 
-    /// HTTP listener and ingress controls.
+    /// HTTP (plaintext) listener and ingress controls.
     #[serde(default)]
     pub http: HttpConfig,
+
+    /// HTTPS (pinned + mTLS) listener and TLS key material.
+    #[serde(default)]
+    pub https: HttpsConfig,
 
     /// Local RocksDB storage settings.
     #[serde(default)]
@@ -68,10 +71,6 @@ pub struct NodeConfig {
     /// Metrics configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
-
-    /// TLS and pinning configuration.
-    #[serde(default)]
-    pub tls: TlsConfig,
 }
 
 impl Default for NodeConfig {
@@ -81,11 +80,11 @@ impl Default for NodeConfig {
             solana: SolanaConfig::default(),
             network: NetworkConfig::default(),
             http: HttpConfig::default(),
+            https: HttpsConfig::default(),
             store: StoreConfig::default(),
             recovery: RecoveryConfig::default(),
             logging: LoggingConfig::default(),
             metrics: MetricsConfig::default(),
-            tls: TlsConfig::default(),
         }
     }
 }
@@ -160,13 +159,13 @@ impl NodeConfig {
         })
     }
 
-    /// Load the node's P-256 TLS keypair, generating and persisting a fresh
-    /// one if `tls.identity_keypair` does not yet exist.
-    pub fn load_or_generate_tls_keypair(&self) -> Result<P256Keypair, NodeError> {
-        ensure_p256_keypair(&self.tls.identity_keypair).map_err(|error| {
+    /// Load the node's Ed25519 TLS keypair, generating and persisting a fresh
+    /// one if `https.identity_keypair` does not yet exist.
+    pub fn load_or_generate_tls_keypair(&self) -> Result<Keypair, NodeError> {
+        ensure_ed25519_keypair(&self.https.identity_keypair).map_err(|error| {
             NodeError::Keypair(format!(
                 "failed to load TLS keypair from {}: {error}",
-                self.tls.identity_keypair.display()
+                self.https.identity_keypair.display()
             ))
         })
     }
@@ -252,13 +251,17 @@ solana:
   start_slot: 12
 network:
   host: "10.0.0.1"
-  port: 443
+  port: 3430
 http:
-  listen: "0.0.0.0:8080"
+  listen: "0.0.0.0:3420"
   timeout_secs: 7
   concurrency: 1024
   slice_max_bytes: 2097152
   peer_max_bytes: 524288
+https:
+  listen: "0.0.0.0:3430"
+  identity_keypair: "/etc/tape/tls.key"
+  auto_update: false
 store:
   path: "/var/lib/tape/data"
   compaction_mb_per_sec: 80
@@ -279,9 +282,6 @@ logging:
   format: "json"
 metrics:
   enabled: false
-tls:
-  identity_keypair: "/etc/tape/tls.key"
-  auto_update: false
 "#;
 
     #[test]
@@ -295,12 +295,15 @@ tls:
         assert_eq!(config.solana.rpc, "http://127.0.0.1:8899");
         assert_eq!(config.solana.start_slot, Some(SlotNumber(12)));
         assert_eq!(config.network.host.as_deref(), Some("10.0.0.1"));
-        assert_eq!(config.network.port, 443);
-        assert_eq!(config.http.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.network.port, 3430);
+        assert_eq!(config.http.listen.to_string(), "0.0.0.0:3420");
         assert_eq!(config.http.timeout_secs, 7);
         assert_eq!(config.http.concurrency, 1024);
         assert_eq!(config.http.slice_max_bytes, 2 * 1024 * 1024);
         assert_eq!(config.http.peer_max_bytes, 512 * 1024);
+        assert_eq!(config.https.listen.to_string(), "0.0.0.0:3430");
+        assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.key"));
+        assert!(!config.https.auto_update);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
         assert!(config.store.gc.enabled);
@@ -316,8 +319,6 @@ tls:
         assert_eq!(config.logging.filter, "debug");
         assert_eq!(config.logging.format, LoggingFormat::Json);
         assert!(!config.metrics.enabled);
-        assert_eq!(config.tls.identity_keypair, PathBuf::from("/etc/tape/tls.key"));
-        assert!(!config.tls.auto_update);
     }
 
     #[test]
@@ -332,7 +333,7 @@ network:
   host: "test"
 store:
   path: "~/tape/data"
-tls:
+https:
   identity_keypair: "~/.tape/tls.key"
 "#,
         )
@@ -341,7 +342,7 @@ tls:
         assert!(!config.node.node_keypair.to_string_lossy().starts_with('~'));
         assert!(!config.node.bls_keypair.to_string_lossy().starts_with('~'));
         assert!(!config.store.path.to_string_lossy().starts_with('~'));
-        assert!(!config.tls.identity_keypair.to_string_lossy().starts_with('~'));
+        assert!(!config.https.identity_keypair.to_string_lossy().starts_with('~'));
     }
 
     #[test]
@@ -380,7 +381,7 @@ node:
         .unwrap();
 
         assert_eq!(config.network.host, None);
-        assert_eq!(config.network.port, 443);
+        assert_eq!(config.network.port, 3430);
         assert!(config.metrics.enabled);
     }
 

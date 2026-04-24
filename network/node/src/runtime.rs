@@ -216,6 +216,7 @@ where
         HttpServer::new(
             context.clone(),
             config.http.clone(),
+            config.https.clone(),
             cfg!(feature = "metrics") && config.metrics.enabled,
             cancel.clone()
         ).run(),

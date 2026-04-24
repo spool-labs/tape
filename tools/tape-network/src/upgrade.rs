@@ -17,7 +17,7 @@ use crate::cloud::{self, Instance};
 use crate::settings::Settings;
 use crate::ssh;
 
-const HTTP_PORT: u16 = 8080;
+const HTTP_PORT: u16 = 80;
 
 pub async fn run(settings: &Settings, binary: Option<PathBuf>) -> Result<()> {
     let binary = match binary {
@@ -97,7 +97,7 @@ async fn wait_for_health(
     host: &str,
     timeout: Duration,
 ) -> Result<()> {
-    let url = format!("https://{host}:{HTTP_PORT}/v1/health");
+    let url = format!("http://{host}:{HTTP_PORT}/v1/health");
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if let Ok(resp) = client.get(&url).send().await {

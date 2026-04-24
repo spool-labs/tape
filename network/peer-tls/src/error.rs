@@ -14,9 +14,6 @@ pub enum TlsError {
     #[error("build server config: {0}")]
     BuildServer(String),
 
-    #[error("pem cert: {0}")]
-    PemCert(String),
-
     #[error("crypto provider already installed with different instance")]
     ProviderInstalled,
 }

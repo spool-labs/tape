@@ -3,7 +3,7 @@
 //!   and name validation.
 //! - [`TlsVerifier::PinnedPublicKey`] — authenticates the peer solely by
 //!   comparing the leaf certificate's SubjectPublicKeyInfo against an expected
-//!   P-256 key published on-chain. WebPKI chain/name/expiry are not enforced;
+//!   Ed25519 key published on-chain. WebPKI chain/name/expiry are not enforced;
 //!   the TLS handshake-signature check (via the crypto provider) still proves
 //!   possession of the private key.
 
@@ -20,7 +20,7 @@ use x509_parser::prelude::FromDer;
 use x509_parser::prelude::X509Certificate;
 
 use crate::provider::ring_provider;
-use crate::spki::{P256_SPKI_LEN, encode_p256_spki};
+use crate::spki::{ED25519_SPKI_LEN, encode_ed25519_spki};
 
 /// Server certificate verifier with two mutually-exclusive modes.
 pub enum TlsVerifier {
@@ -28,7 +28,7 @@ pub enum TlsVerifier {
     /// non-peer HTTPS traffic (public RPC, external services).
     Webpki(Arc<WebPkiServerVerifier>),
 
-    /// Pin the leaf cert to exactly one P-256 public key. Use for peer-to-
+    /// Pin the leaf cert to exactly one Ed25519 public key. Use for peer-to-
     /// peer calls where the pin comes from on-chain `network_tls`.
     PinnedPublicKey(PinnedVerifier),
 }
@@ -50,7 +50,7 @@ impl TlsVerifier {
         Ok(Self::Webpki(inner))
     }
 
-    /// Build a pinned verifier for exactly one P-256 public key.
+    /// Build a pinned verifier for exactly one Ed25519 public key.
     pub fn pinned(expected: NetworkTlsPubkey) -> Self {
         Self::PinnedPublicKey(PinnedVerifier::new(expected))
     }
@@ -119,7 +119,7 @@ impl ServerCertVerifier for TlsVerifier {
 
 /// Pinned-public-key verifier. Constructed via [`TlsVerifier::pinned`].
 pub struct PinnedVerifier {
-    expected_spki: [u8; P256_SPKI_LEN],
+    expected_spki: [u8; ED25519_SPKI_LEN],
     expected_key: NetworkTlsPubkey,
     provider: Arc<CryptoProvider>,
 }
@@ -135,7 +135,7 @@ impl fmt::Debug for PinnedVerifier {
 impl PinnedVerifier {
     fn new(expected: NetworkTlsPubkey) -> Self {
         Self {
-            expected_spki: encode_p256_spki(&expected),
+            expected_spki: encode_ed25519_spki(&expected),
             expected_key: expected,
             provider: ring_provider(),
         }
@@ -211,7 +211,7 @@ impl std::error::Error for WebPkiBuildError {}
 
 /// Server-side verifier for optional peer mTLS.
 ///
-/// Accepts any well-formed P-256 client certificate. The TLS layer proves
+/// Accepts any well-formed Ed25519 client certificate. The TLS layer proves
 /// key possession via `verify_tls1x_signature`; the caller's identity (the
 /// cert's SPKI) is then available from `ServerConnection::peer_certificates()`
 /// and can be mapped to a committee member at the application layer.
@@ -258,10 +258,10 @@ impl rustls::server::danger::ClientCertVerifier for PeerClientVerifier {
         let (_, parsed) = X509Certificate::from_der(end_entity.as_ref())
             .map_err(|_| RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
 
-        // Reject anything that isn't P-256 / prime256v1 / uncompressed so we
-        // don't open ourselves up to curve algorithms we haven't audited. The
-        // upstream SPKI compare relies on exact P-256 encoding.
-        if crate::spki::decode_p256_spki(parsed.public_key().raw).is_none() {
+        // Reject anything that isn't Ed25519 so we don't open ourselves up to
+        // curve algorithms we haven't audited. The upstream SPKI compare relies
+        // on exact Ed25519 encoding.
+        if crate::spki::decode_ed25519_spki(parsed.public_key().raw).is_none() {
             return Err(RustlsError::InvalidCertificate(
                 rustls::CertificateError::BadSignature,
             ));
@@ -320,7 +320,7 @@ mod tests {
     use rand::thread_rng;
     use rustls::pki_types::CertificateDer;
     use tape_core::types::tls::NetworkTlsPubkey;
-    use tape_crypto::p256::Keypair as P256Keypair;
+    use tape_crypto::ed25519::Keypair as EdKeypair;
 
     use super::*;
     use crate::cert::self_signed_cert;
@@ -330,21 +330,21 @@ mod tests {
         install_default();
     }
 
-    fn make_cert(kp: &P256Keypair) -> CertificateDer<'static> {
+    fn make_cert(kp: &EdKeypair) -> CertificateDer<'static> {
         self_signed_cert(kp, &[IpAddr::V4(Ipv4Addr::LOCALHOST)])
             .expect("cert")
             .cert
     }
 
-    fn pubkey_of(kp: &P256Keypair) -> NetworkTlsPubkey {
-        NetworkTlsPubkey::new(kp.public_key_bytes())
+    fn pubkey_of(kp: &EdKeypair) -> NetworkTlsPubkey {
+        NetworkTlsPubkey::new(kp.pubkey().to_bytes())
     }
 
     #[test]
     fn pinned_accepts_matching_key() {
         setup();
         let mut rng = thread_rng();
-        let kp = P256Keypair::generate(&mut rng);
+        let kp = EdKeypair::new(&mut rng);
         let cert = make_cert(&kp);
 
         let verifier = PinnedVerifier::new(pubkey_of(&kp));
@@ -357,8 +357,8 @@ mod tests {
     fn pinned_rejects_wrong_key() {
         setup();
         let mut rng = thread_rng();
-        let kp = P256Keypair::generate(&mut rng);
-        let other = P256Keypair::generate(&mut rng);
+        let kp = EdKeypair::new(&mut rng);
+        let other = EdKeypair::new(&mut rng);
         let cert = make_cert(&kp);
 
         let verifier = PinnedVerifier::new(pubkey_of(&other));

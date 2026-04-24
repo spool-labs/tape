@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use peer_manager::PeerManager;
-use tape_crypto::p256::Keypair as P256Keypair;
+use tape_crypto::ed25519::Keypair;
 
 use crate::HttpApi;
 use crate::metrics::ApiMetrics;
@@ -12,7 +12,7 @@ pub struct HttpApiBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
     metrics: Option<Arc<ApiMetrics>>,
-    local_identity: Option<Arc<P256Keypair>>,
+    local_identity: Option<Arc<Keypair>>,
 }
 
 impl Default for HttpApiBuilder {
@@ -46,7 +46,7 @@ impl HttpApiBuilder {
         self
     }
 
-    pub fn local_identity(mut self, identity: Arc<P256Keypair>) -> Self {
+    pub fn local_identity(mut self, identity: Arc<Keypair>) -> Self {
         self.local_identity = Some(identity);
         self
     }

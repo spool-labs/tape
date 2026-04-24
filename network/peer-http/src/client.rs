@@ -9,7 +9,7 @@ use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_crypto::p256::Keypair as P256Keypair;
+use tape_crypto::ed25519::Keypair;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
@@ -33,7 +33,7 @@ pub struct HttpApi {
     pub metrics: Option<Arc<ApiMetrics>>,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
-    pub local_identity: Option<Arc<P256Keypair>>,
+    pub local_identity: Option<Arc<Keypair>>,
 }
 
 impl HttpApi {
@@ -677,7 +677,7 @@ mod tests {
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
     use tape_crypto::address::Address;
-    use tape_crypto::p256::Keypair as P256Keypair;
+    use tape_crypto::ed25519::Keypair as EdKeypair;
     use tokio::net::TcpListener;
 
     fn make_peer(id: u64, port: u16, tls_pubkey: NetworkTlsPubkey) -> PeerNode {
@@ -691,12 +691,12 @@ mod tests {
         }
     }
 
-    fn pubkey_of(kp: &P256Keypair) -> NetworkTlsPubkey {
-        NetworkTlsPubkey::new(kp.public_key_bytes())
+    fn pubkey_of(kp: &EdKeypair) -> NetworkTlsPubkey {
+        NetworkTlsPubkey::new(kp.pubkey().to_bytes())
     }
 
     async fn serve_tls(
-        tls_keypair: P256Keypair,
+        tls_keypair: EdKeypair,
         router: Router,
     ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -745,7 +745,7 @@ mod tests {
     async fn snapshot_vote_write_roundtrip_over_tls() {
         install_default_provider();
         let mut rng = thread_rng();
-        let tls = P256Keypair::generate(&mut rng);
+        let tls = EdKeypair::new(&mut rng);
         let tls_pubkey = pubkey_of(&tls);
 
         let request = SnapshotVoteRequest {
@@ -792,7 +792,7 @@ mod tests {
     async fn snapshot_vote_complete_group_roundtrip_over_tls() {
         install_default_provider();
         let mut rng = thread_rng();
-        let tls = P256Keypair::generate(&mut rng);
+        let tls = EdKeypair::new(&mut rng);
         let tls_pubkey = pubkey_of(&tls);
 
         let request = SnapshotVoteRequest {
@@ -839,8 +839,8 @@ mod tests {
     async fn rebuilds_client_when_peer_rotates_tls_key() {
         install_default_provider();
         let mut rng = thread_rng();
-        let original_tls = P256Keypair::generate(&mut rng);
-        let new_tls = P256Keypair::generate(&mut rng);
+        let original_tls = EdKeypair::new(&mut rng);
+        let new_tls = EdKeypair::new(&mut rng);
 
         let router = Router::new().route(
             SNAPSHOT_VOTE_PATH,

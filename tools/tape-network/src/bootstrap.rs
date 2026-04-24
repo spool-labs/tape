@@ -30,8 +30,12 @@ use crate::settings::{BuildSource, Settings};
 use crate::ssh;
 
 const SERVICE_TEMPLATE: &str = include_str!("../assets/tape-node.service.tmpl");
-const HTTP_PORT: u16 = 8080;
-const PEER_PORT: u16 = 9000;
+/// Plaintext HTTP port for pilot nodes. Dedicated droplets with no competing
+/// services bind 80 directly so `http://<droplet>/v1/health` works without a
+/// port in the URL. The binary's default is the unprivileged 3420.
+const HTTP_PORT: u16 = 80;
+/// HTTPS / peer port for pilot nodes. Binary default is 3430.
+const HTTPS_PORT: u16 = 443;
 
 /// Options controlling which bootstrap steps run.
 #[derive(Debug, Default, Clone, Copy)]
@@ -302,7 +306,7 @@ async fn upload_bundle(
     )
     .await?;
 
-    for keyfile in ["identity.json", "bls.json", "tls.json"] {
+    for keyfile in ["identity.json", "bls.json", "tls.key"] {
         let local = node_dir.join(keyfile);
         let remote = format!("{working}/keys/{keyfile}");
         ssh::upload(&settings.ssh, ssh_key, host, &local, &remote).await?;
@@ -311,7 +315,7 @@ async fn upload_bundle(
         &settings.ssh,
         ssh_key,
         host,
-        &format!("chown -R tape:tape {working}/keys && chmod 0700 {working}/keys && chmod 0600 {working}/keys/*.json"),
+        &format!("chown -R tape:tape {working}/keys && chmod 0700 {working}/keys && chmod 0600 {working}/keys/*"),
     )
     .await?;
     Ok(())
@@ -367,7 +371,7 @@ fn render_node_yaml(
     let rpc = rpc_override.unwrap_or(settings.solana.rpc_url.as_str());
     let commission = settings.genesis.commission_bp;
     format!(
-        "node:\n  name: \"{node_name}\"\n  node_keypair: \"{working}/keys/identity.json\"\n  bls_keypair: \"{working}/keys/bls.json\"\n  commission: {commission}\nsolana:\n  rpc: \"{rpc}\"\nnetwork:\n  host: \"{public_ip}\"\n  port: {PEER_PORT}\nhttp:\n  listen: \"0.0.0.0:{HTTP_PORT}\"\nstore:\n  path: \"{data}/store\"\ntls:\n  identity_keypair: \"{working}/keys/tls.json\"\n"
+        "node:\n  name: \"{node_name}\"\n  node_keypair: \"{working}/keys/identity.json\"\n  bls_keypair: \"{working}/keys/bls.json\"\n  commission: {commission}\nsolana:\n  rpc: \"{rpc}\"\nnetwork:\n  host: \"{public_ip}\"\n  port: {HTTPS_PORT}\nhttp:\n  listen: \"0.0.0.0:{HTTP_PORT}\"\nhttps:\n  listen: \"0.0.0.0:{HTTPS_PORT}\"\n  identity_keypair: \"{working}/keys/tls.key\"\nstore:\n  path: \"{data}/store\"\n"
     )
 }
 
@@ -508,7 +512,7 @@ async fn register_on_chain(
         .to_string();
 
     let identity_path = node_dir.join("identity.json");
-    let address = format!("{public_ip}:{PEER_PORT}");
+    let address = format!("{public_ip}:{HTTPS_PORT}");
 
     tape_admin::node::register(
         &ctx,
@@ -516,7 +520,7 @@ async fn register_on_chain(
             name,
             identity_path: identity_path.clone(),
             bls_path: node_dir.join("bls.json"),
-            tls_path: node_dir.join("tls.json"),
+            tls_path: node_dir.join("tls.key"),
             address: address.clone(),
             commission_bp: settings.genesis.commission_bp,
         },
@@ -575,17 +579,15 @@ async fn verify_health(droplets: &[Instance]) -> Result<()> {
     // no pinned cert at the operator; this check is for liveness, not
     // authentication.
     //
-    // Force rustls: feature unification elsewhere in the tree enables
-    // reqwest's native-tls feature, which on macOS ends up using LibreSSL and
-    // chokes on the node's Ed25519 cert handshake. rustls handles it cleanly.
+    // Hit the plaintext HTTP port instead of HTTPS — `/v1/health` is
+    // anonymous on both listeners, and using HTTP avoids the self-signed
+    // cert handshake entirely.
     let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(10))
         .build()?;
     for droplet in droplets {
         let ip = droplet_ip(droplet)?;
-        let url = format!("https://{ip}:{HTTP_PORT}/v1/health");
+        let url = format!("http://{ip}:{HTTP_PORT}/v1/health");
         let ok = poll_health(&client, &url, Duration::from_secs(90)).await?;
         if !ok {
             warn!(%ip, "health check failed after timeout");
