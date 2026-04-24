@@ -10,6 +10,7 @@ use tape_crypto::address::Address;
 use tape_protocol::api::{Api, GetSliceReq};
 use tape_retry::{retry_if, RetryConfig, Retryable};
 use tokio::sync::Semaphore;
+use tracing::warn;
 
 use crate::error::DownloadError;
 
@@ -119,8 +120,12 @@ impl ParallelDownloader {
                         break;
                     }
                 }
-                Err(_) => {
-                    // Slice fetch failed, continue with others
+                Err(error) => {
+                    warn!(
+                        slice = slice_idx,
+                        error = %error,
+                        "slice fetch failed, continuing with others"
+                    );
                 }
             }
         }

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use thiserror::Error;
+use tracing::warn;
 
 use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use rpc_client::parse_tape_error;
@@ -293,8 +294,13 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
                     }
 
                     let req = GetTrackDataReq { track: track_address };
-                    if api.get_track_data(*node_id, &req).await.is_ok() {
-                        visible += 1;
+                    match api.get_track_data(*node_id, &req).await {
+                        Ok(_) => visible += 1,
+                        Err(error) => warn!(
+                            node = %node_id,
+                            error = %error,
+                            "track metadata not yet visible on node"
+                        ),
                     }
                 }
 

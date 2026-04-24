@@ -210,7 +210,8 @@ impl DistributedUploader {
                         fully_successful_members += 1;
                     }
                 }
-                Err(_) => {
+                Err(error) => {
+                    warn!(error = %error, "member upload task failed");
                     member_failures += 1;
                 }
             }
