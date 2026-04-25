@@ -260,7 +260,7 @@ http:
   peer_max_bytes: 524288
 https:
   listen: "0.0.0.0:3430"
-  identity_keypair: "/etc/tape/tls.key"
+  identity_keypair: "/etc/tape/tls.json"
   auto_update: false
 store:
   path: "/var/lib/tape/data"
@@ -302,7 +302,7 @@ metrics:
         assert_eq!(config.http.slice_max_bytes, 2 * 1024 * 1024);
         assert_eq!(config.http.peer_max_bytes, 512 * 1024);
         assert_eq!(config.https.listen.to_string(), "0.0.0.0:3430");
-        assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.key"));
+        assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.json"));
         assert!(!config.https.auto_update);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
@@ -334,7 +334,7 @@ network:
 store:
   path: "~/tape/data"
 https:
-  identity_keypair: "~/.tape/tls.key"
+  identity_keypair: "~/.tape/tls.json"
 "#,
         )
         .unwrap();

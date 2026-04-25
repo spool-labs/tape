@@ -30,12 +30,8 @@ use crate::settings::{BuildSource, Settings};
 use crate::ssh;
 
 const SERVICE_TEMPLATE: &str = include_str!("../assets/tape-node.service.tmpl");
-/// Plaintext HTTP port for pilot nodes. Dedicated droplets with no competing
-/// services bind 80 directly so `http://<droplet>/v1/health` works without a
-/// port in the URL. The binary's default is the unprivileged 3420.
-const HTTP_PORT: u16 = 80;
-/// HTTPS / peer port for pilot nodes. Binary default is 3430.
-const HTTPS_PORT: u16 = 443;
+const HTTP_PORT: u16 = 3420;
+const HTTPS_PORT: u16 = 3430;
 
 /// Options controlling which bootstrap steps run.
 #[derive(Debug, Default, Clone, Copy)]
@@ -306,7 +302,7 @@ async fn upload_bundle(
     )
     .await?;
 
-    for keyfile in ["identity.json", "bls.json", "tls.key"] {
+    for keyfile in ["identity.json", "bls.json", "tls.json"] {
         let local = node_dir.join(keyfile);
         let remote = format!("{working}/keys/{keyfile}");
         ssh::upload(&settings.ssh, ssh_key, host, &local, &remote).await?;
@@ -371,7 +367,7 @@ fn render_node_yaml(
     let rpc = rpc_override.unwrap_or(settings.solana.rpc_url.as_str());
     let commission = settings.genesis.commission_bp;
     format!(
-        "node:\n  name: \"{node_name}\"\n  node_keypair: \"{working}/keys/identity.json\"\n  bls_keypair: \"{working}/keys/bls.json\"\n  commission: {commission}\nsolana:\n  rpc: \"{rpc}\"\nnetwork:\n  host: \"{public_ip}\"\n  port: {HTTPS_PORT}\nhttp:\n  listen: \"0.0.0.0:{HTTP_PORT}\"\nhttps:\n  listen: \"0.0.0.0:{HTTPS_PORT}\"\n  identity_keypair: \"{working}/keys/tls.key\"\nstore:\n  path: \"{data}/store\"\n"
+        "node:\n  name: \"{node_name}\"\n  node_keypair: \"{working}/keys/identity.json\"\n  bls_keypair: \"{working}/keys/bls.json\"\n  commission: {commission}\nsolana:\n  rpc: \"{rpc}\"\nnetwork:\n  host: \"{public_ip}\"\n  port: {HTTPS_PORT}\nhttp:\n  listen: \"0.0.0.0:{HTTP_PORT}\"\nhttps:\n  listen: \"0.0.0.0:{HTTPS_PORT}\"\n  identity_keypair: \"{working}/keys/tls.json\"\nstore:\n  path: \"{data}/store\"\n"
     )
 }
 
@@ -520,7 +516,7 @@ async fn register_on_chain(
             name,
             identity_path: identity_path.clone(),
             bls_path: node_dir.join("bls.json"),
-            tls_path: node_dir.join("tls.key"),
+            tls_path: node_dir.join("tls.json"),
             address: address.clone(),
             commission_bp: settings.genesis.commission_bp,
         },

@@ -17,7 +17,7 @@ use crate::cloud::{self, Instance};
 use crate::settings::Settings;
 use crate::ssh;
 
-const HTTP_PORT: u16 = 80;
+const HTTP_PORT: u16 = 3420;
 
 pub async fn run(settings: &Settings, binary: Option<PathBuf>) -> Result<()> {
     let binary = match binary {

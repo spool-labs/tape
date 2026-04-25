@@ -172,7 +172,7 @@ impl ProcessSupervisor {
         let bls_path = node_dir.join("bls.key");
         write_bls_keypair(&bls_path, &bls_keypair)?;
 
-        let tls_path = node_dir.join("tls.key");
+        let tls_path = node_dir.join("tls.json");
         write_solana_keypair(&tls_path, &tls_keypair)?;
 
         let store_path = node_dir.join("data");

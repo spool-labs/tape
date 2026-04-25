@@ -47,7 +47,7 @@ impl Default for HttpsConfig {
 }
 
 fn default_identity_keypair() -> PathBuf {
-    super::helpers::expand_path("~/.tape/tls.key")
+    super::helpers::expand_path("~/.tape/tls.json")
 }
 
 fn default_auto_update() -> bool {
