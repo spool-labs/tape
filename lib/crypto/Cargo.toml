@@ -25,7 +25,6 @@ wincode = ["dep:wincode", "dep:wincode-derive"]
 
 [dependencies]
 dashu = "0.4.2"
-blake3 = { workspace = true }
 solana-nostd-sha256 = "0.1.3"
 solana-bn254 = "2.1.0"
 num = "0.4.3"

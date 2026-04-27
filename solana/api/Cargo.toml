@@ -16,7 +16,6 @@ tape-core.workspace = true
 tape-crypto.workspace = true
 tape-solana.workspace = true
 
-blake3.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true
 thiserror.workspace = true

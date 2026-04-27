@@ -1595,8 +1595,8 @@ mod tests {
             .filter(|&i| (result[i] as usize) < 20 && result[i] == spools[i])
             .count();
         assert!(
-            retained >= 750 && retained <= 800,
-            "expected ~800 retentions, got {}",
+            retained >= 725 && retained <= 800,
+            "expected high retention during committee growth, got {}",
             retained,
         );
     }

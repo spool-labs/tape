@@ -43,16 +43,14 @@ impl Hash {
     }
 }
 
-#[inline(never)]
+#[inline(always)]
 pub fn hashv(data: &[&[u8]]) -> Hash {
-    let mut hasher = blake3::Hasher::new();
-    for part in data {
-        hasher.update(part);
-    }
-    Hash(hasher.finalize().into())
+    let res = solana_program::hash::hashv(data);
+    Hash(res.to_bytes())
 }
 
-#[inline(never)]
+#[inline(always)]
 pub fn hash(data: &[u8]) -> Hash {
-    Hash(blake3::hash(data).into())
+    let res = solana_program::hash::hash(data);
+    Hash(res.to_bytes())
 }
