@@ -5,6 +5,7 @@ pub mod cloud;
 pub mod genesis;
 pub mod settings;
 pub mod ssh;
+pub mod stats;
 pub mod testnet;
 pub mod upgrade;
 

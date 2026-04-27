@@ -2,7 +2,7 @@
 name = "tape"
 version.workspace = true
 edition.workspace = true
-description = "Tapedrive user CLI (read, write, cassette management)"
+description = "Tapedrive user CLI (read, write, tape management)"
 
 [lib]
 name = "tape_cli"

@@ -1,4 +1,4 @@
-//! `tape-admin status` + `tape-admin node list` — read-only views of
+//! `tape-admin stats` + `tape-admin node list` — read-only views of
 //! on-chain cluster state. Return structured results so callers can emit
 //! them as text (default) or JSON.
 
@@ -24,7 +24,7 @@ pub struct ClusterStatus {
 
 impl CliOutput for ClusterStatus {
     fn print_text(&self) {
-        println!("cluster status");
+        println!("cluster stats");
         println!("  rpc:                {}", self.rpc);
         println!("  current epoch:      {}", self.current_epoch);
         println!("  total nodes:        {}", self.total_nodes);

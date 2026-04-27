@@ -1,5 +1,5 @@
-//! `tape delete <track>` — remove a single track from a cassette, freeing
-//! its capacity. Tape-level destroy is not supported; the cassette stays.
+//! `tape delete <track>` — remove a single track from a tape, freeing
+//! its capacity. Tape-level destroy is not supported; the tape stays.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -14,14 +14,14 @@ use crate::output::CliOutput;
 
 #[derive(Serialize)]
 pub struct DeleteOutput {
-    pub cassette: String,
+    pub tape_address: String,
     pub track_address: String,
 }
 
 impl CliOutput for DeleteOutput {
     fn print_text(&self) {
         println!("deleted track:    {}", self.track_address);
-        println!("from cassette:    {}", self.cassette);
+        println!("from tape:        {}", self.tape_address);
     }
 }
 
@@ -41,7 +41,7 @@ pub async fn run(
         .map_err(|e| Error::Sdk(format!("delete: {e}")))?;
 
     Ok(DeleteOutput {
-        cassette: tape_key.address().to_string(),
+        tape_address: tape_key.address().to_string(),
         track_address: addr.to_string(),
     })
 }

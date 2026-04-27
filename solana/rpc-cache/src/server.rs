@@ -10,7 +10,7 @@
 //! Batch requests (top-level JSON array) pass through unchanged.
 //!
 //! Two unauthed observability routes: `GET /v1/health` and
-//! `GET /v1/status`. Everything JSON-RPC requires `?api=<key>`.
+//! `GET /v1/stats`. Everything JSON-RPC requires `?api=<key>`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -115,7 +115,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // configured with a path suffix still work.
         .route("/{*rest}", post(handle))
         .route("/v1/health", get(health))
-        .route("/v1/status", get(status))
+        .route("/v1/stats", get(stats))
         .with_state(state)
 }
 
@@ -131,7 +131,7 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
-async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let s = &state.stats;
     let newest = s.newest_cached_slot.load(Ordering::Relaxed);
     let live = s.last_observed_live_slot.load(Ordering::Relaxed);

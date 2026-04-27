@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::warn;
 
@@ -15,14 +16,14 @@ use tape_core::bft::min_correct;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::prelude::{
     BlobInfo, CompressedTrack, EncodingProfile, EpochNumber, SpoolGroup, StorageUnits,
-    StripeCount,
+    StripeCount, TrackNumber,
 };
 use tape_core::track::data::TrackDataSlice;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
-use tape_retry::{RetryConfig, Retryable};
+use tape_retry::{retry, retry_if, RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
 
 use crate::codec::encoder::BlobEncoder;
@@ -90,7 +91,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         }
 
         let written = submit_raw(self, tape_key, key, raw).await?;
-        wait_for_visibility(self, written.address, written.track.spool_group).await?;
         Ok(written.track)
     }
 
@@ -280,8 +280,8 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     let group_peers = state.group_peers(spool_group);
     let required = min_correct(state.group_member_count(spool_group) as u64) as usize;
 
-    tape_retry::retry_if(
-        RetryConfig::ten(),
+    retry_if(
+        write_retry_config(),
         None,
         || {
             let group_peers = group_peers.clone();
@@ -412,10 +412,10 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
 async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape: &Address,
-    track_number: tape_core::types::TrackNumber,
+    track_number: TrackNumber,
 ) -> Result<CompressedTrack, TapedriveError> {
-    let result = tape_retry::retry_if(
-        RetryConfig::ten(),
+    let result = retry_if(
+        write_retry_config(),
         None,
         || async {
             let track = queries::query_track_by_number(client, tape, track_number)
@@ -451,18 +451,32 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     }
 
     let (written, plan) = client.write_blob(tape_key, key, data).await?;
-    tape_retry::retry_if(
-        RetryConfig::ten(),
-        None,
-        || client.upload(&written, &plan),
-        should_retry_upload,
-    )
-    .await?;
+    upload_with_retry(client, &written, &plan).await?;
+    certify_with_retry(client, tape_key, &written).await
+}
 
-    tape_retry::retry_if(
-        RetryConfig::ten(),
+pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    written: &WrittenTrack,
+    plan: &UploadPlan,
+) -> Result<(), TapedriveError> {
+    retry_if(
+        write_retry_config(),
         None,
-        || client.certify(tape_key, &written),
+        || client.upload(written, plan),
+        should_retry_upload,
+    ).await
+}
+
+pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &TapeKey,
+    written: &WrittenTrack,
+) -> Result<CompressedTrack, TapedriveError> {
+    retry_if(
+        write_retry_config(),
+        None,
+        || client.certify(tape_key, written),
         should_retry_certification,
     )
     .await?;
@@ -474,8 +488,8 @@ async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     signature: &Txid,
 ) -> Result<TrackWritten, TapedriveError> {
-    let transaction = tape_retry::retry(
-        RetryConfig::ten(),
+    let transaction = retry(
+        write_retry_config(),
         None,
         || async { client.rpc().get_transaction(signature).await },
     )
@@ -483,6 +497,14 @@ async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
     .map_err(TapedriveError::Rpc)?;
 
     extract_track_written_event(&transaction)
+}
+
+fn write_retry_config() -> RetryConfig {
+    RetryConfig {
+        base_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(60),
+        max_retries: None,
+    }
 }
 
 fn extract_track_written_event(
@@ -531,4 +553,3 @@ mod tests {
         )));
     }
 }
-

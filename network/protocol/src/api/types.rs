@@ -93,7 +93,7 @@ pub struct StripeSubChunkRequest {
     pub sub_chunks: Vec<u32>,
 }
 
-/// Response from the stats endpoint.
+/// Response from the node stats endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeStats {
     pub last_processed_slot: u64,

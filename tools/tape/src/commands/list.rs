@@ -1,4 +1,4 @@
-//! `tape list` — every cassette the current wallet owns on-chain.
+//! `tape list` — every tape the current wallet owns on-chain.
 
 use serde::Serialize;
 use tape_crypto::address::Address;

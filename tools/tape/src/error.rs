@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tape_cli_common::ConfigError;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -15,7 +16,7 @@ pub enum Error {
     #[error("keypair: {0}")]
     Keypair(String),
 
-    #[error("no active cassette — run `tape use <path>` or pass `--cassette <path>`")]
+    #[error("no active tape; run `tape use <path>` or pass `--tape <path>`")]
     NoActiveCassette,
 
     #[error("sdk: {0}")]
@@ -31,8 +32,8 @@ pub enum Error {
     Other(String),
 }
 
-impl From<tape_cli_common::ConfigError> for Error {
-    fn from(e: tape_cli_common::ConfigError) -> Self {
+impl From<ConfigError> for Error {
+    fn from(e: ConfigError) -> Self {
         Error::Config(e.to_string())
     }
 }

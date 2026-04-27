@@ -1,27 +1,46 @@
-//! `tape read <track-addr>` — stream data back to stdout or `--out <file>`.
-//!
-//! The SDK's `read_into` handles all three write tiers transparently: for a
-//! multi-chunk stream it follows the index track to fetch and reassemble
-//! chunks; for a single blob or raw write it returns the payload directly.
+//! `tape read <address>` — stream data back to stdout or `--out <file>`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 
+use clap::ValueEnum;
+use peer_http::HttpApi;
+use rpc_solana::SolanaRpc;
 use serde::Serialize;
 use tape_crypto::address::Address;
-use tape_sdk::stream::read::read_into;
-use tokio::fs::File;
+use tape_sdk::stream::manifest::ChunkManifest;
+use tape_sdk::tapedrive::Tapedrive;
+use tokio::fs::{metadata, try_exists, File};
 use tokio::io::{stdout, AsyncWriteExt, BufWriter};
 
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::output::CliOutput;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum ReadMode {
+    Auto,
+    Track,
+    Stream,
+}
+
+impl ReadMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Track => "track",
+            Self::Stream => "stream",
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct ReadOutput {
-    pub track_address: String,
+    pub address: String,
     pub bytes_written: u64,
     pub destination: String,
+    pub mode: &'static str,
 }
 
 impl CliOutput for ReadOutput {
@@ -31,72 +50,163 @@ impl CliOutput for ReadOutput {
         // "--out <file>" where we report what we did.
         if self.destination != "stdout" {
             println!("wrote {} bytes to {}", self.bytes_written, self.destination);
-            println!("track address: {}", self.track_address);
+            println!("address: {}", self.address);
+            println!("mode: {}", self.mode);
         }
     }
 }
 
 pub async fn run(
     ctx: &Context,
-    track_address: &str,
+    address: &str,
     out: Option<&Path>,
+    overwrite: bool,
+    mode: ReadMode,
 ) -> Result<ReadOutput> {
-    let addr = Address::from_str(track_address)
-        .map_err(|e| Error::Invalid(format!("invalid track address: {e}")))?;
+    let addr = Address::from_str(address)
+        .map_err(|e| Error::Invalid(format!("invalid address: {e}")))?;
     let sdk = ctx.sdk()?;
 
-    let (bytes_written, destination) = match out {
+    let actual_mode = match mode {
+        ReadMode::Auto => {
+            let direct = sdk
+                .read(&addr)
+                .await
+                .map_err(|e| Error::Sdk(format!("read track: {e}")))?;
+            if ChunkManifest::from_bytes(&direct).is_ok() {
+                read_stream_to_destination(&sdk, &addr, out, overwrite).await?
+            } else {
+                write_bytes_to_destination(&direct, out, overwrite).await?
+            }
+        }
+        ReadMode::Track => {
+            let direct = sdk
+                .read(&addr)
+                .await
+                .map_err(|e| Error::Sdk(format!("read track: {e}")))?;
+            write_bytes_to_destination(&direct, out, overwrite).await?
+        }
+        ReadMode::Stream => read_stream_to_destination(&sdk, &addr, out, overwrite).await?,
+    };
+
+    Ok(ReadOutput {
+        address: addr.to_string(),
+        bytes_written: actual_mode.bytes_written,
+        destination: actual_mode.destination,
+        mode: actual_mode.mode.as_str(),
+    })
+}
+
+struct ReadResult {
+    bytes_written: u64,
+    destination: String,
+    mode: ReadMode,
+}
+
+async fn read_stream_to_destination(
+    sdk: &Tapedrive<SolanaRpc, HttpApi>,
+    addr: &Address,
+    out: Option<&Path>,
+    overwrite: bool,
+) -> Result<ReadResult> {
+    match out {
         Some(path) => {
+            create_output_guard(path, overwrite).await?;
             let path_buf = path.to_path_buf();
             let file = File::create(path).await.map_err(|source| Error::Io {
                 path: path.display().to_string(),
                 source,
             })?;
             let mut writer = BufWriter::new(file);
-            read_into(&sdk, &addr, &mut writer)
+            sdk.read_into(addr, &mut writer)
                 .await
-                .map_err(|e| Error::Sdk(format!("read_into: {e}")))?;
-            writer
-                .flush()
-                .await
-                .map_err(|source| Error::Io {
-                    path: path_buf.display().to_string(),
-                    source,
-                })?;
-            // Probe the resulting file size for reporting.
-            let metadata = tokio::fs::metadata(path).await.map_err(|source| Error::Io {
+                .map_err(|e| Error::Sdk(format!("read stream: {e}")))?;
+            writer.flush().await.map_err(|source| Error::Io {
+                path: path_buf.display().to_string(),
+                source,
+            })?;
+            let metadata = metadata(path).await.map_err(|source| Error::Io {
                 path: path.display().to_string(),
                 source,
             })?;
-            (metadata.len(), path_buf.display().to_string())
+            Ok(ReadResult {
+                bytes_written: metadata.len(),
+                destination: path_buf.display().to_string(),
+                mode: ReadMode::Stream,
+            })
         }
         None => {
             let mut writer = BufWriter::new(stdout());
-            read_into(&sdk, &addr, &mut writer)
+            sdk.read_into(addr, &mut writer)
                 .await
-                .map_err(|e| Error::Sdk(format!("read_into: {e}")))?;
+                .map_err(|e| Error::Sdk(format!("read stream: {e}")))?;
             writer.flush().await.map_err(|source| Error::Io {
                 path: "stdout".into(),
                 source,
             })?;
-            // Total byte count isn't surfaced by read_into; for stdout we
-            // report 0 to avoid noise. Callers that need a count use --out.
-            (0, "stdout".into())
+            Ok(ReadResult {
+                bytes_written: 0,
+                destination: "stdout".into(),
+                mode: ReadMode::Stream,
+            })
         }
-    };
-
-    Ok(ReadOutput {
-        track_address: addr.to_string(),
-        bytes_written,
-        destination: destination_as_string(destination),
-    })
+    }
 }
 
-fn destination_as_string(s: String) -> String {
-    s
+async fn write_bytes_to_destination(
+    bytes: &[u8],
+    out: Option<&Path>,
+    overwrite: bool,
+) -> Result<ReadResult> {
+    match out {
+        Some(path) => {
+            create_output_guard(path, overwrite).await?;
+            let mut file = File::create(path).await.map_err(|source| Error::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+            file.write_all(bytes).await.map_err(|source| Error::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+            file.flush().await.map_err(|source| Error::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+            Ok(ReadResult {
+                bytes_written: bytes.len() as u64,
+                destination: path.display().to_string(),
+                mode: ReadMode::Track,
+            })
+        }
+        None => {
+            let mut writer = BufWriter::new(stdout());
+            writer.write_all(bytes).await.map_err(|source| Error::Io {
+                path: "stdout".into(),
+                source,
+            })?;
+            writer.flush().await.map_err(|source| Error::Io {
+                path: "stdout".into(),
+                source,
+            })?;
+            Ok(ReadResult {
+                bytes_written: 0,
+                destination: "stdout".into(),
+                mode: ReadMode::Track,
+            })
+        }
+    }
 }
 
-// keep a plain PathBuf type in the public surface for JSON callers that
-// might want a structured path field — currently we flatten to string.
-#[allow(dead_code)]
-fn _pathbuf_unused(_p: PathBuf) {}
+async fn create_output_guard(path: &Path, overwrite: bool) -> Result<()> {
+    if !overwrite && try_exists(path).await.map_err(|source| Error::Io {
+        path: path.display().to_string(),
+        source,
+    })? {
+        return Err(Error::Invalid(format!(
+            "{} already exists; pass --overwrite to replace it",
+            path.display()
+        )));
+    }
+    Ok(())
+}

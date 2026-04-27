@@ -1,4 +1,4 @@
-//! `tape extend` — add more epochs to a cassette's reservation.
+//! `tape extend` — add more epochs to a tape's reservation.
 
 use std::path::Path;
 
@@ -18,7 +18,7 @@ pub struct ExtendOutput {
 
 impl CliOutput for ExtendOutput {
     fn print_text(&self) {
-        println!("address:          {}", self.address);
+        println!("tape address:     {}", self.address);
         println!("added epochs:     {}", self.added_epochs);
         println!("new expiry epoch: {}", self.new_expiry_epoch);
     }

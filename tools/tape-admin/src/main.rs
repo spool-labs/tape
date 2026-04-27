@@ -45,7 +45,7 @@ enum Command {
         op: NodeOp,
     },
     /// Print a cluster-wide snapshot (epoch, committee sizes, quorum).
-    Status,
+    Stats,
 }
 
 #[derive(Subcommand)]
@@ -171,7 +171,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<(), Error> {
         Command::Chain { op } => run_chain(ctx, op).await,
         Command::Treasury { op } => run_treasury(ctx, op).await,
         Command::Node { op } => run_node(ctx, op).await,
-        Command::Status => {
+        Command::Stats => {
             let out = status::cluster(ctx).await?;
             emit_output(&out, ctx)
         }

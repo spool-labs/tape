@@ -49,7 +49,7 @@ pub struct Config {
 
     /// API key required as `?api=<key>` on every JSON-RPC request.
     /// Purely a port-scanner filter — not a security boundary.
-    /// `/v1/health` and `/v1/status` are intentionally unauthed.
+    /// `/v1/health` and `/v1/stats` are intentionally unauthed.
     pub api_key: String,
 
     /// Soft byte ceiling for the slot store (filtered finalized blocks).

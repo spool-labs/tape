@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tape_network::{Settings, bootstrap, build, cache, genesis, testnet, upgrade};
+use tape_network::{Settings, bootstrap, build, cache, genesis, stats, testnet, upgrade};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -71,6 +71,15 @@ enum Command {
         /// `target/x86_64-unknown-linux-gnu/release/tape-node`).
         #[arg(long)]
         binary: Option<PathBuf>,
+    },
+    /// Scrape every node's /v1/stats endpoint and print one row per node.
+    Stats {
+        /// Per-node HTTP request timeout in milliseconds.
+        #[arg(long, default_value_t = 2000)]
+        timeout_ms: u64,
+        /// Include cumulative transfer counters, latency, and scrape errors.
+        #[arg(long, short)]
+        verbose: bool,
     },
     /// Manage the RPC cache droplet that sits in front of the fleet.
     Cache {
@@ -170,6 +179,10 @@ async fn main() -> ExitCode {
         }
         Command::BuildLinux { keep, size } => build::run(&settings, keep, size).await,
         Command::Upgrade { binary } => upgrade::run(&settings, binary).await,
+        Command::Stats {
+            timeout_ms,
+            verbose,
+        } => stats::run(&settings, timeout_ms, verbose).await,
         Command::Cache { op } => run_cache(&settings, op).await,
     };
 

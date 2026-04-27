@@ -19,7 +19,7 @@ use tape_protocol::Api;
 use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
 use crate::tapedrive::Tapedrive;
-use crate::track::write::WrittenTrack;
+use crate::track::write::{certify_with_retry, upload_with_retry, WrittenTrack};
 
 use super::error::StreamError;
 use super::manifest::{ChunkEntry, ChunkManifest, CHUNK_SIZE, MANIFEST_VERSION};
@@ -347,7 +347,7 @@ async fn process_chunk<Blockchain: Rpc, Cluster: Api, Bytes: AsRef<[u8]>>(
     let (written, plan) = client
         .write_blob(tape_key, chunk_hash, chunk_data.as_ref())
         .await?;
-    client.upload(&written, &plan).await?;
+    upload_with_retry(client, &written, &plan).await?;
 
     Ok((
         chunk_index,
@@ -397,7 +397,7 @@ async fn certify_chunks<Blockchain: Rpc, Cluster: Api>(
     chunk_order.sort_by_key(|pending_chunk| pending_chunk.written.track.track_number.0);
 
     for pending_chunk in chunk_order {
-        client.certify(tape_key, &pending_chunk.written).await?;
+        certify_with_retry(client, tape_key, &pending_chunk.written).await?;
     }
 
     Ok(())
@@ -411,9 +411,12 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     manifest_bytes: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
     let (written, plan) = client.write_blob(tape_key, key, manifest_bytes).await?;
-    client.upload(&written, &plan).await?;
-    client.certify(tape_key, &written).await?;
-    Ok(written)
+    upload_with_retry(client, &written, &plan).await?;
+    let track = certify_with_retry(client, tape_key, &written).await?;
+    Ok(WrittenTrack {
+        address: written.address,
+        track,
+    })
 }
 
 /// Finalize the stream after chunk registration/upload completes.

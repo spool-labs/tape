@@ -76,8 +76,8 @@ async fn peer_only_routes_reject_non_peers() {
 
     assert_eq!(
         stats.status(),
-        StatusCode::FORBIDDEN,
-        "anonymous client must be rejected from peer-only /v1/stats"
+        StatusCode::OK,
+        "anonymous client should reach public /v1/stats"
     );
 
     let vote = anon
@@ -144,7 +144,7 @@ async fn peer_only_routes_reject_non_peers() {
     assert_eq!(
         peer_stats.status(),
         StatusCode::OK,
-        "registered committee peer should reach peer-only /v1/stats"
+        "registered committee peer should reach public /v1/stats"
     );
 
     harness.stop_all().await.expect("stop runtimes");

@@ -1,5 +1,5 @@
 //! Shared runtime state for every command: config, RPC client, payer
-//! keypair, active cassette, chosen output format. Commands take `&Context`
+//! keypair, active tape, chosen output format. Commands take `&Context`
 //! and rely on it for everything environmental.
 
 use std::path::{Path, PathBuf};
@@ -95,7 +95,7 @@ impl Context {
         Ok(Tapedrive::new(rpc, payer))
     }
 
-    /// Resolve which cassette to operate on, preferring the CLI flag,
+    /// Resolve which tape keypair to operate on, preferring the CLI flag,
     /// falling back to the `use`'d default. Errors with a friendly message
     /// when neither is set.
     pub fn require_cassette(&self, flag: Option<&Path>) -> Result<PathBuf> {

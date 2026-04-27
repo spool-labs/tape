@@ -9060,6 +9060,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tape-admin",
+ "tape-protocol",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

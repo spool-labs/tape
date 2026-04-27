@@ -1,4 +1,4 @@
-//! `tape info` — on-chain state of a cassette.
+//! `tape info` — on-chain state of a tape.
 
 use std::path::Path;
 
@@ -26,7 +26,7 @@ pub struct InfoOutput {
 
 impl CliOutput for InfoOutput {
     fn print_text(&self) {
-        println!("address:           {}", self.address);
+        println!("tape address:      {}", self.address);
         println!("id:                {}", self.id);
         println!("authority:         {}", self.authority);
         println!(

@@ -1,5 +1,5 @@
-//! `tape use <cassette>` — mark a cassette keypair as the current default
-//! so subsequent commands don't need `--cassette`. Persists in
+//! `tape use <tape-keypair>` — mark a tape keypair as the current default
+//! so subsequent commands don't need `--tape`. Persists in
 //! `cli-config.yaml`.
 
 use std::path::{Path, PathBuf};
@@ -14,14 +14,14 @@ use crate::output::CliOutput;
 
 #[derive(Serialize)]
 pub struct UseOutput {
-    pub active_cassette: PathBuf,
-    pub pubkey: String,
+    pub active_tape: PathBuf,
+    pub tape_address: String,
 }
 
 impl CliOutput for UseOutput {
     fn print_text(&self) {
-        println!("active cassette: {}", self.active_cassette.display());
-        println!("pubkey:          {}", self.pubkey);
+        println!("active tape: {}", self.active_tape.display());
+        println!("address:     {}", self.tape_address);
     }
 }
 
@@ -36,7 +36,7 @@ pub fn run(ctx: &mut Context, path: &Path) -> Result<UseOutput> {
     ctx.save_config()?;
 
     Ok(UseOutput {
-        active_cassette: expanded,
-        pubkey: key.address().to_string(),
+        active_tape: expanded,
+        tape_address: key.address().to_string(),
     })
 }

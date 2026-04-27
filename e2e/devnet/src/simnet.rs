@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use peer_tls::{apply_pinned_tls, install_default_provider};
 use rand::RngCore;
 use reqwest::Client;
 use rpc_client::RpcClient;
@@ -20,9 +21,10 @@ use tape_api::instruction::{
 use tape_api::program::tapedrive::node_pda;
 use tape_api::utils::to_name;
 use tape_core::types::coin::TAPE;
-use tape_core::types::StorageUnits;
 use tape_core::types::network::NetworkAddress;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::BasisPoints;
+use tape_core::types::StorageUnits;
 use tape_e2e_simnet::tls::pick_bind;
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
 use tape_crypto::address::Address;
@@ -35,6 +37,7 @@ use tape_sdk::tapedrive::Tapedrive;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::sleep;
 
 use crate::app::Command;
 use crate::log_layer::LogHistogram;
@@ -46,9 +49,8 @@ const SLOT_BUMP: u64 = 1;
 const CU_HIGH: u32 = 1_400_000;
 const CU_MED: u32 = 400_000;
 const UPLOAD_EPOCHS: u64 = 100;
-const UPLOAD_MAX_RETRIES: u32 = 8;
 const UPLOAD_RETRY_BASE_MS: u64 = 500;
-const UPLOAD_RETRY_MAX_MS: u64 = 30_000;
+const UPLOAD_RETRY_MAX_MS: u64 = 60_000;
 const UPLOAD_STALL_THRESHOLD_SECS: u64 = 20;
 const HTTP_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const HTTP_HEALTH_TIMEOUT: Duration = Duration::from_millis(750);
@@ -742,7 +744,7 @@ impl SimnetState {
     async fn poll_http_health(&mut self) {
         // Snapshot enough about each running node to build clients without
         // holding a borrow on `self.nodes` during the cache-mutating call.
-        let snapshots: Vec<(usize, String, tape_core::types::tls::NetworkTlsPubkey)> = self
+        let snapshots: Vec<(usize, String, NetworkTlsPubkey)> = self
             .nodes
             .iter()
             .filter(|node| node.is_running())
@@ -788,15 +790,15 @@ impl SimnetState {
     fn health_client_for_key(
         &mut self,
         id: usize,
-        tls_pubkey: tape_core::types::tls::NetworkTlsPubkey,
+        tls_pubkey: NetworkTlsPubkey,
     ) -> Option<Client> {
         if let Some(client) = self.health_clients.get(&id) {
             return Some(client.clone());
         }
 
-        peer_tls::install_default_provider();
+        install_default_provider();
         let builder = Client::builder().timeout(HTTP_HEALTH_TIMEOUT);
-        let builder = match peer_tls::apply_pinned_tls(builder, tls_pubkey) {
+        let builder = match apply_pinned_tls(builder, tls_pubkey) {
             Ok(b) => b,
             Err(err) => {
                 tracing::warn!(node = id, error = %err, "failed to configure health TLS pin");
@@ -877,22 +879,15 @@ async fn upload_random_blob(
     let upload_id = tape_key.address();
     let capacity = StorageUnits::from_bytes(data.len() as u64);
     let reserve_capacity = capacity + StorageUnits::mb(1); // 1 MB headroom
-    let mut expiry_epoch = None;
 
-    for attempt in 0..=UPLOAD_MAX_RETRIES {
+    let mut attempt = 0u32;
+    let expiry_epoch = loop {
         let _ = tx.send(UploadResult::AttemptStarted { upload_id });
         match sdk.reserve(&tape_key, reserve_capacity, UPLOAD_EPOCHS).await {
-            Ok(tape) => {
-                expiry_epoch = Some(tape.expiry_epoch.as_u64());
-                break;
-            }
+            Ok(tape) => break tape.expiry_epoch.as_u64(),
             Err(error) if !is_retriable_upload_error(&error) => {
                 return Err(anyhow::Error::from(error))
                     .context("reserve failed with non-retriable error");
-            }
-            Err(error) if attempt == UPLOAD_MAX_RETRIES => {
-                return Err(anyhow::Error::from(error))
-                    .context(format!("reserve exhausted after {} attempts", attempt + 1));
             }
             Err(error) => {
                 let delay = upload_retry_delay(attempt);
@@ -902,17 +897,18 @@ async fn upload_random_blob(
                     next_retry_in_ms: delay.as_millis() as u64,
                 });
                 tracing::warn!(attempt = attempt + 1, delay_ms = delay.as_millis(), error = %error, "reserve failed, retrying");
-                tokio::time::sleep(delay).await;
+                attempt = attempt.saturating_add(1);
+                sleep(delay).await;
             }
         }
-    }
+    };
 
     let _ = tx.send(UploadResult::AttemptStarted { upload_id });
     sdk.write_track(&tape_key, key, &data)
         .await
         .map_err(anyhow::Error::from)
         .context("write track")?;
-    Ok(expiry_epoch.expect("reserve succeeds before write"))
+    Ok(expiry_epoch)
 }
 
 fn is_retriable_upload_error(error: &TapedriveError) -> bool {

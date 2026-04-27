@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rand::RngCore;
-use rpc_solana::RpcConfig;
+use rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -17,6 +17,8 @@ use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
+use tokio::spawn;
+use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 use crate::view::UploadView;
@@ -93,7 +95,7 @@ impl UploadManager {
         let rpc_url = self.rpc_url.clone();
         let admin_keypair_path = self.admin_keypair_path.clone();
         let uploads = self.uploads.clone();
-        tokio::spawn(async move {
+        spawn(async move {
             match run_upload(
                 &rpc_url,
                 &admin_keypair_path,
@@ -157,7 +159,7 @@ async fn run_upload(
     let tape_address = tape_key.address().to_string();
     let admin = load_solana_keypair(admin_keypair_path)
         .with_context(|| format!("load uploader keypair: {}", admin_keypair_path.display()))?;
-    let rpc = rpc_solana::SolanaRpc::new(RpcConfig {
+    let rpc = SolanaRpc::new(RpcConfig {
         endpoints: vec![rpc_url.to_string()],
         ..Default::default()
     })
@@ -170,8 +172,8 @@ async fn run_upload(
     let reserve_capacity = capacity + StorageUnits::mb(1);
     let mut backoff = Backoff::new(RetryConfig {
         base_delay: Duration::from_secs(1),
-        max_delay: Duration::from_secs(5),
-        max_retries: Some(10),
+        max_delay: Duration::from_secs(60),
+        max_retries: None,
     });
 
     loop {
@@ -198,7 +200,7 @@ async fn run_upload(
                         error = %details,
                         "testnet reserve failed, retrying"
                     );
-                    tokio::time::sleep(delay).await;
+                    sleep(delay).await;
                     continue;
                 }
                 return Err(error).context("reserve tape");

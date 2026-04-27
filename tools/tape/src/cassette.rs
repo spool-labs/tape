@@ -1,6 +1,6 @@
-//! Cassette = on-disk Solana-style keypair for a TapeKey. Users create one
-//! with `tape create`, target it with `--cassette <path>`, or rely on the
-//! `use`'d default in `cli-config.yaml`.
+//! On-disk Solana-style keypair for a TapeKey. Users create one with
+//! `tape create`, target it with `--tape <path>`, or rely on the `use`'d
+//! default in `cli-config.yaml`.
 //!
 //! Convention: files live at `~/.tape/cassettes/<base58-pubkey>.json` when
 //! created without an explicit `--out` path.
