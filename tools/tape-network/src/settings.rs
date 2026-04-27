@@ -80,6 +80,12 @@ pub struct SolanaSettings {
     pub treasury_keypair: PathBuf,
     #[serde(default)]
     pub program_ids: ProgramIds,
+    /// Extra HTTP headers attached to every upstream RPC request the cache
+    /// makes. Used for providers that authenticate via header (Triton One
+    /// uses `x-token`) rather than via URL query string. Empty map for
+    /// public/keyless endpoints.
+    #[serde(default)]
+    pub rpc_headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

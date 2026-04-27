@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use solana_sdk::pubkey::Pubkey;
-use tape_admin::{mint, node, programs, status, treasury, Context, Error};
+use tape_admin::{chain, mint, node, programs, status, treasury, Context, Error};
 use tape_cli_common::{CliOutput, GlobalArgs, OkMessage, emit};
 use tracing_subscriber::EnvFilter;
 
@@ -28,6 +28,11 @@ enum Command {
     Mint {
         #[command(subcommand)]
         op: MintOp,
+    },
+    /// On-chain genesis: System + Epoch + Archive PDAs.
+    Chain {
+        #[command(subcommand)]
+        op: ChainOp,
     },
     /// Fan out SOL + TAPE from the payer to a list of recipients.
     Treasury {
@@ -58,6 +63,16 @@ enum ProgramsOp {
 #[derive(Subcommand)]
 enum MintOp {
     /// Initialize the TAPE mint PDA. Run once per cluster.
+    Init,
+}
+
+#[derive(Subcommand)]
+enum ChainOp {
+    /// Create + expand the System account and initialize the Epoch and
+    /// Archive PDAs. Idempotent — safe to re-run; already-initialized
+    /// accounts are skipped with a log line. Required before any node
+    /// registration or rpc-cache deployment, because both expect the Epoch
+    /// account to exist.
     Init,
 }
 
@@ -153,6 +168,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<(), Error> {
     match command {
         Command::Programs { op } => run_programs(ctx, op),
         Command::Mint { op } => run_mint(ctx, op).await,
+        Command::Chain { op } => run_chain(ctx, op).await,
         Command::Treasury { op } => run_treasury(ctx, op).await,
         Command::Node { op } => run_node(ctx, op).await,
         Command::Status => {
@@ -205,6 +221,18 @@ async fn run_mint(ctx: &Context, op: MintOp) -> Result<(), Error> {
         MintOp::Init => {
             mint::init(ctx).await?;
             emit_output(&OkMessage::new("TAPE mint initialized"), ctx)
+        }
+    }
+}
+
+async fn run_chain(ctx: &Context, op: ChainOp) -> Result<(), Error> {
+    match op {
+        ChainOp::Init => {
+            chain::init_all(ctx).await?;
+            emit_output(
+                &OkMessage::new("chain initialized (system + epoch + archive)"),
+                ctx,
+            )
         }
     }
 }

@@ -18,6 +18,13 @@ pub struct Config {
     /// Upstream Solana RPC URL. Typically points at a paid provider.
     pub upstream: String,
 
+    /// Extra HTTP headers attached to every upstream request. Used for
+    /// providers that authenticate via header (Triton One uses `x-token`)
+    /// rather than via URL query string (Helius). Empty map = no extra
+    /// headers, suitable for public endpoints.
+    #[serde(default)]
+    pub upstream_headers: HashMap<String, String>,
+
     /// Per-method TTL overrides. Keys are canonical JSON-RPC method names
     /// (e.g. `getSlot`). Values are duration strings: `500ms`, `2s`, `5m`.
     #[serde(default, with = "humantime_map")]
@@ -35,13 +42,27 @@ pub struct Config {
     pub log_submits: bool,
 
     /// Max number of cache entries kept in memory. 10k is plenty for a
-    /// 20-node fleet; bump if you see churn.
+    /// 20-node fleet; bump if you see churn. Applies to the moka cache
+    /// for non-block JSON-RPC methods (getSlot, getAccountInfo, etc).
     #[serde(default = "default_capacity")]
     pub max_entries: u64,
 
-    /// API key required as `?api=<key>` on every request. Purely a
-    /// port-scanner filter — not a security boundary.
+    /// API key required as `?api=<key>` on every JSON-RPC request.
+    /// Purely a port-scanner filter — not a security boundary.
+    /// `/v1/health` and `/v1/status` are intentionally unauthed.
     pub api_key: String,
+
+    /// Soft byte ceiling for the slot store (filtered finalized blocks).
+    /// Moka's weigher evicts oldest entries past this. 4 GiB by default.
+    #[serde(default = "default_slot_store_max_bytes")]
+    pub slot_store_max_bytes: u64,
+
+    /// Filter target. Any tx referencing one of these programs (via
+    /// account_keys, loaded_addresses, or `Program <id> invoke` log
+    /// lines) is kept. All other txs are dropped from the stored block.
+    /// Defaults to the four tape-network programs.
+    #[serde(default = "default_filter_program_ids")]
+    pub filter_program_ids: Vec<String>,
 }
 
 fn default_min_429() -> Duration {
@@ -54,6 +75,19 @@ fn default_true() -> bool {
 
 fn default_capacity() -> u64 {
     10_000
+}
+
+fn default_slot_store_max_bytes() -> u64 {
+    4 * 1024 * 1024 * 1024
+}
+
+fn default_filter_program_ids() -> Vec<String> {
+    vec![
+        tape_api::program::tapedrive::ID.to_string(),
+        tape_api::program::exchange::ID.to_string(),
+        tape_api::program::staking::ID.to_string(),
+        tape_api::program::token::ID.to_string(),
+    ]
 }
 
 impl Config {

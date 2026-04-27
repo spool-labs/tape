@@ -82,7 +82,14 @@ enum Command {
 #[derive(Subcommand)]
 enum CacheOp {
     /// Provision (or reinstall) the cache droplet and start the service.
-    Deploy,
+    Deploy {
+        /// Override the DigitalOcean droplet size slug. Only takes effect
+        /// when provisioning a new cache droplet — an existing droplet is
+        /// reused as-is. Examples: `s-1vcpu-2gb`, `s-2vcpu-4gb-amd`,
+        /// `s-4vcpu-8gb`.
+        #[arg(long)]
+        size: Option<String>,
+    },
     /// Destroy the cache droplet.
     Destroy,
     /// Print current state of the cache droplet.
@@ -202,8 +209,8 @@ fn run_genesis(settings: &Settings, op: GenesisOp) -> Result<()> {
 
 async fn run_cache(settings: &Settings, op: CacheOp) -> Result<()> {
     match op {
-        CacheOp::Deploy => {
-            let st = cache::deploy(settings).await?;
+        CacheOp::Deploy { size } => {
+            let st = cache::deploy(settings, size.as_deref()).await?;
             println!("cache deployed");
             if let Some(ip) = st.public_ip {
                 println!("  ip:  {ip}");

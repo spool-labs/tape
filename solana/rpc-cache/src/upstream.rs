@@ -1,9 +1,12 @@
 //! Upstream JSON-RPC client. Handles 429 cool-off (with `Retry-After`
 //! priority) and an exponential-backoff path for other transient errors.
 
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
-use reqwest::{Client, StatusCode, header::RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -51,10 +54,33 @@ pub struct Upstream {
 }
 
 impl Upstream {
-    pub fn new(url: String, min_429_delay: Duration) -> Self {
+    pub fn new(
+        url: String,
+        min_429_delay: Duration,
+        headers: HashMap<String, String>,
+    ) -> Self {
+        let mut header_map = HeaderMap::new();
+        for (name, value) in &headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .unwrap_or_else(|e| panic!("invalid upstream header name {name:?}: {e}"));
+            let header_value = HeaderValue::from_str(value)
+                .unwrap_or_else(|e| panic!("invalid upstream header value for {name:?}: {e}"));
+            header_map.insert(header_name, header_value);
+        }
+
         let client = Client::builder()
             // Don't block inbound indefinitely on a stuck upstream.
             .timeout(Duration::from_secs(30))
+            // Force IPv4 outbound. Helius / Triton / etc DNS returns both
+            // IPv4 and IPv6 (Cloudflare). reqwest's hyper-util connector
+            // tries IPv6 first; on hosts without a global IPv6 route — like
+            // a default DigitalOcean droplet — that IPv6 connect blocks the
+            // full timeout window before falling back to IPv4, manifesting
+            // as every other request appearing to hang. Binding the local
+            // socket to 0.0.0.0 constrains the address family to IPv4 and
+            // skips that detour.
+            .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .default_headers(header_map)
             .build()
             .expect("reqwest client build");
         Self {

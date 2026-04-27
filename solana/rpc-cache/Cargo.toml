@@ -10,16 +10,21 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "rpc-cache"
-path = "src/main.rs"
+path = "src/bin/rpc-cache/main.rs"
 
 [dependencies]
 # Workspace crates
 tape-cli-common = { path = "../../tools/tape-cli-common" }
 rpc = { workspace = true }
+tape-api = { workspace = true }
+tape-core = { workspace = true }
+tape-crypto = { workspace = true }
 
 # External
 anyhow = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
+bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 humantime = "2"
 humantime-serde = "1"
@@ -29,8 +34,12 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
+solana-client = { workspace = true }
+solana-sdk = { workspace = true }
+solana-transaction-status = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"

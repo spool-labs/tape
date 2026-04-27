@@ -27,7 +27,7 @@ const API_KEY_FILE: &str = "cache-api-key";
 /// Default cache-droplet size. The proxy is I/O-bound; a small shared-CPU
 /// node is plenty for a 20-node committee. Override via settings if you
 /// scale past that.
-const DEFAULT_CACHE_SIZE: &str = "s-1vcpu-2gb";
+const DEFAULT_CACHE_SIZE: &str = "s-2vcpu-4gb-amd";
 
 /// Listen port the rpc-cache binds on the cache droplet. Committee nodes
 /// are configured to hit this port.
@@ -59,7 +59,11 @@ pub fn url_for(instance: &Instance, api_key: &str) -> Option<String> {
 
 /// Provision + install the cache droplet. Idempotent: reuses an existing
 /// droplet if present, reinstalls the binary + config every time.
-pub async fn deploy(settings: &Settings) -> Result<CacheStatus> {
+///
+/// `size_override` controls the DO droplet size slug used when provisioning
+/// a new droplet (`None` falls back to [`DEFAULT_CACHE_SIZE`]). It does not
+/// resize an existing droplet — destroy first if you want a different size.
+pub async fn deploy(settings: &Settings, size_override: Option<&str>) -> Result<CacheStatus> {
     // Locate the local rpc-cache binary. Build-linux produces it
     // alongside tape-node at target/x86_64-unknown-linux-gnu/release/.
     let source_root = settings_source_root(settings)?;
@@ -78,7 +82,7 @@ pub async fn deploy(settings: &Settings) -> Result<CacheStatus> {
 
     let api_key = load_or_create_api_key(settings)?;
 
-    let instance = find_or_create(settings).await?;
+    let instance = find_or_create(settings, size_override).await?;
     let host = instance
         .public_ip
         .as_deref()
@@ -112,7 +116,7 @@ pub async fn deploy(settings: &Settings) -> Result<CacheStatus> {
     .await?;
 
     info!(host = %host, "writing config");
-    let config_yaml = render_config(&upstream, &api_key);
+    let config_yaml = render_config(&upstream, &api_key, &settings.solana.rpc_headers);
     upload_str(
         settings,
         host,
@@ -228,7 +232,7 @@ fn settings_source_root(settings: &Settings) -> Result<std::path::PathBuf> {
     }
 }
 
-async fn find_or_create(settings: &Settings) -> Result<Instance> {
+async fn find_or_create(settings: &Settings, size_override: Option<&str>) -> Result<Instance> {
     let provider = cloud::from_settings(settings)?;
     let tag = cache_tag(settings);
     if let Some(inst) = provider
@@ -257,7 +261,7 @@ async fn find_or_create(settings: &Settings) -> Result<Instance> {
     }
 
     let name = format!("{}{}", settings.testbed_id, CACHE_TAG_SUFFIX);
-    let size = DEFAULT_CACHE_SIZE;
+    let size = size_override.unwrap_or(DEFAULT_CACHE_SIZE);
     info!(tag = %tag, size = %size, "provisioning new cache droplet");
     let created = provider.create_one(&name, &tag, Some(size)).await?;
     let ready = cloud::digitalocean::wait_until_ready(
@@ -272,11 +276,25 @@ async fn find_or_create(settings: &Settings) -> Result<Instance> {
         .ok_or_else(|| anyhow!("cache droplet never became ready"))
 }
 
-fn render_config(upstream: &str, api_key: &str) -> String {
-    format!(
+fn render_config(
+    upstream: &str,
+    api_key: &str,
+    upstream_headers: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut yaml = format!(
         "listen: \"0.0.0.0:{port}\"\nupstream: \"{upstream}\"\napi_key: \"{api_key}\"\nmin_429_delay: \"10s\"\nlog_submits: true\nmax_entries: 10000\n",
         port = CACHE_LISTEN_PORT,
-    )
+    );
+    if !upstream_headers.is_empty() {
+        yaml.push_str("upstream_headers:\n");
+        // Stable order so config hashes don't churn between deploys.
+        let mut entries: Vec<(&String, &String)> = upstream_headers.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, value) in entries {
+            yaml.push_str(&format!("  {name}: \"{value}\"\n"));
+        }
+    }
+    yaml
 }
 
 /// Path where we persist the cache api_key for this testbed.

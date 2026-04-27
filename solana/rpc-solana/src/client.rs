@@ -5,7 +5,7 @@ use crate::failover::EndpointFailover;
 use async_trait::async_trait;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcTransactionConfig};
+use solana_client::rpc_config::{RpcProgramAccountsConfig, RpcTransactionConfig};
 use solana_sdk::account::Account;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::hash::Hash;
@@ -16,7 +16,7 @@ use solana_transaction_status::{
     EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock, UiTransactionEncoding,
 };
 use std::sync::Arc;
-use rpc::{Rpc, RpcError};
+use rpc::{Rpc, RpcError, BLOCK_FETCH_CONFIG};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
 use tokio::sync::RwLock;
@@ -366,22 +366,13 @@ impl Rpc for SolanaRpc {
 
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
-        let commitment = self.config.commitment;
 
         loop {
-            let config = RpcBlockConfig {
-                encoding: Some(UiTransactionEncoding::Json),
-                transaction_details: Some(solana_transaction_status::TransactionDetails::Full),
-                rewards: Some(true),
-                commitment: Some(CommitmentConfig { commitment }),
-                max_supported_transaction_version: Some(0),
-            };
-
             let result = {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.get_block_with_config(slot, config),
+                    client.get_block_with_config(slot, BLOCK_FETCH_CONFIG),
                 )
                 .await
             };

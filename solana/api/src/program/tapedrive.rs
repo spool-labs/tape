@@ -18,7 +18,7 @@ pub const STREAM_SEGMENTS:        usize = 18;   // 2^18 = 262,144 segments (32Mi
 // Emergency unstaking trigger
 pub const STUCK_SYSTEM_THRESHOLD:   i64 = EPOCH_DURATION * 2;  
 
-tape_solana::declare_id!("52zxx3ZjUG5qMxojUVXpQHiZnAc8RwPdWDUjmxx9qN5Q");
+tape_solana::declare_id!("922D5ZvV8RGzGeoPXDSRNxPnDQ1SxYaLJhwkXq1ffvsu");
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
