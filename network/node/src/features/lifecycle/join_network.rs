@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_join_network;
-use crate::core::chain_tx::{TxOutcome, classify_tx};
+use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
@@ -79,9 +79,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         info!(epoch = epoch.0, "join_network: submitting");
 
-        let result = submit_join_network(&ctx).await;
+        let outcome = submit_if_at_tip(&ctx.ingest, submit_join_network(&ctx)).await;
 
-        match classify_tx(result) {
+        match outcome {
             TxOutcome::Confirmed(sig) => {
                 info!(epoch = epoch.0, ?sig, "join_network: confirmed");
                 return TaskDone::Done(Action::JoinNetwork, epoch);
@@ -97,6 +97,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
             TxOutcome::Transport(err) => {
                 debug!(epoch = epoch.0, %err, "join_network: transport error");
+            }
+            TxOutcome::SkippedStale => {
+                debug!(epoch = epoch.0, "join_network: ingest stale, deferring");
+                return TaskDone::Rejected(Action::JoinNetwork, epoch);
             }
         }
 

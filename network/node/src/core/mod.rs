@@ -2,6 +2,7 @@ pub mod bootstrap;
 pub mod chain_tx;
 pub mod channels;
 pub mod error;
+pub mod ingest;
 pub mod limits;
 pub mod metrics;
 pub mod peer_call;

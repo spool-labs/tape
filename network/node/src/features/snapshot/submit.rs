@@ -18,11 +18,61 @@ use tape_store::ops::SnapshotOps;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::chain::{submit_sign_snapshot, submit_write_snapshot};
+use crate::chain::{submit_reserve_snapshot, submit_sign_snapshot, submit_write_snapshot};
 use crate::context::NodeContext;
+use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
 use crate::core::error::NodeError;
 use crate::features::snapshot::utils::bitmap_index_in_group;
 use tape_core::spooler::SpoolGroup;
+
+/// Heartbeat-driven reserve attempt for `snapshot_epoch`. Skips if we've
+/// already observed (or successfully submitted) a reserve for this epoch.
+pub async fn submit_ready_reserves<Db, Cluster, Blockchain>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    snapshot_epoch: EpochNumber,
+    last_reserved: &mut Option<EpochNumber>,
+    cancel: &CancellationToken,
+) -> Result<(), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    if last_reserved.is_some_and(|reserved| reserved >= snapshot_epoch) {
+        return Ok(());
+    }
+
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+
+    let outcome = submit_if_at_tip(
+        &ctx.ingest,
+        submit_reserve_snapshot(ctx, snapshot_epoch),
+    )
+    .await;
+
+    match outcome {
+        TxOutcome::Confirmed(txid) => {
+            info!(epoch = snapshot_epoch.0, ?txid, "snapshot: reserve submitted");
+            *last_reserved = Some(match *last_reserved {
+                Some(prev) => prev.max(snapshot_epoch),
+                None => snapshot_epoch,
+            });
+        }
+        TxOutcome::Program(err) => {
+            debug!(epoch = snapshot_epoch.0, ?err, "snapshot: reserve raced / program error");
+        }
+        TxOutcome::Transport(err) => {
+            debug!(epoch = snapshot_epoch.0, %err, "snapshot: reserve transport error");
+        }
+        TxOutcome::SkippedStale => {
+            debug!(epoch = snapshot_epoch.0, "snapshot: reserve deferred, ingest stale");
+        }
+    }
+
+    Ok(())
+}
 
 /// For every group we're a member of, submit the `WriteSnapshot` instruction
 /// for any chunk where we hold a supermajority and still have the local
@@ -96,13 +146,25 @@ where
             let aggregate = BlsSignature::aggregate(&partials)
                 .map_err(|e| NodeError::Store(format!("aggregate write sigs: {e:?}")))?;
 
-            match submit_write_snapshot(ctx, epoch, group, chunk, bitmap, aggregate, &artifact.blob).await {
-                Ok(txid) => {
+            let outcome = submit_if_at_tip(
+                &ctx.ingest,
+                submit_write_snapshot(ctx, epoch, group, chunk, bitmap, aggregate, &artifact.blob),
+            )
+            .await;
+
+            match outcome {
+                TxOutcome::Confirmed(txid) => {
                     info!(%epoch, group = group.0, chunk = chunk.0, ?txid, "snapshot: write submitted")
-                },
-                Err(error) => {
-                    debug!(?error, %epoch, group = group.0, chunk = chunk.0, "snapshot: write submit raced / failed")
-                },
+                }
+                TxOutcome::Program(err) => {
+                    debug!(?err, %epoch, group = group.0, chunk = chunk.0, "snapshot: write program error")
+                }
+                TxOutcome::Transport(err) => {
+                    debug!(%err, %epoch, group = group.0, chunk = chunk.0, "snapshot: write transport error")
+                }
+                TxOutcome::SkippedStale => {
+                    debug!(%epoch, group = group.0, chunk = chunk.0, "snapshot: write deferred, ingest stale")
+                }
             }
         }
     }
@@ -172,13 +234,25 @@ where
         let aggregate = BlsSignature::aggregate(&partials)
             .map_err(|e| NodeError::Store(format!("aggregate finalize sigs: {e:?}")))?;
 
-        match submit_sign_snapshot(ctx, epoch, group, bitmap, aggregate).await {
-            Ok(txid) => {
+        let outcome = submit_if_at_tip(
+            &ctx.ingest,
+            submit_sign_snapshot(ctx, epoch, group, bitmap, aggregate),
+        )
+        .await;
+
+        match outcome {
+            TxOutcome::Confirmed(txid) => {
                 info!(%epoch, group = group.0, ?txid, "snapshot: finalize submitted")
-            },
-            Err(error) => {
-                debug!(?error, %epoch, group = group.0, "snapshot: finalize submit raced / failed")
-            },
+            }
+            TxOutcome::Program(err) => {
+                debug!(?err, %epoch, group = group.0, "snapshot: finalize program error")
+            }
+            TxOutcome::Transport(err) => {
+                debug!(%err, %epoch, group = group.0, "snapshot: finalize transport error")
+            }
+            TxOutcome::SkippedStale => {
+                debug!(%epoch, group = group.0, "snapshot: finalize deferred, ingest stale")
+            }
         }
     }
 

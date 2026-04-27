@@ -70,6 +70,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     }
 
     async fn fetch_parse_and_dispatch(&self, slot: SlotNumber) -> Result<IngestStep, NodeError> {
+        let progress = self.context.ingest.progress();
+        progress.record_attempt();
+
         let tip = match self.context.rpc.get_slot().await {
             Ok(tip) => tip,
             Err(error) => {
@@ -83,19 +86,26 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             }
         };
 
+        progress.record_tip(tip);
+
         if slot.0 > tip {
             sleep(Duration::from_millis(TIP_POLL_MS)).await;
             return Ok(IngestStep::Wait);
         }
 
         let context = self.context.clone();
+        let attempt_progress = progress.clone();
 
         let block = retry_if(
             RetryConfig::infinite(),
             Some(&self.cancel),
             move || {
                 let context = context.clone();
-                async move { context.rpc.get_block(slot.0).await }
+                let attempt_progress = attempt_progress.clone();
+                async move {
+                    attempt_progress.record_attempt();
+                    context.rpc.get_block(slot.0).await
+                }
             },
             |error| error.is_retriable() && !error.is_skipped_slot(),
         )
@@ -187,6 +197,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         }
 
         self.context.metrics.inc_blocks_processed();
+        progress.record_dispatched(slot.0);
         info!(slot = slot.0, "dispatched parsed block");
         Ok(IngestStep::Continue)
     }

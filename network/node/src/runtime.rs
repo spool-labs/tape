@@ -20,6 +20,7 @@ use crate::core::bootstrap::build_context;
 use crate::core::channels::{downstream_channels, store_channel};
 use crate::core::error::NodeError;
 use crate::core::types::ServiceName;
+use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap;
 use crate::features::gc::manager::GcManager;
@@ -233,6 +234,14 @@ where
     );
 
     supervisor.spawn(
+        ServiceName::IngestMonitor,
+        ingest_monitor::run(
+            context.clone(),
+            cancel.clone()
+        ),
+    );
+
+    supervisor.spawn(
         ServiceName::StateManager,
         StateManager::new(
             context.clone(),
@@ -313,6 +322,7 @@ where
 {
     let cancel = CancellationToken::new();
     initialize_context(&context, &cancel).await?;
+
     let start_slot = bootstrap::run(&context, &config, &cancel).await?;
     supervise_with_context(context, config, start_slot, cancel).await
 }
@@ -328,6 +338,7 @@ where
 {
     let cancel = CancellationToken::new();
     initialize_context(&context, &cancel).await?;
+
     let start_slot = bootstrap::run(&context, &config, &cancel).await?;
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();

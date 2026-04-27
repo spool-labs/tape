@@ -42,6 +42,17 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map(|slot| slot.0)
         .unwrap_or(0);
 
+    let ingest_progress = state.context.ingest.progress();
+    let ingest_tip_raw = ingest_progress.last_known_tip();
+    let ingest_dispatched = ingest_progress.last_dispatched_slot();
+    let ingest_tip_slot = if ingest_tip_raw == u64::MAX { 0 } else { ingest_tip_raw };
+    let ingest_lag_slots = if ingest_tip_raw == u64::MAX {
+        0
+    } else {
+        ingest_tip_raw.saturating_sub(ingest_dispatched)
+    };
+    let ingest_state = state.context.ingest_state().label().to_string();
+
     let owned_spools = store
         .iter_all_spools()
         .map_err(store_error)?;
@@ -85,6 +96,9 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         bytes_uploaded: metrics.bytes_uploaded,
         bytes_downloaded: metrics.bytes_downloaded,
         requests_total: metrics.requests_total,
+        ingest_state,
+        ingest_lag_slots,
+        ingest_tip_slot,
     };
 
     debug!(

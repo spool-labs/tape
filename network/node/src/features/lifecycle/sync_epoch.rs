@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_sync_epoch;
-use crate::core::chain_tx::{TxOutcome, classify_tx};
+use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::wait_spool_ready::{Readiness, check_readiness};
@@ -76,9 +76,13 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         info!(epoch = epoch.0, "sync_epoch: submitting");
-        let result = submit_sync_epoch(&ctx, epoch, &owned_spools).await;
+        let outcome = submit_if_at_tip(
+            &ctx.ingest,
+            submit_sync_epoch(&ctx, epoch, &owned_spools),
+        )
+        .await;
 
-        match classify_tx(result) {
+        match outcome {
             TxOutcome::Confirmed(sig) => {
                 info!(epoch = epoch.0, ?sig, "sync_epoch: confirmed");
                 return TaskDone::Done(Action::SyncEpoch, epoch);
@@ -92,6 +96,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
             TxOutcome::Transport(err) => {
                 debug!(epoch = epoch.0, %err, "sync_epoch: transport error");
+            }
+            TxOutcome::SkippedStale => {
+                debug!(epoch = epoch.0, "sync_epoch: ingest stale, deferring");
+                return TaskDone::Rejected(Action::SyncEpoch, epoch);
             }
         }
 

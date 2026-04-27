@@ -13,16 +13,17 @@ use tape_protocol::Api;
 use tape_store::ops::{EventLogOps, SliceOps, SnapshotOps};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::debug;
 
-use crate::chain::submit_reserve_snapshot;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::snapshot::build::build_snapshot;
 use crate::features::snapshot::fanout::{fanout_finalize_votes, fanout_write_votes};
-use crate::features::snapshot::submit::{submit_ready_finalizes, submit_ready_writes};
+use crate::features::snapshot::submit::{
+    submit_ready_finalizes, submit_ready_reserves, submit_ready_writes,
+};
 use crate::features::snapshot::vote::{
     create_snapshot_finalize_votes, create_snapshot_write_votes,
 };
@@ -33,6 +34,7 @@ pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
+    last_reserved_epoch: Option<EpochNumber>,
 }
 
 impl<Db, Cluster, Blockchain> SnapshotManager<Db, Cluster, Blockchain>
@@ -50,6 +52,7 @@ where
             context,
             block_rx,
             cancel,
+            last_reserved_epoch: None,
         }
     }
 
@@ -76,7 +79,7 @@ where
         }
     }
 
-    async fn on_block(&self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
+    async fn on_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         for ix in &block.instructions {
             match ix {
                 ParsedInstruction::AdvanceEpoch { event } => {
@@ -109,15 +112,6 @@ where
             .delete_snapshot_epochs_except(snapshot_epoch)
             .map_err(|e| NodeError::Store(format!("delete_snapshot_epochs_except: {e}")))?;
 
-        match submit_reserve_snapshot(&self.context, snapshot_epoch).await {
-            Ok(txid) => {
-                info!(epoch = snapshot_epoch.0, ?txid, "snapshot: reserve submitted")
-            },
-            Err(error) => {
-                debug!(?error, epoch = snapshot_epoch.0, "snapshot: reserve raced / already exists")
-            }
-        }
-
         Ok(())
     }
 
@@ -136,7 +130,14 @@ where
         Ok(())
     }
 
-    async fn on_snapshot_reserved(&self, epoch: EpochNumber) -> Result<(), NodeError> {
+    async fn on_snapshot_reserved(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
+        // Observation of any node's reserve event is enough to stop our own
+        // heartbeat from re-attempting reserve for this epoch.
+        self.last_reserved_epoch = Some(match self.last_reserved_epoch {
+            Some(prev) => prev.max(epoch),
+            None => epoch,
+        });
+
         build_snapshot(&self.context, epoch, &self.cancel).await?;
         create_snapshot_write_votes(&self.context, epoch, &self.cancel).await?;
         create_snapshot_finalize_votes(&self.context, epoch, &self.cancel).await?;
@@ -175,7 +176,7 @@ where
         Ok(())
     }
 
-    async fn on_heartbeat(&self) -> Result<(), NodeError> {
+    async fn on_heartbeat(&mut self) -> Result<(), NodeError> {
         let state = self.context.state();
         if state.epoch == EpochNumber(0) {
             return Ok(());
@@ -183,6 +184,8 @@ where
 
         let snapshot_epoch = state.epoch
             .saturating_sub(EpochNumber(1));
+
+        submit_ready_reserves(&self.context, snapshot_epoch, &mut self.last_reserved_epoch, &self.cancel).await?;
 
         submit_ready_writes(&self.context, snapshot_epoch, &self.cancel).await?;
         submit_ready_finalizes(&self.context, snapshot_epoch, &self.cancel).await?;

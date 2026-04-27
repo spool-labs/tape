@@ -22,6 +22,7 @@ use tape_store::{TapeStore, ops::MetaOps};
 
 use crate::config::node::NodeConfig;
 use crate::core::error::NodeError;
+use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
 
@@ -32,6 +33,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub store: Arc<TapeStore<Db>>,
     pub rpc: Arc<RpcClient<Blockchain>>,
     pub state: StateBus,
+    pub ingest: IngestBus,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub metrics: NodeMetrics,
@@ -103,6 +105,18 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn subscribe_state(&self) -> Receiver<Arc<ProtocolState>> {
         self.state.subscribe()
+    }
+
+    pub fn ingest_state(&self) -> IngestState {
+        self.ingest.current()
+    }
+
+    pub fn subscribe_ingest(&self) -> Receiver<IngestState> {
+        self.ingest.subscribe()
+    }
+
+    pub fn is_at_tip(&self) -> bool {
+        self.ingest.is_at_tip()
     }
 
     pub async fn refresh_peers(&self) -> Result<(), PeerManagerError> {
@@ -190,6 +204,7 @@ pub mod test_utils {
             store: Arc::new(store),
             rpc: Arc::new(rpc),
             state: StateBus::default(),
+            ingest: IngestBus::default(),
             peer_manager,
             api: Arc::new(api),
             metrics: NodeMetrics::default(),
@@ -273,6 +288,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             store: Arc::new(self.store),
             rpc: Arc::new(self.rpc),
             state: StateBus::default(),
+            ingest: IngestBus::default(),
             peer_manager: self.peer_manager,
             api: self.api,
             metrics: NodeMetrics::default(),

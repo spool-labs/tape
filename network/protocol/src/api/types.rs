@@ -110,6 +110,9 @@ pub struct NodeStats {
     pub bytes_uploaded: u64,
     pub bytes_downloaded: u64,
     pub requests_total: u64,
+    pub ingest_state: String,
+    pub ingest_lag_slots: u64,
+    pub ingest_tip_slot: u64,
 }
 
 /// Payload for slice upload requests.

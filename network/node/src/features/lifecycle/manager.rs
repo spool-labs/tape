@@ -234,6 +234,13 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             return;
         }
 
+        // Block ingestor must be at the live edge before we plan any
+        // protocol-changing transaction.
+        if !self.context.is_at_tip() {
+            debug!(epoch = epoch.0, "lifecycle: skipping spawn (ingest not at tip)");
+            return;
+        }
+
         let state = self.context.state();
         let node_id = self.context.node_id();
 
