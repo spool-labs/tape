@@ -17,6 +17,7 @@ pub const STAKE_WITH_POOL_CU: u32 = 1_400_000;
 pub const ADVANCE_EPOCH_CU: u32 = 1_400_000;
 pub const CERTIFY_TRACK_CU: u32 = 1_400_000;
 pub const INVALIDATE_TRACK_CU: u32 = 1_400_000;
+pub const TRACK_WRITE_CU: u32 = 1_400_000;
 pub const RESERVE_SNAPSHOT_CU: u32 = 400_000;
 pub const WRITE_SNAPSHOT_CU: u32 = 400_000;
 pub const SIGN_SNAPSHOT_CU: u32 = 400_000;

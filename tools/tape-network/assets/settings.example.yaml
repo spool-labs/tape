@@ -22,9 +22,9 @@ network:
   open_ports: [8080, 9000]
 
 solana:
-  cluster: devnet
-  rpc_url: https://api.devnet.solana.com
-  ws_url:  wss://api.devnet.solana.com
+  provider: helius                              # helius | triton
+  endpoint: https://devnet.helius-rpc.com
+  api_key: "${HELIUS_API_KEY}"
   treasury_keypair: "~/.tape/treasury.json"
   program_ids:     # pin after first `genesis deploy-programs`
     tapedrive: null

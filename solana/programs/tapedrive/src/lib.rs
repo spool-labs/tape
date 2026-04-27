@@ -111,7 +111,7 @@ pub fn process_instruction(
             TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
 
             // Track
-            TapeInstruction::TrackWrite => process_track_write(accounts, data)?,
+            TapeInstruction::TrackWrite => process_track_write(accounts, data)?,             // CU 1_400_000
             TapeInstruction::DeleteTrack => process_delete_track(accounts, data)?,
             TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,        // CU 1_400_000
             TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,  // CU 1_400_000

@@ -72,7 +72,7 @@ pub async fn run(
             info!(cache_url = %url, "routing nodes + admin txs through RPC cache");
             url.clone()
         }
-        None => settings.solana.rpc_url.clone(),
+        None => settings.solana.upstream_url(),
     };
 
     info!(
@@ -364,7 +364,8 @@ fn render_node_yaml(
 ) -> String {
     let working = settings.network.working_dir.display();
     let data = settings.network.data_dir.display();
-    let rpc = rpc_override.unwrap_or(settings.solana.rpc_url.as_str());
+    let upstream = settings.solana.upstream_url();
+    let rpc = rpc_override.unwrap_or(upstream.as_str());
     let commission = settings.genesis.commission_bp;
     format!(
         "node:\n  name: \"{node_name}\"\n  node_keypair: \"{working}/keys/identity.json\"\n  bls_keypair: \"{working}/keys/bls.json\"\n  commission: {commission}\nsolana:\n  rpc: \"{rpc}\"\nnetwork:\n  host: \"{public_ip}\"\n  port: {HTTPS_PORT}\nhttp:\n  listen: \"0.0.0.0:{HTTP_PORT}\"\nhttps:\n  listen: \"0.0.0.0:{HTTPS_PORT}\"\n  identity_keypair: \"{working}/keys/tls.json\"\nstore:\n  path: \"{data}/store\"\n"
@@ -686,7 +687,7 @@ mod tests {
         let rendered = render_node_yaml(&settings, "1.2.3.4", "test-node", None);
         assert!(rendered.contains("name: \"test-node\""));
         assert!(rendered.contains("host: \"1.2.3.4\""));
-        assert!(rendered.contains("port: 9000"));
+        assert!(rendered.contains(&format!("port: {HTTPS_PORT}")));
     }
 
     fn sample_settings() -> Settings {
@@ -703,8 +704,9 @@ cloud:
 network:
   node_count: 1
 solana:
-  cluster: devnet
-  rpc_url: https://api.devnet.solana.com
+  provider: helius
+  endpoint: https://api.devnet.solana.com
+  api_key: dummy
   treasury_keypair: /tmp/treasury.json
 genesis:
   per_node_sol: 1

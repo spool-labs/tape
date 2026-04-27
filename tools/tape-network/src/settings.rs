@@ -71,21 +71,42 @@ fn default_open_ports() -> Vec<u16> {
     vec![8080, 9000]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RpcProvider {
+    Helius,
+    Triton,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SolanaSettings {
-    pub cluster: String,
-    pub rpc_url: String,
-    #[serde(default)]
-    pub ws_url: Option<String>,
+    pub provider: RpcProvider,
+    pub endpoint: String,
+    pub api_key: String,
     pub treasury_keypair: PathBuf,
     #[serde(default)]
     pub program_ids: ProgramIds,
-    /// Extra HTTP headers attached to every upstream RPC request the cache
-    /// makes. Used for providers that authenticate via header (Triton One
-    /// uses `x-token`) rather than via URL query string. Empty map for
-    /// public/keyless endpoints.
-    #[serde(default)]
-    pub rpc_headers: HashMap<String, String>,
+}
+
+impl SolanaSettings {
+    /// Full URL the cache uses to talk to the upstream RPC provider.
+    /// Helius authenticates via `?api-key=`; Triton via `x-token` header
+    /// (returned by `upstream_headers`).
+    pub fn upstream_url(&self) -> String {
+        let endpoint = self.endpoint.trim_end_matches('/');
+        match self.provider {
+            RpcProvider::Helius => format!("{endpoint}/?api-key={}", self.api_key),
+            RpcProvider::Triton => endpoint.to_string(),
+        }
+    }
+
+    /// Extra HTTP headers the cache attaches to every upstream request.
+    pub fn upstream_headers(&self) -> Vec<(String, String)> {
+        match self.provider {
+            RpcProvider::Helius => Vec::new(),
+            RpcProvider::Triton => vec![("x-token".into(), self.api_key.clone())],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

@@ -126,19 +126,10 @@ impl RpcError {
 }
 
 /// Check if error message indicates a retriable condition.
-///
-/// Covers:
-/// - Solana-specific states (blockhash expired, slot skipped, node lag)
-/// - Network conditions (timeouts, connection resets)
-/// - Rate limits and server busy: text forms ("too many requests", "rate
-///   limit", "exceeded") plus raw HTTP status codes (429, 503, 504). The
-///   public devnet RPC typically returns these as plain integers in the
-///   solana-client error string, so both formulations need matching.
 fn is_retriable_message(msg: &str) -> bool {
     let msg = msg.to_lowercase();
     msg.contains("blockhash not found")
         || msg.contains("node is behind")
-        || msg.contains("slot was skipped")
         || msg.contains("block not available")
         || msg.contains("timeout")
         || msg.contains("timed out")
@@ -169,9 +160,7 @@ fn is_endpoint_error_message(msg: &str) -> bool {
 
 fn is_skipped_slot_message(msg: &str) -> bool {
     let msg = msg.to_lowercase();
-    msg.contains("slotskipped")
-        || msg.contains("slot was skipped")
-        || msg.contains("skipped")
+    msg.contains("slotskipped") || msg.contains("slot was skipped")
 }
 
 #[cfg(test)]
@@ -248,5 +237,13 @@ mod tests {
         assert!(!RpcError::BlockNotAvailable.is_skipped_slot());
         assert!(!RpcError::Request("connection reset".to_string()).is_skipped_slot());
         assert!(!RpcError::Timeout(Duration::from_secs(1)).is_skipped_slot());
+    }
+
+    #[test]
+    fn skipped_slot_is_not_retriable() {
+        let real = "RPC response error -32007: Slot was skipped, or missing due to ledger jump to recent snapshot;";
+        let err = RpcError::Request(real.to_string());
+        assert!(err.is_skipped_slot());
+        assert!(!err.is_retriable());
     }
 }

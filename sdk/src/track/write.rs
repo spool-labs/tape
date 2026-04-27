@@ -4,7 +4,7 @@ use tracing::warn;
 
 use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use rpc_client::parse_tape_error;
-use tape_api::compute::CERTIFY_TRACK_CU;
+use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
 use tape_api::instruction::{ 
@@ -166,8 +166,9 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers(
+        .send_instructions_with_signers_and_compute_unit_limit(
             payer,
+            TRACK_WRITE_CU,
             vec![write_ix],
             &[tape_signer],
         )
@@ -221,8 +222,9 @@ async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers(
+        .send_instructions_with_signers_and_compute_unit_limit(
             payer,
+            TRACK_WRITE_CU,
             vec![write_ix],
             &[tape_signer],
         )

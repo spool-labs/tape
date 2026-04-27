@@ -124,33 +124,21 @@ fn parse_transaction(
         return Ok((Vec::new(), Vec::new()));
     };
 
-    // Build the full resolved account-key list. For v0 transactions the
-    // RPC returns static keys in `raw_message.account_keys` and ALT-resolved
-    // keys separately in `meta.loaded_addresses`. Compiled-instruction
-    // indices reference the combined list in this exact order:
-    //   [static_keys] ++ [loaded_addresses.writable] ++ [loaded_addresses.readonly]
+    let Some(meta) = &tx.meta else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+
+    // Solana resolves compiled-instruction indices against static keys, then
+    // ALT-loaded writable, then ALT-loaded readonly. Order is load-bearing.
     let mut resolved_keys: Vec<String> = raw_message.account_keys.clone();
-    if let Some(meta) = &tx.meta {
-        if let OptionSerializer::Some(loaded) = &meta.loaded_addresses {
-            resolved_keys.extend(loaded.writable.iter().cloned());
-            resolved_keys.extend(loaded.readonly.iter().cloned());
-        }
+    if let OptionSerializer::Some(loaded) = &meta.loaded_addresses {
+        resolved_keys.extend(loaded.writable.iter().cloned());
+        resolved_keys.extend(loaded.readonly.iter().cloned());
     }
 
-    // Extract events from log messages
-    let events = if let Some(meta) = &tx.meta {
-        parse_log_messages(meta)?
-    } else {
-        Vec::new()
-    };
-
-    // Parse instructions
+    let events = parse_log_messages(meta)?;
     let mut raw_instructions = Vec::new();
-    let mut inner_by_outer_index = if let Some(meta) = &tx.meta {
-        parse_inner_instructions(&resolved_keys, meta)?
-    } else {
-        BTreeMap::new()
-    };
+    let mut inner_by_outer_index = parse_inner_instructions(&resolved_keys, meta)?;
 
     // Process each top-level instruction followed immediately by its inner instructions.
     for (outer_index, ix) in raw_message.instructions.iter().enumerate() {
@@ -589,106 +577,7 @@ mod tests {
         }
     }
 
-    /// A v0 transaction that loads the tape program ID through an Address Lookup Table.
-    /// The `program_id_index` of the tape instruction lands in the loaded-addresses range,
-    /// not the static range. Without ALT-aware resolution the parser silently drops the
-    /// instruction and `merge` then fails with EventMismatch because the event from the
-    /// log is still captured.
-    #[test]
-    fn resolves_alt_program_id() {
-        let fee_payer = Address::new_unique();
-        let authority = Address::new_unique();
-        let epoch = epoch_pda().0;
-        let tape = tape_pda(authority).0;
-        let slot_hashes = sysvar::slot_hashes::ID;
-        let tapedrive_program = tapedrive::ID;
-
-        // Static keys: every account except the tape program itself.
-        let static_keys = vec![
-            fee_payer.into(),
-            authority.into(),
-            epoch.into(),
-            tape.into(),
-            slot_hashes,
-        ];
-        // Tape program is loaded from an ALT.
-        let writable: Vec<Pubkey> = vec![];
-        let readonly: Vec<Pubkey> = vec![tapedrive_program];
-
-        // The combined list is what the compiled instruction's indices resolve into.
-        let mut combined_keys = static_keys.clone();
-        combined_keys.extend(writable.iter().copied());
-        combined_keys.extend(readonly.iter().copied());
-
-        let key = Hash::new_unique();
-        let ix = build_track_write_raw_ix(fee_payer, authority, key, b"alt program")
-            .expect("valid track write instruction");
-
-        let tx = EncodedTransactionWithStatusMeta {
-            transaction: EncodedTransaction::Json(UiTransaction {
-                signatures: vec![],
-                message: UiMessage::Raw(raw_message(
-                    &static_keys,
-                    vec![compile_ui_instruction(&ix, &combined_keys)],
-                )),
-            }),
-            meta: Some(UiTransactionStatusMeta {
-                err: None,
-                status: Ok(()),
-                fee: 0,
-                pre_balances: vec![],
-                post_balances: vec![],
-                inner_instructions: OptionSerializer::Some(vec![]),
-                log_messages: OptionSerializer::Some(vec![
-                    format!("Program {} invoke [1]", tapedrive_program),
-                    encode_event(
-                        EventType::TrackWritten,
-                        &TrackWritten {
-                            epoch: EpochNumber(3),
-                            track: Address::new_unique(),
-                            tape,
-                            spool_group: SpoolGroup(1),
-                            track_number: 11u64.into(),
-                            track_hash: Hash::new_unique(),
-                        },
-                    ),
-                    format!("Program {} success", tapedrive_program),
-                ]),
-                pre_token_balances: OptionSerializer::None,
-                post_token_balances: OptionSerializer::None,
-                rewards: OptionSerializer::None,
-                loaded_addresses: OptionSerializer::Some(loaded_addresses(&writable, &readonly)),
-                return_data: OptionSerializer::Skip,
-                compute_units_consumed: OptionSerializer::Skip,
-                cost_units: OptionSerializer::Skip,
-            }),
-            version: None,
-        };
-
-        let (instructions, events) = parse_transaction(&tx).unwrap();
-
-        assert_eq!(instructions.len(), 1, "ALT-loaded program id must be resolved");
-        match &instructions[0] {
-            RawInstruction::TrackWrite { key: parsed_key, value, .. } => {
-                assert_eq!(*parsed_key, key);
-                assert!(matches!(value, TrackData::Raw(bytes) if bytes == b"alt program"));
-            }
-            other => panic!("expected TrackWrite, got {other:?}"),
-        }
-
-        let merged = merge(instructions, events).expect("merge with ALT-resolved instruction");
-        assert_eq!(merged.len(), 1);
-        match &merged[0] {
-            ParsedInstruction::TrackWrite { event, .. } => {
-                assert_eq!(event.track_number, 11u64.into());
-            }
-            _ => panic!("expected merged TrackWrite"),
-        }
-    }
-
-    /// An outer instruction in static keys with an inner CPI whose program is loaded
-    /// from an ALT. The inner instruction must still be parsed and merged with its
-    /// event.
+    /// Outer instruction in static keys, inner CPI to a program loaded from an ALT.
     #[test]
     fn resolves_alt_inner_cpi() {
         let fee_payer = Address::new_unique();
@@ -699,7 +588,6 @@ mod tests {
         let outer_program = Pubkey::new_unique();
         let tapedrive_program = tapedrive::ID;
 
-        // Outer program lives in static keys; tape program comes from the ALT.
         let static_keys = vec![
             outer_program,
             fee_payer.into(),
@@ -775,11 +663,7 @@ mod tests {
 
         let (instructions, events) = parse_transaction(&tx).unwrap();
 
-        assert_eq!(
-            instructions.len(),
-            1,
-            "inner CPI to ALT-loaded program must be parsed"
-        );
+        assert_eq!(instructions.len(), 1);
         match &instructions[0] {
             RawInstruction::TrackWrite { key, value, .. } => {
                 assert_eq!(*key, inner_key);

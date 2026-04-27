@@ -75,10 +75,11 @@ pub async fn deploy(settings: &Settings, size_override: Option<&str>) -> Result<
         );
     }
 
-    let upstream = settings.solana.rpc_url.clone();
-    if upstream.is_empty() {
-        bail!("solana.rpc_url must be set before deploying the cache");
+    if settings.solana.endpoint.is_empty() {
+        bail!("solana.endpoint must be set before deploying the cache");
     }
+    let upstream = settings.solana.upstream_url();
+    let upstream_headers = settings.solana.upstream_headers();
 
     let api_key = load_or_create_api_key(settings)?;
 
@@ -116,7 +117,7 @@ pub async fn deploy(settings: &Settings, size_override: Option<&str>) -> Result<
     .await?;
 
     info!(host = %host, "writing config");
-    let config_yaml = render_config(&upstream, &api_key, &settings.solana.rpc_headers);
+    let config_yaml = render_config(&upstream, &api_key, &upstream_headers);
     upload_str(
         settings,
         host,
@@ -279,7 +280,7 @@ async fn find_or_create(settings: &Settings, size_override: Option<&str>) -> Res
 fn render_config(
     upstream: &str,
     api_key: &str,
-    upstream_headers: &std::collections::HashMap<String, String>,
+    upstream_headers: &[(String, String)],
 ) -> String {
     let mut yaml = format!(
         "listen: \"0.0.0.0:{port}\"\nupstream: \"{upstream}\"\napi_key: \"{api_key}\"\nmin_429_delay: \"10s\"\nlog_submits: true\nmax_entries: 10000\n",
@@ -287,10 +288,7 @@ fn render_config(
     );
     if !upstream_headers.is_empty() {
         yaml.push_str("upstream_headers:\n");
-        // Stable order so config hashes don't churn between deploys.
-        let mut entries: Vec<(&String, &String)> = upstream_headers.iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (name, value) in entries {
+        for (name, value) in upstream_headers {
             yaml.push_str(&format!("  {name}: \"{value}\"\n"));
         }
     }

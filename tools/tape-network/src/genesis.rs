@@ -14,7 +14,7 @@ use crate::settings::Settings;
 /// Returns the deployed program ids in tapedrive/token/staking/exchange order.
 pub fn deploy_programs(settings: &Settings, deploy_dir: Option<PathBuf>) -> Result<Vec<(String, String)>> {
     let ctx = tape_admin::Context::new(
-        settings.solana.rpc_url.clone(),
+        settings.solana.upstream_url(),
         &settings.solana.treasury_keypair,
     )
     .map_err(|e| anyhow::anyhow!("tape-admin context: {e}"))?;
