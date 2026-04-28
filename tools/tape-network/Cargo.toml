@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 # Sibling tool (on-chain admin) — used as a library.
 tape-admin = { path = "../tape-admin" }
+tape-cli-common = { path = "../tape-cli-common" }
 tape-protocol = { workspace = true }
 
 # External

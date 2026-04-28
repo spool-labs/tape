@@ -2,13 +2,37 @@
 //! and initialize archive/epoch PDAs. Mirrors the sequence in
 //! `e2e/devnet/src/simnet.rs::init_chain`.
 
+use rpc::Rpc;
 use tape_api::instruction::{
     build_create_system_ix, build_expand_system_ix, build_initialize_ix,
 };
+use tape_api::program::tapedrive::system_pda;
+use tape_api::program::token::MINT_ADDRESS;
 use tape_crypto::address::Address;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
+
+/// Verify that the on-chain cluster has been initialized: the tapedrive
+/// `System` PDA and the TAPE mint must both exist. Bootstrap requires this
+/// because the node + cache services read those accounts at startup. Run
+/// `tape-network genesis init` to create them.
+pub async fn ensure_initialized(ctx: &Context) -> Result<()> {
+    let (system_addr, _) = system_pda();
+    require_account(ctx, &system_addr, "System PDA").await?;
+    require_account(ctx, &MINT_ADDRESS, "TAPE mint").await?;
+    Ok(())
+}
+
+async fn require_account(ctx: &Context, addr: &Address, label: &str) -> Result<()> {
+    match ctx.rpc.rpc().get_account(addr).await {
+        Ok(_) => Ok(()),
+        Err(rpc::RpcError::AccountNotFound(_)) => Err(Error::Invalid(format!(
+            "{label} ({addr}) not found — run `tape-network genesis init` after `genesis deploy-programs`"
+        ))),
+        Err(e) => Err(e.into()),
+    }
+}
 
 /// Run the full chain init sequence. Each step is idempotent: failures due to
 /// the relevant account already being initialized are downgraded to warnings.

@@ -278,7 +278,7 @@ impl LiteSvmRpc {
 #[async_trait]
 impl Rpc for LiteSvmRpc {
     fn commitment(&self) -> CommitmentLevel {
-        CommitmentLevel::Confirmed
+        CommitmentLevel::Finalized
     }
 
     async fn get_slot(&self) -> Result<u64, RpcError> {

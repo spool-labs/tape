@@ -88,7 +88,7 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
         rent_sysvar_info,
         TOKEN_DECIMALS,
         &[TREASURY],
-        SYSTEM_BUMP,
+        TREASURY_BUMP,
     )?;
 
     // Initialize mint metadata.

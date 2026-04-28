@@ -42,8 +42,14 @@ pub struct RunOptions {
 }
 
 /// Perform the full bootstrap pipeline in order.
+///
+/// `rpc_url` is what local tx submissions (chain checks, treasury fund,
+/// register/stake/join) hit. Defaults at the CLI layer to public devnet —
+/// pass the cache URL via `tape-network -u <CACHE_URL>` if you want bursts
+/// to go through the cache's rate-limit absorber.
 pub async fn run(
     settings: &Settings,
+    rpc_url: &str,
     work_dir: Option<PathBuf>,
     options: RunOptions,
 ) -> Result<()> {
@@ -60,27 +66,20 @@ pub async fn run(
     let binary = find_node_binary(settings)?;
     info!(binary = %binary.display(), "using binary");
 
-    // If an RPC cache droplet exists for this testbed, route both the
-    // committee nodes AND this operator's admin-level txs through it.
-    // Admin txs include the step-7 register/stake/join burst: at
-    // concurrency N, that's N parallel sendTransactions/getAccount
-    // calls into the upstream RPC, which hits Helius's per-key rate
-    // limit. The cache's 429 cool-off absorbs those bursts cleanly.
-    let rpc_override = discover_cache_url(settings).await?;
-    let admin_rpc: String = match &rpc_override {
-        Some(url) => {
-            info!(cache_url = %url, "routing nodes + admin txs through RPC cache");
-            url.clone()
-        }
-        None => settings.solana.upstream_url(),
-    };
+    // The cache URL gets baked into each node's node.yaml so the running
+    // node services route through the cache. Local tx submission below
+    // uses `rpc_url` (CLI-provided), independent of cache state.
+    let node_rpc_override = discover_cache_url(settings).await?;
+    if let Some(ref url) = node_rpc_override {
+        info!(cache_url = %url, "rendering node.yaml with cache URL");
+    }
 
     info!(
         concurrency = SSH_CONCURRENCY,
         "step 4+5: install deps and upload bundle on each droplet"
     );
     let binary_ref = binary.as_path();
-    let rpc_override_ref = rpc_override.as_deref();
+    let node_rpc_override_ref = node_rpc_override.as_deref();
     stream::iter(key_dirs.iter().zip(&droplets))
         .map(move |(node_dir, droplet)| async move {
             let ip = droplet_ip(droplet)?;
@@ -94,35 +93,31 @@ pub async fn run(
             .await?;
             install_remote(settings, ip).await?;
             upload_bundle(settings, ip, node_dir, binary_ref).await?;
-            upload_node_yaml(settings, ip, node_dir, &droplet.name, rpc_override_ref).await?;
+            upload_node_yaml(settings, ip, node_dir, &droplet.name, node_rpc_override_ref).await?;
             Ok::<(), anyhow::Error>(())
         })
         .buffer_unordered(SSH_CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
 
-    info!("step 6a: initialize TAPE mint (idempotent)");
-    init_mint_if_missing(settings, &admin_rpc).await?;
-
-    info!("step 6a': initialize chain (system + expand + archive/epoch)");
-    init_chain_if_missing(settings, &admin_rpc).await?;
+    info!("step 6a: verify chain is initialized");
+    ensure_chain_initialized(settings, rpc_url).await?;
 
     if options.skip_fund {
         info!("step 6b: skipped (--skip-fund)");
     } else {
         info!("step 6b: fund node wallets from treasury");
-        fund_wallets(settings, &admin_rpc, &key_dirs).await?;
+        fund_wallets(settings, rpc_url, &key_dirs).await?;
     }
 
     info!(
         concurrency = REGISTER_CONCURRENCY,
         "step 7: register each node on-chain and join network"
     );
-    let admin_rpc_ref = admin_rpc.as_str();
     stream::iter(key_dirs.iter().zip(&droplets))
         .map(|(node_dir, droplet)| async move {
             let ip = droplet_ip(droplet)?;
-            register_on_chain(settings, admin_rpc_ref, node_dir, ip).await
+            register_on_chain(settings, rpc_url, node_dir, ip).await
         })
         .buffer_unordered(REGISTER_CONCURRENCY)
         .try_collect::<Vec<_>>()
@@ -421,41 +416,18 @@ fn rand_suffix() -> String {
 }
 
 // ========================================================================
-// Step 6a: initialize TAPE mint (idempotent)
+// Step 6a: verify the System PDA + TAPE mint exist
 // ========================================================================
 
-async fn init_mint_if_missing(settings: &Settings, admin_rpc: &str) -> Result<()> {
+async fn ensure_chain_initialized(settings: &Settings, admin_rpc: &str) -> Result<()> {
     let ctx = tape_admin::Context::new(
         admin_rpc.to_string(),
         &settings.solana.treasury_keypair,
     )
     .map_err(|e| anyhow!("tape-admin context: {e}"))?;
-
-    match tape_admin::mint::init(&ctx).await {
-        Ok(()) => {
-            info!("TAPE mint initialized");
-            Ok(())
-        }
-        Err(e) => {
-            // The init fails if the mint PDA already exists (common case on
-            // re-run). Downgrade to a warning and continue; if the mint
-            // truly isn't initialized the fund step below will surface a
-            // clear error.
-            info!(reason = %e, "mint init skipped (likely already initialized)");
-            Ok(())
-        }
-    }
-}
-
-async fn init_chain_if_missing(settings: &Settings, admin_rpc: &str) -> Result<()> {
-    let ctx = tape_admin::Context::new(
-        admin_rpc.to_string(),
-        &settings.solana.treasury_keypair,
-    )
-    .map_err(|e| anyhow!("tape-admin context: {e}"))?;
-    tape_admin::chain::init_all(&ctx)
+    tape_admin::chain::ensure_initialized(&ctx)
         .await
-        .map_err(|e| anyhow!("chain init: {e}"))
+        .map_err(|e| anyhow!("chain not initialized: {e}"))
 }
 
 // ========================================================================

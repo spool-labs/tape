@@ -93,7 +93,7 @@ impl Default for RpcRetryConfig {
 
 // Default value functions
 fn default_commitment() -> CommitmentLevel {
-    CommitmentLevel::Confirmed
+    CommitmentLevel::Finalized
 }
 
 fn default_timeout() -> Duration {
@@ -144,7 +144,7 @@ mod tests {
     fn test_default_config() {
         let config = RpcConfig::default();
         assert_eq!(config.endpoints.len(), 1);
-        assert_eq!(config.commitment, CommitmentLevel::Confirmed);
+        assert_eq!(config.commitment, CommitmentLevel::Finalized);
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.retry.max_retries, 5);
     }

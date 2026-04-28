@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tape_cli_common::{GlobalArgs, cluster};
 use tape_network::{Settings, bootstrap, build, cache, genesis, stats, testnet, upgrade};
 use tracing_subscriber::EnvFilter;
 
@@ -12,6 +13,9 @@ struct Cli {
     /// Path to the settings YAML file.
     #[arg(long, default_value = "settings.yaml", env = "TAPE_NETWORK_SETTINGS")]
     settings: PathBuf,
+
+    #[command(flatten)]
+    globals: GlobalArgs,
 
     #[command(subcommand)]
     command: Command,
@@ -148,6 +152,9 @@ enum GenesisOp {
         #[arg(long)]
         deploy_dir: Option<PathBuf>,
     },
+    /// Initialize the TAPE mint and the System/Epoch/Archive PDAs. Run once
+    /// per cluster between `deploy-programs` and `cache deploy`.
+    Init,
 }
 
 #[tokio::main]
@@ -168,11 +175,24 @@ async fn main() -> ExitCode {
         }
     };
 
+    let rpc_url = cluster::resolve(
+        cli.globals
+            .rpc_url
+            .as_deref()
+            .unwrap_or(cluster::DEVNET),
+    );
+
     let result: Result<()> = match cli.command {
         Command::Testnet { op } => run_testnet(&settings, op).await,
-        Command::Genesis { op } => run_genesis(&settings, op),
+        Command::Genesis { op } => run_genesis(&settings, &rpc_url, op).await,
         Command::Bootstrap { work_dir, skip_fund } => {
-            bootstrap::run(&settings, work_dir, bootstrap::RunOptions { skip_fund }).await
+            bootstrap::run(
+                &settings,
+                &rpc_url,
+                work_dir,
+                bootstrap::RunOptions { skip_fund },
+            )
+            .await
         }
         Command::Logs { node_index, tail, follow } => {
             testnet::logs(&settings, node_index, tail, follow).await
@@ -208,15 +228,16 @@ async fn run_testnet(settings: &Settings, op: TestnetOp) -> Result<()> {
     }
 }
 
-fn run_genesis(settings: &Settings, op: GenesisOp) -> Result<()> {
+async fn run_genesis(settings: &Settings, rpc_url: &str, op: GenesisOp) -> Result<()> {
     match op {
         GenesisOp::DeployPrograms { deploy_dir } => {
-            let deployed = genesis::deploy_programs(settings, deploy_dir)?;
+            let deployed = genesis::deploy_programs(settings, rpc_url, deploy_dir)?;
             for (name, pubkey) in deployed {
                 println!("{name}: {pubkey}");
             }
             Ok(())
         }
+        GenesisOp::Init => genesis::init(settings, rpc_url).await,
     }
 }
 
