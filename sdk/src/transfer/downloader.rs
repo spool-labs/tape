@@ -2,21 +2,23 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::NodeId;
 use tape_crypto::address::Address;
-use tape_protocol::api::{Api, GetSliceReq};
-use tape_retry::{retry_if, RetryConfig, Retryable};
+use tape_protocol::api::{Api, ApiError, GetSliceReq, GetSliceRes};
+use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::Semaphore;
+use tokio::time::sleep;
 use tracing::warn;
 
 use crate::error::DownloadError;
 
 /// Default concurrency limit for parallel downloads.
 /// This limits how many HTTP requests are in flight at once.
-const DEFAULT_CONCURRENCY: usize = 64;
+const DEFAULT_CONCURRENCY: usize = 8;
 
 /// Parallel downloader for retrieving slices from storage nodes.
 pub struct ParallelDownloader {
@@ -98,16 +100,7 @@ impl ParallelDownloader {
 
             futures.push(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
-                let req = GetSliceReq {
-                    track: track.into(),
-                    spool: slice_idx,
-                };
-                let result = retry_if(
-                    RetryConfig::ten(),
-                    None,
-                    || peer_client.get_slice(node_id, &req),
-                    Retryable::is_retryable,
-                ).await;
+                let result = download_slice_with_retry(peer_client, track, node_id, slice_idx).await;
                 (slice_idx, result)
             });
         }
@@ -145,19 +138,70 @@ impl ParallelDownloader {
         let &node_id = self.slice_to_node.get(&slice_idx)
             .ok_or(DownloadError::InvalidSliceIndex(slice_idx))?;
 
-        let req = GetSliceReq {
-            track: self.track.into(),
-            spool: slice_idx,
-        };
-
-        let res = retry_if(
-            RetryConfig::ten(),
-            None,
-            || peer_client.get_slice(node_id, &req),
-            tape_retry::Retryable::is_retryable,
-        ).await.map_err(|e| DownloadError::Node(e.to_string()))?;
+        let res = download_slice_with_retry(peer_client, self.track, node_id, slice_idx)
+            .await
+            .map_err(|e| DownloadError::Node(e.to_string()))?;
 
         Ok(res.data)
+    }
+}
+
+async fn download_slice_with_retry<P: Api>(
+    peer_client: &P,
+    track: Address,
+    node_id: NodeId,
+    slice_idx: SpoolIndex,
+) -> Result<GetSliceRes, ApiError> {
+    let req = GetSliceReq {
+        track: track.into(),
+        spool: slice_idx,
+    };
+    let mut backoff = Backoff::new(RetryConfig::ten());
+
+    loop {
+        let started = Instant::now();
+        match peer_client.get_slice(node_id, &req).await {
+            Ok(res) => return Ok(res),
+            Err(error) if !error.is_retryable() => {
+                warn!(
+                    track = %track,
+                    node = %node_id,
+                    slice = slice_idx,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %error,
+                    "slice fetch failed with non-retryable error"
+                );
+                return Err(error);
+            }
+            Err(error) => {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let Some(delay) = backoff.next_delay() else {
+                    warn!(
+                        track = %track,
+                        node = %node_id,
+                        slice = slice_idx,
+                        attempt = backoff.attempt(),
+                        elapsed_ms,
+                        error = %error,
+                        "slice fetch exhausted retries"
+                    );
+                    return Err(error);
+                };
+
+                warn!(
+                    track = %track,
+                    node = %node_id,
+                    slice = slice_idx,
+                    attempt = backoff.attempt(),
+                    delay_ms = delay.as_millis() as u64,
+                    elapsed_ms,
+                    error = %error,
+                    "slice fetch failed, retrying after backoff"
+                );
+
+                sleep(delay).await;
+            }
+        }
     }
 }
 

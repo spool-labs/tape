@@ -11,6 +11,8 @@ use crate::metrics::ApiMetrics;
 pub struct HttpApiBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
+    put_slice_timeout: Duration,
+    get_slice_timeout: Duration,
     metrics: Option<Arc<ApiMetrics>>,
     local_identity: Option<Arc<Keypair>>,
 }
@@ -26,6 +28,8 @@ impl HttpApiBuilder {
         Self {
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
+            put_slice_timeout: Duration::from_secs(120),
+            get_slice_timeout: Duration::from_secs(120),
             metrics: None,
             local_identity: None,
         }
@@ -38,6 +42,16 @@ impl HttpApiBuilder {
 
     pub fn request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
+        self
+    }
+
+    pub fn put_slice_timeout(mut self, timeout: Duration) -> Self {
+        self.put_slice_timeout = timeout;
+        self
+    }
+
+    pub fn get_slice_timeout(mut self, timeout: Duration) -> Self {
+        self.get_slice_timeout = timeout;
         self
     }
 
@@ -59,6 +73,8 @@ impl HttpApiBuilder {
             metrics: self.metrics,
             connect_timeout: self.connect_timeout,
             request_timeout: self.request_timeout,
+            put_slice_timeout: self.put_slice_timeout,
+            get_slice_timeout: self.get_slice_timeout,
             local_identity: self.local_identity,
         })
     }

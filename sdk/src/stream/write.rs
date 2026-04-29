@@ -26,7 +26,7 @@ use super::manifest::{ChunkEntry, ChunkManifest, CHUNK_SIZE, MANIFEST_VERSION};
 use super::receipt::StreamReceipt;
 
 /// Maximum concurrent chunk registrations/uploads.
-const CHUNK_CONCURRENCY: usize = 4;
+const CHUNK_CONCURRENCY: usize = 1;
 
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(1 << TRACK_TREE_HEIGHT);

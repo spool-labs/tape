@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 use thiserror::Error;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use rpc_client::parse_tape_error;
@@ -302,7 +302,7 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             let req = GetTrackDataReq { track: track_address };
             match client.api.get_track_data(*node_id, &req).await {
                 Ok(_) => visible += 1,
-                Err(error) => warn!(
+                Err(error) => debug!(
                     node = %node_id,
                     error = %error,
                     "track metadata not yet visible on node"
@@ -310,23 +310,21 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             }
         }
 
-        if visible == target {
+        if visible >= required {
+            if visible < target {
+                info!(
+                    visible,
+                    target,
+                    required,
+                    "track metadata reached quorum"
+                );
+            }
             return Ok(());
         }
 
         let Some(delay) = backoff.next_delay() else {
-            if visible >= required {
-                warn!(
-                    visible,
-                    target,
-                    required,
-                    "track metadata reached quorum but not all nodes"
-                );
-                return Ok(());
-            }
-
             return Err(TapedriveError::Upload(UploadError::Network(format!(
-                "track metadata visible on {visible}/{required} required nodes"
+                "track metadata visible on {visible}/{target} nodes, need {required}"
             ))));
         };
 
@@ -336,7 +334,7 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             visible,
             target,
             required,
-            "track metadata not yet visible on all nodes"
+            "track metadata not yet visible on required nodes"
         );
 
         sleep(delay).await;

@@ -252,6 +252,10 @@ impl SolanaRpc {
             return RpcError::BlockhashExpired;
         }
 
+        if let Some(tx_error) = err.get_transaction_error() {
+            return RpcError::Transaction(tx_error.to_string());
+        }
+
         if err_str.contains("Transaction simulation failed") {
             return RpcError::Transaction(err_str);
         }
@@ -795,6 +799,9 @@ fn flatten_error(err: &(dyn std::error::Error + 'static)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_client::client_error::ClientErrorKind;
+    use solana_sdk::instruction::InstructionError;
+    use solana_sdk::transaction::TransactionError;
 
     #[test]
     fn test_client_creation() {
@@ -848,5 +855,35 @@ mod tests {
             RpcError::Request(message) => assert_eq!(message, "connection reset"),
             other => panic!("expected request error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_convert_error_maps_structured_transaction_error() {
+        let tx_error = TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(0x12),
+        );
+        let error = ClientError::from(ClientErrorKind::TransactionError(tx_error));
+
+        let converted = SolanaRpc::convert_error(error, None);
+
+        match converted {
+            RpcError::Transaction(message) => {
+                assert!(message.contains("Error processing Instruction 1"));
+                assert!(message.contains("custom program error: 0x12"));
+            }
+            other => panic!("expected transaction error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_convert_error_keeps_blockhash_expired_specific() {
+        let error = ClientError::from(ClientErrorKind::TransactionError(
+            TransactionError::BlockhashNotFound,
+        ));
+
+        let converted = SolanaRpc::convert_error(error, None);
+
+        assert!(matches!(converted, RpcError::BlockhashExpired));
     }
 }

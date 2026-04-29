@@ -33,6 +33,8 @@ pub struct HttpApi {
     pub metrics: Option<Arc<ApiMetrics>>,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
+    pub put_slice_timeout: Duration,
+    pub get_slice_timeout: Duration,
     pub local_identity: Option<Arc<Keypair>>,
 }
 
@@ -138,6 +140,7 @@ impl Api for HttpApi {
         let start = Instant::now();
         let resp = client
             .put(&url)
+            .timeout(self.put_slice_timeout)
             .header("content-type", BINARY_CONTENT)
             .body(body)
             .send()
@@ -159,6 +162,7 @@ impl Api for HttpApi {
         let start = Instant::now();
         let resp = client
             .get(&url)
+            .timeout(self.get_slice_timeout)
             .send()
             .await
             .map_err(map_reqwest)?;

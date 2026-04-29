@@ -89,17 +89,27 @@ pub mod compute;
 mod snapshot;
 mod transactions;
 
+use rpc::RpcError;
 use tape_api::errors::{ProgramError, TapeError};
 
 /// Try to decode a typed `TapeError` from an RPC transaction error.
-pub fn parse_tape_error(err: &rpc::RpcError) -> Option<TapeError> {
-    let rpc::RpcError::Transaction(msg) = err else {
-        return None;
+pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
+    let msg = match err {
+        RpcError::Transaction(msg) => msg,
+        RpcError::Request(msg) if looks_like_program_error(msg) => msg,
+        _ => return None,
     };
+
     match ProgramError::from_error_string(msg) {
         Some(ProgramError::Tape(e)) => Some(e),
         _ => None,
     }
+}
+
+fn looks_like_program_error(msg: &str) -> bool {
+    msg.contains("custom program error")
+        || msg.contains("Error processing Instruction")
+        || msg.contains("InstructionError")
 }
 
 #[cfg(feature = "metrics")]
@@ -141,6 +151,21 @@ mod tests {
     #[test]
     fn skip_non_tx() {
         let err = RpcError::Request("boom".to_string());
+        assert_eq!(parse_tape_error(&err), None);
+    }
+
+    #[test]
+    fn parse_program_error_from_request() {
+        let err = RpcError::Request(
+            "RPC request failed: Error processing Instruction 1: custom program error: 0x12"
+                .to_string(),
+        );
+        assert_eq!(parse_tape_error(&err), Some(TapeError::BadSignature));
+    }
+
+    #[test]
+    fn skip_request_with_unrelated_hex() {
+        let err = RpcError::Request("connection reset from 0x12".to_string());
         assert_eq!(parse_tape_error(&err), None);
     }
 }

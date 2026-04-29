@@ -24,7 +24,7 @@ use super::error::StreamError;
 use super::manifest::ChunkManifest;
 
 /// Maximum concurrent chunk downloads.
-const CHUNK_CONCURRENCY: usize = 8;
+const CHUNK_CONCURRENCY: usize = 1;
 
 /// Read a manifest track and return the full stream contents in memory.
 pub async fn read_bytes<Blockchain: Rpc, Cluster: Api>(
