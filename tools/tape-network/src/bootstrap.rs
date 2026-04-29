@@ -14,15 +14,10 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-/// Max parallel ssh sessions during install/upload/service-start. High
-/// because each droplet's work is independent and the operator's
-/// bottleneck is upload bandwidth, not CPU or handshake overhead.
+/// Max parallel ssh sessions during install/upload/service-start. 
 const SSH_CONCURRENCY: usize = 10;
 
-/// Max parallel on-chain registrations. Lower than ssh concurrency
-/// because every tx hits the shared Solana cluster and bursting can
-/// blow past the upstream RPC's rate limit (the cache can dedupe reads
-/// but not submits).
+/// Max parallel on-chain registrations. 
 const REGISTER_CONCURRENCY: usize = 5;
 
 use crate::cloud::Instance;
@@ -36,17 +31,10 @@ const HTTPS_PORT: u16 = 3430;
 /// Options controlling which bootstrap steps run.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RunOptions {
-    /// Skip step 6b (fund wallets). Useful when resuming a partial run against
-    /// already-funded nodes.
     pub skip_fund: bool,
 }
 
 /// Perform the full bootstrap pipeline in order.
-///
-/// `rpc_url` is what local tx submissions (chain checks, treasury fund,
-/// register/stake/join) hit. Defaults at the CLI layer to public devnet —
-/// pass the cache URL via `tape-network -u <CACHE_URL>` if you want bursts
-/// to go through the cache's rate-limit absorber.
 pub async fn run(
     settings: &Settings,
     rpc_url: &str,
@@ -56,13 +44,13 @@ pub async fn run(
     let work_dir = work_dir.unwrap_or_else(|| default_work_dir(&settings.testbed_id));
     validate(settings)?;
 
-    info!("step 1: local keygen");
+    info!("local keygen");
     let key_dirs = local_keygen(settings, &work_dir)?;
 
-    info!("step 2: discover droplets");
+    info!("discover droplets");
     let droplets = discover_droplets(settings, key_dirs.len()).await?;
 
-    info!("step 3: locate node binary");
+    info!("locate node binary");
     let binary = find_node_binary(settings)?;
     info!(binary = %binary.display(), "using binary");
 
@@ -76,7 +64,7 @@ pub async fn run(
 
     info!(
         concurrency = SSH_CONCURRENCY,
-        "step 4+5: install deps and upload bundle on each droplet"
+        "install deps and upload bundle on each droplet"
     );
     let binary_ref = binary.as_path();
     let node_rpc_override_ref = node_rpc_override.as_deref();
@@ -100,19 +88,19 @@ pub async fn run(
         .try_collect::<Vec<_>>()
         .await?;
 
-    info!("step 6a: verify chain is initialized");
+    info!("verify chain is initialized");
     ensure_chain_initialized(settings, rpc_url).await?;
 
     if options.skip_fund {
-        info!("step 6b: skipped (--skip-fund)");
+        info!("skipped (--skip-fund)");
     } else {
-        info!("step 6b: fund node wallets from treasury");
+        info!("fund node wallets from treasury");
         fund_wallets(settings, rpc_url, &key_dirs).await?;
     }
 
     info!(
         concurrency = REGISTER_CONCURRENCY,
-        "step 7: register each node on-chain and join network"
+        "register each node on-chain and join network"
     );
     stream::iter(key_dirs.iter().zip(&droplets))
         .map(|(node_dir, droplet)| async move {
@@ -125,7 +113,7 @@ pub async fn run(
 
     info!(
         concurrency = SSH_CONCURRENCY,
-        "step 8: start systemd service on each droplet"
+        "start systemd service on each droplet"
     );
     stream::iter(&droplets)
         .map(|droplet| async move {
@@ -136,23 +124,14 @@ pub async fn run(
         .try_collect::<Vec<_>>()
         .await?;
 
-    info!("step 9: verify /v1/health");
+    info!("verify /v1/health");
     verify_health(&droplets).await?;
 
     info!("bootstrap complete");
     Ok(())
 }
 
-// ========================================================================
-// Step 1: local keygen
-// ========================================================================
-
 /// Generate N per-node key bundles on the operator workstation.
-///
-/// Idempotent: a node directory that already contains an `identity.json` is
-/// left untouched. Delete the dir (or just the file) to force regeneration —
-/// but be aware that fresh identities mean re-funding, so prefer preserving
-/// existing dirs when recovering from a partial bootstrap.
 pub fn local_keygen(settings: &Settings, work_dir: &Path) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(work_dir)
         .with_context(|| format!("creating {}", work_dir.display()))?;
@@ -190,10 +169,6 @@ pub fn local_keygen(settings: &Settings, work_dir: &Path) -> Result<Vec<PathBuf>
     Ok(dirs)
 }
 
-// ========================================================================
-// Step 2: discover provisioned droplets
-// ========================================================================
-
 async fn discover_droplets(settings: &Settings, needed: usize) -> Result<Vec<Instance>> {
     // Gap-fill: reuse existing `{testbed_id}-node-{i}` droplets, provision any
     // missing ones. Guarantees the returned vec is in node-index order so the
@@ -207,10 +182,6 @@ fn droplet_ip(droplet: &Instance) -> Result<&str> {
         .as_deref()
         .ok_or_else(|| anyhow!("droplet {} has no public IP", droplet.name))
 }
-
-// ========================================================================
-// Step 3: find the linux node binary on disk
-// ========================================================================
 
 pub fn find_node_binary(settings: &Settings) -> Result<PathBuf> {
     let source_root = match &settings.build.source {
@@ -242,10 +213,6 @@ pub fn find_node_binary(settings: &Settings) -> Result<PathBuf> {
     )
 }
 
-// ========================================================================
-// Step 4: install runtime dependencies on the droplet
-// ========================================================================
-
 async fn install_remote(settings: &Settings, host: &str) -> Result<()> {
     let working_dir = settings.network.working_dir.display();
     let data_dir = settings.network.data_dir.display();
@@ -273,10 +240,6 @@ systemctl is-enabled tape-node >/dev/null 2>&1 && systemctl stop tape-node || tr
     .await?;
     Ok(())
 }
-
-// ========================================================================
-// Step 5: upload binary and per-node bundle
-// ========================================================================
 
 async fn upload_bundle(
     settings: &Settings,
@@ -415,10 +378,6 @@ fn rand_suffix() -> String {
     format!("{n:x}")
 }
 
-// ========================================================================
-// Step 6a: verify the System PDA + TAPE mint exist
-// ========================================================================
-
 async fn ensure_chain_initialized(settings: &Settings, admin_rpc: &str) -> Result<()> {
     let ctx = tape_admin::Context::new(
         admin_rpc.to_string(),
@@ -429,10 +388,6 @@ async fn ensure_chain_initialized(settings: &Settings, admin_rpc: &str) -> Resul
         .await
         .map_err(|e| anyhow!("chain not initialized: {e}"))
 }
-
-// ========================================================================
-// Step 6b: fund wallets
-// ========================================================================
 
 async fn fund_wallets(
     settings: &Settings,
@@ -457,10 +412,6 @@ async fn fund_wallets(
         .map_err(|e| anyhow!("treasury fund: {e}"))?;
     Ok(())
 }
-
-// ========================================================================
-// Step 7: register on-chain and join network
-// ========================================================================
 
 async fn register_on_chain(
     settings: &Settings,
@@ -519,10 +470,6 @@ async fn register_on_chain(
     Ok(())
 }
 
-// ========================================================================
-// Step 8: install and start systemd service
-// ========================================================================
-
 async fn start_service(settings: &Settings, host: &str) -> Result<()> {
     let working = settings.network.working_dir.display();
     let rendered = SERVICE_TEMPLATE.replace("{{WORKING_DIR}}", &working.to_string());
@@ -537,10 +484,6 @@ async fn start_service(settings: &Settings, host: &str) -> Result<()> {
     .await?;
     Ok(())
 }
-
-// ========================================================================
-// Step 9: verify /v1/health
-// ========================================================================
 
 async fn verify_health(droplets: &[Instance]) -> Result<()> {
     // Nodes serve the HTTP API over TLS with per-node self-signed certs (see

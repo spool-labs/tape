@@ -115,7 +115,8 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         .set_gc_started_epoch(epoch)
         .map_err(|error| NodeError::Store(format!("set_gc_started_epoch: {error}")))?;
 
-    let sweep_stats = sweep_epoch(store, config, epoch).await?;
+    let owned_spools = context.my_spools();
+    let sweep_stats = sweep_epoch(store, config, epoch, &owned_spools).await?;
 
     if should_reclaim(config, sweep_stats.slices_deleted) {
         context.set_reclaim_pending(true);

@@ -23,8 +23,9 @@ use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
-use tape_retry::{retry, retry_if, RetryConfig, Retryable};
+use tape_retry::{retry, retry_if, Backoff, RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
+use tokio::time::sleep;
 
 use crate::codec::encoder::BlobEncoder;
 use crate::error::UploadError;
@@ -277,49 +278,69 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     spool_group: SpoolGroup,
 ) -> Result<(), TapedriveError> {
     let state = bootstrap_network_state(client).await?;
+
     let group_peers = state.group_peers(spool_group);
     let required = min_correct(state.group_member_count(spool_group) as u64) as usize;
 
-    retry_if(
-        write_retry_config(),
-        None,
-        || {
-            let group_peers = group_peers.clone();
-            let api = client.api.clone();
-            let mut seen = HashSet::new();
-            async move {
-                let mut visible = 0usize;
+    let mut seen = HashSet::new();
+    let target = group_peers
+        .iter()
+        .filter(|(_, node_id)| seen.insert(*node_id))
+        .count();
 
-                for (_, node_id) in &group_peers {
-                    if !seen.insert(*node_id) {
-                        continue;
-                    }
+    let mut backoff = Backoff::new(visibility_retry_config());
 
-                    let req = GetTrackDataReq { track: track_address };
-                    match api.get_track_data(*node_id, &req).await {
-                        Ok(_) => visible += 1,
-                        Err(error) => warn!(
-                            node = %node_id,
-                            error = %error,
-                            "track metadata not yet visible on node"
-                        ),
-                    }
-                }
+    loop {
+        let mut visible = 0usize;
+        let mut seen = HashSet::new();
 
-                if visible >= required {
-                    Ok(())
-                } else {
-                    Err(TapedriveError::Upload(UploadError::Network(
-                        format!("track metadata visible on {visible}/{required} required nodes"),
-                    )))
-                }
+        for (_, node_id) in &group_peers {
+            if !seen.insert(*node_id) {
+                continue;
             }
-        },
-        |_| true,
-    )
-    .await?;
 
-    Ok(())
+            let req = GetTrackDataReq { track: track_address };
+            match client.api.get_track_data(*node_id, &req).await {
+                Ok(_) => visible += 1,
+                Err(error) => warn!(
+                    node = %node_id,
+                    error = %error,
+                    "track metadata not yet visible on node"
+                ),
+            }
+        }
+
+        if visible == target {
+            return Ok(());
+        }
+
+        let Some(delay) = backoff.next_delay() else {
+            if visible >= required {
+                warn!(
+                    visible,
+                    target,
+                    required,
+                    "track metadata reached quorum but not all nodes"
+                );
+                return Ok(());
+            }
+
+            return Err(TapedriveError::Upload(UploadError::Network(format!(
+                "track metadata visible on {visible}/{required} required nodes"
+            ))));
+        };
+
+        warn!(
+            attempt = backoff.attempt(),
+            delay_ms = delay.as_millis() as u64,
+            visible,
+            target,
+            required,
+            "track metadata not yet visible on all nodes"
+        );
+
+        sleep(delay).await;
+    }
 }
 
 fn should_retry_upload(err: &TapedriveError) -> bool {
@@ -504,6 +525,14 @@ fn write_retry_config() -> RetryConfig {
         base_delay: Duration::from_secs(1),
         max_delay: Duration::from_secs(60),
         max_retries: None,
+    }
+}
+
+fn visibility_retry_config() -> RetryConfig {
+    RetryConfig {
+        base_delay: Duration::from_millis(500),
+        max_delay: Duration::from_secs(5),
+        max_retries: Some(6),
     }
 }
 

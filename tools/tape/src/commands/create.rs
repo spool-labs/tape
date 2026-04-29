@@ -33,6 +33,11 @@ impl CliOutput for CreateOutput {
         );
         if self.set_active {
             println!("(set as active tape)");
+        } else {
+            println!(
+                "active tape:      unchanged; run `tape use {}` or pass `--use` next time",
+                self.tape_keypair.display()
+            );
         }
     }
 }

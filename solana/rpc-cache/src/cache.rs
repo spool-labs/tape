@@ -37,7 +37,7 @@ fn default_ttls() -> HashMap<&'static str, Duration> {
         // pipeline, and land it, anything older than a few seconds is
         // likely to be rejected as BlockhashExpired. Keep this tight.
         ("getLatestBlockhash", sec(5)),
-        ("getAccountInfo", sec(2)),
+        ("getAccountInfo", sec(1)),
         ("getMultipleAccounts", sec(2)),
         ("getProgramAccounts", sec(15)),
         ("getTransaction", sec(300)),
