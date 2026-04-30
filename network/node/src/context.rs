@@ -25,6 +25,7 @@ use crate::core::error::NodeError;
 use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
+use crate::features::block::pending_tracks::PendingTracks;
 
 pub type AppContext = Arc<NodeContext<RocksStore, HttpApi, SolanaRpc>>;
 
@@ -34,6 +35,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub rpc: Arc<RpcClient<Blockchain>>,
     pub state: StateBus,
     pub ingest: IngestBus,
+    pub pending: Arc<PendingTracks>,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub metrics: NodeMetrics,
@@ -79,8 +81,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.tls_keypair.as_ref()
     }
 
-    /// The node's Ed25519 TLS public key as a `NetworkTlsPubkey` (matches the
-    /// on-chain `Node.metadata.network_tls` field).
     pub fn tls_pubkey(&self) -> NetworkTlsPubkey {
         NetworkTlsPubkey::new(self.tls_keypair.pubkey().to_bytes())
     }
@@ -205,6 +205,7 @@ pub mod test_utils {
             rpc: Arc::new(rpc),
             state: StateBus::default(),
             ingest: IngestBus::default(),
+            pending: Arc::new(PendingTracks::new()),
             peer_manager,
             api: Arc::new(api),
             metrics: NodeMetrics::default(),
@@ -289,6 +290,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             rpc: Arc::new(self.rpc),
             state: StateBus::default(),
             ingest: IngestBus::default(),
+            pending: Arc::new(PendingTracks::new()),
             peer_manager: self.peer_manager,
             api: self.api,
             metrics: NodeMetrics::default(),

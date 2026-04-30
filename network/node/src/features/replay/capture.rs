@@ -375,6 +375,7 @@ mod tests {
                     },
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -449,6 +450,7 @@ mod tests {
                 certify_track_instruction(track, EpochNumber(8)),
                 reserve_tape_instruction(tape, EpochNumber(7), EpochNumber(12)),
             ],
+            ..Default::default()
         };
 
         let captured = capture_block(EpochNumber(7), &block).unwrap();
@@ -478,6 +480,7 @@ mod tests {
                 advance_epoch_instruction(EpochNumber(4), EpochNumber(5)),
                 reserve_tape_instruction(tape, EpochNumber(5), EpochNumber(10)),
             ],
+            ..Default::default()
         };
 
         let captured = capture_block(EpochNumber(4), &block).unwrap();
@@ -503,6 +506,7 @@ mod tests {
         let block = ParsedBlock {
             slot: SlotNumber(5),
             instructions: vec![raw_track_write_instruction(track, tape, EpochNumber(9))],
+            ..Default::default()
         };
 
         let captured = capture_block(EpochNumber(9), &block).unwrap();
@@ -622,6 +626,7 @@ mod tests {
                     },
                 },
             ],
+            ..Default::default()
         };
 
         let captured = capture_block(old_epoch, &block).unwrap();

@@ -52,7 +52,7 @@ pub struct Config {
     /// `/v1/health` and `/v1/stats` are intentionally unauthed.
     pub api_key: String,
 
-    /// Soft byte ceiling for the slot store (filtered finalized blocks).
+    /// Soft byte ceiling for the slot store (filtered confirmed blocks).
     /// Moka's weigher evicts oldest entries past this. 4 GiB by default.
     #[serde(default = "default_slot_store_max_bytes")]
     pub slot_store_max_bytes: u64,

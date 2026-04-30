@@ -32,16 +32,33 @@ use tape_crypto::tx::Txid;
 use tokio::task::JoinHandle;
 
 struct Inner {
+    /// The in-memory SVM instance that processes transactions and maintains
     svm: LiteSVM,
+
+    /// Recorded block data, indexed by slot
     slots: HashMap<Slot, SlotData>,
+
+    /// Index to find the slot a transaction was recorded in, by Txid.
     tx_slot_index: HashMap<Txid, Slot>,
+
+    /// The block height of the latest recorded block.
     current_block_height: u64,
+
+    /// The slot of the most recently recorded block.
     last_recorded_slot: Option<Slot>,
+
     /// Highest slot visible via `get_slot()` / `get_block()`.
     confirmed_tip: u64,
+
     /// Current SVM slot where submitted transactions are recorded. Multiple
     /// transactions between block producer ticks share this slot.
     pending_slot: u64,
+
+    /// Optional pin for `get_finalized_slot()`. When `None`, finalization
+    /// matches `confirmed_tip` (LiteSVM has no asynchronous finality of its
+    /// own). Tests gate the block ingestor's promotion logic by setting
+    /// this to a value below `confirmed_tip` via [`LiteSvmRpc::set_finalized_tip`].
+    finalized_tip_override: Option<u64>,
 }
 
 /// LiteSVM-backed Rpc implementation with simulated block production.
@@ -71,6 +88,7 @@ impl LiteSvmRpc {
                 last_recorded_slot: None,
                 confirmed_tip: 0,
                 pending_slot: 1,
+                finalized_tip_override: None,
             })),
         }
     }
@@ -85,6 +103,18 @@ impl LiteSvmRpc {
             .airdrop(pubkey, lamports)
             .map(|_| ())
             .map_err(|e| RpcError::Request(format!("{e:?}")))
+    }
+
+    /// Pin the slot returned by `get_finalized_slot()`. Used by tests that
+    /// need to gate the block ingestor's promotion logic at a specific slot
+    /// while `confirmed_tip` advances independently.
+    pub fn set_finalized_tip(&self, slot: u64) -> Result<(), RpcError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        inner.finalized_tip_override = Some(slot);
+        Ok(())
     }
 
     /// Advance the SVM slot **and** `confirmed_tip` to `slot`.
@@ -289,6 +319,14 @@ impl Rpc for LiteSvmRpc {
         Ok(inner.confirmed_tip)
     }
 
+    async fn get_finalized_slot(&self) -> Result<u64, RpcError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        Ok(inner.finalized_tip_override.unwrap_or(inner.confirmed_tip))
+    }
+
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
         let inner = self
             .inner
@@ -371,6 +409,15 @@ impl Rpc for LiteSvmRpc {
     }
 
     async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError> {
+        self.get_account_with_commitment(pubkey, self.commitment())
+            .await
+    }
+
+    async fn get_account_with_commitment(
+        &self,
+        pubkey: &Address,
+        _commitment: CommitmentLevel,
+    ) -> Result<Account, RpcError> {
         let inner = self
             .inner
             .lock()

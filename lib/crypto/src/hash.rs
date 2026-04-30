@@ -1,5 +1,7 @@
 #![allow(unexpected_cfgs)]
 
+use core::str::FromStr;
+
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
@@ -40,6 +42,15 @@ impl Hash {
 
     pub fn to_bytes(self) -> [u8; HASH_BYTES] {
         self.0
+    }
+}
+
+impl FromStr for Hash {
+    type Err = solana_program::hash::ParseHashError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        solana_program::hash::Hash::from_str(s)
+            .map(|h| Self(h.to_bytes()))
     }
 }
 

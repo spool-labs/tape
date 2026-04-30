@@ -50,6 +50,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluster, Blockch
                     };
 
                     persist_batch(self.context.store.as_ref(), &batch)?;
+
+                    self.context.pending
+                        .drop_slot(batch.slot);
                 }
             }
         }

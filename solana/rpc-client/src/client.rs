@@ -81,6 +81,11 @@ impl<R: Rpc> RpcClient<R> {
         self.rpc.get_slot().await
     }
 
+    /// Get the most recently finalized slot.
+    pub async fn get_finalized_slot(&self) -> Result<u64, RpcError> {
+        self.rpc.get_finalized_slot().await
+    }
+
     /// Get block by slot number.
     pub async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
         self.rpc.get_block(slot).await

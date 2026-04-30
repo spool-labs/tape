@@ -46,6 +46,9 @@ pub enum NodeError {
     #[error("block parse error: {0}")]
     BlockParse(#[from] ParseError),
 
+    #[error("malformed block at slot {slot}: {reason}")]
+    BlockMalformed { slot: u64, reason: String },
+
     #[error("failed to send on channel {channel:?}")]
     ChannelSend { channel: ChannelName },
 

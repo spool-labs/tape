@@ -26,11 +26,16 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
     let track_key = track;
 
-    let track = state
+    let in_store = state
         .context
         .store
         .get_track(track_key)
-        .map_err(store_error)?
+        .map_err(store_error)?;
+
+    let track = state
+        .context
+        .pending
+        .apply_to_track(track_key, in_store)
         .ok_or(RouteError::NotFound)?;
 
     if !track.is_blob() {

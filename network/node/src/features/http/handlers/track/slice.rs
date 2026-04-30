@@ -75,26 +75,36 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
+
     let track_key = track;
     let payload: SlicePayload = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 
-    let track = state
+    let in_store = state
         .context
         .store
         .get_track(track_key)
-        .map_err(store_error)?
+        .map_err(store_error)?;
+
+    let track = state
+        .context
+        .pending
+        .apply_to_track(track_key, in_store)
         .ok_or(RouteError::NotFound)?;
+
     if !track.is_blob() {
         return Err(RouteError::BadRequest("raw tracks do not accept slices".into()));
     }
 
-    let track_data = state
-        .context
-        .store
-        .get_track_data(track_key)
-        .map_err(store_error)?
-        .ok_or(RouteError::NotFound)?;
+    let track_data = match state.context.pending.track_data(track_key) {
+        Some(data) => data,
+        None => state
+            .context
+            .store
+            .get_track_data(track_key)
+            .map_err(store_error)?
+            .ok_or(RouteError::NotFound)?,
+    };
     let TrackData::Blob(blob) = track_data else {
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };

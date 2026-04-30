@@ -8,7 +8,7 @@
 //! are passed through uncached (v1 simplification).
 //!
 //! `getBlock` takes a separate fast path: a slot-keyed in-memory store
-//! pre-warmed at boot with finalized blocks from the current tape epoch
+//! pre-warmed at boot with confirmed blocks from the current tape epoch
 //! start to the live edge, filtered down to tape-relevant data only.
 //! See [`runtime`] for the bootstrap/live-tail tasks and [`filter`] for
 //! the per-block reduction.

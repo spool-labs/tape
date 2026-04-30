@@ -5,21 +5,32 @@ use crate::failover::EndpointFailover;
 use async_trait::async_trait;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcProgramAccountsConfig, RpcTransactionConfig};
+use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcTransactionConfig};
 use solana_sdk::account::Account;
-use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_transaction_status::{
-    EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock, UiTransactionEncoding,
+    EncodedConfirmedTransactionWithStatusMeta, TransactionDetails, UiConfirmedBlock,
+    UiTransactionEncoding,
 };
 use std::sync::Arc;
-use rpc::{Rpc, RpcError, BLOCK_FETCH_CONFIG};
+use rpc::{Rpc, RpcError};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
 use tokio::sync::RwLock;
+
+const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
+    encoding: Some(UiTransactionEncoding::Json),
+    transaction_details: Some(TransactionDetails::Full),
+    rewards: Some(false),
+    commitment: Some(CommitmentConfig {
+        commitment: CommitmentLevel::Confirmed,
+    }),
+    max_supported_transaction_version: Some(0),
+};
 
 /// Production Solana RPC client with retry and failover capabilities.
 ///
@@ -327,6 +338,49 @@ impl Rpc for SolanaRpc {
         }
     }
 
+    async fn get_finalized_slot(&self) -> Result<u64, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        let commitment = CommitmentConfig::finalized();
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_slot_with_commitment(commitment),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(slot)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics
+                            .record_request("getSlot:finalized", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(slot);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getSlot:finalized", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getSlot:finalized", &mut backoff).await?;
+                }
+            }
+        }
+    }
+
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
@@ -376,7 +430,7 @@ impl Rpc for SolanaRpc {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.get_block_with_config(slot, BLOCK_FETCH_CONFIG),
+                    client.get_block_with_config(slot, BLOCK_CONFIG),
                 )
                 .await
             };
@@ -503,6 +557,15 @@ impl Rpc for SolanaRpc {
     }
 
     async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError> {
+        self.get_account_with_commitment(pubkey, self.config.commitment)
+            .await
+    }
+
+    async fn get_account_with_commitment(
+        &self,
+        pubkey: &Address,
+        commitment: CommitmentLevel,
+    ) -> Result<Account, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -510,15 +573,24 @@ impl Rpc for SolanaRpc {
         let solana_pubkey: Pubkey = pubkey.into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
+        let commitment = CommitmentConfig { commitment };
 
         loop {
             let result = {
                 let client = self.client.read().await;
-                tokio::time::timeout(self.config.timeout, client.get_account(&solana_pubkey)).await
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_account_with_commitment(&solana_pubkey, commitment),
+                )
+                .await
             };
 
             match result {
-                Ok(Ok(account)) => {
+                Ok(Ok(response)) => {
+                    let Some(account) = response.value else {
+                        return Err(RpcError::AccountNotFound(pubkey));
+                    };
+
                     self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]

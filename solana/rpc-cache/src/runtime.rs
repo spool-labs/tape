@@ -17,9 +17,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use moka::future::Cache as MokaCache;
-use rpc::BLOCK_FETCH_CONFIG;
 use serde_json::{Value, json};
-use solana_transaction_status::UiConfirmedBlock;
+use solana_client::rpc_config::RpcBlockConfig;
+use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
+use solana_transaction_status::{TransactionDetails, UiConfirmedBlock, UiTransactionEncoding};
 use tape_api::program::tapedrive::EPOCH_ADDRESS;
 use tape_api::state::Epoch;
 use tape_crypto::address::Address;
@@ -46,6 +47,16 @@ const LIVE_TAIL_CONCURRENCY: usize = 4;
 const MAX_BLOCK_FETCH_ATTEMPTS: u32 = 5;
 const RETRY_BASE: Duration = Duration::from_millis(100);
 const RETRY_CAP: Duration = Duration::from_secs(30);
+
+const BLOCK_FETCH_CONFIG: RpcBlockConfig = RpcBlockConfig {
+    encoding: Some(UiTransactionEncoding::Json),
+    transaction_details: Some(TransactionDetails::Full),
+    rewards: Some(false),
+    commitment: Some(CommitmentConfig {
+        commitment: CommitmentLevel::Confirmed,
+    }),
+    max_supported_transaction_version: Some(0),
+};
 
 /// Status of a single upstream `getBlock` call.
 enum BlockOutcome {
@@ -360,7 +371,7 @@ async fn fetch_live_slot(upstream: &Upstream) -> Result<u64> {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "getSlot",
-        "params": [{"commitment": "finalized"}],
+        "params": [{"commitment": "confirmed"}],
     });
     let env = upstream
         .forward(&body)
@@ -379,7 +390,7 @@ async fn fetch_epoch_account(upstream: &Upstream) -> Result<Epoch> {
         "method": "getAccountInfo",
         "params": [
             EPOCH_ADDRESS.to_string(),
-            {"encoding": "base64", "commitment": "finalized"},
+            {"encoding": "base64", "commitment": "confirmed"},
         ],
     });
     let env = upstream

@@ -14,6 +14,7 @@ pub use advance_pool::submit_advance_pool;
 pub use invalidate_track::submit_invalidate_track;
 pub use join_network::submit_join_network;
 pub use reserve_snapshot::submit_reserve_snapshot;
+pub use set_network_tls::submit_set_network_tls;
 pub use sign_snapshot::submit_sign_snapshot;
 pub use sync_epoch::submit_sync_epoch;
 pub use write_snapshot::submit_write_snapshot;

@@ -25,12 +25,10 @@
 //! }
 //! ```
 
-mod block_config;
 mod error;
 mod rpc;
 
 // Core exports
-pub use block_config::BLOCK_FETCH_CONFIG;
 pub use error::RpcError;
 pub use rpc::Rpc;
 

@@ -3,14 +3,14 @@
 //! after the last replayed snapshot's end.
 
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info};
 
-use rpc::Rpc;
+use rpc::{CommitmentLevel, Rpc};
 use store::Store;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_protocol::Api;
 use tape_store::ops::MetaOps;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
 
 use crate::config::node::NodeConfig;
 use crate::context::NodeContext;
@@ -123,12 +123,17 @@ where
         return Ok(resume);
     }
 
-    let epoch = context.rpc.get_epoch().await?;
+    let epoch = context
+        .rpc
+        .get_epoch_with_commitment(CommitmentLevel::Finalized)
+        .await?;
+
     debug!(
         epoch = epoch.id.0,
         start_slot = epoch.start_slot.0,
         "bootstrap: fresh node, using current epoch's start_slot"
     );
+
     Ok(epoch.start_slot)
 }
 
@@ -142,14 +147,17 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
+
     context
         .store
         .set_bootstrap_target_epoch(epoch)
         .map_err(|error| NodeError::Store(format!("set_bootstrap_target_epoch: {error}")))?;
+
     context
         .store
         .set_sync_cursor(end_slot)
         .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
+
 }
 
 #[cfg(test)]

@@ -46,6 +46,9 @@ pub trait Rpc: Send + Sync {
     /// Get the current slot number
     async fn get_slot(&self) -> Result<u64, RpcError>;
 
+    /// Get the most recently finalized slot.
+    async fn get_finalized_slot(&self) -> Result<u64, RpcError>;
+
     /// Get the latest blockhash for transaction signing
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError>;
 
@@ -66,9 +69,16 @@ pub trait Rpc: Send + Sync {
     // ========================================================================
 
     /// Fetch a single account's data
+    async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError>;
+
+    /// Fetch a single account's data at an explicit commitment.
     ///
     /// Returns `Err(RpcError::AccountNotFound)` if the account doesn't exist.
-    async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError>;
+    async fn get_account_with_commitment(
+        &self,
+        pubkey: &Address,
+        commitment: CommitmentLevel,
+    ) -> Result<Account, RpcError>;
 
     /// Fetch multiple accounts in a single request
     ///

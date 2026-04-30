@@ -43,7 +43,7 @@ const SKIPPED_SLOT_ERROR_CODE: i32 = -32007;
 
 #[derive(Clone)]
 pub enum CachedBlock {
-    /// Pre-serialized JSON-RPC `result` body for a finalized,
+    /// Pre-serialized JSON-RPC `result` body for a confirmed,
     /// filtered block. Wrapped in an envelope at serve time.
     Present(Bytes),
     /// The slot was skipped or never produced. Replays the standard
@@ -194,16 +194,20 @@ async fn handle(
     let id = obj.get("id").cloned().unwrap_or(Value::Null);
     let caller = addr.ip().to_string();
 
-    // Block path: separate slot-keyed store, populated by bootstrap +
-    // live tail. Falls through to upstream on miss without writing —
-    // live tail owns writes, so concurrent serve-path inserts would
-    // race with no upside.
+    // Block path: separate confirmed slot-keyed store, populated by
+    // bootstrap + live tail. Falls through to upstream on non-confirmed
+    // commitments or misses without writing — live tail owns writes, so
+    // concurrent serve-path inserts would race with no upside.
     if method == "getBlock" {
-        if let Some(slot) = parse_slot_param(&params) {
-            if let Some(cached) = state.slot_store.get(&slot).await {
-                state.stats.slot_store_hits.fetch_add(1, Ordering::Relaxed);
-                return serve_cached_block(id, cached);
+        if is_confirmed_get_block(&params) {
+            if let Some(slot) = parse_slot_param(&params) {
+                if let Some(cached) = state.slot_store.get(&slot).await {
+                    state.stats.slot_store_hits.fetch_add(1, Ordering::Relaxed);
+                    return serve_cached_block(id, cached);
+                }
+                state.stats.slot_store_misses.fetch_add(1, Ordering::Relaxed);
             }
+        } else if parse_slot_param(&params).is_some() {
             state.stats.slot_store_misses.fetch_add(1, Ordering::Relaxed);
         }
         return forward_passthrough(&state, &req, id).await;
@@ -254,6 +258,19 @@ async fn handle(
 
 fn parse_slot_param(params: &Value) -> Option<u64> {
     params.as_array()?.first()?.as_u64()
+}
+
+fn is_confirmed_get_block(params: &Value) -> bool {
+    get_block_commitment(params) == Some("confirmed")
+}
+
+fn get_block_commitment(params: &Value) -> Option<&str> {
+    let commitment = params.as_array()?.get(1)?.get("commitment")?;
+    match commitment {
+        Value::String(value) => Some(value.as_str()),
+        Value::Object(map) => map.get("commitment").and_then(Value::as_str),
+        _ => None,
+    }
 }
 
 fn serve_cached_block(id: Value, cached: CachedBlock) -> Response {
@@ -397,6 +414,24 @@ mod tests {
         assert_eq!(parse_slot_param(&Value::Null), None);
         assert_eq!(parse_slot_param(&json!([])), None);
         assert_eq!(parse_slot_param(&json!(["not-a-number"])), None);
+    }
+
+    #[test]
+    fn confirmed_get_block_detects_flat_commitment() {
+        let p = json!([12345, {"encoding": "json", "commitment": "confirmed"}]);
+        assert!(is_confirmed_get_block(&p));
+    }
+
+    #[test]
+    fn confirmed_get_block_detects_nested_commitment() {
+        let p = json!([12345, {"commitment": {"commitment": "confirmed"}}]);
+        assert!(is_confirmed_get_block(&p));
+    }
+
+    #[test]
+    fn finalized_get_block_does_not_use_slot_store() {
+        let p = json!([12345, {"encoding": "json", "commitment": "finalized"}]);
+        assert!(!is_confirmed_get_block(&p));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::client::RpcClient;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
+use solana_sdk::commitment_config::CommitmentLevel;
 use rpc::{Rpc, RpcError};
 
 use tape_api::state::{AccountType, Archive, Epoch, History, Node, Stake, System, Tape};
@@ -19,11 +20,23 @@ impl<R: Rpc> RpcClient<R> {
 
     /// Fetch the System singleton account
     pub async fn get_system(&self) -> Result<System, RpcError> {
+        self.get_system_with_commitment(self.rpc().commitment())
+            .await
+    }
+
+    /// Fetch the System singleton account at an explicit commitment.
+    pub async fn get_system_with_commitment(
+        &self,
+        commitment: CommitmentLevel,
+    ) -> Result<System, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
-            let account = self.rpc().get_account(&SYSTEM_ADDRESS).await?;
+            let account = self
+                .rpc()
+                .get_account_with_commitment(&SYSTEM_ADDRESS, commitment)
+                .await?;
 
             // Check account size before unpacking to avoid panic on partially initialized accounts
             let expected_size = std::mem::size_of::<System>() + 8; // +8 for discriminator
@@ -54,11 +67,22 @@ impl<R: Rpc> RpcClient<R> {
 
     /// Fetch the Epoch singleton account
     pub async fn get_epoch(&self) -> Result<Epoch, RpcError> {
+        self.get_epoch_with_commitment(self.rpc().commitment()).await
+    }
+
+    /// Fetch the Epoch singleton account at an explicit commitment.
+    pub async fn get_epoch_with_commitment(
+        &self,
+        commitment: CommitmentLevel,
+    ) -> Result<Epoch, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
-            let account = self.rpc().get_account(&EPOCH_ADDRESS).await?;
+            let account = self
+                .rpc()
+                .get_account_with_commitment(&EPOCH_ADDRESS, commitment)
+                .await?;
             Epoch::unpack_with_discriminator(&account.data)
                 .map(|e| *e)
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
