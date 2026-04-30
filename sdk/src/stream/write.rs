@@ -19,7 +19,10 @@ use tape_protocol::Api;
 use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
 use crate::tapedrive::Tapedrive;
-use crate::track::write::{certify_with_retry, upload_with_retry, WrittenTrack};
+use crate::metrics::{Operation, Phase};
+use crate::track::write::{
+    certify_with_retry, submit_blob, upload_with_retry, WrittenTrack,
+};
 
 use super::error::StreamError;
 use super::manifest::{ChunkEntry, ChunkManifest, CHUNK_SIZE, MANIFEST_VERSION};
@@ -212,24 +215,31 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     key: Hash,
     size: StorageUnits,
 ) -> Result<TrackNumber, TapedriveError> {
-    validate_stream_size(size).map_err(stream_error)?;
+    let timer = client
+        .timer(Operation::WriteStream, Phase::Preflight)
+        .bytes(size.to_bytes());
 
-    let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
-    let tracks_needed = chunk_count
-        .checked_add(TrackNumber(1))
-        .ok_or_else(|| stream_error(StreamError::InvalidInput("stream has too many chunks".into())))?;
+    let result = async {
+        validate_stream_size(size).map_err(stream_error)?;
+        let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
+        let tracks_needed = chunk_count.checked_add(TrackNumber(1)).ok_or_else(|| {
+            stream_error(StreamError::InvalidInput("stream has too many chunks".into()))
+        })?;
 
-    let entries = build_entries(TrackNumber(0), chunk_count, size)
-        .map_err(stream_error)?;
-    let manifest = build_manifest(key, size, entries).map_err(stream_error)?;
-    let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
-    let total_size = size
-        .checked_add(StorageUnits::from_bytes(manifest_bytes.len() as u64))
-        .ok_or_else(|| stream_error(StreamError::InvalidInput("stream size overflow".into())))?;
+        let entries = build_entries(TrackNumber(0), chunk_count, size).map_err(stream_error)?;
+        let manifest = build_manifest(key, size, entries).map_err(stream_error)?;
+        let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
+        let total_size = size
+            .checked_add(StorageUnits::from_bytes(manifest_bytes.len() as u64))
+            .ok_or_else(|| stream_error(StreamError::InvalidInput("stream size overflow".into())))?;
 
-    let tape = client.get_tape(&tape_key.address()).await?;
-    preflight(&tape, total_size, tracks_needed)?;
-    Ok(chunk_count)
+        let tape = client.get_tape(&tape_key.address()).await?;
+        preflight(&tape, total_size, tracks_needed)?;
+        Ok(chunk_count)
+    }
+    .await;
+    timer.finish_result(&result);
+    result
 }
 
 /// Register and upload all in-memory chunks concurrently.
@@ -344,10 +354,15 @@ async fn process_chunk<Blockchain: Rpc, Cluster: Api, Bytes: AsRef<[u8]>>(
     chunk_data: Bytes,
 ) -> Result<(usize, PendingChunk), TapedriveError> {
     let chunk_hash = chunk_key(key, chunk_index);
-    let (written, plan) = client
-        .write_blob(tape_key, chunk_hash, chunk_data.as_ref())
-        .await?;
-    upload_with_retry(client, &written, &plan).await?;
+    let (written, plan) = submit_blob(
+        client,
+        tape_key,
+        chunk_hash,
+        chunk_data.as_ref(),
+        Operation::WriteStream,
+    )
+    .await?;
+    upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
 
     Ok((
         chunk_index,
@@ -397,7 +412,13 @@ async fn certify_chunks<Blockchain: Rpc, Cluster: Api>(
     chunk_order.sort_by_key(|pending_chunk| pending_chunk.written.track.track_number.0);
 
     for pending_chunk in chunk_order {
-        certify_with_retry(client, tape_key, &pending_chunk.written).await?;
+        certify_with_retry(
+            client,
+            tape_key,
+            &pending_chunk.written,
+            Operation::WriteStream,
+        )
+        .await?;
     }
 
     Ok(())
@@ -410,9 +431,16 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     key: Hash,
     manifest_bytes: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
-    let (written, plan) = client.write_blob(tape_key, key, manifest_bytes).await?;
-    upload_with_retry(client, &written, &plan).await?;
-    let track = certify_with_retry(client, tape_key, &written).await?;
+    let (written, plan) = submit_blob(
+        client,
+        tape_key,
+        key,
+        manifest_bytes,
+        Operation::WriteStream,
+    )
+    .await?;
+    upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
+    let track = certify_with_retry(client, tape_key, &written, Operation::WriteStream).await?;
     Ok(WrittenTrack {
         address: written.address,
         track,

@@ -47,6 +47,10 @@ struct Cli {
     #[arg(short = 'v', long = "verbose", global = true, help_heading = "Global Options")]
     verbose: bool,
 
+    /// Print SDK timing summary to stderr after the command finishes.
+    #[arg(long = "timings", global = true, help_heading = "Global Options")]
+    timings: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -187,7 +191,8 @@ async fn main() -> ExitCode {
         )
         .try_init();
 
-    let mut ctx = match Context::load(cli.rpc_url, cli.keypair, cli.config, cli.output) {
+    let mut ctx = match Context::load(cli.rpc_url, cli.keypair, cli.config, cli.output, cli.timings)
+    {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("context init failed: {e}");
@@ -196,6 +201,12 @@ async fn main() -> ExitCode {
     };
 
     let result = dispatch(&mut ctx, cli.command).await;
+
+    if let Some(metrics) = &ctx.metrics {
+        if let Err(error) = tape_cli::metrics::print_stderr(metrics.as_ref()) {
+            eprintln!("timings: {error}");
+        }
+    }
 
     match result {
         Ok(()) => ExitCode::SUCCESS,

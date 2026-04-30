@@ -22,4 +22,4 @@
 
 .tmp/
 
-1gb_file.bin
+*.bin

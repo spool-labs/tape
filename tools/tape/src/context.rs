@@ -3,13 +3,15 @@
 //! and rely on it for everything environmental.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use peer_http::HttpApi;
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use tape_crypto::ed25519::Keypair;
 use tape_sdk::keys::helpers::{load_ed25519_keypair, load_solana_keypair};
+use tape_sdk::metrics::InMemory;
 use tape_sdk::tapedrive::Tapedrive;
-use peer_http::HttpApi;
 
 use crate::cluster;
 use crate::config::{self, CliConfig};
@@ -25,6 +27,7 @@ pub struct Context {
     pub config: CliConfig,
     pub active_cassette: Option<PathBuf>,
     pub output: OutputFormat,
+    pub metrics: Option<Arc<InMemory>>,
 }
 
 impl Context {
@@ -40,6 +43,7 @@ impl Context {
         cli_keypair: Option<PathBuf>,
         cli_config_path: Option<PathBuf>,
         output: OutputFormat,
+        timings: bool,
     ) -> Result<Self> {
         let config_path = cli_config_path.unwrap_or_else(config::default_config_path);
         let cfg = CliConfig::load(&config_path)?;
@@ -69,6 +73,7 @@ impl Context {
             config: cfg,
             active_cassette,
             output,
+            metrics: timings.then(|| Arc::new(InMemory::new())),
         })
     }
 
@@ -92,7 +97,11 @@ impl Context {
         // Tapedrive takes the payer keypair by value; clone so the Context
         // can stay intact for later commands in the same process.
         let payer = clone_keypair(&self.payer)?;
-        Ok(Tapedrive::new(rpc, payer))
+        let sdk = Tapedrive::new(rpc, payer);
+        Ok(match &self.metrics {
+            Some(metrics) => sdk.with_metrics(metrics.clone()),
+            None => sdk,
+        })
     }
 
     /// Resolve which tape keypair to operate on, preferring the CLI flag,

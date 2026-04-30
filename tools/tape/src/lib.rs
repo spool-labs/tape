@@ -2,6 +2,7 @@ pub mod cassette;
 pub mod commands;
 pub mod context;
 pub mod error;
+pub mod metrics;
 
 // Shared plumbing comes from tape-cli-common. Re-export the modules and
 // types the commands/main use so paths stay short and internal modules

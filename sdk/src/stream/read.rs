@@ -18,6 +18,7 @@ use tape_crypto::address::Address;
 use tape_protocol::Api;
 
 use crate::error::TapedriveError;
+use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 
 use super::error::StreamError;
@@ -52,10 +53,15 @@ async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     manifest_address: &Address,
 ) -> Result<(ChunkManifest, CompressedTrack), TapedriveError> {
-    let manifest_bytes = client.read(manifest_address).await?;
+    let manifest_bytes = client
+        .read_as(manifest_address, Operation::ReadStream)
+        .await?;
     let manifest = ChunkManifest::from_bytes(&manifest_bytes)
         .map_err(|error| stream_error(StreamError::Manifest(format!("invalid manifest: {error}"))))?;
-    let manifest_track = client.get_track(manifest_address).await?;
+    let metadata = client.timer(Operation::ReadStream, Phase::Metadata);
+    let manifest_track = client.get_track(manifest_address).await;
+    metadata.finish_result(&manifest_track);
+    let manifest_track = manifest_track?;
     Ok((manifest, manifest_track))
 }
 
@@ -80,7 +86,9 @@ async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + 
             let chunk_index = next_chunk_to_schedule;
 
             in_flight.push(async move {
-                let data = client.read(&track_address).await?;
+                let data = client
+                    .read_as(&track_address, Operation::ReadStream)
+                    .await?;
                 let data_size = StorageUnits::from_bytes(data.len() as u64);
                 if data_size != entry.size {
                     return Err(stream_error(StreamError::Chunk(format!(
@@ -102,7 +110,12 @@ async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + 
         }
 
         while let Some(chunk_data) = ready_chunks.remove(&next_chunk_to_write) {
-            writer.write_all(&chunk_data).await?;
+            let write_sink = client
+                .timer(Operation::ReadStream, Phase::WriteSink)
+                .bytes(chunk_data.len() as u64);
+            let result = writer.write_all(&chunk_data).await;
+            write_sink.finish_result(&result);
+            result?;
             total_written = total_written
                 .checked_add(StorageUnits::from_bytes(chunk_data.len() as u64))
                 .ok_or_else(|| stream_error(StreamError::Integrity("stream size overflow".into())))?;
@@ -110,7 +123,10 @@ async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + 
         }
     }
 
-    writer.flush().await?;
+    let write_sink = client.timer(Operation::ReadStream, Phase::WriteSink);
+    let result = writer.flush().await;
+    write_sink.finish_result(&result);
+    result?;
 
     if total_written != manifest.total_size {
         return Err(stream_error(StreamError::Integrity(format!(

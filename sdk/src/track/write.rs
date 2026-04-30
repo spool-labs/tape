@@ -31,6 +31,7 @@ use crate::codec::encoder::BlobEncoder;
 use crate::error::UploadError;
 use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
+use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 use crate::track::{bootstrap_network_state, queries};
 use crate::transfer::certify::CertificationCollector;
@@ -91,7 +92,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             )));
         }
 
-        let written = submit_raw(self, tape_key, key, raw).await?;
+        let timer = self
+            .timer(Operation::WriteRaw, Phase::Total)
+            .bytes(raw.len() as u64);
+        let result = submit_raw(self, tape_key, key, raw, Operation::WriteRaw).await;
+        timer.finish_result(&result);
+        let written = result?;
         Ok(written.track)
     }
 
@@ -102,7 +108,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         key: Hash,
         data: &[u8],
     ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
-        submit_blob(self, tape_key, key, data).await
+        let timer = self
+            .timer(Operation::WriteBlob, Phase::Total)
+            .bytes(data.len() as u64);
+        let result = submit_blob(self, tape_key, key, data, Operation::WriteBlob).await;
+        timer.finish_result(&result);
+        result
     }
 
     /// Upload blob slices for a previously written blob track.
@@ -111,14 +122,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         written: &WrittenTrack,
         plan: &UploadPlan,
     ) -> Result<(), TapedriveError> {
-        wait_for_visibility(self, written.address, written.track.spool_group).await?;
-        upload_once(
-            self,
-            written.address,
-            written.track.spool_group,
-            plan.slices.clone(),
-        )
-        .await
+        let bytes = plan.slices.iter().map(|slice| slice.data.len() as u64).sum();
+        let timer = self
+            .timer(Operation::Upload, Phase::Total)
+            .bytes(bytes)
+            .chunks(plan.slices.len() as u64);
+        let result = upload(self, written, plan, Operation::Upload).await;
+        timer.finish_result(&result);
+        result
     }
 
     /// Collect signatures and submit the certify instruction for a written track.
@@ -127,7 +138,10 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         tape_key: &TapeKey,
         written: &WrittenTrack,
     ) -> Result<(), TapedriveError> {
-        certify_once(self, tape_key, written.address, written.track.spool_group).await
+        let timer = self.timer(Operation::Certify, Phase::Total).chunks(1);
+        let result = certify_once(self, tape_key, written, Operation::Certify).await;
+        timer.finish_result(&result);
+        result
     }
 }
 
@@ -150,6 +164,22 @@ fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
 }
 
 async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &TapeKey,
+    key: Hash,
+    raw: &[u8],
+    operation: Operation,
+) -> Result<WrittenTrack, TapedriveError> {
+    let timer = client
+        .timer(operation, Phase::Register)
+        .bytes(raw.len() as u64)
+        .chunks(1);
+    let result = send_raw(client, tape_key, key, raw).await;
+    timer.finish_result(&result);
+    result
+}
+
+async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
     key: Hash,
@@ -196,13 +226,36 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     })
 }
 
-async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
+pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
     key: Hash,
     data: &[u8],
+    operation: Operation,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
-    let plan = prepare_plan(data)?;
+    let encode_timer = client
+        .timer(operation, Phase::Encode)
+        .bytes(data.len() as u64);
+    let plan = prepare_plan(data);
+    encode_timer.finish_result(&plan);
+    let plan = plan?;
+
+    let register_timer = client
+        .timer(operation, Phase::Register)
+        .bytes(data.len() as u64)
+        .chunks(1);
+    let result = send_blob(client, tape_key, key, data, plan).await;
+    register_timer.finish_result(&result);
+    result
+}
+
+async fn send_blob<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &TapeKey,
+    key: Hash,
+    _data: &[u8],
+    plan: UploadPlan,
+) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
     let blob = BlobInfo {
@@ -261,15 +314,50 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     track_address: Address,
     spool_group: SpoolGroup,
     slices: Vec<SliceWithProof>,
+    operation: Operation,
 ) -> Result<(), TapedriveError> {
-    let state = bootstrap_network_state(client).await?;
+    let bytes = slices.iter().map(|slice| slice.data.len() as u64).sum();
+    let chunks = slices.len() as u64;
+
+    let locate = client.timer(operation, Phase::Locate);
+    let state = bootstrap_network_state(client).await;
+    locate.finish_result(&state);
+    let state = state?;
+
     let uploader = DistributedUploader::new(track_address, spool_group, slices, &state)
         .map_err(TapedriveError::Upload)?;
 
-    uploader
+    let store = client
+        .timer(operation, Phase::Store)
+        .bytes(bytes)
+        .chunks(chunks);
+    let result = uploader
         .upload_all(client.api.as_ref())
         .await
-        .map_err(TapedriveError::Upload)
+        .map_err(TapedriveError::Upload);
+    store.finish_result(&result);
+    result
+}
+
+async fn upload<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    written: &WrittenTrack,
+    plan: &UploadPlan,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    let visibility = client.timer(operation, Phase::Visibility);
+    let result = wait_for_visibility(client, written.address, written.track.spool_group).await;
+    visibility.finish_result(&result);
+    result?;
+
+    upload_once(
+        client,
+        written.address,
+        written.track.spool_group,
+        plan.slices.clone(),
+        operation,
+    )
+    .await
 }
 
 async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
@@ -382,24 +470,31 @@ fn should_retry_track_completion(err: &TrackCompletionError) -> bool {
 async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    track_address: Address,
-    spool_group: SpoolGroup,
+    written: &WrittenTrack,
+    operation: Operation,
 ) -> Result<(), TapedriveError> {
+    let track_address = written.address;
+    let spool_group = written.track.spool_group;
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
-    let system = client.rpc().get_system().await?;
 
-    let collector = CertificationCollector::with_defaults();
-    let collected = collector
-        .collect_signatures(
-            client.api.as_ref(),
-            &track_address,
-            spool_group,
-            &system,
-        )
-        .await
-        .map_err(TapedriveError::Certification)?;
-    let proof = queries::query_track_proof(client, &track_address).await?;
+    let collect = client.timer(operation, Phase::CertifyCollect);
+    let result = async {
+        let system = client.rpc().get_system().await?;
+        let collector = CertificationCollector::with_defaults();
+        collector
+            .collect_signatures(client.api.as_ref(), &track_address, spool_group, &system)
+            .await
+            .map_err(TapedriveError::Certification)
+    }
+    .await;
+    collect.finish_result(&result);
+    let collected = result?;
+
+    let proof_timer = client.timer(operation, Phase::CertifyProof);
+    let proof = queries::query_track_proof(client, &track_address).await;
+    proof_timer.finish_result(&proof);
+    let proof = proof?;
 
     let certify_ix = build_certify_track_ix(
         payer.pubkey().into(),
@@ -410,7 +505,8 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
         collected.aggregated_signature,
     );
 
-    match client
+    let submit = client.timer(operation, Phase::CertifySubmit);
+    let result = match client
         .rpc()
         .send_instructions_with_signers_and_compute_unit_limit(
             payer,
@@ -425,7 +521,9 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
             Some(TapeError::AlreadyCertified) => Ok(()),
             _ => Err(TapedriveError::Rpc(err)),
         },
-    }
+    };
+    submit.finish_result(&result);
+    result
 }
 
 async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
@@ -465,24 +563,48 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     key: Hash,
     data: &[u8],
 ) -> Result<CompressedTrack, TapedriveError> {
-    if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
-        return client.write_raw(tape_key, key, data).await;
-    }
+    let timer = client
+        .timer(Operation::WriteTrack, Phase::Total)
+        .bytes(data.len() as u64);
+    let result = async {
+        if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
+            let written = submit_raw(
+                client,
+                tape_key,
+                key,
+                data,
+                Operation::WriteTrack,
+            )
+            .await?;
+            return Ok(written.track);
+        }
 
-    let (written, plan) = client.write_blob(tape_key, key, data).await?;
-    upload_with_retry(client, &written, &plan).await?;
-    certify_with_retry(client, tape_key, &written).await
+        let (written, plan) = submit_blob(
+            client,
+            tape_key,
+            key,
+            data,
+            Operation::WriteTrack,
+        )
+        .await?;
+        upload_with_retry(client, &written, &plan, Operation::WriteTrack).await?;
+        certify_with_retry(client, tape_key, &written, Operation::WriteTrack).await
+    }
+    .await;
+    timer.finish_result(&result);
+    result
 }
 
 pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     written: &WrittenTrack,
     plan: &UploadPlan,
+    operation: Operation,
 ) -> Result<(), TapedriveError> {
     retry_if(
         write_retry_config(),
         None,
-        || client.upload(written, plan),
+        || upload(client, written, plan, operation),
         should_retry_upload,
     ).await
 }
@@ -491,16 +613,20 @@ pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
     written: &WrittenTrack,
+    operation: Operation,
 ) -> Result<CompressedTrack, TapedriveError> {
     retry_if(
         write_retry_config(),
         None,
-        || client.certify(tape_key, written),
+        || certify_once(client, tape_key, written, operation),
         should_retry_certification,
     )
     .await?;
 
-    wait_for_certified_track(client, &tape_key.address(), written.track.track_number).await
+    let visible = client.timer(operation, Phase::CertifyVisible).chunks(1);
+    let result = wait_for_certified_track(client, &tape_key.address(), written.track.track_number).await;
+    visible.finish_result(&result);
+    result
 }
 
 async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
