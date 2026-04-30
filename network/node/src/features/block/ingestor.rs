@@ -136,6 +136,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             }
         };
         self.finalized_tip = SlotNumber(tip);
+        self.context.ingest.progress().record_tip(tip);
         Ok(())
     }
 
@@ -156,8 +157,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             }
         };
 
-        progress.record_tip(tip);
-
+        // This is the confirmed fetch tip, used only to avoid asking for
+        // future blocks. Ingest readiness is measured against finalized_tip,
+        // because promoted/durable consumers intentionally lag confirmed.
         if slot.0 > tip {
             sleep(Duration::from_millis(TIP_POLL_MS)).await;
             return Ok(FetchOutcome::PastTip);

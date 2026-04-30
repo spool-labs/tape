@@ -16,8 +16,8 @@ pub enum TxOutcome {
     /// Transport/RPC error (timeout, connection, blockhash expired, etc.)
     /// These are always retriable.
     Transport(RpcError),
-    /// Submit was refused because the local block ingestor is not at the
-    /// live edge. The submit future was never polled.
+    /// Submit was refused because the local block ingestor is not caught up
+    /// to the finalized dispatch edge. The submit future was never polled.
     SkippedStale,
 }
 
@@ -36,9 +36,10 @@ pub fn classify_tx(result: Result<Txid, RpcError>) -> TxOutcome {
 }
 
 /// Funnel every protocol-changing transaction through here. If the
-/// ingestor is not at the live edge, the submit future is dropped without
-/// being polled and `SkippedStale` is returned. Otherwise the future is
-/// awaited and its result classified via `classify_tx`.
+/// ingestor is not caught up to the finalized dispatch edge, the submit
+/// future is dropped without being polled and `SkippedStale` is returned.
+/// Otherwise the future is awaited and its result classified via
+/// `classify_tx`.
 pub async fn submit_if_at_tip<F>(ingest: &IngestBus, submit: F) -> TxOutcome
 where
     F: Future<Output = Result<Txid, RpcError>>,

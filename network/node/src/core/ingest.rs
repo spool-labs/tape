@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
 
-/// Threshold at which a node is considered "at the live edge". The block
-/// ingestor cursor is allowed to lag the last observed tip by up to this
-/// many slots and still report `AtTip`.
+/// Threshold at which a node is considered caught up to the durable ingest
+/// edge. The block ingestor dispatch cursor is allowed to lag the finalized
+/// tip by up to this many slots and still report `AtTip`.
 pub const AT_TIP_THRESHOLD_SLOTS: u64 = 5;
 
 /// If no block fetch attempt or tip read has occurred for this long, the
@@ -16,7 +16,7 @@ pub const STALL_THRESHOLD: Duration = Duration::from_secs(30);
 /// How often the monitor task recomputes `IngestState` from progress.
 pub const MONITOR_TICK: Duration = Duration::from_millis(500);
 
-/// Where the block ingestor is, relative to the live edge.
+/// Where the block ingestor is, relative to the finalized dispatch edge.
 #[derive(Debug, Clone, Copy)]
 pub enum IngestState {
     Catching { lag_slots: u64 },
