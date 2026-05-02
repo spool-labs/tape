@@ -58,7 +58,7 @@ async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
         .await?;
     let manifest = ChunkManifest::from_bytes(&manifest_bytes)
         .map_err(|error| stream_error(StreamError::Manifest(format!("invalid manifest: {error}"))))?;
-    let metadata = client.timer(Operation::ReadStream, Phase::Metadata);
+    let metadata = client.timer(Operation::ReadStream, Phase::TrackMetadata);
     let manifest_track = client.get_track(manifest_address).await;
     metadata.finish_result(&manifest_track);
     let manifest_track = manifest_track?;

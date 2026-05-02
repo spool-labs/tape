@@ -320,7 +320,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     let chunks = slices.len() as u64;
 
     let locate = client.timer(operation, Phase::Locate);
-    let state = bootstrap_network_state(client).await;
+    let state = bootstrap_network_state(client, Some(operation)).await;
     locate.finish_result(&state);
     let state = state?;
 
@@ -346,7 +346,13 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     let visibility = client.timer(operation, Phase::Visibility);
-    let result = wait_for_visibility(client, written.address, written.track.spool_group).await;
+    let result = wait_for_visibility(
+        client,
+        written.address,
+        written.track.spool_group,
+        operation,
+    )
+    .await;
     visibility.finish_result(&result);
     result?;
 
@@ -364,8 +370,9 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track_address: Address,
     spool_group: SpoolGroup,
+    operation: Operation,
 ) -> Result<(), TapedriveError> {
-    let state = bootstrap_network_state(client).await?;
+    let state = bootstrap_network_state(client, Some(operation)).await?;
 
     let group_peers = state.group_peers(spool_group);
     let required = min_correct(state.group_member_count(spool_group) as u64) as usize;

@@ -52,7 +52,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 pub(crate) async fn queryable_peers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
 ) -> Result<Vec<NodeId>, TapedriveError> {
-    let state = bootstrap_network_state(client).await?;
+    let state = bootstrap_network_state(client, None).await?;
     let mut peers = Vec::with_capacity(state.committee.len());
     for member in &state.committee {
         if !peers.contains(&member.id) {
@@ -202,4 +202,3 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
 
     Err(finish_peer_query(last_error, saw_not_found))
 }
-

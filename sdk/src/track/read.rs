@@ -59,15 +59,17 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<Vec<u8>, TapedriveError> {
     let total = client.timer(operation, Phase::Total);
     let result = async {
-        let metadata = client.timer(operation, Phase::Metadata);
-        let result = async {
-            let track_info = client.get_track(track).await?;
-            let track_data = fetch_track_data(client, *track, track_info.spool_group).await?;
-            Ok::<_, TapedriveError>((track_info, track_data))
-        }
-        .await;
-        metadata.finish_result(&result);
-        let (track_info, track_data) = result?;
+        bootstrap_network_state(client, Some(operation)).await?;
+
+        let metadata = client.timer(operation, Phase::TrackMetadata);
+        let track_info = client.get_track(track).await;
+        metadata.finish_result(&track_info);
+        let track_info = track_info?;
+
+        let data = client.timer(operation, Phase::TrackData);
+        let track_data = fetch_track_data(client, *track, track_info.spool_group, operation).await;
+        data.finish_result(&track_data);
+        let track_data = track_data?;
 
         if track_info.is_raw() {
             let TrackData::Raw(bytes) = track_data else {
@@ -94,7 +96,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let k = blob.profile.k() as usize;
 
         let locate = client.timer(operation, Phase::Locate);
-        let state = bootstrap_network_state(client).await;
+        let state = bootstrap_network_state(client, Some(operation)).await;
         locate.finish_result(&state);
         let state = state?;
         let slice_to_node: HashMap<SpoolIndex, NodeId> =
@@ -142,7 +144,9 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     track: &Address,
     data: &[u8],
 ) -> Result<bool, TapedriveError> {
-    let metadata = client.timer(Operation::Verify, Phase::Metadata);
+    bootstrap_network_state(client, Some(Operation::Verify)).await?;
+
+    let metadata = client.timer(Operation::Verify, Phase::TrackMetadata);
     let track_info = client.get_track(track).await;
     metadata.finish_result(&track_info);
     let track_info = track_info?;
@@ -151,9 +155,10 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
         return Ok(hash(data) == track_info.value_hash);
     }
 
-    let metadata = client.timer(Operation::Verify, Phase::Metadata);
-    let track_data = fetch_track_data(client, *track, track_info.spool_group).await;
-    metadata.finish_result(&track_data);
+    let data_timer = client.timer(Operation::Verify, Phase::TrackData);
+    let track_data =
+        fetch_track_data(client, *track, track_info.spool_group, Operation::Verify).await;
+    data_timer.finish_result(&track_data);
     let TrackData::Blob(blob) = track_data? else {
         return Err(TapedriveError::InvalidArgument(
             "expected blob track data".into(),
@@ -181,8 +186,9 @@ async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: Address,
     spool_group: SpoolGroup,
+    operation: Operation,
 ) -> Result<TrackData, TapedriveError> {
-    let state = bootstrap_network_state(client).await?;
+    let state = bootstrap_network_state(client, Some(operation)).await?;
     let mut peers = Vec::new();
     let mut saw_not_found = false;
     let mut last_error = None;
