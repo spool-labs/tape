@@ -2,17 +2,17 @@
 
   --------------------------------------
 
-  > [!Important]
+  > [!Warning]
   > Tapedrive is under active development and **not yet deployed**.
   >
-  > This is the stable *proof-of-stake* rewrite. "Stable" means it compiles
+  > This is the stable **proof-of-stake** rewrite. `Stable` means it compiles
   > and has hit a structural milestone — not that it's usable yet. To
   > follow along with day-to-day progress, check the [`latest`](https://github.com/spool-labs/tape/tree/latest) branch.
   >
   > Looking for the previous proof-of-work version? See the
   > [`pow`](https://github.com/spool-labs/tape/tree/pow) branch.
   >
-  > [Sign up](https://tapedrive.io/#sign-up) for early access. Join us on
+  > [Sign up](https://tape.network/#sign-up) for early access. Join us on
   > [Discord](https://discord.gg/dVa9TWA45X) to follow development.
 
   --------------------------------------
@@ -70,5 +70,5 @@
 
   ## Want to run a node?
 
-  [Sign up](https://tapedrive.io/#sign-up) for early access. Tapedrive is
+  [Sign up](https://tape.network/#sign-up) for early access. Tapedrive is
   currently invite-only.
