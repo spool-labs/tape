@@ -5,9 +5,8 @@
   > [!Warning]
   > Tapedrive is under active development and **not yet deployed**.
   >
-  > This is the stable **proof-of-stake** rewrite. `Stable` means it compiles
-  > and has hit a structural milestone — not that it's usable yet. To
-  > follow along with day-to-day progress, check the [`latest`](https://github.com/spool-labs/tape/tree/latest) branch.
+  > This is the **Proof-of-Stake** rewrite. It compiles but is not ready to deploy just yet.
+  > To follow along with day-to-day progress, check the [`latest`](https://github.com/spool-labs/tape/tree/latest) branch.
   >
   > Looking for the previous proof-of-work version? See the
   > [`pow`](https://github.com/spool-labs/tape/tree/pow) branch.
