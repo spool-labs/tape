@@ -7,13 +7,14 @@
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
 //! - TrackLookupKey: (tape, track_number BE, key) (72 bytes)
 //! - SnapshotArtifactKey: (epoch BE, group BE, chunk BE) (24 bytes)
-//! - SnapshotWriteSigKey: (epoch BE, group BE, chunk BE, signer BE) (32 bytes)
-//! - SnapshotFinalizeSigKey: (epoch BE, group BE, signer BE) (24 bytes)
+//! - VoteSigKey: (voting_epoch BE, kind BE, target_epoch BE, hash, group BE, signer) (96 bytes)
 
 use std::mem::MaybeUninit;
 
 use serde::{Deserialize, Serialize};
-use tape_core::types::{NodeId, TrackNumber};
+use tape_core::spooler::SpoolGroup;
+use tape_core::system::{VoteCandidate, VoteKind};
+use tape_core::types::{EpochNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::{
@@ -95,12 +96,12 @@ impl<'de> SchemaRead<'de> for UnitKey {
 ///
 /// Format: [spool_id BE 2 bytes]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SpoolIndexKey(pub u16);
+pub struct SpoolIndexKey(pub SpoolIndex);
 
 impl SpoolIndexKey {
     pub const SIZE: usize = 2;
 
-    pub fn new(spool_id: u16) -> Self {
+    pub fn new(spool_id: SpoolIndex) -> Self {
         Self(spool_id)
     }
 }
@@ -113,7 +114,7 @@ impl SchemaWrite for SpoolIndexKey {
     }
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        let bytes = src.0.to_be_bytes();
+        let bytes = (src.0.as_u64() as u16).to_be_bytes();
         writer.write_exact(&bytes)?;
         Ok(())
     }
@@ -125,7 +126,7 @@ impl<'de> SchemaRead<'de> for SpoolIndexKey {
     fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<SpoolIndexKey>) -> ReadResult<()> {
         let bytes: [u8; 2] = unsafe { reader.get_t()? };
         let spool_id = u16::from_be_bytes(bytes);
-        dst.write(SpoolIndexKey(spool_id));
+        dst.write(SpoolIndexKey(SpoolIndex(spool_id as u64)));
         Ok(())
     }
 }
@@ -137,14 +138,14 @@ impl<'de> SchemaRead<'de> for SpoolIndexKey {
 /// Spool-first ordering enables efficient prefix iteration by spool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SliceKey {
-    pub spool_id: u16,
+    pub spool_id: SpoolIndex,
     pub track_address: Address,
 }
 
 impl SliceKey {
     pub const SIZE: usize = 34;
 
-    pub fn new(spool_id: u16, track_address: Address) -> Self {
+    pub fn new(spool_id: SpoolIndex, track_address: Address) -> Self {
         Self {
             spool_id,
             track_address,
@@ -152,8 +153,8 @@ impl SliceKey {
     }
 
     /// Create prefix bytes for spool-based iteration
-    pub fn spool_prefix(spool_id: u16) -> [u8; 2] {
-        spool_id.to_be_bytes()
+    pub fn spool_prefix(spool_id: SpoolIndex) -> [u8; 2] {
+        (spool_id.as_u64() as u16).to_be_bytes()
     }
 }
 
@@ -236,7 +237,7 @@ impl SchemaWrite for SliceKey {
     }
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        let spool_bytes = src.spool_id.to_be_bytes();
+        let spool_bytes = (src.spool_id.as_u64() as u16).to_be_bytes();
         writer.write_exact(&spool_bytes)?;
         writer.write_exact(src.track_address.as_ref())?;
         Ok(())
@@ -251,7 +252,7 @@ impl<'de> SchemaRead<'de> for SliceKey {
         let track_bytes: [u8; 32] = unsafe { reader.get_t()? };
         let spool_id = u16::from_be_bytes(spool_bytes);
         dst.write(SliceKey {
-            spool_id,
+            spool_id: SpoolIndex(spool_id as u64),
             track_address: Address::from(track_bytes),
         });
         Ok(())
@@ -325,52 +326,61 @@ impl<'de> SchemaRead<'de> for SnapshotArtifactKey {
     }
 }
 
-/// Key for snapshot write partial signatures (32 bytes)
+/// Key for generic pushed vote signatures (96 bytes)
 ///
 /// Format:
-/// [epoch BE 8 bytes][group BE 8 bytes][chunk BE 8 bytes][signer BE 8 bytes]
+/// [voting_epoch BE 8 bytes][kind BE 8 bytes][target_epoch BE 8 bytes]
+/// [hash 32 bytes][group BE 8 bytes][signer address 32 bytes]
 ///
-/// Keyed by signer `NodeId` (not bitmap position): the signer's position in a
-/// group can drift across epochs, but their NodeId is stable. Bitmap indices
-/// are re-derived from current state at submit time.
+/// Ordering supports scans by voting epoch, candidate, and candidate group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SnapshotWriteSigKey {
-    pub epoch: u64,
-    pub group: u64,
-    pub chunk: u64,
-    pub signer: NodeId,
+pub struct VoteSigKey {
+    pub candidate: VoteCandidate,
+    pub group: SpoolGroup,
+    pub signer: Address,
 }
 
-impl SnapshotWriteSigKey {
-    pub const SIZE: usize = 32;
+impl VoteSigKey {
+    pub const SIZE: usize = 96;
+    pub const EPOCH_PREFIX_SIZE: usize = 8;
+    pub const CANDIDATE_PREFIX_SIZE: usize = 56;
+    pub const GROUP_PREFIX_SIZE: usize = 64;
 
-    pub fn new(epoch: u64, group: u64, chunk: u64, signer: NodeId) -> Self {
+    pub fn new(candidate: VoteCandidate, group: SpoolGroup, signer: Address) -> Self {
         Self {
-            epoch,
+            candidate,
             group,
-            chunk,
             signer,
         }
     }
 
-    pub fn epoch_prefix(epoch: u64) -> [u8; 8] {
-        epoch.to_be_bytes()
+    pub fn epoch_prefix(voting_epoch: EpochNumber) -> [u8; Self::EPOCH_PREFIX_SIZE] {
+        voting_epoch.0.to_be_bytes()
     }
 
-    pub fn group_prefix(epoch: u64, group: u64) -> [u8; 16] {
-        SnapshotArtifactKey::group_prefix(epoch, group)
+    pub fn candidate_prefix(candidate: VoteCandidate) -> [u8; Self::CANDIDATE_PREFIX_SIZE] {
+        let mut buf = [0u8; Self::CANDIDATE_PREFIX_SIZE];
+        let kind: u64 = candidate.kind.into();
+        buf[0..8].copy_from_slice(&candidate.voting_epoch.0.to_be_bytes());
+        buf[8..16].copy_from_slice(&kind.to_be_bytes());
+        buf[16..24].copy_from_slice(&candidate.target_epoch.0.to_be_bytes());
+        buf[24..56].copy_from_slice(&candidate.hash.0);
+        buf
     }
 
-    pub fn chunk_prefix(epoch: u64, group: u64, chunk: u64) -> [u8; 24] {
-        let mut buf = [0u8; 24];
-        buf[0..8].copy_from_slice(&epoch.to_be_bytes());
-        buf[8..16].copy_from_slice(&group.to_be_bytes());
-        buf[16..24].copy_from_slice(&chunk.to_be_bytes());
+    pub fn group_prefix(
+        candidate: VoteCandidate,
+        group: SpoolGroup,
+    ) -> [u8; Self::GROUP_PREFIX_SIZE] {
+        let mut buf = [0u8; Self::GROUP_PREFIX_SIZE];
+        buf[0..Self::CANDIDATE_PREFIX_SIZE].copy_from_slice(&Self::candidate_prefix(candidate));
+        buf[Self::CANDIDATE_PREFIX_SIZE..Self::GROUP_PREFIX_SIZE]
+            .copy_from_slice(&group.0.to_be_bytes());
         buf
     }
 }
 
-impl SchemaWrite for SnapshotWriteSigKey {
+impl SchemaWrite for VoteSigKey {
     type Src = Self;
 
     fn size_of(_src: &Self::Src) -> WriteResult<usize> {
@@ -378,98 +388,38 @@ impl SchemaWrite for SnapshotWriteSigKey {
     }
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&src.epoch.to_be_bytes())?;
-        writer.write_exact(&src.group.to_be_bytes())?;
-        writer.write_exact(&src.chunk.to_be_bytes())?;
-        writer.write_exact(&src.signer.0.to_be_bytes())?;
+        let kind: u64 = src.candidate.kind.into();
+        writer.write_exact(&src.candidate.voting_epoch.0.to_be_bytes())?;
+        writer.write_exact(&kind.to_be_bytes())?;
+        writer.write_exact(&src.candidate.target_epoch.0.to_be_bytes())?;
+        writer.write_exact(&src.candidate.hash.0)?;
+        writer.write_exact(&src.group.0.to_be_bytes())?;
+        writer.write_exact(src.signer.as_ref())?;
         Ok(())
     }
 }
 
-impl<'de> SchemaRead<'de> for SnapshotWriteSigKey {
+impl<'de> SchemaRead<'de> for VoteSigKey {
     type Dst = Self;
 
-    fn read(
-        reader: &mut Reader<'de>,
-        dst: &mut MaybeUninit<SnapshotWriteSigKey>,
-    ) -> ReadResult<()> {
-        let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<VoteSigKey>) -> ReadResult<()> {
+        let voting_epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let kind_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let target_epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let hash: [u8; 32] = unsafe { reader.get_t()? };
         let group_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        let chunk_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        let signer_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        dst.write(SnapshotWriteSigKey {
-            epoch: u64::from_be_bytes(epoch_bytes),
-            group: u64::from_be_bytes(group_bytes),
-            chunk: u64::from_be_bytes(chunk_bytes),
-            signer: NodeId(u64::from_be_bytes(signer_bytes)),
-        });
-        Ok(())
-    }
-}
-
-/// Key for snapshot finalize partial signatures (24 bytes)
-///
-/// Format: [epoch BE 8 bytes][group BE 8 bytes][signer BE 8 bytes]
-///
-/// Keyed by signer `NodeId` (not bitmap position): the signer's position in a
-/// group can drift across epochs, but their NodeId is stable. Bitmap indices
-/// are re-derived from current state at submit time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SnapshotFinalizeSigKey {
-    pub epoch: u64,
-    pub group: u64,
-    pub signer: NodeId,
-}
-
-impl SnapshotFinalizeSigKey {
-    pub const SIZE: usize = 24;
-
-    pub fn new(epoch: u64, group: u64, signer: NodeId) -> Self {
-        Self {
-            epoch,
-            group,
-            signer,
-        }
-    }
-
-    pub fn epoch_prefix(epoch: u64) -> [u8; 8] {
-        epoch.to_be_bytes()
-    }
-
-    pub fn group_prefix(epoch: u64, group: u64) -> [u8; 16] {
-        SnapshotArtifactKey::group_prefix(epoch, group)
-    }
-}
-
-impl SchemaWrite for SnapshotFinalizeSigKey {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(Self::SIZE)
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&src.epoch.to_be_bytes())?;
-        writer.write_exact(&src.group.to_be_bytes())?;
-        writer.write_exact(&src.signer.0.to_be_bytes())?;
-        Ok(())
-    }
-}
-
-impl<'de> SchemaRead<'de> for SnapshotFinalizeSigKey {
-    type Dst = Self;
-
-    fn read(
-        reader: &mut Reader<'de>,
-        dst: &mut MaybeUninit<SnapshotFinalizeSigKey>,
-    ) -> ReadResult<()> {
-        let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        let group_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        let signer_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        dst.write(SnapshotFinalizeSigKey {
-            epoch: u64::from_be_bytes(epoch_bytes),
-            group: u64::from_be_bytes(group_bytes),
-            signer: NodeId(u64::from_be_bytes(signer_bytes)),
+        let signer: [u8; 32] = unsafe { reader.get_t()? };
+        let kind =
+            VoteKind::try_from(u64::from_be_bytes(kind_bytes)).unwrap_or(VoteKind::Unknown);
+        dst.write(VoteSigKey {
+            candidate: VoteCandidate {
+                kind,
+                voting_epoch: EpochNumber(u64::from_be_bytes(voting_epoch_bytes)),
+                target_epoch: EpochNumber(u64::from_be_bytes(target_epoch_bytes)),
+                hash: Hash(hash),
+            },
+            group: SpoolGroup(u64::from_be_bytes(group_bytes)),
+            signer: Address::from(signer),
         });
         Ok(())
     }
@@ -573,15 +523,15 @@ mod tests {
 
     #[test]
     fn test_spool_index_key_size() {
-        let key = SpoolIndexKey::new(42);
+        let key = SpoolIndexKey::new(SpoolIndex(42));
         let bytes = wincode::serialize(&key).unwrap();
         assert_eq!(bytes.len(), SpoolIndexKey::SIZE);
     }
 
     #[test]
     fn test_spool_index_key_ordering() {
-        let key1 = SpoolIndexKey::new(1);
-        let key2 = SpoolIndexKey::new(256);
+        let key1 = SpoolIndexKey::new(SpoolIndex(1));
+        let key2 = SpoolIndexKey::new(SpoolIndex(256));
 
         let bytes1 = wincode::serialize(&key1).unwrap();
         let bytes2 = wincode::serialize(&key2).unwrap();
@@ -591,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_spool_index_key_roundtrip() {
-        let key = SpoolIndexKey::new(1023);
+        let key = SpoolIndexKey::new(SpoolIndex(1023));
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: SpoolIndexKey = wincode::deserialize(&bytes).unwrap();
         assert_eq!(key, decoded);
@@ -599,7 +549,7 @@ mod tests {
 
     #[test]
     fn test_slice_key_size() {
-        let key = SliceKey::new(42, Address::new([1u8; 32]));
+        let key = SliceKey::new(SpoolIndex(42), Address::new([1u8; 32]));
         let bytes = wincode::serialize(&key).unwrap();
         assert_eq!(bytes.len(), SliceKey::SIZE);
     }
@@ -607,8 +557,8 @@ mod tests {
     #[test]
     fn test_slice_key_ordering() {
         // Spool 1 should come before spool 100
-        let key1 = SliceKey::new(1, Address::new([255u8; 32]));
-        let key2 = SliceKey::new(100, Address::new([0u8; 32]));
+        let key1 = SliceKey::new(SpoolIndex(1), Address::new([255u8; 32]));
+        let key2 = SliceKey::new(SpoolIndex(100), Address::new([0u8; 32]));
 
         let bytes1 = wincode::serialize(&key1).unwrap();
         let bytes2 = wincode::serialize(&key2).unwrap();
@@ -618,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_slice_key_roundtrip() {
-        let key = SliceKey::new(42, Address::new([0xAB; 32]));
+        let key = SliceKey::new(SpoolIndex(42), Address::new([0xAB; 32]));
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: SliceKey = wincode::deserialize(&bytes).unwrap();
         assert_eq!(key, decoded);

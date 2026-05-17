@@ -7,8 +7,8 @@ description = "In-memory mock implementation of the Peer trait for testing"
 [dependencies]
 tape-protocol = { workspace = true }
 tape-core = { workspace = true }
+tape-crypto = { workspace = true }
 async-trait.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
-tape-crypto = { workspace = true }

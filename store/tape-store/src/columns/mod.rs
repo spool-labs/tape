@@ -26,10 +26,11 @@
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
 //!
+//! ## Vote Coordination Columns
+//! - `vote_sig`: Per-group BLS signatures keyed by vote candidate and signer
+//!
 //! ## Snapshot Coordination Columns
-//! - `snapshot_write_sig`: Per-chunk partial BLS signatures
-//! - `snapshot_finalize_sig`: Per-group partial BLS signatures
-//! - `snapshot_artifact`: Local build artifacts retained until write capture
+//! - `snapshot_artifact`: Local build artifacts retained until snapshot finalization
 
 pub mod event_log;
 pub mod gc;
@@ -41,15 +42,16 @@ pub mod spool;
 pub mod sync_cursor;
 pub mod tape;
 pub mod track;
-pub mod track_lookup;
 pub mod track_data;
+pub mod track_lookup;
+pub mod vote;
 
 // Re-export all column types
 pub use event_log::EventLogCol;
 pub use gc::GcCol;
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
-pub use snapshot::{SnapshotArtifactCol, SnapshotFinalizeSigCol, SnapshotWriteSigCol};
+pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
@@ -57,8 +59,9 @@ pub use spool::{
 pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
-pub use track_lookup::TrackLookupCol;
 pub use track_data::TrackDataCol;
+pub use track_lookup::TrackLookupCol;
+pub use vote::VoteSigCol;
 
 /// List of all column family names in the store.
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
@@ -76,7 +79,6 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "slice",
     "spool_sync_cursor",
     "event_log",
-    "snapshot_write_sig",
-    "snapshot_finalize_sig",
+    "vote_sig",
     "snapshot_artifact",
 ];

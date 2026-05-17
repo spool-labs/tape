@@ -1,21 +1,19 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::event::EpochAdvanced;
-use tape_crypto::hash::Hash;
 
-use crate::error::TapeError;
+use tape_core::bft::{quorum_above, quorum_below};
 
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let now = Clock::get()?.unix_timestamp;
     let _args = AdvanceEpoch::try_from_bytes(data)?;
     let [
         fee_payer_info,
-        authority_info,
         system_info,
         archive_info,
-        epoch_info,
-        prev_snapshot_info,
-        slot_hashes_info,
+        curr_epoch_info,
+        next_epoch_info,
+        next_committee_info,
+        peer_set_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -23,929 +21,426 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     fee_payer_info
         .is_signer()?
         .is_writable()?;
-    authority_info
-        .is_signer()?;
 
     let system = system_info
         .is_writable()?
         .is_system()?
         .as_account_mut::<System>(&tapedrive::ID)?;
 
-    let archive = archive_info
-        .is_writable()?
-        .is_archive()?
-        .as_account_mut::<Archive>(&tapedrive::ID)?;
+    let curr = system.current_epoch;
+    let next = curr.saturating_add(EpochNumber(1));
 
-    let epoch = epoch_info
+    archive_info
         .is_writable()?
-        .is_epoch()?
+        .is_archive()?;
+    let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    let curr_epoch = curr_epoch_info
+        .is_writable()?
+        .is_epoch(curr)?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    // Check epoch state and timing - always enforce normal requirements
-    if !epoch.state.is_active() {
+    if curr_epoch.state.phase != EpochPhase::Closing as u64 {
         return Err(TapeError::BadEpochState.into());
     }
-    if epoch.last_epoch + EPOCH_DURATION > now {
-        return Err(TapeError::TooSoon.into());
+
+    let next_epoch = next_epoch_info
+        .is_writable()?
+        .is_epoch(next)?
+        .as_account_mut::<Epoch>(&tapedrive::ID)?;
+
+    if !next_epoch.has_assignment_hash() {
+        return Err(TapeError::SpoolsNotSettled.into());
     }
 
-    // Ensure the archive schedule is aligned with the current epoch
-    if archive.schedule.current_epoch() != epoch.id {
+    if next_epoch.total_groups != system.target_group_count {
+        return Err(TapeError::SpoolsNotSettled.into());
+    }
+
+    if archive.schedule.current_epoch() != curr {
         return Err(TapeError::BadSchedule.into());
     }
 
-    // Snapshot gate: every non-bootstrap advance requires the previous epoch's
-    // snapshot manifest to be fully sealed (all SPOOL_GROUP_COUNT groups
-    // certified). The expected manifest PDA is derived here from the live
-    // epoch account, so a stale ix payload cannot bypass this check.
-    if epoch.id > EpochNumber(1) {
-        let required_epoch = prev_epoch(epoch);
-        let (snapshot_address, _) = snapshot_pda(required_epoch);
+    // Aggregate preferences across the next-epoch committee, weighted by each
+    // member's spool count.
+    next_committee_info.is_committee(next)?;
+    let (next_committee, next_members) = Committee::read(next_committee_info, &tapedrive::ID)?;
+    let committee_count = next_committee.members.count;
 
-        let snapshot = prev_snapshot_info
-            .has_address(&snapshot_address.into())?
-            .as_account::<Snapshot>(&tapedrive::ID)?;
+    peer_set_info.is_peer_set()?;
+    let (_, peers) = PeerSet::read(peer_set_info, &tapedrive::ID)?;
 
-        if snapshot.state != SnapshotState::Finalized as u64 {
-            return Err(TapeError::SnapshotIncomplete.into());
+    let mut total_weight: u64 = 0;
+    let mut total_stake: u64 = 0;
+    let mut storage_capacities: Vec<(u64, u64)> = Vec::new();
+    let mut storage_prices: Vec<(u64, u64)> = Vec::new();
+    let mut committee_sizes: Vec<(u64, u64)> = Vec::new();
+    let mut spool_group_counts: Vec<(u64, u64)> = Vec::new();
+    let mut min_versions: Vec<(u64, u64)> = Vec::new();
+
+    for member in next_members.iter() {
+        if member.node == Address::default() {
+            continue;
         }
+        let peer = peers
+            .iter()
+            .find(|p| p.node == member.node)
+            .ok_or(TapeError::BadMember)?;
+        let weight = member.spools;
+
+        storage_capacities.push((peer.preferences.storage_capacity.0, weight));
+        storage_prices.push((peer.preferences.storage_price.0, weight));
+        committee_sizes.push((peer.preferences.committee_size, weight));
+        spool_group_counts.push((peer.preferences.spool_groups, weight));
+        min_versions.push((peer.preferences.min_version.0, weight));
+
+        total_weight = total_weight.saturating_add(weight);
+        total_stake = total_stake.saturating_add(member.stake.0);
     }
 
-    // Save old epoch for event logging
-    let old_epoch = epoch.id;
+    let new_min_version : VersionId = VersionId(
+        quorum_above(&min_versions, total_weight)
+        .max(system.min_version.0)
+    );
+    let new_storage_capacity = StorageUnits(
+        quorum_above(&storage_capacities, total_weight)
+        .max(MIN_STORAGE_CAPACITY as u64)
+    );
+    let new_storage_price = TAPE(
+        quorum_below(&storage_prices, total_weight)
+        .max(MIN_STORAGE_PRICE as u64)
+    );
 
-    // Block epoch advancement if committee_next is below threshold
-    // Exception: Allow bootstrap (first epoch where current committee is empty)
-    // Note: We check committee_empty() not committee_prev_empty() because
-    // the current committee will become committee_prev after rotation.
-    if system.will_be_low_quorum() && !system.committee_empty() {
-        return Err(TapeError::InsufficientCommittee.into());
-    }
+    let new_committee_size = quorum_above(&committee_sizes, total_weight)
+        .max(MIN_COMMITTEE_SIZE as u64);
+    let new_spool_groups = quorum_above(&spool_group_counts, total_weight) 
+        .max(system.target_group_count);
 
-    // Empty committee_next is an error (unless in bootstrap phase handled above)
-    if system.committee_next_empty() {
-        return Err(TapeError::UnexpectedState.into());
-    }
+    // Archive schedule and rewards rollover. Unspent reward dust from the
+    // closing epoch carries into next epoch's pool.
+    let epoch_usage = archive.schedule.advance_epoch();
+    let leftover = archive.rewards_pool.saturating_sub(archive.rewards_paid);
 
-    // Extract seed from slot hashes
-    let seed = slot_hash_seed(slot_hashes_info)?;
-
-    // Save previous spools, then reassign for the next committee
-    system.spools_prev = system.spools;
-    tape_spooler::migrate_dhondt(
-        &mut system.spools,
-        &system.committee,
-        &system.committee_next,
-        &seed,
-    )
-    .map_err(|_| TapeError::UnexpectedState)?;
-
-    // Rotate committees: prev <- current <- next <- empty
-    system.rotate_committees();
-
-    system.committee
-        .apply_weights_from_spools(&system.spools);
-
-    // Update future accounting
-    let epoch_usage = archive.schedule
-        .advance_epoch();
-
-    // Carry-over dust from last epoch
-    let leftover = archive.rewards_pool
-        .saturating_sub(archive.rewards_paid);
-
-    // Update reward pool: add new rewards from schedule plus leftover
+    archive.rewards_pool = epoch_usage.paid().saturating_add(leftover);
     archive.rewards_paid = TAPE::zero();
-    archive.rewards_pool = epoch_usage.paid()
-        .saturating_add(leftover);
     archive.recent_usage = epoch_usage.reserved();
+    archive.storage_capacity = new_storage_capacity;
+    archive.storage_price = new_storage_price;
 
-    // Advance epoch metadata - always transition to Syncing
-    epoch.id = next_epoch(epoch);
-    epoch.last_epoch = now;
-    epoch.state = EpochState::syncing();
-    epoch.nonce = seed;
-    epoch.start_slot = SlotNumber(Clock::get()?.slot);
+    // Light up the next epoch.
+    let clock = Clock::get()?;
+    next_epoch.start_slot = SlotNumber(clock.slot);
+    next_epoch.start_time = clock.unix_timestamp;
+    next_epoch.state.phase = EpochPhase::Sync as u64;
 
-    // Update storage price/capacity from committee preferences
-    update_storage_params(archive, &system.committee);
+    // Mark the closing epoch completed.
+    curr_epoch.state.phase = EpochPhase::Completed as u64;
 
-    // Calculate committee size and total stake for event
-    let committee_size = system.committee.size() as u64;
-    let total_stake: u64 = system.committee.iter()
-        .map(|m| m.stake.as_u64())
-        .sum();
+    // Update system with new epoch and preferences.
+    system.current_epoch = next;
+    system.committee_size = new_committee_size;
+    system.target_group_count = new_spool_groups;
+    system.live_group_count = next_epoch.total_groups;
+    system.min_version = new_min_version;
 
     EpochAdvanced {
-        old_epoch,
-        new_epoch: epoch.id,
-        timestamp: (now as u64).to_le_bytes(),
-        committee_size: committee_size.to_le_bytes(),
+        old_epoch: curr,
+        new_epoch: next,
+        timestamp: (clock.unix_timestamp as u64).to_le_bytes(),
         total_stake: total_stake.to_le_bytes(),
-        storage_price: archive.storage_price.as_u64().to_le_bytes(),
-        storage_capacity: archive.storage_capacity,
-        nonce: seed,
-        phase: epoch.state.phase,
+        committee_count: committee_count.to_le_bytes(),
+        preferences: NodePreferences {
+            storage_capacity: new_storage_capacity,
+            storage_price: new_storage_price,
+            committee_size: new_committee_size,
+            spool_groups: new_spool_groups,
+            min_version: new_min_version,
+        },
+        nonce: next_epoch.nonce,
     }.log();
-
-    solana_program::msg!(
-        "Advanced to {}, capacity: {}, price: {}",
-        epoch.id,
-        archive.storage_capacity,
-        archive.storage_price,
-    );
 
     Ok(())
 }
 
-fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
-    // SlotHashes binary layout: 8-byte count, then (8-byte slot + 32-byte hash) entries.
-    // First entry's hash is at bytes 16..48.
-
-    slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
-    let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
-    let seed = Hash(
-        slot_hashes_data[16..48]
-            .try_into()
-            .map_err(|_| TapeError::UnexpectedState)?
-    );
-    Ok(seed)
-}
-
-fn update_storage_params(archive: &mut Archive, committee: &Committee<MEMBER_COUNT>) {
-    let mut total_weight = 0u64;
-    let mut storage_prices = Vec::new();
-    let mut storage_capacities = Vec::new();
-
-    for member in committee.iter() {
-        let weight = member.weight as u64;
-
-        storage_prices.push((member.preferences.storage_price.into(), weight));
-        storage_capacities.push((member.preferences.storage_capacity.into(), weight));
-
-        total_weight = total_weight.saturating_add(weight);
-    }
-
-    archive.storage_capacity =
-        quorum_above(&storage_capacities, total_weight).into();
-    archive.storage_price =
-        quorum_below(&storage_prices, total_weight).into();
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_api::state::{Committee, PeerSet};
+    use tape_core::system::{NodePreferences, Peer};
     use tape_test::*;
-    use tape_spooler::{dhondt_allocate, migrate_spools};
 
-    fn member(id: u64, stake: u64, size: u64, price: u64) -> CommitteeMember {
-        let mut m = CommitteeMember::new(NodeId(id), TAPE(stake));
-        m.preferences.storage_capacity = StorageUnits::mb(size);
-        m.preferences.storage_price = TAPE(price);
-        m
-    }
+    const COMMITTEE_SIZE: u64 = 128;
 
-    /// Build a fake SlotHashes sysvar account with a single entry containing a zero hash.
-    fn slot_hashes_account() -> (Pubkey, solana_sdk::account::Account) {
-        // Layout: 8-byte count + (8-byte slot + 32-byte hash) per entry
-        let mut data = vec![0u8; 48];
-        data[0] = 1; // count = 1 (little-endian u64)
-        // slot = 0, hash = [0; 32] (all zeros = Hash::default)
-        (sysvar::slot_hashes::ID, solana_sdk::account::Account {
-            lamports: 1,
-            data,
-            owner: sysvar::ID,
-            executable: false,
-            rent_epoch: 0,
-        })
-    }
-
-    fn snapshot_manifest(epoch: EpochNumber) -> Snapshot {
-        let mut group_bitmap = GroupBitmap::zeroed();
-        for group in 0..SPOOL_GROUP_COUNT {
-            group_bitmap.set(group);
-        }
-        Snapshot {
-            epoch,
-            state: SnapshotState::Finalized as u64,
-            group_bitmap,
+    fn pref(capacity_mb: u64, price: u64, committee: u64, spool_groups: u64, version: u64) -> NodePreferences {
+        NodePreferences {
+            storage_capacity: StorageUnits::mb(capacity_mb),
+            storage_price: TAPE(price),
+            committee_size: committee,
+            spool_groups,
+            min_version: VersionId(version),
         }
     }
 
     #[test]
-    fn test_advance_epoch() {
-        let env = test_env();
-
+    fn advance() {
         let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
 
-        let e0 = EpochNumber(42);
-        let e1 = e0 + EpochNumber(1);
-        let e100 = e0 + EpochNumber(100);
-        let prev_snapshot_epoch = e0 - EpochNumber(1);
-
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
+        let curr = EpochNumber(10);
+        let next = EpochNumber(11);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(prev_snapshot_epoch);
+        let (curr_epoch_address, _) = epoch_pda(curr);
+        let (next_epoch_address, _) = epoch_pda(next);
+        let (next_committee_address, _) = committee_pda(next);
+        let (peer_set_address, _) = peer_set_pda();
 
-        // Setup existing accounts
+        let env = test_env();
+        let now = env.now();
+        let slot = env.slot();
 
-        let mut epoch = Epoch::zeroed();
+        // 20 next-committee members, each owning 50 spools (full 1000 spools
+        // distributed evenly). All agree on the same preferences so the
+        // quorum aggregation returns the unanimous value. Storage capacity
+        // is set above MIN_STORAGE_CAPACITY (1 GiB) so the floor doesn't
+        // override the aggregation.
+        let prefs = pref(2_048, 950, 256, 75, 3);
+        let next_members: Vec<Member> = (0..20)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = (i as u8) + 1;
+                Member {
+                    node: Address::new(bytes),
+                    stake: TAPE(1_000),
+                    blacklist: StorageUnits::zero(),
+                    spools: 50,
+                }
+            })
+            .collect();
+        let next_peers: Vec<Peer> = next_members
+            .iter()
+            .map(|m| Peer { node: m.node, preferences: prefs, ..Peer::zeroed() })
+            .collect();
+
+        let nonce_value = Hash([0x77u8; 32]);
+
+        let system = System {
+            current_epoch: curr,
+            committee_size: COMMITTEE_SIZE,
+            target_group_count: 50,
+            live_group_count: 50,
+            ..System::zeroed()
+        };
+
         let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
+        archive.schedule = EpochSchedule::new_at(curr);
+        archive.rewards_pool = TAPE(500);
+        archive.rewards_paid = TAPE(300);
 
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
+        let curr_epoch = Epoch {
+            id: curr,
+            state: EpochState {
+                phase: EpochPhase::Closing as u64,
+                ..EpochState::zeroed()
+            },
+            ..Epoch::zeroed()
+        };
 
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
+        let next_epoch_data = Epoch {
+            id: next,
+            total_groups: 50,
+            nonce: nonce_value,
+            assignment_hash: Hash::from([0x88; 32]),
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
 
-        // Need >= MIN_COMMITTEE_SIZE (20) members for normal mode
-        let prev_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000 + i * 100, 8_000_000, 950))
-            .collect();
-        system.committee_prev = Committee::from_members(&prev_members);
+        let next_committee_data =
+            Committee { epoch: next, members: Tail::new(COMMITTEE_SIZE, next_members.len() as u64) }
+                .pack_with(&next_members);
+        let peer_set_data = PeerSet { peers: Tail::new(20, next_peers.len() as u64) }
+            .pack_with(&next_peers);
 
-        let curr_members: Vec<CommitteeMember> = (1..=21)
-            .map(|i| member(i, 1_000 + i * 100, 8_050_000, 1050))
-            .collect();
-        system.committee = Committee::from_members(&curr_members);
-
-        let next_members: Vec<CommitteeMember> = (1..=22)
-            .map(|i| member(i, 1_000 + i * 100, 1_500_000, 850))
-            .collect();
-        system.committee_next = Committee::from_members(&next_members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-        archive.schedule.reserve_capacity(
-            StorageUnits::mb(500), TAPE(1000), e0, e100
-        ).expect("reserve capacity");
-
-        // Snapshot for epoch 41 must be complete to advance from epoch 42
-        let prev_manifest = snapshot_manifest(prev_snapshot_epoch);
+        let instruction = build_advance_epoch_ix(fee_payer.into(), curr);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
-            slot_hashes_account(),
+            pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
+            pda(next_epoch_address, next_epoch_data.pack(), tapedrive::ID),
+            pda(next_committee_address, next_committee_data, tapedrive::ID),
+            pda(peer_set_address, peer_set_data, tapedrive::ID),
         ];
 
-        // Expected state after instruction
+        let expected_system = System {
+            current_epoch: next,
+            committee_size: 256,
+            target_group_count: 75,
+            live_group_count: 50,
+            min_version: VersionId(3),
+            ..system
+        };
 
-        let stakes = system.committee_next.active_stakes();
-        let seat_count = dhondt_allocate(
-            &stakes,
-            SPOOL_COUNT as u16,
-        ).unwrap();
+        let expected_curr_epoch = Epoch {
+            state: EpochState {
+                phase: EpochPhase::Completed as u64,
+                ..curr_epoch.state
+            },
+            ..curr_epoch
+        };
 
-        let seed = tape_crypto::hash::Hash::default();
-        let spools = migrate_spools(
-            &system.spools.0,
-            &system.committee.active_members(),
-            &system.committee_next.active_members(),
-            &seat_count,
-            &seed,
-        ).expect("seat reassignment failed");
+        let expected_next_epoch = Epoch {
+            start_slot: SlotNumber(slot),
+            start_time: now,
+            state: EpochState {
+                phase: EpochPhase::Sync as u64,
+                ..EpochState::zeroed()
+            },
+            ..next_epoch_data
+        };
 
-        let expected_seats = SpoolAssignment::try_from(spools.as_ref()).unwrap();
-
-        let mut expected_committee = system.committee_next.clone();
-        expected_committee
-            .apply_weights_from_spools(&expected_seats);
-
-        let mut schedule = EpochSchedule::new_at(e1);
-        schedule.reserve_capacity(
-            StorageUnits::mb(500), TAPE(1000), e1, e100
-        ).expect("reserve capacity");
-
-        let total_weight: u64 = expected_committee
-            .iter()
-            .map(|m| m.weight as u64)
-            .sum();
-
-        let price_pairs: Vec<(u64, u64)> = expected_committee
-            .iter()
-            .map(|m| (m.preferences.storage_price.as_u64(), m.weight as u64))
-            .collect();
-
-        let cap_pairs: Vec<(u64, u64)> = expected_committee
-            .iter()
-            .map(|m| (m.preferences.storage_capacity.as_u64(), m.weight as u64))
-            .collect();
-
-        let storage_capacity = quorum_above(&cap_pairs, total_weight).into();
-        let storage_price    = quorum_below(&price_pairs, total_weight).into();
+        // Rewards rollover: (500 - 300) leftover + 0 from a fresh schedule = 200.
+        let expected_archive = Archive {
+            rewards_pool: TAPE(200),
+            rewards_paid: TAPE::zero(),
+            recent_usage: StorageUnits::zero(),
+            storage_capacity: StorageUnits::mb(2_048),
+            storage_price: TAPE(950),
+            schedule: {
+                let mut s = archive.schedule;
+                let _ = s.advance_epoch();
+                s
+            },
+            ..archive
+        };
 
         env.process_instruction(
             &instruction,
             &accounts,
             &[
                 Check::success(),
-                Check::account(&Pubkey::from(system_address)).data(
-                    System {
-                        spools: expected_seats,
-                        spools_prev: system.spools,
-                        committee_prev: system.committee,
-                        committee: expected_committee,
-                        committee_next: Committee::new(),  // Cleared after epoch advance
-                        ..system
-                    }.pack().as_ref()
-                ).build(),
-                Check::account(&Pubkey::from(epoch_address)).data(
-                    Epoch {
-                        id: e1,
-                        state: EpochState::syncing(),
-                        last_epoch: env.now(),
-                        start_slot: SlotNumber(env.slot()),
-                        nonce: Hash::default(),
-                    }.pack().as_ref()
-                ).build(),
-                Check::account(&Pubkey::from(archive_address)).data({
-                    Archive {
-                        schedule,
-
-                        rewards_pool: TAPE(1000),      // fees_prev + leftover(=0)
-                        rewards_paid: TAPE(0),         // reset
-                        recent_usage: StorageUnits::mb(500),
-
-                        storage_capacity,
-                        storage_price,
-
-                        ..archive
-                    }.pack().as_ref()
-                }).build(),
-            ]
+                Check::account(&Pubkey::from(system_address))
+                    .data(expected_system.pack().as_ref())
+                    .build(),
+                Check::account(&Pubkey::from(curr_epoch_address))
+                    .data(expected_curr_epoch.pack().as_ref())
+                    .build(),
+                Check::account(&Pubkey::from(next_epoch_address))
+                    .data(expected_next_epoch.pack().as_ref())
+                    .build(),
+                Check::account(&Pubkey::from(archive_address))
+                    .data(expected_archive.pack().as_ref())
+                    .build(),
+            ],
         );
     }
 
     #[test]
-    fn test_advance_too_soon() {
-        // Test that advance fails if EPOCH_DURATION hasn't elapsed (in normal mode)
-        let env = test_env();
-
+    fn holds_against_shrinking_votes() {
         let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
 
-        let current_epoch = EpochNumber(2);
-        let instruction =
-            build_advance_epoch_ix(fee_payer.into(), authority.into(), current_epoch);
+        let curr = EpochNumber(10);
+        let next = EpochNumber(11);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(current_epoch - EpochNumber(1));
+        let (curr_epoch_address, _) = epoch_pda(curr);
+        let (next_epoch_address, _) = epoch_pda(next);
+        let (next_committee_address, _) = committee_pda(next);
+        let (peer_set_address, _) = peer_set_pda();
 
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        // Recent last_epoch - not enough time has passed (EPOCH_DURATION is 5 seconds locally)
-        let last_epoch = env.now() - 2; // Only 2 seconds ago, need 5
-
-        epoch.id = current_epoch;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        // Need >= MIN_COMMITTEE_SIZE members in both committees to test timing check
-        let members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
+        // Members vote for values BELOW the current system parameters.
+        let prefs = pref(2_048, 950, /*committee*/ 64, /*spool_groups*/ 30, /*min_version*/ 1);
+        let next_members: Vec<Member> = (0..20)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = (i as u8) + 1;
+                Member {
+                    node: Address::new(bytes),
+                    stake: TAPE(1_000),
+                    blacklist: StorageUnits::zero(),
+                    spools: 50,
+                }
+            })
             .collect();
-        system.committee = Committee::from_members(&members);
-        // committee_next must have >= 20 to pass the low-quorum check and reach TooSoon
-        system.committee_next = Committee::from_members(&members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        // Time check fires before the snapshot gate, so the previous manifest
-        // is never read. Pass an empty placeholder account.
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            empty(prev_manifest_address),
-            slot_hashes_account(),
-        ];
-
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::err(TapeError::TooSoon.into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_bad_state() {
-        // Test that advance fails if not in Active state (in normal mode)
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let current_epoch = EpochNumber(2);
-        let instruction =
-            build_advance_epoch_ix(fee_payer.into(), authority.into(), current_epoch);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(current_epoch - EpochNumber(1));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = current_epoch;
-        epoch.state = EpochState::syncing(); // Wrong state - should be Active
-        epoch.last_epoch = last_epoch;
-
-        // Need >= MIN_COMMITTEE_SIZE (20) members in current committee for normal mode
-        let members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
+        let next_peers: Vec<Peer> = next_members
+            .iter()
+            .map(|m| Peer { node: m.node, preferences: prefs, ..Peer::zeroed() })
             .collect();
-        system.committee = Committee::from_members(&members);
-        system.committee_next = Committee::from_members(&[
-            member(1, 3_000, 1_000_000, 1000),
-        ]);
 
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        // State check fires before the snapshot gate; placeholder is fine.
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            empty(prev_manifest_address),
-            slot_hashes_account(),
-        ];
-
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::err(TapeError::BadEpochState.into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_blocked_below_threshold() {
-        // Test that AdvanceEpoch is blocked when committee_next < MIN_COMMITTEE_SIZE
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let e0 = EpochNumber(2);
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        // Current committee has enough nodes (20)
-        let curr_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee = Committee::from_members(&curr_members);
-
-        // Previous committee exists (not bootstrap)
-        let prev_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_prev = Committee::from_members(&prev_members);
-
-        // Next committee has < MIN_COMMITTEE_SIZE (only 19 nodes)
-        let next_members: Vec<CommitteeMember> = (1..=19)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_next = Committee::from_members(&next_members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        // Snapshot for epoch 1 must be complete; we want to fail later, on the
-        // committee size check.
-        let prev_manifest = snapshot_manifest(e0 - EpochNumber(1));
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
-            slot_hashes_account(),
-        ];
-
-        // Should fail with InsufficientCommittee since committee_next < 20
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::err(TapeError::InsufficientCommittee.into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_allowed_at_threshold() {
-        // Test that AdvanceEpoch succeeds when committee_next == MIN_COMMITTEE_SIZE
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let e0 = EpochNumber(10);
-        let e1 = e0 + EpochNumber(1);
-        let e100 = e0 + EpochNumber(100);
-
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        // Current committee has nodes
-        let curr_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee = Committee::from_members(&curr_members);
-
-        // Previous committee exists
-        let prev_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_prev = Committee::from_members(&prev_members);
-
-        // Next committee has exactly MIN_COMMITTEE_SIZE (20) nodes
-        let next_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_next = Committee::from_members(&next_members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-        archive.schedule.reserve_capacity(
-            StorageUnits::mb(500), TAPE(1000), e0, e100
-        ).expect("reserve capacity");
-
-        // Snapshot for epoch 9 must be complete to advance from epoch 10.
-        let prev_manifest = snapshot_manifest(e0 - EpochNumber(1));
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
-            slot_hashes_account(),
-        ];
-
-        // Expected epoch state: syncing
-        let expected_epoch = Epoch {
-            id: e1,
-            state: EpochState::syncing(),
-            last_epoch: env.now(),
-            start_slot: SlotNumber(env.slot()),
-            nonce: Hash::default(),
+        // System sits at values HIGHER than the votes.
+        let system = System {
+            current_epoch: curr,
+            committee_size: 256,
+            target_group_count: 75,
+            live_group_count: 75,
+            min_version: VersionId(5),
+            ..System::zeroed()
         };
 
-        // Should succeed since committee_next == 20
+        let archive = Archive {
+            schedule: EpochSchedule::new_at(curr),
+            ..Archive::zeroed()
+        };
+
+        let curr_epoch = Epoch {
+            id: curr,
+            state: EpochState {
+                phase: EpochPhase::Closing as u64,
+                ..EpochState::zeroed()
+            },
+            ..Epoch::zeroed()
+        };
+
+        let next_epoch_data = Epoch {
+            id: next,
+            total_groups: 75,
+            assignment_hash: Hash::from([0x88; 32]),
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+
+        let next_committee_data =
+            Committee { epoch: next, members: Tail::new(COMMITTEE_SIZE, next_members.len() as u64) }
+                .pack_with(&next_members);
+        let peer_set_data = PeerSet { peers: Tail::new(20, next_peers.len() as u64) }
+            .pack_with(&next_peers);
+
+        let instruction = build_advance_epoch_ix(fee_payer.into(), curr);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
+            pda(next_epoch_address, next_epoch_data.pack(), tapedrive::ID),
+            pda(next_committee_address, next_committee_data, tapedrive::ID),
+            pda(peer_set_address, peer_set_data, tapedrive::ID),
+        ];
+
+        // spool_groups: ratchet holds at 75 (vote of 30 ignored).
+        // min_version: ratchet holds at 5 (vote of 1 ignored).
+        // committee_size: shrinks to 64 (no ratchet; only floored at 20).
+        let expected_system = System {
+            current_epoch: next,
+            committee_size: 64,
+            target_group_count: 75,
+            live_group_count: next_epoch_data.total_groups,
+            min_version: VersionId(5),
+            ..system
+        };
+
+        let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
             &[
                 Check::success(),
-                Check::account(&Pubkey::from(epoch_address)).data(
-                    expected_epoch.pack().as_ref()
-                ).build(),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_bootstrap_exception() {
-        // Test that first epoch (empty committee) can advance with < MIN_COMMITTEE_SIZE
-        // Bootstrap = committee is empty, only committee_next has nodes
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let e0 = EpochNumber(1);
-        let e1 = e0 + EpochNumber(1);
-        let e100 = e0 + EpochNumber(100);
-
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        // The bootstrap path skips the snapshot gate entirely. The ix-builder
-        // saturates at EpochNumber(0) so the placeholder PDA is well-defined.
-        let (prev_manifest_address, _) = snapshot_pda(EpochNumber(0));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        // Current committee is EMPTY (true bootstrap - first epoch)
-        system.committee = Committee::new();
-
-        // Previous committee is also EMPTY
-        system.committee_prev = Committee::new();
-
-        // Next committee has < MIN_COMMITTEE_SIZE (20 nodes joining)
-        let next_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_next = Committee::from_members(&next_members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-        archive.schedule.reserve_capacity(
-            StorageUnits::mb(500), TAPE(1000), e0, e100
-        ).expect("reserve capacity");
-
-        // Epoch 1, snapshot gate is skipped (bootstrap)
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            empty(prev_manifest_address),
-            slot_hashes_account(),
-        ];
-
-        // Expected epoch state: syncing (bootstrap allowed)
-        let expected_epoch = Epoch {
-            id: e1,
-            state: EpochState::syncing(),
-            last_epoch: env.now(),
-            start_slot: SlotNumber(env.slot()),
-            nonce: Hash::default(),
-        };
-
-        // Should succeed due to bootstrap exception (empty committee)
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::success(),
-                Check::account(&Pubkey::from(epoch_address)).data(
-                    expected_epoch.pack().as_ref()
-                ).build(),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_blocked_after_bootstrap() {
-        // Test that once we have a functioning committee, low quorum is blocked
-        // even if committee_prev is empty (second epoch scenario)
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let e0 = EpochNumber(2);
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        // Current committee has 20 nodes (functioning committee)
-        let curr_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee = Committee::from_members(&curr_members);
-
-        // Previous committee is EMPTY (this is epoch 2, first real epoch)
-        system.committee_prev = Committee::new();
-
-        // Next committee has < MIN_COMMITTEE_SIZE (only 10 rejoined)
-        let next_members: Vec<CommitteeMember> = (1..=10)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_next = Committee::from_members(&next_members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        // Snapshot for epoch 1 must be complete to reach the committee check.
-        let prev_manifest = snapshot_manifest(e0 - EpochNumber(1));
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
-            slot_hashes_account(),
-        ];
-
-        // Should FAIL - committee is non-empty so bootstrap exception doesn't apply
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::err(TapeError::InsufficientCommittee.into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_empty_committee_next_fails() {
-        // Test that empty committee_next always fails (even during bootstrap)
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let e0 = EpochNumber(5);
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        // Current committee has nodes
-        let curr_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee = Committee::from_members(&curr_members);
-
-        // Previous committee exists
-        let prev_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_prev = Committee::from_members(&prev_members);
-
-        // Empty next committee
-        system.committee_next = Committee::new();
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        // Snapshot for epoch 4 must be complete to reach the committee check.
-        let prev_manifest = snapshot_manifest(e0 - EpochNumber(1));
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
-            slot_hashes_account(),
-        ];
-
-        // Should fail with InsufficientCommittee (empty is < 20)
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::err(TapeError::InsufficientCommittee.into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_blocked_snapshot_incomplete() {
-        // Previous snapshot manifest is still Registered, the snapshot gate must
-        // reject the advance before any committee or schedule state is touched.
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let e0 = EpochNumber(5);
-        let e100 = e0 + EpochNumber(100);
-        let instruction = build_advance_epoch_ix(fee_payer.into(), authority.into(), e0);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-        let (prev_manifest_address, _) = snapshot_pda(e0 - EpochNumber(1));
-
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = e0;
-        epoch.state = EpochState::active();
-        epoch.last_epoch = last_epoch;
-
-        // Valid committees so the only failure path is the snapshot gate.
-        let curr_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee = Committee::from_members(&curr_members);
-
-        let prev_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_prev = Committee::from_members(&prev_members);
-
-        let next_members: Vec<CommitteeMember> = (1..=20)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee_next = Committee::from_members(&next_members);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-        archive.schedule.reserve_capacity(
-            StorageUnits::mb(500), TAPE(1000), e0, e100
-        ).expect("reserve capacity");
-
-        let prev_manifest = Snapshot {
-            epoch: e0 - EpochNumber(1),
-            state: SnapshotState::Registered as u64,
-            group_bitmap: GroupBitmap::zeroed(),
-        };
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(prev_manifest_address, prev_manifest.pack(), tapedrive::ID),
-            slot_hashes_account(),
-        ];
-
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::err(TapeError::SnapshotIncomplete.into()),
-            ]
+                Check::account(&Pubkey::from(system_address))
+                    .data(expected_system.pack().as_ref())
+                    .build(),
+            ],
         );
     }
 }

@@ -152,15 +152,15 @@ mod tests {
 
     #[test]
     fn parse_many() {
-        let got = parse_codes("a 0x1 b 0x34 c Custom(81)");
-        assert_eq!(got, vec![1, 52, 81]);
+        let got = parse_codes("a 0x1 b 0x30 c Custom(81)");
+        assert_eq!(got, vec![1, 48, 81]);
     }
 
     #[test]
     fn parse_chain() {
-        let msg = "x 0xdead y custom program error: 0x34";
+        let msg = "x 0xdead y custom program error: 0x30";
         let got = ProgramError::from_error_string(msg);
-        assert_eq!(got, Some(ProgramError::Tape(TapeError::SnapshotIncomplete)));
+        assert_eq!(got, Some(ProgramError::Tape(TapeError::BadEpochState)));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Route constants and URL builders for the node API.
 
-use tape_core::types::TrackNumber;
+use tape_core::types::{SpoolIndex, TrackNumber};
 
 pub const API_V1: &str = "/v1";
 
@@ -11,7 +11,7 @@ pub const NODE_INFO_PATH: &str = "/v1/info";
 pub const NODE_METRICS_PATH: &str = "/v1/metrics";
 pub const NODE_STATS_PATH: &str = "/v1/stats";
 
-pub const SNAPSHOT_VOTE_PATH: &str = "/v1/snapshots/vote";
+pub const VOTE_PATH: &str = "/v1/votes";
 
 pub const SYNC_SLICES_PATH: &str = "/v1/sync/slices";
 pub const SYNC_TRACKS_PATH: &str = "/v1/sync/tracks";
@@ -32,8 +32,8 @@ pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
 // Route Builders
 
-pub fn slice_url(track_id: &str, spool_id: u16) -> String {
-    format!("/v1/tracks/{track_id}/slices/{spool_id}")
+pub fn slice_url(track_id: &str, spool_id: SpoolIndex) -> String {
+    format!("/v1/tracks/{track_id}/slices/{}", spool_id.0)
 }
 
 pub fn status_url(track_id: &str) -> String {
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn url_builders() {
-        assert_eq!(slice_url("abc", 5), "/v1/tracks/abc/slices/5");
+        assert_eq!(slice_url("abc", SpoolIndex(5)), "/v1/tracks/abc/slices/5");
         assert_eq!(track_url("abc"), "/v1/tracks/abc");
         assert_eq!(track_data_url("abc"), "/v1/tracks/abc/data");
         assert_eq!(track_proof_url("abc"), "/v1/tracks/abc/proof");

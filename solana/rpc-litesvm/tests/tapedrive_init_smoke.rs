@@ -52,7 +52,7 @@ async fn initialize_system_with_tapedrive_programs() {
         .expect("airdrop payer");
 
     use tape_api::instruction::{
-        build_create_system_ix, build_expand_system_ix, build_initialize_ix, build_initialize_mint_ix,
+        build_create_system_ix, build_expand_system_ix, build_create_archive_ix, build_initialize_mint_ix,
     };
 
     let mint_ix = build_initialize_mint_ix(payer.pubkey(), payer.pubkey());
@@ -87,7 +87,7 @@ async fn initialize_system_with_tapedrive_programs() {
         }
     }
 
-    let init_ix = build_initialize_ix(payer.pubkey(), payer.pubkey());
+    let init_ix = build_create_archive_ix(payer.pubkey(), payer.pubkey());
     client
         .send_instructions(&payer, vec![init_ix])
         .await

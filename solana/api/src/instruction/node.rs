@@ -6,12 +6,11 @@ use crate::consts::NAME_LENGTH;
 use crate::utils::to_name;
 use crate::utils::ata;
 use tape_core::bls::{BlsPubkey, BlsSignature};
-use tape_core::spooler::{SpoolIndex, get_spool_hash};
+use tape_core::types::{SpoolGroup, SpoolIndex};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
+use tape_core::types::{BasisPoints, EpochNumber, StorageUnits, VersionId};
 use tape_core::types::coin::{Coin, TAPE};
-use tape_crypto::Hash;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -26,13 +25,12 @@ pub struct RegisterNode {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct JoinNetwork {}
+pub struct JoinCommittee {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SyncEpoch {
-    pub epoch: [u8; 8],
-    pub spools: Hash,
+pub struct SyncSpool {
+    pub spool: [u8; 8],
 }
 
 #[repr(C)]
@@ -84,6 +82,24 @@ pub struct SetCommissionRate {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetCommitteeSize {
+    pub committee_size: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetSpoolGroups {
+    pub spool_groups: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetMinVersion {
+    pub min_version: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ClaimCommission {}
 
 
@@ -100,7 +116,6 @@ pub fn build_register_node_ix(
 
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
-    let (epoch_address, _) = epoch_pda();
     let (node_address, _) = node_pda(authority);
     let (history_address, _) = history_pda(node_address);
 
@@ -114,7 +129,6 @@ pub fn build_register_node_ix(
 
             AccountMeta::new(system_address.into(), false),
             AccountMeta::new_readonly(archive_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
             AccountMeta::new(node_address.into(), false),
             AccountMeta::new(history_address.into(), false),
 
@@ -132,41 +146,48 @@ pub fn build_register_node_ix(
     }
 }
 
-pub fn build_join_network_ix(
+pub fn build_join_committee_ix(
     fee_payer: Address,
     authority: Address,
     node_address: Address,
+    current_epoch: EpochNumber,
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
-    let (epoch_address, _) = epoch_pda();
+    let next_epoch = current_epoch.saturating_add(EpochNumber(1));
+    let (curr_epoch_address, _) = epoch_pda(current_epoch);
+    let (curr_committee_address, _) = committee_pda(current_epoch);
+    let (next_committee_address, _) = committee_pda(next_epoch);
+    let (peer_set_address, _) = peer_set_pda();
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(authority.into(), true),
-            AccountMeta::new(system_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
-            AccountMeta::new_readonly(node_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new_readonly(curr_epoch_address.into(), false),
+            AccountMeta::new_readonly(curr_committee_address.into(), false),
+            AccountMeta::new(next_committee_address.into(), false),
+            AccountMeta::new(peer_set_address.into(), false),
+            AccountMeta::new(node_address.into(), false),
         ],
-        data: JoinNetwork {}.to_bytes(),
+        data: JoinCommittee {}.to_bytes(),
     }
 }
 
-pub fn build_epoch_sync_ix(
+pub fn build_sync_spool_ix(
     fee_payer: Address,
     authority: Address,
     node_address: Address,
     epoch: EpochNumber,
-    spools: &[SpoolIndex],
+    group: SpoolGroup,
+    spool: SpoolIndex,
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
-    let (epoch_address, _) = epoch_pda();
-
-    let epoch = epoch.pack();
-    let spools = get_spool_hash(spools);
+    let (epoch_address, _) = epoch_pda(epoch);
+    let (group_address, _) = group_pda(epoch, group);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -175,11 +196,11 @@ pub fn build_epoch_sync_ix(
             AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(epoch_address.into(), false),
+            AccountMeta::new(group_address.into(), false),
             AccountMeta::new(node_address.into(), false),
         ],
-        data: SyncEpoch {
-            epoch,
-            spools,
+        data: SyncSpool {
+            spool: spool.pack(),
         }.to_bytes(),
     }
 }
@@ -210,6 +231,7 @@ pub fn build_set_bls_pubkey_ix(
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
 ) -> Instruction {
+    let (peer_set_address, _) = peer_set_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -217,6 +239,7 @@ pub fn build_set_bls_pubkey_ix(
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new(node_address.into(), false),
+            AccountMeta::new(peer_set_address.into(), false),
         ],
         data: SetBlsPubkey {
             bls_pubkey,
@@ -294,7 +317,7 @@ pub fn build_set_commission_ix(
 ) -> Instruction {
     let commission_rate = commission_rate.pack();
 
-    let (epoch_address, _) = epoch_pda();
+    let (system_address, _) = system_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -302,7 +325,7 @@ pub fn build_set_commission_ix(
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new(node_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
         ],
         data: SetCommissionRate {
             commission_rate,
@@ -376,6 +399,63 @@ pub fn build_set_storage_price_ix(
         ],
         data: SetStoragePrice {
             price,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_committee_size_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    committee_size: u64,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetCommitteeSize {
+            committee_size: committee_size.to_le_bytes(),
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_spool_groups_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    spool_groups: u64,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetSpoolGroups {
+            spool_groups: spool_groups.to_le_bytes(),
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_min_version_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    min_version: VersionId,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetMinVersion {
+            min_version: min_version.pack(),
         }.to_bytes(),
     }
 }

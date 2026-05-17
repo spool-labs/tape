@@ -5,6 +5,7 @@ use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;
 
 use crate::errors::TapeError;
+use crate::program::tapedrive::SYSTEM_ADDRESS;
 use super::AccountType;
 
 #[repr(C)]
@@ -33,6 +34,14 @@ pub struct Tape {
 }
 
 impl Tape {
+    pub fn is_snapshot_tape(&self, epoch: EpochNumber) -> bool {
+        self.id == TapeNumber(0)
+            && self.authority == SYSTEM_ADDRESS
+            && self.capacity == StorageUnits(u64::MAX)
+            && self.active_epoch == epoch
+            && self.expiry_epoch == EpochNumber(u64::MAX)
+    }
+
     pub fn write_track(&mut self, track: &CompressedTrack) -> ProgramResult {
         let new_used = self
             .used

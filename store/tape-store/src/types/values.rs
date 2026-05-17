@@ -2,10 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
-use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
-use tape_core::spooler::SpoolIndex;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{EpochNumber, TrackNumber};
+use tape_core::types::{EpochNumber, SpoolIndex, TrackNumber};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -34,20 +32,6 @@ pub struct SnapshotArtifact {
     pub slice: Vec<u8>,
 }
 
-/// One mutable per-signer vote for a snapshot write message.
-#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SnapshotWriteVote {
-    pub message: [u8; SNAPSHOT_WRITE_MESSAGE_SIZE],
-    pub signature: BlsSignature,
-}
-
-/// One mutable per-signer vote for a snapshot finalize message.
-#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SnapshotFinalizeVote {
-    pub message: [u8; SNAPSHOT_SIGN_MESSAGE_SIZE],
-    pub signature: BlsSignature,
-}
-
 /// Metadata about a tape (storage allocation)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct TapeInfo {
@@ -70,7 +54,7 @@ pub struct InvalidationProof {
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
     use tape_core::types::{StorageUnits, StripeCount};
@@ -106,7 +90,7 @@ mod tests {
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(2),
-            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -116,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_track_blob_commitment_root() {
-        let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
+        let leaves = [Hash::default(); GROUP_SIZE];
         let info = BlobInfo {
             size: StorageUnits(1024),
             commitment: root_from_leaf_hashes::<{ SLICE_TREE_HEIGHT }>(&leaves),

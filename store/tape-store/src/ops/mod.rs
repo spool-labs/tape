@@ -19,14 +19,16 @@ mod spool;
 mod tape;
 mod track;
 mod track_data;
+mod vote;
 
 // Re-export operation traits
 pub use event_log::EventLogOps;
 pub use meta::MetaOps;
 pub use object_info::ObjectInfoOps;
-pub use snapshot::{ChunkWriteSigs, SnapshotOps};
+pub use snapshot::SnapshotOps;
 pub use slice::SliceOps;
 pub use spool::SpoolOps;
 pub use tape::TapeOps;
 pub use track::TrackOps;
 pub use track_data::TrackDataOps;
+pub use vote::VoteOps;

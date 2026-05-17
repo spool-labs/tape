@@ -201,7 +201,7 @@ where
 mod tests {
     use tape_api::event::SnapshotWritten;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
@@ -222,7 +222,7 @@ mod tests {
             profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(1),
-            leaves: [Hash::from([tag; 32]); SPOOL_GROUP_SIZE],
+            leaves: [Hash::from([tag; 32]); GROUP_SIZE],
         }
     }
 

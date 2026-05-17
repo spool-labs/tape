@@ -11,8 +11,8 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::types::{EpochNumber, SpoolGroupBitmap};
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::types::{EpochNumber, SpoolBitmap};
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
 use tokio_util::sync::CancellationToken;
@@ -129,7 +129,7 @@ where
                 partials.push(vote.signature);
             }
 
-            if !is_supermajority(partials.len() as u64, SPOOL_GROUP_SIZE as u64) {
+            if !is_supermajority(partials.len() as u64, GROUP_SIZE as u64) {
                 continue;
             }
 
@@ -142,7 +142,7 @@ where
                 continue;
             };
 
-            let bitmap = SpoolGroupBitmap::from_indices(&indices, SPOOL_GROUP_SIZE);
+            let bitmap = SpoolBitmap::from_indices(&indices, GROUP_SIZE);
             let aggregate = BlsSignature::aggregate(&partials)
                 .map_err(|e| NodeError::Store(format!("aggregate write sigs: {e:?}")))?;
 
@@ -226,11 +226,11 @@ where
             partials.push(vote.signature);
         }
 
-        if !is_supermajority(partials.len() as u64, SPOOL_GROUP_SIZE as u64) {
+        if !is_supermajority(partials.len() as u64, GROUP_SIZE as u64) {
             continue;
         }
 
-        let bitmap = SpoolGroupBitmap::from_indices(&indices, SPOOL_GROUP_SIZE);
+        let bitmap = SpoolBitmap::from_indices(&indices, GROUP_SIZE);
         let aggregate = BlsSignature::aggregate(&partials)
             .map_err(|e| NodeError::Store(format!("aggregate finalize sigs: {e:?}")))?;
 

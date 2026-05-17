@@ -2,56 +2,47 @@
 
 use core::mem::size_of;
 
-use tape_core::prelude::{EpochNumber, NodeId, SpoolIndex, TrackData, TrackNumber};
-use wincode::containers::{Pod, Vec as WincodeVec};
-use wincode::len::BincodeLen;
 use tape_core::{
     bls::BlsSignature,
-    erasure::{MEMBER_COUNT, SLICE_TREE_HEIGHT},
+    erasure::SLICE_TREE_HEIGHT,
+    spooler::SpoolGroup,
 };
+pub use tape_core::system::VoteCandidate;
+use tape_core::prelude::{EpochNumber, SpoolIndex, TrackData, TrackNumber};
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
-use tape_crypto::prelude::Hash;
+use tape_core::types::SpoolBitmap;
+use tape_crypto::prelude::{Address, Hash};
+use wincode::containers::{Pod, Vec as WincodeVec};
+use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::ops::FindTrackVersion;
 
-/// Bitmap bytes needed to represent `MEMBER_COUNT` committee members.
-pub const COMMITTEE_BITMAP_BYTES: usize = (MEMBER_COUNT + 7) / 8;
 pub const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
-pub const SLICE_BODY_LIMIT: usize =
-    size_of::<u64>() + SLICE_BYTES_LIMIT + Hash::LEN + size_of::<u64>() + (SLICE_TREE_HEIGHT * Hash::LEN);
-
-/// Upper bound on the message bytes carried in a snapshot vote push (write = 64, complete = 24).
-pub const SNAPSHOT_VOTE_MESSAGE_LIMIT: usize = 64;
+pub const SLICE_BODY_LIMIT: usize = size_of::<u64>()
+    + SLICE_BYTES_LIMIT
+    + Hash::LEN
+    + size_of::<u64>()
+    + (SLICE_TREE_HEIGHT * Hash::LEN);
 
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
-type SnapshotVoteBytes = WincodeVec<Pod<u8>, BincodeLen<SNAPSHOT_VOTE_MESSAGE_LIMIT>>;
-
-/// Kind of snapshot vote being pushed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub enum SnapshotVoteKind {
-    WriteChunk,
-    CompleteGroup,
-}
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct BlsSignResponse {
     pub signature: BlsSignature,
-    pub node_id: NodeId,
+    pub node: Address,
     pub epoch: EpochNumber,
 }
 
-/// Body for a pushed snapshot vote (write chunk or group completion).
+/// Body for a pushed off-chain BLS vote.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SnapshotVoteRequest {
-    pub node_id: NodeId,
-    pub kind: SnapshotVoteKind,
-    #[wincode(with = "SnapshotVoteBytes")]
-    pub message: Vec<u8>,
+pub struct VoteRequest {
+    pub signer: Address,
+    pub candidate: VoteCandidate,
+    pub group: SpoolGroup,
     pub signature: BlsSignature,
 }
-
 
 /// Request for inconsistency attestation.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -63,8 +54,8 @@ pub struct InconsistencyRequest {
 /// Committee proof data for inconsistency reporting.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct InconsistencyProof {
-    /// Bitmap of committee members that produced the proof signature.
-    pub committee_bitmap: [u8; COMMITTEE_BITMAP_BYTES],
+    /// Bitmap of spool positions inside the track's group that produced the proof signature.
+    pub spool_bitmap: SpoolBitmap,
     /// Aggregated BLS signature over an invalidation message.
     pub signature: BlsSignature,
     /// Merkle root computed from re-encoded recovery material.
@@ -75,7 +66,7 @@ pub struct InconsistencyProof {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct BlsInconsistencyResponse {
     pub signature: BlsSignature,
-    pub node_id: NodeId,
+    pub node: Address,
     pub epoch: EpochNumber,
 }
 
@@ -220,10 +211,17 @@ pub struct TrackProofResponse {
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::system::VoteKind;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+
+    fn address(byte: u8) -> Address {
+        let mut bytes = [0u8; 32];
+        bytes[0] = byte;
+        Address::new(bytes)
+    }
 
     #[test]
     fn payload_roundtrip() {
@@ -294,7 +292,7 @@ mod tests {
     fn sign_response() {
         let resp = BlsSignResponse {
             signature: BlsSignature(G1CompressedPoint([0xAA; 32])),
-            node_id: NodeId(42),
+            node: address(42),
             epoch: EpochNumber(100),
         };
         let bytes = wincode::serialize(&resp).unwrap();
@@ -303,35 +301,28 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_vote_request_roundtrip() {
-        use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
-
-        let write_req = SnapshotVoteRequest {
-            node_id: NodeId(7),
-            kind: SnapshotVoteKind::WriteChunk,
-            message: vec![0x11; SNAPSHOT_WRITE_MESSAGE_SIZE],
+    fn vote_request_roundtrip() {
+        let req = VoteRequest {
+            signer: address(7),
+            candidate: VoteCandidate {
+                kind: VoteKind::Snapshot,
+                voting_epoch: EpochNumber(11),
+                target_epoch: EpochNumber(10),
+                hash: Hash::from([0x11; 32]),
+            },
+            group: SpoolGroup(4),
             signature: BlsSignature(G1CompressedPoint([0xAB; 32])),
         };
-        let bytes = wincode::serialize(&write_req).unwrap();
-        let decoded: SnapshotVoteRequest = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(write_req, decoded);
-
-        let finalize_req = SnapshotVoteRequest {
-            node_id: NodeId(7),
-            kind: SnapshotVoteKind::CompleteGroup,
-            message: vec![0x22; SNAPSHOT_SIGN_MESSAGE_SIZE],
-            signature: BlsSignature(G1CompressedPoint([0xCD; 32])),
-        };
-        let bytes = wincode::serialize(&finalize_req).unwrap();
-        let decoded: SnapshotVoteRequest = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(finalize_req, decoded);
+        let bytes = wincode::serialize(&req).unwrap();
+        let decoded: VoteRequest = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(req, decoded);
     }
 
     #[test]
     fn inconsistency() {
         let req = InconsistencyRequest {
             proof: InconsistencyProof {
-                committee_bitmap: [0xFF; COMMITTEE_BITMAP_BYTES],
+                spool_bitmap: SpoolBitmap::from_indices(&[0, 3, 7, 19]),
                 signature: BlsSignature(G1CompressedPoint([0xAA; 32])),
                 observed_root: Hash::from([0xBB; 32]),
             },
@@ -342,7 +333,7 @@ mod tests {
 
         let resp = BlsInconsistencyResponse {
             signature: BlsSignature(G1CompressedPoint([0xCC; 32])),
-            node_id: NodeId(1),
+            node: address(1),
             epoch: EpochNumber(50),
         };
         let bytes = wincode::serialize(&resp).unwrap();
@@ -353,7 +344,7 @@ mod tests {
     #[test]
     fn repair() {
         let req = RepairRequest {
-            helper_spool: 42,
+            helper_spool: SpoolIndex(42),
             stripes: vec![
                 StripeSubChunkRequest {
                     stripe: 0,
@@ -373,7 +364,7 @@ mod tests {
     #[test]
     fn sync_slices_request() {
         let req = SyncSlicesRequest {
-            spool_index: 42,
+            spool_index: SpoolIndex(42),
             cursor: Some([0xAA; 32]),
             limit: 100,
         };
@@ -436,7 +427,7 @@ mod tests {
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(256),
                 stripe_count: StripeCount(8),
-                leaves: [Hash::from([0x66; 32]); SPOOL_GROUP_SIZE],
+                leaves: [Hash::from([0x66; 32]); GROUP_SIZE],
             }),
         };
 

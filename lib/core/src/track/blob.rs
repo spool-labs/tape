@@ -9,9 +9,8 @@ use tape_crypto::merkle::root_from_leaf_hashes;
 use tape_crypto::merkle::hash_leaf;
 
 use crate::encoding::EncodingProfile;
-use crate::spooler::SpoolIndex;
-use crate::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
-use crate::types::{StorageUnits, StripeCount};
+use crate::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+use crate::types::{SpoolIndex, StorageUnits, StripeCount};
 
 #[cfg(feature = "wincode")]
 use core::mem::MaybeUninit;
@@ -30,16 +29,21 @@ use wincode::{
 pub struct BlobInfo {
     /// Original unencoded data size in bytes.
     pub size: StorageUnits,
+
     /// Root of the erasure-coded commitment tree.
     pub commitment: Hash,
+
     /// Erasure-coding profile used for the blob.
     pub profile: EncodingProfile,
+
     /// Stripe size in bytes.
     pub stripe_size: StorageUnits,
+
     /// Number of stripes.
     pub stripe_count: StripeCount,
+
     /// Per-slice commitment leaves.
-    pub leaves: [Hash; SPOOL_GROUP_SIZE],
+    pub leaves: [Hash; GROUP_SIZE],
 }
 
 pub type PackedBlobInfo = [u8; size_of::<BlobInfo>()];
@@ -66,7 +70,7 @@ impl BlobInfo {
 
     /// Verify a single slice against its stored leaf hash.
     pub fn verify_slice(&self, position: SpoolIndex, data: &[u8]) -> bool {
-        let position = position as usize;
+        let position = position.as_usize();
         if position >= self.leaves.len() {
             return false;
         }
@@ -119,7 +123,7 @@ mod tests {
             profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(2),
-            leaves: [Hash::from([0x33; 32]); SPOOL_GROUP_SIZE],
+            leaves: [Hash::from([0x33; 32]); GROUP_SIZE],
         }
     }
 

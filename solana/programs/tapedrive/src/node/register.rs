@@ -10,7 +10,6 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
         system_info,
         archive_info,
-        epoch_info,
         node_info,
         history_info,
 
@@ -44,13 +43,8 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_system()?
         .as_account_mut::<System>(&tapedrive::ID)?;
 
-    let archive = archive_info
-        .is_archive()?
-        .as_account::<Archive>(&tapedrive::ID)?;
-
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
+    archive_info.is_archive()?;
+    let archive = archive_info.as_account::<Archive>(&tapedrive::ID)?;
 
     system_program_info
         .is_program(&system_program::ID)?;
@@ -76,15 +70,16 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
+    let current = current_epoch(system);
     let commission_rate = BasisPoints::unpack(args.commission_rate);
 
     let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
 
     node.id                   = node_number.into();
-    node.authority = (*authority_info.key).into();
-    node.registered_epoch     = current_epoch(epoch);
-    node.latest_sync_epoch    = current_epoch(epoch);
-    node.latest_advance_epoch = current_epoch(epoch);
+    node.authority            = (*authority_info.key).into();
+    node.registered_epoch     = current;
+    node.latest_sync_epoch    = current;
+    node.latest_advance_epoch = current;
 
     node.blacklist = Blacklist::new();
     node.pool = StakingPool::new(commission_rate);
@@ -94,12 +89,14 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         network_address: args.network_address,
         network_tls: args.network_tls,
         bls_pubkey: args.bls_pubkey,
-        next_bls_pubkey: args.bls_pubkey,
     };
 
     node.preferences = NodePreferences {
         storage_price: archive.storage_price,
         storage_capacity: archive.storage_capacity,
+        committee_size: system.committee_size,
+        spool_groups: system.target_group_count,
+        min_version: system.min_version,
     };
 
     create_program_account::<History>(
@@ -117,15 +114,15 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     history.latest_epoch      = node.latest_advance_epoch;
     history.inner             = PoolHistory::new();
 
-    // Push initial flat rate so stakes that activate immediately (low-quorum mode)
-    // have a valid rate_at(activation_epoch) lookup during unlock.
+    // Initial flat rate so stakes that activate immediately have a valid
+    // rate_at(activation_epoch) lookup during unlock.
     history.inner.push(node.registered_epoch, ExchangeRate::flat());
 
     NodeRegistered {
         node: node_address,
         id: node.id,
         authority: (*authority_info.key).into(),
-        epoch: current_epoch(epoch),
+        epoch: current,
     }.log();
 
     Ok(())
@@ -134,11 +131,10 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_crypto::Hash;
     use tape_test::*;
 
     #[test]
-    fn test_register_node() {
+    fn register() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -151,7 +147,9 @@ mod tests {
         let bls_pubkey = secret.public_key().expect("pubkey");
         let bls_pop = secret.proof_of_possession().expect("pop");
 
-        let instruction = build_register_node_ix(fee_payer.into(), authority.into(),
+        let instruction = build_register_node_ix(
+            fee_payer.into(),
+            authority.into(),
             name,
             commission_rate,
             network_address,
@@ -162,23 +160,17 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
 
-        // Setup existing accounts
-        let system = System::zeroed();
+        let system = System {
+            current_epoch: EpochNumber(42),
+            ..System::zeroed()
+        };
         let archive = Archive {
             storage_price: TAPE(100),
             storage_capacity: StorageUnits::mb(1_000_000),
             ..Archive::zeroed()
-        };
-        let epoch = Epoch {
-            id: EpochNumber(42),
-            state: EpochState::new(),
-            last_epoch: 0,
-            nonce: Hash::default(),
-            ..Epoch::zeroed()
         };
 
         let accounts = vec![
@@ -187,7 +179,6 @@ mod tests {
 
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
             empty(node_address),
             empty(history_address),
 
@@ -218,27 +209,28 @@ mod tests {
                             network_address,
                             network_tls,
                             bls_pubkey,
-                            next_bls_pubkey: bls_pubkey,
                         },
                         preferences: NodePreferences {
                             storage_price: TAPE(100),
                             storage_capacity: StorageUnits::mb(1_000_000),
+                            committee_size: system.committee_size,
+                            spool_groups: system.target_group_count,
+                            min_version: system.min_version,
                         },
-                        registered_epoch: epoch.id,
-                        latest_sync_epoch: epoch.id,
-                        latest_advance_epoch: epoch.id,
+                        registered_epoch: system.current_epoch,
+                        latest_sync_epoch: system.current_epoch,
+                        latest_advance_epoch: system.current_epoch,
                         ..Node::zeroed()
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&Pubkey::from(history_address)).data({
                     let mut expected_history = History {
                         node: node_address,
-                        registered_epoch: epoch.id,
-                        latest_epoch: epoch.id,
+                        registered_epoch: system.current_epoch,
+                        latest_epoch: system.current_epoch,
                         inner: PoolHistory::new(),
                     };
-                    // Initial flat rate is pushed during registration
-                    expected_history.inner.push(epoch.id, ExchangeRate::flat());
+                    expected_history.inner.push(system.current_epoch, ExchangeRate::flat());
                     expected_history
                 }.pack().as_ref()
                 ).build(),

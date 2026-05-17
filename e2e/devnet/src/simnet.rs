@@ -14,7 +14,7 @@ use solana_sdk::signer::Signer;
 use tape_api::errors::{is_account_state_pending_error, ProgramError, TapeError};
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::{
-    build_advance_pool_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
+    build_advance_pool_ix, build_create_system_ix, build_expand_system_ix, build_create_archive_ix,
     build_initialize_mint_ix, build_join_network_ix, build_register_node_ix,
     build_stake_with_pool_ix,
 };
@@ -444,7 +444,7 @@ async fn init_chain(chain: &ChainFixture) -> Result<Keypair> {
     chain
         .send_instructions_and_advance(
             &admin,
-            vec![build_initialize_ix(admin_pub.into(), admin_pub.into())],
+            vec![build_create_archive_ix(admin_pub.into(), admin_pub.into())],
             SLOT_BUMP,
         )
         .await

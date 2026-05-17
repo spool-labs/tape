@@ -616,6 +616,15 @@ impl Rpc for SolanaRpc {
         &self,
         pubkeys: &[Address],
     ) -> Result<Vec<Option<Account>>, RpcError> {
+        self.get_multiple_accounts_with_commitment(pubkeys, self.config.commitment)
+            .await
+    }
+
+    async fn get_multiple_accounts_with_commitment(
+        &self,
+        pubkeys: &[Address],
+        commitment: CommitmentLevel,
+    ) -> Result<Vec<Option<Account>>, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -623,13 +632,14 @@ impl Rpc for SolanaRpc {
         let solana_pubkeys: Vec<Pubkey> = pubkeys.iter().copied().map(Into::into).collect();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
+        let commitment = CommitmentConfig { commitment };
 
         loop {
             let result = {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.get_multiple_accounts(&solana_pubkeys),
+                    client.get_multiple_accounts_with_commitment(&solana_pubkeys, commitment),
                 )
                 .await
             };
@@ -647,7 +657,7 @@ impl Rpc for SolanaRpc {
                         );
                     }
 
-                    return Ok(accounts);
+                    return Ok(accounts.value);
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);

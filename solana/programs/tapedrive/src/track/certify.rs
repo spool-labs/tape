@@ -1,7 +1,8 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
+use tape_api::state::Group;
 use tape_api::event::TrackCertified;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::TrackState;
 use tape_crypto::bls12254::min_sig::*;
 
@@ -13,7 +14,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         authority_info,
 
         system_info,
-        epoch_info,
+        group_info,
         tape_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -30,19 +31,20 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_system()?
         .as_account::<System>(&tapedrive::ID)?;
 
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
+    let curr = system.current_epoch;
+
+    let proof = args.track;
+    let track = proof.state;
+
+    let group = group_info
+        .is_group(curr, track.spool_group)?
+        .as_account::<Group>(&tapedrive::ID)?;
 
     let tape = tape_info
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     let (tape_address, _) = tape_pda(tape.authority);
-
-    let proof = args.track;
-    let track = proof.state;
-
     let track_address = track_pda(track.tape, track.track_number).0;
 
     if tape.authority != (*authority_info.key).into() {
@@ -73,33 +75,26 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let committee = &system.committee;
-    let spools = &system.spools;
-    let weight = spools.group_weight(track.spool_group, &args.bitmap);
-
-    if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
+    let weight = args.bitmap.count_ones() as u64;
+    if !is_supermajority(weight, GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
-    let committee_size = committee.size();
-    let indices = args.bitmap.indices(committee_size);
+    let indices = args.bitmap.indices();
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
     }
 
     let mut pubkeys = Vec::with_capacity(indices.len());
-    for member_index in &indices {
-        if let Some(member) = committee.member_at(*member_index) {
-            pubkeys.push(member.key.0);
-        } else {
-            return Err(TapeError::BadMember.into());
-        }
+    for spool_index in &indices {
+        let spool = group.spools.get(*spool_index).ok_or(TapeError::BadMember)?;
+        pubkeys.push(spool.bls_pubkey.0);
     }
 
     let decompressed_sig = G1Point::try_from(&args.signature.0)
         .map_err(|_| TapeError::BadSignature)?;
 
-    let message = TrackWriteMessage::new(epoch.id, old_track_hash);
+    let message = TrackWriteMessage::new(curr, old_track_hash);
     let message_bytes = message.to_bytes();
 
     verify_aggregate(
@@ -117,7 +112,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     TrackCertified {
         track: track_address,
-        epoch: epoch.id,
+        epoch: curr,
         signer_count: signer_count.to_le_bytes(),
         signer_weight: weight.to_le_bytes(),
     }.log();
@@ -128,56 +123,63 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::system::Spool;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
-    use tape_core::types::CommitteeBitmap;
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
     use tape_test::*;
-    use tape_spooler::dhondt_allocate;
 
+    /// Build a Group whose 20 spools are owned by 20 distinct BLS keys.
+    fn make_group(epoch: EpochNumber, group_id: SpoolGroup) -> (Vec<BlsPrivateKey>, Group) {
+        let mut group = Group::zeroed();
+        group.epoch = epoch;
+        group.id = group_id;
+        group.size = StorageUnits::mb(50);
+
+        let mut sks = Vec::with_capacity(GROUP_SIZE);
+        for i in 0..GROUP_SIZE {
+            let sk = BlsPrivateKey::from_random();
+            let pk = sk.public_key().expect("pubkey");
+            let mut bytes = [0u8; 32];
+            bytes[0] = (i as u8) + 1;
+            let addr = Address::new(bytes);
+
+            group.spools[i] = Spool {
+                node: addr,
+                bls_pubkey: pk,
+            };
+            sks.push(sk);
+        }
+        (sks, group)
+    }
+
+    // happy-path BLS-aggregate certification of a track
     #[test]
-    fn test_certify_track() {
+    fn certify() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
+        let curr = EpochNumber(42);
 
         let (tape_address, _) = tape_pda(authority.into());
         let (system_address, _) = system_pda();
-        let (epoch_address, _) = epoch_pda();
+        let spool_group = SpoolGroup(0);
+        let (group_address, _) = group_pda(curr, spool_group);
 
-        const SIGNERS: usize = 30;
+        const SIGNERS: usize = 14;
 
-        let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..MEMBER_COUNT)
-            .map(|_| {
-                let sk = BlsPrivateKey::from_random();
-                let pk = sk.public_key().unwrap();
-                (sk, pk)
-            })
-            .collect();
+        let (sks, group) = make_group(curr, spool_group);
 
-        let mut system = System::zeroed();
-        system.committee = Committee::from_members(
-            &committee
-                .iter()
-                .enumerate()
-                .map(|(i, (_, pk))| CommitteeMember {
-                    id: NodeId::from(i as u64),
-                    stake: TAPE(1_000 * (i * i) as u64),
-                    key: *pk,
-                    ..CommitteeMember::zeroed()
-                })
-                .collect::<Vec<_>>(),
-        );
-
-        let stakes = system.committee.active_stakes();
-        let seat_counts = dhondt_allocate(&stakes, SPOOL_COUNT as u16).unwrap();
-        system.spools = SpoolAssignment::try_from_counts(&seat_counts)
-            .expect("spools from counts");
+        let system = System {
+            current_epoch: curr,
+            committee_size: 128,
+            ..System::zeroed()
+        };
 
         let track_number = TrackNumber(0);
-        let spool_group = SpoolGroup(0);
         let track = CompressedTrack {
             tape: tape_address,
             key: bucket_hash,
@@ -189,6 +191,7 @@ mod tests {
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
+
         let mut track_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
         track_tree.add_leaf_hash(old_track_hash).unwrap();
         let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
@@ -217,41 +220,23 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let epoch = Epoch {
-            id: EpochNumber(42),
-            nonce: Hash::default(),
-            ..Epoch::zeroed()
-        };
-
-        let committee_size = system.committee.size();
-        assert!(SIGNERS <= committee_size);
-
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
-        let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
+        let bitmap = SpoolBitmap::from_indices(&signed_indices);
 
-        let track_message = TrackWriteMessage::new(epoch.id, old_track_hash);
+        let track_message = TrackWriteMessage::new(curr, old_track_hash);
         let message = track_message.to_bytes();
 
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .map(|&i| {
-                let member_pk = system.committee
-                    .member_at(i)
-                    .expect("member at index").key;
-                let sk = committee
-                    .iter()
-                    .find(|(_, pk)| *pk == member_pk)
-                    .expect("matching sk for pk").0
-                    .clone();
-                sk.sign(&message).unwrap()
-            })
+            .map(|&i| sks[i].sign(&message).unwrap())
             .collect();
-
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 
-        let instruction = build_certify_track_ix(fee_payer.into(), authority.into(),
+        let instruction = build_certify_track_ix(
+            fee_payer.into(),
+            authority.into(),
             CompressedTrackProof { state: track, proof },
-            epoch.id,
+            curr,
             bitmap,
             agg_sig,
         );
@@ -261,7 +246,7 @@ mod tests {
             sol(authority, 0),
 
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(group_address, group.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
         ];
 

@@ -17,6 +17,9 @@ pub struct Archive {
     /// The archive schedule for future epochs.
     pub schedule: EpochSchedule<FUTURE_EPOCHS>,
 
+    /// Monotonic tape ID allocator. This is not decremented when tapes close.
+    pub tape_count: u64,
+
     /// The capacity reserved in the last epoch.
     pub recent_usage: StorageUnits,
 
@@ -25,9 +28,6 @@ pub struct Archive {
 
     /// The rewards paid out so far in this epoch.
     pub rewards_paid: Coin<TAPE>,
-
-    /// The total number of tapes in the archive.
-    pub tape_count: u64,
 }
 
 tape_solana::state!(AccountType, Archive);

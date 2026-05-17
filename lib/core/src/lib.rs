@@ -16,9 +16,10 @@ mod macros;
 
 pub mod prelude {
     pub use crate::encoding::EncodingProfile;
-    pub use crate::spooler::{SpoolGroup, SpoolIndex};
-    pub use crate::system::{EpochPhase, NodeStatus, SpoolState, SpoolStatus, VoteKind};
-    pub use crate::snapshot::types::SnapshotState;
+    pub use crate::types::{SpoolGroup, SpoolIndex};
+    pub use crate::system::{
+        EpochPhase, EpochState, NodeStatus, SpoolState, SpoolStatus, VoteKind,
+    };
     pub use crate::track::blob::BlobInfo;
     pub use crate::track::data::TrackData;
     pub use crate::track::types::{CompressedTrack, TrackKind, TrackState};

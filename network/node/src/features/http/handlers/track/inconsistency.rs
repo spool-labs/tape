@@ -10,7 +10,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::cert::track::TrackInvalidateMessage;
-use tape_core::erasure::{SPOOL_GROUP_SIZE, group_for_spool};
+use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{CommitteeBitmap, EpochNumber};
@@ -131,7 +131,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         signer_pubkeys.push(member.key);
     }
 
-    if !is_supermajority(signer_weight, SPOOL_GROUP_SIZE as u64) {
+    if !is_supermajority(signer_weight, GROUP_SIZE as u64) {
         return Err(RouteError::BadRequest(
             "inconsistency proof lacks quorum for spool group".into(),
         ));
@@ -163,7 +163,7 @@ mod tests {
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
@@ -191,7 +191,7 @@ mod tests {
         })
         .expect("set state");
 
-        let leaves = [Hash::from([0x44; 32]); SPOOL_GROUP_SIZE];
+        let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
             size: StorageUnits::from_bytes(1_537),

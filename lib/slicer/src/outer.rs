@@ -1,20 +1,20 @@
 //! Outer Reed-Solomon code for snapshot erasure across spool groups.
 //!
-//! The outer code distributes snapshot data across all 50 spool groups,
-//! providing high fault tolerance (72% group failure tolerance with k=14).
-//! This is a single-level RS code, no striping or rotation.
+//! The outer code distributes snapshot data across the active spool groups,
+//! providing high fault tolerance. This is a single-level RS code, no
+//! striping or rotation. `n` (the active group count) is supplied at
+//! construction by the caller.
 
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
-use tape_core::erasure::SPOOL_GROUP_COUNT;
 
 use crate::errors::{DecodeError, EncodeError};
 
 /// Default number of data chunks for outer RS code.
-/// 14 of 50 chunks needed for reconstruction = 72% failure tolerance.
+/// At n=50 this gives 72% group failure tolerance with k=14.
 pub const DEFAULT_K_OUTER: usize = 14;
 
 /// Outer RS `k` used by the snapshot pipeline.
-/// 17 of 50 chunks needed for reconstruction = ~1/3 recovery threshold.
+/// At n=50 this gives ~1/3 recovery threshold (17/50).
 pub const SNAPSHOT_K_OUTER: usize = 17;
 
 /// Maximum per-symbol size for the outer RS coder, set by the
@@ -34,15 +34,13 @@ pub struct OuterCoder {
 }
 
 impl OuterCoder {
-    /// Create a new outer coder with the given k (data chunks).
-    /// n is always SPOOL_GROUP_COUNT (50).
-    pub fn new(k: usize) -> Self {
-        let n = SPOOL_GROUP_COUNT;
-        let m = n - k;
-
+    /// Create a new outer coder with the given k (data chunks) and
+    /// n (total chunks = active spool group count).
+    pub fn new(k: usize, n: usize) -> Self {
         assert!(k > 0, "k must be > 0");
         assert!(k <= n, "k must be <= n");
 
+        let m = n - k;
         let encoder =
             ReedSolomonEncoder::new(k, m, MAX_CHUNK_BYTES).expect("RS encoder init");
         let decoder =
@@ -191,13 +189,15 @@ impl OuterCoder {
 mod tests {
     use super::*;
 
+    const SPOOL_GROUP_COUNT: usize = 50;
+
     fn make_data(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
     #[test]
     fn test_chunk_count() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let data = make_data(100_000);
         let chunks = coder.encode(&data).unwrap();
 
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_all_chunks() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_data_chunks_only() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_parity_chunks_only() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_mixed_chunks() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_insufficient_chunks() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_empty_data() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let chunks = coder.encode(&[]).unwrap();
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
 
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_various_sizes() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER);
+        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
         let sizes = [1, 13, DEFAULT_K_OUTER, 1000, 50_000, 200_000];
 
         for &sz in &sizes {
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn test_custom_k() {
         // Test with k=7 (matching inner Clay k)
-        let mut coder = OuterCoder::new(7);
+        let mut coder = OuterCoder::new(7, SPOOL_GROUP_COUNT);
         let original = make_data(50_000);
         let chunks = coder.encode(&original).unwrap();
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);

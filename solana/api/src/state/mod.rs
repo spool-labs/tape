@@ -1,9 +1,11 @@
 mod archive;
+mod committee;
 mod epoch;
 mod exchange;
+mod group;
 mod history;
 mod node;
-mod snapshot;
+mod peer;
 mod stake;
 mod system;
 mod tape;
@@ -11,11 +13,13 @@ mod treasury;
 mod vote;
 
 pub use archive::*;
+pub use committee::*;
 pub use epoch::*;
 pub use exchange::*;
+pub use group::*;
 pub use history::*;
 pub use node::*;
-pub use snapshot::*;
+pub use peer::*;
 pub use stake::*;
 pub use system::*;
 pub use tape::*;
@@ -28,20 +32,17 @@ use tape_solana::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum AccountType {
     Unknown = 0,
-
-    Treasury,
-
-    System,
-    Epoch,
     Archive,
-
+    Committee,
+    Epoch,
     Exchange,
-    Node,
+    Group,
     History,
+    Node,
+    PeerSet,
     Stake,
-
+    System,
     Tape,
-
-    Snapshot,
+    Treasury,
     Vote,
 }

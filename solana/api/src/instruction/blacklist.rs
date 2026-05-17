@@ -5,6 +5,7 @@ use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use tape_core::prelude::*;
 use tape_crypto::Hash;
+use crate::helpers::read_instruction_pod;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -21,7 +22,7 @@ pub struct RemoveFromBlacklist {
 
 #[inline(always)]
 pub fn parse_add_to_blacklist(data: &[u8]) -> Result<AddToBlacklist, ProgramError> {
-    super::read_instruction_pod::<AddToBlacklist>(data)
+    read_instruction_pod::<AddToBlacklist>(data)
 }
 
 pub fn build_add_to_blacklist_ix(

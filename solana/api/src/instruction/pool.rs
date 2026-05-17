@@ -1,9 +1,17 @@
 use tape_solana::*;
 use tape_crypto::address::Address;
+use tape_core::types::{SpoolGroup, SpoolIndex};
+use tape_core::types::EpochNumber;
 use tape_core::types::coin::{Coin, TAPE};
 use crate::program::{staking, tapedrive};
 use crate::utils::ata;
 use crate::program::*;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SettleSpool {
+    pub spool: [u8; 8],                   // Index within the group (0 .. GROUP_SIZE)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -33,31 +41,63 @@ pub struct SplitPoolStake {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct MergePoolStake {}
 
-pub fn build_advance_pool_ix(
+pub fn build_settle_spool_ix(
     fee_payer: Address,
-    authority: Address,
     pool: Address,
+    current_epoch: EpochNumber,
+    spool: SpoolIndex,
 ) -> Instruction {
+
+    let prev = current_epoch.saturating_sub(EpochNumber(1));
+    let group = SpoolGroup::of(spool);
 
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
-    let (epoch_address, _)  = epoch_pda();
+    let (curr_epoch_address, _) = epoch_pda(current_epoch);
+    let (prev_epoch_address, _) = epoch_pda(prev);
+    let (prev_group_address, _) = group_pda(prev, group);
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new(curr_epoch_address.into(), false),
+            AccountMeta::new_readonly(prev_epoch_address.into(), false),
+            AccountMeta::new(prev_group_address.into(), false),
+            AccountMeta::new(pool.into(), false),
+        ],
+        data: SettleSpool {
+            spool: spool.pack(),
+        }.to_bytes(),
+    }
+}
+
+pub fn build_advance_pool_ix(
+    fee_payer: Address,
+    pool: Address,
+    current_epoch: EpochNumber,
+) -> Instruction {
+
+    let prev = current_epoch.saturating_sub(EpochNumber(1));
+
+    let (system_address, _) = system_pda();
+    let (prev_committee_address, _) = committee_pda(prev);
     let (history_address, _) = history_pda(pool);
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
-            // authority is NOT a signer - AdvancePool is permissionless
-            AccountMeta::new_readonly(authority.into(), false),
 
             AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new(archive_address.into(), false),
-            AccountMeta::new(epoch_address.into(), false),
+            AccountMeta::new_readonly(prev_committee_address.into(), false),
             AccountMeta::new(pool.into(), false),
             AccountMeta::new(history_address.into(), false),
         ],
-        data: AdvancePool { }.to_bytes(),
+        data: AdvancePool {}.to_bytes(),
     }
 }
 
@@ -66,10 +106,13 @@ pub fn build_stake_with_pool_ix(
     authority: Address,
     pool: Address,
     amount: Coin<TAPE>,
+    current_epoch: EpochNumber,
 ) -> Instruction {
 
+    let next = current_epoch.saturating_add(EpochNumber(1));
+
     let (system_address, _) = system_pda();
-    let (epoch_address, _)  = epoch_pda();
+    let (committee_next_address, _) = committee_pda(next);
     let (mint_address, _)   = mint_pda();
     let (stake_address, _)  = stake_pda(authority);
     let (vault_address, _)  = vault_pda(stake_address);
@@ -85,7 +128,7 @@ pub fn build_stake_with_pool_ix(
             AccountMeta::new(authority_ata.into(), false),
 
             AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(committee_next_address.into(), false),
             AccountMeta::new(pool.into(), false),
             AccountMeta::new(stake_address.into(), false),
             AccountMeta::new(vault_address.into(), false),
@@ -106,7 +149,7 @@ pub fn build_request_stake_unlock_ix(
     pool: Address,
 ) -> Instruction {
 
-    let (epoch_address, _) = epoch_pda();
+    let (system_address, _) = system_pda();
     let (stake_address, _) = stake_pda(authority);
     let (history_address, _) = history_pda(pool);
 
@@ -117,7 +160,7 @@ pub fn build_request_stake_unlock_ix(
             AccountMeta::new_readonly(authority.into(), true),
 
             AccountMeta::new(stake_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(pool.into(), false),
             AccountMeta::new_readonly(history_address.into(), false),
         ],
@@ -135,7 +178,7 @@ pub fn build_unstake_from_pool_ix(
     let authority_ata        = ata(&authority);
     let (archive_address, _) = archive_pda();
     let (archive_ata, _)     = archive_ata();
-    let (epoch_address, _)   = epoch_pda();
+    let (system_address, _)  = system_pda();
     let (stake_address, _)   = stake_pda(authority);
     let (vault_address, _)   = vault_pda(stake_address);
     let (history_address, _) = history_pda(pool);
@@ -152,7 +195,7 @@ pub fn build_unstake_from_pool_ix(
 
             AccountMeta::new(stake_address.into(), false),
             AccountMeta::new(vault_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(pool.into(), false),
             AccountMeta::new_readonly(history_address.into(), false),
 

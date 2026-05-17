@@ -1,12 +1,12 @@
 //! Error types for API operations.
 
-use tape_core::types::NodeId;
+use tape_crypto::Address;
 use tape_retry::Retryable;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     #[error("node not found in directory: {0:?}")]
-    NodeUnresolved(NodeId),
+    NodeUnresolved(Address),
 
     #[error("not found")]
     NotFound,

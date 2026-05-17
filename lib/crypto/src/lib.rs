@@ -7,6 +7,7 @@ pub mod signer;
 pub mod tx;
 
 pub use hash::Hash;
+pub use address::Address;
 
 pub mod prelude {
     pub use crate::address::Address;

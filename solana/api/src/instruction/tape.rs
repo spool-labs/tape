@@ -43,7 +43,7 @@ pub fn build_reserve_tape_ix(
 ) -> Instruction {
 
     let authority_ata = ata(&authority);
-    let (epoch_address, _) = epoch_pda();
+    let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
     let (archive_ata, _) = archive_ata();
 
@@ -61,7 +61,7 @@ pub fn build_reserve_tape_ix(
             AccountMeta::new(authority_ata.into(), false),
 
             AccountMeta::new(tape_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(archive_address.into(), false),
             AccountMeta::new(archive_ata.into(), false),
 
@@ -144,7 +144,6 @@ pub fn build_merge_tape_ix(
 ) -> Instruction {
     let (source_tape_address, _) = tape_pda(authority);
     let (dest_tape_address, _) = tape_pda(recipient);
-    let (archive_address, _) = archive_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -155,7 +154,6 @@ pub fn build_merge_tape_ix(
 
             AccountMeta::new(source_tape_address.into(), false),
             AccountMeta::new(dest_tape_address.into(), false),
-            AccountMeta::new(archive_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
         ],
@@ -168,8 +166,7 @@ pub fn build_destroy_tape_ix(
     authority: Address,
 ) -> Instruction {
     let (tape_address, _) = tape_pda(authority);
-    let (epoch_address, _) = epoch_pda();
-    let (archive_address, _) = archive_pda();
+    let (system_address, _) = system_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -178,8 +175,7 @@ pub fn build_destroy_tape_ix(
             AccountMeta::new_readonly(authority.into(), true),
 
             AccountMeta::new(tape_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
-            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
         ],

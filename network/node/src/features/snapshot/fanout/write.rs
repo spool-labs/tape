@@ -8,7 +8,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
 use tape_protocol::api::{SnapshotVoteKind, SnapshotVoteReq};
@@ -61,7 +61,7 @@ where
             .map_err(|e| NodeError::Store(format!("iter_snapshot_write_sigs: {e}")))?;
 
         for chunk_sigs in chunks {
-            if is_supermajority(chunk_sigs.votes.len() as u64, SPOOL_GROUP_SIZE as u64) {
+            if is_supermajority(chunk_sigs.votes.len() as u64, GROUP_SIZE as u64) {
                 continue;
             }
             let Some((_, vote)) = chunk_sigs

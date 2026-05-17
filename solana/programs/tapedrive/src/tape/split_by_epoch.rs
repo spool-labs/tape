@@ -31,15 +31,19 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     rent_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let archive = archive_info
+    archive_info
         .is_writable()?
-        .is_archive()?
-        .as_account_mut::<Archive>(&tapedrive::ID)?;
+        .is_archive()?;
 
-    // Splitting creates an additional tape (1 becomes 2)
-    archive.tape_count = archive.tape_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    // Allocate a new monotonic tape ID for the destination tape.
+    let dest_tape_id = TapeNumber(
+        archive.tape_count
+            .checked_add(1)
+            .ok_or(ProgramError::ArithmeticOverflow)?,
+    );
+    archive.tape_count = dest_tape_id.as_u64();
 
     // Derive PDAs
     let (source_tape_address, _) = tape_pda((*source_authority_info.key).into());
@@ -81,6 +85,7 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     let dest_tape = dest_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
 
     // Initialize destination: later time slice with same capacity; used starts at zero
+    dest_tape.id = dest_tape_id;
     dest_tape.authority = (*dest_authority_info.key).into();
     dest_tape.active_epoch = split_epoch;
     dest_tape.expiry_epoch = source_tape.expiry_epoch;
@@ -140,6 +145,7 @@ mod tests {
         ];
 
         let expected_dest = Tape {
+            id: TapeNumber(101),
             authority: dest_authority.into(),
             capacity: StorageUnits::mb(500),
             used: StorageUnits(0), // starts zero for future slice

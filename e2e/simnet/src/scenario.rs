@@ -7,7 +7,7 @@ use solana_sdk::signature::Signature;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::errors::is_account_state_pending_error;
 use tape_api::instruction::{
-    build_advance_epoch_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
+    build_advance_epoch_ix, build_create_system_ix, build_expand_system_ix, build_create_archive_ix,
     build_initialize_mint_ix, build_join_network_ix, build_register_node_ix,
 };
 use tape_api::program::tapedrive::node_pda;
@@ -107,7 +107,7 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_initialize_ix(admin_pub.into(), admin_pub.into())],
+                vec![build_create_archive_ix(admin_pub.into(), admin_pub.into())],
                 slot_bump,
             )
             .await

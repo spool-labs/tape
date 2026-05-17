@@ -204,7 +204,7 @@ mod tests {
             .append_event(
                 epoch,
                 SlotNumber(10),
-                &ReplayableEvent::JoinNetwork {
+                &ReplayableEvent::JoinCommittee {
                     node: Address::new([1u8; 32]),
                 },
             )
@@ -302,7 +302,7 @@ mod tests {
                 .append_event(
                     epoch,
                     slot,
-                    &ReplayableEvent::SyncEpoch {
+                    &ReplayableEvent::SyncSpool {
                         node: [i; 32].into(),
                         node_id: tape_core::types::NodeId(i as u64),
                         epoch,
@@ -319,7 +319,7 @@ mod tests {
         // Verify order is preserved
         for (i, event) in entries[0].events.iter().enumerate() {
             match event {
-                ReplayableEvent::SyncEpoch { node, .. } => {
+                ReplayableEvent::SyncSpool { node, .. } => {
                     assert_eq!(node.to_bytes()[0], i as u8);
                 }
                 _ => panic!("unexpected event type"),

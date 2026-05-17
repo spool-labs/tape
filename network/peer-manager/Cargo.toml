@@ -16,5 +16,6 @@ thiserror.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
+tape-api = { workspace = true }
 bytemuck.workspace = true
 tokio.workspace = true

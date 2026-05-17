@@ -1,7 +1,7 @@
 //! Spool operations
 
-use tape_core::spooler::SpoolIndex;
 use tape_core::system::SpoolState;
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use store::{Column, Store};
 
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn spool_state_roundtrip() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         assert!(store.get_spool_state(spool_id).unwrap().is_none());
 
@@ -241,13 +241,13 @@ mod tests {
         let store = test_store();
 
         store
-            .set_spool_state(10, active_state())
+            .set_spool_state(SpoolIndex(10), active_state())
             .unwrap();
         store
-            .set_spool_state(20, sync_state())
+            .set_spool_state(SpoolIndex(20), sync_state())
             .unwrap();
         store
-            .set_spool_state(30, recover_state())
+            .set_spool_state(SpoolIndex(30), recover_state())
             .unwrap();
 
         let spools = store.iter_all_spools().unwrap();
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_pending_recovery() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
         assert!(!store.has_pending_recovery(spool_id, track).unwrap());
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn test_pending_repair() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
         assert!(!store.has_pending_repair(spool_id, track).unwrap());
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn test_iter_pending_recoveries() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         let track1 = Address::new_unique();
         let track2 = Address::new_unique();
@@ -299,7 +299,7 @@ mod tests {
 
         // Different spool should not appear
         store
-            .add_pending_recovery(99, Address::new_unique())
+            .add_pending_recovery(SpoolIndex(99), Address::new_unique())
             .unwrap();
 
         let pending = store.iter_pending_recoveries(spool_id, 100).unwrap();
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn test_iter_pending_repairs() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         let track1 = Address::new_unique();
         let track2 = Address::new_unique();
@@ -319,7 +319,7 @@ mod tests {
         store.add_pending_repair(spool_id, track2).unwrap();
         store.add_pending_repair(spool_id, track3).unwrap();
 
-        store.add_pending_repair(99, Address::new_unique()).unwrap();
+        store.add_pending_repair(SpoolIndex(99), Address::new_unique()).unwrap();
 
         let pending = store.iter_pending_repairs(spool_id, 100).unwrap();
         assert_eq!(pending.len(), 3);
@@ -333,14 +333,14 @@ mod tests {
         let t2 = Address::new_unique();
         let t3 = Address::new_unique();
 
-        store.add_pending_recovery(42, t1).unwrap();
-        store.add_pending_recovery(42, t2).unwrap();
-        store.add_pending_recovery(99, t3).unwrap();
+        store.add_pending_recovery(SpoolIndex(42), t1).unwrap();
+        store.add_pending_recovery(SpoolIndex(42), t2).unwrap();
+        store.add_pending_recovery(SpoolIndex(99), t3).unwrap();
 
-        store.clear_all_pending_recoveries(42).unwrap();
+        store.clear_all_pending_recoveries(SpoolIndex(42)).unwrap();
 
-        assert!(store.iter_pending_recoveries(42, 100).unwrap().is_empty());
-        assert_eq!(store.iter_pending_recoveries(99, 100).unwrap().len(), 1);
+        assert!(store.iter_pending_recoveries(SpoolIndex(42), 100).unwrap().is_empty());
+        assert_eq!(store.iter_pending_recoveries(SpoolIndex(99), 100).unwrap().len(), 1);
     }
 
     #[test]
@@ -351,20 +351,20 @@ mod tests {
         let t2 = Address::new_unique();
         let t3 = Address::new_unique();
 
-        store.add_pending_repair(42, t1).unwrap();
-        store.add_pending_repair(42, t2).unwrap();
-        store.add_pending_repair(99, t3).unwrap();
+        store.add_pending_repair(SpoolIndex(42), t1).unwrap();
+        store.add_pending_repair(SpoolIndex(42), t2).unwrap();
+        store.add_pending_repair(SpoolIndex(99), t3).unwrap();
 
-        store.clear_all_pending_repairs(42).unwrap();
+        store.clear_all_pending_repairs(SpoolIndex(42)).unwrap();
 
-        assert!(store.iter_pending_repairs(42, 100).unwrap().is_empty());
-        assert_eq!(store.iter_pending_repairs(99, 100).unwrap().len(), 1);
+        assert!(store.iter_pending_repairs(SpoolIndex(42), 100).unwrap().is_empty());
+        assert_eq!(store.iter_pending_repairs(SpoolIndex(99), 100).unwrap().len(), 1);
     }
 
     #[test]
     fn test_sync_progress_roundtrip() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
         assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());

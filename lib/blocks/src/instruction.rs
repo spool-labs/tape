@@ -2,17 +2,19 @@
 
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
-    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    SnapshotReserved, SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteClosed,
+    AssignmentGroupFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee, NodeRegistered,
+    PoolAdvanced, SnapshotFinalized, SpoolSettled, SpoolSynced, TapeDestroyed, TapeReserved,
+    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
-use tape_api::instruction::{self as ix, TapeInstruction, WriteSnapshot};
+use tape_api::instruction::{
+    self as ix, FinalizeGroup, FinalizeSnapshot, ProposeAssignment, ProposeSnapshot,
+    SettleSpool, SyncSpool, TapeInstruction, VoteAssignment, VoteSnapshot,
+};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
 use tape_core::spooler::SpoolGroup;
-use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::{TrackData, TrackDataSlice};
-use tape_core::types::ChunkNumber;
+use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
@@ -25,17 +27,36 @@ use crate::error::ParseError;
 /// Use `merge()` to combine with events.
 #[derive(Debug, Clone)]
 pub enum RawInstruction {
+    CommitEpoch,
     AdvanceEpoch,
-    SyncEpoch,
-    ReserveSnapshot,
-    WriteSnapshot {
-        group: SpoolGroup,
-        chunk: ChunkNumber,
-        blob: BlobInfo,
+    SyncSpool {
+        node: Address,
+        spool: u64,
     },
-    SignSnapshot,
-    CloseVote {
-        vote: Address,
+    ProposeSnapshot {
+        hash: Hash,
+    },
+    VoteSnapshot {
+        hash: Hash,
+        group: SpoolGroup,
+    },
+    FinalizeSnapshot {
+        epoch: EpochNumber,
+    },
+    ProposeAssignment {
+        hash: Hash,
+    },
+    VoteAssignment {
+        hash: Hash,
+        group: SpoolGroup,
+    },
+    FinalizeGroup {
+        epoch: EpochNumber,
+        group: SpoolGroup,
+    },
+    SettleSpool {
+        node: Address,
+        spool: u64,
     },
     AdvancePool {
         node: Address,
@@ -67,7 +88,7 @@ pub enum RawInstruction {
         authority: Address,
         node: Address,
     },
-    JoinNetwork {
+    JoinCommittee {
         node: Address,
     },
 }
@@ -78,28 +99,49 @@ pub enum RawInstruction {
 /// eliminating the need to query current RPC state during catch-up.
 #[derive(Debug, Clone)]
 pub enum ParsedInstruction {
-    // Epoch management
+    // Epoch boundary
+    CommitEpoch {
+        event: EpochCommitted,
+    },
     AdvanceEpoch {
         event: EpochAdvanced,
     },
-    SyncEpoch {
-        event: NodeSynced,
+    SyncSpool {
+        node: Address,
+        spool: u64,
+        event: SpoolSynced,
     },
-    ReserveSnapshot {
-        event: SnapshotReserved,
+    ProposeSnapshot {
+        hash: Hash,
+        event: VoteProposed,
     },
-    WriteSnapshot {
+    VoteSnapshot {
+        hash: Hash,
         group: SpoolGroup,
-        chunk: ChunkNumber,
-        blob: BlobInfo,
-        event: SnapshotWritten,
+        event: VoteRecorded,
     },
-    SignSnapshot {
-        event: SnapshotSigned,
+    FinalizeSnapshot {
+        epoch: EpochNumber,
+        event: SnapshotFinalized,
     },
-    CloseVote {
-        vote: Address,
-        event: VoteClosed,
+    ProposeAssignment {
+        hash: Hash,
+        event: VoteProposed,
+    },
+    VoteAssignment {
+        hash: Hash,
+        group: SpoolGroup,
+        event: VoteRecorded,
+    },
+    FinalizeGroup {
+        epoch: EpochNumber,
+        group: SpoolGroup,
+        event: AssignmentGroupFinalized,
+    },
+    SettleSpool {
+        node: Address,
+        spool: u64,
+        event: SpoolSettled,
     },
     AdvancePool {
         node: Address,
@@ -146,7 +188,7 @@ pub enum ParsedInstruction {
         node: Address,
         event: NodeRegistered,
     },
-    JoinNetwork {
+    JoinCommittee {
         node: Address,
         event: NodeJoinedCommittee,
     },
@@ -202,32 +244,63 @@ pub fn parse_raw_instruction(
     };
 
     match ix_type {
+        TapeInstruction::CommitEpoch => Ok(Some(RawInstruction::CommitEpoch)),
+
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
 
-        TapeInstruction::SyncEpoch => Ok(Some(RawInstruction::SyncEpoch)),
+        TapeInstruction::SyncSpool => {
+            let args = SyncSpool::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("sync_spool: {e:?}")))?;
+            // Account layout from build_sync_spool_ix: [fee_payer, authority, system, epoch, group, node]
+            let node = get_account(5)?;
+            let spool = u64::from_le_bytes(args.spool);
+            Ok(Some(RawInstruction::SyncSpool { node, spool }))
+        }
 
-        TapeInstruction::ReserveSnapshot => Ok(Some(RawInstruction::ReserveSnapshot)),
+        TapeInstruction::ProposeSnapshot => {
+            let args = ProposeSnapshot::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("propose_snapshot: {e:?}")))?;
+            Ok(Some(RawInstruction::ProposeSnapshot { hash: args.hash }))
+        }
 
-        TapeInstruction::WriteSnapshot => {
-            let args = WriteSnapshot::try_from_bytes(&ix_data[1..])
-                .map_err(|e| ParseError::Deserialization(format!("write_snapshot: {e:?}")))?;
+        TapeInstruction::VoteSnapshot => {
+            let args = VoteSnapshot::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("vote_snapshot: {e:?}")))?;
             let group = SpoolGroup::unpack(args.group);
-            let chunk = ChunkNumber::unpack(args.chunk);
-            let blob = BlobInfo::unpack(args.snapshot);
-            Ok(Some(RawInstruction::WriteSnapshot {
-                group,
-                chunk,
-                blob,
+            Ok(Some(RawInstruction::VoteSnapshot { hash: args.hash, group }))
+        }
+
+        TapeInstruction::FinalizeSnapshot => {
+            let args = FinalizeSnapshot::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("finalize_snapshot: {e:?}")))?;
+            Ok(Some(RawInstruction::FinalizeSnapshot {
+                epoch: EpochNumber::unpack(args.epoch),
             }))
         }
 
-        TapeInstruction::SignSnapshot => Ok(Some(RawInstruction::SignSnapshot)),
+        TapeInstruction::ProposeAssignment => {
+            let args = ProposeAssignment::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("propose_assignment: {e:?}")))?;
+            Ok(Some(RawInstruction::ProposeAssignment { hash: args.hash }))
+        }
 
-        TapeInstruction::CloseVote => {
-            ix::CloseVote::try_from_bytes(&ix_data[1..])
-                .map_err(|e| ParseError::Deserialization(format!("close_vote: {e:?}")))?;
-            let vote = get_account(4)?;
-            Ok(Some(RawInstruction::CloseVote { vote }))
+        TapeInstruction::VoteAssignment => {
+            let args = VoteAssignment::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("vote_assignment: {e:?}")))?;
+            let group = SpoolGroup::unpack(args.group);
+            Ok(Some(RawInstruction::VoteAssignment {
+                hash: args.hash,
+                group,
+            }))
+        }
+
+        TapeInstruction::FinalizeGroup => {
+            let args = FinalizeGroup::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("finalize_group: {e:?}")))?;
+            Ok(Some(RawInstruction::FinalizeGroup {
+                epoch: EpochNumber::unpack(args.epoch),
+                group: args.payload.group(),
+            }))
         }
 
         TapeInstruction::TrackWrite => {
@@ -288,13 +361,26 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::RegisterNode { authority, node }))
         }
 
-        TapeInstruction::JoinNetwork => {
-            let node = get_account(4)?;
-            Ok(Some(RawInstruction::JoinNetwork { node }))
+        TapeInstruction::JoinCommittee => {
+            // Account layout: [fee_payer, authority, system, curr_epoch, next_committee, peer_set, node]
+            let node = get_account(6)?;
+            Ok(Some(RawInstruction::JoinCommittee { node }))
+        }
+
+        TapeInstruction::SettleSpool => {
+            let args = SettleSpool::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("settle_spool: {e:?}")))?;
+            // Account layout from build_settle_spool_ix:
+            // [fee_payer, system, archive, curr_epoch, prev_epoch, prev_group, pool]
+            let node = get_account(6)?;
+            let spool = u64::from_le_bytes(args.spool);
+            Ok(Some(RawInstruction::SettleSpool { node, spool }))
         }
 
         TapeInstruction::AdvancePool => {
-            let node = get_account(5)?;
+            // Account layout from build_advance_pool_ix:
+            // [fee_payer, system, prev_committee, pool, history]
+            let node = get_account(3)?;
             Ok(Some(RawInstruction::AdvancePool { node }))
         }
 
@@ -312,19 +398,15 @@ mod tests {
     use solana_sdk::instruction::Instruction;
     use solana_transaction_status::UiCompiledInstruction;
     use tape_api::instruction::{
-        build_close_vote_ix, build_reserve_snapshot_ix, build_sign_snapshot_ix,
-        build_write_snapshot_ix,
+        build_vote_assignment_ix, build_vote_snapshot_ix,
     };
     use tape_core::bls::BlsSignature;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
     use tape_core::spooler::SpoolGroup;
-    use tape_core::track::blob::BlobInfo;
+    use tape_core::system::VoteKind;
     use tape_core::types::{
-        EpochNumber, SpoolGroupBitmap, StorageUnits, StripeCount, TrackNumber,
+        EpochNumber, SpoolBitmap,
     };
     use tape_crypto::address::Address;
-    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_crypto::Hash;
     use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
 
@@ -349,153 +431,76 @@ mod tests {
         )
     }
 
-    fn valid_blob() -> BlobInfo {
-        let leaves: [Hash; SPOOL_GROUP_SIZE] =
-            core::array::from_fn(|i| hash_leaf(&vec![i as u8; 64]));
-        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
-        BlobInfo {
-            size: StorageUnits::from_bytes(64 * SPOOL_GROUP_SIZE as u64),
-            commitment,
-            profile: EncodingProfile::basic_default(),
-            stripe_size: StorageUnits::from_bytes(64),
-            stripe_count: StripeCount(SPOOL_GROUP_SIZE as u64),
-            leaves,
-        }
-    }
-
     #[test]
-    fn parses_snapshot_instructions() {
-        // ReserveSnapshot
-        let (ix, keys) = compiled_instruction(&build_reserve_snapshot_ix(
+    fn parses_vote_snapshot() {
+        let (ix, keys) = compiled_instruction(&build_vote_snapshot_ix(
             Address::new_unique(),
             EpochNumber(7),
-        ));
-        assert!(matches!(
-            parse_raw_instruction(&ix, &keys).unwrap(),
-            Some(RawInstruction::ReserveSnapshot)
-        ));
-
-        let blob = valid_blob();
-        let (ix, keys) = compiled_instruction(&build_write_snapshot_ix(
-            Address::new_unique(),
-            Address::new_unique(),
-            EpochNumber(7),
+            Hash::from([0x55; 32]),
             SpoolGroup(3),
-            ChunkNumber(5),
-            SpoolGroupBitmap::zeroed(),
+            SpoolBitmap::zeroed(),
             BlsSignature::zeroed(),
-            &blob,
         ));
-
-        let parsed = parse_raw_instruction(&ix, &keys).unwrap();
-        match parsed {
-            Some(RawInstruction::WriteSnapshot {
-                group,
-                chunk,
-                blob: parsed_blob,
-            }) => {
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::VoteSnapshot { hash, group }) => {
+                assert_eq!(hash, Hash::from([0x55; 32]));
                 assert_eq!(group, SpoolGroup(3));
-                assert_eq!(chunk, ChunkNumber(5));
-                assert_eq!(parsed_blob, blob);
             }
-            other => panic!("expected RawInstruction::WriteSnapshot, got {other:?}"),
+            other => panic!("expected RawInstruction::VoteSnapshot, got {other:?}"),
         }
-
-        // SignSnapshot
-        let (ix, keys) = compiled_instruction(&build_sign_snapshot_ix(
-            Address::new_unique(),
-            EpochNumber(7),
-            SpoolGroup(3),
-            SpoolGroupBitmap::zeroed(),
-            BlsSignature::zeroed(),
-        ));
-        assert!(matches!(
-            parse_raw_instruction(&ix, &keys).unwrap(),
-            Some(RawInstruction::SignSnapshot)
-        ));
     }
 
     #[test]
-    fn parses_close_vote_instruction() {
-        let vote = Address::new_unique();
-        let (ix, keys) = compiled_instruction(&build_close_vote_ix(
+    fn parses_vote_assignment() {
+        let (ix, keys) = compiled_instruction(&build_vote_assignment_ix(
             Address::new_unique(),
-            Address::new_unique(),
-            Address::new_unique(),
-            vote,
+            EpochNumber(7),
+            Hash::from([0x66; 32]),
+            SpoolGroup(3),
+            SpoolBitmap::zeroed(),
+            BlsSignature::zeroed(),
         ));
-
-        assert!(matches!(
-            parse_raw_instruction(&ix, &keys).unwrap(),
-            Some(RawInstruction::CloseVote { vote: parsed_vote }) if parsed_vote == vote
-        ));
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::VoteAssignment { hash, group }) => {
+                assert_eq!(hash, Hash::from([0x66; 32]));
+                assert_eq!(group, SpoolGroup(3));
+            }
+            other => panic!("expected RawInstruction::VoteAssignment, got {other:?}"),
+        }
     }
 
     #[test]
     fn parses_snapshot_events() {
-        let blob = valid_blob();
-        let reserved = SnapshotReserved {
-            epoch: EpochNumber(7),
-        };
-        let written = SnapshotWritten {
-            epoch: EpochNumber(7),
+        let voted = VoteRecorded {
+            kind: VoteKind::Snapshot as u64,
+            vote: Address::new_unique(),
+            voting_epoch: EpochNumber(8),
+            target_epoch: EpochNumber(7),
+            hash: Hash::from([0x55; 32]),
             group: SpoolGroup(4),
-            track: Address::new_unique(),
-            track_number: TrackNumber(9),
-            track_hash: Hash::from([0x44; 32]),
-        };
-        let signed = SnapshotSigned {
-            epoch: EpochNumber(7),
-            group: SpoolGroup(4),
-            state: 0,
+            signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
+            signed_groups: 1u64.to_le_bytes(),
+            total_groups: 5u64.to_le_bytes(),
         };
 
         let instructions = vec![
-            RawInstruction::ReserveSnapshot,
-            RawInstruction::WriteSnapshot {
+            RawInstruction::VoteSnapshot {
+                hash: Hash::from([0x55; 32]),
                 group: SpoolGroup(4),
-                chunk: ChunkNumber(0),
-                blob: blob.clone(),
             },
-            RawInstruction::SignSnapshot,
         ];
-        let events = vec![
-            TapedriveEvent::SnapshotReserved(reserved),
-            TapedriveEvent::SnapshotWritten(written),
-            TapedriveEvent::SnapshotSigned(signed),
-        ];
+        let events = vec![TapedriveEvent::VoteRecorded(voted)];
 
         let merged = merge(instructions, events).expect("merge snapshot instructions");
 
-        assert_eq!(merged.len(), 3);
+        assert_eq!(merged.len(), 1);
         match &merged[0] {
-            ParsedInstruction::ReserveSnapshot { event } => {
-                assert_eq!(event.epoch, reserved.epoch);
-            }
-            other => panic!("expected ReserveSnapshot, got {other:?}"),
-        }
-        match &merged[1] {
-            ParsedInstruction::WriteSnapshot {
-                group,
-                chunk,
-                blob: parsed_blob,
-                event,
-            } => {
+            ParsedInstruction::VoteSnapshot { group, event, .. } => {
                 assert_eq!(*group, SpoolGroup(4));
-                assert_eq!(*chunk, ChunkNumber(0));
-                assert_eq!(*parsed_blob, blob);
-                assert_eq!(event.epoch, written.epoch);
-                assert_eq!(event.track_number, written.track_number);
-                assert_eq!(event.track_hash, written.track_hash);
+                assert_eq!(event.target_epoch, voted.target_epoch);
+                assert_eq!(event.group, voted.group);
             }
-            other => panic!("expected WriteSnapshot, got {other:?}"),
-        }
-        match &merged[2] {
-            ParsedInstruction::SignSnapshot { event } => {
-                assert_eq!(event.epoch, signed.epoch);
-                assert_eq!(event.group, signed.group);
-            }
-            other => panic!("expected SignSnapshot, got {other:?}"),
+            other => panic!("expected VoteSnapshot, got {other:?}"),
         }
     }
 }

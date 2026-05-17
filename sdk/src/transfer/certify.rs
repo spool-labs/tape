@@ -20,7 +20,7 @@ use tape_api::instruction::build_certify_track_ix;
 use tape_api::state::System;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
-use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{spool_for_slice, GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{CommitteeBitmap, EpochNumber, NodeId};
@@ -192,7 +192,7 @@ impl CertificationCollector {
     ) -> Result<CollectedSignatures, CertificationError> {
         let committee = &system.committee;
         let committee_size = committee.size();
-        let group_total_weight = SPOOL_GROUP_SIZE as u64;
+        let group_total_weight = GROUP_SIZE as u64;
 
         if committee_size == 0 {
             return Err(CertificationError::NoCommitteeMembers);
@@ -291,7 +291,7 @@ impl CertificationCollector {
                         tracing::info!(
                             signatures = bucket.responses.len(),
                             weight = bucket.weight,
-                            group_size = SPOOL_GROUP_SIZE,
+                            group_size = GROUP_SIZE,
                             remaining_weight = remaining_node_weight,
                             "Spool group supermajority reached, exiting early"
                         );
@@ -431,7 +431,7 @@ struct SignatureRequest {
 
 fn collect_group_members(spool_group: SpoolGroup, system: &System) -> HashSet<u8> {
     let mut members = HashSet::new();
-    for i in 0..SPOOL_GROUP_SIZE {
+    for i in 0..GROUP_SIZE {
         let spool = spool_for_slice(spool_group, i);
         let member = system.spools.0[spool as usize];
         members.insert(member);

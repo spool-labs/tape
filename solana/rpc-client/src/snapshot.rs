@@ -1,79 +1,122 @@
 use crate::client::RpcClient;
-use core::mem::size_of;
 use rpc::{Rpc, RpcError};
-use tape_api::program::tapedrive::snapshot_pda;
-use tape_api::state::Snapshot;
+use solana_sdk::commitment_config::CommitmentLevel;
+use tape_api::program::tapedrive::snapshot_tape_pda;
+use tape_api::state::Tape;
 use tape_core::types::EpochNumber;
 
 impl<R: Rpc> RpcClient<R> {
-    /// Fetch the snapshot manifest account for a specific epoch.
-    pub async fn get_snapshot(&self, epoch: EpochNumber) -> Result<Snapshot, RpcError> {
-        let (address, _) = snapshot_pda(epoch);
-        let account = self.rpc().get_account(&address).await?;
-        let expected_size = size_of::<Snapshot>() + 8;
-        if account.data.len() < expected_size {
+    /// Fetch the canonical snapshot tape account for a specific epoch.
+    pub async fn get_snapshot_tape(&self, epoch: EpochNumber) -> Result<Tape, RpcError> {
+        self.get_snapshot_tape_with_commitment(epoch, self.rpc().commitment())
+            .await
+    }
+
+    /// Fetch the canonical snapshot tape account for a specific epoch at an explicit commitment.
+    pub async fn get_snapshot_tape_with_commitment(
+        &self,
+        epoch: EpochNumber,
+        commitment: CommitmentLevel,
+    ) -> Result<Tape, RpcError> {
+        let (address, _) = snapshot_tape_pda(epoch);
+        let account = self
+            .rpc()
+            .get_account_with_commitment(&address, commitment)
+            .await?;
+
+        if account.data.len() < Tape::get_size() {
             return Err(RpcError::Deserialization(format!(
-                "Snapshot account too small: {} bytes (expected {})",
+                "Snapshot tape account too small: {} bytes (expected {})",
                 account.data.len(),
-                expected_size
+                Tape::get_size()
             )));
         }
-        match Snapshot::unpack_with_discriminator(&account.data) {
-            Ok(snapshot) => Ok(*snapshot),
-            Err(error) => Err(RpcError::Deserialization(error.to_string())),
+
+        let tape = Tape::unpack_with_discriminator(&account.data)
+            .map(|tape| *tape)
+            .map_err(|error| RpcError::Deserialization(error.to_string()))?;
+
+        if !tape.is_snapshot_tape(epoch) {
+            return Err(RpcError::Deserialization(format!(
+                "snapshot tape account does not match epoch {epoch}"
+            )));
         }
+
+        Ok(tape)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::RpcClient;
     use bytemuck::Zeroable;
     use rpc::RpcError;
-    use crate::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
-    use tape_api::program::tapedrive::{self, snapshot_pda};
-    use tape_api::state::Snapshot;
-    use tape_core::snapshot::types::SnapshotState;
-    use tape_core::types::{EpochNumber, GroupBitmap};
+    use tape_api::program::tapedrive::{self, snapshot_tape_pda, SYSTEM_ADDRESS};
+    use tape_api::state::Tape;
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
 
     fn client() -> RpcClient<LiteSvmRpc> {
         RpcClient::from_rpc(LiteSvmRpc::new())
     }
 
-    fn sample_snapshot(epoch: EpochNumber) -> Snapshot {
-        Snapshot {
-            epoch,
-            state: SnapshotState::Registered as u64,
-            group_bitmap: GroupBitmap::zeroed(),
+    fn sample_snapshot_tape(epoch: EpochNumber) -> Tape {
+        Tape {
+            id: TapeNumber(0),
+            authority: SYSTEM_ADDRESS,
+            capacity: StorageUnits(u64::MAX),
+            active_epoch: epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            ..Tape::zeroed()
         }
     }
 
     #[tokio::test]
-    async fn snapshot_roundtrip() {
+    async fn snapshot_tape_roundtrip() {
         let client = client();
         let epoch = EpochNumber(22);
-        let snapshot = sample_snapshot(epoch);
-        let (address, _) = snapshot_pda(epoch);
+        let tape = sample_snapshot_tape(epoch);
+        let (address, _) = snapshot_tape_pda(epoch);
 
         client
             .rpc()
-            .set_account_data(address, tapedrive::ID, &snapshot.pack())
-            .expect("store snapshot");
+            .set_account_data(address, tapedrive::ID, &tape.pack())
+            .expect("store snapshot tape");
 
         let decoded = client
-            .get_snapshot(epoch)
+            .get_snapshot_tape(epoch)
             .await
-            .expect("read snapshot");
-        assert_eq!(decoded, snapshot);
+            .expect("read snapshot tape");
+        assert_eq!(decoded, tape);
     }
 
     #[tokio::test]
-    async fn missing_snapshot_propagates_account_not_found() {
+    async fn malformed_snapshot_tape_rejected() {
+        let client = client();
+        let epoch = EpochNumber(22);
+        let mut tape = sample_snapshot_tape(epoch);
+        tape.active_epoch = EpochNumber(21);
+        let (address, _) = snapshot_tape_pda(epoch);
+
+        client
+            .rpc()
+            .set_account_data(address, tapedrive::ID, &tape.pack())
+            .expect("store malformed snapshot tape");
+
+        let err = client
+            .get_snapshot_tape(epoch)
+            .await
+            .expect_err("snapshot tape should be rejected");
+        assert!(matches!(err, RpcError::Deserialization(_)));
+    }
+
+    #[tokio::test]
+    async fn missing_snapshot_tape_propagates_account_not_found() {
         let client = client();
         let err = client
-            .get_snapshot(EpochNumber(99))
+            .get_snapshot_tape(EpochNumber(99))
             .await
-            .expect_err("snapshot should be missing");
+            .expect_err("snapshot tape should be missing");
         assert!(matches!(err, RpcError::AccountNotFound(_)));
     }
 }

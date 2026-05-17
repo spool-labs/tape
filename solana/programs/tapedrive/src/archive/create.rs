@@ -1,14 +1,21 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
-use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
-pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = CreateSystem::try_from_bytes(data)?;
+pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let _args = CreateArchive::try_from_bytes(data)?;
     let [
         fee_payer_info,
         authority_info,
+
         system_info,
+        archive_info,
+        archive_ata_info,
+        peer_set_info,
+
+        mint_info,
         system_program_info,
+        token_program_info,
+        associated_token_program_info,
         rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -17,33 +24,70 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     fee_payer_info
         .is_signer()?
         .is_writable()?;
+
     authority_info
         .is_signer()?;
 
     system_program_info
         .is_program(&system_program::ID)?;
+    token_program_info
+        .is_program(&spl_token::ID)?;
+    associated_token_program_info
+        .is_program(&spl_associated_token_account::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let (system_address, _) = system_pda();
-
     system_info
+        .is_writable()?
+        .is_system()?;
+
+    let (archive_address, _) = archive_pda();
+    let (archive_ata_address, _) = archive_ata();
+
+    archive_info
         .is_empty()?
         .is_writable()?
-        .has_address(&system_address.into())?;
+        .has_address(&archive_address.into())?;
 
-    let size = MAX_PERMITTED_DATA_INCREASE
-        .min(System::get_size());
+    archive_ata_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&archive_ata_address.into())?;
 
-    create_account_with_size::<System>(
-        system_info,
+    peer_set_info
+        .is_peer_set()?;
+
+    mint_info
+        .is_mint()?;
+
+    create_program_account::<Archive>(
+        archive_info,
         system_program_info,
         fee_payer_info,
-        size,
         &tapedrive::ID,
-        &[SYSTEM],
-        SYSTEM_BUMP,
+        &[ARCHIVE],
     )?;
+
+    create_associated_token_account(
+        fee_payer_info,
+        archive_info,
+        archive_ata_info,
+        mint_info,
+        system_program_info,
+        token_program_info,
+        associated_token_program_info,
+    )?;
+
+    let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
+    system.total_nodes = 0;
+    system.current_epoch = EpochNumber(0);
+    system.min_version = VersionId(0);
+    // committee_size + spool_groups are seeded by start_network
+
+    let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
+    archive.storage_capacity = StorageUnits::tb(100);
+    archive.storage_price = TAPE::from("0.0001");
+    archive.schedule = EpochSchedule::new_at(EpochNumber(0));
 
     Ok(())
 }
@@ -51,27 +95,43 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_api::state::PeerSet;
     use tape_test::*;
 
     #[test]
-    fn test_system_create() {
+    fn create_archive() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_create_system_ix(fee_payer.into(), authority.into());
         let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (archive_ata, _) = archive_ata();
+        let (peer_set_address, _) = peer_set_pda();
+
+        let system = System::zeroed();
+        let peer_set = PeerSet::zeroed();
+
+        let instruction = build_create_archive_ix(
+            fee_payer.into(),
+            authority.into(),
+        );
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
-            empty(system_address),
 
+            pda(system_address, system.pack(), tapedrive::ID),
+
+            empty(archive_address),
+            empty(archive_ata),
+            pda(peer_set_address, peer_set.pack(), tapedrive::ID),
+
+            mint(MAX_SUPPLY),
             system_program(),
+            token_program(),
+            ata_program(),
             rent_sysvar(),
         ];
-
-        let size = MAX_PERMITTED_DATA_INCREASE
-            .min(System::get_size());
 
         let env = test_env();
         env.process_instruction(
@@ -79,12 +139,29 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&Pubkey::from(system_address))
-                    .space(size)
-                    .owner(&tapedrive::ID)
-                    .data_slice(0, &[System::discriminator()])
-                    .build(),
-            ]
+
+                Check::account(&Pubkey::from(system_address)).data(
+                    System {
+                        total_nodes: 0,
+                        current_epoch: EpochNumber(0),
+                        min_version: VersionId(0),
+                        ..system
+                    }.pack().as_ref()
+                ).build(),
+
+                Check::account(&Pubkey::from(archive_address)).data(
+                    Archive {
+                        storage_capacity: StorageUnits::tb(100),
+                        storage_price: TAPE::from("0.0001"),
+                        schedule: EpochSchedule::new_at(EpochNumber(0)),
+                        ..Archive::zeroed()
+                    }.pack().as_ref()
+                ).build(),
+
+                Check::account(&Pubkey::from(archive_ata)).data(
+                    token(archive_ata, archive_address, 0).1.data.as_ref()
+                ).build(),
+            ],
         );
     }
 }

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SPOOL_COUNT, GROUP_SIZE};
 use tape_core::prelude::{EpochNumber, SpoolGroup, SpoolIndex, SpoolState, SpoolStatus};
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
@@ -505,7 +505,7 @@ fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut state = SpoolState::new(SpoolStatus::Sync, epoch);
 
     state.prev_owner = protocol.spool_owner_prev(spool);
-    for slice in 0..SPOOL_GROUP_SIZE {
+    for slice in 0..GROUP_SIZE {
         state.prev_helpers[slice] = protocol.spool_owner_prev(group.spool_at(slice));
     }
 

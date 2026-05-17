@@ -10,7 +10,6 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
         source_tape_info,
         dest_tape_info,
-        archive_info,
 
         system_program_info,
     ] = accounts else {
@@ -29,15 +28,6 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let archive = archive_info
-        .is_writable()?
-        .is_archive()?
-        .as_account_mut::<Archive>(&tapedrive::ID)?;
-
-    archive.tape_count = archive.tape_count
-        .checked_sub(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
     let (source_tape_address, _) = tape_pda((*source_authority_info.key).into());
     let (dest_tape_address, _) = tape_pda((*dest_authority_info.key).into());
 
@@ -55,6 +45,14 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     if source_tape.authority != (*source_authority_info.key).into() ||
        dest_tape.authority != (*dest_authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
+    }
+
+    // Since the compressed tracks are bound to the source tape address, 
+    // only empty source tapes can be merged without rewriting the 
+    // source Merkle tree.
+
+    if !source_tape.used.is_zero() {
+        return Err(TapeError::CannotMerge.into());
     }
 
     // Merge tapes together if possible
@@ -96,7 +94,6 @@ mod tests {
 
         let (source_tape_address, _) = tape_pda(source_authority.into());
         let (dest_tape_address, _)   = tape_pda(dest_authority.into());
-        let (archive_address, _)     = archive_pda();
 
         // Two tapes with identical epochs
         let e0 = EpochNumber(100);
@@ -105,7 +102,7 @@ mod tests {
         let source_tape = Tape {
             authority: source_authority.into(),
             capacity: StorageUnits::mb(200),
-            used: StorageUnits::mb(30),
+            used: StorageUnits::zero(),
             active_epoch: e0,
             expiry_epoch: e1,
             ..Tape::zeroed()
@@ -119,11 +116,6 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let archive = Archive {
-            tape_count: 100,
-            ..Archive::zeroed()
-        };
-
         let instruction = build_merge_tape_ix(fee_payer.into(), source_authority.into(), dest_authority.into());
 
         let accounts = vec![
@@ -133,7 +125,6 @@ mod tests {
 
             pda(source_tape_address, source_tape.pack(), tapedrive::ID),
             pda(dest_tape_address, dest_tape.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
 
             system_program(),
         ];
@@ -141,15 +132,10 @@ mod tests {
         let expected_tape = Tape {
             authority: dest_authority.into(),
             capacity: StorageUnits::mb(300),
-            used: StorageUnits::mb(50),
+            used: StorageUnits::mb(20),
             active_epoch: e0,
             expiry_epoch: e1,
             ..Tape::zeroed()
-        };
-
-        let expected_archive = Archive {
-            tape_count: 99,
-            ..Archive::zeroed()
         };
 
         let env = test_env();
@@ -162,8 +148,6 @@ mod tests {
                     .data(expected_tape.pack().as_ref()).build(),
                 Check::account(&Pubkey::from(source_tape_address))
                     .lamports(0).closed().build(),
-                Check::account(&Pubkey::from(archive_address))
-                    .data(expected_archive.pack().as_ref()).build(),
             ],
         );
     }

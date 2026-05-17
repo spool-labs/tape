@@ -1,7 +1,4 @@
 //! Encoding profile types for erasure-coded track data.
-//!
-//! Defines `EncodingType`, `ClayParams`, and `EncodingProfile` for
-//! configuring erasure coding parameters per-track.
 
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -13,8 +10,6 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 
 
 /// Encoding type for erasure-coded track data.
-///
-/// Determines how blob data is split into stripes and mapped to slices.
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum EncodingType {
@@ -31,9 +26,6 @@ pub enum EncodingType {
 }
 
 /// Encoding configuration: type + params.
-///
-/// Follows the EpochState pattern (discriminant + payload as u64 pair).
-/// This is a 16-byte Pod struct suitable for on-chain storage.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
@@ -241,7 +233,7 @@ impl ClayParams {
     }
 }
 
-/// Default Clay parameters: n=20, k=7, d=16 → m=13 parity (35% of slices needed for recovery).
+/// Default Clay parameters: n=20, k=7, d=16 -> m=13 parity
 impl ClayParams {
     pub const DEFAULT: Self = Self::new(20, 7, 16);
 }

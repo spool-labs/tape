@@ -66,7 +66,11 @@ pub enum ReplayableEvent {
     },
 
     /// Node synced for epoch.
-    SyncEpoch {
+    /// TODO(v2): per-spool shape. See `solana/api/src/instruction/node.rs`
+    /// `SyncSpool` for the on-chain ix shape that this event will mirror once
+    /// block_ingestor lands. Fields kept as-is to avoid pulling network/node
+    /// into the current rename pass.
+    SyncSpool {
         node: Address,
         node_id: NodeId,
         epoch: EpochNumber,
@@ -93,8 +97,8 @@ pub enum ReplayableEvent {
         node: Address,
     },
 
-    /// Node joined the network.
-    JoinNetwork {
+    /// Node joined the next-epoch committee.
+    JoinCommittee {
         node: Address,
     },
 }
@@ -229,7 +233,7 @@ mod tests {
     #[cfg(feature = "wincode")]
     use crate::encoding::EncodingProfile;
     #[cfg(feature = "wincode")]
-    use crate::erasure::SPOOL_GROUP_SIZE;
+    use crate::erasure::GROUP_SIZE;
     #[cfg(feature = "wincode")]
     use crate::types::{StorageUnits, StripeCount};
     use super::*;
@@ -271,7 +275,7 @@ mod tests {
                 profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(128),
                 stripe_count: StripeCount(4),
-                leaves: [Hash::from([7u8; 32]); SPOOL_GROUP_SIZE],
+                leaves: [Hash::from([7u8; 32]); GROUP_SIZE],
             }),
         }
     }
@@ -296,7 +300,7 @@ mod tests {
                 old_epoch: EpochNumber(9),
                 new_epoch: EpochNumber(10),
             },
-            ReplayableEvent::SyncEpoch {
+            ReplayableEvent::SyncSpool {
                 node: Address::from([5u8; 32]),
                 node_id: NodeId(1),
                 epoch: EpochNumber(10),
@@ -316,7 +320,7 @@ mod tests {
                 authority: Address::from([9u8; 32]),
                 node: Address::from([10u8; 32]),
             },
-            ReplayableEvent::JoinNetwork {
+            ReplayableEvent::JoinCommittee {
                 node: Address::from([11u8; 32]),
             },
         ];
@@ -380,7 +384,7 @@ mod tests {
                         epoch: EpochNumber(42),
                         ..raw_replay_track()
                     }),
-                    ReplayableEvent::SyncEpoch {
+                    ReplayableEvent::SyncSpool {
                         node: Address::from([0xCD; 32]),
                         node_id: NodeId(7),
                         epoch: EpochNumber(42),
@@ -405,7 +409,7 @@ mod tests {
                 track: Address::from([2u8; 32]),
                 epoch: EpochNumber(10),
             },
-            ReplayableEvent::JoinNetwork {
+            ReplayableEvent::JoinCommittee {
                 node: Address::from([3u8; 32]),
             },
         ];
@@ -450,7 +454,7 @@ mod tests {
                             track: Address::from([1u8; 32]),
                             epoch: EpochNumber(42),
                         },
-                        ReplayableEvent::SyncEpoch {
+                        ReplayableEvent::SyncSpool {
                             node: Address::from([0xCD; 32]),
                             node_id: NodeId(7),
                             epoch: EpochNumber(42),

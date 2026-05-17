@@ -4,27 +4,12 @@ use crate::error::ParseError;
 use crate::event::TapedriveEvent;
 use crate::instruction::{ParsedInstruction, RawInstruction};
 use std::collections::VecDeque;
+use tape_core::system::VoteKind;
 
 /// Merge raw instructions with their corresponding events.
 ///
 /// This function matches events to instructions based on their order
-/// in the transaction. Some instructions require events (AdvanceEpoch,
-/// CertifyTrack, SyncEpoch, TrackWrite, DeleteTrack, InvalidateTrack,
-/// ReserveTape, DestroyTape, RegisterNode, JoinNetwork, CloseVote).
-///
-/// # Arguments
-/// * `instructions` - Raw instructions parsed from the transaction
-/// * `events` - Events parsed from transaction logs
-///
-/// # Returns
-/// * `Ok(Vec<ParsedInstruction>)` - Instructions with events merged in
-/// * `Err(ParseError::EventMismatch)` - Required event was missing
-///
-/// # Example
-/// ```ignore
-/// let parsed = tape_blocks::parse(&block)?;
-/// let merged = tape_blocks::merge(parsed.raw_instructions, parsed.events)?;
-/// ```
+/// in the transaction.
 pub fn merge(
     instructions: Vec<RawInstruction>,
     events: Vec<TapedriveEvent>,
@@ -34,8 +19,15 @@ pub fn merge(
 
     for ix in instructions {
         let parsed = match ix {
+            RawInstruction::CommitEpoch => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::EpochCommitted(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected EpochCommitted event")),
+                };
+                ParsedInstruction::CommitEpoch { event }
+            }
+
             RawInstruction::AdvanceEpoch => {
-                // AdvanceEpoch always has an event
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::EpochAdvanced(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected EpochAdvanced event")),
@@ -43,60 +35,94 @@ pub fn merge(
                 ParsedInstruction::AdvanceEpoch { event }
             }
 
-            RawInstruction::SyncEpoch => {
-                // SyncEpoch always emits NodeSynced event
+            RawInstruction::SyncSpool { node, spool } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::NodeSynced(e)) => e,
-                    _ => return Err(ParseError::EventMismatch("expected NodeSynced event")),
+                    Some(TapedriveEvent::SpoolSynced(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected SpoolSynced event")),
                 };
-                ParsedInstruction::SyncEpoch { event }
+                ParsedInstruction::SyncSpool { node, spool, event }
             }
 
-            RawInstruction::ReserveSnapshot => {
+            RawInstruction::ProposeSnapshot { hash } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::SnapshotReserved(e)) => e,
-                    _ => {
-                        return Err(ParseError::EventMismatch("expected SnapshotReserved event"))
-                    }
+                    Some(TapedriveEvent::VoteProposed(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected VoteProposed event")),
                 };
-                ParsedInstruction::ReserveSnapshot { event }
-            }
-
-            RawInstruction::WriteSnapshot {
-                group,
-                chunk,
-                blob,
-            } => {
-                let event = match events.pop_front() {
-                    Some(TapedriveEvent::SnapshotWritten(e)) => e,
-                    _ => {
-                        return Err(ParseError::EventMismatch("expected SnapshotWritten event"))
-                    }
-                };
-                ParsedInstruction::WriteSnapshot {
-                    group,
-                    chunk,
-                    blob,
-                    event,
+                if event.kind != VoteKind::Snapshot as u64 || event.hash != hash {
+                    return Err(ParseError::EventMismatch("unexpected VoteProposed event"));
                 }
+                ParsedInstruction::ProposeSnapshot { hash, event }
             }
 
-            RawInstruction::SignSnapshot => {
+            RawInstruction::VoteSnapshot { hash, group } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::SnapshotSigned(e)) => e,
+                    Some(TapedriveEvent::VoteRecorded(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected VoteRecorded event")),
+                };
+                if event.kind != VoteKind::Snapshot as u64
+                    || event.hash != hash
+                    || event.group != group
+                {
+                    return Err(ParseError::EventMismatch("unexpected VoteRecorded event"));
+                }
+                ParsedInstruction::VoteSnapshot { hash, group, event }
+            }
+
+            RawInstruction::FinalizeSnapshot { epoch } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::SnapshotFinalized(e)) => e,
                     _ => {
-                        return Err(ParseError::EventMismatch("expected SnapshotSigned event"))
+                        return Err(ParseError::EventMismatch(
+                            "expected SnapshotFinalized event",
+                        ))
                     }
                 };
-                ParsedInstruction::SignSnapshot { event }
+                if event.epoch != epoch {
+                    return Err(ParseError::EventMismatch("unexpected SnapshotFinalized event"));
+                }
+                ParsedInstruction::FinalizeSnapshot { epoch, event }
             }
 
-            RawInstruction::CloseVote { vote } => {
+            RawInstruction::ProposeAssignment { hash } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::VoteClosed(e)) => e,
-                    _ => return Err(ParseError::EventMismatch("expected VoteClosed event")),
+                    Some(TapedriveEvent::VoteProposed(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected VoteProposed event")),
                 };
-                ParsedInstruction::CloseVote { vote, event }
+                if event.kind != VoteKind::Assignment as u64 || event.hash != hash {
+                    return Err(ParseError::EventMismatch("unexpected VoteProposed event"));
+                }
+                ParsedInstruction::ProposeAssignment { hash, event }
+            }
+
+            RawInstruction::VoteAssignment { hash, group } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::VoteRecorded(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected VoteRecorded event")),
+                };
+                if event.kind != VoteKind::Assignment as u64
+                    || event.hash != hash
+                    || event.group != group
+                {
+                    return Err(ParseError::EventMismatch("unexpected VoteRecorded event"));
+                }
+                ParsedInstruction::VoteAssignment { hash, group, event }
+            }
+
+            RawInstruction::FinalizeGroup { epoch, group } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::AssignmentGroupFinalized(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected AssignmentGroupFinalized event",
+                        ))
+                    }
+                };
+                if event.epoch != epoch || event.group != group {
+                    return Err(ParseError::EventMismatch(
+                        "unexpected AssignmentGroupFinalized event",
+                    ));
+                }
+                ParsedInstruction::FinalizeGroup { epoch, group, event }
             }
 
             RawInstruction::TrackWrite {
@@ -122,7 +148,6 @@ pub fn merge(
             }
 
             RawInstruction::CertifyTrack { track } => {
-                // CertifyTrack always has an event with the epoch
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::TrackCertified(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected TrackCertified event")),
@@ -162,7 +187,6 @@ pub fn merge(
             }
 
             RawInstruction::ReserveTape { owner, tape } => {
-                // TapeReserved event is now included
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::TapeReserved(e)) => e,
                     _ => {
@@ -210,7 +234,7 @@ pub fn merge(
                 }
             }
 
-            RawInstruction::JoinNetwork { node } => {
+            RawInstruction::JoinCommittee { node } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::NodeJoinedCommittee(e)) => e,
                     _ => {
@@ -219,10 +243,18 @@ pub fn merge(
                         ))
                     }
                 };
-                ParsedInstruction::JoinNetwork {
+                ParsedInstruction::JoinCommittee {
                     node,
                     event,
                 }
+            }
+
+            RawInstruction::SettleSpool { node, spool } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::SpoolSettled(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected SpoolSettled event")),
+                };
+                ParsedInstruction::SettleSpool { node, spool, event }
             }
 
             RawInstruction::AdvancePool { node } => {
@@ -245,35 +277,58 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_api::event::{
-        EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, SnapshotReserved,
-        SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved, TrackCertified,
-        TrackDeleted, TrackInvalidated, TrackWritten, VoteClosed,
+        AssignmentGroupFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee,
+        NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSettled, SpoolSynced,
+        TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
+        TrackWritten, VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::prelude::*;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::ChunkNumber;
-    use tape_core::system::NodePreferences;
-    use tape_core::track::blob::BlobInfo;
+    use tape_core::system::{NodePreferences, VoteKind};
     use tape_core::track::data::TrackData;
-    use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
-    #[test]
-    fn test_merge_advance_epoch() {
-        let event = EpochAdvanced {
+    fn epoch_advanced_event() -> EpochAdvanced {
+        EpochAdvanced {
             old_epoch: EpochNumber(5),
             new_epoch: EpochNumber(6),
             timestamp: [0; 8],
-            committee_size: [0; 8],
             total_stake: [0; 8],
-            storage_price: [0; 8],
-            storage_capacity: StorageUnits(0),
+            committee_count: [0; 8],
+            preferences: NodePreferences::zeroed(),
             nonce: Hash::default(),
-            phase: 1, // Syncing
+        }
+    }
+
+    #[test]
+    fn merge_commit_epoch() {
+        let event = EpochCommitted {
+            epoch: EpochNumber(5),
+            next_nonce: Hash::from([0x42; 32]),
         };
+
+        let merged = merge(
+            vec![RawInstruction::CommitEpoch],
+            vec![TapedriveEvent::EpochCommitted(event)],
+        )
+        .unwrap();
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::CommitEpoch { event } => {
+                assert_eq!(event.epoch, EpochNumber(5));
+            }
+            _ => panic!("Expected CommitEpoch"),
+        }
+    }
+
+    #[test]
+    fn merge_advance_epoch() {
+        let event = epoch_advanced_event();
 
         let instructions = vec![RawInstruction::AdvanceEpoch];
         let events = vec![TapedriveEvent::EpochAdvanced(event)];
@@ -291,83 +346,126 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_snapshot_events() {
-        let reserved = SnapshotReserved {
-            epoch: EpochNumber(7),
-        };
-        let written = SnapshotWritten {
-            epoch: EpochNumber(7),
+    fn merge_snapshot_events() {
+        let voted = VoteRecorded {
+            kind: VoteKind::Snapshot as u64,
+            vote: Address::new_unique(),
+            voting_epoch: EpochNumber(8),
+            target_epoch: EpochNumber(7),
+            hash: Hash::from([0x55; 32]),
             group: SpoolGroup(3),
-            track: Address::new_unique(),
-            track_number: TrackNumber(9),
-            track_hash: Hash::from([0x44; 32]),
-        };
-        let signed = SnapshotSigned {
-            epoch: EpochNumber(7),
-            group: SpoolGroup(3),
-            state: 0,
-        };
-
-        let blob = BlobInfo {
-            size: StorageUnits::from_bytes(1_024),
-            commitment: Hash::default(),
-            profile: EncodingProfile::default(),
-            stripe_size: StorageUnits::from_bytes(64),
-            stripe_count: StripeCount(1),
-            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+            signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
+            signed_groups: 1u64.to_le_bytes(),
+            total_groups: 5u64.to_le_bytes(),
         };
 
         let merged = merge(
             vec![
-                RawInstruction::ReserveSnapshot,
-                RawInstruction::WriteSnapshot {
+                RawInstruction::VoteSnapshot {
+                    hash: Hash::from([0x55; 32]),
                     group: SpoolGroup(3),
-                    chunk: ChunkNumber(0),
-                    blob: blob.clone(),
                 },
-                RawInstruction::SignSnapshot,
             ],
-            vec![
-                TapedriveEvent::SnapshotReserved(reserved),
-                TapedriveEvent::SnapshotWritten(written),
-                TapedriveEvent::SnapshotSigned(signed),
-            ],
+            vec![TapedriveEvent::VoteRecorded(voted)],
         )
         .unwrap();
 
-        assert_eq!(merged.len(), 3);
+        assert_eq!(merged.len(), 1);
         match &merged[0] {
-            ParsedInstruction::ReserveSnapshot { event } => {
-                assert_eq!(event.epoch, reserved.epoch);
-            }
-            _ => panic!("Expected ReserveSnapshot"),
-        }
-        match &merged[1] {
-            ParsedInstruction::WriteSnapshot {
-                group,
-                chunk,
-                blob: parsed_blob,
-                event,
-            } => {
+            ParsedInstruction::VoteSnapshot { group, event, .. } => {
                 assert_eq!(*group, SpoolGroup(3));
-                assert_eq!(*chunk, ChunkNumber(0));
-                assert_eq!(*parsed_blob, blob);
-                assert_eq!(event.epoch, written.epoch);
-                assert_eq!(event.track_hash, written.track_hash);
+                assert_eq!(event.target_epoch, voted.target_epoch);
+                assert_eq!(event.group, voted.group);
             }
-            _ => panic!("Expected WriteSnapshot"),
-        }
-        match &merged[2] {
-            ParsedInstruction::SignSnapshot { event } => {
-                assert_eq!(event.epoch, signed.epoch);
-                assert_eq!(event.group, signed.group);
-            }
-            _ => panic!("Expected SignSnapshot"),
+            _ => panic!("Expected VoteSnapshot"),
         }
     }
 
     #[test]
-    fn test_merge_certify_track() {
+    fn merge_propose_and_finalize_events() {
+        let snapshot_hash = Hash::from([0x55; 32]);
+        let snapshot_vote = VoteProposed {
+            kind: VoteKind::Snapshot as u64,
+            vote: Address::new_unique(),
+            voting_epoch: EpochNumber(8),
+            target_epoch: EpochNumber(7),
+            hash: snapshot_hash,
+            total_groups: 5u64.to_le_bytes(),
+        };
+        let snapshot_finalized = SnapshotFinalized {
+            epoch: EpochNumber(7),
+            hash: snapshot_hash,
+            snapshot_tape: Address::new_unique(),
+        };
+        let assignment_hash = Hash::from([0x66; 32]);
+        let assignment_vote = VoteProposed {
+            kind: VoteKind::Assignment as u64,
+            vote: Address::new_unique(),
+            voting_epoch: EpochNumber(8),
+            target_epoch: EpochNumber(9),
+            hash: assignment_hash,
+            total_groups: 5u64.to_le_bytes(),
+        };
+        let group_finalized = AssignmentGroupFinalized {
+            epoch: EpochNumber(9),
+            hash: assignment_hash,
+            group: SpoolGroup(2),
+            group_account: Address::new_unique(),
+            size: StorageUnits::mb(10),
+            total_groups: 1u64.to_le_bytes(),
+            total_assigned: StorageUnits::mb(200),
+        };
+
+        let merged = merge(
+            vec![
+                RawInstruction::ProposeSnapshot {
+                    hash: snapshot_hash,
+                },
+                RawInstruction::FinalizeSnapshot {
+                    epoch: EpochNumber(7),
+                },
+                RawInstruction::ProposeAssignment {
+                    hash: assignment_hash,
+                },
+                RawInstruction::FinalizeGroup {
+                    epoch: EpochNumber(9),
+                    group: SpoolGroup(2),
+                },
+            ],
+            vec![
+                TapedriveEvent::VoteProposed(snapshot_vote),
+                TapedriveEvent::SnapshotFinalized(snapshot_finalized),
+                TapedriveEvent::VoteProposed(assignment_vote),
+                TapedriveEvent::AssignmentGroupFinalized(group_finalized),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(merged.len(), 4);
+        assert!(matches!(
+            &merged[0],
+            ParsedInstruction::ProposeSnapshot { event, .. }
+                if event.kind == VoteKind::Snapshot as u64
+        ));
+        assert!(matches!(
+            &merged[1],
+            ParsedInstruction::FinalizeSnapshot { event, .. }
+                if event.snapshot_tape == snapshot_finalized.snapshot_tape
+        ));
+        assert!(matches!(
+            &merged[2],
+            ParsedInstruction::ProposeAssignment { event, .. }
+                if event.kind == VoteKind::Assignment as u64
+        ));
+        assert!(matches!(
+            &merged[3],
+            ParsedInstruction::FinalizeGroup { event, .. }
+                if event.group_account == group_finalized.group_account
+        ));
+    }
+
+    #[test]
+    fn merge_certify_track() {
         let track = Address::new_unique();
         let event = TrackCertified {
             track,
@@ -376,10 +474,11 @@ mod tests {
             signer_weight: [0; 8],
         };
 
-        let instructions = vec![RawInstruction::CertifyTrack { track }];
-        let events = vec![TapedriveEvent::TrackCertified(event)];
-
-        let merged = merge(instructions, events).unwrap();
+        let merged = merge(
+            vec![RawInstruction::CertifyTrack { track }],
+            vec![TapedriveEvent::TrackCertified(event)],
+        )
+        .unwrap();
 
         assert_eq!(merged.len(), 1);
         match &merged[0] {
@@ -392,50 +491,25 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_advance_epoch_missing_event() {
-        let instructions = vec![RawInstruction::AdvanceEpoch];
-        let events = vec![]; // No events!
-
-        let result = merge(instructions, events);
-        assert!(result.is_err());
-        match result {
-            Err(ParseError::EventMismatch(_)) => {}
-            _ => panic!("Expected EventMismatch error"),
-        }
+    fn merge_advance_epoch_missing_event() {
+        let result = merge(vec![RawInstruction::AdvanceEpoch], vec![]);
+        assert!(matches!(result, Err(ParseError::EventMismatch(_))));
     }
 
     #[test]
-    fn test_merge_certify_track_missing_event() {
+    fn merge_certify_track_missing_event() {
         let track = Address::new_unique();
-        let instructions = vec![RawInstruction::CertifyTrack { track }];
-        let events = vec![]; // No events!
-
-        let result = merge(instructions, events);
-        assert!(result.is_err());
-        match result {
-            Err(ParseError::EventMismatch(_)) => {}
-            _ => panic!("Expected EventMismatch error"),
-        }
+        let result = merge(vec![RawInstruction::CertifyTrack { track }], vec![]);
+        assert!(matches!(result, Err(ParseError::EventMismatch(_))));
     }
 
-
     #[test]
-    fn test_merge_multiple_instructions() {
+    fn merge_multiple_instructions() {
         let track1 = Address::new_unique();
         let track2 = Address::new_unique();
         let owner = Address::new_unique();
 
-        let epoch_event = EpochAdvanced {
-            old_epoch: EpochNumber(1),
-            new_epoch: EpochNumber(2),
-            timestamp: [0; 8],
-            committee_size: [0; 8],
-            total_stake: [0; 8],
-            storage_price: [0; 8],
-            storage_capacity: StorageUnits(0),
-            nonce: Hash::default(),
-            phase: 1, // Syncing
-        };
+        let epoch_event = epoch_advanced_event();
 
         let register_event = TrackWritten {
             epoch: EpochNumber(2),
@@ -464,7 +538,7 @@ mod tests {
                     profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                    leaves: [Hash::default(); GROUP_SIZE],
                 }),
             },
             RawInstruction::CertifyTrack { track: track2 },
@@ -480,15 +554,13 @@ mod tests {
 
         assert_eq!(merged.len(), 3);
 
-        // Check AdvanceEpoch
         match &merged[0] {
             ParsedInstruction::AdvanceEpoch { event } => {
-                assert_eq!(event.new_epoch, EpochNumber(2));
+                assert_eq!(event.new_epoch, EpochNumber(6));
             }
             _ => panic!("Expected AdvanceEpoch"),
         }
 
-        // Check TrackWrite
         match &merged[1] {
             ParsedInstruction::TrackWrite { track, event, .. } => {
                 assert_eq!(*track, track1);
@@ -497,7 +569,6 @@ mod tests {
             _ => panic!("Expected TrackWrite"),
         }
 
-        // Check CertifyTrack
         match &merged[2] {
             ParsedInstruction::CertifyTrack { track, event } => {
                 assert_eq!(*track, track2);
@@ -508,20 +579,11 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_required_events_missing() {
-        // DeleteTrack requires TrackDeleted event
+    fn merge_required_events_missing() {
         let track = Address::new_unique();
         let owner = Address::new_unique();
-
-        let instructions = vec![RawInstruction::DeleteTrack { owner, track }];
-        let events = vec![]; // No event
-
-        let result = merge(instructions, events);
-        assert!(result.is_err());
-        match result {
-            Err(ParseError::EventMismatch(_)) => {}
-            _ => panic!("Expected EventMismatch error"),
-        }
+        let result = merge(vec![RawInstruction::DeleteTrack { owner, track }], vec![]);
+        assert!(matches!(result, Err(ParseError::EventMismatch(_))));
     }
 
     fn required_events_missing_cases() -> Vec<RawInstruction> {
@@ -535,7 +597,7 @@ mod tests {
                     profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                    leaves: [Hash::default(); GROUP_SIZE],
                 }),
             },
             RawInstruction::DeleteTrack {
@@ -557,41 +619,21 @@ mod tests {
                 authority: Address::new_unique(),
                 node: Address::new_unique(),
             },
-            RawInstruction::JoinNetwork {
+            RawInstruction::JoinCommittee {
                 node: Address::new_unique(),
-            },
-            RawInstruction::CloseVote {
-                vote: Address::new_unique(),
             },
         ]
     }
 
     fn required_event_mismatch_case() -> TapedriveEvent {
-        TapedriveEvent::EpochAdvanced(EpochAdvanced {
-            old_epoch: EpochNumber(1),
-            new_epoch: EpochNumber(2),
-            timestamp: [0; 8],
-            committee_size: [0; 8],
-            total_stake: [0; 8],
-            storage_price: [0; 8],
-            storage_capacity: StorageUnits(0),
-            nonce: Hash::default(),
-            phase: 1, // Syncing
-        })
+        TapedriveEvent::EpochAdvanced(epoch_advanced_event())
     }
 
     #[test]
-    fn test_merge_required_events_missing_all() {
+    fn merge_required_events_missing_all() {
         for raw in required_events_missing_cases() {
             let result = merge(vec![raw], vec![]);
-            assert!(
-                result.is_err(),
-                "expected error when required event was missing"
-            );
-            match result {
-                Err(ParseError::EventMismatch(_)) => {}
-                _ => panic!("Expected EventMismatch error"),
-            }
+            assert!(matches!(result, Err(ParseError::EventMismatch(_))));
         }
     }
 
@@ -605,7 +647,6 @@ mod tests {
         let destroy_tape = Address::new_unique();
         let register_node = Address::new_unique();
         let join_node = Address::new_unique();
-        let vote = Address::new_unique();
 
         vec![
             (
@@ -618,7 +659,7 @@ mod tests {
                         profile: EncodingProfile::default(),
                         stripe_size: StorageUnits::from_bytes(64),
                         stripe_count: StripeCount(1),
-                        leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                        leaves: [Hash::default(); GROUP_SIZE],
                     }),
                 },
                 TapedriveEvent::TrackWritten(TrackWritten {
@@ -688,12 +729,11 @@ mod tests {
                 }),
             ),
             (
-                RawInstruction::JoinNetwork {
+                RawInstruction::JoinCommittee {
                     node: join_node,
                 },
                 TapedriveEvent::NodeJoinedCommittee(NodeJoinedCommittee {
                     node: join_node,
-                    id: NodeId::new(2),
                     stake: [0; 8],
                     key: BlsPubkey::new_unique(),
                     blacklist: StorageUnits::default(),
@@ -701,20 +741,11 @@ mod tests {
                     activation_epoch: EpochNumber(1),
                 }),
             ),
-            (
-                RawInstruction::CloseVote { vote },
-                TapedriveEvent::VoteClosed(VoteClosed {
-                    epoch: EpochNumber(2),
-                    kind: VoteKind::Snapshot as u64,
-                    vote,
-                    registered_by: NodeId::new(3),
-                }),
-            ),
         ]
     }
 
     #[test]
-    fn test_merge_required_events_success_all() {
+    fn merge_required_events_success_all() {
         for (raw, event) in required_events_success_cases() {
             let merged = merge(vec![raw], vec![event]).unwrap();
             assert_eq!(merged.len(), 1);
@@ -726,64 +757,108 @@ mod tests {
                 | ParsedInstruction::ReserveTape { .. }
                 | ParsedInstruction::DestroyTape { .. }
                 | ParsedInstruction::RegisterNode { .. }
-                | ParsedInstruction::JoinNetwork { .. }
-                | ParsedInstruction::CloseVote { .. } => {}
+                | ParsedInstruction::JoinCommittee { .. } => {}
                 _ => panic!("expected one of the required instruction variants"),
             }
         }
     }
 
     #[test]
-    fn test_merge_required_events_wrong_event_type_all() {
+    fn merge_required_events_wrong_event_type_all() {
         for raw in required_events_missing_cases() {
             let result = merge(vec![raw], vec![required_event_mismatch_case()]);
-            assert!(
-                result.is_err(),
-                "expected error when event type mismatched required event"
-            );
-            match result {
-                Err(ParseError::EventMismatch(_)) => {}
-                _ => panic!("Expected EventMismatch error"),
-            }
+            assert!(matches!(result, Err(ParseError::EventMismatch(_))));
         }
     }
 
     #[test]
-    fn test_merge_sync_epoch_with_event() {
+    fn merge_sync_spool_with_event() {
         let node = Address::new_unique();
-        let instructions = vec![RawInstruction::SyncEpoch];
-        let events = vec![TapedriveEvent::NodeSynced(NodeSynced {
+        let event = SpoolSynced {
             node,
-            id: NodeId::new(1),
             epoch: EpochNumber(5),
-            spools_hash: Hash::default(),
-            phase: 1, // Syncing
-        })];
-
-        let merged = merge(instructions, events).unwrap();
+            group: SpoolGroup(7),
+            spool: 3u64.to_le_bytes(),
+        };
+        let merged = merge(
+            vec![RawInstruction::SyncSpool { node, spool: 3 }],
+            vec![TapedriveEvent::SpoolSynced(event)],
+        )
+        .unwrap();
 
         assert_eq!(merged.len(), 1);
         match &merged[0] {
-            ParsedInstruction::SyncEpoch { event } => {
-                assert_eq!(event.node, node);
+            ParsedInstruction::SyncSpool { node: n, spool, event } => {
+                assert_eq!(*n, node);
+                assert_eq!(*spool, 3);
                 assert_eq!(event.epoch, EpochNumber(5));
+                assert_eq!(event.group, SpoolGroup(7));
             }
-            _ => panic!("Expected SyncEpoch"),
+            _ => panic!("Expected SyncSpool"),
         }
     }
 
     #[test]
-    fn test_merge_wrong_event_type() {
-        // AdvanceEpoch instruction with TrackCertified event should fail
-        let instructions = vec![RawInstruction::AdvanceEpoch];
-        let events = vec![TapedriveEvent::TrackCertified(TrackCertified {
-            track: Address::new_unique(),
-            epoch: EpochNumber(1),
-            signer_count: [0; 8],
-            signer_weight: [0; 8],
-        })];
+    fn merge_settle_spool_with_event() {
+        let node = Address::new_unique();
+        let event = SpoolSettled {
+            node,
+            epoch: EpochNumber(4),
+            group: SpoolGroup(2),
+            spool: 1u64.to_le_bytes(),
+        };
+        let merged = merge(
+            vec![RawInstruction::SettleSpool { node, spool: 1 }],
+            vec![TapedriveEvent::SpoolSettled(event)],
+        )
+        .unwrap();
 
-        let result = merge(instructions, events);
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::SettleSpool { node: n, spool, event } => {
+                assert_eq!(*n, node);
+                assert_eq!(*spool, 1);
+                assert_eq!(event.epoch, EpochNumber(4));
+                assert_eq!(event.group, SpoolGroup(2));
+            }
+            _ => panic!("Expected SettleSpool"),
+        }
+    }
+
+    #[test]
+    fn merge_advance_pool_with_event() {
+        let node = Address::new_unique();
+        let event = PoolAdvanced {
+            node,
+            epoch: EpochNumber(4),
+        };
+        let merged = merge(
+            vec![RawInstruction::AdvancePool { node }],
+            vec![TapedriveEvent::PoolAdvanced(event)],
+        )
+        .unwrap();
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::AdvancePool { node: n, event } => {
+                assert_eq!(*n, node);
+                assert_eq!(event.epoch, EpochNumber(4));
+            }
+            _ => panic!("Expected AdvancePool"),
+        }
+    }
+
+    #[test]
+    fn merge_wrong_event_type() {
+        let result = merge(
+            vec![RawInstruction::AdvanceEpoch],
+            vec![TapedriveEvent::TrackCertified(TrackCertified {
+                track: Address::new_unique(),
+                epoch: EpochNumber(1),
+                signer_count: [0; 8],
+                signer_weight: [0; 8],
+            })],
+        );
         assert!(result.is_err());
     }
 }

@@ -3,4 +3,4 @@ pub mod fetch;
 pub mod state;
 
 pub use api::{Api, ApiError};
-pub use state::ProtocolState;
+pub use state::{EpochBundle, ProtocolState};

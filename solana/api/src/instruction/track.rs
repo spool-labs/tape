@@ -1,16 +1,16 @@
 use core::mem::size_of;
 
-use crate::instruction::read_instruction_pod;
+use crate::helpers::read_instruction_pod;
 use crate::program::tapedrive;
 use tape_core::bls::BlsSignature;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::{CompressedTrackProof, TrackKind};
-use tape_core::types::{CommitteeBitmap, EpochNumber, StorageUnits, StripeCount};
+use tape_core::types::{EpochNumber, SpoolBitmap, StorageUnits, StripeCount};
 use tape_crypto::Hash;
 use tape_solana::*;
 use tape_crypto::address::Address;
-use crate::program::tapedrive::{epoch_pda, system_pda, tape_pda};
+use crate::program::tapedrive::{group_pda, system_pda, tape_pda};
 
 pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
 
@@ -32,7 +32,7 @@ pub struct DeleteTrack {
 pub struct CertifyTrack {
     pub track: CompressedTrackProof,
     pub epoch: [u8; 8],
-    pub bitmap: CommitteeBitmap,
+    pub bitmap: SpoolBitmap,
     pub signature: BlsSignature,
 }
 
@@ -40,7 +40,7 @@ pub struct CertifyTrack {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct InvalidateTrack {
     pub track: CompressedTrackProof,
-    pub bitmap: CommitteeBitmap,
+    pub bitmap: SpoolBitmap,
     pub signature: BlsSignature,
     pub computed_root: Hash,
 }
@@ -60,7 +60,7 @@ pub fn build_track_write_blob_ix(
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    let (epoch_address, _) = epoch_pda();
+    let (system_address, _) = system_pda();
     let (tape_address, _) = tape_pda(authority);
 
     Ok(Instruction {
@@ -69,7 +69,7 @@ pub fn build_track_write_blob_ix(
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(tape_address.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
@@ -83,7 +83,7 @@ pub fn build_track_write_raw_ix(
     key: Hash,
     raw: &[u8],
 ) -> Result<Instruction, ProgramError> {
-    let (epoch_address, _) = epoch_pda();
+    let (system_address, _) = system_pda();
     let (tape_address, _) = tape_pda(authority);
 
     Ok(Instruction {
@@ -92,7 +92,7 @@ pub fn build_track_write_raw_ix(
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new_readonly(authority.into(), true),
 
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(tape_address.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
@@ -121,11 +121,11 @@ pub fn build_certify_track_ix(
     authority: Address,
     track: CompressedTrackProof,
     epoch: EpochNumber,
-    bitmap: CommitteeBitmap,
+    bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
-    let (epoch_address, _) = epoch_pda();
     let (system_address, _) = system_pda();
+    let (group_address, _) = group_pda(epoch, track.state.spool_group);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -134,7 +134,7 @@ pub fn build_certify_track_ix(
             AccountMeta::new_readonly(authority.into(), true),
 
             AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(group_address.into(), false),
             AccountMeta::new(track.state.tape.into(), false),
         ],
         data: CertifyTrack {
@@ -148,20 +148,22 @@ pub fn build_certify_track_ix(
 
 pub fn build_invalidate_track_ix(
     fee_payer: Address,
-    system_address: Address,
-    epoch_address: Address,
     track: CompressedTrackProof,
-    bitmap: CommitteeBitmap,
+    epoch: EpochNumber,
+    bitmap: SpoolBitmap,
     signature: BlsSignature,
     computed_root: Hash,
 ) -> Instruction {
+    let (system_address, _) = system_pda();
+    let (group_address, _) = group_pda(epoch, track.state.spool_group);
+
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
 
             AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(group_address.into(), false),
             AccountMeta::new(track.state.tape.into(), false),
         ],
         data: InvalidateTrack {

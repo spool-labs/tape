@@ -1,7 +1,8 @@
 use crate::heap::MaxHeap;
 use crate::cap_spools;
 use crate::priority::{NodePriority, SpoolPriority};
-use tape_core::spooler::{SpoolCount, SpoolerError};
+use tape_core::spooler::SpoolerError;
+use tape_core::types::SpoolCount;
 use tape_core::types::TAPE;
 
 /// Sainte-Lague-method spooler (highest averages with divisors 1, 3, 5, ...).
@@ -29,11 +30,11 @@ pub fn sainte_lague_allocate(
     }
 
     let stakes: Vec<u64> = stake_weight.iter().map(|s| s.as_u64()).collect();
-    let total_spools = spool_count as u64;
+    let total_spools = spool_count.as_u64();
     let cap = cap_spools(n as u64, total_spools);
 
     if total_spools == 0 {
-        return Ok(vec![0; n]);
+        return Ok(vec![SpoolCount(0); n]);
     }
 
     let mut seats = vec![0u64; n];
@@ -71,30 +72,34 @@ pub fn sainte_lague_allocate(
         }
     }
 
-    Ok(seats.into_iter().map(|x| x as SpoolCount).collect())
+    Ok(seats.into_iter().map(SpoolCount).collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn counts(values: &[u64]) -> Vec<SpoolCount> {
+        values.iter().copied().map(SpoolCount).collect()
+    }
+
     #[test]
     fn uneven_stake() {
         let s = SainteLagueSpooler::default();
         let stake = vec![TAPE(50_000), TAPE(30_000), TAPE(15_000), TAPE(5_000)];
 
-        let res = s.allocate(&stake, 4).unwrap();
-        assert_eq!(res.iter().sum::<SpoolCount>(), 4);
+        let res = s.allocate(&stake, SpoolCount(4)).unwrap();
+        assert_eq!(res.iter().map(|c| c.as_u64()).sum::<u64>(), 4);
     }
 
     #[test]
     fn zero_spools_or_zero_stake() {
         let s = SainteLagueSpooler::default();
         let stake = vec![TAPE(100), TAPE(90), TAPE(80)];
-        assert_eq!(s.allocate(&stake, 0).unwrap(), vec![0, 0, 0]);
+        assert_eq!(s.allocate(&stake, SpoolCount(0)).unwrap(), counts(&[0, 0, 0]));
 
         let stake = vec![TAPE(0), TAPE(0), TAPE(0)];
-        assert_eq!(s.allocate(&stake, 5).unwrap_err(), SpoolerError::Infeasible);
+        assert_eq!(s.allocate(&stake, SpoolCount(5)).unwrap_err(), SpoolerError::Infeasible);
     }
 
     #[test]
@@ -102,22 +107,22 @@ mod tests {
         let stake = vec![TAPE(10_000), TAPE(10_000), TAPE(10_000), TAPE(10_000)];
         let s = SainteLagueSpooler::default();
 
-        assert_eq!(s.allocate(&stake, 1).unwrap(), vec![1, 0, 0, 0]);
-        assert_eq!(s.allocate(&stake, 2).unwrap(), vec![1, 1, 0, 0]);
-        assert_eq!(s.allocate(&stake, 3).unwrap(), vec![1, 1, 1, 0]);
-        assert_eq!(s.allocate(&stake, 4).unwrap(), vec![1, 1, 1, 1]);
-        assert_eq!(s.allocate(&stake, 5).unwrap(), vec![2, 1, 1, 1]);
-        assert_eq!(s.allocate(&stake, 6).unwrap(), vec![2, 2, 1, 1]);
-        assert_eq!(s.allocate(&stake, 7).unwrap(), vec![2, 2, 2, 1]);
-        assert_eq!(s.allocate(&stake, 8).unwrap(), vec![2, 2, 2, 2]);
+        assert_eq!(s.allocate(&stake, SpoolCount(1)).unwrap(), counts(&[1, 0, 0, 0]));
+        assert_eq!(s.allocate(&stake, SpoolCount(2)).unwrap(), counts(&[1, 1, 0, 0]));
+        assert_eq!(s.allocate(&stake, SpoolCount(3)).unwrap(), counts(&[1, 1, 1, 0]));
+        assert_eq!(s.allocate(&stake, SpoolCount(4)).unwrap(), counts(&[1, 1, 1, 1]));
+        assert_eq!(s.allocate(&stake, SpoolCount(5)).unwrap(), counts(&[2, 1, 1, 1]));
+        assert_eq!(s.allocate(&stake, SpoolCount(6)).unwrap(), counts(&[2, 2, 1, 1]));
+        assert_eq!(s.allocate(&stake, SpoolCount(7)).unwrap(), counts(&[2, 2, 2, 1]));
+        assert_eq!(s.allocate(&stake, SpoolCount(8)).unwrap(), counts(&[2, 2, 2, 2]));
     }
 
     #[test]
     fn large_equal_distribution() {
         let stake = vec![TAPE(1), TAPE(1), TAPE(1), TAPE(1), TAPE(1)];
         let s = SainteLagueSpooler::default();
-        let out = s.allocate(&stake, 1000).unwrap();
-        assert_eq!(out, vec![200, 200, 200, 200, 200]);
+        let out = s.allocate(&stake, SpoolCount(1000)).unwrap();
+        assert_eq!(out, counts(&[200, 200, 200, 200, 200]));
     }
 
     #[test]
@@ -130,12 +135,9 @@ mod tests {
         }
 
         let s = SainteLagueSpooler::default();
-        let out = s.allocate(&stake, 100).unwrap();
-        assert_eq!(
-            out.iter().copied().map(SpoolCount::from).map(|x| x as u32).sum::<u32>(),
-            100
-        );
-        assert_eq!(out[0], 5);
-        assert!(out.iter().all(|&x| x <= 5));
+        let out = s.allocate(&stake, SpoolCount(100)).unwrap();
+        assert_eq!(out.iter().map(|c| c.as_u64()).sum::<u64>(), 100);
+        assert_eq!(out[0], SpoolCount(5));
+        assert!(out.iter().all(|&x| x <= SpoolCount(5)));
     }
 }

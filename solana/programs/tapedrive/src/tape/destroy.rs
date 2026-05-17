@@ -9,8 +9,7 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         authority_info,
 
         tape_info,
-        epoch_info,
-        archive_info,
+        system_info,
 
         system_program_info,
     ] = accounts else {
@@ -27,15 +26,6 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let archive = archive_info
-        .is_writable()?
-        .is_archive()?
-        .as_account_mut::<Archive>(&tapedrive::ID)?;
-
-    archive.tape_count = archive.tape_count
-        .checked_sub(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
     let tape = tape_info
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
@@ -44,19 +34,16 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Require the tape to be expired
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
+    // Require the tape to be expired; users may reclaim rent but not tokens used to pay the
+    // network to allocate storage for the tape. This prevents malicious attack vectors.
 
-    let now = current_epoch(epoch);
+    let system = system_info
+        .is_system()?
+        .as_account::<System>(&tapedrive::ID)?;
 
+    let now = current_epoch(system);
     if now < tape.expiry_epoch {
         return Err(TapeError::NotExpired.into());
-    }
-
-    if !tape.used.is_zero() {
-        return Err(TapeError::NotEmpty.into());
     }
 
     TapeDestroyed {
@@ -75,29 +62,26 @@ mod tests {
     use tape_test::*;
 
     #[test]
-    fn test_destroy_tape() {
+    fn destroy_tape() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let (tape_address, _) = tape_pda(authority.into());
-        let (epoch_address, _) = epoch_pda();
-        let (archive_address, _) = archive_pda();
+        let (system_address, _) = system_pda();
 
-        // Tape expired at 50, used = 0
+        // Tape expired at 50. Destroy is allowed even when used is non-zero;
+        // expired tape metadata cleanup is independent of track cleanup.
         let tape = Tape {
             authority: authority.into(),
             capacity: StorageUnits::mb(123),
-            used: StorageUnits(0),
+            used: StorageUnits::mb(12),
             active_epoch: EpochNumber(40),
             expiry_epoch: EpochNumber(50),
             ..Tape::zeroed()
         };
 
-        let mut epoch = Epoch::zeroed();
-        epoch.id = EpochNumber(60);
-
-        let archive = Archive {
-            tape_count: 100,
-            ..Archive::zeroed()
+        let system = System {
+            current_epoch: EpochNumber(60),
+            ..System::zeroed()
         };
 
         let instruction = build_destroy_tape_ix(fee_payer.into(), authority.into());
@@ -107,16 +91,10 @@ mod tests {
             sol(authority, 0),
 
             pda(tape_address, tape.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(system_address, system.pack(), tapedrive::ID),
 
             system_program(),
         ];
-
-        let expected_archive = Archive {
-            tape_count: 99,
-            ..archive
-        };
 
         let env = test_env();
         env.process_instruction(
@@ -130,9 +108,6 @@ mod tests {
                 Check::account(&Pubkey::from(tape_address))
                     .lamports(0)
                     .closed()
-                    .build(),
-                Check::account(&Pubkey::from(archive_address))
-                    .data(expected_archive.pack().as_ref())
                     .build(),
             ],
         );

@@ -8,9 +8,11 @@
 //! 2) Call `migrate_spools` to minimally reassign spools from current -> next layout,
 //!    enforcing group constraints (1 spool per group per node).
 
-use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-use tape_core::spooler::{SpoolAssignment, SpoolCount, SpoolerError};
-use tape_core::system::Committee;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::spooler::SpoolerError;
+use tape_core::types::SpoolCount;
+use tape_core::system::Member;
+use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 
 mod heap;
@@ -23,15 +25,12 @@ pub use dhondt::{DhondtSpooler, dhondt_allocate};
 pub use sainte_lague::{SainteLagueSpooler, sainte_lague_allocate};
 pub use migrate::{migrate_spools, initial_assignment};
 
-/// Maximum spools any single node can hold (one per group = 50).
-pub const MAX_SPOOLS_PER_NODE: SpoolCount = SPOOL_GROUP_COUNT as SpoolCount;
-
 /// Compute the per-node spool cap.
 ///
-/// With `node_count >= SPOOL_GROUP_SIZE` (20), cap = `spool_count / SPOOL_GROUP_SIZE`.
+/// With `node_count >= GROUP_SIZE` (20), cap = `spool_count / GROUP_SIZE`.
 /// For smaller committees the cap is scaled up so that all spools can be distributed.
 pub fn cap_spools(node_count: u64, spool_count: u64) -> u64 {
-    let group_size = SPOOL_GROUP_SIZE as u64;
+    let group_size = GROUP_SIZE as u64;
     if spool_count == 0 || node_count == 0 {
         return 0;
     }
@@ -45,53 +44,37 @@ pub fn cap_spools(node_count: u64, spool_count: u64) -> u64 {
 }
 
 /// Allocate + migrate in one call using D'Hondt.
-pub fn migrate_dhondt<const SPOOLS: usize, const N: usize>(
-    assignment: &mut SpoolAssignment<SPOOLS>,
-    current: &Committee<N>,
-    next: &Committee<N>,
+pub fn migrate_dhondt(
+    group_count: usize,
+    current_spools: &[Option<Address>],
+    next: &[Member],
     seed: &Hash,
-) -> Result<(), SpoolerError> {
-    let members_current = current.active_members();
-    let members_next = next.active_members();
-    let stakes_next = next.active_stakes();
+    spool_count: SpoolCount,
+) -> Result<Vec<Address>, SpoolerError> {
+    let next_addresses: Vec<Address> = next.iter().map(|m| m.node).collect();
+    let stakes_next: Vec<_> = next.iter().map(|m| m.stake).collect();
 
     let dh = DhondtSpooler::default();
-    let spool_counts = dh.allocate(&stakes_next, SPOOLS as u16)?;
+    let spool_counts = dh.allocate(&stakes_next, spool_count)?;
 
-    let spools = migrate_spools(
-        &assignment.0,
-        &members_current,
-        &members_next,
-        &spool_counts,
-        seed,
-    )?;
-    assignment.0.copy_from_slice(&spools);
-    Ok(())
+    migrate_spools(group_count, current_spools, &next_addresses, &spool_counts, seed)
 }
 
 /// Allocate + migrate in one call using Sainte-Lague.
-pub fn migrate_sainte_lague<const SPOOLS: usize, const N: usize>(
-    assignment: &mut SpoolAssignment<SPOOLS>,
-    current: &Committee<N>,
-    next: &Committee<N>,
+pub fn migrate_sainte_lague(
+    group_count: usize,
+    current_spools: &[Option<Address>],
+    next: &[Member],
     seed: &Hash,
-) -> Result<(), SpoolerError> {
-    let members_current = current.active_members();
-    let members_next = next.active_members();
-    let stakes_next = next.active_stakes();
+    spool_count: SpoolCount,
+) -> Result<Vec<Address>, SpoolerError> {
+    let next_addresses: Vec<Address> = next.iter().map(|m| m.node).collect();
+    let stakes_next: Vec<_> = next.iter().map(|m| m.stake).collect();
 
     let sl = SainteLagueSpooler::default();
-    let spool_counts = sl.allocate(&stakes_next, SPOOLS as u16)?;
+    let spool_counts = sl.allocate(&stakes_next, spool_count)?;
 
-    let spools = migrate_spools(
-        &assignment.0,
-        &members_current,
-        &members_next,
-        &spool_counts,
-        seed,
-    )?;
-    assignment.0.copy_from_slice(&spools);
-    Ok(())
+    migrate_spools(group_count, current_spools, &next_addresses, &spool_counts, seed)
 }
 
 #[cfg(test)]

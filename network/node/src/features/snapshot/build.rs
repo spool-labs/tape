@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tokio_util::sync::CancellationToken;
-use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
 use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEADER_SIZE};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::SpoolGroup;
@@ -32,7 +32,7 @@ pub struct BuiltChunk {
     pub group: SpoolGroup,
     pub chunk: ChunkNumber,
     pub blob: BlobInfo,
-    pub slices: [Vec<u8>; SPOOL_GROUP_SIZE],
+    pub slices: [Vec<u8>; GROUP_SIZE],
 }
 
 #[derive(Debug, Default)]
@@ -162,15 +162,15 @@ pub(crate) fn encode_chunk(
         ))
     })?;
 
-    let slices: [Vec<u8>; SPOOL_GROUP_SIZE] = slices.try_into().map_err(|v: Vec<Vec<u8>>| {
+    let slices: [Vec<u8>; GROUP_SIZE] = slices.try_into().map_err(|v: Vec<Vec<u8>>| {
         NodeError::Store(format!(
             "clay encode produced {} slices, expected {}",
             v.len(),
-            SPOOL_GROUP_SIZE,
+            GROUP_SIZE,
         ))
     })?;
 
-    let leaves: [Hash; SPOOL_GROUP_SIZE] = core::array::from_fn(|i| hash_leaf(&slices[i]));
+    let leaves: [Hash; GROUP_SIZE] = core::array::from_fn(|i| hash_leaf(&slices[i]));
     let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
     let stripe_size = slicer.stripe_size();

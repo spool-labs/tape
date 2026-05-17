@@ -1,5 +1,5 @@
 use store::Store;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
 use tape_store::ops::SpoolOps;
 use tape_store::TapeStore;
@@ -10,7 +10,7 @@ pub fn is_responsible_for_group<Db: Store>(
     store: &TapeStore<Db>,
     spool_group: SpoolGroup,
 ) -> Result<bool, NodeError> {
-    for slice in 0..SPOOL_GROUP_SIZE {
+    for slice in 0..GROUP_SIZE {
         let spool = spool_group.spool_at(slice);
         if store
             .get_spool_state(spool)

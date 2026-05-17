@@ -1,33 +1,31 @@
 use tape_solana::*;
 
-mod archive;
+mod system;
 mod blacklist;
+mod committee;
 mod epoch;
 mod exchange;
 mod node;
+mod peer;
 mod pool;
-mod snapshot;
 mod stake;
-mod stream;
 mod tape;
 mod token;
 mod track;
-mod util;
 mod vote;
 
-pub use archive::*;
+pub use system::*;
 pub use blacklist::*;
+pub use committee::*;
 pub use epoch::*;
 pub use exchange::*;
 pub use node::*;
+pub use peer::*;
 pub use pool::*;
-pub use snapshot::*;
 pub use stake::*;
-pub use stream::*;
 pub use tape::*;
 pub use token::*;
 pub use track::*;
-pub use util::*;
 pub use vote::*;
 
 #[repr(u8)]
@@ -71,22 +69,23 @@ pub enum TapeInstruction {
 
     // System
     CreateSystem,
-    ExpandSystem,
-    Initialize,
-    AdvanceEpoch,
+    CreateArchive,
+    CreateCommittee,
+    CreateEpoch,
+    CreatePeerSet,
+    ResizeCommittee,
+    ResizePeerSet,
+    StartNetwork,
 
-    // Pool
-    AdvancePool = 0x50,
-    StakeWithPool,
-    RequestStakeUnlock,
-    UnstakeFromPool,
-    SplitPoolStake,
-    MergePoolStake,
+    // Epoch
+    SyncSpool = 0x50,
+    SettleSpool,
+    CommitEpoch,
+    AdvanceEpoch,
 
     // Operator
     RegisterNode = 0x60,
-    JoinNetwork,
-    SyncEpoch,
+    JoinCommittee,
     SetAuthority,
     SetName,
     SetBlsPubkey,
@@ -95,30 +94,41 @@ pub enum TapeInstruction {
     SetCommissionRate,
     SetStoragePrice,
     SetStorageCapacity,
+    SetCommitteeSize,
+    SetSpoolGroups,
+    SetMinVersion,
     ClaimCommission,
     AddToBlacklist,
     RemoveFromBlacklist,
 
+    // Pool
+    AdvancePool = 0x90,
+    StakeWithPool,
+    RequestStakeUnlock,
+    UnstakeFromPool,
+    SplitPoolStake,
+    MergePoolStake,
+
     // Tape
-    ReserveTape = 0x90,
+    ReserveTape = 0xA0,
     DestroyTape,
     SplitTapeByEpoch,
     SplitTapeBySize,
     MergeTape,
 
     // Track
-    TrackWrite = 0xA0,
+    TrackWrite = 0xB0,
     DeleteTrack,
     CertifyTrack,
     InvalidateTrack,
 
-    // Snapshot
-    ReserveSnapshot = 0xC0,
-    WriteSnapshot,
-    SignSnapshot,
-
     // Vote
-    CloseVote = 0xD0,
+    ProposeSnapshot = 0xC0,
+    VoteSnapshot,
+    FinalizeSnapshot,
+    ProposeAssignment,
+    VoteAssignment,
+    FinalizeGroup,
 }
 
 
@@ -139,8 +149,17 @@ tape_solana::instruction!(StakingInstruction, SplitStake);
 tape_solana::instruction!(StakingInstruction, MergeStake);
 
 tape_solana::instruction!(TapeInstruction, CreateSystem);
-tape_solana::instruction!(TapeInstruction, ExpandSystem);
-tape_solana::instruction!(TapeInstruction, Initialize);
+tape_solana::instruction!(TapeInstruction, CreateArchive);
+tape_solana::instruction!(TapeInstruction, CreateCommittee);
+tape_solana::instruction!(TapeInstruction, CreateEpoch);
+tape_solana::instruction!(TapeInstruction, CreatePeerSet);
+tape_solana::instruction!(TapeInstruction, ResizeCommittee);
+tape_solana::instruction!(TapeInstruction, ResizePeerSet);
+tape_solana::instruction!(TapeInstruction, StartNetwork);
+
+tape_solana::instruction!(TapeInstruction, SyncSpool);
+tape_solana::instruction!(TapeInstruction, SettleSpool);
+tape_solana::instruction!(TapeInstruction, CommitEpoch);
 tape_solana::instruction!(TapeInstruction, AdvanceEpoch);
 
 tape_solana::instruction!(TapeInstruction, AdvancePool);
@@ -151,8 +170,7 @@ tape_solana::instruction!(TapeInstruction, SplitPoolStake);
 tape_solana::instruction!(TapeInstruction, MergePoolStake);
 
 tape_solana::instruction!(TapeInstruction, RegisterNode);
-tape_solana::instruction!(TapeInstruction, JoinNetwork);
-tape_solana::instruction!(TapeInstruction, SyncEpoch);
+tape_solana::instruction!(TapeInstruction, JoinCommittee);
 tape_solana::instruction!(TapeInstruction, ClaimCommission);
 tape_solana::instruction!(TapeInstruction, SetAuthority);
 tape_solana::instruction!(TapeInstruction, SetName);
@@ -162,6 +180,9 @@ tape_solana::instruction!(TapeInstruction, SetNetworkTls);
 tape_solana::instruction!(TapeInstruction, SetCommissionRate);
 tape_solana::instruction!(TapeInstruction, SetStoragePrice);
 tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
+tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
+tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
+tape_solana::instruction!(TapeInstruction, SetMinVersion);
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);
 
@@ -176,7 +197,9 @@ tape_solana::instruction!(TapeInstruction, DeleteTrack);
 tape_solana::instruction!(TapeInstruction, CertifyTrack);
 tape_solana::instruction!(TapeInstruction, InvalidateTrack);
 
-tape_solana::instruction!(TapeInstruction, ReserveSnapshot);
-tape_solana::instruction!(TapeInstruction, WriteSnapshot);
-tape_solana::instruction!(TapeInstruction, SignSnapshot);
-tape_solana::instruction!(TapeInstruction, CloseVote);
+tape_solana::instruction!(TapeInstruction, ProposeSnapshot);
+tape_solana::instruction!(TapeInstruction, VoteSnapshot);
+tape_solana::instruction!(TapeInstruction, FinalizeSnapshot);
+tape_solana::instruction!(TapeInstruction, ProposeAssignment);
+tape_solana::instruction!(TapeInstruction, VoteAssignment);
+tape_solana::instruction!(TapeInstruction, FinalizeGroup);

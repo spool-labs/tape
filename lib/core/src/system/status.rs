@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-use crate::erasure::SPOOL_GROUP_SIZE;
+use crate::erasure::GROUP_SIZE;
 use crate::types::{EpochNumber, NodeId};
 
 /// Node status in the network
@@ -54,12 +54,12 @@ pub struct SpoolState {
     pub status: SpoolStatus,
     pub epoch: EpochNumber,
     pub prev_owner: Option<NodeId>,
-    pub prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
+    pub prev_helpers: [Option<NodeId>; GROUP_SIZE],
 }
 
 impl SpoolState {
     pub fn new(status: SpoolStatus, epoch: EpochNumber) -> Self {
-        Self { status, epoch, prev_owner: None, prev_helpers: [None; SPOOL_GROUP_SIZE] }
+        Self { status, epoch, prev_owner: None, prev_helpers: [None; GROUP_SIZE] }
     }
 
     pub fn set_status(&mut self, status: SpoolStatus) {
@@ -96,14 +96,14 @@ mod tests {
                 status: SpoolStatus::Sync,
                 epoch: EpochNumber(5),
                 prev_owner: Some(NodeId(7)),
-                prev_helpers: [Some(NodeId(7)); SPOOL_GROUP_SIZE],
+                prev_helpers: [Some(NodeId(7)); GROUP_SIZE],
             },
             SpoolState::new(SpoolStatus::Scan, EpochNumber(6)),
             SpoolState {
                 status: SpoolStatus::Recover,
                 epoch: EpochNumber(7),
                 prev_owner: Some(NodeId(3)),
-                prev_helpers: [None; SPOOL_GROUP_SIZE],
+                prev_helpers: [None; GROUP_SIZE],
             },
         ];
 

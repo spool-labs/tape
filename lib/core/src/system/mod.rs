@@ -1,18 +1,22 @@
+mod assignment;
 mod blacklist;
 mod committee;
 mod epoch;
 mod exchange;
 mod node;
+mod peer;
 mod rewards;
 mod schedule;
 mod status;
 mod vote;
 
+pub use assignment::*;
 pub use blacklist::*;
 pub use committee::*;
 pub use epoch::*;
 pub use exchange::*;
 pub use node::*;
+pub use peer::*;
 pub use rewards::*;
 pub use schedule::*;
 pub use status::*;

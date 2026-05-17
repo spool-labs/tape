@@ -1,12 +1,14 @@
 //! Request/response types for peer operations.
 
 use tape_core::bls::BlsSignature;
-use tape_core::prelude::{CompressedTrack, EpochNumber, NodeId, SpoolIndex, TrackData, TrackNumber};
+use tape_core::prelude::{CompressedTrack, EpochNumber, SpoolIndex, TrackData, TrackNumber};
+use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
+
 use crate::api::types::{
-    InconsistencyProof, NodeStats, SnapshotVoteKind, SlicePayload, StripeSubChunkRequest,
-    SyncSliceEntry, SyncTrackEntry,
+    InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
+    SyncTrackEntry, VoteCandidate,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -151,20 +153,9 @@ pub struct CertifyReq {
 #[derive(Clone, Debug)]
 pub struct CertifyRes {
     pub signature: BlsSignature,
-    pub node_id: NodeId,
+    pub node: Address,
     pub epoch: EpochNumber,
 }
-
-#[derive(Clone, Debug)]
-pub struct SnapshotVoteReq {
-    pub node_id: NodeId,
-    pub kind: SnapshotVoteKind,
-    pub message: Vec<u8>,
-    pub signature: BlsSignature,
-}
-
-#[derive(Clone, Debug)]
-pub struct SnapshotVoteRes;
 
 #[derive(Clone, Debug)]
 pub struct InvalidateReq {
@@ -175,9 +166,20 @@ pub struct InvalidateReq {
 #[derive(Clone, Debug)]
 pub struct InvalidateRes {
     pub signature: BlsSignature,
-    pub node_id: NodeId,
+    pub node: Address,
     pub epoch: EpochNumber,
 }
+
+#[derive(Clone, Debug)]
+pub struct VoteReq {
+    pub signer: Address,
+    pub candidate: VoteCandidate,
+    pub group: SpoolGroup,
+    pub signature: BlsSignature,
+}
+
+#[derive(Clone, Debug)]
+pub struct VoteRes;
 
 #[derive(Clone, Debug)]
 pub struct GetHealthReq;
@@ -210,7 +212,7 @@ pub enum PeerReq {
     Repair(RepairReq),
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
-    SnapshotVote(SnapshotVoteReq),
+    Vote(VoteReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -228,8 +230,8 @@ pub enum PeerRes {
     SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
-    SnapshotVote(Result<SnapshotVoteRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
+    Vote(Result<VoteRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),
 }

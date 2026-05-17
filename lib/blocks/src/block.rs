@@ -236,19 +236,21 @@ mod tests {
     use solana_sdk::hash::Hash as SolanaHash;
     use solana_sdk::sysvar;
     use tape_core::spooler::SpoolGroup;
+    use tape_core::system::NodePreferences;
+    use bytemuck::Zeroable;
     use solana_transaction_status::{
         EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
         UiInnerInstructions, UiLoadedAddresses, UiRawMessage, UiTransaction,
         UiTransactionStatusMeta,
     };
-    use tape_api::event::{EpochAdvanced, EventType, NodeSynced, TrackWritten};
+    use tape_api::event::{EpochAdvanced, EventType, SpoolSynced, TrackWritten};
     use tape_api::instruction::build_track_write_raw_ix;
-    use tape_api::program::tapedrive::{self, epoch_pda, tape_pda};
+    use tape_api::program::tapedrive::{self, system_pda, tape_pda};
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
-    use tape_core::types::{EpochNumber, NodeId, StorageUnits, StripeCount};
+    use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
@@ -289,7 +291,7 @@ mod tests {
                     profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                    leaves: [Hash::default(); GROUP_SIZE],
                 }),
             }],
             events: vec![],
@@ -314,7 +316,7 @@ mod tests {
                     profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                    leaves: [Hash::default(); GROUP_SIZE],
                 }),
             }],
             events: vec![TapedriveEvent::TrackWritten(track_event)],
@@ -335,29 +337,27 @@ mod tests {
 
     #[test]
     fn test_merge_transactions_preserves_instruction_order() {
+        let sync_node = Address::new_unique();
         let tx1 = ParsedTransaction {
             raw_instructions: vec![
                 RawInstruction::AdvanceEpoch,
-                RawInstruction::SyncEpoch,
+                RawInstruction::SyncSpool { node: sync_node, spool: 3 },
             ],
             events: vec![
                 TapedriveEvent::EpochAdvanced(EpochAdvanced {
                     old_epoch: 1u64.into(),
                     new_epoch: 2u64.into(),
                     timestamp: [0; 8],
-                    committee_size: [0; 8],
                     total_stake: [0; 8],
-                    storage_price: [0; 8],
-                    storage_capacity: 1.into(),
+                    committee_count: [0; 8],
+                    preferences: NodePreferences::zeroed(),
                     nonce: Hash::default(),
-                    phase: 1, // Syncing
                 }),
-                TapedriveEvent::NodeSynced(NodeSynced {
-                    node: Address::new_unique(),
-                    id: NodeId::new(1),
+                TapedriveEvent::SpoolSynced(SpoolSynced {
+                    node: sync_node,
                     epoch: 1u64.into(),
-                    spools_hash: Hash::default(),
-                    phase: 1, // Syncing
+                    group: SpoolGroup(7),
+                    spool: 3u64.to_le_bytes(),
                 }),
             ],
         };
@@ -367,12 +367,10 @@ mod tests {
                 old_epoch: 2u64.into(),
                 new_epoch: 3u64.into(),
                 timestamp: [0; 8],
-                committee_size: [0; 8],
                 total_stake: [0; 8],
-                storage_price: [0; 8],
-                storage_capacity: 1.into(),
-                    nonce: Hash::default(),
-                phase: 1, // Syncing
+                committee_count: [0; 8],
+                preferences: NodePreferences::zeroed(),
+                nonce: Hash::default(),
             })],
         };
 
@@ -387,7 +385,7 @@ mod tests {
             &merged[0],
             ParsedInstruction::AdvanceEpoch { .. }
         ));
-        assert!(matches!(&merged[1], ParsedInstruction::SyncEpoch { .. }));
+        assert!(matches!(&merged[1], ParsedInstruction::SyncSpool { .. }));
         assert!(matches!(&merged[2], ParsedInstruction::AdvanceEpoch { .. }));
     }
 
@@ -441,7 +439,7 @@ mod tests {
     fn test_parse_transaction_interleaves_inner_instructions_by_outer_index() {
         let fee_payer = Address::new_unique();
         let authority = Address::new_unique();
-        let epoch = epoch_pda().0;
+        let system = system_pda().0;
         let tape = tape_pda(authority).0;
         let slot_hashes = sysvar::slot_hashes::ID;
         let other_program = Pubkey::new_unique();
@@ -450,7 +448,7 @@ mod tests {
             other_program,
             fee_payer.into(),
             authority.into(),
-            epoch.into(),
+            system.into(),
             tape.into(),
             slot_hashes,
             tapedrive_program,
@@ -582,7 +580,7 @@ mod tests {
     fn resolves_alt_inner_cpi() {
         let fee_payer = Address::new_unique();
         let authority = Address::new_unique();
-        let epoch = epoch_pda().0;
+        let system = system_pda().0;
         let tape = tape_pda(authority).0;
         let slot_hashes = sysvar::slot_hashes::ID;
         let outer_program = Pubkey::new_unique();
@@ -592,7 +590,7 @@ mod tests {
             outer_program,
             fee_payer.into(),
             authority.into(),
-            epoch.into(),
+            system.into(),
             tape.into(),
             slot_hashes,
         ];

@@ -41,6 +41,7 @@ pub mod prelude {
     pub use crate::errors::RequiredAction;
     pub use crate::event::*;
     pub use crate::instruction::*;
+    pub use crate::dynamic::DynamicState;
     pub use crate::loaders::{AccountInfoHelper, AccountInfoLoader, FromAccountSlice};
     pub use crate::program::exchange::*;
     pub use crate::program::staking::*;

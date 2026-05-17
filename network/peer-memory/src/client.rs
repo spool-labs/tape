@@ -7,17 +7,16 @@ use tape_protocol::api::{
     GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
     GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
     ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes,
-    SnapshotVoteReq, SnapshotVoteRes,
-    SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
+    SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes, VoteReq, VoteRes,
 };
-use tape_core::types::NodeId;
+use tape_crypto::Address;
 
 pub struct MemoryApi {
-    handler: Arc<dyn Fn(NodeId, PeerReq) -> PeerRes + Send + Sync>,
+    handler: Arc<dyn Fn(Address, PeerReq) -> PeerRes + Send + Sync>,
 }
 
 impl MemoryApi {
-    pub fn new(handler: impl Fn(NodeId, PeerReq) -> PeerRes + Send + Sync + 'static) -> Self {
+    pub fn new(handler: impl Fn(Address, PeerReq) -> PeerRes + Send + Sync + 'static) -> Self {
         Self {
             handler: Arc::new(handler),
         }
@@ -38,8 +37,8 @@ impl MemoryApi {
             PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(not_impl())),
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
-            PeerReq::SnapshotVote(_) => PeerRes::SnapshotVote(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
+            PeerReq::Vote(_) => PeerRes::Vote(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
@@ -62,81 +61,77 @@ macro_rules! dispatch {
 
 #[async_trait]
 impl Api for MemoryApi {
-    async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
+    async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
         dispatch!(self, node, PutSliceReq { track: req.track, spool: req.spool, payload: req.payload.clone() }, PutSlice)
     }
 
-    async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
+    async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
         dispatch!(self, node, GetSliceReq { track: req.track, spool: req.spool }, GetSlice)
     }
 
-    async fn get_track(&self, node: NodeId, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
+    async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
         dispatch!(self, node, GetTrackReq { track: req.track }, GetTrack)
     }
 
-    async fn get_track_by_number(&self, node: NodeId, req: &GetTrackByNumberReq) -> Result<GetTrackByNumberRes, ApiError> {
+    async fn get_track_by_number(&self, node: Address, req: &GetTrackByNumberReq) -> Result<GetTrackByNumberRes, ApiError> {
         dispatch!(self, node, GetTrackByNumberReq { tape: req.tape, track_number: req.track_number }, GetTrackByNumber)
     }
 
-    async fn find_track(&self, node: NodeId, req: &FindTrackReq) -> Result<FindTrackRes, ApiError> {
+    async fn find_track(&self, node: Address, req: &FindTrackReq) -> Result<FindTrackRes, ApiError> {
         dispatch!(self, node, FindTrackReq { tape: req.tape, key: req.key, version: req.version.clone() }, FindTrack)
     }
 
-    async fn list_tracks_by_tape(&self, node: NodeId, req: &ListTracksByTapeReq) -> Result<ListTracksByTapeRes, ApiError> {
+    async fn list_tracks_by_tape(&self, node: Address, req: &ListTracksByTapeReq) -> Result<ListTracksByTapeRes, ApiError> {
         dispatch!(self, node, ListTracksByTapeReq { tape: req.tape, cursor: req.cursor, limit: req.limit }, ListTracksByTape)
     }
 
-    async fn get_track_data(&self, node: NodeId, req: &GetTrackDataReq) -> Result<GetTrackDataRes, ApiError> {
+    async fn get_track_data(&self, node: Address, req: &GetTrackDataReq) -> Result<GetTrackDataRes, ApiError> {
         dispatch!(self, node, GetTrackDataReq { track: req.track }, GetTrackData)
     }
 
-    async fn get_track_proof(&self, node: NodeId, req: &GetTrackProofReq) -> Result<GetTrackProofRes, ApiError> {
+    async fn get_track_proof(&self, node: Address, req: &GetTrackProofReq) -> Result<GetTrackProofRes, ApiError> {
         dispatch!(self, node, GetTrackProofReq { track: req.track }, GetTrackProof)
     }
 
-    async fn sync_slices(&self, node: NodeId, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
+    async fn sync_slices(&self, node: Address, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
         dispatch!(self, node, SyncSlicesReq { spool_index: req.spool_index, cursor: req.cursor, limit: req.limit }, SyncSlices)
     }
 
-    async fn sync_tracks(&self, node: NodeId, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
+    async fn sync_tracks(&self, node: Address, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
         dispatch!(self, node, SyncTracksReq { spool_index: req.spool_index, cursor: req.cursor, limit: req.limit }, SyncTracks)
     }
 
-    async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError> {
+    async fn repair(&self, node: Address, req: &RepairReq) -> Result<RepairRes, ApiError> {
         dispatch!(self, node, RepairReq { track: req.track, helper_spool: req.helper_spool, stripes: req.stripes.clone() }, Repair)
     }
 
-    async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
+    async fn certify(&self, node: Address, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
         dispatch!(self, node, CertifyReq { track: req.track }, Certify)
     }
 
-    async fn snapshot_vote(
-        &self,
-        node: NodeId,
-        req: &SnapshotVoteReq,
-    ) -> Result<SnapshotVoteRes, ApiError> {
+    async fn vote(&self, node: Address, req: &VoteReq) -> Result<VoteRes, ApiError> {
         dispatch!(
             self,
             node,
-            SnapshotVoteReq {
-                node_id: req.node_id,
-                kind: req.kind,
-                message: req.message.clone(),
+            VoteReq {
+                signer: req.signer,
+                candidate: req.candidate,
+                group: req.group,
                 signature: req.signature,
             },
-            SnapshotVote
+            Vote
         )
     }
 
-    async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
+    async fn invalidate(&self, node: Address, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
         dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
     }
 
-    async fn get_health(&self, node: NodeId, _req: &GetHealthReq) -> Result<GetHealthRes, ApiError> {
+    async fn get_health(&self, node: Address, _req: &GetHealthReq) -> Result<GetHealthRes, ApiError> {
         dispatch!(self, node, GetHealthReq, GetHealth)
     }
 
-    async fn get_stats(&self, node: NodeId, _req: &GetStatsReq) -> Result<GetStatsRes, ApiError> {
+    async fn get_stats(&self, node: Address, _req: &GetStatsReq) -> Result<GetStatsRes, ApiError> {
         dispatch!(self, node, GetStatsReq, GetStats)
     }
 }
@@ -146,62 +141,81 @@ mod tests {
     use super::*;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
-    use tape_core::cert::{SNAPSHOT_SIGN_MESSAGE_SIZE, SNAPSHOT_WRITE_MESSAGE_SIZE};
-    use tape_protocol::api::SnapshotVoteKind;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::system::VoteKind;
+    use tape_core::types::EpochNumber;
+    use tape_crypto::Hash;
+    use tape_protocol::api::VoteCandidate;
 
-    fn snapshot_vote_signature(message: &[u8]) -> BlsSignature {
+    fn address(byte: u8) -> Address {
+        let mut bytes = [0u8; 32];
+        bytes[0] = byte;
+        Address::new(bytes)
+    }
+
+    fn vote_signature(message: &[u8]) -> BlsSignature {
         BlsPrivateKey::from_random().sign(message).unwrap()
+    }
+
+    fn candidate(kind: VoteKind) -> VoteCandidate {
+        VoteCandidate {
+            kind,
+            voting_epoch: EpochNumber(11),
+            target_epoch: EpochNumber(10),
+            hash: Hash::from([0xAB; 32]),
+        }
     }
 
     #[tokio::test]
     async fn noop_returns_error() {
         let client = MemoryApi::noop();
-        let res = client.get_health(NodeId(1), &GetHealthReq).await;
+        let res = client.get_health(address(1), &GetHealthReq).await;
         assert!(res.is_err());
     }
 
     #[tokio::test]
     async fn custom_handler() {
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::GetHealth(_) => PeerRes::GetHealth(Ok(GetHealthRes { ok: node.0 == 1 })),
-            PeerReq::SnapshotVote(req) => {
-                assert_eq!(req.node_id, NodeId(9));
-                PeerRes::SnapshotVote(Ok(SnapshotVoteRes))
+            PeerReq::GetHealth(_) => PeerRes::GetHealth(Ok(GetHealthRes {
+                ok: node == address(1),
+            })),
+            PeerReq::Vote(req) => {
+                assert_eq!(req.signer, address(9));
+                PeerRes::Vote(Ok(VoteRes))
             }
             _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
         });
 
-        let res = client.get_health(NodeId(1), &GetHealthReq).await.unwrap();
+        let res = client.get_health(address(1), &GetHealthReq).await.unwrap();
         assert!(res.ok);
 
-        let res = client.get_health(NodeId(2), &GetHealthReq).await.unwrap();
+        let res = client.get_health(address(2), &GetHealthReq).await.unwrap();
         assert!(!res.ok);
     }
 
     #[tokio::test]
-    async fn snapshot_vote_write_dispatch() {
-        let message = vec![0xAB; SNAPSHOT_WRITE_MESSAGE_SIZE];
-        let signature = snapshot_vote_signature(b"snapshot-write");
-        let expected_message = message.clone();
+    async fn vote_dispatches_snapshot_candidate() {
+        let signature = vote_signature(b"snapshot");
+        let expected_candidate = candidate(VoteKind::Snapshot);
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::SnapshotVote(req) => {
-                assert_eq!(node, NodeId(7));
-                assert_eq!(req.node_id, NodeId(9));
-                assert_eq!(req.kind, SnapshotVoteKind::WriteChunk);
-                assert_eq!(req.message, expected_message);
+            PeerReq::Vote(req) => {
+                assert_eq!(node, address(7));
+                assert_eq!(req.signer, address(9));
+                assert_eq!(req.candidate, expected_candidate);
+                assert_eq!(req.group, SpoolGroup(4));
                 assert_eq!(req.signature, signature);
-                PeerRes::SnapshotVote(Ok(SnapshotVoteRes))
+                PeerRes::Vote(Ok(VoteRes))
             }
-            _ => PeerRes::SnapshotVote(Err(ApiError::Other("unexpected".into()))),
+            _ => PeerRes::Vote(Err(ApiError::Other("unexpected".into()))),
         });
 
         client
-            .snapshot_vote(
-                NodeId(7),
-                &SnapshotVoteReq {
-                    node_id: NodeId(9),
-                    kind: SnapshotVoteKind::WriteChunk,
-                    message,
+            .vote(
+                address(7),
+                &VoteReq {
+                    signer: address(9),
+                    candidate: expected_candidate,
+                    group: SpoolGroup(4),
                     signature,
                 },
             )
@@ -210,29 +224,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_vote_complete_group_dispatch() {
-        let message = vec![0xCD; SNAPSHOT_SIGN_MESSAGE_SIZE];
-        let signature = snapshot_vote_signature(b"snapshot-complete");
-        let expected_message = message.clone();
+    async fn vote_dispatches_assignment_candidate() {
+        let signature = vote_signature(b"assignment");
+        let expected_candidate = candidate(VoteKind::Assignment);
         let client = MemoryApi::new(move |node, req| match req {
-            PeerReq::SnapshotVote(req) => {
-                assert_eq!(node, NodeId(7));
-                assert_eq!(req.node_id, NodeId(9));
-                assert_eq!(req.kind, SnapshotVoteKind::CompleteGroup);
-                assert_eq!(req.message, expected_message);
+            PeerReq::Vote(req) => {
+                assert_eq!(node, address(7));
+                assert_eq!(req.signer, address(9));
+                assert_eq!(req.candidate, expected_candidate);
+                assert_eq!(req.group, SpoolGroup(8));
                 assert_eq!(req.signature, signature);
-                PeerRes::SnapshotVote(Ok(SnapshotVoteRes))
+                PeerRes::Vote(Ok(VoteRes))
             }
-            _ => PeerRes::SnapshotVote(Err(ApiError::Other("unexpected".into()))),
+            _ => PeerRes::Vote(Err(ApiError::Other("unexpected".into()))),
         });
 
         client
-            .snapshot_vote(
-                NodeId(7),
-                &SnapshotVoteReq {
-                    node_id: NodeId(9),
-                    kind: SnapshotVoteKind::CompleteGroup,
-                    message,
+            .vote(
+                address(7),
+                &VoteReq {
+                    signer: address(9),
+                    candidate: expected_candidate,
+                    group: SpoolGroup(8),
                     signature,
                 },
             )

@@ -1,7 +1,6 @@
 use tape_solana::*;
 use tape_api::event::TrackWritten;
 use tape_api::program::prelude::*;
-use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::spooler::SpoolGroup;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::Hash;
@@ -17,8 +16,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     let [
         fee_payer_info,
         authority_info,
-
-        epoch_info,
+        system_info,
         tape_info,
         slot_hashes_info,
     ] = accounts else {
@@ -32,9 +30,9 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     authority_info
         .is_signer()?;
 
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
+    let system = system_info
+        .is_system()?
+        .as_account::<System>(&tapedrive::ID)?;
 
     let (tape_address, _) = tape_pda((*authority_info.key).into());
 
@@ -43,8 +41,13 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .has_address(&tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if tape.expiry_epoch <= current_epoch(epoch) {
+    let curr = current_epoch(system);
+    if curr < tape.active_epoch || tape.expiry_epoch <= curr {
         return Err(TapeError::TapeExpired.into());
+    }
+
+    if system.live_group_count == 0 {
+        return Err(TapeError::UnexpectedState.into());
     }
 
     let track_number = tape.tracks.next_number();
@@ -52,6 +55,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         tape.id,
         track_number,
         slot_hash_seed(slot_hashes_info)?,
+        system.live_group_count,
     )?;
 
     let track = CompressedTrack {
@@ -71,7 +75,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     tape.write_track(&track)?;
 
     TrackWritten {
-        epoch: current_epoch(epoch),
+        epoch: curr,
         track: track_address,
         tape: tape_address,
         spool_group,
@@ -86,6 +90,7 @@ fn get_spool_group(
     tape_id: TapeNumber,
     track_number: TrackNumber,
     seed: Hash,
+    spool_groups: u64,
 ) -> Result<SpoolGroup, ProgramError> {
     let tape_number: u64 = tape_id.into();
     let mixed = u64::from_le_bytes(
@@ -96,14 +101,16 @@ fn get_spool_group(
         .wrapping_add(tape_number)
         .wrapping_add(track_number.0);
 
-    Ok(SpoolGroup(mixed % SPOOL_GROUP_COUNT as u64))
+    Ok(SpoolGroup(mixed % spool_groups))
 }
 
 fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
     slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
     let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
     let seed = Hash(
-        slot_hashes_data[16..48]
+        slot_hashes_data
+            .get(16..48)
+            .ok_or(TapeError::UnexpectedState)?
             .try_into()
             .map_err(|_| TapeError::UnexpectedState)?
     );
@@ -113,7 +120,7 @@ fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::SLICE_TREE_HEIGHT;
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::archive::TrackArchive;
@@ -145,7 +152,7 @@ mod tests {
         let bucket_hash = Hash::new_unique();
         let profile = EncodingProfile::clay_default();
 
-        let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
+        let leaves = [Hash::default(); GROUP_SIZE];
         // Compute valid commitment from leaves
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobInfo {
@@ -163,12 +170,14 @@ mod tests {
         )
         .expect("valid blob write instruction");
 
-        let (epoch_address, _) = epoch_pda();
+        let (system_address, _) = system_pda();
         let (tape_address, _) = tape_pda(authority.into());
 
-        // Setup existing accounts
-
-        let epoch = Epoch::zeroed();
+        let system = System {
+            current_epoch: EpochNumber(0),
+            live_group_count: 50,
+            ..System::zeroed()
+        };
         let tape = Tape {
             id: TapeNumber(1),
             authority: authority.into(),
@@ -187,7 +196,7 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
 
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(system_address, system.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];

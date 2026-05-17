@@ -4,7 +4,7 @@
 //! raw blobs into network-ready slices with merkle commitments.
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::SpoolIndex;
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, root_from_leaf_hashes};
 use tape_crypto::Hash;
@@ -126,7 +126,7 @@ impl BlobEncoder {
     /// * `data` - Raw blob data to encode
     ///
     /// # Returns
-    /// Vector of (index, data) tuples for all SPOOL_GROUP_SIZE slices.
+    /// Vector of (index, data) tuples for all GROUP_SIZE slices.
     pub fn encode(&mut self, data: Vec<u8>) -> Result<Vec<(SpoolIndex, Vec<u8>)>, UploadError> {
         let chunks = self.encode_internal(&data)?;
 
@@ -141,7 +141,7 @@ impl BlobEncoder {
 
     /// Encode and return raw slice data vectors (for uploader compatibility).
     ///
-    /// This method returns slices in order (0 to SPOOL_GROUP_SIZE-1), suitable
+    /// This method returns slices in order (0 to GROUP_SIZE-1), suitable
     /// for passing directly to `DistributedUploader`.
     ///
     /// # Arguments
@@ -266,9 +266,9 @@ impl BlobEncoder {
     pub fn encode_with_leaves(
         &mut self,
         data: Vec<u8>,
-    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, [Hash; SPOOL_GROUP_SIZE]), UploadError> {
+    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, [Hash; GROUP_SIZE]), UploadError> {
         let (slices, root) = self.encode_with_proofs(data)?;
-        let mut leaves = [Hash::default(); SPOOL_GROUP_SIZE];
+        let mut leaves = [Hash::default(); GROUP_SIZE];
         for s in &slices {
             leaves[s.index as usize] = s.leaf_hash;
         }
@@ -279,7 +279,7 @@ impl BlobEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
 
     /// Create a test encoder using ReedSolomonCoder (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {
@@ -292,7 +292,7 @@ mod tests {
         let data = vec![0u8; 10_000];
         let slices = encoder.encode(data).unwrap();
 
-        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
+        assert_eq!(slices.len(), GROUP_SIZE);
 
         // Verify indices are sequential
         for (idx, (slice_idx, _)) in slices.iter().enumerate() {
@@ -306,7 +306,7 @@ mod tests {
         let data = vec![42u8; 5_000];
         let slices = encoder.encode_to_vec(data).unwrap();
 
-        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
+        assert_eq!(slices.len(), GROUP_SIZE);
     }
 
     #[test]
@@ -315,7 +315,7 @@ mod tests {
         let data = vec![0xAB; 20_000];
         let (slices, root) = encoder.encode_with_root(data).unwrap();
 
-        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
+        assert_eq!(slices.len(), GROUP_SIZE);
 
         // Root should be non-zero
         assert_ne!(root.as_ref(), &[0u8; 32]);
@@ -351,8 +351,8 @@ mod tests {
         let data = vec![];
         let slices = encoder.encode(data).unwrap();
 
-        // Even empty data produces SPOOL_GROUP_SIZE slices
-        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
+        // Even empty data produces GROUP_SIZE slices
+        assert_eq!(slices.len(), GROUP_SIZE);
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
         let data = vec![0x42; 20_000];
         let (slices_with_proofs, root) = encoder.encode_with_proofs(data).unwrap();
 
-        assert_eq!(slices_with_proofs.len(), SPOOL_GROUP_SIZE);
+        assert_eq!(slices_with_proofs.len(), GROUP_SIZE);
 
         // Verify each proof
         for slice in &slices_with_proofs {

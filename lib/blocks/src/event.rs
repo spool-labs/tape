@@ -1,9 +1,10 @@
 //! Tapedrive event parsing from transaction logs.
 
 use tape_api::event::{
-    EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
-    SnapshotReserved, SnapshotSigned, SnapshotWritten, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteClosed,
+    AssignmentGroupFinalized, EpochAdvanced, EpochCommitted, EventType, NodeJoinedCommittee,
+    NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSettled, SpoolSynced, TapeDestroyed,
+    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed,
+    VoteRecorded,
 };
 
 use crate::error::ParseError;
@@ -15,9 +16,11 @@ use crate::error::ParseError;
 /// during historical catch-up.
 #[derive(Debug, Clone)]
 pub enum TapedriveEvent {
-    SnapshotReserved(SnapshotReserved),
-    SnapshotWritten(SnapshotWritten),
-    SnapshotSigned(SnapshotSigned),
+    VoteProposed(VoteProposed),
+    VoteRecorded(VoteRecorded),
+    SnapshotFinalized(SnapshotFinalized),
+    AssignmentGroupFinalized(AssignmentGroupFinalized),
+    EpochCommitted(EpochCommitted),
     EpochAdvanced(EpochAdvanced),
     TrackCertified(TrackCertified),
     TrackDeleted(TrackDeleted),
@@ -27,9 +30,9 @@ pub enum TapedriveEvent {
     TapeDestroyed(TapeDestroyed),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
-    NodeSynced(NodeSynced),
+    SpoolSynced(SpoolSynced),
+    SpoolSettled(SpoolSettled),
     PoolAdvanced(PoolAdvanced),
-    VoteClosed(VoteClosed),
 }
 
 /// Parse event data from a "Program data:" log line.
@@ -56,20 +59,30 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
     let event_data = &data[8..];
 
     match event_type {
-        EventType::SnapshotReserved => {
-            let event = bytemuck::try_from_bytes::<SnapshotReserved>(event_data)
+        EventType::VoteProposed => {
+            let event = bytemuck::try_from_bytes::<VoteProposed>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::SnapshotReserved(*event)))
+            Ok(Some(TapedriveEvent::VoteProposed(*event)))
         }
-        EventType::SnapshotWritten => {
-            let event = bytemuck::try_from_bytes::<SnapshotWritten>(event_data)
+        EventType::VoteRecorded => {
+            let event = bytemuck::try_from_bytes::<VoteRecorded>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::SnapshotWritten(*event)))
+            Ok(Some(TapedriveEvent::VoteRecorded(*event)))
         }
-        EventType::SnapshotSigned => {
-            let event = bytemuck::try_from_bytes::<SnapshotSigned>(event_data)
+        EventType::SnapshotFinalized => {
+            let event = bytemuck::try_from_bytes::<SnapshotFinalized>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::SnapshotSigned(*event)))
+            Ok(Some(TapedriveEvent::SnapshotFinalized(*event)))
+        }
+        EventType::AssignmentGroupFinalized => {
+            let event = bytemuck::try_from_bytes::<AssignmentGroupFinalized>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::AssignmentGroupFinalized(*event)))
+        }
+        EventType::EpochCommitted => {
+            let event = bytemuck::try_from_bytes::<EpochCommitted>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::EpochCommitted(*event)))
         }
         EventType::EpochAdvanced => {
             let event = bytemuck::try_from_bytes::<EpochAdvanced>(event_data)
@@ -116,20 +129,20 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::NodeJoinedCommittee(*event)))
         }
-        EventType::NodeSynced => {
-            let event = bytemuck::try_from_bytes::<NodeSynced>(event_data)
+        EventType::SpoolSynced => {
+            let event = bytemuck::try_from_bytes::<SpoolSynced>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::NodeSynced(*event)))
+            Ok(Some(TapedriveEvent::SpoolSynced(*event)))
+        }
+        EventType::SpoolSettled => {
+            let event = bytemuck::try_from_bytes::<SpoolSettled>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::SpoolSettled(*event)))
         }
         EventType::PoolAdvanced => {
             let event = bytemuck::try_from_bytes::<PoolAdvanced>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::PoolAdvanced(*event)))
-        }
-        EventType::VoteClosed => {
-            let event = bytemuck::try_from_bytes::<VoteClosed>(event_data)
-                .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::VoteClosed(*event)))
         }
         // Unknown event types are silently skipped
         _ => Ok(None),
@@ -141,7 +154,9 @@ mod tests {
     use super::*;
     use tape_core::prelude::*;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::TrackNumber;
+    use tape_core::system::{NodePreferences, VoteKind};
+    use tape_core::types::{TrackNumber, VersionId};
+    use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
@@ -154,17 +169,40 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_epoch_advanced_event() {
+    fn parse_epoch_committed_event() {
+        let event = EpochCommitted {
+            epoch: EpochNumber(5),
+            next_nonce: Hash::from([0x42; 32]),
+        };
+
+        let log = encode_event(EventType::EpochCommitted, &event);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::EpochCommitted(e) => {
+                assert_eq!(e.epoch, EpochNumber(5));
+                assert_eq!(e.next_nonce, Hash::from([0x42; 32]));
+            }
+            _ => panic!("Expected EpochCommitted event"),
+        }
+    }
+
+    #[test]
+    fn parse_epoch_advanced_event() {
         let event = EpochAdvanced {
             old_epoch: EpochNumber(5),
             new_epoch: EpochNumber(6),
             timestamp: [0; 8],
-            committee_size: [10, 0, 0, 0, 0, 0, 0, 0],
             total_stake: [0; 8],
-            storage_price: [0; 8],
-            storage_capacity: StorageUnits::mb(1000),
+            committee_count: [10, 0, 0, 0, 0, 0, 0, 0],
+            preferences: NodePreferences {
+                storage_capacity: StorageUnits::mb(1000),
+                storage_price: TAPE(0),
+                committee_size: 0,
+                spool_groups: 0,
+                min_version: VersionId(0),
+            },
             nonce: Hash::default(),
-            phase: 1, // Syncing
         };
 
         let log = encode_event(EventType::EpochAdvanced, &event);
@@ -180,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_track_certified_event() {
+    fn parse_track_certified_event() {
         let track = Address::new_unique();
         let event = TrackCertified {
             track,
@@ -202,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_track_written_event() {
+    fn parse_track_written_event() {
         let track = Address::new_unique();
         let tape = Address::new_unique();
         let event = TrackWritten {
@@ -230,88 +268,111 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_snapshot_written_event() {
-        let track = Address::new_unique();
-        let event = SnapshotWritten {
-            epoch: EpochNumber(11),
-            group: SpoolGroup(4),
-            track,
-            track_number: TrackNumber(8),
-            track_hash: Hash::from([0x33; 32]),
-        };
-
-        let log = encode_event(EventType::SnapshotWritten, &event);
-        let parsed = parse_event_data(&log).unwrap().unwrap();
-
-        match parsed {
-            TapedriveEvent::SnapshotWritten(decoded) => {
-                assert_eq!(decoded.epoch, event.epoch);
-                assert_eq!(decoded.group, event.group);
-                assert_eq!(decoded.track, event.track);
-                assert_eq!(decoded.track_number, event.track_number);
-                assert_eq!(decoded.track_hash, event.track_hash);
-            }
-            _ => panic!("Expected SnapshotWritten event"),
-        }
-    }
-
-    #[test]
-    fn test_parse_snapshot_reserved_and_signed_events() {
-        let reserved = SnapshotReserved {
-            epoch: EpochNumber(20),
-        };
-        let signed = SnapshotSigned {
-            epoch: EpochNumber(20),
-            group: SpoolGroup(3),
-            state: 0,
-        };
-
-        let reserved_log = encode_event(EventType::SnapshotReserved, &reserved);
-        let signed_log = encode_event(EventType::SnapshotSigned, &signed);
-
-        match parse_event_data(&reserved_log).unwrap().unwrap() {
-            TapedriveEvent::SnapshotReserved(decoded) => {
-                assert_eq!(decoded.epoch, reserved.epoch);
-            }
-            _ => panic!("Expected SnapshotReserved event"),
-        }
-
-        match parse_event_data(&signed_log).unwrap().unwrap() {
-            TapedriveEvent::SnapshotSigned(decoded) => {
-                assert_eq!(decoded.epoch, signed.epoch);
-                assert_eq!(decoded.group, signed.group);
-                assert_eq!(decoded.state, signed.state);
-            }
-            _ => panic!("Expected SnapshotSigned event"),
-        }
-    }
-
-    #[test]
-    fn test_parse_vote_closed_event() {
+    fn parse_vote_proposed_event() {
         let vote = Address::new_unique();
-        let event = VoteClosed {
-            epoch: EpochNumber(20),
+        let proposed = VoteProposed {
             kind: VoteKind::Snapshot as u64,
             vote,
-            registered_by: NodeId::new(7),
+            voting_epoch: EpochNumber(21),
+            target_epoch: EpochNumber(20),
+            hash: Hash::from([0x55; 32]),
+            total_groups: 5u64.to_le_bytes(),
         };
 
-        let log = encode_event(EventType::VoteClosed, &event);
-        let parsed = parse_event_data(&log).unwrap().unwrap();
+        let log = encode_event(EventType::VoteProposed, &proposed);
 
-        match parsed {
-            TapedriveEvent::VoteClosed(decoded) => {
-                assert_eq!(decoded.epoch, event.epoch);
-                assert_eq!(decoded.kind, event.kind);
+        match parse_event_data(&log).unwrap().unwrap() {
+            TapedriveEvent::VoteProposed(decoded) => {
+                assert_eq!(decoded.kind, VoteKind::Snapshot as u64);
                 assert_eq!(decoded.vote, vote);
-                assert_eq!(decoded.registered_by, event.registered_by);
+                assert_eq!(decoded.target_epoch, EpochNumber(20));
+                assert_eq!(decoded.hash, Hash::from([0x55; 32]));
             }
-            _ => panic!("Expected VoteClosed event"),
+            _ => panic!("Expected VoteProposed event"),
         }
     }
 
     #[test]
-    fn test_parse_tape_reserved_event() {
+    fn parse_vote_recorded_event() {
+        let vote = Address::new_unique();
+        let recorded = VoteRecorded {
+            kind: VoteKind::Assignment as u64,
+            vote,
+            voting_epoch: EpochNumber(20),
+            target_epoch: EpochNumber(21),
+            hash: Hash::from([0x66; 32]),
+            group: SpoolGroup(3),
+            signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
+            signed_groups: 4u64.to_le_bytes(),
+            total_groups: 5u64.to_le_bytes(),
+        };
+
+        let log = encode_event(EventType::VoteRecorded, &recorded);
+
+        match parse_event_data(&log).unwrap().unwrap() {
+            TapedriveEvent::VoteRecorded(decoded) => {
+                assert_eq!(decoded.kind, VoteKind::Assignment as u64);
+                assert_eq!(decoded.vote, vote);
+                assert_eq!(decoded.group, recorded.group);
+                assert_eq!(decoded.signer_count, recorded.signer_count);
+                assert_eq!(decoded.signed_groups, 4u64.to_le_bytes());
+            }
+            _ => panic!("Expected VoteRecorded event"),
+        }
+    }
+
+    #[test]
+    fn parse_snapshot_finalized_event() {
+        let snapshot_tape = Address::new_unique();
+        let finalized = SnapshotFinalized {
+            epoch: EpochNumber(20),
+            hash: Hash::from([0x55; 32]),
+            snapshot_tape,
+        };
+
+        let log = encode_event(EventType::SnapshotFinalized, &finalized);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::SnapshotFinalized(decoded) => {
+                assert_eq!(decoded.epoch, finalized.epoch);
+                assert_eq!(decoded.hash, finalized.hash);
+                assert_eq!(decoded.snapshot_tape, snapshot_tape);
+            }
+            _ => panic!("Expected SnapshotFinalized event"),
+        }
+    }
+
+    #[test]
+    fn parse_assignment_group_finalized_event() {
+        let group_account = Address::new_unique();
+        let finalized = AssignmentGroupFinalized {
+            epoch: EpochNumber(21),
+            hash: Hash::from([0x66; 32]),
+            group: SpoolGroup(3),
+            group_account,
+            size: StorageUnits::mb(10),
+            total_groups: 4u64.to_le_bytes(),
+            total_assigned: StorageUnits::mb(800),
+        };
+
+        let log = encode_event(EventType::AssignmentGroupFinalized, &finalized);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::AssignmentGroupFinalized(decoded) => {
+                assert_eq!(decoded.epoch, finalized.epoch);
+                assert_eq!(decoded.hash, finalized.hash);
+                assert_eq!(decoded.group, finalized.group);
+                assert_eq!(decoded.group_account, group_account);
+                assert_eq!(decoded.total_groups, 4u64.to_le_bytes());
+            }
+            _ => panic!("Expected AssignmentGroupFinalized event"),
+        }
+    }
+
+    #[test]
+    fn parse_tape_reserved_event() {
         let tape = Address::new_unique();
         let authority = Address::new_unique();
         let event = TapeReserved {
@@ -337,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_invalid_event_data() {
+    fn parse_invalid_event_data() {
         // Too short
         let result = parse_event_data("Program data: AAAA").unwrap();
         assert!(result.is_none());
@@ -348,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_unknown_event_type() {
+    fn parse_unknown_event_type() {
         // Create data with unknown discriminator (0xFF)
         let mut data = vec![0xFFu8; 8];
         data.extend_from_slice(&[0u8; 32]); // Some padding

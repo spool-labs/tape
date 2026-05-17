@@ -282,7 +282,7 @@ mod tests {
     use tape_api::program::tapedrive::{snapshot_tape_pda, SYSTEM_ADDRESS};
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::SpoolGroup;
@@ -312,7 +312,7 @@ mod tests {
     }
 
     fn default_blob() -> BlobInfo {
-        let payload = vec![vec![0xAA; 64]; SPOOL_GROUP_SIZE];
+        let payload = vec![vec![0xAA; 64]; GROUP_SIZE];
         blob_info(&payload)
     }
 

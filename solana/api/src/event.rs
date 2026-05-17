@@ -14,40 +14,44 @@ use tape_crypto::Hash;
 pub enum EventType {
     Unknown = 0,
 
-    // Track events (0x10 range)
+    // Track
     TrackCertified = 0x13,
     TrackDeleted = 0x14,
     TrackInvalidated = 0x15,
     TrackWritten = 0x16,
 
-    // Tape events (0x20 range)
+    // Tape
     TapeReserved = 0x20,
     TapeDestroyed = 0x21,
 
-    // Node events (0x30 range)
+    // Node
     NodeRegistered = 0x30,
     NodeJoinedCommittee = 0x31,
-    NodeSynced = 0x32,
-    PoolAdvanced = 0x33,
+    SpoolSynced = 0x32,
+    SpoolSettled = 0x33,
+    PoolAdvanced = 0x34,
 
-    // Epoch events (0x40 range)
-    EpochAdvanced = 0x40,
+    // Epoch
+    EpochCommitted = 0x40,
+    EpochAdvanced = 0x41,
 
-    // Staking events (0x50 range)
+    // Staking
     StakeDeposited = 0x50,
     StakeUnlockRequested = 0x51,
     StakeWithdrawn = 0x52,
 
-    // Commission events (0x60 range)
+    // Commission
     CommissionClaimed = 0x60,
 
-    // Snapshot events (0x70 range)
-    SnapshotReserved = 0x70,
-    SnapshotWritten = 0x71,
-    SnapshotSigned = 0x72,
+    // Vote
+    VoteProposed = 0x70,
+    VoteRecorded = 0x71,
 
-    // Vote events (0x80 range)
-    VoteClosed = 0x80,
+    // Snapshot
+    SnapshotFinalized = 0x72,
+
+    // Assignment
+    AssignmentGroupFinalized = 0x80,
 }
 
 /// Emitted when a track achieves certification quorum.
@@ -183,15 +187,12 @@ pub struct NodeRegistered {
 
 tape_solana::event!(EventType, NodeRegistered);
 
-/// Emitted when a node joins the active committee.
+/// Emitted when a node joins the next epoch's committee.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct NodeJoinedCommittee {
     /// Node account address
     pub node: Address,
-
-    /// Node ID
-    pub id: NodeId,
 
     /// Stake in TAPE flux units
     pub stake: [u8; 8],
@@ -211,48 +212,71 @@ pub struct NodeJoinedCommittee {
 
 tape_solana::event!(EventType, NodeJoinedCommittee);
 
-/// Emitted when a node completes epoch sync.
+/// Emitted when a single spool's owner attests data sync.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct NodeSynced {
-    /// Node account address
+pub struct SpoolSynced {
+    /// Node account address (owner of the synced spool)
     pub node: Address,
 
-    /// Node ID
-    pub id: NodeId,
-
-    /// Synced epoch
+    /// Epoch being synced
     pub epoch: EpochNumber,
 
-    /// Hash of spool assignments
-    pub spools_hash: Hash,
+    /// Spool group containing the spool
+    pub group: SpoolGroup,
 
-    /// Epoch phase after this sync (Syncing, Settling, or Active)
-    pub phase: u64,
+    /// Index within the group (0 .. GROUP_SIZE)
+    pub spool: [u8; 8],
 }
 
-tape_solana::event!(EventType, NodeSynced);
+tape_solana::event!(EventType, SpoolSynced);
 
-/// Emitted when a node advances its staking pool.
+/// Emitted when a single spool's pool reward is credited via `SettleSpool`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SpoolSettled {
+    /// Node account address (owner of the settled spool)
+    pub node: Address,
+
+    /// Previous epoch being settled
+    pub epoch: EpochNumber,
+
+    /// Spool group containing the spool
+    pub group: SpoolGroup,
+
+    /// Index within the group (0 .. GROUP_SIZE)
+    pub spool: [u8; 8],
+}
+
+tape_solana::event!(EventType, SpoolSettled);
+
+/// Emitted when a pool drains its accumulated `pending_rewards` via `AdvancePool`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct PoolAdvanced {
-    /// Node account address
+    /// Node account address (the pool being advanced)
     pub node: Address,
 
-    /// Node ID
-    pub id: NodeId,
-
-    /// Current epoch
+    /// Previous epoch absorbed by this advance
     pub epoch: EpochNumber,
-
-    /// Epoch phase after this advance (Settling or Active)
-    pub phase: u64,
 }
 
 tape_solana::event!(EventType, PoolAdvanced);
 
-/// Emitted when the protocol epoch advances.
+/// Emitted on `commit_epoch` (Active → Closing).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct EpochCommitted {
+    /// Epoch transitioning to Closing
+    pub epoch: EpochNumber,
+
+    /// Slot hash captured as the next epoch's nonce
+    pub next_nonce: Hash,
+}
+
+tape_solana::event!(EventType, EpochCommitted);
+
+/// Emitted on `advance_epoch` (Closing → next Syncing).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct EpochAdvanced {
@@ -265,23 +289,19 @@ pub struct EpochAdvanced {
     /// Unix timestamp
     pub timestamp: [u8; 8],
 
-    /// Active committee count
-    pub committee_size: [u8; 8],
-
-    /// Total staked TAPE
+    /// Total staked TAPE across the new epoch's active committee
     pub total_stake: [u8; 8],
 
-    /// Current price per StorageUnit
-    pub storage_price: [u8; 8],
+    /// Active committee size — count of members in `Committee(new_epoch)`.
+    /// Distinct from `preferences.committee_size`, which is the cap voted in
+    /// by node preferences and applied to future committees.
+    pub committee_count: [u8; 8],
 
-    /// Total network capacity
-    pub storage_capacity: StorageUnits,
+    /// Network-level preferences aggregated from this epoch's committee.
+    pub preferences: NodePreferences,
 
-    /// Randomness seed for leader schedule
+    /// Randomness seed for the new epoch (captured at the previous commit)
     pub nonce: Hash,
-
-    /// Epoch phase after advance (always Syncing)
-    pub phase: u64,
 }
 
 tape_solana::event!(EventType, EpochAdvanced);
@@ -368,72 +388,108 @@ pub struct CommissionClaimed {
 
 tape_solana::event!(EventType, CommissionClaimed);
 
-/// Emitted when a snapshot is reserved for an epoch
+/// Emitted when a snapshot or assignment candidate vote account is created.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotReserved {
-    /// The epoch this snapshot is reserved for
-    pub epoch: EpochNumber,
-}
-
-tape_solana::event!(EventType, SnapshotReserved);
-
-/// Emitted when a snapshot blob is written to the tape
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotWritten {
-    /// The epoch this snapshot is for
-    pub epoch: EpochNumber,
-
-    /// The SpoolGroup that wrote this snapshot
-    pub group: SpoolGroup,
-
-    /// Track account address
-    pub track: Address,
-
-    /// The TrackNumber that contains the snapshot blob info
-    pub track_number: TrackNumber,
-
-    /// The compressed track hash that was added to the tape's merkle tree
-    pub track_hash: Hash,
-}
-
-tape_solana::event!(EventType, SnapshotWritten);
-
-/// Emitted when a snapshot is certified by a group of signers
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SnapshotSigned {
-    /// The epoch this snapshot is for
-    pub epoch: EpochNumber,
-
-    /// The SpoolGroup that signed this snapshot
-    pub group: SpoolGroup,
-
-    /// The snapshot state (0 = Registered, 1 = PartiallyCertified, 2 = Finalized)
-    pub state: u64,
-}
-
-tape_solana::event!(EventType, SnapshotSigned);
-
-/// Emitted when an accepted quorum vote account is closed.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct VoteClosed {
-    /// The epoch this vote belonged to
-    pub epoch: EpochNumber,
-
-    /// The protocol vote domain/type
+pub struct VoteProposed {
+    /// `VoteKind` as `u64`.
     pub kind: u64,
 
-    /// Vote account address
+    /// Vote account address.
     pub vote: Address,
 
-    /// The node that registered the accepted quorum vote
-    pub registered_by: NodeId,
+    /// Epoch whose groups are voting.
+    pub voting_epoch: EpochNumber,
+
+    /// Epoch the candidate value applies to.
+    pub target_epoch: EpochNumber,
+
+    /// Snapshot or assignment hash.
+    pub hash: Hash,
+
+    /// Number of groups required to land this candidate.
+    pub total_groups: [u8; 8],
 }
 
-tape_solana::event!(EventType, VoteClosed);
+tape_solana::event!(EventType, VoteProposed);
+
+/// Emitted when a group records a vote for a snapshot or assignment candidate.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct VoteRecorded {
+    /// `VoteKind` as `u64`.
+    pub kind: u64,
+
+    /// Vote account address.
+    pub vote: Address,
+
+    /// Epoch whose groups are voting.
+    pub voting_epoch: EpochNumber,
+
+    /// Epoch the candidate value applies to.
+    pub target_epoch: EpochNumber,
+
+    /// Snapshot or assignment hash.
+    pub hash: Hash,
+
+    /// The spool group whose owners signed.
+    pub group: SpoolGroup,
+
+    /// Number of signers in this cert.
+    pub signer_count: [u8; 8],
+
+    /// Number of groups recorded after this vote.
+    pub signed_groups: [u8; 8],
+
+    /// Number of groups required to land this candidate.
+    pub total_groups: [u8; 8],
+}
+
+tape_solana::event!(EventType, VoteRecorded);
+
+/// Emitted when the canonical epoch snapshot tape is created.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SnapshotFinalized {
+    /// Epoch the snapshot belongs to.
+    pub epoch: EpochNumber,
+
+    /// Canonical snapshot hash.
+    pub hash: Hash,
+
+    /// Snapshot tape account address.
+    pub snapshot_tape: Address,
+}
+
+tape_solana::event!(EventType, SnapshotFinalized);
+
+/// Emitted when one group from the canonical assignment is finalized.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct AssignmentGroupFinalized {
+    /// Epoch the assignment group belongs to.
+    pub epoch: EpochNumber,
+
+    /// Canonical assignment hash.
+    pub hash: Hash,
+
+    /// Finalized spool group.
+    pub group: SpoolGroup,
+
+    /// Group account address.
+    pub group_account: Address,
+
+    /// Per-spool committed size for this group.
+    pub size: StorageUnits,
+
+    /// Number of groups finalized after this group lands.
+    pub total_groups: [u8; 8],
+
+    /// Total assigned storage after this group lands.
+    pub total_assigned: StorageUnits,
+}
+
+tape_solana::event!(EventType, AssignmentGroupFinalized);
 
 #[cfg(test)]
 mod tests {
@@ -444,27 +500,32 @@ mod tests {
         assert_eq!(EventType::TrackCertified as u8, 0x13);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
-        assert_eq!(EventType::EpochAdvanced as u8, 0x40);
+        assert_eq!(EventType::EpochCommitted as u8, 0x40);
+        assert_eq!(EventType::EpochAdvanced as u8, 0x41);
         assert_eq!(EventType::StakeDeposited as u8, 0x50);
         assert_eq!(EventType::CommissionClaimed as u8, 0x60);
-        assert_eq!(EventType::SnapshotReserved as u8, 0x70);
-        assert_eq!(EventType::SnapshotWritten as u8, 0x71);
-        assert_eq!(EventType::SnapshotSigned as u8, 0x72);
-        assert_eq!(EventType::VoteClosed as u8, 0x80);
+        assert_eq!(EventType::VoteProposed as u8, 0x70);
+        assert_eq!(EventType::VoteRecorded as u8, 0x71);
+        assert_eq!(EventType::SnapshotFinalized as u8, 0x72);
+        assert_eq!(EventType::SpoolSettled as u8, 0x33);
+        assert_eq!(EventType::PoolAdvanced as u8, 0x34);
+        assert_eq!(EventType::AssignmentGroupFinalized as u8, 0x80);
     }
 
     #[test]
     fn test_event_sizes() {
-        // Verify events fit within Solana's 1024-byte log limit
         assert!(TrackCertified::size_of() < 1024);
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
+        assert!(EpochCommitted::size_of() < 1024);
         assert!(EpochAdvanced::size_of() < 1024);
-        assert!(NodeSynced::size_of() < 1024);
+        assert!(SpoolSynced::size_of() < 1024);
+        assert!(SpoolSettled::size_of() < 1024);
         assert!(PoolAdvanced::size_of() < 1024);
         assert!(StakeDeposited::size_of() < 1024);
-        assert!(SnapshotReserved::size_of() < 1024);
-        assert!(SnapshotSigned::size_of() < 1024);
-        assert!(VoteClosed::size_of() < 1024);
+        assert!(VoteProposed::size_of() < 1024);
+        assert!(VoteRecorded::size_of() < 1024);
+        assert!(SnapshotFinalized::size_of() < 1024);
+        assert!(AssignmentGroupFinalized::size_of() < 1024);
     }
 }

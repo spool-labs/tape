@@ -1,11 +1,12 @@
+use tape_crypto::address::Address;
+
 use crate::types::*;
-use crate::spooler::SpoolAssignment;
-use super::Committee;
+use super::Member;
 
 pub fn get_pool_score(
     allocated: StorageUnits,
     blacklisted: StorageUnits,
-    weight: u16,
+    weight: u64,
 ) -> u128 {
     if weight == 0 {
         return 0;
@@ -21,87 +22,65 @@ pub fn get_pool_score(
     score
 }
 
-pub fn get_committee_score<const N: usize, const S: usize>(
+pub fn get_committee_score(
     allocated: StorageUnits,
-    committee: &Committee<N>,
-    spools: &SpoolAssignment<S>,
+    members: &[Member],
 ) -> u128 {
     let mut score: u128 = 0;
 
-    for (i, member) in committee.iter().enumerate() {
-        let blacklist = member.blacklist;
-        let weight = spools.weight(i);
-
-        if blacklist >= allocated {
-            continue;
-        }
-
-        if weight == 0 {
+    for member in members {
+        if member.blacklist >= allocated || member.spools == 0 {
             continue;
         }
 
         let member_score = get_pool_score(
             allocated,
-            blacklist,
-            weight,
+            member.blacklist,
+            member.spools,
         );
 
-        score = score
-            .saturating_add(member_score);
+        score = score.saturating_add(member_score);
     }
 
     score
 }
 
-pub fn calc_rewards<const N: usize, const S: usize>(
-    id: NodeId,
+pub fn calc_rewards(
+    node: Address,
     allocated: StorageUnits,
-    committee: &Committee<N>,
-    spools: &SpoolAssignment<S>,
+    members: &[Member],
     reward_pool: Coin<TAPE>,
 ) -> Coin<TAPE> {
     if allocated.is_zero() {
         return TAPE::zero();
     }
-    
-    if let Some((member, index)) = committee.get_member(&id) {
-        let weight = spools.weight(index);
-        let blacklist = member.blacklist;
 
-        // No rewards if weight is zero (pool is not assigned any spools)
-        if weight == 0 {
-            return TAPE::zero();
-        }
+    let Some(member) = members.iter().find(|m| m.node == node) else {
+        return TAPE::zero();
+    };
 
-        // No rewards if the pool has blacklisted all of allocated
-        if blacklist >= allocated {
-            return TAPE::zero();
-        }
-
-        // Calculate a weighted score for this pool
-        let pool_score = get_pool_score(
-            allocated,
-            blacklist,
-            weight
-        );
-
-        // Calculate a total weighted score for all committee members
-        let total_score = get_committee_score(
-            allocated,
-            committee,
-            spools,
-        );
-
-        // rewards = floor(reward_pool * pool_score / total_score)
-        let rewards = reward_pool.as_u128()
-            .saturating_mul(pool_score)
-            .checked_div(total_score)
-            .unwrap_or(0);
-
-        return TAPE(rewards as u64);
+    if member.spools == 0 || member.blacklist >= allocated {
+        return TAPE::zero();
     }
 
-    TAPE::zero()
+    let pool_score = get_pool_score(
+        allocated,
+        member.blacklist,
+        member.spools,
+    );
+
+    let total_score = get_committee_score(
+        allocated,
+        members,
+    );
+
+    // rewards = floor(reward_pool * pool_score / total_score)
+    let rewards = reward_pool.as_u128()
+        .saturating_mul(pool_score)
+        .checked_div(total_score)
+        .unwrap_or(0);
+
+    TAPE(rewards as u64)
 }
 
 #[cfg(test)]

@@ -6,7 +6,6 @@ define_numeric_type!(SlotNumber, "slot");
 define_numeric_type!(TapeNumber, "tape");
 define_numeric_type!(TrackNumber, "track");
 define_numeric_type!(ChunkNumber, "chunk");
-define_numeric_type!(CommitteeNumber, "committee");
 define_numeric_type!(NodeId, "node");
 define_numeric_type!(VersionId, "version");
 define_numeric_type!(ShareAmount, "shares");
@@ -15,6 +14,8 @@ define_numeric_type!(ShareAmount, "shares");
 define_numeric_type!(BasisPoints, "bps");
 define_numeric_type!(StorageUnits, "units");
 define_numeric_type!(StripeCount, "stripes");
+define_numeric_type!(SpoolIndex, "spool");
+define_numeric_type!(SpoolCount, "spools");
 
 impl BasisPoints {
     pub const MAX: u64 = 10_000;
@@ -75,35 +76,6 @@ impl StorageUnits {
     }
 }
 
-impl CommitteeNumber {
-    const CURRENT: u64 = 0;
-    const PREVIOUS: u64 = 1;
-
-    #[inline]
-    pub fn previous() -> Self {
-        Self::new(Self::PREVIOUS)
-    }
-
-    #[inline]
-    pub fn current() -> Self {
-        Self::new(Self::CURRENT)
-    }
-
-    #[inline]
-    pub fn is_current(&self) -> bool {
-        self.0 == Self::CURRENT
-    }
-
-    #[inline]
-    pub fn is_previous(&self) -> bool {
-        self.0 == Self::PREVIOUS
-    }
-    
-    #[inline]
-    pub fn is_valid(&self) -> bool {
-        self.0 == Self::CURRENT || self.0 == Self::PREVIOUS
-    }
-}
 
 #[cfg(test)]
 mod tests {

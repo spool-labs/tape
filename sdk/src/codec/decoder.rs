@@ -5,7 +5,7 @@
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_core::spooler::SpoolIndex;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_slicer::{
     ClayCoder, DEFAULT_STRIPE_SIZE, ErasureCoder, ReedSolomonCoder, Slicer, SliceMetadata,
 };
@@ -150,7 +150,7 @@ impl BlobDecoder {
     /// The reconstructed original blob data.
     ///
     /// # Errors
-    /// - `InvalidSliceIndex` if any slice index >= SPOOL_GROUP_SIZE
+    /// - `InvalidSliceIndex` if any slice index >= GROUP_SIZE
     /// - `InsufficientSlices` if fewer than k slices provided (k from metadata)
     /// - `Decoding` if erasure code reconstruction fails or encoding type is Unknown
     pub fn decode(&mut self, slices: Vec<(SpoolIndex, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
@@ -167,7 +167,7 @@ impl BlobDecoder {
 
         // Validate indices and build refs
         for &(idx, _) in &slices {
-            if idx as usize >= SPOOL_GROUP_SIZE {
+            if idx as usize >= GROUP_SIZE {
                 return Err(DownloadError::InvalidSliceIndex(idx));
             }
         }
@@ -302,7 +302,7 @@ mod tests {
         let mut encoder = test_encoder();
         let mut slices: Vec<_> = encoder.encode(original).unwrap();
 
-        // Replace one slice's index with an invalid one (>= SPOOL_GROUP_SIZE)
+        // Replace one slice's index with an invalid one (>= GROUP_SIZE)
         slices[0].0 = 9999;
 
         let mut decoder = test_decoder();

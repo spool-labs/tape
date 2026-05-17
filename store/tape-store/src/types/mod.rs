@@ -2,7 +2,7 @@
 //!
 //! This module provides all the types used throughout the tape-store crate:
 //! - Enums: NodeStatus, SpoolState, ObjectInfo
-//! - Keys: EpochKey, UnitKey, SpoolIndexKey, SliceKey, TrackLookupKey, snapshot keys
+//! - Keys: EpochKey, UnitKey, SpoolIndexKey, SliceKey, TrackLookupKey, vote/snapshot keys
 //! - Values: TapeInfo, PackedTrack, snapshot artifacts
 mod enums;
 pub mod keys;
@@ -13,12 +13,9 @@ pub use enums::ObjectInfo;
 
 // Re-export key types
 pub use keys::{
-    EpochKey, EventLogKey, SliceKey, SnapshotArtifactKey, SnapshotFinalizeSigKey,
-    SnapshotWriteSigKey, SpoolIndexKey, TrackLookupKey, UnitKey,
+    EpochKey, EventLogKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey, TrackLookupKey, UnitKey,
+    VoteSigKey,
 };
 
 // Re-export value types
-pub use values::{
-    InvalidationProof, SliceValue, SnapshotArtifact, SnapshotFinalizeVote, SnapshotWriteVote,
-    TapeInfo,
-};
+pub use values::{InvalidationProof, SliceValue, SnapshotArtifact, TapeInfo};

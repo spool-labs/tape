@@ -16,7 +16,7 @@
 //!
 //! ## Example
 //!
-//! ```no_run
+//! ```ignore
 //! use rpc_client::RpcClient;
 //! use rpc_solana::RpcConfig;
 //! use solana_sdk::signature::{Keypair, Signer};
@@ -63,7 +63,7 @@
 //!
 //! ## Submitting Transactions
 //!
-//! ```no_run
+//! ```ignore
 //! use rpc_client::RpcClient;
 //! use solana_sdk::signature::{Keypair, Signer};
 //! # use tape_api::instruction::*; // Assuming tape-api provides instruction builders

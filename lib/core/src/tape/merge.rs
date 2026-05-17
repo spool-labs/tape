@@ -23,6 +23,10 @@ pub fn merge_tapes(
         return None;
     }
 
+    if !source_used.is_zero() {
+        return None;
+    }
+
     let total_capacity = dest_capacity
         .checked_add(source_capacity)?;
 
@@ -62,10 +66,10 @@ mod tests {
     #[test]
     fn same_window() {
         let res = merge_tapes(
-            epoch(10), epoch(20), units(200), units(30),  // source
+            epoch(10), epoch(20), units(200), units(0),   // source
             epoch(10), epoch(20), units(100), units(20),  // dest
         );
-        assert_eq!(res, Some((epoch(10), epoch(20), units(300), units(50))));
+        assert_eq!(res, Some((epoch(10), epoch(20), units(300), units(20))));
     }
 
     #[test]
@@ -92,10 +96,19 @@ mod tests {
     fn touching_backward() {
         // source [40,50), dest [50,60) -> result [40,60), capacity sums
         let res = merge_tapes(
-            epoch(40), epoch(50), units(250), units(10),  // source
-            epoch(50), epoch(60), units(250), units(0),   // dest
+            epoch(40), epoch(50), units(250), units(0),   // source
+            epoch(50), epoch(60), units(250), units(10),  // dest
         );
         assert_eq!(res, Some((epoch(40), epoch(60), units(500), units(10))));
+    }
+
+    #[test]
+    fn reject_nonempty_source() {
+        let res = merge_tapes(
+            epoch(10), epoch(20), units(200), units(30),
+            epoch(10), epoch(20), units(100), units(0),
+        );
+        assert_eq!(res, None);
     }
 
     #[test]

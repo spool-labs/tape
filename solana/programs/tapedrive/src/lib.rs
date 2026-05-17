@@ -2,11 +2,13 @@
 
 pub mod archive;
 pub mod blacklist;
+pub mod committee;
 pub mod epoch;
 pub mod error;
 pub mod node;
-pub mod snapshot;
-pub mod staking;
+pub mod peer;
+pub mod pool;
+pub mod system;
 pub mod tape;
 pub mod track;
 pub mod vote;
@@ -15,41 +17,72 @@ use tape_api::program::prelude::{TapeInstruction, parse_instruction};
 use tape_api::program::tapedrive;
 use tape_solana::{AccountInfo, ProgramError, ProgramResult, Pubkey, TryFromPrimitive, entrypoint};
 
-use crate::archive::{
-    process_create_system, 
-    process_expand_system, 
-    process_initialize
+use crate::archive::process_create_archive;
+use crate::system::{
+    process_create_system,
+    process_start_network,
 };
 use crate::blacklist::{
-    process_add_to_blacklist, 
-    process_remove_from_blacklist
+    process_add_to_blacklist,
+    process_remove_from_blacklist,
 };
-use crate::epoch::process_advance_epoch;
+use crate::committee::{
+    process_create_committee,
+    process_resize_committee,
+};
+use crate::epoch::{
+    process_advance_epoch,
+    process_commit_epoch,
+    process_create_epoch,
+    process_settle_spool,
+    process_sync_spool,
+};
 use crate::node::{
-    process_advance_pool, process_claim_commission, process_join_network,
-    process_register_node, process_set_authority, process_set_bls_pubkey,
-    process_set_commission_rate, process_set_name, process_set_network_address,
-    process_set_network_tls, process_set_storage_capacity, process_set_storage_price,
-    process_sync_epoch,
+    process_claim_commission,
+    process_join_committee,
+    process_register_node,
+    process_set_authority,
+    process_set_bls_pubkey,
+    process_set_commission_rate,
+    process_set_committee_size,
+    process_set_min_version,
+    process_set_name,
+    process_set_network_address,
+    process_set_network_tls,
+    process_set_spool_groups,
+    process_set_storage_capacity,
+    process_set_storage_price,
 };
-use crate::snapshot::{
-    process_reserve_snapshot, 
-    process_write_snapshot,
-    process_sign_snapshot,
-};
-use crate::staking::{
-    process_merge_pool_stake, process_request_stake_unlock, process_split_pool_stake,
-    process_stake_with_pool, process_unstake_from_pool,
+use crate::peer::{process_create_peer_set, process_resize_peer_set};
+use crate::pool::{
+    process_advance_pool,
+    process_merge_pool_stake,
+    process_request_stake_unlock,
+    process_split_pool_stake,
+    process_stake_with_pool,
+    process_unstake_from_pool,
 };
 use crate::tape::{
-    process_destroy_tape, process_merge_tape, process_reserve_tape,
-    process_split_tape_by_epoch, process_split_tape_by_size,
+    process_destroy_tape,
+    process_merge_tape,
+    process_reserve_tape,
+    process_split_tape_by_epoch,
+    process_split_tape_by_size,
 };
 use crate::track::{
-    process_certify_track, process_delete_track, process_invalidate_track,
+    process_certify_track,
+    process_delete_track,
+    process_invalidate_track,
     process_track_write,
 };
-use crate::vote::process_close_vote;
+use crate::vote::{
+    process_finalize_group,
+    process_finalize_snapshot,
+    process_propose_assignment,
+    process_propose_snapshot,
+    process_vote_assignment,
+    process_vote_snapshot,
+};
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -66,66 +99,74 @@ pub fn process_instruction(
 
     solana_program::msg!("Instruction: {}", ix_type);
 
-    // Instructions marked with CU require a ComputeBudgetInstruction in the
-    // transaction.  See `tape_api::compute` for the canonical budget constants.
-    if let Ok(ix) = TapeInstruction::try_from(discriminator) {
-        match ix {
+    let ix = TapeInstruction::try_from(discriminator)
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
 
-            // System
-            TapeInstruction::CreateSystem => process_create_system(accounts, data)?,
-            TapeInstruction::ExpandSystem => process_expand_system(accounts, data)?,
-            TapeInstruction::Initialize => process_initialize(accounts, data)?,
-            TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,    // CU 1_400_000
+    match ix {
+        TapeInstruction::Unknown => return Err(ProgramError::InvalidInstructionData),
 
-            // Node
-            TapeInstruction::AdvancePool => process_advance_pool(accounts, data)?,      // CU   400_000
-            TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
-            TapeInstruction::JoinNetwork => process_join_network(accounts, data)?,      // CU   400_000
-            TapeInstruction::SyncEpoch => process_sync_epoch(accounts, data)?,          // CU   400_000
-            TapeInstruction::SetAuthority => process_set_authority(accounts, data)?,
-            TapeInstruction::SetBlsPubkey => process_set_bls_pubkey(accounts, data)?,
-            TapeInstruction::SetName => process_set_name(accounts, data)?,
-            TapeInstruction::SetNetworkAddress => process_set_network_address(accounts, data)?,
-            TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
-            TapeInstruction::SetStoragePrice => process_set_storage_price(accounts, data)?,
-            TapeInstruction::SetStorageCapacity => process_set_storage_capacity(accounts, data)?,
-            TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,  // CU 400_000
-            TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,       // CU 400_000
+        // System
+        TapeInstruction::CreateSystem => process_create_system(accounts, data)?,
+        TapeInstruction::CreateArchive => process_create_archive(accounts, data)?,
+        TapeInstruction::CreateCommittee => process_create_committee(accounts, data)?,
+        TapeInstruction::CreateEpoch => process_create_epoch(accounts, data)?,
+        TapeInstruction::CreatePeerSet => process_create_peer_set(accounts, data)?,
+        TapeInstruction::ResizeCommittee => process_resize_committee(accounts, data)?,
+        TapeInstruction::ResizePeerSet => process_resize_peer_set(accounts, data)?,
+        TapeInstruction::StartNetwork => process_start_network(accounts, data)?,
 
-            // Blacklist
-            TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
-            TapeInstruction::RemoveFromBlacklist => process_remove_from_blacklist(accounts, data)?,
+        // Epoch
+        TapeInstruction::SyncSpool => process_sync_spool(accounts, data)?,
+        TapeInstruction::SettleSpool => process_settle_spool(accounts, data)?,
+        TapeInstruction::CommitEpoch => process_commit_epoch(accounts, data)?,
+        TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
 
-            // Staking
-            TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,             // CU 1_400_000
-            TapeInstruction::RequestStakeUnlock => process_request_stake_unlock(accounts, data)?,   // CU   400_000
-            TapeInstruction::UnstakeFromPool => process_unstake_from_pool(accounts, data)?,         // CU   400_000
-            TapeInstruction::MergePoolStake => process_merge_pool_stake(accounts, data)?,
-            TapeInstruction::SplitPoolStake => process_split_pool_stake(accounts, data)?,
+        // Operator
+        TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
+        TapeInstruction::JoinCommittee => process_join_committee(accounts, data)?,
+        TapeInstruction::SetAuthority => process_set_authority(accounts, data)?,
+        TapeInstruction::SetName => process_set_name(accounts, data)?,
+        TapeInstruction::SetBlsPubkey => process_set_bls_pubkey(accounts, data)?,
+        TapeInstruction::SetNetworkAddress => process_set_network_address(accounts, data)?,
+        TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
+        TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,
+        TapeInstruction::SetStoragePrice => process_set_storage_price(accounts, data)?,
+        TapeInstruction::SetStorageCapacity => process_set_storage_capacity(accounts, data)?,
+        TapeInstruction::SetCommitteeSize => process_set_committee_size(accounts, data)?,
+        TapeInstruction::SetSpoolGroups => process_set_spool_groups(accounts, data)?,
+        TapeInstruction::SetMinVersion => process_set_min_version(accounts, data)?,
+        TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
+        TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
+        TapeInstruction::RemoveFromBlacklist => process_remove_from_blacklist(accounts, data)?,
 
-            // Tape
-            TapeInstruction::ReserveTape => process_reserve_tape(accounts, data)?,
-            TapeInstruction::DestroyTape => process_destroy_tape(accounts, data)?,
-            TapeInstruction::SplitTapeByEpoch => process_split_tape_by_epoch(accounts, data)?,
-            TapeInstruction::SplitTapeBySize => process_split_tape_by_size(accounts, data)?,
-            TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
+        // Pool
+        TapeInstruction::AdvancePool => process_advance_pool(accounts, data)?,
+        TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,
+        TapeInstruction::RequestStakeUnlock => process_request_stake_unlock(accounts, data)?,
+        TapeInstruction::UnstakeFromPool => process_unstake_from_pool(accounts, data)?,
+        TapeInstruction::SplitPoolStake => process_split_pool_stake(accounts, data)?,
+        TapeInstruction::MergePoolStake => process_merge_pool_stake(accounts, data)?,
 
-            // Track
-            TapeInstruction::TrackWrite => process_track_write(accounts, data)?,             // CU 1_400_000
-            TapeInstruction::DeleteTrack => process_delete_track(accounts, data)?,
-            TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,        // CU 1_400_000
-            TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,  // CU 1_400_000
+        // Tape
+        TapeInstruction::ReserveTape => process_reserve_tape(accounts, data)?,
+        TapeInstruction::DestroyTape => process_destroy_tape(accounts, data)?,
+        TapeInstruction::SplitTapeByEpoch => process_split_tape_by_epoch(accounts, data)?,
+        TapeInstruction::SplitTapeBySize => process_split_tape_by_size(accounts, data)?,
+        TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
 
-            // Snapshot
-            TapeInstruction::ReserveSnapshot => process_reserve_snapshot(accounts, data)?,
-            TapeInstruction::WriteSnapshot => process_write_snapshot(accounts, data)?,
-            TapeInstruction::SignSnapshot => process_sign_snapshot(accounts, data)?,
-            TapeInstruction::CloseVote => process_close_vote(accounts, data)?,
+        // Track
+        TapeInstruction::TrackWrite => process_track_write(accounts, data)?,
+        TapeInstruction::DeleteTrack => process_delete_track(accounts, data)?,
+        TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,
+        TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,
 
-            _ => return Err(ProgramError::InvalidInstructionData),
-        }
-    } else {
-        return Err(ProgramError::InvalidInstructionData);
+        // Vote
+        TapeInstruction::ProposeSnapshot => process_propose_snapshot(accounts, data)?,
+        TapeInstruction::VoteSnapshot => process_vote_snapshot(accounts, data)?,
+        TapeInstruction::FinalizeSnapshot => process_finalize_snapshot(accounts, data)?,
+        TapeInstruction::ProposeAssignment => process_propose_assignment(accounts, data)?,
+        TapeInstruction::VoteAssignment => process_vote_assignment(accounts, data)?,
+        TapeInstruction::FinalizeGroup => process_finalize_group(accounts, data)?,
     }
 
     Ok(())

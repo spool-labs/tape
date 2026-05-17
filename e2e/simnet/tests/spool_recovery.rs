@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use rand::Rng as _;
 use tape_api::program::EPOCH_DURATION;
-use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SPOOL_COUNT, GROUP_SIZE};
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
@@ -84,7 +84,7 @@ async fn spool_recovery_inner() {
     let slice_count = scenario
         .count_slices(&track_address, spool_group)
         .expect("count slices");
-    assert_eq!(slice_count, SPOOL_GROUP_SIZE);
+    assert_eq!(slice_count, GROUP_SIZE);
 
     // Crash 5 random nodes (previous spool owners will be unreachable)
     let mut rng = rand::thread_rng();

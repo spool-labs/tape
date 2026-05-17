@@ -44,9 +44,10 @@ use rocksdb;
 /// ## Event Log Column
 /// - `event_log` - 20-byte EventLogKey with 8-byte epoch prefix (BlockBased)
 ///
+/// ## Vote Coordination Columns
+/// - `vote_sig` - 96-byte key with 64-byte candidate/group prefix (BlockBased)
+///
 /// ## Snapshot Coordination Columns
-/// - `snapshot_write_sig` - 26-byte key with 24-byte chunk prefix (BlockBased)
-/// - `snapshot_finalize_sig` - 18-byte key with 16-byte group prefix (BlockBased)
 /// - `snapshot_artifact` - 24-byte key with 16-byte group prefix (BlobDB)
 pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
     vec![
@@ -130,16 +131,10 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_prefix_extractor(8)
             .build(),
 
-        // Snapshot write partial signatures - prefix scans by (epoch, group, chunk)
-        ColumnFamilyConfig::new("snapshot_write_sig")
+        // Vote signatures - prefix scans by (voting_epoch, kind, target_epoch, hash, group)
+        ColumnFamilyConfig::new("vote_sig")
             .with_block_based()
-            .with_prefix_extractor(24)
-            .build(),
-
-        // Snapshot finalize partial signatures - prefix scans by (epoch, group)
-        ColumnFamilyConfig::new("snapshot_finalize_sig")
-            .with_block_based()
-            .with_prefix_extractor(16)
+            .with_prefix_extractor(64)
             .build(),
 
         // Snapshot artifacts - staged local slices indexed by (epoch, group, chunk)
@@ -206,7 +201,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 17);
+        assert_eq!(configs.len(), 16);
     }
 
     #[test]
@@ -229,8 +224,7 @@ mod tests {
             "slice",
             "spool_sync_cursor",
             "event_log",
-            "snapshot_write_sig",
-            "snapshot_finalize_sig",
+            "vote_sig",
             "snapshot_artifact",
         ];
 

@@ -10,7 +10,7 @@
 //! - Slice data: Raw erasure-coded data
 //! - Spool state: Spool status, sync progress, pending repair/recovery
 //!
-//! # Column Families (13 total)
+//! # Column Families
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata
@@ -132,9 +132,8 @@ mod tests {
     use crate::ops::*;
     use crate::types::{ObjectInfo, TapeInfo};
     use store_memory::MemoryStore;
-    use tape_core::spooler::SpoolGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, SpoolGroup, SpoolIndex, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;
@@ -196,7 +195,7 @@ mod tests {
     #[test]
     fn test_spool_status() {
         let store = TapeStore::new(MemoryStore::new());
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
@@ -208,7 +207,7 @@ mod tests {
     #[test]
     fn test_slice_data_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
         let data = vec![0xAB; 1024];
@@ -255,15 +254,15 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
 
         // Insert slices in non-sequential spool order
-        for spool_id in [100u16, 1, 50, 200, 25] {
+        for spool_id in [100u64, 1, 50, 200, 25] {
             let track = Address::new_unique();
             let data = vec![0u8; 10];
-            store.put_slice(spool_id, track, data).unwrap();
+            store.put_slice(SpoolIndex(spool_id), track, data).unwrap();
         }
 
         // Verify slices come back when iterating per-spool
-        for spool_id in [1, 25, 50, 100, 200] {
-            let slices = store.iter_slices_by_spool(spool_id).unwrap();
+        for spool_id in [1u64, 25, 50, 100, 200] {
+            let slices = store.iter_slices_by_spool(SpoolIndex(spool_id)).unwrap();
             assert_eq!(slices.len(), 1);
         }
     }

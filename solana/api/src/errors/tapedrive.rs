@@ -6,17 +6,17 @@ use tape_solana::{Error, IntoPrimitive, TryFromPrimitive};
 #[repr(u32)]
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 pub enum TapeError {
-    // General (0x10)
+    // General
     #[error("unexpected state")]
     UnexpectedState = 0x10,
 
-    // Crypto (0x11-0x12)
+    // Crypto
     #[error("bad bls proof")]
     BadBlsProof = 0x11,
     #[error("bad signature")]
     BadSignature = 0x12,
 
-    // Archive (0x20-0x25)
+    // Archive
     #[error("no capacity")]
     NoCapacity = 0x20,
     #[error("no space")]
@@ -30,7 +30,7 @@ pub enum TapeError {
     #[error("cannot merge")]
     CannotMerge = 0x25,
 
-    // Epoch (0x30-0x33)
+    // Epoch
     #[error("bad epoch state")]
     BadEpochState = 0x30,
     #[error("too soon")]
@@ -39,10 +39,7 @@ pub enum TapeError {
     BadSchedule = 0x32,
     #[error("bad epoch id")]
     BadEpochId = 0x33,
-    #[error("snapshot incomplete")]
-    SnapshotIncomplete = 0x34,
-
-    // Committee (0x40-0x45)
+    // Committee
     #[error("no quorum")]
     NoQuorum = 0x40,
     #[error("no signers")]
@@ -55,22 +52,26 @@ pub enum TapeError {
     BadSpoolHash = 0x44,
     #[error("insufficient committee")]
     InsufficientCommittee = 0x45,
+    #[error("resize would orphan")]
+    ResizeWouldOrphan = 0x46,
 
-    // Node (0x50-0x55)
+    // Node
     #[error("node stale")]
     NodeStale = 0x50,
     #[error("already synced")]
     AlreadySynced = 0x51,
     #[error("already advanced")]
     AlreadyAdvanced = 0x52,
-    #[error("no rewards")]
-    NoRewards = 0x53,
     #[error("rewards overflow")]
     RewardsOverflow = 0x54,
     #[error("no commission")]
     NoCommission = 0x55,
+    #[error("already settled")]
+    AlreadySettled = 0x56,
+    #[error("spools not settled")]
+    SpoolsNotSettled = 0x57,
 
-    // Staking (0x60-0x67)
+    // Staking
     #[error("staking failed")]
     StakingFailed = 0x60,
     #[error("bad stake state")]
@@ -88,7 +89,7 @@ pub enum TapeError {
     #[error("pool accounting failed")]
     PoolAccountingFailed = 0x67,
 
-    // Commitment (0x70-0x74)
+    // Commitment
     #[error("bad proof")]
     BadProof = 0x70,
     #[error("list full")]
@@ -101,8 +102,6 @@ pub enum TapeError {
     AlreadyCertified = 0x74,
     #[error("already signed")]
     AlreadySigned = 0x75,
-    #[error("vote still active")]
-    VoteStillActive = 0x76,
 }
 
 impl From<TapeError> for solana_program::program_error::ProgramError {
@@ -132,6 +131,7 @@ impl TapeError {
             Self::BadEpochState
                 | Self::AlreadyAdvanced
                 | Self::AlreadySynced
+                | Self::AlreadySettled
                 | Self::AlreadyInvalidated
                 | Self::AlreadyCertified
                 | Self::UnexpectedState
@@ -144,8 +144,7 @@ impl TapeError {
             self,
             Self::TooSoon
                 | Self::InsufficientCommittee
-                | Self::SnapshotIncomplete
-                | Self::VoteStillActive
+                | Self::SpoolsNotSettled
         )
     }
 
@@ -173,17 +172,18 @@ impl TapeError {
             Self::TooSoon => "Please wait - epoch duration has not elapsed",
             Self::BadSchedule => "Invalid schedule",
             Self::BadEpochId => "Invalid epoch ID",
-            Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
             Self::NoQuorum => "Quorum not reached",
             Self::NoSigners => "No signers provided",
             Self::BadMember => "Invalid committee member",
             Self::NotInCommittee => "Node is not in the committee",
             Self::BadSpoolHash => "Spool hash mismatch",
             Self::InsufficientCommittee => "Not enough committee members",
+            Self::ResizeWouldOrphan => "Cannot shrink: account holds more entries than the target capacity",
             Self::NodeStale => "Node is behind - run advance-pool first",
             Self::AlreadySynced => "Node has already synced",
+            Self::AlreadySettled => "Spool has already been settled",
+            Self::SpoolsNotSettled => "Not all of this node's prev-epoch spools have been settled yet",
             Self::AlreadyAdvanced => "Already advanced",
-            Self::NoRewards => "No rewards to claim",
             Self::RewardsOverflow => "Rewards calculation overflow",
             Self::NoCommission => "No commission to claim",
             Self::StakingFailed => "Staking operation failed",
@@ -200,7 +200,6 @@ impl TapeError {
             Self::AlreadyInvalidated => "Track already invalidated",
             Self::AlreadyCertified => "Track already certified",
             Self::AlreadySigned => "Snapshot group has already signed",
-            Self::VoteStillActive => "Vote account is still active",
         }
     }
 }

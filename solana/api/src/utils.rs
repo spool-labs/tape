@@ -2,7 +2,7 @@ use solana_program::pubkey::Pubkey;
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 
-use crate::state::Epoch;
+use crate::state::System;
 use crate::consts::NAME_LENGTH;
 use crate::program::token;
 
@@ -43,22 +43,22 @@ pub fn from_name(val: &[u8; NAME_LENGTH]) -> String {
     String::from_utf8_lossy(&name_bytes).into_owned()
 }
 
-/// Helper: get the current epoch from an Epoch account
+/// Helper: get the current epoch from the System account.
 #[inline(always)]
-pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
-    epoch.id
+pub fn current_epoch(system: &System) -> EpochNumber {
+    system.current_epoch
 }
 
-/// Helper: get the next epoch from an Epoch account
+/// Helper: get the next epoch from the System account.
 #[inline(always)]
-pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
-    epoch.id.saturating_add(EpochNumber::one())
+pub fn next_epoch(system: &System) -> EpochNumber {
+    system.current_epoch.saturating_add(EpochNumber::one())
 }
 
-/// Helper: get the next epoch from an Epoch account
+/// Helper: get the previous epoch from the System account.
 #[inline(always)]
-pub fn prev_epoch(epoch: &Epoch) -> EpochNumber {
-    epoch.id.saturating_sub(EpochNumber::one())
+pub fn prev_epoch(system: &System) -> EpochNumber {
+    system.current_epoch.saturating_sub(EpochNumber::one())
 }
 
 /// Helper: get the associated token account

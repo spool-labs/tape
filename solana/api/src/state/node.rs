@@ -35,14 +35,10 @@ pub struct Node {
     /// The epoch when this node was registered.
     pub registered_epoch: EpochNumber,
 
-    /// The last epoch this node synced via SyncEpoch.
-    /// Prevents double-sync in the same epoch.
+    /// The last epoch this node synced via SyncSpool.
     pub latest_sync_epoch: EpochNumber,
 
     /// The last epoch this node's pool was advanced via AdvancePool.
-    /// Prevents double-advance in the same epoch.
-    /// Separate from latest_sync_epoch because a node in both committees
-    /// needs to both sync AND advance.
     pub latest_advance_epoch: EpochNumber,
 }
 

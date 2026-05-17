@@ -16,7 +16,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
-use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, GROUP_SIZE};
 
 use crate::view::{NodeView, TestnetView, UploadView};
 
@@ -228,12 +228,12 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
 
                 for cell in 0..GROUP_COLS {
                     let spool_in_group = row * GROUP_COLS + cell;
-                    if spool_in_group >= SPOOL_GROUP_SIZE {
+                    if spool_in_group >= GROUP_SIZE {
                         spans.push(Span::raw(" "));
                         continue;
                     }
 
-                    let spool_idx = group * SPOOL_GROUP_SIZE + spool_in_group;
+                    let spool_idx = group * GROUP_SIZE + spool_in_group;
                     if spool_idx >= SPOOL_COUNT {
                         spans.push(Span::raw(" "));
                         continue;

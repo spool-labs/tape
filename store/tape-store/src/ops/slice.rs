@@ -1,6 +1,7 @@
 //! Slice data operations (merged primary + recovery)
 
 use store::{Column, Store};
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 
 use crate::columns::SliceCol;
@@ -11,28 +12,28 @@ use crate::TapeStore;
 /// Operations for slice data storage
 pub trait SliceOps {
     /// Get slice data
-    fn get_slice(&self, spool_id: u16, track_address: Address) -> Result<Option<Vec<u8>>>;
+    fn get_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<Option<Vec<u8>>>;
 
     /// Store slice data
-    fn put_slice(&self, spool_id: u16, track_address: Address, data: Vec<u8>) -> Result<()>;
+    fn put_slice(&self, spool_id: SpoolIndex, track_address: Address, data: Vec<u8>) -> Result<()>;
 
     /// Delete slice data
-    fn delete_slice(&self, spool_id: u16, track_address: Address) -> Result<()>;
+    fn delete_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
 
     /// Check if a slice exists without loading data
-    fn has_slice(&self, spool_id: u16, track_address: Address) -> Result<bool>;
+    fn has_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool>;
 
     /// Iterate slices by spool
     fn iter_slices_by_spool(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
     ) -> Result<Vec<(Address, Vec<u8>)>>;
 
     /// Paginated slice iteration by spool. Returns up to `limit` slices
     /// starting after `after_track` (or from the beginning if None).
     fn iter_slices_by_spool_from(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
         after_track: Option<Address>,
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>>;
@@ -40,43 +41,43 @@ pub trait SliceOps {
     /// Iterate slice keys (track addresses) by spool without loading data.
     fn iter_slice_keys_by_spool(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
     ) -> Result<Vec<Address>>;
 
     /// Count slices in a spool without loading data.
-    fn count_slices_by_spool(&self, spool_id: u16) -> Result<usize>;
+    fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize>;
 
     /// Delete all slices for a spool. Returns count of deleted slices.
-    fn delete_all_slices_for_spool(&self, spool_id: u16) -> Result<usize>;
+    fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<usize>;
 }
 
 impl<S: Store> SliceOps for TapeStore<S> {
-    fn get_slice(&self, spool_id: u16, track_address: Address) -> Result<Option<Vec<u8>>> {
+    fn get_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<Option<Vec<u8>>> {
         let key = SliceKey::new(spool_id, track_address);
         Ok(self.get::<SliceCol>(&key)?.map(|value| value.0))
     }
 
-    fn put_slice(&self, spool_id: u16, track_address: Address, data: Vec<u8>) -> Result<()> {
+    fn put_slice(&self, spool_id: SpoolIndex, track_address: Address, data: Vec<u8>) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         let value = SliceValue(data);
         self.put::<SliceCol>(&key, &value)?;
         Ok(())
     }
 
-    fn delete_slice(&self, spool_id: u16, track_address: Address) -> Result<()> {
+    fn delete_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         self.delete::<SliceCol>(&key)?;
         Ok(())
     }
 
-    fn has_slice(&self, spool_id: u16, track_address: Address) -> Result<bool> {
+    fn has_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool> {
         let key = SliceKey::new(spool_id, track_address);
         Ok(self.contains::<SliceCol>(&key)?)
     }
 
     fn iter_slices_by_spool(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
         let prefix = SliceKey::spool_prefix(spool_id);
         let iter = self
@@ -97,7 +98,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
 
     fn iter_slices_by_spool_from(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
         after_track: Option<Address>,
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
@@ -141,7 +142,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
 
     fn iter_slice_keys_by_spool(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
     ) -> Result<Vec<Address>> {
         let prefix = SliceKey::spool_prefix(spool_id);
         let iter = self
@@ -158,7 +159,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         Ok(results)
     }
 
-    fn count_slices_by_spool(&self, spool_id: u16) -> Result<usize> {
+    fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
         let prefix = SliceKey::spool_prefix(spool_id);
         let iter = self
             .inner()
@@ -168,7 +169,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         Ok(iter.count())
     }
 
-    fn delete_all_slices_for_spool(&self, spool_id: u16) -> Result<usize> {
+    fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
         let raw = self.inner().inner();
         let prefix = SliceKey::spool_prefix(spool_id);
 
@@ -198,7 +199,7 @@ mod tests {
     #[test]
     fn test_slice_roundtrip() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
         let data = vec![0xAB; 1024];
@@ -217,7 +218,7 @@ mod tests {
     #[test]
     fn slice_large() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
         let data = vec![0xAB; (4 * 1024 * 1024) + 1];
 
@@ -230,7 +231,7 @@ mod tests {
     #[test]
     fn test_delete_slice() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
         let data = vec![0u8; 100];
@@ -245,7 +246,7 @@ mod tests {
     #[test]
     fn test_iter_slices_by_spool() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         let track1 = Address::new_unique();
         let track2 = Address::new_unique();
@@ -263,7 +264,7 @@ mod tests {
 
         // Different spool
         store
-            .put_slice(99, Address::new_unique(), vec![99])
+            .put_slice(SpoolIndex(99), Address::new_unique(), vec![99])
             .unwrap();
 
         let slices = store.iter_slices_by_spool(spool_id).unwrap();
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn test_has_slice() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
         assert!(!store.has_slice(spool_id, track).unwrap());
@@ -295,7 +296,7 @@ mod tests {
     #[test]
     fn test_iter_slices_by_spool_from() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         let mut tracks = Vec::new();
         for i in 0..5 {
@@ -324,21 +325,21 @@ mod tests {
         assert_eq!(next.len(), 3);
 
         // Different spool should be empty
-        let empty = store.iter_slices_by_spool_from(99, None, 10).unwrap();
+        let empty = store.iter_slices_by_spool_from(SpoolIndex(99), None, 10).unwrap();
         assert!(empty.is_empty());
     }
 
     #[test]
     fn test_iter_slice_keys_by_spool() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         let track1 = Address::new_unique();
         let track2 = Address::new_unique();
 
         store.put_slice(spool_id, track1, vec![1; 1024]).unwrap();
         store.put_slice(spool_id, track2, vec![2; 1024]).unwrap();
-        store.put_slice(99, Address::new_unique(), vec![3; 1024]).unwrap();
+        store.put_slice(SpoolIndex(99), Address::new_unique(), vec![3; 1024]).unwrap();
 
         let keys = store.iter_slice_keys_by_spool(spool_id).unwrap();
         assert_eq!(keys.len(), 2);
@@ -352,30 +353,30 @@ mod tests {
         let t2 = Address::new_unique();
         let t3 = Address::new_unique();
 
-        store.put_slice(42, t1, vec![1]).unwrap();
-        store.put_slice(42, t2, vec![2]).unwrap();
-        store.put_slice(99, t3, vec![3]).unwrap();
+        store.put_slice(SpoolIndex(42), t1, vec![1]).unwrap();
+        store.put_slice(SpoolIndex(42), t2, vec![2]).unwrap();
+        store.put_slice(SpoolIndex(99), t3, vec![3]).unwrap();
 
-        let count = store.delete_all_slices_for_spool(42).unwrap();
+        let count = store.delete_all_slices_for_spool(SpoolIndex(42)).unwrap();
         assert_eq!(count, 2);
-        assert_eq!(store.count_slices_by_spool(42).unwrap(), 0);
-        assert_eq!(store.count_slices_by_spool(99).unwrap(), 1);
+        assert_eq!(store.count_slices_by_spool(SpoolIndex(42)).unwrap(), 0);
+        assert_eq!(store.count_slices_by_spool(SpoolIndex(99)).unwrap(), 1);
     }
 
     #[test]
     fn test_count_slices_by_spool() {
         let store = test_store();
-        let spool_id = 42;
+        let spool_id = SpoolIndex(42);
 
         assert_eq!(store.count_slices_by_spool(spool_id).unwrap(), 0);
 
         for i in 0..5 {
             store.put_slice(spool_id, Address::new_unique(), vec![i]).unwrap();
         }
-        store.put_slice(99, Address::new_unique(), vec![99]).unwrap();
+        store.put_slice(SpoolIndex(99), Address::new_unique(), vec![99]).unwrap();
 
         assert_eq!(store.count_slices_by_spool(spool_id).unwrap(), 5);
-        assert_eq!(store.count_slices_by_spool(99).unwrap(), 1);
-        assert_eq!(store.count_slices_by_spool(0).unwrap(), 0);
+        assert_eq!(store.count_slices_by_spool(SpoolIndex(99)).unwrap(), 1);
+        assert_eq!(store.count_slices_by_spool(SpoolIndex(0)).unwrap(), 0);
     }
 }

@@ -1,259 +1,379 @@
-use tape_core::erasure::{MEMBER_COUNT, SPOOL_COUNT};
-use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
-use tape_core::system::{Committee, CommitteeMember, EpochPhase};
-use tape_core::types::{EpochNumber, NodeId};
-use tape_crypto::Hash;
+use std::collections::HashSet;
+
+use bytemuck::Zeroable;
+use tape_api::state::{Epoch, Group, System};
+use tape_core::spooler::SpoolGroup;
+use tape_core::system::{EpochPhase, Member, Peer};
+use tape_core::types::{EpochNumber, SpoolIndex};
+use tape_crypto::Address;
+
+/// On-chain state for one epoch, normalized for off-chain protocol use.
+#[derive(Debug, Clone)]
+pub struct EpochBundle {
+    pub epoch: Epoch,
+    pub committee: Vec<Member>,
+    pub groups: Vec<Group>,
+}
 
 /// Snapshot of on-chain protocol state.
 ///
-/// Contains committee membership, spool assignments, and epoch info.
-/// Does not include network addresses, those live in `PeerManager`.
+/// This is address-first. `NodeId` remains useful for logs and local node
+/// metadata, but peer routing and spool ownership are keyed by node account
+/// `Address`.
 #[derive(Debug, Clone)]
 pub struct ProtocolState {
-    pub epoch: EpochNumber,
-    pub phase: EpochPhase,
-    pub last_epoch: i64,
-    pub nonce: Hash,
-    pub committee: Vec<CommitteeMember>,
-    pub committee_prev: Vec<CommitteeMember>,
-    pub committee_next: Vec<CommitteeMember>,
-    pub spools: SpoolAssignment<SPOOL_COUNT>,
-    pub spools_prev: SpoolAssignment<SPOOL_COUNT>,
+    pub system: System,
+    pub peers: Vec<Peer>,
+    pub current: EpochBundle,
+    pub previous: Option<EpochBundle>,
+    pub next_epoch: Option<Epoch>,
+    pub next_committee: Option<Vec<Member>>,
+}
+
+impl Default for EpochBundle {
+    fn default() -> Self {
+        Self {
+            epoch: Epoch::zeroed(),
+            committee: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
 }
 
 impl Default for ProtocolState {
     fn default() -> Self {
         Self {
-            epoch: EpochNumber(0),
-            phase: EpochPhase::Active,
-            last_epoch: 0,
-            nonce: Hash::default(),
-            committee: Vec::new(),
-            committee_prev: Vec::new(),
-            committee_next: Vec::new(),
-            spools: bytemuck::Zeroable::zeroed(),
-            spools_prev: bytemuck::Zeroable::zeroed(),
+            system: System::zeroed(),
+            peers: Vec::new(),
+            current: EpochBundle::default(),
+            previous: None,
+            next_epoch: None,
+            next_committee: None,
         }
     }
 }
 
 impl ProtocolState {
-    /// Which node owns this spool in the current committee?
-    pub fn spool_owner(&self, spool: SpoolIndex) -> Option<NodeId> {
-        let mapping = self.spools.0.get(spool as usize)?;
-        let member_index = *mapping as usize;
-        self.committee.get(member_index).map(|m| m.id)
+    /// The current epoch number.
+    pub fn epoch(&self) -> EpochNumber {
+        self.current.epoch.id
     }
 
-    /// Which node owned this spool in the previous committee?
-    pub fn spool_owner_prev(&self, spool: SpoolIndex) -> Option<NodeId> {
-        let mapping = self.spools_prev.0.get(spool as usize)?;
-        let member_index = *mapping as usize;
-        self.committee_prev.get(member_index).map(|m| m.id)
+    /// The current epoch phase.
+    pub fn phase(&self) -> EpochPhase {
+        EpochPhase::try_from(self.current.epoch.state.phase).unwrap_or(EpochPhase::Unknown)
     }
 
-    /// All spools assigned to a member (by index in current committee).
-    pub fn member_spools(&self, member_index: usize) -> Vec<SpoolIndex> {
-        self.spools.spools_for_member(member_index)
+    /// The current epoch's nonce, used for group assignments
+    pub fn nonce(&self) -> tape_crypto::Hash {
+        self.current.epoch.nonce
     }
 
-    /// Find a member in the current committee by NodeId.
-    /// Returns (member_index, &CommitteeMember).
-    pub fn find_member(&self, node_id: NodeId) -> Option<(usize, &CommitteeMember)> {
-        self.committee
+    /// Find peer directory information by node account address.
+    pub fn peer(&self, node: Address) -> Option<&Peer> {
+        self.peers.iter().find(|peer| peer.node == node)
+    }
+
+    /// Find a member in the current committee by node account address.
+    pub fn find_member(&self, node: Address) -> Option<&Member> {
+        self.current
+            .committee
             .iter()
-            .enumerate()
-            .find(|(_, m)| m.id == node_id)
+            .find(|member| member.node == node)
     }
 
-    /// Find a member in the next committee by NodeId.
-    /// Returns (member_index, &CommitteeMember).
-    pub fn find_member_next(&self, node_id: NodeId) -> Option<(usize, &CommitteeMember)> {
-        self.committee_next
+    /// Find a member in the next committee by node account address.
+    pub fn find_member_next(&self, node: Address) -> Option<&Member> {
+        self.next_committee
+            .as_deref()?
             .iter()
-            .enumerate()
-            .find(|(_, m)| m.id == node_id)
+            .find(|member| member.node == node)
     }
 
-    /// Find a member in the previous committee by NodeId.
-    pub fn find_member_prev(&self, node_id: NodeId) -> Option<(usize, &CommitteeMember)> {
-        self.committee_prev
+    /// Find a member in the previous committee by node account address.
+    pub fn find_member_prev(&self, node: Address) -> Option<&Member> {
+        self.previous
+            .as_ref()?
+            .committee
             .iter()
-            .enumerate()
-            .find(|(_, m)| m.id == node_id)
+            .find(|member| member.node == node)
     }
 
-    /// True if `node_id` is in the current, previous, or next committee.
-    /// Used for authorizing peer-only API endpoints.
-    pub fn is_committee_peer(&self, node_id: NodeId) -> bool {
-        self.find_member(node_id).is_some()
-            || self.find_member_prev(node_id).is_some()
-            || self.find_member_next(node_id).is_some()
+    /// True if `node` is in the current, previous, or next committee.
+    pub fn is_committee_peer(&self, node: Address) -> bool {
+        self.find_member(node).is_some()
+            || self.find_member_prev(node).is_some()
+            || self.find_member_next(node).is_some()
     }
 
-    /// Build a fixed-size Committee array from the current committee Vec.
-    pub fn committee_as_array(&self) -> Committee<MEMBER_COUNT> {
-        let mut committee = Committee::new();
-        for member in &self.committee {
-            let _ = committee.try_join(member);
-        }
-        committee
+    /// Which node owns this spool in the current epoch?
+    pub fn spool_owner(&self, spool: SpoolIndex) -> Option<Address> {
+        spool_owner_inner(&self.current.groups, spool)
     }
 
-    /// Map each spool in a group to its owning NodeId (current committee).
-    ///
-    /// Returns a vec of (global_spool_index, node_id) for all spools in the group.
-    /// Spools owned by members not in the committee are skipped.
-    pub fn group_peers(&self, group: SpoolGroup) -> Vec<(SpoolIndex, NodeId)> {
-        group_peers_inner(&self.spools, &self.committee, group)
+    /// Which node owned this spool in the previous epoch?
+    pub fn spool_owner_prev(&self, spool: SpoolIndex) -> Option<Address> {
+        spool_owner_inner(&self.previous.as_ref()?.groups, spool)
     }
 
-    /// Map each spool in a group to its owning NodeId (previous committee).
-    pub fn group_peers_prev(&self, group: SpoolGroup) -> Vec<(SpoolIndex, NodeId)> {
-        group_peers_inner(&self.spools_prev, &self.committee_prev, group)
+    /// All spools assigned to a node in the current epoch.
+    pub fn member_spools(&self, node: Address) -> Vec<SpoolIndex> {
+        member_spools_inner(&self.current.groups, node)
     }
 
-    /// Count unique members responsible for spools in a group (current committee).
+    /// All spools assigned to a node in the previous epoch.
+    pub fn member_spools_prev(&self, node: Address) -> Vec<SpoolIndex> {
+        self.previous
+            .as_ref()
+            .map(|previous| member_spools_inner(&previous.groups, node))
+            .unwrap_or_default()
+    }
+
+    /// Map each spool in a group to its owning node account address.
+    pub fn group_peers(&self, group: SpoolGroup) -> Vec<(SpoolIndex, Address)> {
+        group_peers_inner(&self.current.groups, group)
+    }
+
+    /// Map each spool in a previous-epoch group to its owning node account address.
+    pub fn group_peers_prev(&self, group: SpoolGroup) -> Vec<(SpoolIndex, Address)> {
+        self.previous
+            .as_ref()
+            .map(|previous| group_peers_inner(&previous.groups, group))
+            .unwrap_or_default()
+    }
+
+    /// Count unique nodes responsible for spools in a current-epoch group.
     pub fn group_member_count(&self, group: SpoolGroup) -> usize {
-        group_member_count_inner(&self.spools, group)
+        group_member_count_inner(&self.current.groups, group)
     }
 
-    /// Count unique members responsible for spools in a group (previous committee).
+    /// Count unique nodes responsible for spools in a previous-epoch group.
     pub fn group_member_count_prev(&self, group: SpoolGroup) -> usize {
-        group_member_count_inner(&self.spools_prev, group)
+        self.previous
+            .as_ref()
+            .map(|previous| group_member_count_inner(&previous.groups, group))
+            .unwrap_or_default()
     }
 }
 
-fn group_peers_inner(
-    spools: &SpoolAssignment<SPOOL_COUNT>,
-    committee: &[CommitteeMember],
-    group: SpoolGroup,
-) -> Vec<(SpoolIndex, NodeId)> {
-    let members = spools.members_in_group(group);
-    let base = group.base();
-    members
+fn spool_owner_inner(groups: &[Group], spool: SpoolIndex) -> Option<Address> {
+    let group = SpoolGroup::of(spool);
+    let slice = group.slice_of(spool)?.as_usize();
+    groups
         .iter()
-        .enumerate()
-        .filter_map(|(i, &member_idx)| {
-            let spool = base + i as SpoolIndex;
-            let node_id = committee.get(member_idx as usize)?.id;
-            Some((spool, node_id))
+        .find(|candidate| candidate.id == group)?
+        .spools
+        .get(slice)
+        .and_then(|spool| assigned_node(spool.node))
+}
+
+fn member_spools_inner(groups: &[Group], node: Address) -> Vec<SpoolIndex> {
+    if assigned_node(node).is_none() {
+        return Vec::new();
+    }
+
+    groups
+        .iter()
+        .flat_map(|group| {
+            group
+                .spools
+                .iter()
+                .enumerate()
+                .filter_map(move |(slice, spool)| {
+                    (spool.node == node).then_some(group.id.spool_at(slice))
+                })
         })
         .collect()
 }
 
-fn group_member_count_inner(
-    spools: &SpoolAssignment<SPOOL_COUNT>,
-    group: SpoolGroup,
-) -> usize {
-    let members = spools.members_in_group(group);
-    let mut seen = [false; 256]; // SpoolMapping is u8
-    let mut count = 0;
-    for &m in members {
-        if !seen[m as usize] {
-            seen[m as usize] = true;
-            count += 1;
-        }
-    }
-    count
+fn group_peers_inner(groups: &[Group], group: SpoolGroup) -> Vec<(SpoolIndex, Address)> {
+    groups
+        .iter()
+        .find(|candidate| candidate.id == group)
+        .map(|group_account| {
+            group_account
+                .spools
+                .iter()
+                .enumerate()
+                .filter_map(|(slice, spool)| {
+                    assigned_node(spool.node).map(|node| (group.spool_at(slice), node))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn group_member_count_inner(groups: &[Group], group: SpoolGroup) -> usize {
+    groups
+        .iter()
+        .find(|candidate| candidate.id == group)
+        .map(|group_account| {
+            group_account
+                .spools
+                .iter()
+                .filter_map(|spool| assigned_node(spool.node))
+                .collect::<HashSet<_>>()
+                .len()
+        })
+        .unwrap_or_default()
+}
+
+fn assigned_node(node: Address) -> Option<Address> {
+    (node != Address::default()).then_some(node)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use tape_core::types::coin::{Coin, TAPE};
+    use bytemuck::Zeroable;
+    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::system::Spool;
+    use tape_core::types::coin::TAPE;
+    use tape_core::types::StorageUnits;
+    use tape_crypto::Hash;
 
-    fn empty_state() -> ProtocolState {
-        ProtocolState::default()
+    fn address(byte: u8) -> Address {
+        let mut bytes = [0u8; 32];
+        bytes[0] = byte;
+        Address::new(bytes)
+    }
+
+    fn member(node: Address, stake: u64) -> Member {
+        Member {
+            node,
+            stake: TAPE(stake),
+            blacklist: StorageUnits::zero(),
+            spools: 0,
+        }
+    }
+
+    fn group(epoch: EpochNumber, id: SpoolGroup, owners: &[Address]) -> Group {
+        let mut group = Group {
+            epoch,
+            id,
+            ..Group::zeroed()
+        };
+        for i in 0..GROUP_SIZE {
+            group.spools[i] = Spool {
+                node: owners[i % owners.len()],
+                ..Spool::zeroed()
+            };
+        }
+        group
+    }
+
+    fn state_with_groups() -> ProtocolState {
+        let epoch = EpochNumber(5);
+        let a = address(1);
+        let b = address(2);
+        let c = address(3);
+        ProtocolState {
+            current: EpochBundle {
+                epoch: Epoch {
+                    id: epoch,
+                    nonce: Hash::from([7; 32]),
+                    ..Epoch::zeroed()
+                },
+                committee: vec![member(a, 100), member(b, 90), member(c, 80)],
+                groups: vec![group(epoch, SpoolGroup(0), &[a, b, c])],
+            },
+            next_committee: Some(vec![member(address(9), 50)]),
+            ..ProtocolState::default()
+        }
     }
 
     #[test]
     fn find_member_empty() {
-        let state = empty_state();
-        assert!(state.find_member(NodeId(1)).is_none());
-        assert!(state.find_member_next(NodeId(1)).is_none());
+        let state = ProtocolState::default();
+        assert!(state.find_member(address(1)).is_none());
+        assert!(state.find_member_next(address(1)).is_none());
     }
 
     #[test]
     fn spool_owner_empty() {
-        let state = empty_state();
-        assert!(state.spool_owner(0).is_none());
-    }
-
-    fn state_with_3_members() -> ProtocolState {
-        let mut state = ProtocolState::default();
-        for i in 0..3u64 {
-            state.committee.push(CommitteeMember::new(
-                NodeId(i + 1),
-                Coin::<TAPE>::new(1000 - i),
-            ));
-        }
-        let mut spools = [0u8; SPOOL_COUNT];
-        for (i, s) in spools.iter_mut().enumerate() {
-            *s = (i % 3) as u8;
-        }
-        state.spools = SpoolAssignment::new(spools);
-        state
+        let state = ProtocolState::default();
+        assert!(state.spool_owner(SpoolIndex(0)).is_none());
     }
 
     #[test]
     fn group_peers_all_spools() {
-        let state = state_with_3_members();
+        let state = state_with_groups();
         let peers = state.group_peers(SpoolGroup(0));
-        assert_eq!(peers.len(), 20);
-        assert_eq!(peers[0], (0, NodeId(1)));
-        assert_eq!(peers[1], (1, NodeId(2)));
+        assert_eq!(peers.len(), GROUP_SIZE);
+        assert_eq!(peers[0], (SpoolIndex(0), address(1)));
+        assert_eq!(peers[1], (SpoolIndex(1), address(2)));
     }
 
     #[test]
-    fn group_peers_as_hashmap() {
-        let state = state_with_3_members();
-        let map: HashMap<SpoolIndex, NodeId> = state.group_peers(SpoolGroup(0)).into_iter().collect();
-        assert_eq!(map.len(), 20);
-        assert_eq!(map[&0], NodeId(1));
+    fn member_spools_uses_group_ownership() {
+        let state = state_with_groups();
+        assert_eq!(
+            state.member_spools(address(1)),
+            vec![
+                SpoolIndex(0),
+                SpoolIndex(3),
+                SpoolIndex(6),
+                SpoolIndex(9),
+                SpoolIndex(12),
+                SpoolIndex(15),
+                SpoolIndex(18),
+            ]
+        );
     }
 
     #[test]
-    fn group_peers_prev_uses_previous() {
-        let mut state = state_with_3_members();
-        state.committee_prev = vec![
-            CommitteeMember::new(NodeId(10), Coin::<TAPE>::new(500)),
-            CommitteeMember::new(NodeId(20), Coin::<TAPE>::new(400)),
-        ];
-        let mut prev_spools = [0u8; SPOOL_COUNT];
-        for (i, s) in prev_spools.iter_mut().enumerate() {
-            *s = (i % 2) as u8;
-        }
-        state.spools_prev = SpoolAssignment::new(prev_spools);
-
-        let peers = state.group_peers_prev(SpoolGroup(0));
-        assert_eq!(peers.len(), 20);
-        assert_eq!(peers[0].1, NodeId(10));
-        assert_eq!(peers[1].1, NodeId(20));
-    }
-
-    #[test]
-    fn group_member_count_3() {
-        let state = state_with_3_members();
+    fn group_member_count_counts_unique_addresses() {
+        let state = state_with_groups();
         assert_eq!(state.group_member_count(SpoolGroup(0)), 3);
     }
 
     #[test]
-    fn group_member_count_single() {
-        let mut state = ProtocolState::default();
-        state.committee.push(CommitteeMember::new(NodeId(1), Coin::<TAPE>::new(1000)));
-        state.spools = SpoolAssignment::new([0u8; SPOOL_COUNT]);
-        assert_eq!(state.group_member_count(SpoolGroup(0)), 1);
+    fn default_address_is_not_treated_as_owner() {
+        let epoch = EpochNumber(5);
+        let state = ProtocolState {
+            current: EpochBundle {
+                epoch: Epoch {
+                    id: epoch,
+                    ..Epoch::zeroed()
+                },
+                groups: vec![Group {
+                    epoch,
+                    id: SpoolGroup(0),
+                    ..Group::zeroed()
+                }],
+                ..EpochBundle::default()
+            },
+            ..ProtocolState::default()
+        };
+
+        assert!(state.spool_owner(SpoolIndex(0)).is_none());
+        assert!(state.member_spools(Address::default()).is_empty());
+        assert!(state.group_peers(SpoolGroup(0)).is_empty());
+        assert_eq!(state.group_member_count(SpoolGroup(0)), 0);
+    }
+
+    #[test]
+    fn previous_helpers_use_previous_bundle() {
+        let prev_epoch = EpochNumber(4);
+        let prev_owner = address(8);
+        let mut state = state_with_groups();
+        state.previous = Some(EpochBundle {
+            epoch: Epoch {
+                id: prev_epoch,
+                ..Epoch::zeroed()
+            },
+            committee: vec![member(prev_owner, 10)],
+            groups: vec![group(prev_epoch, SpoolGroup(0), &[prev_owner])],
+        });
+
+        assert_eq!(state.spool_owner_prev(SpoolIndex(0)), Some(prev_owner));
+        assert_eq!(state.group_member_count_prev(SpoolGroup(0)), 1);
     }
 
     #[test]
     fn find_member_next_uses_next_committee() {
-        let mut state = ProtocolState::default();
-        state.committee_next.push(CommitteeMember::new(NodeId(7), Coin::<TAPE>::new(1000)));
-
-        let member = state.find_member_next(NodeId(7)).unwrap();
-        assert_eq!(member.0, 0);
-        assert_eq!(member.1.id, NodeId(7));
+        let state = state_with_groups();
+        let member = state.find_member_next(address(9)).unwrap();
+        assert_eq!(member.node, address(9));
     }
 }

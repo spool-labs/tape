@@ -42,7 +42,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::{
         ReplayTrack, ReplayableEvent, SnapshotEntry, SnapshotLog,
     };
@@ -71,7 +71,7 @@ mod tests {
             profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(3),
-            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         }
     }
 

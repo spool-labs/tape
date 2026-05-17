@@ -11,7 +11,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         authority_ata_info,
 
         tape_info,
-        epoch_info,
+        system_info,
         archive_info,
         archive_ata_info,
 
@@ -42,14 +42,15 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     rent_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
+    let system = system_info
+        .is_system()?
+        .as_account::<System>(&tapedrive::ID)?;
 
-    let archive = archive_info
+    archive_info
         .is_writable()?
-        .is_archive()?
-        .as_account_mut::<Archive>(&tapedrive::ID)?;
+        .is_archive()?;
+
+    let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
 
     archive_ata_info
         .is_writable()?
@@ -65,7 +66,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let start_epoch = EpochNumber::unpack(args.activation_epoch);
     let end_epoch = EpochNumber::unpack(args.expiry_epoch);
 
-    if start_epoch < current_epoch(epoch) {
+    if start_epoch < current_epoch(system) {
         return Err(ProgramError::InvalidArgument);
     }
     if end_epoch <= start_epoch {
@@ -90,7 +91,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         num_epochs.as_u64(),
     ).ok_or(ProgramError::InvalidArgument)?;
 
-    let current_epoch = current_epoch(epoch);
+    let current_epoch = current_epoch(system);
     let current_capacity = archive.storage_capacity;
 
     if archive.schedule.current_epoch() != current_epoch {
@@ -106,9 +107,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .reserve_capacity(total_units, fee_per_epoch, start_epoch, end_epoch)
         .map_err(|_| TapeError::UnexpectedState)?;
 
-    // Assign tape ID before incrementing count (1-indexed)
-    // TODO: this is broken, we can't be decrementing tape count on destroy if we are using it to
-    // generate tape IDs, we need a different way to generate unique tape IDs.
+    // Assign tape ID before incrementing count (1-indexed).
     let tape_id = TapeNumber(archive.tape_count.checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?);
 
@@ -158,7 +157,7 @@ mod tests {
     use tape_test::*;
 
     #[test]
-    fn test_reserve_tape() {
+    fn reserve_tape() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -169,15 +168,13 @@ mod tests {
 
         let instruction = build_reserve_tape_ix(fee_payer.into(), authority.into(), storage_units, start_epoch, end_epoch);
 
-        let (epoch_address, _) = epoch_pda();
+        let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
         let (tape_address, _) = tape_pda(authority.into());
         let authority_ata = ata_address(&authority);
 
-        // Setup existing accounts
-
-        let epoch = Epoch::zeroed();
+        let system = System::zeroed();
 
         let archive = Archive {
             storage_capacity: StorageUnits::mb(1000), // 1000 MB capacity
@@ -209,7 +206,7 @@ mod tests {
             token(authority_ata, authority, initial_token_balance),
 
             empty(tape_address),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             token(archive_ata, archive_address, 0),
 

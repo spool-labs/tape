@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use tape_api::program::EPOCH_DURATION;
-use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, GROUP_SIZE};
 
 use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
 use crate::sparkline::{render_braille_sparkline, render_node_sparkline};
@@ -264,11 +264,11 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
                 }
                 for c in 0..GROUP_COLS {
                     let spool_in_group = row * GROUP_COLS + c;
-                    if spool_in_group >= SPOOL_GROUP_SIZE {
+                    if spool_in_group >= GROUP_SIZE {
                         spans.push(Span::raw(" "));
                         continue;
                     }
-                    let spool_idx = group * SPOOL_GROUP_SIZE + spool_in_group;
+                    let spool_idx = group * GROUP_SIZE + spool_in_group;
                     if spool_idx >= SPOOL_COUNT {
                         spans.push(Span::raw(" "));
                         continue;

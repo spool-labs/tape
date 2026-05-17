@@ -1,6 +1,6 @@
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::system::SpoolStatus;
 use tape_core::track::types::TrackState;
@@ -186,7 +186,7 @@ fn enqueue_certified_repairs<Db: Store>(
 
     let group = track_info.spool_group;
 
-    for slice in 0..SPOOL_GROUP_SIZE {
+    for slice in 0..GROUP_SIZE {
         let spool = group.spool_at(slice);
 
         let Some(mut state) = store.get_spool_state(spool).map_err(store_error)? else {
@@ -244,7 +244,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::SpoolGroup;
     use tape_core::track::blob::BlobInfo;
@@ -270,7 +270,7 @@ mod tests {
             profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(3),
-            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         };
 
         ReplayableEvent::Track(ReplayTrack {
@@ -432,7 +432,7 @@ mod tests {
                 },
             )
             .unwrap();
-        for slice_index in 0..SPOOL_GROUP_SIZE {
+        for slice_index in 0..GROUP_SIZE {
             store
                 .put_slice(spool_group.spool_at(slice_index), track, vec![slice_index as u8])
                 .unwrap();
@@ -450,7 +450,7 @@ mod tests {
 
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
-        for slice_index in 0..SPOOL_GROUP_SIZE {
+        for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
                     .get_slice(spool_group.spool_at(slice_index), track)
@@ -480,7 +480,7 @@ mod tests {
                 },
             )
             .unwrap();
-        for slice_index in 0..SPOOL_GROUP_SIZE {
+        for slice_index in 0..GROUP_SIZE {
             store
                 .put_slice(spool_group.spool_at(slice_index), track, vec![0xAB; 8])
                 .unwrap();
@@ -504,7 +504,7 @@ mod tests {
                 slot: SlotNumber(55),
             })
         );
-        for slice_index in 0..SPOOL_GROUP_SIZE {
+        for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
                     .get_slice(spool_group.spool_at(slice_index), track)
@@ -557,7 +557,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            for slice_index in 0..SPOOL_GROUP_SIZE {
+            for slice_index in 0..GROUP_SIZE {
                 store
                     .put_slice(spool_group.spool_at(slice_index), track, vec![0xCD; 8])
                     .unwrap();
@@ -593,7 +593,7 @@ mod tests {
         for track in [track_a, track_b] {
             assert!(store.get_track(track).unwrap().is_none());
             assert!(store.get_object_info(track).unwrap().is_none());
-            for slice_index in 0..SPOOL_GROUP_SIZE {
+            for slice_index in 0..GROUP_SIZE {
                 assert!(
                     store
                         .get_slice(spool_group.spool_at(slice_index), track)

@@ -91,7 +91,7 @@ mod tests {
     use axum::response::IntoResponse;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, SPOOL_GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::spooler::SpoolGroup;
@@ -128,7 +128,7 @@ mod tests {
         let stripe_size = slicer.stripe_size();
         let stripe_count = chunk.len().div_ceil(stripe_size);
 
-        let leaves: [Hash; SPOOL_GROUP_SIZE] =
+        let leaves: [Hash; GROUP_SIZE] =
             core::array::from_fn(|index| hash_leaf(&slices[index]));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 

@@ -13,7 +13,7 @@ use tape_api::instruction::{
 };
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{
     BlobInfo, CompressedTrack, EncodingProfile, EpochNumber, SpoolGroup, StorageUnits,
     StripeCount, TrackNumber,
@@ -50,7 +50,7 @@ pub struct UploadPlan {
     pub profile: EncodingProfile,
     pub stripe_size: usize,
     pub stripe_count: usize,
-    pub leaves: [Hash; SPOOL_GROUP_SIZE],
+    pub leaves: [Hash; GROUP_SIZE],
 }
 
 #[derive(Clone)]

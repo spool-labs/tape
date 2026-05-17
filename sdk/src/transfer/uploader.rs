@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use futures::stream::{self, StreamExt};
 use tape_core::bft::{max_faulty, min_correct};
-use tape_core::erasure::{SPOOL_GROUP_SIZE, spool_for_slice};
+use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_crypto::address::Address;
@@ -80,9 +80,9 @@ impl DistributedUploader {
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
     ) -> Result<Self, UploadError> {
-        if slices.len() != SPOOL_GROUP_SIZE {
+        if slices.len() != GROUP_SIZE {
             return Err(UploadError::InvalidSliceCount {
-                expected: SPOOL_GROUP_SIZE,
+                expected: GROUP_SIZE,
                 got: slices.len(),
             });
         }
@@ -133,7 +133,7 @@ impl DistributedUploader {
             .collect();
 
         let required_members = min_correct(self.group_member_count as u64) as usize;
-        let required_slices = min_correct(SPOOL_GROUP_SIZE as u64) as usize;
+        let required_slices = min_correct(GROUP_SIZE as u64) as usize;
         let quorum_reached = Arc::new(AtomicBool::new(false));
 
         // Upload to each node in parallel. Before quorum, slice uploads use the
@@ -242,7 +242,7 @@ impl DistributedUploader {
 
         // If more than f slices were rejected as NotResponsible, the epoch
         // has changed. A Byzantine minority (at most f nodes) cannot fake this.
-        let f = max_faulty(SPOOL_GROUP_SIZE as u64) as usize;
+        let f = max_faulty(GROUP_SIZE as u64) as usize;
         if not_responsible_count > f {
             return Err(UploadError::EpochChanged {
                 not_responsible: not_responsible_count,
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn uploader_creation() {
-        let slices = make_test_slices(SPOOL_GROUP_SIZE);
+        let slices = make_test_slices(GROUP_SIZE);
         let state = make_test_state(2);
 
         let uploader = DistributedUploader::new(
@@ -418,7 +418,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(uploader.slice_count(), SPOOL_GROUP_SIZE);
+        assert_eq!(uploader.slice_count(), GROUP_SIZE);
     }
 
     #[test]

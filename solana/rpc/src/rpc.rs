@@ -88,6 +88,18 @@ pub trait Rpc: Send + Sync {
         pubkeys: &[Address],
     ) -> Result<Vec<Option<Account>>, RpcError>;
 
+    /// Fetch multiple accounts in a single request at an explicit commitment.
+    ///
+    /// Returns `None` for accounts that don't exist.
+    async fn get_multiple_accounts_with_commitment(
+        &self,
+        pubkeys: &[Address],
+        commitment: CommitmentLevel,
+    ) -> Result<Vec<Option<Account>>, RpcError> {
+        let _ = commitment;
+        self.get_multiple_accounts(pubkeys).await
+    }
+
     /// Fetch program accounts with filters
     async fn get_program_accounts(
         &self,

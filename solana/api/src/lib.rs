@@ -2,6 +2,7 @@
 
 pub mod compute;
 pub mod consts;
+pub mod dynamic;
 pub mod errors;
 pub mod event;
 pub mod helpers;
@@ -20,16 +21,17 @@ pub mod prelude {
     pub use crate::program::{
         archive_ata,
         archive_pda,
+        committee_pda,
         epoch_pda,
         exchange_ata,
         exchange_pda,
+        group_pda,
         history_pda,
         metadata_pda,
         mint_pda,
         node_pda,
-        snapshot_pda,
+        peer_set_pda,
         snapshot_tape_pda,
-        snapshot_vote_pda,
         stake_pda,
         system_pda,
         tape_pda,
@@ -40,15 +42,16 @@ pub mod prelude {
     pub use crate::state::{
         AccountType,
         Archive,
+        Committee,
         Epoch,
         Exchange,
+        Group,
         History,
         Node,
-        Snapshot,
+        PeerSet,
         Stake,
         System,
         Tape,
         Treasury,
-        Vote,
     };
 }

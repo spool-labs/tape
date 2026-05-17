@@ -3,7 +3,7 @@ use std::sync::Arc;
 use peer_manager::PeerManager;
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::track::data::TrackData;
 use tape_core::types::{NodeId, StorageUnits};
@@ -288,7 +288,7 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     let track = track_addr;
     let mut slices = Vec::with_capacity(k);
 
-    let positions: Vec<usize> = (0..SPOOL_GROUP_SIZE)
+    let positions: Vec<usize> = (0..GROUP_SIZE)
         .filter(|&pos| group.spool_at(pos) != spool)
         .collect();
     let mut pos_iter = positions.into_iter();
@@ -764,7 +764,7 @@ mod tests {
         // Compute which helper positions will succeed (first k, excluding ours).
         let mut good_spools = std::collections::HashSet::new();
         let mut count = 0;
-        for pos in 0..SPOOL_GROUP_SIZE {
+        for pos in 0..GROUP_SIZE {
             let helper_spool = group.spool_at(pos);
             if helper_spool == SPOOL {
                 continue;

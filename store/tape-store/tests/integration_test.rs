@@ -1,9 +1,8 @@
 //! Integration tests for TapeStore with RocksDB backend
 
-use tape_core::spooler::SpoolGroup;
 use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber, SpoolGroup, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_store::{ops::*, types::*, TapeStore};
@@ -96,35 +95,36 @@ fn all_column_families() {
         .unwrap();
 
     // Spool status (NOT epoch-namespaced)
+    let spool = SpoolIndex(42);
     store
-        .set_spool_state(42, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
+        .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
         .unwrap();
 
     // Sync progress
     let progress_track = Address::new_unique();
-    store.set_spool_sync_cursor(42, progress_track).unwrap();
+    store.set_spool_sync_cursor(spool, progress_track).unwrap();
 
     // Pending recovery
     store
-        .add_pending_recovery(42, track_address)
+        .add_pending_recovery(spool, track_address)
         .unwrap();
 
     // Slices
     store
-        .put_slice(42, track_address, vec![0u8; 1024])
+        .put_slice(spool, track_address, vec![0u8; 1024])
         .unwrap();
 
     // Verify we can read everything back
     assert!(store.get_track(track_address).unwrap().is_some());
     assert!(store.get_tape(tape_address).unwrap().is_some());
     assert!(store.get_object_info(object_address).unwrap().is_some());
-    assert!(store.get_spool_state(42).unwrap().unwrap().is_active());
+    assert!(store.get_spool_state(spool).unwrap().unwrap().is_active());
     assert_eq!(
-        store.get_spool_sync_cursor(42).unwrap(),
+        store.get_spool_sync_cursor(spool).unwrap(),
         Some(progress_track)
     );
-    assert!(store.has_pending_recovery(42, track_address).unwrap());
-    assert!(store.get_slice(42, track_address).unwrap().is_some());
+    assert!(store.has_pending_recovery(spool, track_address).unwrap());
+    assert!(store.get_slice(spool, track_address).unwrap().is_some());
 }
 
 #[test]
@@ -139,10 +139,10 @@ fn large_slice_data() {
     let track_address = Address::new_unique();
 
     store
-        .put_slice(0, track_address, large_data.clone())
+        .put_slice(SpoolIndex(0), track_address, large_data.clone())
         .unwrap();
 
-    let retrieved = store.get_slice(0, track_address).unwrap().unwrap();
+    let retrieved = store.get_slice(SpoolIndex(0), track_address).unwrap().unwrap();
     assert_eq!(retrieved, large_data);
 }
 
@@ -158,23 +158,23 @@ fn spool_prefix_iteration() {
     let spool_100_tracks: Vec<Address> = (0..5).map(|_| Address::new_unique()).collect();
 
     for track in &spool_42_tracks {
-        store.put_slice(42, *track, vec![0u8; 100]).unwrap();
+        store.put_slice(SpoolIndex(42), *track, vec![0u8; 100]).unwrap();
     }
 
     for track in &spool_100_tracks {
-        store.put_slice(100, *track, vec![0u8; 100]).unwrap();
+        store.put_slice(SpoolIndex(100), *track, vec![0u8; 100]).unwrap();
     }
 
     // Query spool 42 only
-    let spool_42_slices = store.iter_slices_by_spool(42).unwrap();
+    let spool_42_slices = store.iter_slices_by_spool(SpoolIndex(42)).unwrap();
     assert_eq!(spool_42_slices.len(), 10);
 
     // Query spool 100 only
-    let spool_100_slices = store.iter_slices_by_spool(100).unwrap();
+    let spool_100_slices = store.iter_slices_by_spool(SpoolIndex(100)).unwrap();
     assert_eq!(spool_100_slices.len(), 5);
 
     // Verify empty spool returns empty
-    let spool_999_slices = store.iter_slices_by_spool(999).unwrap();
+    let spool_999_slices = store.iter_slices_by_spool(SpoolIndex(999)).unwrap();
     assert_eq!(spool_999_slices.len(), 0);
 }
 
@@ -205,22 +205,22 @@ fn spool_ops() {
 
     // Set status (NOT epoch-namespaced)
     store
-        .set_spool_state(42, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
+        .set_spool_state(SpoolIndex(42), SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
         .unwrap();
     store
-        .set_spool_state(43, SpoolState::new(SpoolStatus::Sync, EpochNumber(0)))
+        .set_spool_state(SpoolIndex(43), SpoolState::new(SpoolStatus::Sync, EpochNumber(0)))
         .unwrap();
 
-    assert!(store.get_spool_state(42).unwrap().unwrap().is_active());
-    assert!(store.get_spool_state(43).unwrap().unwrap().is_syncing());
+    assert!(store.get_spool_state(SpoolIndex(42)).unwrap().unwrap().is_active());
+    assert!(store.get_spool_state(SpoolIndex(43)).unwrap().unwrap().is_syncing());
 
     // Iterate all spools
     let spools = store.iter_all_spools().unwrap();
     assert_eq!(spools.len(), 2);
 
     // Remove
-    store.remove_spool_state(42).unwrap();
-    assert!(store.get_spool_state(42).unwrap().is_none());
+    store.remove_spool_state(SpoolIndex(42)).unwrap();
+    assert!(store.get_spool_state(SpoolIndex(42)).unwrap().is_none());
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn pending_recovery_operations() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let spool_id = 42;
+    let spool_id = SpoolIndex(42);
     let track1 = Address::new_unique();
     let track2 = Address::new_unique();
     let track3 = Address::new_unique();
@@ -265,7 +265,7 @@ fn pending_repair_operations() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let spool_id = 42;
+    let spool_id = SpoolIndex(42);
     let track1 = Address::new_unique();
     let track2 = Address::new_unique();
     let track3 = Address::new_unique();
@@ -294,7 +294,7 @@ fn slice_operations() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let spool_id = 42;
+    let spool_id = SpoolIndex(42);
     let track = Address::new_unique();
 
     let data = vec![0xAB; 100];

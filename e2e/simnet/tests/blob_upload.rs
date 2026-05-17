@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tape_api::program::EPOCH_DURATION;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
@@ -82,8 +82,8 @@ async fn blob_upload_inner() {
         .count_slices(&track_address, spool_group)
         .expect("count slices");
     assert_eq!(
-        slice_count, SPOOL_GROUP_SIZE,
-        "expected {SPOOL_GROUP_SIZE} slices stored, got {slice_count}"
+        slice_count, GROUP_SIZE,
+        "expected {GROUP_SIZE} slices stored, got {slice_count}"
     );
 
     // Download and verify data integrity

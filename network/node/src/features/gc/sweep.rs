@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use tokio::task::yield_now;
 
 use store::Store;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
@@ -119,7 +119,7 @@ fn cleanup_unowned_track_slices<Db: Store>(
 ) -> Result<usize, NodeError> {
     let mut deleted_slices = 0usize;
 
-    for slice_index in 0..SPOOL_GROUP_SIZE {
+    for slice_index in 0..GROUP_SIZE {
         let spool_id = spool_group.spool_at(slice_index);
 
         if owned_spools.contains(&spool_id) {
