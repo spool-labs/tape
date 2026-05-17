@@ -77,9 +77,9 @@ async fn blob_upload_inner() {
     );
 
     // Verify slices stored across the spool group
-    let spool_group = track.spool_group;
+    let group = track.group;
     let slice_count = scenario
-        .count_slices(&track_address, spool_group)
+        .count_slices(&track_address, group)
         .expect("count slices");
     assert_eq!(
         slice_count, GROUP_SIZE,

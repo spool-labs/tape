@@ -4,16 +4,15 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
-use bytemuck::cast;
 
 use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::cert::track::TrackInvalidateMessage;
-use tape_core::erasure::{GROUP_SIZE, group_for_spool};
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{CommitteeBitmap, EpochNumber};
+use tape_core::types::{BitmapRead, EpochNumber};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{
@@ -21,13 +20,13 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{TrackDataOps, TrackOps};
 
-use crate::features::http::auth::PeerCommitteeMember;
+use crate::features::http::auth::PeerAuth;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _peer: PeerCommitteeMember,
+    _peer: PeerAuth,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -80,7 +79,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let response = BlsInconsistencyResponse {
         signature,
-        node_id: state.context.node_id(),
+        node: state.context.node_address(),
         epoch,
     };
 
@@ -102,36 +101,35 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<(), RouteError> {
 
     let protocol = state.context.state();
-    if protocol.epoch != epoch || protocol.committee.is_empty() {
+    if protocol.epoch() != epoch || protocol.current.committee.is_empty() {
         return Err(RouteError::BadRequest("committee missing".into()));
     }
 
-    let bitmap: CommitteeBitmap = cast(proof.committee_bitmap);
-    let signer_indices = bitmap.indices(protocol.committee.len());
+    let signer_indices = proof.spool_bitmap.indices();
     if signer_indices.is_empty() {
         return Err(RouteError::BadRequest(
             "inconsistency proof has no signers".into(),
         ));
     }
 
-    let mut signer_weight = 0u64;
     let mut signer_pubkeys = Vec::with_capacity(signer_indices.len());
+    let group = protocol
+        .current
+        .groups
+        .iter()
+        .find(|group| group.id == track_info.group)
+        .ok_or_else(|| RouteError::BadRequest("track group missing".into()))?;
 
     for signer_index in signer_indices {
-        let member = protocol
-            .committee
+        let spool = group
+            .spools
             .get(signer_index)
             .ok_or_else(|| RouteError::BadRequest("unknown signer in bitmap".into()))?;
 
-        signer_weight += protocol
-            .member_spools(signer_index)
-            .iter()
-            .filter(|&&spool| group_for_spool(spool) == track_info.spool_group)
-            .count() as u64;
-        signer_pubkeys.push(member.key);
+        signer_pubkeys.push(spool.bls_pubkey);
     }
 
-    if !is_supermajority(signer_weight, GROUP_SIZE as u64) {
+    if !is_supermajority(signer_pubkeys.len() as u64, GROUP_SIZE as u64) {
         return Err(RouteError::BadRequest(
             "inconsistency proof lacks quorum for spool group".into(),
         ));
@@ -158,14 +156,14 @@ fn store_error(error: impl Display) -> RouteError {
 mod tests {
     use axum::body::Bytes;
     use axum::extract::{Path, State};
-    use bytemuck::{cast, Zeroable};
+    use bytemuck::Zeroable;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
@@ -185,11 +183,9 @@ mod tests {
     #[tokio::test]
     async fn matching_root_rejected() {
         let ctx = test_context();
-        ctx.set_state(ProtocolState {
-            epoch: EpochNumber(6),
-            ..ProtocolState::default()
-        })
-        .expect("set state");
+        let mut state = ProtocolState::default();
+        state.current.epoch.id = EpochNumber(6);
+        ctx.set_state(state).expect("set state");
 
         let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
@@ -204,7 +200,7 @@ mod tests {
 
         let epoch = EpochNumber(5);
 
-        let group = SpoolGroup(2);
+        let group = GroupIndex(2);
         let track_number = TrackNumber(9);
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
         let track_address = track_pda(snapshot_tape, track_number).0;
@@ -225,7 +221,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
-            spool_group: group,
+            group: group,
             value_hash: blob.get_hash(),
         };
 
@@ -252,15 +248,15 @@ mod tests {
         let request = InconsistencyRequest {
             proof: InconsistencyProof {
                 observed_root: blob.commitment_root(),
-                committee_bitmap: cast([0u64; 2]),
+                spool_bitmap: tape_core::types::SpoolBitmap::zeroed(),
                 signature: BlsSignature::zeroed(),
             },
         };
 
         let body = wincode::serialize(&request).expect("serialize request");
 
-        let peer = PeerCommitteeMember {
-            node_id: tape_core::types::NodeId(0),
+        let peer = PeerAuth {
+            node: ctx.node_address(),
             tls_pubkey: tape_core::types::tls::NetworkTlsPubkey::new_unique(),
         };
         let err = invalidate(
@@ -281,6 +277,7 @@ mod tests {
             | RouteError::NotResponsible
             | RouteError::NotInCommittee
             | RouteError::InvalidSignature
+            | RouteError::Forbidden(_)
             | RouteError::Internal(_) => panic!("unexpected RouteError variant"),
         }
     }

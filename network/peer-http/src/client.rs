@@ -683,7 +683,7 @@ mod tests {
     use peer_tls::{build_server_config, install_default_provider};
     use rand::thread_rng;
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::VoteKind;
     use tape_core::system::NodePreferences;
     use tape_core::types::coin::TAPE;
@@ -790,7 +790,7 @@ mod tests {
         let request = VoteRequest {
             signer,
             candidate: candidate(VoteKind::Snapshot),
-            group: SpoolGroup(4),
+            group: GroupIndex(4),
             signature: BlsPrivateKey::from_random()
                 .sign(b"snapshot")
                 .unwrap(),
@@ -839,7 +839,7 @@ mod tests {
         let request = VoteRequest {
             signer,
             candidate: candidate(VoteKind::Assignment),
-            group: SpoolGroup(8),
+            group: GroupIndex(8),
             signature: BlsPrivateKey::from_random()
                 .sign(b"assignment")
                 .unwrap(),
@@ -904,7 +904,7 @@ mod tests {
         let request = VoteReq {
             signer,
             candidate: candidate(VoteKind::Snapshot),
-            group: SpoolGroup(4),
+            group: GroupIndex(4),
             signature: BlsPrivateKey::from_random().sign(b"x").unwrap(),
         };
         assert!(api.vote(target, &request).await.is_err());

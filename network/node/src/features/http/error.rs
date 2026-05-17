@@ -5,6 +5,7 @@ use axum::response::{IntoResponse, Response};
 pub enum RouteError {
     NotFound,
     BadRequest(String),
+    Forbidden(String),
     NotResponsible,
     NotInCommittee,
     InvalidSignature,
@@ -16,6 +17,7 @@ impl IntoResponse for RouteError {
         match self {
             Self::NotFound => (StatusCode::NOT_FOUND, "not found").into_response(),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+            Self::Forbidden(message) => (StatusCode::FORBIDDEN, message).into_response(),
             Self::NotResponsible => (StatusCode::FORBIDDEN, "not responsible").into_response(),
             Self::NotInCommittee => (StatusCode::FORBIDDEN, "not in committee").into_response(),
             Self::InvalidSignature => {

@@ -44,7 +44,7 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     }
 
     let spool = SpoolIndex::unpack(args.spool);
-    let group_id = SpoolGroup::of(spool);
+    let group_id = GroupIndex::containing(spool);
 
     let group = group_info
         .is_writable()?
@@ -52,9 +52,9 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .as_account_mut::<Group>(&tapedrive::ID)?;
 
     let slice = group_id
-        .slice_of(spool)
+        .position_of(spool)
         .ok_or(TapeError::BadSpoolHash)?;
-    let slice_idx = slice.as_usize();
+    let slice_idx = slice;
 
     let node = node_info
         .is_writable()?
@@ -109,7 +109,7 @@ mod tests {
 
     fn group_with_owner(
         epoch: EpochNumber,
-        group_id: SpoolGroup,
+        group_id: GroupIndex,
         owner_slot: usize,
         owner: Address,
     ) -> Group {
@@ -126,7 +126,7 @@ mod tests {
         let authority = Pubkey::new_unique();
 
         let curr = EpochNumber(42);
-        let group_id = SpoolGroup(3);
+        let group_id = GroupIndex(3);
         let slice_in_group = 7usize;
         let spool = group_id.spool_at(slice_in_group);
 

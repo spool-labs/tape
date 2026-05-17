@@ -133,7 +133,7 @@ mod tests {
     use crate::types::{ObjectInfo, TapeInfo};
     use store_memory::MemoryStore;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::types::{EpochNumber, SlotNumber, SpoolGroup, SpoolIndex, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;
@@ -151,7 +151,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024 * 1024),
-            spool_group: SpoolGroup(3),
+            group: GroupIndex(3),
             value_hash: Hash::new_unique(),
         };
 
@@ -286,7 +286,7 @@ mod tests {
                 kind: TrackKind::Blob as u64,
                 state: TrackState::Certified as u64,
                 size: StorageUnits::from_bytes(1024),
-                spool_group: SpoolGroup(3),
+                group: GroupIndex(3),
                 value_hash: Hash::new_unique(),
             };
             store.put_track(track, info).unwrap();
@@ -325,7 +325,7 @@ mod tests {
                 kind: TrackKind::Blob as u64,
                 state: TrackState::Certified as u64,
                 size: StorageUnits::from_bytes(512),
-                spool_group: SpoolGroup(0),
+                group: GroupIndex(0),
                 value_hash: Hash::new_unique(),
             };
             store.put_track(track, info).unwrap();

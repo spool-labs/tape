@@ -10,7 +10,7 @@ use rpc_litesvm::LiteSvmRpc;
 use tape_api::program::tapedrive::{self, tape_pda, track_pda};
 use tape_api::state::Tape;
 use tape_core::bls::BlsPubkey;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::data::TrackData;
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
@@ -243,7 +243,7 @@ fn make_raw_track(
         kind: TrackKind::Raw as u64,
         state: TrackState::Certified as u64,
         size: StorageUnits::from_bytes(bytes.len() as u64),
-        spool_group: SpoolGroup(0),
+        group: GroupIndex(0),
         value_hash: hash::hash(&bytes),
     };
     (track, TrackData::Raw(bytes))

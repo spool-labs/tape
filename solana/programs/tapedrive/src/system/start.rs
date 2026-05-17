@@ -57,7 +57,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_archive()?;
 
     let target = EpochNumber(1);
-    let group_id = SpoolGroup(0);
+    let group_id = GroupIndex(0);
 
     let epoch = epoch_info
         .is_writable()?
@@ -247,7 +247,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
 
         let target = EpochNumber(1);
-        let group_id = SpoolGroup(0);
+        let group_id = GroupIndex(0);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -380,7 +380,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
 
         let target = EpochNumber(1);
-        let group_id = SpoolGroup(0);
+        let group_id = GroupIndex(0);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();

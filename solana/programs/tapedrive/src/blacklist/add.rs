@@ -74,7 +74,7 @@ mod tests {
             kind: TrackKind::Raw as u64,
             state: TrackState::Certified as u64,
             size,
-            spool_group: SpoolGroup(3),
+            group: GroupIndex(3),
             value_hash: Hash::new_unique(),
         };
         let track_hash = track.get_hash();

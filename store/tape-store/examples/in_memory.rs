@@ -21,7 +21,7 @@ fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
         kind: TrackKind::Raw as u64,
         state: TrackState::Certified as u64,
         size: StorageUnits::from_bytes(1024),
-        spool_group: SpoolGroup(3),
+        group: GroupIndex(3),
         value_hash: Hash::new_unique(),
     }
 }

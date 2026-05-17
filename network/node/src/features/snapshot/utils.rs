@@ -1,13 +1,13 @@
 //! Shared helpers for the snapshot HTTP handler, fanout, and manager.
 
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::NodeId;
 use tape_protocol::ProtocolState;
 
 /// Group peer node ids with `exclude` filtered out.
 pub fn group_peers_without(
     state: &ProtocolState,
-    group: SpoolGroup,
+    group: GroupIndex,
     exclude: NodeId,
 ) -> Vec<NodeId> {
     state
@@ -23,7 +23,7 @@ pub fn group_peers_without(
 /// entries being filtered out.
 pub fn bitmap_index_in_group(
     state: &ProtocolState,
-    group: SpoolGroup,
+    group: GroupIndex,
     node_id: NodeId,
 ) -> Option<u16> {
     let (member_index, _) = state.find_member(node_id)?;

@@ -4,7 +4,7 @@ use peer_manager::PeerManager;
 use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_core::track::data::TrackData;
 use tape_core::types::{NodeId, StorageUnits};
 use tape_crypto::address::Address;
@@ -65,11 +65,11 @@ const RECOVER_FETCH_CONCURRENCY: usize = 4;
 // NOTE:
 //
 // The spool relationships are:
-//   - SpoolGroup::of(spool) → group is derived from spool
-//   - group.slice_of(spool) → slice index is derived from spool + group
+//   - GroupIndex::containing(spool) → group is derived from spool
+//   - group.position_of(spool) → slice index is derived from spool + group
 //   - group.spool_at(slice) → spool is derived from group + slice
 //
-//   Given a SpoolIndex, you can always derive the SpoolGroup and the SliceIndex within it. So passing
+//   Given a SpoolIndex, you can always derive the GroupIndex and the SliceIndex within it. So passing
 //   spool, group, AND lost is redundant, any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
 
@@ -90,8 +90,8 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     };
 
     let peers = group_peers(ctx.as_ref(), &spool_state, spool);
-    let group = SpoolGroup::of(spool);
-    let position = group.slice_of(spool).unwrap_or_default();
+    let group = GroupIndex::containing(spool);
+    let position = group.position_of(spool).unwrap_or_default();
     let batch_size = config.recover_batch.max(1);
 
     loop {
@@ -284,7 +284,7 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     token: &CancellationToken,
 ) -> Result<Vec<(SliceIndex, Vec<u8>)>, ()> {
 
-    let group = SpoolGroup::of(spool);
+    let group = GroupIndex::containing(spool);
     let track = track_addr;
     let mut slices = Vec::with_capacity(k);
 
@@ -438,7 +438,7 @@ mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SLICE_TREE_HEIGHT;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -483,7 +483,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size),
-            spool_group: SpoolGroup::of(SPOOL),
+            group: GroupIndex::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
     }
@@ -543,8 +543,8 @@ mod tests {
         );
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
-        let group = SpoolGroup::of(SPOOL);
-        let lost_pos = group.slice_of(SPOOL).unwrap() as usize;
+        let group = GroupIndex::containing(SPOOL);
+        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
         let expected = slices[lost_pos].clone();
 
         let slices_for_api = slices.clone();
@@ -553,7 +553,7 @@ mod tests {
         let track_info = clay_track(1024, &slices);
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::GetSlice(ref r) => {
-                let pos = group.slice_of(r.spool).unwrap() as usize;
+                let pos = group.position_of(r.spool).unwrap() as usize;
                 PeerRes::GetSlice(Ok(GetSliceRes {
                     data: slices_for_api[pos].clone(),
                 }))
@@ -659,8 +659,8 @@ mod tests {
         );
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
-        let group = SpoolGroup::of(SPOOL);
-        let lost_pos = group.slice_of(SPOOL).unwrap() as usize;
+        let group = GroupIndex::containing(SPOOL);
+        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
         let expected = slices[lost_pos].clone();
 
         let slices_for_api = slices.clone();
@@ -670,7 +670,7 @@ mod tests {
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::GetSlice(ref r) => {
-                let pos = group.slice_of(r.spool).unwrap() as usize;
+                let pos = group.position_of(r.spool).unwrap() as usize;
                 PeerRes::GetSlice(Ok(GetSliceRes {
                     data: slices_for_api[pos].clone(),
                 }))
@@ -757,8 +757,8 @@ mod tests {
         );
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
-        let group = SpoolGroup::of(SPOOL);
-        let lost_pos = group.slice_of(SPOOL).unwrap() as usize;
+        let group = GroupIndex::containing(SPOOL);
+        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
         let expected = slices[lost_pos].clone();
 
         // Compute which helper positions will succeed (first k, excluding ours).
@@ -782,7 +782,7 @@ mod tests {
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::GetSlice(ref r) => {
                 if good_spools.contains(&r.spool) {
-                    let pos = group.slice_of(r.spool).unwrap() as usize;
+                    let pos = group.position_of(r.spool).unwrap() as usize;
                     PeerRes::GetSlice(Ok(GetSliceRes {
                         data: slices_for_api[pos].clone(),
                     }))

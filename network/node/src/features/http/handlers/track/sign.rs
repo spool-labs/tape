@@ -46,9 +46,9 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let protocol = state.context.state();
     let has_local_slice = protocol
-        .group_peers(track.spool_group)
+        .group_peers(track.group)
         .into_iter()
-        .filter(|(_, node_id)| *node_id == state.context.node_id())
+        .filter(|(_, node)| *node == state.context.node_address())
         .any(|(spool_id, _)| {
             state
                 .context
@@ -70,7 +70,7 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let response = BlsSignResponse {
         signature,
-        node_id: state.context.node_id(),
+        node: state.context.node_address(),
         epoch,
     };
 

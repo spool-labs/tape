@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use tape_core::bls::BlsPubkey;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::NodePreferences;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
@@ -122,7 +122,7 @@ pub struct TrackWritten {
     pub track_number: TrackNumber,
 
     /// The spool group that is responsible for this track
-    pub spool_group: SpoolGroup,
+    pub group: GroupIndex,
 
     /// The compressed track hash that was added to the tape's merkle tree
     pub track_hash: Hash,
@@ -223,7 +223,7 @@ pub struct SpoolSynced {
     pub epoch: EpochNumber,
 
     /// Spool group containing the spool
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
 
     /// Index within the group (0 .. GROUP_SIZE)
     pub spool: [u8; 8],
@@ -242,7 +242,7 @@ pub struct SpoolSettled {
     pub epoch: EpochNumber,
 
     /// Spool group containing the spool
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
 
     /// Index within the group (0 .. GROUP_SIZE)
     pub spool: [u8; 8],
@@ -433,7 +433,7 @@ pub struct VoteRecorded {
     pub hash: Hash,
 
     /// The spool group whose owners signed.
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
 
     /// Number of signers in this cert.
     pub signer_count: [u8; 8],
@@ -474,7 +474,7 @@ pub struct AssignmentGroupFinalized {
     pub hash: Hash,
 
     /// Finalized spool group.
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
 
     /// Group account address.
     pub group_account: Address,

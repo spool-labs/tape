@@ -5,7 +5,7 @@ use store::Store;
 use tape_api::compute::WRITE_SNAPSHOT_CU;
 use tape_api::instruction::build_write_snapshot_ix;
 use tape_core::bls::BlsSignature;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobInfo;
 use tape_core::types::{ChunkNumber, EpochNumber, SpoolBitmap};
 use tape_crypto::tx::Txid;
@@ -16,7 +16,7 @@ use crate::context::NodeContext;
 pub async fn submit_write_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     snapshot_epoch: EpochNumber,
-    group: SpoolGroup,
+    group: GroupIndex,
     chunk: ChunkNumber,
     bitmap: SpoolBitmap,
     signature: BlsSignature,

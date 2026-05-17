@@ -15,7 +15,7 @@ use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{
-    BlobInfo, CompressedTrack, EncodingProfile, EpochNumber, SpoolGroup, StorageUnits,
+    BlobInfo, CompressedTrack, EncodingProfile, EpochNumber, GroupIndex, StorageUnits,
     StripeCount, TrackNumber,
 };
 use tape_core::track::data::TrackDataSlice;
@@ -215,7 +215,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
         kind: meta.kind as u64,
         state: meta.state as u64,
         size: meta.size,
-        spool_group: written.spool_group,
+        group: written.group,
         value_hash: meta.value_hash,
     };
     debug_assert_eq!(track.get_hash(), written.track_hash);
@@ -295,7 +295,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
         kind: meta.kind as u64,
         state: meta.state as u64,
         size: meta.size,
-        spool_group: written.spool_group,
+        group: written.group,
         value_hash: meta.value_hash,
     };
     debug_assert_eq!(track.get_hash(), written.track_hash);
@@ -312,7 +312,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
 async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track_address: Address,
-    spool_group: SpoolGroup,
+    group: GroupIndex,
     slices: Vec<SliceWithProof>,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
@@ -324,7 +324,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     locate.finish_result(&state);
     let state = state?;
 
-    let uploader = DistributedUploader::new(track_address, spool_group, slices, &state)
+    let uploader = DistributedUploader::new(track_address, group, slices, &state)
         .map_err(TapedriveError::Upload)?;
 
     let store = client
@@ -349,7 +349,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
     let result = wait_for_visibility(
         client,
         written.address,
-        written.track.spool_group,
+        written.track.group,
         operation,
     )
     .await;
@@ -359,7 +359,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
     upload_once(
         client,
         written.address,
-        written.track.spool_group,
+        written.track.group,
         plan.slices.clone(),
         operation,
     )
@@ -369,13 +369,13 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
 async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track_address: Address,
-    spool_group: SpoolGroup,
+    group: GroupIndex,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;
 
-    let group_peers = state.group_peers(spool_group);
-    let required = min_correct(state.group_member_count(spool_group) as u64) as usize;
+    let group_peers = state.group_peers(group);
+    let required = min_correct(state.group_member_count(group) as u64) as usize;
 
     let mut seen = HashSet::new();
     let target = group_peers
@@ -481,7 +481,7 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     let track_address = written.address;
-    let spool_group = written.track.spool_group;
+    let group = written.track.group;
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
 
@@ -490,7 +490,7 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
         let system = client.rpc().get_system().await?;
         let collector = CertificationCollector::with_defaults();
         collector
-            .collect_signatures(client.api.as_ref(), &track_address, spool_group, &system)
+            .collect_signatures(client.api.as_ref(), &track_address, group, &system)
             .await
             .map_err(TapedriveError::Certification)
     }

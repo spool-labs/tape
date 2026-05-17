@@ -6,7 +6,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_core::types::{NodeId, StorageUnits};
 use tape_core::track::blob::BlobInfo;
 use tape_crypto::address::Address;
@@ -268,7 +268,7 @@ fn verify_slice(
     track_data: &BlobInfo,
     data: &[u8],
 ) -> bool {
-    let Some(position) = track_info.spool_group.slice_of(spool) else {
+    let Some(position) = track_info.group.position_of(spool) else {
         return false;
     };
 
@@ -320,7 +320,7 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
                 break;
             }
 
-            if !track.spool_group.contains(spool) {
+            if !track.group.contains(spool) {
                 continue;
             }
 
@@ -357,7 +357,7 @@ fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     spool: SpoolIndex,
 ) -> Vec<NodeId> {
-    let group = SpoolGroup::of(spool);
+    let group = GroupIndex::containing(spool);
     let mut peers = Vec::new();
 
     for (peer_spool, node_id) in ctx.state().group_peers(group) {
@@ -401,7 +401,7 @@ mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SLICE_TREE_HEIGHT;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
@@ -476,7 +476,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size),
-            spool_group: SpoolGroup::of(SPOOL),
+            group: GroupIndex::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
     }
@@ -485,7 +485,7 @@ mod tests {
         let slices = clay_slices(fill, size);
         let track_info = clay_track(size as u64, &slices);
         let blob = clay_blob(size as u64, &slices);
-        let position = track_info.spool_group.slice_of(SPOOL).unwrap() as usize;
+        let position = track_info.group.position_of(SPOOL).unwrap() as usize;
         (track_info, blob, slices[position].clone())
     }
 

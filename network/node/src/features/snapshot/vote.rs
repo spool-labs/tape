@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::cert::{SnapshotSignMessage, SnapshotWriteMessage};
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::SnapshotOps;
@@ -167,8 +167,8 @@ where
     })
 }
 
-fn member_groups(spools: &[SpoolIndex]) -> Vec<SpoolGroup> {
-    let mut groups = spools.iter().copied().map(SpoolGroup::of).collect::<Vec<_>>();
+fn member_groups(spools: &[SpoolIndex]) -> Vec<GroupIndex> {
+    let mut groups = spools.iter().copied().map(GroupIndex::of).collect::<Vec<_>>();
     groups.sort_by_key(|group| group.0);
     groups.dedup_by_key(|group| group.0);
     groups

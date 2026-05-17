@@ -118,7 +118,7 @@ impl PendingTracks {
                         kind: meta.kind as u64,
                         state: meta.state as u64,
                         size: meta.size,
-                        spool_group: event.spool_group,
+                        group: event.group,
                         value_hash: meta.value_hash,
                     };
                     self.apply_register(block.slot, *track, state, value.clone());
@@ -246,7 +246,7 @@ impl PendingTracks {
 mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::TrackKind;
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
@@ -262,7 +262,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Registered as u64,
             size: StorageUnits::from_bytes(1024),
-            spool_group: SpoolGroup::from(0),
+            group: GroupIndex::from(0),
             value_hash: Hash::new_unique(),
         }
     }

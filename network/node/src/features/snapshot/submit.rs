@@ -23,7 +23,7 @@ use crate::context::NodeContext;
 use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
 use crate::core::error::NodeError;
 use crate::features::snapshot::utils::bitmap_index_in_group;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 
 /// Heartbeat-driven reserve attempt for `snapshot_epoch`. Skips if we've
 /// already observed (or successfully submitted) a reserve for this epoch.
@@ -108,7 +108,7 @@ where
     let Some((member_index, _)) = state.find_member(me) else { return Ok(()); };
 
     for spool in state.member_spools(member_index) {
-        let group = SpoolGroup::of(spool);
+        let group = GroupIndex::containing(spool);
         let chunks = ctx
             .store
             .iter_snapshot_write_sigs(epoch, group)
@@ -207,7 +207,7 @@ where
     };
 
     for spool in state.member_spools(member_index) {
-        let group = SpoolGroup::of(spool);
+        let group = GroupIndex::containing(spool);
         let sigs = ctx
             .store
             .iter_snapshot_finalize_sigs(epoch, group)

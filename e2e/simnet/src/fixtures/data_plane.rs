@@ -4,7 +4,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::signer::keypair::Keypair;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -50,7 +50,7 @@ impl SimnetScenario<'_> {
     }
 
     /// Count slices stored across all nodes for a track's spool group.
-    pub fn count_slices(&self, track: &Address, group: SpoolGroup) -> Result<usize> {
+    pub fn count_slices(&self, track: &Address, group: GroupIndex) -> Result<usize> {
         let track_store_key = *track;
         let mut count = 0usize;
 

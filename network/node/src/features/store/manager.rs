@@ -73,7 +73,7 @@ fn persist_raw_tracks<Db: Store>(
     raw_tracks: &[RawTrack],
 ) -> Result<(), NodeError> {
     for raw_track in raw_tracks {
-        if !is_responsible_for_group(store, raw_track.spool_group)? {
+        if !is_responsible_for_group(store, raw_track.group)? {
             continue;
         }
 
@@ -89,7 +89,7 @@ fn persist_raw_tracks<Db: Store>(
 mod tests {
     use store_memory::MemoryStore;
     use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
@@ -133,7 +133,7 @@ mod tests {
                     kind: TrackKind::Raw as u64,
                     state: TrackState::Certified as u64,
                     size: StorageUnits(1),
-                    spool_group: SpoolGroup::from(0),
+                    group: GroupIndex::from(0),
                     value_hash: Hash::default(),
                 },
                 epoch: EpochNumber(1),
@@ -150,12 +150,12 @@ mod tests {
     fn persists_raw_writes_for_owned_spools() {
         let store = test_store();
         let track = Address::new_unique();
-        let spool_group = SpoolGroup::from(5);
+        let group = GroupIndex::from(5);
         let raw = vec![1, 2, 3, 4];
 
         store
             .set_spool_state(
-                spool_group.spool_at(0),
+                group.spool_at(0),
                 SpoolState::new(SpoolStatus::Active, EpochNumber(1)),
             )
             .unwrap();
@@ -165,7 +165,7 @@ mod tests {
             events: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,
-                spool_group,
+                group,
                 data: raw.clone(),
             }],
         };
@@ -179,14 +179,14 @@ mod tests {
     fn skips_raw_writes_for_non_owners() {
         let store = test_store();
         let track = Address::new_unique();
-        let spool_group = SpoolGroup::from(6);
+        let group = GroupIndex::from(6);
 
         let batch = ReplayBatch {
             slot: SlotNumber(79),
             events: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,
-                spool_group,
+                group,
                 data: vec![9, 8, 7],
             }],
         };

@@ -2,7 +2,7 @@ use tape_crypto::Hash;
 use tape_crypto::hash::hashv;
 
 use crate::snapshot::error::SnapshotError;
-use crate::spooler::SpoolGroup;
+use crate::spooler::GroupIndex;
 use crate::types::{ChunkNumber, EpochNumber};
 
 pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
@@ -12,7 +12,7 @@ pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
 #[inline]
 pub fn snapshot_chunk_key(
     epoch: EpochNumber,
-    group: SpoolGroup,
+    group: GroupIndex,
     chunk: ChunkNumber,
 ) -> Hash {
     hashv(&[
@@ -89,22 +89,22 @@ mod tests {
 
     #[test]
     fn distinguishes_epoch_pair() {
-        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), ChunkNumber(0));
-        let b = snapshot_chunk_key(EpochNumber(10), SpoolGroup(3), ChunkNumber(0));
+        let a = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
+        let b = snapshot_chunk_key(EpochNumber(10), GroupIndex(3), ChunkNumber(0));
         assert_ne!(a, b);
     }
 
     #[test]
     fn distinguishes_group_pair() {
-        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), ChunkNumber(0));
-        let b = snapshot_chunk_key(EpochNumber(9), SpoolGroup(4), ChunkNumber(0));
+        let a = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
+        let b = snapshot_chunk_key(EpochNumber(9), GroupIndex(4), ChunkNumber(0));
         assert_ne!(a, b);
     }
 
     #[test]
     fn distinguishes_chunk_index() {
-        let a = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), ChunkNumber(0));
-        let b = snapshot_chunk_key(EpochNumber(9), SpoolGroup(3), ChunkNumber(1));
+        let a = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
+        let b = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(1));
         assert_ne!(a, b);
     }
 

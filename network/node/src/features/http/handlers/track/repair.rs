@@ -94,7 +94,7 @@ mod tests {
     use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -120,7 +120,7 @@ mod tests {
         // Build a real Clay-encoded snapshot chunk: 20 slices, each carrying
         // the per-slice metadata suffix that `extract_repair_data` parses.
         let chunk = vec![0xCDu8; 2048];
-        let group = SpoolGroup(2);
+        let group = GroupIndex(2);
         let mut slicer = Slicer::clay_default();
         slicer.set_chunk_index(ChunkNumber(group.0));
 
@@ -147,7 +147,7 @@ mod tests {
         let helper_spool = group.spool_at(5);
 
         let slice_position = group
-            .slice_of(helper_spool)
+            .position_of(helper_spool)
             .expect("helper slice position");
         let helper_slice = slices[slice_position as usize].clone();
 
@@ -171,7 +171,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
-            spool_group: group,
+            group: group,
             value_hash: blob.get_hash(),
         };
 

@@ -90,7 +90,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     }
 
     pub fn phase(&self) -> EpochPhase {
-        self.state().phase
+        self.state().phase()
     }
 
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
@@ -99,7 +99,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn update_phase(&self, phase: EpochPhase) -> Result<(), NodeError> {
         let mut state = (*self.state()).clone();
-        state.phase = phase;
+        state.current.epoch.state.phase = phase as u64;
         self.set_state(state)
     }
 
@@ -121,14 +121,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub async fn refresh_peers(&self) -> Result<(), PeerManagerError> {
         let state = self.state();
-        self.peer_manager.resolve_peers(&self.rpc, state.as_ref()).await
+        self.peer_manager.resolve_peers(state.as_ref())
     }
 
     pub fn node_status(&self) -> NodeStatus {
         let state = self.state();
-        let in_committee = state.find_member(self.node_id).is_some();
+        let in_committee = state.find_member(self.node_address).is_some();
         let bootstrap_in_next =
-            state.committee.is_empty() && state.find_member_next(self.node_id).is_some();
+            state.current.committee.is_empty() && state.find_member_next(self.node_address).is_some();
 
         if in_committee || bootstrap_in_next {
             NodeStatus::Active
@@ -139,8 +139,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn my_spools(&self) -> HashSet<SpoolIndex> {
         let state = self.state();
-        match state.find_member(self.node_id) {
-            Some((index, _)) => state.member_spools(index).into_iter().collect(),
+        match state.find_member(self.node_address) {
+            Some(_) => state.member_spools(self.node_address).into_iter().collect(),
             None => HashSet::new(),
         }
     }
@@ -151,76 +151,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn set_reclaim_pending(&self, is_pending: bool) {
         self.reclaim_pending.store(is_pending, Ordering::Relaxed);
-    }
-}
-
-#[cfg(test)]
-pub mod test_utils {
-    use std::path::PathBuf;
-    use std::sync::Arc;
-
-    use peer_manager::PeerManager;
-    use peer_memory::MemoryApi;
-    use rpc_litesvm::LiteSvmRpc;
-    use tape_api::program::tapedrive::node_pda;
-    use tape_core::bls::BlsPrivateKey;
-    use tape_core::types::{NodeId, SlotNumber};
-    use store_memory::MemoryStore;
-    use tape_store::TapeStore;
-
-    use super::*;
-
-    pub type TestContext = Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>;
-
-    pub fn test_context() -> TestContext {
-        test_context_with_api(MemoryApi::noop())
-    }
-
-    pub fn test_context_with_api(api: MemoryApi) -> TestContext {
-        test_context_with_api_and_rpc(api, LiteSvmRpc::new())
-    }
-
-    pub fn test_context_with_rpc(rpc: LiteSvmRpc) -> TestContext {
-        test_context_with_api_and_rpc(MemoryApi::noop(), rpc)
-    }
-
-    pub fn test_context_with_api_and_rpc(api: MemoryApi, rpc: LiteSvmRpc) -> TestContext {
-        let mut rng = rand::thread_rng();
-        let keypair = Keypair::new(&mut rng);
-        let bls = BlsPrivateKey::from_random();
-        let tls = Keypair::new(&mut rng);
-        let rpc = RpcClient::from_rpc(rpc);
-        let peer_manager = Arc::new(PeerManager::new());
-        let store = TapeStore::new(MemoryStore::new());
-        let (node_address, _) = node_pda(keypair.address());
-
-        Arc::new(NodeContext {
-            node_id: NodeId(0),
-            node_address,
-            config: Arc::new(test_config()),
-            keypair: Arc::new(keypair),
-            bls_keypair: Arc::new(bls),
-            tls_keypair: Arc::new(tls),
-            store: Arc::new(store),
-            rpc: Arc::new(rpc),
-            state: StateBus::default(),
-            ingest: IngestBus::default(),
-            pending: Arc::new(PendingTracks::new()),
-            peer_manager,
-            api: Arc::new(api),
-            metrics: NodeMetrics::default(),
-            reclaim_pending: AtomicBool::new(false),
-        })
-    }
-
-    fn test_config() -> NodeConfig {
-        let mut config = NodeConfig::default();
-        config.node.node_keypair = PathBuf::from("/dev/null");
-        config.node.bls_keypair = PathBuf::from("/dev/null");
-        config.solana.rpc = "http://localhost:8899".into();
-        config.solana.start_slot = Some(SlotNumber(0));
-        config.store.path = PathBuf::from("/tmp");
-        config
     }
 }
 

@@ -184,7 +184,7 @@ fn enqueue_certified_repairs<Db: Store>(
         return Ok(());
     };
 
-    let group = track_info.spool_group;
+    let group = track_info.group;
 
     for slice in 0..GROUP_SIZE {
         let spool = group.spool_at(slice);
@@ -222,7 +222,7 @@ fn invalidate_track<Db: Store>(
     slot: SlotNumber,
 ) -> Result<(), NodeError> {
     if let Some(mut info) = store.get_track(track).map_err(store_error)? {
-        let _ = cleanup_track_slices(store, track, info.spool_group)?;
+        let _ = cleanup_track_slices(store, track, info.group)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
     }
@@ -246,7 +246,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -281,7 +281,7 @@ mod tests {
                 kind: TrackKind::Blob as u64,
                 state: TrackState::Registered as u64,
                 size: blob.size,
-                spool_group: SpoolGroup::from(4),
+                group: GroupIndex::from(4),
                 value_hash: blob.get_hash(),
             },
             epoch,
@@ -298,7 +298,7 @@ mod tests {
                 kind: TrackKind::Raw as u64,
                 state: TrackState::Certified as u64,
                 size: StorageUnits::from_bytes(4 * 1024),
-                spool_group: SpoolGroup::from(5),
+                group: GroupIndex::from(5),
                 value_hash: Hash::new_unique(),
             },
             epoch,
@@ -306,7 +306,7 @@ mod tests {
         })
     }
 
-    fn track_info(tape: Address, spool_group: SpoolGroup) -> CompressedTrack {
+    fn track_info(tape: Address, group: GroupIndex) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
@@ -314,7 +314,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
-            spool_group,
+            group,
             value_hash: Hash::new_unique(),
         }
     }
@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(track_info.kind, TrackKind::Blob as u64);
         assert_eq!(track_info.state, TrackState::Certified as u64);
         assert_eq!(track_info.size, StorageUnits::mb(2));
-        assert_eq!(track_info.spool_group, SpoolGroup::from(4));
+        assert_eq!(track_info.group, GroupIndex::from(4));
         match &events[1] {
             ReplayableEvent::Track(replay) => {
                 assert_eq!(
@@ -418,9 +418,9 @@ mod tests {
         let slot = SlotNumber(21);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let spool_group = SpoolGroup::from(11);
+        let group = GroupIndex::from(11);
 
-        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store.put_track(track, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -434,7 +434,7 @@ mod tests {
             .unwrap();
         for slice_index in 0..GROUP_SIZE {
             store
-                .put_slice(spool_group.spool_at(slice_index), track, vec![slice_index as u8])
+                .put_slice(group.spool_at(slice_index), track, vec![slice_index as u8])
                 .unwrap();
         }
 
@@ -453,7 +453,7 @@ mod tests {
         for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
-                    .get_slice(spool_group.spool_at(slice_index), track)
+                    .get_slice(group.spool_at(slice_index), track)
                     .unwrap()
                     .is_none()
             );
@@ -466,9 +466,9 @@ mod tests {
         let slot = SlotNumber(34);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let spool_group = SpoolGroup::from(23);
+        let group = GroupIndex::from(23);
 
-        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store.put_track(track, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -482,7 +482,7 @@ mod tests {
             .unwrap();
         for slice_index in 0..GROUP_SIZE {
             store
-                .put_slice(spool_group.spool_at(slice_index), track, vec![0xAB; 8])
+                .put_slice(group.spool_at(slice_index), track, vec![0xAB; 8])
                 .unwrap();
         }
 
@@ -507,7 +507,7 @@ mod tests {
         for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
-                    .get_slice(spool_group.spool_at(slice_index), track)
+                    .get_slice(group.spool_at(slice_index), track)
                     .unwrap()
                     .is_none()
             );
@@ -523,7 +523,7 @@ mod tests {
         let track_a = Address::new_unique();
         let track_b = Address::new_unique();
         let track_other = Address::new_unique();
-        let spool_group = SpoolGroup::from(31);
+        let group = GroupIndex::from(31);
 
         store
             .put_tape(
@@ -545,7 +545,7 @@ mod tests {
             .unwrap();
 
         for track in [track_a, track_b] {
-            store.put_track(track, track_info(tape, spool_group)).unwrap();
+            store.put_track(track, track_info(tape, group)).unwrap();
             store
                 .put_object_info(
                     track,
@@ -559,13 +559,13 @@ mod tests {
                 .unwrap();
             for slice_index in 0..GROUP_SIZE {
                 store
-                    .put_slice(spool_group.spool_at(slice_index), track, vec![0xCD; 8])
+                    .put_slice(group.spool_at(slice_index), track, vec![0xCD; 8])
                     .unwrap();
             }
         }
 
         store
-            .put_track(track_other, track_info(other_tape, spool_group))
+            .put_track(track_other, track_info(other_tape, group))
             .unwrap();
         store
             .put_object_info(
@@ -596,7 +596,7 @@ mod tests {
             for slice_index in 0..GROUP_SIZE {
                 assert!(
                     store
-                        .get_slice(spool_group.spool_at(slice_index), track)
+                        .get_slice(group.spool_at(slice_index), track)
                         .unwrap()
                         .is_none()
                 );
@@ -614,13 +614,13 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let spool_group = SpoolGroup::from(7);
-        let spool_id = spool_group.spool_at(0);
+        let group = GroupIndex::from(7);
+        let spool_id = group.spool_at(0);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
             .unwrap();
-        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store.put_track(track, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -654,13 +654,13 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let spool_group = SpoolGroup::from(7);
-        let spool_id = spool_group.spool_at(0);
+        let group = GroupIndex::from(7);
+        let spool_id = group.spool_at(0);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
             .unwrap();
-        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store.put_track(track, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -697,9 +697,9 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let spool_group = SpoolGroup::from(7);
+        let group = GroupIndex::from(7);
 
-        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store.put_track(track, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track,

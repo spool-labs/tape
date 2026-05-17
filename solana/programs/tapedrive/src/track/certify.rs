@@ -37,7 +37,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let track = proof.state;
 
     let group = group_info
-        .is_group(curr, track.spool_group)?
+        .is_group(curr, track.group)?
         .as_account::<Group>(&tapedrive::ID)?;
 
     let tape = tape_info
@@ -133,7 +133,7 @@ mod tests {
     use tape_test::*;
 
     /// Build a Group whose 20 spools are owned by 20 distinct BLS keys.
-    fn make_group(epoch: EpochNumber, group_id: SpoolGroup) -> (Vec<BlsPrivateKey>, Group) {
+    fn make_group(epoch: EpochNumber, group_id: GroupIndex) -> (Vec<BlsPrivateKey>, Group) {
         let mut group = Group::zeroed();
         group.epoch = epoch;
         group.id = group_id;
@@ -166,12 +166,12 @@ mod tests {
 
         let (tape_address, _) = tape_pda(authority.into());
         let (system_address, _) = system_pda();
-        let spool_group = SpoolGroup(0);
-        let (group_address, _) = group_pda(curr, spool_group);
+        let group = GroupIndex(0);
+        let (group_address, _) = group_pda(curr, group);
 
         const SIGNERS: usize = 14;
 
-        let (sks, group) = make_group(curr, spool_group);
+        let (sks, group) = make_group(curr, group);
 
         let system = System {
             current_epoch: curr,
@@ -187,7 +187,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Registered as u64,
             size: StorageUnits::mb(250),
-            spool_group,
+            group,
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rpc::Rpc;
 use tape_core::erasure::group_start;
-use tape_core::prelude::{NodeId, SpoolGroup, SpoolIndex, TrackData};
+use tape_core::prelude::{NodeId, GroupIndex, SpoolIndex, TrackData};
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::hash::hash;
 use tape_protocol::api::{ApiError, GetTrackDataReq};
@@ -42,10 +42,10 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 }
 
 pub fn localize_slices(
-    spool_group: SpoolGroup,
+    group: GroupIndex,
     slices: Vec<(SpoolIndex, Vec<u8>)>,
 ) -> Vec<(SpoolIndex, Vec<u8>)> {
-    let base = group_start(spool_group);
+    let base = group_start(group);
     slices
         .into_iter()
         .map(|(global_idx, data)| ((global_idx - base) as SpoolIndex, data))
@@ -67,7 +67,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let track_info = track_info?;
 
         let data = client.timer(operation, Phase::TrackData);
-        let track_data = fetch_track_data(client, *track, track_info.spool_group, operation).await;
+        let track_data = fetch_track_data(client, *track, track_info.group, operation).await;
         data.finish_result(&track_data);
         let track_data = track_data?;
 
@@ -92,7 +92,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
             return Err(TapedriveError::CommitmentMismatch);
         }
 
-        let spool_group = track_info.spool_group;
+        let group = track_info.group;
         let k = blob.profile.k() as usize;
 
         let locate = client.timer(operation, Phase::Locate);
@@ -100,7 +100,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         locate.finish_result(&state);
         let state = state?;
         let slice_to_node: HashMap<SpoolIndex, NodeId> =
-            state.group_peers(spool_group).into_iter().collect();
+            state.group_peers(group).into_iter().collect();
 
         let downloader = ParallelDownloader::new(*track, slice_to_node, k);
         let download = client.timer(operation, Phase::Download);
@@ -120,7 +120,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let decode = client.timer(operation, Phase::Decode);
         let mut decoder = BlobDecoder::with_profile(blob.profile);
         let data = decoder
-            .decode(localize_slices(spool_group, slices))
+            .decode(localize_slices(group, slices))
             .map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string())));
         let decode = match &data {
             Ok(data) => decode.bytes(data.len() as u64),
@@ -157,7 +157,7 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
 
     let data_timer = client.timer(Operation::Verify, Phase::TrackData);
     let track_data =
-        fetch_track_data(client, *track, track_info.spool_group, Operation::Verify).await;
+        fetch_track_data(client, *track, track_info.group, Operation::Verify).await;
     data_timer.finish_result(&track_data);
     let TrackData::Blob(blob) = track_data? else {
         return Err(TapedriveError::InvalidArgument(
@@ -185,14 +185,14 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
 async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: Address,
-    spool_group: SpoolGroup,
+    group: GroupIndex,
     operation: Operation,
 ) -> Result<TrackData, TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;
     let mut peers = Vec::new();
     let mut saw_not_found = false;
     let mut last_error = None;
-    for (_, node_id) in state.group_peers(spool_group) {
+    for (_, node_id) in state.group_peers(group) {
         if peers.contains(&node_id) {
             continue;
         }

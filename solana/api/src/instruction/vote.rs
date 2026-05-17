@@ -4,7 +4,7 @@ use solana_program::program_error::ProgramError;
 
 use tape_core::bls::BlsSignature;
 use tape_core::cert::{AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT};
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::{EpochNumber, SpoolBitmap};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -121,7 +121,7 @@ pub fn build_vote_snapshot_ix(
     fee_payer: Address,
     current_epoch: EpochNumber,
     hash: Hash,
-    group: SpoolGroup,
+    group: GroupIndex,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
@@ -205,7 +205,7 @@ pub fn build_vote_assignment_ix(
     fee_payer: Address,
     current_epoch: EpochNumber,
     hash: Hash,
-    group: SpoolGroup,
+    group: GroupIndex,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {

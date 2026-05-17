@@ -14,7 +14,7 @@ use tape_api::program::tapedrive::{
     committee_pda, epoch_pda, group_pda, history_pda, node_pda, stake_pda, tape_pda,
 };
 
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, Peer};
 use tape_core::types::{EpochNumber, NodeId, TapeNumber};
 use tape_crypto::address::Address;
@@ -222,7 +222,7 @@ impl<R: Rpc> RpcClient<R> {
     pub async fn get_group(
         &self,
         epoch: EpochNumber,
-        group: SpoolGroup,
+        group: GroupIndex,
     ) -> Result<Group, RpcError> {
         self.get_group_with_commitment(epoch, group, self.rpc().commitment())
             .await
@@ -232,7 +232,7 @@ impl<R: Rpc> RpcClient<R> {
     pub async fn get_group_with_commitment(
         &self,
         epoch: EpochNumber,
-        group: SpoolGroup,
+        group: GroupIndex,
         commitment: CommitmentLevel,
     ) -> Result<Group, RpcError> {
         #[cfg(feature = "metrics")]
@@ -289,7 +289,7 @@ impl<R: Rpc> RpcClient<R> {
             }
 
             let addresses: Vec<Address> = (0..total_groups)
-                .map(|idx| group_pda(epoch, SpoolGroup(idx)).0)
+                .map(|idx| group_pda(epoch, GroupIndex(idx)).0)
                 .collect();
 
             let accounts = self
@@ -309,7 +309,7 @@ impl<R: Rpc> RpcClient<R> {
                 .into_iter()
                 .enumerate()
                 .map(|(idx, account)| {
-                    let group = SpoolGroup(idx as u64);
+                    let group = GroupIndex(idx as u64);
                     let account = account.ok_or(RpcError::AccountNotFound(addresses[idx]))?;
                     unpack_group(&account.data, epoch, group)
                 })
@@ -648,7 +648,7 @@ impl<R: Rpc> RpcClient<R> {
 
 }
 
-fn unpack_group(data: &[u8], epoch: EpochNumber, group: SpoolGroup) -> Result<Group, RpcError> {
+fn unpack_group(data: &[u8], epoch: EpochNumber, group: GroupIndex) -> Result<Group, RpcError> {
     if data.len() < Group::get_size() {
         return Err(RpcError::Deserialization(format!(
             "Group account too small: {} bytes (expected {})",
@@ -843,7 +843,7 @@ mod tests {
         let mut expected = Vec::new();
 
         for idx in 0..2 {
-            let group_id = SpoolGroup(idx);
+            let group_id = GroupIndex(idx);
             let (group_address, _) = group_pda(epoch, group_id);
             let mut group = Group {
                 epoch,

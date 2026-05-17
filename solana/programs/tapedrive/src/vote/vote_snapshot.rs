@@ -41,7 +41,7 @@ pub fn process_vote_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_epoch(target_epoch_id)?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    let group_id = SpoolGroup::unpack(args.group);
+    let group_id = GroupIndex::unpack(args.group);
     if group_id.0 >= voting_epoch.total_groups {
         return Err(TapeError::BadMember.into());
     }
@@ -138,7 +138,7 @@ mod tests {
     use tape_core::system::Spool;
     use tape_test::*;
 
-    fn make_group(epoch: EpochNumber, group_id: SpoolGroup) -> (Vec<BlsPrivateKey>, Group) {
+    fn make_group(epoch: EpochNumber, group_id: GroupIndex) -> (Vec<BlsPrivateKey>, Group) {
         let mut group = Group::zeroed();
         group.epoch = epoch;
         group.id = group_id;
@@ -168,7 +168,7 @@ mod tests {
         let voting_epoch_id = EpochNumber(12);
         let target_epoch_id = EpochNumber(11);
         let hash = Hash::new_unique();
-        let group_id = SpoolGroup(0);
+        let group_id = GroupIndex(0);
         let total_groups = 1;
         let bitmap_len = bytes_for_members(total_groups as usize);
 

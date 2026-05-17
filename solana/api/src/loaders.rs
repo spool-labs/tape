@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::EpochNumber;
 
 use crate::program::{
@@ -14,7 +14,7 @@ pub trait AccountInfoLoader {
     fn is_system(&self) -> Result<&Self, ProgramError>;
     fn is_epoch(&self, epoch: EpochNumber) -> Result<&Self, ProgramError>;
     fn is_committee(&self, epoch: EpochNumber) -> Result<&Self, ProgramError>;
-    fn is_group(&self, epoch: EpochNumber, group: SpoolGroup) -> Result<&Self, ProgramError>;
+    fn is_group(&self, epoch: EpochNumber, group: GroupIndex) -> Result<&Self, ProgramError>;
     fn is_snapshot_tape(&self, epoch: EpochNumber) -> Result<&Self, ProgramError>;
     fn is_peer_set(&self) -> Result<&Self, ProgramError>;
     fn is_archive(&self) -> Result<&Self, ProgramError>;
@@ -48,7 +48,7 @@ impl AccountInfoLoader for AccountInfo<'_> {
             .is_type::<Committee>(&tapedrive::ID)
     }
 
-    fn is_group(&self, epoch: EpochNumber, group: SpoolGroup) -> Result<&Self, ProgramError> {
+    fn is_group(&self, epoch: EpochNumber, group: GroupIndex) -> Result<&Self, ProgramError> {
         let (group_address, _) = group_pda(epoch, group);
         let group_address: Pubkey = group_address.into();
 

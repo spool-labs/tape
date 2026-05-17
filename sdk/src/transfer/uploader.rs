@@ -12,7 +12,7 @@ use std::time::Instant;
 use futures::stream::{self, StreamExt};
 use tape_core::bft::{max_faulty, min_correct};
 use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -57,7 +57,7 @@ impl SliceWithProof {
 /// SpoolAssignment.
 pub struct DistributedUploader {
     track: Address,
-    spool_group: SpoolGroup,
+    group: GroupIndex,
     slices: Vec<SliceWithProof>,
     /// Spool-to-node map for this group, built from ProtocolState at construction.
     group_peers: Vec<(SpoolIndex, NodeId)>,
@@ -76,7 +76,7 @@ impl DistributedUploader {
     /// Create a new uploader with group-aware spool-based routing.
     pub fn new(
         track: Address,
-        spool_group: SpoolGroup,
+        group: GroupIndex,
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
     ) -> Result<Self, UploadError> {
@@ -87,12 +87,12 @@ impl DistributedUploader {
             });
         }
 
-        let group_peers = state.group_peers(spool_group);
-        let group_member_count = state.group_member_count(spool_group);
+        let group_peers = state.group_peers(group);
+        let group_member_count = state.group_member_count(group);
 
         Ok(Self {
             track,
-            spool_group,
+            group,
             slices,
             group_peers,
             group_member_count,
@@ -127,7 +127,7 @@ impl DistributedUploader {
             .slices
             .iter()
             .map(|s| {
-                let global_spool = spool_for_slice(self.spool_group, s.index as usize);
+                let global_spool = spool_for_slice(self.group, s.index as usize);
                 (global_spool, s)
             })
             .collect();
@@ -412,7 +412,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            SpoolGroup(0),
+            GroupIndex(0),
             slices,
             &state,
         )

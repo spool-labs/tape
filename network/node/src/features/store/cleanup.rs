@@ -1,6 +1,6 @@
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
 use tape_store::TapeStore;
@@ -21,7 +21,7 @@ pub fn delete_track_local<Db: Store>(
     let mut stats = CleanupStats::default();
 
     if let Some(info) = store.get_track(track).map_err(store_error)? {
-        stats.slices_deleted += cleanup_track_slices(store, track, info.spool_group)?;
+        stats.slices_deleted += cleanup_track_slices(store, track, info.group)?;
         stats.tracks_deleted += 1;
     }
 
@@ -54,7 +54,7 @@ pub fn delete_tape_local<Db: Store>(
 
         for (track, info) in &tracks {
             if info.tape == tape.into() {
-                stats.slices_deleted += cleanup_track_slices(store, *track, info.spool_group)?;
+                stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
                 store.delete_track(*track).map_err(store_error)?;
                 store.delete_track_data(*track).map_err(store_error)?;
                 store.delete_object_info(*track).map_err(store_error)?;
@@ -72,12 +72,12 @@ pub fn delete_tape_local<Db: Store>(
 pub fn cleanup_track_slices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    spool_group: SpoolGroup,
+    group: GroupIndex,
 ) -> Result<usize, NodeError> {
     let mut deleted_slices = 0usize;
 
     for slice_index in 0..GROUP_SIZE {
-        let spool_id = spool_group.spool_at(slice_index);
+        let spool_id = group.spool_at(slice_index);
 
         if store.has_slice(spool_id, track).map_err(store_error)? {
             deleted_slices += 1;

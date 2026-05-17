@@ -235,7 +235,7 @@ mod tests {
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::hash::Hash as SolanaHash;
     use solana_sdk::sysvar;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::NodePreferences;
     use bytemuck::Zeroable;
     use solana_transaction_status::{
@@ -301,7 +301,7 @@ mod tests {
             epoch: 2.into(),
             track: tx2_track,
             tape: Address::new_unique(),
-            spool_group: SpoolGroup(0),
+            group: GroupIndex(0),
             track_number: 0u64.into(),
             track_hash: Hash::default(),
         };
@@ -356,7 +356,7 @@ mod tests {
                 TapedriveEvent::SpoolSynced(SpoolSynced {
                     node: sync_node,
                     epoch: 1u64.into(),
-                    group: SpoolGroup(7),
+                    group: GroupIndex(7),
                     spool: 3u64.to_le_bytes(),
                 }),
             ],
@@ -499,7 +499,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            spool_group: SpoolGroup(1),
+                            group: GroupIndex(1),
                             track_number: 7u64.into(),
                             track_hash: Hash::new_unique(),
                         },
@@ -513,7 +513,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            spool_group: SpoolGroup(2),
+                            group: GroupIndex(2),
                             track_number: 8u64.into(),
                             track_hash: Hash::new_unique(),
                         },
@@ -640,7 +640,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            spool_group: SpoolGroup(1),
+                            group: GroupIndex(1),
                             track_number: 21u64.into(),
                             track_hash: Hash::new_unique(),
                         },

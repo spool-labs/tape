@@ -21,7 +21,7 @@ use tape_api::state::System;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::{spool_for_slice, GROUP_SIZE};
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{CommitteeBitmap, EpochNumber, NodeId};
 use tape_retry::{retry, RetryConfig};
@@ -187,7 +187,7 @@ impl CertificationCollector {
         &self,
         peer_client: &P,
         track_address: &Address,
-        spool_group: SpoolGroup,
+        group: GroupIndex,
         system: &System,
     ) -> Result<CollectedSignatures, CertificationError> {
         let committee = &system.committee;
@@ -198,7 +198,7 @@ impl CertificationCollector {
             return Err(CertificationError::NoCommitteeMembers);
         }
 
-        let group_members = collect_group_members(spool_group, system);
+        let group_members = collect_group_members(group, system);
 
         // Build signature requests
         let mut remaining_node_weight = 0u64;
@@ -211,7 +211,7 @@ impl CertificationCollector {
 
             let node_id = member.id;
             let member_bitmap = CommitteeBitmap::from_indices(&[member_idx], committee_size);
-            let node_weight = system.spools.group_weight(spool_group, &member_bitmap);
+            let node_weight = system.spools.group_weight(group, &member_bitmap);
             if node_weight == 0 {
                 continue;
             }
@@ -360,7 +360,7 @@ impl CertificationCollector {
         let signature_count = selected_bucket.responses.len();
         let member_indices = selected_bucket.member_indices.clone();
         let check_bitmap = CommitteeBitmap::from_indices(&member_indices, committee_size);
-        let final_weight = system.spools.group_weight(spool_group, &check_bitmap);
+        let final_weight = system.spools.group_weight(group, &check_bitmap);
         if !is_supermajority(final_weight, group_total_weight) {
             return Err(CertificationError::InsufficientSignatures {
                 got: final_weight as usize,
@@ -429,10 +429,10 @@ struct SignatureRequest {
     weight: u64,
 }
 
-fn collect_group_members(spool_group: SpoolGroup, system: &System) -> HashSet<u8> {
+fn collect_group_members(group: GroupIndex, system: &System) -> HashSet<u8> {
     let mut members = HashSet::new();
     for i in 0..GROUP_SIZE {
-        let spool = spool_for_slice(spool_group, i);
+        let spool = spool_for_slice(group, i);
         let member = system.spools.0[spool as usize];
         members.insert(member);
     }

@@ -22,7 +22,7 @@ pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
 ///
 /// `spool_index` is the exact key the slice belongs at, captured at build time
 /// so the event handler doesn't re-derive it from protocol state. The bytes in
-/// `slice` are the Clay slice at position (`spool_index - group.base()`); they
+/// `slice` are the Clay slice at position (`spool_index - group.base_spool()`); they
 /// verify against `blob.leaves[position]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct SnapshotArtifact {

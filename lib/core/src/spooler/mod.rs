@@ -11,11 +11,11 @@ pub use group::*;
 
 // The spool relationships are:
 //
-//   - SpoolGroup::of(spool) → group is derived from spool
-//   - group.slice_of(spool) → slice index is derived from spool + group
+//   - GroupIndex::containing(spool) → group is derived from spool
+//   - group.position_of(spool) → slice index is derived from spool + group
 //   - group.spool_at(slice) → spool is derived from group + slice
 //
-//   Given a SpoolIndex, you can always derive the SpoolGroup and the SliceIndex within it. So
+//   Given a SpoolIndex, you can always derive the GroupIndex and the SliceIndex within it. So
 //   passing spool, group, AND lost is redundant; any one of these plus spool is computable from
 //   the other.
 

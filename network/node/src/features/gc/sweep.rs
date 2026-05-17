@@ -3,7 +3,7 @@ use tokio::task::yield_now;
 
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_store::{
@@ -97,7 +97,7 @@ async fn sweep_uncertified_tracks<Db: Store>(
                     stats.slices_deleted += cleanup_unowned_track_slices(
                         store,
                         *track,
-                        info.spool_group,
+                        info.group,
                         owned_spools,
                     )?;
                 }
@@ -114,13 +114,13 @@ async fn sweep_uncertified_tracks<Db: Store>(
 fn cleanup_unowned_track_slices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    spool_group: SpoolGroup,
+    group: GroupIndex,
     owned_spools: &HashSet<SpoolIndex>,
 ) -> Result<usize, NodeError> {
     let mut deleted_slices = 0usize;
 
     for slice_index in 0..GROUP_SIZE {
-        let spool_id = spool_group.spool_at(slice_index);
+        let spool_id = group.spool_at(slice_index);
 
         if owned_spools.contains(&spool_id) {
             continue;
@@ -171,7 +171,7 @@ async fn sweep_orphan_tracks<Db: Store>(
             match store.get_object_info(*track).map_err(store_error)? {
                 Some(ObjectInfo::Valid { .. }) => {}
                 Some(ObjectInfo::Invalid { .. }) | Some(ObjectInfo::Blacklisted) | None => {
-                    stats.slices_deleted += cleanup_track_slices(store, *track, info.spool_group)?;
+                    stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
                 }
             }
         }
@@ -252,7 +252,7 @@ fn should_delete_slice<Db: Store>(
         return Ok(true);
     };
 
-    if !track_info.spool_group.contains(spool_id) {
+    if !track_info.group.contains(spool_id) {
         return Ok(true);
     }
 
@@ -269,7 +269,7 @@ fn recovery_is_stale<Db: Store>(
         return Ok(true);
     };
 
-    if !track_info.spool_group.contains(spool_id) {
+    if !track_info.group.contains(spool_id) {
         return Ok(true);
     }
 
@@ -317,7 +317,7 @@ mod tests {
 
     use tape_crypto::address::Address;
     use store_memory::MemoryStore;
-    use tape_core::spooler::{SpoolGroup, SpoolIndex};
+    use tape_core::spooler::{GroupIndex, SpoolIndex};
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
@@ -358,7 +358,7 @@ mod tests {
         }
     }
 
-    fn track_info(tape: Address, spool_group: SpoolGroup) -> CompressedTrack {
+    fn track_info(tape: Address, group: GroupIndex) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
@@ -366,7 +366,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
-            spool_group,
+            group,
             value_hash: Hash::new_unique(),
         }
     }
@@ -392,7 +392,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, SpoolGroup(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(1), slot))
             .unwrap();
@@ -419,7 +419,7 @@ mod tests {
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
             .unwrap();
-        store.put_track(track, track_info(tape, SpoolGroup(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(2), SlotNumber(20)))
             .unwrap();
@@ -454,7 +454,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, SpoolGroup(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(
                 track,
@@ -498,7 +498,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, SpoolGroup(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(
                 track,
@@ -537,7 +537,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, SpoolGroup(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(1), SlotNumber(10)))
             .unwrap();
@@ -564,9 +564,9 @@ mod tests {
         let tape = Address::new_unique();
         let track_stale = Address::new_unique();
         let track_recent = Address::new_unique();
-        let spool_group = SpoolGroup(1);
-        let owned_spool = spool_group.spool_at(0);
-        let unowned_spool = spool_group.spool_at(1);
+        let group = GroupIndex(1);
+        let owned_spool = group.spool_at(0);
+        let unowned_spool = group.spool_at(1);
 
         store
             .set_spool_state(owned_spool, SpoolState::new(SpoolStatus::Active, EpochNumber(5)))
@@ -579,7 +579,7 @@ mod tests {
             .unwrap();
 
         // Stale uncertified: registered epoch 2, current epoch 5 -> age 3 >= threshold 2
-        store.put_track(track_stale, track_info(tape, spool_group)).unwrap();
+        store.put_track(track_stale, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track_stale,
@@ -597,7 +597,7 @@ mod tests {
         store.add_pending_recovery(unowned_spool, track_stale).unwrap();
 
         // Recent uncertified: registered epoch 4, current epoch 5 -> age 1 < threshold 2
-        store.put_track(track_recent, track_info(tape, spool_group)).unwrap();
+        store.put_track(track_recent, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track_recent,

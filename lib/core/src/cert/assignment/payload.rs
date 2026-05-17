@@ -3,7 +3,7 @@ use tape_crypto::Hash;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 
 use crate::erasure::GROUP_SIZE;
-use crate::spooler::SpoolGroup;
+use crate::spooler::GroupIndex;
 use crate::types::StorageUnits;
 
 use super::ASSIGNMENT_TREE_HEIGHT;
@@ -12,7 +12,7 @@ use super::ASSIGNMENT_TREE_HEIGHT;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
 pub struct AssignmentGroupPayload {
     /// Group index within the target epoch.
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
 
     /// Indices into the canonical peer set.
     pub peer_indices: [u64; GROUP_SIZE],
@@ -23,7 +23,7 @@ pub struct AssignmentGroupPayload {
 
 impl AssignmentGroupPayload {
     pub const fn new(
-        group: SpoolGroup,
+        group: GroupIndex,
         peer_indices: [u64; GROUP_SIZE],
         size: StorageUnits,
     ) -> Self {
@@ -34,7 +34,7 @@ impl AssignmentGroupPayload {
         }
     }
 
-    pub const fn group(&self) -> SpoolGroup {
+    pub const fn group(&self) -> GroupIndex {
         self.group
     }
 
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn payload_hash_deterministic() {
         let payload = AssignmentGroupPayload::new(
-            SpoolGroup(3),
+            GroupIndex(3),
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
         );
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn payload_hash_sensitive_to_input() {
         let payload1 = AssignmentGroupPayload::new(
-            SpoolGroup(3),
+            GroupIndex(3),
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
         );

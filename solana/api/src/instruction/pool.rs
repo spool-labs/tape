@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_crypto::address::Address;
-use tape_core::types::{SpoolGroup, SpoolIndex};
+use tape_core::types::{GroupIndex, SpoolIndex};
 use tape_core::types::EpochNumber;
 use tape_core::types::coin::{Coin, TAPE};
 use crate::program::{staking, tapedrive};
@@ -49,7 +49,7 @@ pub fn build_settle_spool_ix(
 ) -> Instruction {
 
     let prev = current_epoch.saturating_sub(EpochNumber(1));
-    let group = SpoolGroup::of(spool);
+    let group = GroupIndex::containing(spool);
 
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();

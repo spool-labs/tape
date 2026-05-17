@@ -78,9 +78,9 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let protocol = state.context.state();
     let is_owner = protocol
-        .group_peers(track.spool_group)
+        .group_peers(track.group)
         .into_iter()
-        .any(|(_, node_id)| node_id == state.context.node_id());
+        .any(|(_, node)| node == state.context.node_address());
 
     if !is_owner {
         return Err(RouteError::NotResponsible);

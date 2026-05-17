@@ -6,7 +6,7 @@ use crate::consts::NAME_LENGTH;
 use crate::utils::to_name;
 use crate::utils::ata;
 use tape_core::bls::{BlsPubkey, BlsSignature};
-use tape_core::types::{SpoolGroup, SpoolIndex};
+use tape_core::types::{GroupIndex, SpoolIndex};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits, VersionId};
@@ -181,7 +181,7 @@ pub fn build_sync_spool_ix(
     authority: Address,
     node_address: Address,
     epoch: EpochNumber,
-    group: SpoolGroup,
+    group: GroupIndex,
     spool: SpoolIndex,
 ) -> Instruction {
 

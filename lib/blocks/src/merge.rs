@@ -285,7 +285,7 @@ mod tests {
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::prelude::*;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::{NodePreferences, VoteKind};
     use tape_core::track::data::TrackData;
     use tape_core::types::{StorageUnits, TrackNumber};
@@ -353,7 +353,7 @@ mod tests {
             voting_epoch: EpochNumber(8),
             target_epoch: EpochNumber(7),
             hash: Hash::from([0x55; 32]),
-            group: SpoolGroup(3),
+            group: GroupIndex(3),
             signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
             signed_groups: 1u64.to_le_bytes(),
             total_groups: 5u64.to_le_bytes(),
@@ -363,7 +363,7 @@ mod tests {
             vec![
                 RawInstruction::VoteSnapshot {
                     hash: Hash::from([0x55; 32]),
-                    group: SpoolGroup(3),
+                    group: GroupIndex(3),
                 },
             ],
             vec![TapedriveEvent::VoteRecorded(voted)],
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(merged.len(), 1);
         match &merged[0] {
             ParsedInstruction::VoteSnapshot { group, event, .. } => {
-                assert_eq!(*group, SpoolGroup(3));
+                assert_eq!(*group, GroupIndex(3));
                 assert_eq!(event.target_epoch, voted.target_epoch);
                 assert_eq!(event.group, voted.group);
             }
@@ -409,7 +409,7 @@ mod tests {
         let group_finalized = AssignmentGroupFinalized {
             epoch: EpochNumber(9),
             hash: assignment_hash,
-            group: SpoolGroup(2),
+            group: GroupIndex(2),
             group_account: Address::new_unique(),
             size: StorageUnits::mb(10),
             total_groups: 1u64.to_le_bytes(),
@@ -429,7 +429,7 @@ mod tests {
                 },
                 RawInstruction::FinalizeGroup {
                     epoch: EpochNumber(9),
-                    group: SpoolGroup(2),
+                    group: GroupIndex(2),
                 },
             ],
             vec![
@@ -515,7 +515,7 @@ mod tests {
             epoch: EpochNumber(2),
             track: track1,
             tape: Address::new_unique(),
-            spool_group: SpoolGroup(0),
+            group: GroupIndex(0),
             track_number: TrackNumber(0),
             track_hash: Hash::default(),
         };
@@ -666,7 +666,7 @@ mod tests {
                     epoch: EpochNumber(2),
                     track: register_track,
                     tape: register_tape,
-                    spool_group: SpoolGroup(0),
+                    group: GroupIndex(0),
                     track_number: TrackNumber(0),
                     track_hash: Hash::default(),
                 }),
@@ -777,7 +777,7 @@ mod tests {
         let event = SpoolSynced {
             node,
             epoch: EpochNumber(5),
-            group: SpoolGroup(7),
+            group: GroupIndex(7),
             spool: 3u64.to_le_bytes(),
         };
         let merged = merge(
@@ -792,7 +792,7 @@ mod tests {
                 assert_eq!(*n, node);
                 assert_eq!(*spool, 3);
                 assert_eq!(event.epoch, EpochNumber(5));
-                assert_eq!(event.group, SpoolGroup(7));
+                assert_eq!(event.group, GroupIndex(7));
             }
             _ => panic!("Expected SyncSpool"),
         }
@@ -804,7 +804,7 @@ mod tests {
         let event = SpoolSettled {
             node,
             epoch: EpochNumber(4),
-            group: SpoolGroup(2),
+            group: GroupIndex(2),
             spool: 1u64.to_le_bytes(),
         };
         let merged = merge(
@@ -819,7 +819,7 @@ mod tests {
                 assert_eq!(*n, node);
                 assert_eq!(*spool, 1);
                 assert_eq!(event.epoch, EpochNumber(4));
-                assert_eq!(event.group, SpoolGroup(2));
+                assert_eq!(event.group, GroupIndex(2));
             }
             _ => panic!("Expected SettleSpool"),
         }

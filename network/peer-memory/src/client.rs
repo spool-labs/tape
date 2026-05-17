@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::bls::BlsSignature;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::VoteKind;
     use tape_core::types::EpochNumber;
     use tape_crypto::Hash;
@@ -202,7 +202,7 @@ mod tests {
                 assert_eq!(node, address(7));
                 assert_eq!(req.signer, address(9));
                 assert_eq!(req.candidate, expected_candidate);
-                assert_eq!(req.group, SpoolGroup(4));
+                assert_eq!(req.group, GroupIndex(4));
                 assert_eq!(req.signature, signature);
                 PeerRes::Vote(Ok(VoteRes))
             }
@@ -215,7 +215,7 @@ mod tests {
                 &VoteReq {
                     signer: address(9),
                     candidate: expected_candidate,
-                    group: SpoolGroup(4),
+                    group: GroupIndex(4),
                     signature,
                 },
             )
@@ -232,7 +232,7 @@ mod tests {
                 assert_eq!(node, address(7));
                 assert_eq!(req.signer, address(9));
                 assert_eq!(req.candidate, expected_candidate);
-                assert_eq!(req.group, SpoolGroup(8));
+                assert_eq!(req.group, GroupIndex(8));
                 assert_eq!(req.signature, signature);
                 PeerRes::Vote(Ok(VoteRes))
             }
@@ -245,7 +245,7 @@ mod tests {
                 &VoteReq {
                     signer: address(9),
                     candidate: expected_candidate,
-                    group: SpoolGroup(8),
+                    group: GroupIndex(8),
                     signature,
                 },
             )

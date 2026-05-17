@@ -18,7 +18,7 @@ use tape_crypto::address::Address;
 use tape_crypto::hash::{hashv, Hash};
 use tape_crypto::merkle::{MerkleError, MerkleTree};
 
-use crate::spooler::SpoolGroup;
+use crate::spooler::GroupIndex;
 use crate::types::{StorageUnits, TrackNumber};
 use super::archive::TRACK_TREE_HEIGHT;
 
@@ -49,7 +49,7 @@ pub struct CompressedTrack {
     pub kind: u64,
     pub state: u64,
     pub size: StorageUnits,
-    pub spool_group: SpoolGroup,
+    pub group: GroupIndex,
     pub value_hash: Hash,
 }
 
@@ -99,7 +99,7 @@ impl CompressedTrack {
             &self.kind.to_le_bytes(),
             &self.state.to_le_bytes(),
             &self.size.pack(),
-            &self.spool_group.pack(),
+            &self.group.pack(),
             &self.value_hash.to_bytes(),
         ])
     }

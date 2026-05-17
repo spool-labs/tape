@@ -9,7 +9,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::EpochNumber;
 use tape_protocol::api::{SnapshotVoteKind, SnapshotVoteReq};
 use tape_protocol::Api;
@@ -52,7 +52,7 @@ where
     let Some((member_index, _)) = state.find_member(me) else { return Ok(()); };
 
     for spool in state.member_spools(member_index) {
-        let group = SpoolGroup::of(spool);
+        let group = GroupIndex::containing(spool);
         let peers = group_peers_without(&state, group, me);
 
         let chunks = ctx

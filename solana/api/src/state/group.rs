@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::Spool;
 use tape_core::types::{EpochNumber, SpoolBitmap, StorageUnits};
 use super::AccountType;
@@ -9,7 +9,7 @@ use super::AccountType;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Group {
     /// Group index within the epoch.
-    pub id: SpoolGroup,
+    pub id: GroupIndex,
 
     /// Epoch this group belongs to.
     pub epoch: EpochNumber,

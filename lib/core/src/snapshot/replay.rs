@@ -228,7 +228,7 @@ impl SnapshotLog {
 
 #[cfg(test)]
 mod tests {
-    use crate::spooler::SpoolGroup;
+    use crate::spooler::GroupIndex;
     use crate::track::types::{TrackKind, TrackState};
     #[cfg(feature = "wincode")]
     use crate::encoding::EncodingProfile;
@@ -247,7 +247,7 @@ mod tests {
                 kind: TrackKind::Raw as u64,
                 state: TrackState::Certified as u64,
                 size: 1u64.into(),
-                spool_group: SpoolGroup::from(0),
+                group: GroupIndex::from(0),
                 value_hash: Hash::default(),
             },
             epoch: EpochNumber(10),
@@ -265,7 +265,7 @@ mod tests {
                 kind: TrackKind::Blob as u64,
                 state: TrackState::Registered as u64,
                 size: 1024u64.into(),
-                spool_group: SpoolGroup::from(1),
+                group: GroupIndex::from(1),
                 value_hash: Hash::from([4u8; 32]),
             },
             epoch: EpochNumber(11),

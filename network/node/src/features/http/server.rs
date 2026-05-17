@@ -31,7 +31,7 @@ use crate::config::http::HttpConfig;
 use crate::config::https::HttpsConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::http::auth::resolve_peer_membership;
+use crate::features::http::auth::authorize_peer;
 use crate::features::http::handlers;
 use crate::features::http::peer_identity::PeerIdentityAcceptor;
 use crate::features::http::state::AppState;
@@ -65,14 +65,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     }
 
     /// Build the shared router that backs both listeners. Authorization lives
-    /// at the handler level via the [`PeerCommitteeMember`] extractor
+    /// at the handler level via the [`PeerAuth`] extractor
     /// (declared in a handler's signature), not at the Router-composition
     /// level. The HTTPS listener separately layers the
-    /// [`resolve_peer_membership`] middleware so that mTLS-authenticated
+    /// [`authorize_peer`] middleware so that mTLS-authenticated
     /// callers can satisfy the extractor; the HTTP listener does not, so
     /// peer-only handlers on plaintext fall through to 403.
     ///
-    /// [`PeerCommitteeMember`]: crate::features::http::auth::PeerCommitteeMember
+    /// [`PeerAuth`]: crate::features::http::auth::PeerAuth
     fn build_router(&self) -> Router {
         let state = AppState {
             context: self.context.clone(),
@@ -135,7 +135,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 post(handlers::track::repair::repair::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit.clone()),
             )
-            // Peer-only: handler signatures carry `_peer: PeerCommitteeMember`,
+            // Peer-only: handler signatures carry `_peer: PeerAuth`,
             // which 403s when the extension isn't present (plaintext listener,
             // anonymous HTTPS, unknown/non-committee pubkey).
             .route(
@@ -149,8 +149,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     .layer(peer_body_limit.clone()),
             )
             .route(
-                api_routes::SNAPSHOT_VOTE_PATH,
-                post(handlers::snapshot::vote::vote::<Db, Cluster, Blockchain>)
+                api_routes::VOTE_PATH,
+                post(handlers::vote::vote::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit.clone()),
             )
             .route(
@@ -203,7 +203,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         };
         let https_router = shared_router.clone().layer(from_fn_with_state(
             auth_state,
-            resolve_peer_membership::<Db, Cluster, Blockchain>,
+            authorize_peer::<Db, Cluster, Blockchain>,
         ));
         let http_router = shared_router;
 

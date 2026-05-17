@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
 use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEADER_SIZE};
 use tape_core::snapshot::replay::SnapshotLog;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobInfo;
 use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount};
 use tape_crypto::hash::Hash;
@@ -29,7 +29,7 @@ pub const MAX_SEGMENT_BYTES: usize = SNAPSHOT_K_OUTER * MAX_CHUNK_BYTES - SEGMEN
 /// One encoded snapshot chunk, in memory between build and persistence.
 #[derive(Debug, Clone)]
 pub struct BuiltChunk {
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
     pub chunk: ChunkNumber,
     pub blob: BlobInfo,
     pub slices: [Vec<u8>; GROUP_SIZE],
@@ -117,8 +117,8 @@ where
         let chunk = ChunkNumber(chunk_index as u64);
 
         for &spool_index in &our_spools {
-            let group = SpoolGroup::of(spool_index);
-            let bitmap_index = (spool_index - group.base()) as u16;
+            let group = GroupIndex::containing(spool_index);
+            let bitmap_index = (spool_index - group.base_spool()) as u16;
             let built = encode_chunk(epoch, group, chunk, &symbols[group.0 as usize])?;
 
             let artifact = SnapshotArtifact {
@@ -145,7 +145,7 @@ where
 /// the result with derived `BlobInfo`.
 pub(crate) fn encode_chunk(
     epoch: EpochNumber,
-    group: SpoolGroup,
+    group: GroupIndex,
     chunk: ChunkNumber,
     symbol: &[u8],
 ) -> Result<BuiltChunk, NodeError> {

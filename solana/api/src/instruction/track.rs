@@ -125,7 +125,7 @@ pub fn build_certify_track_ix(
     signature: BlsSignature,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let (group_address, _) = group_pda(epoch, track.state.spool_group);
+    let (group_address, _) = group_pda(epoch, track.state.group);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -155,7 +155,7 @@ pub fn build_invalidate_track_ix(
     computed_root: Hash,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let (group_address, _) = group_pda(epoch, track.state.spool_group);
+    let (group_address, _) = group_pda(epoch, track.state.group);
 
     Instruction {
         program_id: tapedrive::ID,

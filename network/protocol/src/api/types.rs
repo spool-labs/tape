@@ -5,7 +5,7 @@ use core::mem::size_of;
 use tape_core::{
     bls::BlsSignature,
     erasure::SLICE_TREE_HEIGHT,
-    spooler::SpoolGroup,
+    spooler::GroupIndex,
 };
 pub use tape_core::system::VoteCandidate;
 use tape_core::prelude::{EpochNumber, SpoolIndex, TrackData, TrackNumber};
@@ -40,7 +40,7 @@ pub struct BlsSignResponse {
 pub struct VoteRequest {
     pub signer: Address,
     pub candidate: VoteCandidate,
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
     pub signature: BlsSignature,
 }
 
@@ -310,7 +310,7 @@ mod tests {
                 target_epoch: EpochNumber(10),
                 hash: Hash::from([0x11; 32]),
             },
-            group: SpoolGroup(4),
+            group: GroupIndex(4),
             signature: BlsSignature(G1CompressedPoint([0xAB; 32])),
         };
         let bytes = wincode::serialize(&req).unwrap();

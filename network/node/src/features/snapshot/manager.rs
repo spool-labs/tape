@@ -6,7 +6,7 @@ use store::Store;
 use tape_api::event::{SnapshotSigned, SnapshotWritten};
 use tape_blocks::ParsedInstruction;
 use tape_core::snapshot::types::SnapshotState;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobInfo;
 use tape_core::types::{ChunkNumber, EpochNumber};
 use tape_protocol::Api;
@@ -150,7 +150,7 @@ where
     async fn on_snapshot_written(
         &self,
         event: SnapshotWritten,
-        group: SpoolGroup,
+        group: GroupIndex,
         chunk: ChunkNumber,
         blob: BlobInfo,
     ) -> Result<(), NodeError> {
@@ -202,7 +202,7 @@ mod tests {
     use tape_api::event::SnapshotWritten;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
@@ -232,7 +232,7 @@ mod tests {
         let (_tx, rx) = mpsc::channel(1);
         let manager = SnapshotManager::new(ctx.clone(), rx, CancellationToken::new());
         let epoch = EpochNumber(9);
-        let group = SpoolGroup(0);
+        let group = GroupIndex(0);
         let chunk = ChunkNumber(0);
         let track = Address::new_unique();
         let artifact = SnapshotArtifact {
@@ -281,7 +281,7 @@ mod tests {
         let (_tx, rx) = mpsc::channel(1);
         let manager = SnapshotManager::new(ctx.clone(), rx, CancellationToken::new());
         let epoch = EpochNumber(9);
-        let group = SpoolGroup(0);
+        let group = GroupIndex(0);
         let chunk = ChunkNumber(0);
         let track = Address::new_unique();
         let artifact = SnapshotArtifact {

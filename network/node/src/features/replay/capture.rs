@@ -122,7 +122,7 @@ fn capture_instruction(
                 kind: TrackKind::Blob as u64,
                 state: TrackState::Certified as u64,
                 size: blob.size,
-                spool_group: *group,
+                group: *group,
                 value_hash: blob.get_hash(),
             };
 
@@ -172,7 +172,7 @@ fn capture_instruction(
                             kind: meta.kind as u64,
                             state: meta.state as u64,
                             size: meta.size,
-                            spool_group: event.spool_group,
+                            group: event.group,
                             value_hash: meta.value_hash,
                         },
                         epoch: event.epoch,
@@ -185,7 +185,7 @@ fn capture_instruction(
                 raw_track: match value {
                     TrackData::Raw(bytes) => Some(RawTrack {
                         track: *track,
-                        spool_group: event.spool_group,
+                        group: event.group,
                         data: bytes.clone(),
                     }),
                     TrackData::Blob(_) => None,
@@ -285,7 +285,7 @@ mod tests {
     use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::snapshot::replay::ReplayableEvent;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -327,13 +327,13 @@ mod tests {
                 track,
                 tape,
                 track_number: TrackNumber(7),
-                spool_group: SpoolGroup(3),
+                group: GroupIndex(3),
                 track_hash: Hash::new_unique(),
             },
         }
     }
 
-    fn snapshot_block(epoch: EpochNumber, group: SpoolGroup, chunk: ChunkNumber) -> ParsedBlock {
+    fn snapshot_block(epoch: EpochNumber, group: GroupIndex, chunk: ChunkNumber) -> ParsedBlock {
         let blob = default_blob();
         let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
         let key = snapshot_chunk_key(epoch, group, chunk);
@@ -345,7 +345,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
-            spool_group: group,
+            group: group,
             value_hash: blob.get_hash(),
         };
 
@@ -390,7 +390,7 @@ mod tests {
                 track,
                 tape,
                 track_number: TrackNumber(8),
-                spool_group: SpoolGroup(4),
+                group: GroupIndex(4),
                 track_hash: Hash::new_unique(),
             },
         }
@@ -517,7 +517,7 @@ mod tests {
             ReplayableEvent::Track(track) => {
                 assert_eq!(track.state.tape, tape);
                 assert_eq!(track.state.track_number, TrackNumber(8));
-                assert_eq!(u64::from(track.state.spool_group), 4);
+                assert_eq!(u64::from(track.state.group), 4);
                 assert_eq!(track.state.kind, TrackKind::Raw as u64);
                 assert_eq!(track.state.state, TrackState::Certified as u64);
                 assert!(track.blob.is_none());
@@ -526,14 +526,14 @@ mod tests {
         }
 
         assert_eq!(captured.raw_tracks[0].track, track.into());
-        assert_eq!(u64::from(captured.raw_tracks[0].spool_group), 4);
+        assert_eq!(u64::from(captured.raw_tracks[0].group), 4);
         assert_eq!(captured.raw_tracks[0].data, vec![0xAB; 4 * 1024]);
     }
 
     #[test]
     fn captures_snapshot_chunks() {
         let snapshot_epoch = EpochNumber(7);
-        let group = SpoolGroup(3);
+        let group = GroupIndex(3);
         let chunk = ChunkNumber(0);
 
         let block = snapshot_block(snapshot_epoch, group, chunk);
@@ -568,7 +568,7 @@ mod tests {
                 assert_eq!(track.state.tape, snapshot_tape);
                 assert_eq!(track.state.key, expected_key);
                 assert_eq!(track.state.track_number, TrackNumber(0));
-                assert_eq!(track.state.spool_group, group);
+                assert_eq!(track.state.group, group);
                 assert_eq!(track.state.kind, TrackKind::Blob as u64);
                 assert_eq!(track.state.state, TrackState::Certified as u64);
                 assert_eq!(track.epoch, snapshot_epoch);
@@ -588,7 +588,7 @@ mod tests {
         let old_epoch = EpochNumber(7);
         let new_epoch = EpochNumber(8);
         let snapshot_epoch = old_epoch;
-        let group = SpoolGroup(3);
+        let group = GroupIndex(3);
         let chunk = ChunkNumber(0);
 
         let blob = default_blob();
@@ -602,7 +602,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
-            spool_group: group,
+            group: group,
             value_hash: blob.get_hash(),
         };
 

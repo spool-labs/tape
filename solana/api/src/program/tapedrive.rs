@@ -1,7 +1,7 @@
 use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_core::{
-    spooler::SpoolGroup,
+    spooler::GroupIndex,
     types::{EpochNumber, TrackNumber},
 };
 use tape_crypto::{Address, Hash};
@@ -111,7 +111,7 @@ pub fn committee_pda(epoch: EpochNumber) -> (Address, u8) {
 }
 
 #[inline(always)]
-pub fn group_pda(epoch: EpochNumber, group: SpoolGroup) -> (Address, u8) {
+pub fn group_pda(epoch: EpochNumber, group: GroupIndex) -> (Address, u8) {
     Address::find_program_address(&[GROUP, &epoch.pack(), &group.pack()], id())
 }
 
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn epoch_scoped_pdas_distinct() {
         let epoch = EpochNumber(42);
-        let group = SpoolGroup(7);
+        let group = GroupIndex(7);
 
         let (epoch_pda_addr, _) = epoch_pda(epoch);
         let (committee, _) = committee_pda(epoch);
@@ -256,7 +256,7 @@ mod tests {
         assert_ne!(group_addr, group_other);
 
         // Different groups within the same epoch are distinct.
-        let (group_neighbor, _) = group_pda(epoch, SpoolGroup(8));
+        let (group_neighbor, _) = group_pda(epoch, GroupIndex(8));
         assert_ne!(group_addr, group_neighbor);
 
         // PDAs are reproducible.

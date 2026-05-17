@@ -6,7 +6,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -205,7 +205,7 @@ impl PeerManager {
     pub fn healthy_peers_for_group(
         &self,
         state: &ProtocolState,
-        group: SpoolGroup,
+        group: GroupIndex,
     ) -> Vec<(SpoolIndex, Address)> {
         state
             .group_peers(group)
@@ -298,7 +298,7 @@ mod tests {
     use tape_api::state::Group;
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::GROUP_SIZE;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::{Member, Peer, Spool};
     use tape_core::types::EpochNumber;
     use tape_core::types::coin::TAPE;
@@ -338,7 +338,7 @@ mod tests {
     fn group(epoch: EpochNumber, owner: Address) -> Group {
         let mut group = Group {
             epoch,
-            id: SpoolGroup(0),
+            id: GroupIndex(0),
             ..Group::zeroed()
         };
         for i in 0..GROUP_SIZE {

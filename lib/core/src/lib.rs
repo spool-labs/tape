@@ -16,7 +16,7 @@ mod macros;
 
 pub mod prelude {
     pub use crate::encoding::EncodingProfile;
-    pub use crate::types::{SpoolGroup, SpoolIndex};
+    pub use crate::types::{GroupIndex, SpoolIndex};
     pub use crate::system::{
         EpochPhase, EpochState, NodeStatus, SpoolState, SpoolStatus, VoteKind,
     };

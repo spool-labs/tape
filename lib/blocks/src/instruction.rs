@@ -12,7 +12,7 @@ use tape_api::instruction::{
 };
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::data::{TrackData, TrackDataSlice};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
@@ -38,7 +38,7 @@ pub enum RawInstruction {
     },
     VoteSnapshot {
         hash: Hash,
-        group: SpoolGroup,
+        group: GroupIndex,
     },
     FinalizeSnapshot {
         epoch: EpochNumber,
@@ -48,11 +48,11 @@ pub enum RawInstruction {
     },
     VoteAssignment {
         hash: Hash,
-        group: SpoolGroup,
+        group: GroupIndex,
     },
     FinalizeGroup {
         epoch: EpochNumber,
-        group: SpoolGroup,
+        group: GroupIndex,
     },
     SettleSpool {
         node: Address,
@@ -117,7 +117,7 @@ pub enum ParsedInstruction {
     },
     VoteSnapshot {
         hash: Hash,
-        group: SpoolGroup,
+        group: GroupIndex,
         event: VoteRecorded,
     },
     FinalizeSnapshot {
@@ -130,12 +130,12 @@ pub enum ParsedInstruction {
     },
     VoteAssignment {
         hash: Hash,
-        group: SpoolGroup,
+        group: GroupIndex,
         event: VoteRecorded,
     },
     FinalizeGroup {
         epoch: EpochNumber,
-        group: SpoolGroup,
+        group: GroupIndex,
         event: AssignmentGroupFinalized,
     },
     SettleSpool {
@@ -266,7 +266,7 @@ pub fn parse_raw_instruction(
         TapeInstruction::VoteSnapshot => {
             let args = VoteSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_snapshot: {e:?}")))?;
-            let group = SpoolGroup::unpack(args.group);
+            let group = GroupIndex::unpack(args.group);
             Ok(Some(RawInstruction::VoteSnapshot { hash: args.hash, group }))
         }
 
@@ -287,7 +287,7 @@ pub fn parse_raw_instruction(
         TapeInstruction::VoteAssignment => {
             let args = VoteAssignment::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_assignment: {e:?}")))?;
-            let group = SpoolGroup::unpack(args.group);
+            let group = GroupIndex::unpack(args.group);
             Ok(Some(RawInstruction::VoteAssignment {
                 hash: args.hash,
                 group,
@@ -401,7 +401,7 @@ mod tests {
         build_vote_assignment_ix, build_vote_snapshot_ix,
     };
     use tape_core::bls::BlsSignature;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::VoteKind;
     use tape_core::types::{
         EpochNumber, SpoolBitmap,
@@ -437,14 +437,14 @@ mod tests {
             Address::new_unique(),
             EpochNumber(7),
             Hash::from([0x55; 32]),
-            SpoolGroup(3),
+            GroupIndex(3),
             SpoolBitmap::zeroed(),
             BlsSignature::zeroed(),
         ));
         match parse_raw_instruction(&ix, &keys).unwrap() {
             Some(RawInstruction::VoteSnapshot { hash, group }) => {
                 assert_eq!(hash, Hash::from([0x55; 32]));
-                assert_eq!(group, SpoolGroup(3));
+                assert_eq!(group, GroupIndex(3));
             }
             other => panic!("expected RawInstruction::VoteSnapshot, got {other:?}"),
         }
@@ -456,14 +456,14 @@ mod tests {
             Address::new_unique(),
             EpochNumber(7),
             Hash::from([0x66; 32]),
-            SpoolGroup(3),
+            GroupIndex(3),
             SpoolBitmap::zeroed(),
             BlsSignature::zeroed(),
         ));
         match parse_raw_instruction(&ix, &keys).unwrap() {
             Some(RawInstruction::VoteAssignment { hash, group }) => {
                 assert_eq!(hash, Hash::from([0x66; 32]));
-                assert_eq!(group, SpoolGroup(3));
+                assert_eq!(group, GroupIndex(3));
             }
             other => panic!("expected RawInstruction::VoteAssignment, got {other:?}"),
         }
@@ -477,7 +477,7 @@ mod tests {
             voting_epoch: EpochNumber(8),
             target_epoch: EpochNumber(7),
             hash: Hash::from([0x55; 32]),
-            group: SpoolGroup(4),
+            group: GroupIndex(4),
             signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
             signed_groups: 1u64.to_le_bytes(),
             total_groups: 5u64.to_le_bytes(),
@@ -486,7 +486,7 @@ mod tests {
         let instructions = vec![
             RawInstruction::VoteSnapshot {
                 hash: Hash::from([0x55; 32]),
-                group: SpoolGroup(4),
+                group: GroupIndex(4),
             },
         ];
         let events = vec![TapedriveEvent::VoteRecorded(voted)];
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(merged.len(), 1);
         match &merged[0] {
             ParsedInstruction::VoteSnapshot { group, event, .. } => {
-                assert_eq!(*group, SpoolGroup(4));
+                assert_eq!(*group, GroupIndex(4));
                 assert_eq!(event.target_epoch, voted.target_epoch);
                 assert_eq!(event.group, voted.group);
             }

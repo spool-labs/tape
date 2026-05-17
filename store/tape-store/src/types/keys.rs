@@ -12,7 +12,7 @@
 use std::mem::MaybeUninit;
 
 use serde::{Deserialize, Serialize};
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::{VoteCandidate, VoteKind};
 use tape_core::types::{EpochNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
@@ -336,7 +336,7 @@ impl<'de> SchemaRead<'de> for SnapshotArtifactKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VoteSigKey {
     pub candidate: VoteCandidate,
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
     pub signer: Address,
 }
 
@@ -346,7 +346,7 @@ impl VoteSigKey {
     pub const CANDIDATE_PREFIX_SIZE: usize = 56;
     pub const GROUP_PREFIX_SIZE: usize = 64;
 
-    pub fn new(candidate: VoteCandidate, group: SpoolGroup, signer: Address) -> Self {
+    pub fn new(candidate: VoteCandidate, group: GroupIndex, signer: Address) -> Self {
         Self {
             candidate,
             group,
@@ -370,7 +370,7 @@ impl VoteSigKey {
 
     pub fn group_prefix(
         candidate: VoteCandidate,
-        group: SpoolGroup,
+        group: GroupIndex,
     ) -> [u8; Self::GROUP_PREFIX_SIZE] {
         let mut buf = [0u8; Self::GROUP_PREFIX_SIZE];
         buf[0..Self::CANDIDATE_PREFIX_SIZE].copy_from_slice(&Self::candidate_prefix(candidate));
@@ -418,7 +418,7 @@ impl<'de> SchemaRead<'de> for VoteSigKey {
                 target_epoch: EpochNumber(u64::from_be_bytes(target_epoch_bytes)),
                 hash: Hash(hash),
             },
-            group: SpoolGroup(u64::from_be_bytes(group_bytes)),
+            group: GroupIndex(u64::from_be_bytes(group_bytes)),
             signer: Address::from(signer),
         });
         Ok(())

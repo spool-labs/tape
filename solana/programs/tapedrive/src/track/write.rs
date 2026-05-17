@@ -1,7 +1,7 @@
 use tape_solana::*;
 use tape_api::event::TrackWritten;
 use tape_api::program::prelude::*;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::Hash;
 
@@ -51,7 +51,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     }
 
     let track_number = tape.tracks.next_number();
-    let spool_group = get_spool_group(
+    let group = select_group(
         tape.id,
         track_number,
         slot_hash_seed(slot_hashes_info)?,
@@ -65,7 +65,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         kind: meta.kind as u64,
         state: meta.state as u64,
         size: meta.size,
-        spool_group,
+        group,
         value_hash: meta.value_hash,
     };
 
@@ -78,7 +78,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         epoch: curr,
         track: track_address,
         tape: tape_address,
-        spool_group,
+        group,
         track_number,
         track_hash,
     }.log();
@@ -86,12 +86,12 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     Ok(())
 }
 
-fn get_spool_group(
+fn select_group(
     tape_id: TapeNumber,
     track_number: TrackNumber,
     seed: Hash,
     spool_groups: u64,
-) -> Result<SpoolGroup, ProgramError> {
+) -> Result<GroupIndex, ProgramError> {
     let tape_number: u64 = tape_id.into();
     let mixed = u64::from_le_bytes(
         seed.0[..8]
@@ -101,7 +101,7 @@ fn get_spool_group(
         .wrapping_add(tape_number)
         .wrapping_add(track_number.0);
 
-    Ok(SpoolGroup(mixed % spool_groups))
+    Ok(GroupIndex(mixed % spool_groups))
 }
 
 fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
@@ -209,7 +209,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Registered as u64,
             size: storage_units,
-            spool_group: SpoolGroup(1),
+            group: GroupIndex(1),
             value_hash: blob.get_hash(),
         };
         let track_hash = track.get_hash();

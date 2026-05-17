@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use bytemuck::Zeroable;
 use tape_api::state::{Epoch, Group, System};
-use tape_core::spooler::SpoolGroup;
-use tape_core::system::{EpochPhase, Member, Peer};
+use tape_core::spooler::GroupIndex;
+use tape_core::system::{EpochPhase, Member, Peer, Spool};
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::Address;
 
@@ -106,14 +106,70 @@ impl ProtocolState {
             || self.find_member_next(node).is_some()
     }
 
+    /// Find a current-epoch group account by index.
+    pub fn group(&self, group: GroupIndex) -> Option<&Group> {
+        group_inner(&self.current.groups, group)
+    }
+
+    /// Find a previous-epoch group account by index.
+    pub fn group_prev(&self, group: GroupIndex) -> Option<&Group> {
+        group_inner(&self.previous.as_ref()?.groups, group)
+    }
+
+    /// Find a current-epoch spool assignment by global spool index.
+    pub fn spool(&self, spool: SpoolIndex) -> Option<&Spool> {
+        spool_inner(&self.current.groups, spool)
+    }
+
+    /// Find a previous-epoch spool assignment by global spool index.
+    pub fn spool_prev(&self, spool: SpoolIndex) -> Option<&Spool> {
+        spool_inner(&self.previous.as_ref()?.groups, spool)
+    }
+
+    /// Iterate current-epoch spool assignments for one group.
+    pub fn spools_in_group(
+        &self,
+        group: GroupIndex,
+    ) -> Option<impl Iterator<Item = (SpoolIndex, &Spool)> + '_> {
+        spools_in_group_inner(&self.current.groups, group)
+    }
+
+    /// Iterate previous-epoch spool assignments for one group.
+    pub fn spools_in_group_prev(
+        &self,
+        group: GroupIndex,
+    ) -> Option<impl Iterator<Item = (SpoolIndex, &Spool)> + '_> {
+        spools_in_group_inner(&self.previous.as_ref()?.groups, group)
+    }
+
+    /// Find the concrete spool position a node owns inside a current-epoch group.
+    pub fn spool_for_node_in_group(
+        &self,
+        group: GroupIndex,
+        node: Address,
+    ) -> Option<(SpoolIndex, &Spool)> {
+        spool_for_node_in_group_inner(&self.current.groups, group, node)
+    }
+
+    /// Find the concrete spool position a node owns inside a previous-epoch group.
+    pub fn spool_for_node_in_group_prev(
+        &self,
+        group: GroupIndex,
+        node: Address,
+    ) -> Option<(SpoolIndex, &Spool)> {
+        spool_for_node_in_group_inner(&self.previous.as_ref()?.groups, group, node)
+    }
+
     /// Which node owns this spool in the current epoch?
     pub fn spool_owner(&self, spool: SpoolIndex) -> Option<Address> {
-        spool_owner_inner(&self.current.groups, spool)
+        self.spool(spool)
+            .and_then(|spool| assigned_node(spool.node))
     }
 
     /// Which node owned this spool in the previous epoch?
     pub fn spool_owner_prev(&self, spool: SpoolIndex) -> Option<Address> {
-        spool_owner_inner(&self.previous.as_ref()?.groups, spool)
+        self.spool_prev(spool)
+            .and_then(|spool| assigned_node(spool.node))
     }
 
     /// All spools assigned to a node in the current epoch.
@@ -130,41 +186,60 @@ impl ProtocolState {
     }
 
     /// Map each spool in a group to its owning node account address.
-    pub fn group_peers(&self, group: SpoolGroup) -> Vec<(SpoolIndex, Address)> {
-        group_peers_inner(&self.current.groups, group)
+    pub fn group_peers(&self, group: GroupIndex) -> Vec<(SpoolIndex, Address)> {
+        group_peers_inner(self.spools_in_group(group))
     }
 
     /// Map each spool in a previous-epoch group to its owning node account address.
-    pub fn group_peers_prev(&self, group: SpoolGroup) -> Vec<(SpoolIndex, Address)> {
-        self.previous
-            .as_ref()
-            .map(|previous| group_peers_inner(&previous.groups, group))
-            .unwrap_or_default()
+    pub fn group_peers_prev(&self, group: GroupIndex) -> Vec<(SpoolIndex, Address)> {
+        group_peers_inner(self.spools_in_group_prev(group))
     }
 
     /// Count unique nodes responsible for spools in a current-epoch group.
-    pub fn group_member_count(&self, group: SpoolGroup) -> usize {
-        group_member_count_inner(&self.current.groups, group)
+    pub fn group_member_count(&self, group: GroupIndex) -> usize {
+        group_member_count_inner(self.group(group))
     }
 
     /// Count unique nodes responsible for spools in a previous-epoch group.
-    pub fn group_member_count_prev(&self, group: SpoolGroup) -> usize {
-        self.previous
-            .as_ref()
-            .map(|previous| group_member_count_inner(&previous.groups, group))
-            .unwrap_or_default()
+    pub fn group_member_count_prev(&self, group: GroupIndex) -> usize {
+        group_member_count_inner(self.group_prev(group))
     }
 }
 
-fn spool_owner_inner(groups: &[Group], spool: SpoolIndex) -> Option<Address> {
-    let group = SpoolGroup::of(spool);
-    let slice = group.slice_of(spool)?.as_usize();
-    groups
-        .iter()
-        .find(|candidate| candidate.id == group)?
-        .spools
-        .get(slice)
-        .and_then(|spool| assigned_node(spool.node))
+fn group_inner(groups: &[Group], group: GroupIndex) -> Option<&Group> {
+    groups.iter().find(|candidate| candidate.id == group)
+}
+
+fn spool_inner(groups: &[Group], spool: SpoolIndex) -> Option<&Spool> {
+    let group = GroupIndex::containing(spool);
+    let position = group.position_of(spool)?;
+    group_inner(groups, group)?.spools.get(position)
+}
+
+fn spools_in_group_inner(
+    groups: &[Group],
+    group: GroupIndex,
+) -> Option<impl Iterator<Item = (SpoolIndex, &Spool)> + '_> {
+    Some(
+        group_inner(groups, group)?
+            .spools
+            .iter()
+            .enumerate()
+            .map(move |(position, spool)| (group.spool_at(position), spool)),
+    )
+}
+
+fn spool_for_node_in_group_inner(
+    groups: &[Group],
+    group: GroupIndex,
+    node: Address,
+) -> Option<(SpoolIndex, &Spool)> {
+    if assigned_node(node).is_none() {
+        return None;
+    }
+
+    spools_in_group_inner(groups, group)?
+        .find(|(_, spool)| spool.node == node)
 }
 
 fn member_spools_inner(groups: &[Group], node: Address) -> Vec<SpoolIndex> {
@@ -174,41 +249,29 @@ fn member_spools_inner(groups: &[Group], node: Address) -> Vec<SpoolIndex> {
 
     groups
         .iter()
-        .flat_map(|group| {
-            group
-                .spools
-                .iter()
-                .enumerate()
-                .filter_map(move |(slice, spool)| {
-                    (spool.node == node).then_some(group.id.spool_at(slice))
-                })
-        })
+        .flat_map(|group| spools_in_group_inner(groups, group.id).into_iter().flatten())
+        .filter_map(|(spool_index, spool)| (spool.node == node).then_some(spool_index))
         .collect()
 }
 
-fn group_peers_inner(groups: &[Group], group: SpoolGroup) -> Vec<(SpoolIndex, Address)> {
-    groups
-        .iter()
-        .find(|candidate| candidate.id == group)
-        .map(|group_account| {
-            group_account
-                .spools
-                .iter()
-                .enumerate()
-                .filter_map(|(slice, spool)| {
-                    assigned_node(spool.node).map(|node| (group.spool_at(slice), node))
+fn group_peers_inner<'a>(
+    spools: Option<impl Iterator<Item = (SpoolIndex, &'a Spool)>>,
+) -> Vec<(SpoolIndex, Address)> {
+    spools
+        .map(|spools| {
+            spools
+                .filter_map(|(spool_index, spool)| {
+                    assigned_node(spool.node).map(|node| (spool_index, node))
                 })
-                .collect()
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default()
 }
 
-fn group_member_count_inner(groups: &[Group], group: SpoolGroup) -> usize {
-    groups
-        .iter()
-        .find(|candidate| candidate.id == group)
-        .map(|group_account| {
-            group_account
+fn group_member_count_inner(group: Option<&Group>) -> usize {
+    group
+        .map(|group| {
+            group
                 .spools
                 .iter()
                 .filter_map(|spool| assigned_node(spool.node))
@@ -247,7 +310,7 @@ mod tests {
         }
     }
 
-    fn group(epoch: EpochNumber, id: SpoolGroup, owners: &[Address]) -> Group {
+    fn group(epoch: EpochNumber, id: GroupIndex, owners: &[Address]) -> Group {
         let mut group = Group {
             epoch,
             id,
@@ -275,7 +338,7 @@ mod tests {
                     ..Epoch::zeroed()
                 },
                 committee: vec![member(a, 100), member(b, 90), member(c, 80)],
-                groups: vec![group(epoch, SpoolGroup(0), &[a, b, c])],
+                groups: vec![group(epoch, GroupIndex(0), &[a, b, c])],
             },
             next_committee: Some(vec![member(address(9), 50)]),
             ..ProtocolState::default()
@@ -298,7 +361,7 @@ mod tests {
     #[test]
     fn group_peers_all_spools() {
         let state = state_with_groups();
-        let peers = state.group_peers(SpoolGroup(0));
+        let peers = state.group_peers(GroupIndex(0));
         assert_eq!(peers.len(), GROUP_SIZE);
         assert_eq!(peers[0], (SpoolIndex(0), address(1)));
         assert_eq!(peers[1], (SpoolIndex(1), address(2)));
@@ -324,7 +387,7 @@ mod tests {
     #[test]
     fn group_member_count_counts_unique_addresses() {
         let state = state_with_groups();
-        assert_eq!(state.group_member_count(SpoolGroup(0)), 3);
+        assert_eq!(state.group_member_count(GroupIndex(0)), 3);
     }
 
     #[test]
@@ -338,7 +401,7 @@ mod tests {
                 },
                 groups: vec![Group {
                     epoch,
-                    id: SpoolGroup(0),
+                    id: GroupIndex(0),
                     ..Group::zeroed()
                 }],
                 ..EpochBundle::default()
@@ -348,8 +411,8 @@ mod tests {
 
         assert!(state.spool_owner(SpoolIndex(0)).is_none());
         assert!(state.member_spools(Address::default()).is_empty());
-        assert!(state.group_peers(SpoolGroup(0)).is_empty());
-        assert_eq!(state.group_member_count(SpoolGroup(0)), 0);
+        assert!(state.group_peers(GroupIndex(0)).is_empty());
+        assert_eq!(state.group_member_count(GroupIndex(0)), 0);
     }
 
     #[test]
@@ -363,11 +426,11 @@ mod tests {
                 ..Epoch::zeroed()
             },
             committee: vec![member(prev_owner, 10)],
-            groups: vec![group(prev_epoch, SpoolGroup(0), &[prev_owner])],
+            groups: vec![group(prev_epoch, GroupIndex(0), &[prev_owner])],
         });
 
         assert_eq!(state.spool_owner_prev(SpoolIndex(0)), Some(prev_owner));
-        assert_eq!(state.group_member_count_prev(SpoolGroup(0)), 1);
+        assert_eq!(state.group_member_count_prev(GroupIndex(0)), 1);
     }
 
     #[test]

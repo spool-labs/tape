@@ -164,7 +164,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let current_epoch_id = EpochNumber(12);
         let target_epoch_id = EpochNumber(13);
-        let group_id = SpoolGroup(0);
+        let group_id = GroupIndex(0);
         let size = StorageUnits::gb(2);
         let peer_indices = core::array::from_fn(|i| i as u64);
         let payload =

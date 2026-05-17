@@ -23,7 +23,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, B
 pub fn current_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
 ) -> Result<EpochNumber, RouteError> {
-    let epoch = state.context.state().epoch;
+    let epoch = state.context.state().epoch();
     if epoch.is_zero() {
         return Err(RouteError::BadRequest("chain epoch missing".into()));
     }

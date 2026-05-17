@@ -153,7 +153,7 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
 mod tests {
     use super::*;
     use tape_core::prelude::*;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::{NodePreferences, VoteKind};
     use tape_core::types::{TrackNumber, VersionId};
     use tape_core::types::coin::TAPE;
@@ -247,7 +247,7 @@ mod tests {
             epoch: EpochNumber(3),
             track,
             tape,
-            spool_group: SpoolGroup(5),
+            group: GroupIndex(5),
             track_number: TrackNumber(7),
             track_hash: Hash::default(),
         };
@@ -261,7 +261,7 @@ mod tests {
                 assert_eq!(e.tape, tape);
                 assert_eq!(e.epoch, EpochNumber(3));
                 assert_eq!(e.track_number, TrackNumber(7));
-                assert_eq!(e.spool_group, SpoolGroup(5));
+                assert_eq!(e.group, GroupIndex(5));
             }
             _ => panic!("Expected TrackWritten event"),
         }
@@ -301,7 +301,7 @@ mod tests {
             voting_epoch: EpochNumber(20),
             target_epoch: EpochNumber(21),
             hash: Hash::from([0x66; 32]),
-            group: SpoolGroup(3),
+            group: GroupIndex(3),
             signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
             signed_groups: 4u64.to_le_bytes(),
             total_groups: 5u64.to_le_bytes(),
@@ -349,7 +349,7 @@ mod tests {
         let finalized = AssignmentGroupFinalized {
             epoch: EpochNumber(21),
             hash: Hash::from([0x66; 32]),
-            group: SpoolGroup(3),
+            group: GroupIndex(3),
             group_account,
             size: StorageUnits::mb(10),
             total_groups: 4u64.to_le_bytes(),

@@ -1,4 +1,4 @@
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::EpochNumber;
 use tape_solana::*;
 use tape_crypto::address::Address;
@@ -89,7 +89,7 @@ pub fn build_start_network_ix(
     let (epoch_address, _) = epoch_pda(EpochNumber(1));
     let (committee_address, _) = committee_pda(EpochNumber(1));
     let (peer_set_address, _) = peer_set_pda();
-    let (group_address, _) = group_pda(EpochNumber(1), SpoolGroup(0));
+    let (group_address, _) = group_pda(EpochNumber(1), GroupIndex(0));
     let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
     let mut accounts = vec![

@@ -167,7 +167,7 @@ mod tests {
     use super::*;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::types::StorageUnits;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_crypto::Hash;
     use store_memory::MemoryStore;
 
@@ -183,7 +183,7 @@ mod tests {
             kind: 0,
             state: 1,
             size: StorageUnits(1024 * 1024),
-            spool_group: SpoolGroup(3),
+            group: GroupIndex(3),
             value_hash: Hash::new_unique(),
         }
     }

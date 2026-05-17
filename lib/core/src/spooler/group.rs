@@ -1,4 +1,4 @@
-/// Spool group index. Each group contains GROUP_SIZE contiguous spools.
+/// Group account index. Each group contains GROUP_SIZE contiguous spools.
 
 use crate::erasure::GROUP_SIZE;
 use crate::types::SpoolIndex;
@@ -6,32 +6,44 @@ use bytemuck::{Pod, Zeroable};
 
 #[repr(transparent)]
 #[cfg_attr(feature = "wincode", derive(wincode_derive::SchemaRead, wincode_derive::SchemaWrite))]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
-pub struct SpoolGroup(pub u64);
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Pod,
+    Zeroable,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct GroupIndex(pub u64);
 
-impl SpoolGroup {
+impl GroupIndex {
     /// Get the group that owns a given spool.
     #[inline]
-    pub fn of(spool: SpoolIndex) -> Self {
+    pub fn containing(spool: SpoolIndex) -> Self {
         Self(spool.as_u64() / GROUP_SIZE as u64)
     }
 
     /// First spool index in this group.
     #[inline]
-    pub fn base(&self) -> SpoolIndex {
+    pub fn base_spool(&self) -> SpoolIndex {
         SpoolIndex::from(self.0 * GROUP_SIZE as u64)
     }
 
-    /// Global spool index for a slice position within this group.
+    /// Global spool index for a position within this group.
     #[inline]
-    pub fn spool_at(&self, slice_in_group: usize) -> SpoolIndex {
-        assert!(slice_in_group < GROUP_SIZE);
-        SpoolIndex::from(self.0 * GROUP_SIZE as u64 + slice_in_group as u64)
+    pub fn spool_at(&self, position: usize) -> SpoolIndex {
+        assert!(position < GROUP_SIZE);
+        SpoolIndex::from(self.0 * GROUP_SIZE as u64 + position as u64)
     }
 
-    /// Slice position within this group for a spool, if the spool belongs to this group.
+    /// Position within this group for a spool, if the spool belongs to this group.
     #[inline]
-    pub fn slice_of(&self, spool: SpoolIndex) -> Option<SpoolIndex> {
+    pub fn position_of(&self, spool: SpoolIndex) -> Option<usize> {
         let spool = spool.as_usize();
 
         // Not in this group.
@@ -39,14 +51,13 @@ impl SpoolGroup {
             return None;
         }
 
-        // Slice position within the group.
-        Some(SpoolIndex::from((spool % GROUP_SIZE) as u64))
+        Some(spool % GROUP_SIZE)
     }
 
     /// Check if a spool belongs to this group.
     #[inline]
     pub fn contains(&self, spool: SpoolIndex) -> bool {
-        SpoolGroup::of(spool) == *self
+        GroupIndex::containing(spool) == *self
     }
 
     /// Unpack from little-endian bytes.
@@ -62,27 +73,27 @@ impl SpoolGroup {
     }
 }
 
-impl From<u64> for SpoolGroup {
+impl From<u64> for GroupIndex {
     #[inline]
     fn from(v: u64) -> Self {
         Self(v)
     }
 }
 
-impl From<SpoolGroup> for u64 {
+impl From<GroupIndex> for u64 {
     #[inline]
-    fn from(g: SpoolGroup) -> u64 {
+    fn from(g: GroupIndex) -> u64 {
         g.0
     }
 }
 
-impl std::fmt::Debug for SpoolGroup {
+impl std::fmt::Debug for GroupIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "group:{}", self.0)
     }
 }
 
-impl std::fmt::Display for SpoolGroup {
+impl std::fmt::Display for GroupIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }

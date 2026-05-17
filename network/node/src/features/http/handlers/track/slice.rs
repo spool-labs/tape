@@ -168,7 +168,7 @@ mod tests {
     use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -190,7 +190,7 @@ mod tests {
     ) -> (Address, u16, Vec<u8>) {
         let epoch = EpochNumber(5);
 
-        let group = SpoolGroup(2);
+        let group = GroupIndex(2);
         let track_number = TrackNumber(9);
         let owned_spool = group.spool_at(5);
         let slice_bytes = vec![0xAB; 96];
@@ -226,7 +226,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
-            spool_group: group,
+            group: group,
             value_hash: blob.get_hash(),
         };
 

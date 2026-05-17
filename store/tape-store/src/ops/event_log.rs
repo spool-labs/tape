@@ -125,7 +125,7 @@ mod tests {
     use super::*;
     use store_memory::MemoryStore;
     use tape_core::snapshot::replay::ReplayTrack;
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
@@ -164,7 +164,7 @@ mod tests {
                         kind: TrackKind::Raw as u64,
                         state: TrackState::Certified as u64,
                         size: StorageUnits(100),
-                        spool_group: SpoolGroup::from(7),
+                        group: GroupIndex::from(7),
                         value_hash: Hash::default(),
                     },
                     epoch,

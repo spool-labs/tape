@@ -4,7 +4,7 @@ use std::sync::Arc;
 use peer_manager::PeerManager;
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_core::system::SpoolState;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
@@ -83,11 +83,11 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 // NOTE:
 //
 // The spool relationships are:
-//   - SpoolGroup::of(spool) → group is derived from spool
-//   - group.slice_of(spool) → slice index is derived from spool + group
+//   - GroupIndex::containing(spool) → group is derived from spool
+//   - group.position_of(spool) → slice index is derived from spool + group
 //   - group.spool_at(slice) → spool is derived from group + slice
 //
-//   Given a SpoolIndex, you can always derive the SpoolGroup and the SliceIndex within it. So passing
+//   Given a SpoolIndex, you can always derive the GroupIndex and the SliceIndex within it. So passing
 //   spool, group, AND lost is redundant, any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
 
@@ -241,7 +241,7 @@ pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool_state: &SpoolState,
     spool: SpoolIndex,
 ) -> GroupPeers {
-    let group = SpoolGroup::of(spool);
+    let group = GroupIndex::containing(spool);
     let previous = spool_state
         .prev_helpers
         .iter()
@@ -286,8 +286,8 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         return Err(());
     }
 
-    let group = SpoolGroup::of(spool);
-    let position = group.slice_of(spool).ok_or(())?;
+    let group = GroupIndex::containing(spool);
+    let position = group.position_of(spool).ok_or(())?;
     let lost = SliceIndex::new(position as usize);
 
     // Merge previous and current helpers, excluding duplicates and our own slice. 
@@ -297,7 +297,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         .chain(peers.current.keys())
         .filter_map(|helper_spool| {
             group
-                .slice_of(*helper_spool)
+                .position_of(*helper_spool)
                 .map(|helper_slice| SliceIndex::new(helper_slice as usize))
         })
         .collect();
@@ -464,7 +464,7 @@ fn per_helper_reqs(
     spool: SpoolIndex,
     track: Address,
 ) -> HashMap<SliceIndex, RepairReq> {
-    let group = SpoolGroup::of(spool);
+    let group = GroupIndex::containing(spool);
     let mut reqs: HashMap<SliceIndex, RepairReq> = HashMap::new();
 
     for stripe_repair in &plan.stripes {
@@ -582,7 +582,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size),
-            spool_group: SpoolGroup::of(SPOOL),
+            group: GroupIndex::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
     }
@@ -658,8 +658,8 @@ mod tests {
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
-        let group = SpoolGroup::of(SPOOL);
-        let lost_pos = group.slice_of(SPOOL).unwrap() as usize;
+        let group = GroupIndex::containing(SPOOL);
+        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
         let track_blob = clay_blob(1024, &slices);
@@ -668,7 +668,7 @@ mod tests {
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::Repair(ref req) => {
-                let helper_slice = &slices_for_api[group.slice_of(req.helper_spool).unwrap() as usize];
+                let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap() as usize];
 
                 let data = extract_repair_data(
                     &track_blob_for_api,
@@ -794,8 +794,8 @@ mod tests {
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
-        let group = SpoolGroup::of(SPOOL);
-        let lost_pos = group.slice_of(SPOOL).unwrap() as usize;
+        let group = GroupIndex::containing(SPOOL);
+        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
         let track_blob = clay_blob(1024, &slices);
@@ -804,7 +804,7 @@ mod tests {
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::Repair(ref req) => {
-                let helper_slice = &slices_for_api[group.slice_of(req.helper_spool).unwrap() as usize];
+                let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap() as usize];
                 let data = extract_repair_data(
                     &track_blob_for_api,
                     &req.stripes,

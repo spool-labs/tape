@@ -2,7 +2,7 @@
 
 use store::{Column, Store};
 use tape_core::bls::BlsSignature;
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::VoteCandidate;
 use tape_core::types::EpochNumber;
 use tape_crypto::Address;
@@ -16,7 +16,7 @@ pub trait VoteOps {
     fn put_vote_sig(
         &self,
         candidate: VoteCandidate,
-        group: SpoolGroup,
+        group: GroupIndex,
         signer: Address,
         signature: &BlsSignature,
     ) -> Result<()>;
@@ -25,7 +25,7 @@ pub trait VoteOps {
     fn iter_vote_sigs(
         &self,
         candidate: VoteCandidate,
-        group: SpoolGroup,
+        group: GroupIndex,
     ) -> Result<Vec<(Address, BlsSignature)>>;
 
     fn delete_vote_epoch(&self, voting_epoch: EpochNumber) -> Result<()>;
@@ -37,7 +37,7 @@ impl<S: Store> VoteOps for TapeStore<S> {
     fn put_vote_sig(
         &self,
         candidate: VoteCandidate,
-        group: SpoolGroup,
+        group: GroupIndex,
         signer: Address,
         signature: &BlsSignature,
     ) -> Result<()> {
@@ -49,7 +49,7 @@ impl<S: Store> VoteOps for TapeStore<S> {
     fn iter_vote_sigs(
         &self,
         candidate: VoteCandidate,
-        group: SpoolGroup,
+        group: GroupIndex,
     ) -> Result<Vec<(Address, BlsSignature)>> {
         let prefix = VoteSigKey::group_prefix(candidate, group);
         let iter = self
@@ -152,7 +152,7 @@ mod tests {
     fn vote_sigs_roundtrip_ordered_by_signer() {
         let store = test_store();
         let candidate = candidate(VoteKind::Snapshot, 11, 10, 0xAA);
-        let group = SpoolGroup(4);
+        let group = GroupIndex(4);
 
         for byte in [3u8, 1, 2] {
             store
@@ -178,25 +178,25 @@ mod tests {
         let candidate_b = candidate(VoteKind::Assignment, 11, 12, 0xBB);
 
         store
-            .put_vote_sig(candidate_a, SpoolGroup(4), address(1), &signature(1))
+            .put_vote_sig(candidate_a, GroupIndex(4), address(1), &signature(1))
             .unwrap();
         store
-            .put_vote_sig(candidate_a, SpoolGroup(5), address(2), &signature(2))
+            .put_vote_sig(candidate_a, GroupIndex(5), address(2), &signature(2))
             .unwrap();
         store
-            .put_vote_sig(candidate_b, SpoolGroup(4), address(3), &signature(3))
+            .put_vote_sig(candidate_b, GroupIndex(4), address(3), &signature(3))
             .unwrap();
 
         assert_eq!(
-            store.iter_vote_sigs(candidate_a, SpoolGroup(4)).unwrap(),
+            store.iter_vote_sigs(candidate_a, GroupIndex(4)).unwrap(),
             vec![(address(1), signature(1))]
         );
         assert_eq!(
-            store.iter_vote_sigs(candidate_a, SpoolGroup(5)).unwrap(),
+            store.iter_vote_sigs(candidate_a, GroupIndex(5)).unwrap(),
             vec![(address(2), signature(2))]
         );
         assert_eq!(
-            store.iter_vote_sigs(candidate_b, SpoolGroup(4)).unwrap(),
+            store.iter_vote_sigs(candidate_b, GroupIndex(4)).unwrap(),
             vec![(address(3), signature(3))]
         );
     }
@@ -205,7 +205,7 @@ mod tests {
     fn put_vote_sig_overwrites_existing_signer() {
         let store = test_store();
         let candidate = candidate(VoteKind::Snapshot, 11, 10, 0xAA);
-        let group = SpoolGroup(4);
+        let group = GroupIndex(4);
         let signer = address(1);
 
         store
@@ -226,7 +226,7 @@ mod tests {
         let store = test_store();
         let old = candidate(VoteKind::Snapshot, 11, 10, 0xAA);
         let keep = candidate(VoteKind::Snapshot, 12, 11, 0xAA);
-        let group = SpoolGroup(4);
+        let group = GroupIndex(4);
 
         store
             .put_vote_sig(old, group, address(1), &signature(1))
@@ -249,7 +249,7 @@ mod tests {
         let store = test_store();
         let keep_epoch = EpochNumber(12);
         let keep = candidate(VoteKind::Snapshot, keep_epoch.0, 11, 0xAA);
-        let group = SpoolGroup(4);
+        let group = GroupIndex(4);
 
         for epoch in [10u64, 11, 12, 13] {
             let candidate = candidate(VoteKind::Snapshot, epoch, epoch - 1, 0xAA);

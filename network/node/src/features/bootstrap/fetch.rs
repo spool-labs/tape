@@ -9,7 +9,7 @@ use store::Store;
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_core::snapshot::chunk::{unpack_segment, SnapshotChunkPayload};
 use tape_core::snapshot::replay::SnapshotLog;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
@@ -152,7 +152,7 @@ fn validate_snapshot_track_list(
 }
 
 struct Decoded {
-    group: SpoolGroup,
+    group: GroupIndex,
     chunk: ChunkNumber,
     symbol: Vec<u8>,
 }
@@ -169,7 +169,7 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let group = track.spool_group;
+    let group = track.group;
     let track_address = Address::from(track_pda(track.tape, track.track_number).0);
 
     let peers = context.state().group_peers(group);
@@ -222,7 +222,7 @@ where
 async fn fetch_verified_slices<Cluster: Api>(
     api: &Cluster,
     peers: &[(SpoolIndex, NodeId)],
-    group: SpoolGroup,
+    group: GroupIndex,
     track: Address,
     blob: &BlobInfo,
     cancel: &CancellationToken,
@@ -232,7 +232,7 @@ async fn fetch_verified_slices<Cluster: Api>(
         if cancel.is_cancelled() {
             return Err(NodeError::Store("bootstrap: cancelled".into()));
         }
-        let Some(leaf_idx) = group.slice_of(*spool) else {
+        let Some(leaf_idx) = group.position_of(*spool) else {
             continue;
         };
         match api
@@ -508,7 +508,7 @@ mod tests {
             let symbols = outer.encode(&pack_segment(&compressed[start..end])).unwrap();
             let chunk = ChunkNumber(segment_idx as u64);
             for (group_index, symbol) in symbols.into_iter().enumerate() {
-                let group = SpoolGroup(group_index as u64);
+                let group = GroupIndex(group_index as u64);
                 chunks.push(encode_chunk(epoch, group, chunk, &symbol).unwrap());
             }
         }

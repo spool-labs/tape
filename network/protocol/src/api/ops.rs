@@ -2,7 +2,7 @@
 
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{CompressedTrack, EpochNumber, SpoolIndex, TrackData, TrackNumber};
-use tape_core::spooler::SpoolGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
@@ -174,7 +174,7 @@ pub struct InvalidateRes {
 pub struct VoteReq {
     pub signer: Address,
     pub candidate: VoteCandidate,
-    pub group: SpoolGroup,
+    pub group: GroupIndex,
     pub signature: BlsSignature,
 }
 

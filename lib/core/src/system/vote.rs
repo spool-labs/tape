@@ -5,7 +5,15 @@ use crate::types::EpochNumber;
 
 #[repr(u64)]
 #[derive(
-    Clone, Copy, Debug, Eq, Hash, PartialEq, IntoPrimitive, TryFromPrimitive, serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    PartialEq,
+    IntoPrimitive,
+    TryFromPrimitive,
+    serde::Serialize,
     serde::Deserialize,
 )]
 #[cfg_attr(feature = "wincode", derive(wincode_derive::SchemaRead, wincode_derive::SchemaWrite))]

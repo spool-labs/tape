@@ -43,7 +43,7 @@ pub fn process_settle_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account::<Epoch>(&tapedrive::ID)?;
 
     let spool = SpoolIndex::unpack(args.spool);
-    let group_id = SpoolGroup::of(spool);
+    let group_id = GroupIndex::containing(spool);
 
     let group = prev_group_info
         .is_writable()?
@@ -51,9 +51,9 @@ pub fn process_settle_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account_mut::<Group>(&tapedrive::ID)?;
 
     let slice = group_id
-        .slice_of(spool)
+        .position_of(spool)
         .ok_or(TapeError::BadSpoolHash)?;
-    let slice_idx = slice.as_usize();
+    let slice_idx = slice;
 
     if group.settled.is_set(slice_idx) {
         return Err(TapeError::AlreadySettled.into());
@@ -150,7 +150,7 @@ mod tests {
 
         let curr = EpochNumber(10);
         let prev = EpochNumber(9);
-        let group_id = SpoolGroup(0);
+        let group_id = GroupIndex(0);
         let slice_in_group = 7usize;
         let spool = group_id.spool_at(slice_in_group);
 
@@ -276,7 +276,7 @@ mod tests {
 
         let curr = EpochNumber(10);
         let prev = EpochNumber(9);
-        let group_id = SpoolGroup(0);
+        let group_id = GroupIndex(0);
         let slice_in_group = 7usize;
         let spool = group_id.spool_at(slice_in_group);
 

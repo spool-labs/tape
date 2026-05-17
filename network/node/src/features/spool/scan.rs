@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::{GroupIndex, SpoolIndex};
 use tape_protocol::Api;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
@@ -45,7 +45,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut gaps = 0usize;
     let mut had_error = false;
 
-    let group = SpoolGroup::of(spool);
+    let group = GroupIndex::containing(spool);
     let batch_size = config.scan_batch.max(1);
 
     loop {
@@ -71,7 +71,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         for (track_addr, track_info) in &tracks {
             // Skip tracks not in this spool's group.
-            if track_info.spool_group != group {
+            if track_info.group != group {
                 continue;
             }
 
@@ -150,7 +150,7 @@ mod tests {
         Address::from([n; 32])
     }
 
-    fn track(group: SpoolGroup) -> CompressedTrack {
+    fn track(group: GroupIndex) -> CompressedTrack {
         let _profile = EncodingProfile::clay_default();
         CompressedTrack {
             tape: Address::from([0; 32]),
@@ -159,7 +159,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
-            spool_group: group,
+            group: group,
             value_hash: Hash::new_unique(),
         }
     }
@@ -175,7 +175,7 @@ mod tests {
     async fn all_present() {
         let ctx = test_context();
         let a = addr(1);
-        let group = SpoolGroup::of(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
@@ -198,7 +198,7 @@ mod tests {
     async fn finds_gaps() {
         let ctx = test_context();
         let a = addr(1);
-        let group = SpoolGroup::of(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         // Certified track exists but no slice data.
         ctx.store.put_track(a, track(group)).unwrap();
@@ -214,7 +214,7 @@ mod tests {
     async fn skips_other_groups() {
         let ctx = test_context();
         let a = addr(1);
-        let other_group = SpoolGroup::of(SPOOL + 20); // Different group.
+        let other_group = GroupIndex::containing(SPOOL + 20); // Different group.
 
         ctx.store.put_track(a, track(other_group)).unwrap();
 
@@ -226,7 +226,7 @@ mod tests {
     async fn idempotent_adds() {
         let ctx = test_context();
         let a = addr(1);
-        let group = SpoolGroup::of(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
@@ -243,7 +243,7 @@ mod tests {
     async fn skips_uncertified() {
         let ctx = test_context();
         let a = addr(1);
-        let group = SpoolGroup::of(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         // Track exists, no slice, but NOT certified.
         ctx.store.put_track(a, track(group)).unwrap();
@@ -263,7 +263,7 @@ mod tests {
     async fn scans_certified() {
         let ctx = test_context();
         let a = addr(1);
-        let group = SpoolGroup::of(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         // Track exists, no slice, IS certified -> should be a gap.
         ctx.store.put_track(a, track(group)).unwrap();

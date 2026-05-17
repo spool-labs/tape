@@ -44,7 +44,7 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
                             node = i,
                             spool = %spool_id,
                             track = ?track_addr,
-                            spool_group = %track_info.spool_group,
+                            group = %track_info.group,
                             "raw track should not have stored slices"
                         );
                         total_failures += 1;
@@ -62,7 +62,7 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
                         node = i,
                         spool = %spool_id,
                         track = ?track_addr,
-                        spool_group = %track_info.spool_group,
+                        group = %track_info.group,
                         slice_len = slice_data.len(),
                         original_size = blob_info.size.0,
                         error = %e,
@@ -97,7 +97,7 @@ fn validate_slice_entry(
     blob_info: &BlobInfo,
     data: &[u8],
 ) -> Result<(), String> {
-    let slice_index = slice_for_spool(track_info.spool_group, spool)
+    let slice_index = slice_for_spool(track_info.group, spool)
         .ok_or_else(|| "track not mapped to this spool group".to_string())?;
 
     if blob_info.size.0 > 0 && data.is_empty() {
