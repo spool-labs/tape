@@ -2,7 +2,7 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::state::{Committee, PeerSet};
 use tape_api::event::NodeJoinedCommittee;
-use tape_core::system::{EpochPhase, Peer};
+use tape_core::system::{apply_member_join_slice, apply_peer_join_slice, EpochPhase, Peer};
 
 pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = JoinCommittee::try_from_bytes(data)?;
@@ -92,36 +92,29 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         spools: 0,
     };
 
-    try_join_committee(next_committee, next_members, &member)
+    apply_member_join_slice(
+        next_members,
+        &mut next_committee.members.count,
+        next_committee.members.capacity,
+        member,
+    )
         .map_err(|_| TapeError::UnexpectedState)?;
 
-    let count = peer_set.peers.count as usize;
-    let existing = peers[..count].iter().position(|p| p.node == node_address);
-
-    let peer_index = if let Some(idx) = existing {
-        // Refresh the peer's routing/identity from the (possibly-rotated)
-        // node state so cert verification picks up the new key next epoch.
-        peers[idx].bls_pubkey = node.metadata.bls_pubkey;
-        peers[idx].network_address = node.metadata.network_address;
-        peers[idx].network_tls = node.metadata.network_tls;
-        peers[idx].preferences = node.preferences;
-        idx
-    } else {
-        if peer_set.peers.is_full() {
-            return Err(TapeError::ListFull.into());
-        }
-        peers[count] = Peer {
-            node: node_address,
-            bls_pubkey: node.metadata.bls_pubkey,
-            network_address: node.metadata.network_address,
-            network_tls: node.metadata.network_tls,
-            preferences: node.preferences,
-        };
-        peer_set.peers.count = count as u64 + 1;
-        count
+    let peer = Peer {
+        node: node_address,
+        bls_pubkey: node.metadata.bls_pubkey,
+        network_address: node.metadata.network_address,
+        network_tls: node.metadata.network_tls,
+        preferences: node.preferences,
     };
 
-    bubble_up(peer_set, peers, peer_index);
+    apply_peer_join_slice(
+        peers,
+        &mut peer_set.peers.count,
+        peer_set.peers.capacity,
+        peer,
+    )
+    .map_err(|_| TapeError::ListFull)?;
 
     if node.latest_advance_epoch < curr {
         node.latest_advance_epoch = curr;
@@ -137,63 +130,6 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     }.log();
 
     Ok(())
-}
-
-fn try_join_committee(
-    committee: &mut Committee,
-    members: &mut [Member],
-    member: &Member,
-) -> Result<(), TapeError> {
-    if member.stake == TAPE::zero() {
-        return Err(TapeError::UnexpectedState);
-    }
-
-    let count = committee.members.count as usize;
-    let capacity = committee.members.capacity as usize;
-
-    if members[..count].iter().any(|m| m.node == member.node) {
-        return Ok(());
-    }
-
-    if count < capacity {
-        members[count] = *member;
-        committee.members.count = (count as u64) + 1;
-    } else {
-        let (min_idx, min_stake) = members[..count]
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, m)| m.stake)
-            .map(|(i, m)| (i, m.stake))
-            .ok_or(TapeError::UnexpectedState)?;
-
-        if member.stake <= min_stake {
-            return Err(TapeError::UnexpectedState);
-        }
-
-        members[min_idx] = *member;
-    }
-
-    sort_committee_desc(committee, members);
-
-    Ok(())
-}
-
-fn sort_committee_desc(committee: &Committee, members: &mut [Member]) {
-    let n = committee.members.count as usize;
-    if n <= 1 {
-        return;
-    }
-    members[..n].sort_by(|a, b| {
-        b.stake.cmp(&a.stake).then(a.node.as_bytes().cmp(b.node.as_bytes()))
-    });
-}
-
-fn bubble_up(peer_set: &PeerSet, peers: &mut [Peer], i: usize) {
-    let count = peer_set.peers.count;
-    let bottom_threshold = (count * 2) / 3;
-    if (i as u64) >= bottom_threshold && i != 0 {
-        peers.swap(0, i);
-    }
 }
 
 #[cfg(test)]

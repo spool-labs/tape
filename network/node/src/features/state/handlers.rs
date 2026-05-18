@@ -7,20 +7,23 @@ use tape_core::system::{EpochPhase, VoteKind};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
-use tape_protocol::{Api, fetch::fetch_state};
+use tape_protocol::{fetch::fetch_state, Api};
 use tape_retry::{retry_if, RetryConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
+use crate::features::state::events::apply_join_committee_event;
 
 pub struct ProtocolStateHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 }
 
-impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster, Blockchain> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> 
+ProtocolStateHandlers<Db, Cluster, Blockchain> {
+
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         cancel: CancellationToken,
@@ -77,42 +80,39 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
         epoch: EpochNumber,
         next_nonce: Hash,
     ) -> Result<(), NodeError> {
-        let context = self.context.clone();
+        let mut state = (*self.context.state()).clone();
+        if state.epoch() != epoch {
+            debug!(
+                event_epoch = epoch.0,
+                local_epoch = state.epoch().0,
+                "ignoring commit epoch for non-current epoch"
+            );
+            return Ok(());
+        }
 
-        let state = retry_if(
-            RetryConfig::infinite(),
-            Some(&self.cancel),
-            move || {
-                let context = context.clone();
-                async move {
-                    let state = fetch_state(&context.rpc).await.map_err(NodeError::from)?;
+        state.current.epoch.state.phase = EpochPhase::Closing as u64;
 
-                    let next_epoch = epoch.saturating_add(EpochNumber(1));
-                    let committed = state.epoch() == epoch
-                        && state.phase() == EpochPhase::Closing
-                        && state
-                            .next_epoch
-                            .as_ref()
-                            .is_some_and(|next| next.id == next_epoch && next.nonce == next_nonce);
+        let next_epoch = epoch.saturating_add(EpochNumber(1));
+        let Some(next) = state.next_epoch.as_mut() else {
+            warn!(
+                epoch = epoch.0,
+                next_epoch = next_epoch.0,
+                "commit epoch observed but next epoch is missing from local protocol state"
+            );
+            return Ok(());
+        };
 
-                    if !committed {
-                        return Err(NodeError::StateUnavailable {
-                            expected_epoch: next_epoch,
-                        });
-                    }
+        if next.id != next_epoch {
+            warn!(
+                epoch = epoch.0,
+                expected_next_epoch = next_epoch.0,
+                local_next_epoch = next.id.0,
+                "commit epoch observed but local next epoch does not match"
+            );
+            return Ok(());
+        }
 
-                    Ok(state)
-                }
-            },
-            |error| match error {
-                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
-                NodeError::StateUnavailable { expected_epoch } => {
-                    *expected_epoch == epoch.saturating_add(EpochNumber(1))
-                }
-                _ => false,
-            },
-        )
-        .await?;
+        next.nonce = next_nonce;
 
         self.context.set_state(state)?;
 
@@ -145,49 +145,23 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
     pub async fn handle_join_committee(&self, event: NodeJoinedCommittee) -> Result<(), NodeError> {
         debug!(node = %event.node, "received join committee");
 
-        let expected_activation_epoch = self.context.state().epoch() + EpochNumber(1);
+        let mut state = (*self.context.state()).clone();
+        let expected_activation_epoch = state.epoch() + EpochNumber(1);
 
         if event.activation_epoch != expected_activation_epoch {
             debug!(
                 node = %event.node,
-                current_epoch = self.context.state().epoch().0,
+                current_epoch = state.epoch().0,
                 activation_epoch = event.activation_epoch.0,
                 "ignoring join committee for stale epoch"
             );
             return Ok(());
         }
 
-        let node = event.node;
-        let activation_epoch = event.activation_epoch;
-        let context = self.context.clone();
-
-        let state = retry_if(
-            RetryConfig::infinite(),
-            Some(&self.cancel),
-            move || {
-                let context = context.clone();
-                async move {
-                    let state = fetch_state(&context.rpc).await
-                        .map_err(NodeError::from)?;
-
-                    if state.find_member_next(node).is_none() {
-                        return Err(NodeError::StateUnavailable {
-                            expected_epoch: activation_epoch,
-                        });
-                    }
-
-                    Ok(state)
-                }
-            },
-            |error| match error {
-                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
-                NodeError::StateUnavailable { expected_epoch } => {
-                    *expected_epoch == activation_epoch
-                }
-                _ => false,
-            },
-        )
-        .await?;
+        if let Err(error) = apply_join_committee_event(&mut state, event) {
+            warn!(error = %error, "join committee event could not be applied locally");
+            return Ok(());
+        }
 
         self.context.set_state(state)?;
 
@@ -202,40 +176,19 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
         }
 
         let target_epoch = event.target_epoch;
-        let hash = event.hash;
-        let context = self.context.clone();
+        let mut state = (*self.context.state()).clone();
+        if state.epoch() != event.voting_epoch {
+            return Ok(());
+        }
 
-        let state = retry_if(
-            RetryConfig::infinite(),
-            Some(&self.cancel),
-            move || {
-                let context = context.clone();
-                async move {
-                    let state = fetch_state(&context.rpc).await.map_err(NodeError::from)?;
-
-                    let landed = state
-                        .previous
-                        .as_ref()
-                        .is_some_and(|previous| {
-                            previous.epoch.id == target_epoch
-                                && previous.epoch.snapshot_hash == hash
-                        });
-                    if !landed {
-                        return Err(NodeError::StateUnavailable {
-                            expected_epoch: target_epoch,
-                        });
-                    }
-
-                    Ok(state)
-                }
-            },
-            |error| match error {
-                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
-                NodeError::StateUnavailable { expected_epoch } => *expected_epoch == target_epoch,
-                _ => false,
-            },
-        )
-        .await?;
+        state.current.epoch.state.phase = EpochPhase::Active as u64;
+        if let Some(previous) = state
+            .previous
+            .as_mut()
+            .filter(|previous| previous.epoch.id == target_epoch)
+        {
+            previous.epoch.snapshot_hash = event.hash;
+        }
 
         self.context.set_state(state)?;
 
@@ -250,40 +203,18 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
         }
 
         let target_epoch = event.target_epoch;
-        let hash = event.hash;
-        let context = self.context.clone();
+        let mut state = (*self.context.state()).clone();
+        if state.epoch() != event.voting_epoch {
+            return Ok(());
+        }
 
-        let state = retry_if(
-            RetryConfig::infinite(),
-            Some(&self.cancel),
-            move || {
-                let context = context.clone();
-                async move {
-                    let state = fetch_state(&context.rpc).await.map_err(NodeError::from)?;
-
-                    let landed = state
-                        .next_epoch
-                        .as_ref()
-                        .is_some_and(|next| {
-                            next.id == target_epoch
-                                && next.assignment_hash == hash
-                        });
-                    if !landed {
-                        return Err(NodeError::StateUnavailable {
-                            expected_epoch: target_epoch,
-                        });
-                    }
-
-                    Ok(state)
-                }
-            },
-            |error| match error {
-                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
-                NodeError::StateUnavailable { expected_epoch } => *expected_epoch == target_epoch,
-                _ => false,
-            },
-        )
-        .await?;
+        if let Some(next) = state
+            .next_epoch
+            .as_mut()
+            .filter(|next| next.id == target_epoch)
+        {
+            next.assignment_hash = event.hash;
+        }
 
         self.context.set_state(state)?;
 
@@ -294,43 +225,17 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
         &self,
         event: AssignmentGroupFinalized,
     ) -> Result<(), NodeError> {
-        let target_epoch = event.epoch;
-        let expected_groups = u64::from_le_bytes(event.total_groups);
-        let hash = event.hash;
-        let context = self.context.clone();
+        let mut state = (*self.context.state()).clone();
 
-        let state = retry_if(
-            RetryConfig::infinite(),
-            Some(&self.cancel),
-            move || {
-                let context = context.clone();
-                async move {
-                    let state = fetch_state(&context.rpc).await.map_err(NodeError::from)?;
-
-                    let landed = state
-                        .next_epoch
-                        .as_ref()
-                        .is_some_and(|next| {
-                            next.id == target_epoch
-                                && next.assignment_hash == hash
-                                && next.total_groups >= expected_groups
-                        });
-                    if !landed {
-                        return Err(NodeError::StateUnavailable {
-                            expected_epoch: target_epoch,
-                        });
-                    }
-
-                    Ok(state)
-                }
-            },
-            |error| match error {
-                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
-                NodeError::StateUnavailable { expected_epoch } => *expected_epoch == target_epoch,
-                _ => false,
-            },
-        )
-        .await?;
+        if let Some(next) = state
+            .next_epoch
+            .as_mut()
+            .filter(|next| next.id == event.epoch)
+        {
+            next.assignment_hash = event.hash;
+            next.total_groups = u64::from_le_bytes(event.total_groups);
+            next.total_assigned = event.total_assigned;
+        }
 
         self.context.set_state(state)?;
 
