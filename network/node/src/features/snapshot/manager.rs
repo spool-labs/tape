@@ -3,30 +3,28 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_api::event::{SnapshotSigned, SnapshotWritten};
 use tape_blocks::ParsedInstruction;
-use tape_core::snapshot::types::SnapshotState;
-use tape_core::spooler::GroupIndex;
-use tape_core::track::blob::BlobInfo;
-use tape_core::types::{ChunkNumber, EpochNumber};
+use tape_core::system::{EpochPhase, VoteKind};
+use tape_core::types::EpochNumber;
+use tape_crypto::Hash;
 use tape_protocol::Api;
-use tape_store::ops::{EventLogOps, SliceOps, SnapshotOps};
+use tape_store::ops::{EventLogOps, SnapshotOps, VoteOps};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::snapshot::build::build_snapshot;
-use crate::features::snapshot::fanout::{fanout_finalize_votes, fanout_write_votes};
+use crate::features::snapshot::build::{
+    build_snapshot, persist_snapshot_candidate, SnapshotCandidate,
+};
+use crate::features::snapshot::fanout::fanout_snapshot_votes;
 use crate::features::snapshot::submit::{
-    submit_ready_finalizes, submit_ready_reserves, submit_ready_writes,
+    submit_ready_snapshot_votes, submit_snapshot_finalization, submit_snapshot_proposal,
 };
-use crate::features::snapshot::vote::{
-    create_snapshot_finalize_votes, create_snapshot_write_votes,
-};
+use crate::features::snapshot::vote::create_snapshot_votes;
 
 const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -34,7 +32,6 @@ pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
-    last_reserved_epoch: Option<EpochNumber>,
 }
 
 impl<Db, Cluster, Blockchain> SnapshotManager<Db, Cluster, Blockchain>
@@ -52,7 +49,6 @@ where
             context,
             block_rx,
             cancel,
-            last_reserved_epoch: None,
         }
     }
 
@@ -85,14 +81,13 @@ where
                 ParsedInstruction::AdvanceEpoch { event } => {
                     self.on_advance_epoch(event.old_epoch, event.new_epoch).await?;
                 }
-                ParsedInstruction::ReserveSnapshot { event } => {
-                    self.on_snapshot_reserved(event.epoch).await?;
+                ParsedInstruction::VoteSnapshot { event, .. } => {
+                    if is_landed_snapshot_vote(event) {
+                        self.on_snapshot_canonical(event.target_epoch, event.hash).await?;
+                    }
                 }
-                ParsedInstruction::WriteSnapshot { group, chunk, blob, event, } => {
-                    self.on_snapshot_written(*event, *group, *chunk, *blob).await?;
-                }
-                ParsedInstruction::SignSnapshot { event } => {
-                    self.on_snapshot_signed(*event).await?;
+                ParsedInstruction::FinalizeSnapshot { event, .. } => {
+                    self.on_snapshot_finalized(event.epoch, event.hash).await?;
                 }
                 _ => {}
             }
@@ -103,222 +98,126 @@ where
     async fn on_advance_epoch(
         &self,
         old: EpochNumber,
-        _new: EpochNumber,
+        new: EpochNumber,
     ) -> Result<(), NodeError> {
-        let snapshot_epoch = old;
-
         self.context
             .store
-            .delete_snapshot_epochs_except(snapshot_epoch)
+            .delete_snapshot_epochs_except(old)
             .map_err(|e| NodeError::Store(format!("delete_snapshot_epochs_except: {e}")))?;
-
-        Ok(())
-    }
-
-    async fn on_snapshot_signed(&self, event: SnapshotSigned) -> Result<(), NodeError> {
-        if event.state != SnapshotState::Finalized as u64 {
-            return Ok(());
-        }
-
         self.context
             .store
-            .delete_epoch_events(event.epoch)
-            .map_err(|e| NodeError::Store(format!("delete_epoch_events: {e}")))?;
-
-        debug!(epoch = event.epoch.0, "snapshot: epoch event log dropped");
-
+            .delete_vote_epochs_except(new)
+            .map_err(|e| NodeError::Store(format!("delete_vote_epochs_except: {e}")))?;
         Ok(())
     }
 
-    async fn on_snapshot_reserved(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
-        // Observation of any node's reserve event is enough to stop our own
-        // heartbeat from re-attempting reserve for this epoch.
-        self.last_reserved_epoch = Some(match self.last_reserved_epoch {
-            Some(prev) => prev.max(epoch),
-            None => epoch,
-        });
-
-        build_snapshot(&self.context, epoch, &self.cancel).await?;
-        create_snapshot_write_votes(&self.context, epoch, &self.cancel).await?;
-        create_snapshot_finalize_votes(&self.context, epoch, &self.cancel).await?;
-        fanout_write_votes(&self.context, epoch, &self.cancel).await?;
-        fanout_finalize_votes(&self.context, epoch, &self.cancel).await?;
-
-        Ok(())
-    }
-
-    async fn on_snapshot_written(
+    async fn on_snapshot_canonical(
         &self,
-        event: SnapshotWritten,
-        group: GroupIndex,
-        chunk: ChunkNumber,
-        blob: BlobInfo,
+        epoch: EpochNumber,
+        hash: Hash,
     ) -> Result<(), NodeError> {
-        let store = self.context.store.as_ref();
-
-        let Some(artifact) = store
-            .get_snapshot_artifact(event.epoch, group, chunk)
-            .map_err(|e| NodeError::Store(format!("get_snapshot_artifact: {e}")))?
-        else {
+        let Some(candidate) = self.build_candidate(epoch).await? else {
             return Ok(());
         };
 
-        if artifact.blob == blob {
-            store
-                .put_slice(artifact.spool_index, event.track, artifact.slice)
-                .map_err(|e| NodeError::Store(format!("put_slice: {e}")))?;
-        }
-
-        store
-            .delete_snapshot_artifact(event.epoch, group, chunk)
-            .map_err(|e| NodeError::Store(format!("delete_snapshot_artifact: {e}")))?;
-
-        Ok(())
-    }
-
-    async fn on_heartbeat(&mut self) -> Result<(), NodeError> {
-        let state = self.context.state();
-        if state.epoch() == EpochNumber(0) {
+        if candidate.hash != hash {
+            warn!(
+                epoch = epoch.0,
+                local_hash = ?candidate.hash,
+                canonical_hash = ?hash,
+                "snapshot: local candidate does not match canonical hash"
+            );
             return Ok(());
         }
 
-        let snapshot_epoch = state.epoch()
-            .saturating_sub(EpochNumber(1));
+        submit_snapshot_finalization(&self.context, &candidate, &self.cancel).await
+    }
 
-        submit_ready_reserves(&self.context, snapshot_epoch, &mut self.last_reserved_epoch, &self.cancel).await?;
+    async fn on_snapshot_finalized(&self, epoch: EpochNumber, hash: Hash) -> Result<(), NodeError> {
+        if let Some(candidate) = self.build_candidate(epoch).await? {
+            if candidate.hash == hash {
+                persist_snapshot_candidate(self.context.as_ref(), &candidate)?;
+            } else {
+                warn!(
+                    epoch = epoch.0,
+                    local_hash = ?candidate.hash,
+                    finalized_hash = ?hash,
+                    "snapshot: finalized hash does not match local candidate"
+                );
+            }
+        }
 
-        submit_ready_writes(&self.context, snapshot_epoch, &self.cancel).await?;
-        submit_ready_finalizes(&self.context, snapshot_epoch, &self.cancel).await?;
+        self.context
+            .store
+            .delete_epoch_events(epoch)
+            .map_err(|e| NodeError::Store(format!("delete_epoch_events: {e}")))?;
+        self.context
+            .store
+            .delete_snapshot_epoch(epoch)
+            .map_err(|e| NodeError::Store(format!("delete_snapshot_epoch: {e}")))?;
+        self.context
+            .store
+            .delete_vote_epoch(epoch + EpochNumber(1))
+            .map_err(|e| NodeError::Store(format!("delete_vote_epoch: {e}")))?;
 
-        fanout_write_votes(&self.context, snapshot_epoch, &self.cancel).await?;
-        fanout_finalize_votes(&self.context, snapshot_epoch, &self.cancel).await?;
+        debug!(epoch = epoch.0, "snapshot: finalized local cleanup complete");
+        Ok(())
+    }
 
+    async fn on_heartbeat(&self) -> Result<(), NodeError> {
+        let state = self.context.state();
+        if state.epoch().is_zero() {
+            return Ok(());
+        }
+
+        let snapshot_epoch = state.epoch().saturating_sub(EpochNumber(1));
+
+        if let Some(hash) = canonical_snapshot_hash(&state, snapshot_epoch) {
+            drop(state);
+            self.on_snapshot_canonical(snapshot_epoch, hash).await?;
+            return Ok(());
+        }
+
+        if state.phase() != EpochPhase::Snapshot {
+            return Ok(());
+        }
+
+        drop(state);
+        let Some(candidate) = self.build_candidate(snapshot_epoch).await? else {
+            return Ok(());
+        };
+
+        self.run_vote_round(&candidate).await
+    }
+
+    async fn build_candidate(
+        &self,
+        epoch: EpochNumber,
+    ) -> Result<Option<SnapshotCandidate>, NodeError> {
+        build_snapshot(&self.context, epoch, &self.cancel).await
+    }
+
+    async fn run_vote_round(&self, candidate: &SnapshotCandidate) -> Result<(), NodeError> {
+        submit_snapshot_proposal(&self.context, candidate, &self.cancel).await?;
+        create_snapshot_votes(&self.context, candidate, &self.cancel).await?;
+        fanout_snapshot_votes(&self.context, candidate, &self.cancel).await?;
+        submit_ready_snapshot_votes(&self.context, candidate, &self.cancel).await?;
         Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use tape_api::event::SnapshotWritten;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
-    use tape_core::spooler::GroupIndex;
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
-    use tape_crypto::address::Address;
-    use tape_crypto::Hash;
-    use tape_store::ops::{ObjectInfoOps, SliceOps, SnapshotOps, TrackDataOps, TrackOps};
-    use tape_store::types::SnapshotArtifact;
-    use tokio::sync::mpsc;
-    use tokio_util::sync::CancellationToken;
-
-    use super::SnapshotManager;
-    use crate::context::test_utils::test_context;
-
-    fn blob(tag: u8) -> BlobInfo {
-        BlobInfo {
-            size: StorageUnits::from_bytes(64),
-            commitment: Hash::from([tag; 32]),
-            profile: EncodingProfile::clay_default(),
-            stripe_size: StorageUnits::from_bytes(64),
-            stripe_count: StripeCount(1),
-            leaves: [Hash::from([tag; 32]); GROUP_SIZE],
-        }
+fn canonical_snapshot_hash(
+    state: &tape_protocol::ProtocolState,
+    snapshot_epoch: EpochNumber,
+) -> Option<Hash> {
+    let previous = state.previous.as_ref()?;
+    if previous.epoch.id != snapshot_epoch || !previous.epoch.has_snapshot_hash() {
+        return None;
     }
+    Some(previous.epoch.snapshot_hash)
+}
 
-    #[tokio::test]
-    async fn snapshot_written_promotes_matching_artifact_slice_only() {
-        let ctx = test_context();
-        let (_tx, rx) = mpsc::channel(1);
-        let manager = SnapshotManager::new(ctx.clone(), rx, CancellationToken::new());
-        let epoch = EpochNumber(9);
-        let group = GroupIndex(0);
-        let chunk = ChunkNumber(0);
-        let track = Address::new_unique();
-        let artifact = SnapshotArtifact {
-            blob: blob(0x11),
-            spool_index: group.spool_at(3),
-            slice: vec![1, 2, 3],
-        };
-
-        ctx.store
-            .put_snapshot_artifact(epoch, group, chunk, &artifact)
-            .unwrap();
-
-        manager
-            .on_snapshot_written(
-                SnapshotWritten {
-                    epoch,
-                    group,
-                    track,
-                    track_number: TrackNumber(7),
-                    track_hash: Hash::new_unique(),
-                },
-                group,
-                chunk,
-                artifact.blob,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            ctx.store.get_slice(artifact.spool_index, track).unwrap(),
-            Some(artifact.slice),
-        );
-        assert!(ctx
-            .store
-            .get_snapshot_artifact(epoch, group, chunk)
-            .unwrap()
-            .is_none());
-        assert!(ctx.store.get_track(track).unwrap().is_none());
-        assert!(ctx.store.get_track_data(track).unwrap().is_none());
-        assert!(ctx.store.get_object_info(track).unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn snapshot_written_drops_divergent_artifact() {
-        let ctx = test_context();
-        let (_tx, rx) = mpsc::channel(1);
-        let manager = SnapshotManager::new(ctx.clone(), rx, CancellationToken::new());
-        let epoch = EpochNumber(9);
-        let group = GroupIndex(0);
-        let chunk = ChunkNumber(0);
-        let track = Address::new_unique();
-        let artifact = SnapshotArtifact {
-            blob: blob(0x11),
-            spool_index: group.spool_at(3),
-            slice: vec![1, 2, 3],
-        };
-
-        ctx.store
-            .put_snapshot_artifact(epoch, group, chunk, &artifact)
-            .unwrap();
-
-        manager
-            .on_snapshot_written(
-                SnapshotWritten {
-                    epoch,
-                    group,
-                    track,
-                    track_number: TrackNumber(7),
-                    track_hash: Hash::new_unique(),
-                },
-                group,
-                chunk,
-                blob(0x22),
-            )
-            .await
-            .unwrap();
-
-        assert!(ctx
-            .store
-            .get_snapshot_artifact(epoch, group, chunk)
-            .unwrap()
-            .is_none());
-        assert!(ctx
-            .store
-            .get_slice(artifact.spool_index, track)
-            .unwrap()
-            .is_none());
-    }
+fn is_landed_snapshot_vote(event: &tape_api::event::VoteRecorded) -> bool {
+    event.kind == VoteKind::Snapshot as u64
+        && u64::from_le_bytes(event.signed_groups) == u64::from_le_bytes(event.total_groups)
 }

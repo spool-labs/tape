@@ -16,6 +16,7 @@ tape-crypto = { workspace = true, features = ["wincode"] }
 tape-sdk = { workspace = true }
 tape-store = { workspace = true }
 tape-blocks = { workspace = true }
+tape-spooler = { workspace = true }
 store = { workspace = true }
 store-rocks = { workspace = true }
 tape-protocol = { workspace = true }

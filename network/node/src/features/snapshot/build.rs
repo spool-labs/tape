@@ -1,24 +1,40 @@
-//! Build the snapshot for one epoch: outer-RS encode the event log into
-//! per-group symbols, then Clay-encode each symbol into slices.
+//! Build the canonical snapshot candidate for one epoch.
+//!
+//! The candidate is a deterministic snapshot `Tape` plus the local slice
+//! artifacts this node owns. The `Tape` hash is what current-epoch groups vote
+//! on; local artifacts are promoted into the serving store only after that
+//! hash is canonical.
+
 use std::sync::Arc;
 
+use bytemuck::{bytes_of, Zeroable};
 use rpc::Rpc;
 use store::Store;
-use tokio_util::sync::CancellationToken;
-use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
-use tape_core::snapshot::chunk::{pack_segment, SnapshotChunkPayload, SEGMENT_HEADER_SIZE};
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+use tape_api::state::Tape;
+use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+use tape_core::snapshot::chunk::{
+    pack_segment, snapshot_chunk_key, SnapshotChunkPayload, SEGMENT_HEADER_SIZE,
+};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount};
+use tape_core::track::data::TrackData;
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::types::{
+    ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+};
+use tape_crypto::hash::hash as hash_bytes;
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
+use tape_crypto::Address;
 use tape_protocol::Api;
 use tape_slicer::{
     num_stripes, ErasureCoder, OuterCoder, Slicer, MAX_CHUNK_BYTES, SNAPSHOT_K_OUTER,
 };
-use tape_store::ops::{EventLogOps, SnapshotOps};
-use tape_store::types::SnapshotArtifact;
+use tape_store::ops::{EventLogOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::types::{SnapshotArtifact, TapeInfo};
+use tokio_util::sync::CancellationToken;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -35,40 +51,51 @@ pub struct BuiltChunk {
     pub slices: [Vec<u8>; GROUP_SIZE],
 }
 
-#[derive(Debug, Default)]
-pub struct BuildSummary {
-    pub groups: usize,
-    pub chunks: usize,
+/// Canonical snapshot candidate derived from the local event log.
+#[derive(Debug, Clone)]
+pub struct SnapshotCandidate {
+    pub voting_epoch: EpochNumber,
+    pub target_epoch: EpochNumber,
+    pub hash: Hash,
+    pub tape: Tape,
+    pub tracks: Vec<SnapshotTrack>,
 }
 
-/// Build the snapshot for one epoch and persist this node's local group artifacts.
+#[derive(Debug, Clone)]
+pub struct SnapshotTrack {
+    pub group: GroupIndex,
+    pub chunk: ChunkNumber,
+    pub track: CompressedTrack,
+    pub blob: BlobInfo,
+}
+
+/// Build the snapshot for one epoch and persist this node's local slice
+/// artifacts. Returns `None` if this node is not a current committee voter.
 pub async fn build_snapshot<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     cancel: &CancellationToken,
-) -> Result<BuildSummary, NodeError>
+) -> Result<Option<SnapshotCandidate>, NodeError>
 where
     Db: Store + 'static,
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
     let owned_ctx = ctx.clone();
-    let task = tokio::task::spawn_blocking(
-        move || build_snapshot_blocking(&owned_ctx, epoch)
-    );
+    let task = tokio::task::spawn_blocking(move || build_snapshot_blocking(&owned_ctx, epoch));
 
     tokio::select! {
         result = task => result
             .map_err(|e| NodeError::Store(format!("build_snapshot task join: {e}")))?,
-        _ = cancel.cancelled() => 
-            Err(NodeError::Store(format!( "build_snapshot({epoch}): cancelled"))),
+        _ = cancel.cancelled() =>
+            Err(NodeError::Store(format!("build_snapshot({epoch}): cancelled"))),
     }
 }
 
 fn build_snapshot_blocking<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    epoch: EpochNumber, // <- this is the previous epoch
-) -> Result<BuildSummary, NodeError>
+    epoch: EpochNumber,
+) -> Result<Option<SnapshotCandidate>, NodeError>
 where
     Db: Store + 'static,
     Cluster: Api + 'static,
@@ -78,22 +105,37 @@ where
     let me = ctx.node_address();
 
     if state.find_member(me).is_none() {
-        return Ok(BuildSummary::default());
+        return Ok(None);
     }
 
     let our_spools = state.member_spools(me);
     if our_spools.is_empty() {
-        return Ok(BuildSummary::default());
+        return Ok(None);
     }
 
-    let entries = ctx.store
+    let voting_epoch = state.epoch();
+    let total_groups = usize::try_from(state.current.epoch.total_groups)
+        .map_err(|_| NodeError::Store("snapshot total_groups overflow".into()))?;
+    if total_groups < SNAPSHOT_K_OUTER {
+        return Err(NodeError::Store(format!(
+            "snapshot total_groups {total_groups} is below outer threshold {SNAPSHOT_K_OUTER}"
+        )));
+    }
+
+    let entries = ctx
+        .store
         .get_epoch_events(epoch)
         .map_err(store_err("get_epoch_events"))?;
 
     let start_slot = entries.first().map(|e| e.slot).unwrap_or(SlotNumber(0));
     let end_slot = entries.last().map(|e| e.slot).unwrap_or(SlotNumber(0));
 
-    let snapshot_log = SnapshotLog { epoch, start_slot, end_slot, entries };
+    let snapshot_log = SnapshotLog {
+        epoch,
+        start_slot,
+        end_slot,
+        entries,
+    };
     let serialized = snapshot_log
         .to_bytes()
         .map_err(|e| NodeError::Store(format!("snapshot log serialize({epoch}): {e}")))?;
@@ -102,8 +144,18 @@ where
     let chunk_total = compressed.len().div_ceil(MAX_SEGMENT_BYTES).max(1);
     let chunk_size = compressed.len().div_ceil(chunk_total).max(1);
 
-    let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER, state.current.groups.len());
-    let mut chunk_count = 0usize;
+    let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
+    let mut tape = Tape {
+        id: TapeNumber(0),
+        authority: SYSTEM_ADDRESS,
+        capacity: StorageUnits(u64::MAX),
+        active_epoch: epoch,
+        expiry_epoch: EpochNumber(u64::MAX),
+        ..Tape::zeroed()
+    };
+
+    let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER, total_groups);
+    let mut tracks = Vec::with_capacity(chunk_total * total_groups);
 
     for chunk_index in 0..chunk_total {
         let start = chunk_index * chunk_size;
@@ -116,31 +168,108 @@ where
 
         let chunk = ChunkNumber(chunk_index as u64);
 
-        for &spool_index in &our_spools {
-            let group = GroupIndex::containing(spool_index);
-            let Some(bitmap_index) = group.position_of(spool_index) else {
-                continue;
+        for (group_index, symbol) in symbols.iter().enumerate() {
+            let group = GroupIndex(group_index as u64);
+            let built = encode_chunk(epoch, group, chunk, symbol)?;
+            let track_number =
+                TrackNumber((chunk_index as u64) * (total_groups as u64) + group.0);
+            let track = CompressedTrack {
+                tape: snapshot_tape,
+                track_number,
+                key: snapshot_chunk_key(epoch, group, chunk),
+                kind: TrackKind::Blob as u64,
+                state: TrackState::Certified as u64,
+                size: built.blob.size,
+                group,
+                value_hash: built.blob.get_hash(),
             };
-            let built = encode_chunk(epoch, group, chunk, &symbols[group.0 as usize])?;
 
-            let artifact = SnapshotArtifact {
-                spool_index,
+            tape.write_track(&track).map_err(|error| {
+                NodeError::Store(format!("snapshot tape write_track: {error:?}"))
+            })?;
+
+            if let Some((spool_index, bitmap_index)) = our_spools.iter().find_map(|spool| {
+                (GroupIndex::containing(*spool) == group)
+                    .then(|| group.position_of(*spool).map(|position| (*spool, position)))
+                    .flatten()
+            }) {
+                let artifact = SnapshotArtifact {
+                    spool_index,
+                    blob: built.blob,
+                    slice: built.slices[bitmap_index].clone(),
+                };
+
+                ctx.store
+                    .put_snapshot_artifact(epoch, group, chunk, &artifact)
+                    .map_err(store_err("put_snapshot_artifact"))?;
+            }
+
+            tracks.push(SnapshotTrack {
+                group,
+                chunk,
+                track,
                 blob: built.blob,
-                slice: built.slices[bitmap_index].clone(),
-            };
-
-            ctx.store
-                .put_snapshot_artifact(epoch, group, chunk, &artifact)
-                .map_err(store_err("put_snapshot_artifact"))?;
-
-            chunk_count += 1;
+            });
         }
     }
 
-    Ok(BuildSummary {
-        groups: our_spools.len(),
-        chunks: chunk_count,
-    })
+    let hash = hash_bytes(bytes_of(&tape));
+
+    Ok(Some(SnapshotCandidate {
+        voting_epoch,
+        target_epoch: epoch,
+        hash,
+        tape,
+        tracks,
+    }))
+}
+
+/// Promote the locally built canonical candidate into the serving store.
+///
+/// This must only be called once `candidate.hash` is known canonical.
+pub fn persist_snapshot_candidate<Db, Cluster, Blockchain>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
+    candidate: &SnapshotCandidate,
+) -> Result<(), NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let snapshot_tape = Address::from(snapshot_tape_pda(candidate.target_epoch).0);
+    ctx.store
+        .put_tape(
+            snapshot_tape,
+            TapeInfo {
+                end_epoch: EpochNumber(u64::MAX),
+                next_track_number: candidate.tape.tracks.next_number(),
+            },
+        )
+        .map_err(store_err("put_tape"))?;
+
+    for track in &candidate.tracks {
+        let track_address = Address::from(track_pda(track.track.tape, track.track.track_number).0);
+        ctx.store
+            .put_track(track_address, track.track)
+            .map_err(store_err("put_track"))?;
+        ctx.store
+            .put_track_data(track_address, TrackData::Blob(track.blob))
+            .map_err(store_err("put_track_data"))?;
+
+        if let Some(artifact) = ctx
+            .store
+            .get_snapshot_artifact(candidate.target_epoch, track.group, track.chunk)
+            .map_err(store_err("get_snapshot_artifact"))?
+        {
+            if artifact.blob == track.blob {
+                ctx.store
+                    .put_slice(artifact.spool_index, track_address, artifact.slice)
+                    .map_err(store_err("put_slice"))?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Clay-encode one outer symbol into its 20 spool-member slices and package
@@ -166,7 +295,7 @@ pub(crate) fn encode_chunk(
 
     let slices: [Vec<u8>; GROUP_SIZE] = slices.try_into().map_err(|v: Vec<Vec<u8>>| {
         NodeError::Store(format!(
-            "clay encode produced {} slices, expected {}",
+            "clay encode produced {}, expected {}",
             v.len(),
             GROUP_SIZE,
         ))

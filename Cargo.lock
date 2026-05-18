@@ -9110,6 +9110,7 @@ dependencies = [
  "tape-retry",
  "tape-sdk",
  "tape-slicer",
+ "tape-spooler",
  "tape-store",
  "tempfile",
  "thiserror 2.0.18",

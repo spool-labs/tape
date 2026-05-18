@@ -316,6 +316,22 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         }
 
         if let Err(error) = send_block(
+            &self.senders.assignment,
+            ChannelName::AssignmentManager,
+            Arc::clone(block),
+        )
+        .await
+        {
+            error!(
+                slot = slot.0,
+                error = %error,
+                "block_ingestor: send to AssignmentManager failed: {}",
+                error
+            );
+            return Err(error);
+        }
+
+        if let Err(error) = send_block(
             &self.senders.replay,
             ChannelName::ReplayManager,
             Arc::clone(block),

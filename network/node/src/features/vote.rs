@@ -1,10 +1,19 @@
-//! Shared helpers for the snapshot HTTP handler, fanout, and manager.
-
 use tape_core::spooler::GroupIndex;
+use tape_core::types::SpoolIndex;
 use tape_crypto::Address;
 use tape_protocol::ProtocolState;
 
-/// Group peer node addresses with `exclude` filtered out.
+pub fn member_groups(spools: &[SpoolIndex]) -> Vec<GroupIndex> {
+    let mut groups = spools
+        .iter()
+        .copied()
+        .map(GroupIndex::containing)
+        .collect::<Vec<_>>();
+    groups.sort_by_key(|group| group.0);
+    groups.dedup_by_key(|group| group.0);
+    groups
+}
+
 pub fn group_peers_without(
     state: &ProtocolState,
     group: GroupIndex,
@@ -18,9 +27,6 @@ pub fn group_peers_without(
         .collect()
 }
 
-/// Spool offset within `group` owned by `node`, if any. Reads the spool
-/// assignment directly so positions can't drift due to unrelated committee
-/// entries being filtered out.
 pub fn bitmap_index_in_group(
     state: &ProtocolState,
     group: GroupIndex,

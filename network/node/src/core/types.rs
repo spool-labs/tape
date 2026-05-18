@@ -4,6 +4,7 @@ pub enum ServiceName {
     HttpServer,
     BlockIngestor,
     IngestMonitor,
+    AssignmentManager,
     LifecycleManager,
     SpoolManager,
     SnapshotManager,
@@ -20,6 +21,7 @@ impl ServiceName {
             Self::HttpServer => "HttpServer",
             Self::BlockIngestor => "BlockIngestor",
             Self::IngestMonitor => "IngestMonitor",
+            Self::AssignmentManager => "AssignmentManager",
             Self::LifecycleManager => "LifecycleManager",
             Self::SpoolManager => "SpoolManager",
             Self::SnapshotManager => "SnapshotManager",
@@ -34,6 +36,7 @@ impl ServiceName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelName {
     StateManager,
+    AssignmentManager,
     SpoolManager,
     SnapshotManager,
     ReplayManager,

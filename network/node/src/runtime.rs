@@ -23,6 +23,7 @@ use crate::core::types::ServiceName;
 use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap;
+use crate::features::assignment::manager::AssignmentManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::lifecycle::manager::LifecycleManager;
@@ -264,6 +265,16 @@ where
         SpoolManager::new(
             context.clone(),
             config.recovery.clone(),
+            cancel.clone(),
+        )
+        .run(),
+    );
+
+    supervisor.spawn(
+        ServiceName::AssignmentManager,
+        AssignmentManager::new(
+            context.clone(),
+            receivers.assignment,
             cancel.clone(),
         )
         .run(),

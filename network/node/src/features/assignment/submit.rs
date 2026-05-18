@@ -1,4 +1,4 @@
-//! Submit snapshot candidate, group votes, and finalization transactions.
+//! Submit assignment candidate, group votes, and group finalization transactions.
 
 use std::sync::Arc;
 
@@ -14,17 +14,17 @@ use tape_store::ops::VoteOps;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::chain::{submit_finalize_snapshot, submit_propose_snapshot, submit_vote_snapshot};
+use crate::chain::{submit_finalize_group, submit_propose_assignment, submit_vote_assignment};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{submit_if_at_tip, TxOutcome};
+use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
 use crate::core::error::NodeError;
-use crate::features::snapshot::build::{persist_snapshot_candidate, SnapshotCandidate};
-use crate::features::snapshot::vote::vote_candidate;
+use crate::features::assignment::build::AssignmentCandidate;
+use crate::features::assignment::vote::vote_candidate;
 use crate::features::vote::{bitmap_index_in_group, member_groups};
 
-pub async fn submit_snapshot_proposal<Db, Cluster, Blockchain>(
+pub async fn submit_assignment_proposal<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    candidate: &SnapshotCandidate,
+    candidate: &AssignmentCandidate,
     cancel: &CancellationToken,
 ) -> Result<(), NodeError>
 where
@@ -36,14 +36,15 @@ where
         return Ok(());
     }
 
-    let outcome = submit_if_at_tip(&ctx.ingest, submit_propose_snapshot(ctx, candidate.hash)).await;
+    let outcome =
+        submit_if_at_tip(&ctx.ingest, submit_propose_assignment(ctx, candidate.hash)).await;
     match outcome {
         TxOutcome::Confirmed(txid) => {
             info!(
                 epoch = candidate.target_epoch.0,
                 hash = ?candidate.hash,
                 ?txid,
-                "snapshot: proposal submitted"
+                "assignment: proposal submitted"
             );
         }
         TxOutcome::Program(err) => {
@@ -51,7 +52,7 @@ where
                 epoch = candidate.target_epoch.0,
                 hash = ?candidate.hash,
                 ?err,
-                "snapshot: proposal program error"
+                "assignment: proposal program error"
             );
         }
         TxOutcome::Transport(err) => {
@@ -59,14 +60,14 @@ where
                 epoch = candidate.target_epoch.0,
                 hash = ?candidate.hash,
                 %err,
-                "snapshot: proposal transport error"
+                "assignment: proposal transport error"
             );
         }
         TxOutcome::SkippedStale => {
             debug!(
                 epoch = candidate.target_epoch.0,
                 hash = ?candidate.hash,
-                "snapshot: proposal deferred, ingest stale"
+                "assignment: proposal deferred, ingest stale"
             );
         }
     }
@@ -74,9 +75,9 @@ where
     Ok(())
 }
 
-pub async fn submit_ready_snapshot_votes<Db, Cluster, Blockchain>(
+pub async fn submit_ready_assignment_votes<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    candidate: &SnapshotCandidate,
+    candidate: &AssignmentCandidate,
     cancel: &CancellationToken,
 ) -> Result<(), NodeError>
 where
@@ -85,7 +86,7 @@ where
     Blockchain: Rpc + 'static,
 {
     match cancel
-        .run_until_cancelled(submit_ready_snapshot_votes_inner(ctx, candidate))
+        .run_until_cancelled(submit_ready_assignment_votes_inner(ctx, candidate))
         .await
     {
         Some(result) => result,
@@ -93,9 +94,9 @@ where
     }
 }
 
-async fn submit_ready_snapshot_votes_inner<Db, Cluster, Blockchain>(
+async fn submit_ready_assignment_votes_inner<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    candidate: &SnapshotCandidate,
+    candidate: &AssignmentCandidate,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -132,11 +133,11 @@ where
 
         let bitmap = SpoolBitmap::from_indices(&indices);
         let aggregate = BlsSignature::aggregate(&partials)
-            .map_err(|e| NodeError::Store(format!("aggregate snapshot sigs: {e:?}")))?;
+            .map_err(|e| NodeError::Store(format!("aggregate assignment sigs: {e:?}")))?;
 
         let outcome = submit_if_at_tip(
             &ctx.ingest,
-            submit_vote_snapshot(ctx, candidate.hash, group, bitmap, aggregate),
+            submit_vote_assignment(ctx, candidate.hash, group, bitmap, aggregate),
         )
         .await;
 
@@ -146,14 +147,14 @@ where
                     epoch = candidate.target_epoch.0,
                     group = group.0,
                     ?txid,
-                    "snapshot: group vote submitted"
+                    "assignment: group vote submitted"
                 );
             }
             TxOutcome::Program(TapeError::AlreadySigned) => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
-                    "snapshot: group already voted"
+                    "assignment: group already voted"
                 );
             }
             TxOutcome::Program(err) => {
@@ -161,7 +162,7 @@ where
                     epoch = candidate.target_epoch.0,
                     group = group.0,
                     ?err,
-                    "snapshot: vote program error"
+                    "assignment: vote program error"
                 );
             }
             TxOutcome::Transport(err) => {
@@ -169,14 +170,14 @@ where
                     epoch = candidate.target_epoch.0,
                     group = group.0,
                     %err,
-                    "snapshot: vote transport error"
+                    "assignment: vote transport error"
                 );
             }
             TxOutcome::SkippedStale => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
-                    "snapshot: vote deferred, ingest stale"
+                    "assignment: vote deferred, ingest stale"
                 );
             }
         }
@@ -185,9 +186,9 @@ where
     Ok(())
 }
 
-pub async fn submit_snapshot_finalization<Db, Cluster, Blockchain>(
+pub async fn submit_assignment_finalization<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    candidate: &SnapshotCandidate,
+    candidate: &AssignmentCandidate,
     cancel: &CancellationToken,
 ) -> Result<(), NodeError>
 where
@@ -195,49 +196,50 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    if cancel.is_cancelled() {
-        return Ok(());
-    }
-
-    persist_snapshot_candidate(ctx.as_ref(), candidate)?;
-
-    let outcome = submit_if_at_tip(
-        &ctx.ingest,
-        submit_finalize_snapshot(ctx, candidate.target_epoch, candidate.tape),
-    )
-    .await;
-
-    match outcome {
-        TxOutcome::Confirmed(txid) => {
-            info!(
-                epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
-                ?txid,
-                "snapshot: finalized"
-            );
+    for group in &candidate.groups {
+        if cancel.is_cancelled() {
+            return Ok(());
         }
-        TxOutcome::Program(err) => {
-            debug!(
-                epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
-                ?err,
-                "snapshot: finalize program error"
-            );
-        }
-        TxOutcome::Transport(err) => {
-            debug!(
-                epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
-                %err,
-                "snapshot: finalize transport error"
-            );
-        }
-        TxOutcome::SkippedStale => {
-            debug!(
-                epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
-                "snapshot: finalize deferred, ingest stale"
-            );
+
+        let outcome = submit_if_at_tip(
+            &ctx.ingest,
+            submit_finalize_group(ctx, candidate.target_epoch, group.payload, group.proof),
+        )
+        .await;
+
+        match outcome {
+            TxOutcome::Confirmed(txid) => {
+                info!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    ?txid,
+                    "assignment: group finalized"
+                );
+            }
+            TxOutcome::Program(err) => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    ?err,
+                    "assignment: finalize group program error"
+                );
+            }
+            TxOutcome::Transport(err) => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    %err,
+                    "assignment: finalize group transport error"
+                );
+            }
+            TxOutcome::SkippedStale => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    "assignment: finalize group deferred, ingest stale"
+                );
+                return Ok(());
+            }
         }
     }
 

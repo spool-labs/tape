@@ -1,3 +1,4 @@
+pub mod assignment;
 pub mod block;
 pub mod bootstrap;
 pub mod gc;
@@ -8,3 +9,4 @@ pub mod snapshot;
 pub mod spool;
 pub mod store;
 pub mod state;
+pub mod vote;

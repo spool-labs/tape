@@ -69,6 +69,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
 
         for instruction in &block.instructions {
             match instruction {
+                ParsedInstruction::CommitEpoch { event } => {
+                    handlers
+                        .handle_commit_epoch(event.epoch, event.next_nonce)
+                        .await?;
+                }
                 ParsedInstruction::AdvanceEpoch { event } => {
                     handlers.handle_advance_epoch(event.new_epoch).await?;
                 }
@@ -80,6 +85,15 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 }
                 ParsedInstruction::JoinCommittee { event, .. } => {
                     handlers.handle_join_committee(*event).await?;
+                }
+                ParsedInstruction::VoteSnapshot { event, .. } => {
+                    handlers.handle_snapshot_vote(*event).await?;
+                }
+                ParsedInstruction::VoteAssignment { event, .. } => {
+                    handlers.handle_assignment_vote(*event).await?;
+                }
+                ParsedInstruction::FinalizeGroup { event, .. } => {
+                    handlers.handle_finalize_group(*event).await?;
                 }
                 _ => {}
             }
