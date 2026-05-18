@@ -2,6 +2,7 @@ pub mod advance_epoch;
 pub mod advance_pool;
 pub mod join_committee;
 pub mod manager;
+pub mod settle_spools;
 pub mod sync_spools;
 pub mod types;
 pub mod wait_spool_ready;

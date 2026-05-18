@@ -15,9 +15,12 @@
 //   Syncing   | in committee, spools not ready               | WaitSpoolReady
 //   Syncing   | in committee, spools ready, sync not done    | SyncSpools
 //   Syncing   | SyncSpools done or not in committee          | None (wait)
-//   Settling  | in committee or prev, pool not done          | AdvancePool
-//   Settling  | pool done or not in either                   | None (wait)
-//   Active    | pool not done, in committee or prev          | AdvancePool
+//   Settling  | previous spools not settled                  | SettleSpools
+//   Settling  | settlement done, pool not done               | AdvancePool
+//   Snapshot  | previous spools not settled                  | SettleSpools
+//   Snapshot  | settlement done, pool not done               | AdvancePool
+//   Active    | previous spools not settled                  | SettleSpools
+//   Active    | settlement done, pool not done               | AdvancePool
 //   Active    | join not done, 90% time elapsed              | JoinCommittee
 //   Active    | join done, advance not done                  | AdvanceEpoch
 //   Active    | all done                                     | None (wait)
@@ -29,8 +32,8 @@
 //       would reject a late sync anyway.
 //
 //   If the phase jumps ahead while a task is running:
-//     - The lifecycle manager cancels the current task via its CancellationToken.
-//     - Re-evaluates next_action() with the new phase.
+//     - The running task is responsible for deciding whether the new phase is
+//       still acceptable. If it completes or rejects, the manager replans.
 //
 // ── Epoch reset ─────────────────────────────────────────────────────
 //
@@ -117,7 +120,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::{
-    advance_epoch, advance_pool, join_committee, sync_spools, wait_spool_ready,
+    advance_epoch, advance_pool, join_committee, settle_spools, sync_spools, wait_spool_ready,
 };
 
 const LIFECYCLE_HEARTBEAT: Duration = Duration::from_secs(1);
@@ -259,6 +262,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             match action {
                 Action::WaitSpoolReady => wait_spool_ready::run(ctx, epoch, token).await,
                 Action::SyncSpools     => sync_spools::run(ctx, epoch, token).await,
+                Action::SettleSpools   => settle_spools::run(ctx, epoch, token).await,
                 Action::AdvancePool    => advance_pool::run(ctx, epoch, token).await,
                 Action::JoinCommittee  => join_committee::run(ctx, epoch, token).await,
                 Action::AdvanceEpoch   => advance_epoch::run(ctx, epoch, token).await,
@@ -318,9 +322,34 @@ pub fn next_action(
 ) -> Option<Action> {
 
     let in_current = state.find_member(node).is_some();
-    let in_next    = state.find_member_next(node).is_some();
+    let in_next = state.find_member_next(node).is_some();
 
-    match state.phase() {
+    let has_previous_spools = !state.member_spools_prev(node).is_empty();
+    let settlement_done = !has_previous_spools || done.contains(&Action::SettleSpools);
+    let phase = state.phase();
+
+    // If we had spools in the previous epoch, we need to settle them before doing anything else.
+    if has_previous_spools
+        && !done.contains(&Action::SettleSpools)
+        && phase_allows_settle_spools(phase)
+    {
+        return Some(Action::SettleSpools);
+    }
+
+    // If we have settled previous spools, we have rewards pending.
+    if settlement_done 
+        && !done.contains(&Action::AdvancePool) 
+        && phase_allows_advance_pool(phase) 
+    {
+        return Some(Action::AdvancePool);
+    }
+
+    // Global phase, not just our local state. The gates progress via 2/3 majority. We may still
+    // want to run some of these actions even if the phase has advanced.
+    match phase {
+
+        // We only need to attest SyncSpool during Syncing. Once we move past Syncing, it's too
+        // late to sync and the program would reject it anyway, so we skip it.
         EpochPhase::Sync => {
 
             // Wait for our spools to be ready before attesting SyncSpool.
@@ -335,20 +364,18 @@ pub fn next_action(
 
             None
         }
-        EpochPhase::Settle => {
-            // AdvancePool is permissionless and should be called once per epoch.
-            if !done.contains(&Action::AdvancePool) {
-                return Some(Action::AdvancePool);
-            }
 
+        EpochPhase::Settle => {
+            // Handled above, we typically always want to settle all our previous spools,
+            // regardless of phase. 
             None
         }
-        EpochPhase::Active => {
-            // AdvancePool can still be submitted during Active if we missed Settling.
-            if !done.contains(&Action::AdvancePool) {
-                return Some(Action::AdvancePool);
-            }
 
+        EpochPhase::Snapshot => {
+            None
+        }
+
+        EpochPhase::Active => {
             // JoinCommittee: gated by time, checked by the task itself.
             if !in_next && !done.contains(&Action::JoinCommittee) {
                 return Some(Action::JoinCommittee);
@@ -361,10 +388,28 @@ pub fn next_action(
 
             None
         }
+
         EpochPhase::Unknown
-        | EpochPhase::Snapshot
         | EpochPhase::Closing
         | EpochPhase::Completed => None,
+    }
+}
+
+fn phase_allows_advance_pool(phase: EpochPhase) -> bool {
+    match phase {
+        EpochPhase::Settle => true,
+        EpochPhase::Snapshot => true,
+        EpochPhase::Active => true,
+        _ => false,
+    }
+}
+
+fn phase_allows_settle_spools(phase: EpochPhase) -> bool {
+    match phase {
+        EpochPhase::Settle => true,
+        EpochPhase::Snapshot => true,
+        EpochPhase::Active => true,
+        _ => false,
     }
 }
 
@@ -373,22 +418,89 @@ pub fn next_action(
 mod tests {
     use std::collections::HashSet;
 
-    use tape_core::system::CommitteeMember;
+    use bytemuck::Zeroable;
+    use tape_api::state::{Epoch, Group};
+    use tape_core::spooler::GroupIndex;
+    use tape_core::system::{EpochPhase, Member};
     use tape_core::types::coin::TAPE;
-    use tape_core::types::NodeId;
-    use tape_protocol::ProtocolState;
+    use tape_core::types::{EpochNumber, StorageUnits};
+    use tape_crypto::Address;
+    use tape_protocol::{EpochBundle, ProtocolState};
+
     use super::next_action;
     use crate::features::lifecycle::types::Action;
 
+    fn member(node: Address) -> Member {
+        Member {
+            node,
+            stake: TAPE(100),
+            blacklist: StorageUnits::zero(),
+            spools: 1,
+        }
+    }
+
+    fn state_with_phase(phase: EpochPhase) -> ProtocolState {
+        let mut state = ProtocolState::default();
+        state.current.epoch.state.phase = phase as u64;
+        state
+    }
+
+    fn state_with_previous_spool(node: Address, phase: EpochPhase) -> ProtocolState {
+        let mut state = state_with_phase(phase);
+        let prev = EpochNumber(1);
+        let curr = EpochNumber(2);
+        let group_id = GroupIndex(0);
+        let mut group = Group {
+            id: group_id,
+            epoch: prev,
+            ..Group::zeroed()
+        };
+        group.spools[0].node = node;
+
+        state.current.epoch.id = curr;
+        state.previous = Some(EpochBundle {
+            epoch: Epoch {
+                id: prev,
+                ..Epoch::zeroed()
+            },
+            committee: vec![member(node)],
+            groups: vec![group],
+        });
+        state
+    }
+
+    #[test]
+    fn settle_runs_before_advance_pool() {
+        let node = Address::new_unique();
+        let state = state_with_previous_spool(node, EpochPhase::Settle);
+        let done = HashSet::new();
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, Some(Action::SettleSpools));
+    }
+
+    #[test]
+    fn settle_done_allows_advance_pool() {
+        let node = Address::new_unique();
+        let state = state_with_previous_spool(node, EpochPhase::Settle);
+        let mut done = HashSet::new();
+        done.insert(Action::SettleSpools);
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, Some(Action::AdvancePool));
+    }
+
     #[test]
     fn active_skips_join_when_already_in_next_committee() {
-        let node_id = NodeId(7);
-        let mut state = ProtocolState::default();
-        state.committee_next.push(CommitteeMember::new(node_id, TAPE(100)));
+        let node = Address::new_unique();
+        let mut state = state_with_phase(EpochPhase::Active);
+        state.next_committee = Some(vec![member(node)]);
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
 
-        let action = next_action(&state, node_id, &done);
+        let action = next_action(&state, node, &done);
 
         assert_eq!(action, Some(Action::AdvanceEpoch));
     }

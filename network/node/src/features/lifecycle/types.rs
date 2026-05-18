@@ -5,6 +5,7 @@ use tape_core::types::EpochNumber;
 pub enum Action {
     WaitSpoolReady,
     SyncSpools,
+    SettleSpools,
     AdvancePool,
     JoinCommittee,
     AdvanceEpoch,
