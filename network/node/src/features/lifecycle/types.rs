@@ -4,9 +4,9 @@ use tape_core::types::EpochNumber;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     WaitSpoolReady,
-    SyncEpoch,
+    SyncSpools,
     AdvancePool,
-    JoinNetwork,
+    JoinCommittee,
     AdvanceEpoch,
 }
 

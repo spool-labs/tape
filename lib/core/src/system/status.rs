@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::erasure::GROUP_SIZE;
-use crate::types::{EpochNumber, NodeId};
+use crate::types::EpochNumber;
+use tape_crypto::Address;
 
 /// Node status in the network
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,13 +54,18 @@ pub enum SpoolStatus {
 pub struct SpoolState {
     pub status: SpoolStatus,
     pub epoch: EpochNumber,
-    pub prev_owner: Option<NodeId>,
-    pub prev_helpers: [Option<NodeId>; GROUP_SIZE],
+    pub prev_owner: Option<Address>,
+    pub prev_helpers: [Option<Address>; GROUP_SIZE],
 }
 
 impl SpoolState {
     pub fn new(status: SpoolStatus, epoch: EpochNumber) -> Self {
-        Self { status, epoch, prev_owner: None, prev_helpers: [None; GROUP_SIZE] }
+        Self {
+            status,
+            epoch,
+            prev_owner: None,
+            prev_helpers: [None; GROUP_SIZE],
+        }
     }
 
     pub fn set_status(&mut self, status: SpoolStatus) {
@@ -89,20 +95,22 @@ mod tests {
     #[cfg(feature = "wincode")]
     #[test]
     fn spool_state_roundtrip() {
+        let owner = Address::new([7u8; 32]);
+        let helper = Address::new([3u8; 32]);
         let states = vec![
             SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
             SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(42)),
             SpoolState {
                 status: SpoolStatus::Sync,
                 epoch: EpochNumber(5),
-                prev_owner: Some(NodeId(7)),
-                prev_helpers: [Some(NodeId(7)); GROUP_SIZE],
+                prev_owner: Some(owner),
+                prev_helpers: [Some(owner); GROUP_SIZE],
             },
             SpoolState::new(SpoolStatus::Scan, EpochNumber(6)),
             SpoolState {
                 status: SpoolStatus::Recover,
                 epoch: EpochNumber(7),
-                prev_owner: Some(NodeId(3)),
+                prev_owner: Some(helper),
                 prev_helpers: [None; GROUP_SIZE],
             },
         ];

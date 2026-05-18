@@ -103,11 +103,13 @@ where
     Blockchain: Rpc + 'static,
 {
     let state = ctx.state();
-    let me = ctx.node_id();
+    let me = ctx.node_address();
 
-    let Some((member_index, _)) = state.find_member(me) else { return Ok(()); };
+    if state.find_member(me).is_none() {
+        return Ok(());
+    }
 
-    for spool in state.member_spools(member_index) {
+    for spool in state.member_spools(me) {
         let group = GroupIndex::containing(spool);
         let chunks = ctx
             .store
@@ -142,7 +144,7 @@ where
                 continue;
             };
 
-            let bitmap = SpoolBitmap::from_indices(&indices, GROUP_SIZE);
+            let bitmap = SpoolBitmap::from_indices(&indices);
             let aggregate = BlsSignature::aggregate(&partials)
                 .map_err(|e| NodeError::Store(format!("aggregate write sigs: {e:?}")))?;
 
@@ -200,13 +202,13 @@ where
     Blockchain: Rpc + 'static,
 {
     let state = ctx.state();
-    let me = ctx.node_id();
+    let me = ctx.node_address();
 
-    let Some((member_index, _)) = state.find_member(me) else {
+    if state.find_member(me).is_none() {
         return Ok(());
-    };
+    }
 
-    for spool in state.member_spools(member_index) {
+    for spool in state.member_spools(me) {
         let group = GroupIndex::containing(spool);
         let sigs = ctx
             .store
@@ -230,7 +232,7 @@ where
             continue;
         }
 
-        let bitmap = SpoolBitmap::from_indices(&indices, GROUP_SIZE);
+        let bitmap = SpoolBitmap::from_indices(&indices);
         let aggregate = BlsSignature::aggregate(&partials)
             .map_err(|e| NodeError::Store(format!("aggregate finalize sigs: {e:?}")))?;
 

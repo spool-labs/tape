@@ -17,30 +17,6 @@ use crate::features::lifecycle::types::{Action, TaskDone};
 // Purpose: Submit an AdvancePool transaction to settle rewards for this
 //          node's staking pool. This is required for any node that was
 //          in the current or previous committee.
-//
-// AdvancePool is permissionless, anyone can call it. But nodes call it
-// for themselves because each node needs its pool advanced before it can
-// earn rewards and before JoinNetwork can be called.
-//
-// Algorithm:
-// 1. Loop (with backoff, checking cancel):
-//    a. Check cancel token.
-//    b. Submit AdvancePool transaction via rpc.send_instructions:
-//       - build_advance_pool_ix(fee_payer, authority, node_address)
-//       - Wrap with compute budget instruction.
-//    c. On success → return Done.
-//    d. On AlreadyAdvanced → return Done (idempotent).
-//    e. On BadEpochState → the on-chain program rejected the call.
-//       This happens if the phase hasn't reached Settling yet (we were
-//       scheduled too early) or if the epoch state is somehow wrong.
-//       Retry with backoff — the phase may advance soon.
-//    f. On NoRewards / RewardsOverflow / PoolAccountingFailed → stop retrying
-//       for this epoch. These are deterministic program failures, not
-//       transport/transient errors.
-//    g. On retriable errors → backoff and retry.
-//
-// Unlike SyncEpoch, AdvancePool has no preconditions beyond being in
-// the right epoch phase. No spool readiness check needed.
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -51,7 +27,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
-        if ctx.state().epoch != epoch {
+        if ctx.state().epoch() != epoch {
             info!(epoch = epoch.0, "advance_pool: wrong epoch");
             return TaskDone::Rejected(Action::AdvancePool, epoch);
         }
@@ -70,8 +46,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
             TxOutcome::Program(
                 err @ (
-                    TapeError::NoRewards
-                    | TapeError::RewardsOverflow
+                    TapeError::RewardsOverflow
                     | TapeError::PoolAccountingFailed
                 )
             ) => {

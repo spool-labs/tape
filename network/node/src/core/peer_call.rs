@@ -1,16 +1,16 @@
 use std::future::Future;
 
 use peer_manager::PeerManager;
-use tape_core::types::NodeId;
+use tape_crypto::Address;
 use tape_protocol::api::ApiError;
-use tape_retry::{RetryConfig, Retryable, retry_if};
+use tape_retry::{retry_if, RetryConfig, Retryable};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 pub async fn call_peer<T, F, Fut>(
     peer_manager: &PeerManager,
     retry: RetryConfig,
-    node_id: NodeId,
+    node: Address,
     cancel: Option<&CancellationToken>,
     f: F,
 ) -> Result<T, ApiError>
@@ -20,17 +20,18 @@ where
 {
     let result = retry_if(
         retry,
-        cancel, 
-        f, 
-        |e| { 
-            info!("peer call to {} failed: {e}", node_id);
+        cancel,
+        f,
+        |e| {
+            info!("peer call to {} failed: {e}", node);
             ApiError::is_retryable(e)
-        }
-    ).await;
+        },
+    )
+    .await;
 
     match &result {
-        Ok(_) => peer_manager.report_success(node_id),
-        Err(error) if error.is_retryable() => peer_manager.report_failure(node_id),
+        Ok(_) => peer_manager.report_success(node),
+        Err(error) if error.is_retryable() => peer_manager.report_failure(node),
         Err(_) => {}
     }
 

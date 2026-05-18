@@ -83,7 +83,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         last_processed_slot,
         blocks_processed: metrics.blocks_processed_total,
         epoch_transitions: metrics.epoch_transitions_total,
-        current_epoch: current_state.epoch.0,
+        current_epoch: current_state.epoch().0,
         owned_spools: owned_spools.len() as u64,
         tracks_stored: store
             .count_tracks()

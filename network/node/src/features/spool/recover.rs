@@ -7,7 +7,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_core::track::data::TrackData;
-use tape_core::types::{NodeId, StorageUnits};
+use tape_core::types::StorageUnits;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::ops::GetSliceReq;
@@ -85,7 +85,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         Ok(Some(state)) => state,
         Ok(None) => return RecoverResult::Done { remaining: 0 },
         Err(error) => {
-            warn!(spool, %error, "failed to read spool state");
+            warn!(spool = %spool, %error, "failed to read spool state");
             return RecoverResult::Done { remaining: 0 };
         }
     };
@@ -106,7 +106,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         {
             Ok(pending) => pending,
             Err(error) => {
-                warn!(spool, %error, "iter_pending_recoveries failed");
+                warn!(spool = %spool, %error, "iter_pending_recoveries failed");
                 break;
             }
         };
@@ -124,7 +124,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             let has_slice = match ctx.store.has_slice(spool, track_addr) {
                 Ok(has_slice) => has_slice,
                 Err(error) => {
-                    warn!(spool, track = %track_addr, %error, "has_slice failed");
+                    warn!(spool = %spool, track = %track_addr, %error, "has_slice failed");
                     continue;
                 }
             };
@@ -143,28 +143,28 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     continue;
                 }
                 Err(error) => {
-                    warn!(spool, track = %track_addr, %error, "get_track failed");
+                    warn!(spool = %spool, track = %track_addr, %error, "get_track failed");
                     continue;
                 }
             };
 
             if !track_info.is_blob() {
-                warn!(spool, track = %track_addr, "non-blob track in recovery queue");
+                warn!(spool = %spool, track = %track_addr, "non-blob track in recovery queue");
                 continue;
             }
 
             let track_data = match ctx.store.get_track_data(track_addr) {
                 Ok(Some(TrackData::Blob(info))) => info,
                 Ok(Some(TrackData::Raw(_))) => {
-                    warn!(spool, track = %track_addr, "blob track has raw track_data, keeping queued");
+                    warn!(spool = %spool, track = %track_addr, "blob track has raw track_data, keeping queued");
                     continue;
                 }
                 Ok(None) => {
-                    warn!(spool, track = %track_addr, "track_data missing, keeping queued");
+                    warn!(spool = %spool, track = %track_addr, "track_data missing, keeping queued");
                     continue;
                 }
                 Err(error) => {
-                    warn!(spool, track = %track_addr, %error, "get_track_data failed");
+                    warn!(spool = %spool, track = %track_addr, %error, "get_track_data failed");
                     continue;
                 }
             };
@@ -178,7 +178,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     continue;
                 }
                 Ok(None) | Err(_) => {
-                    warn!(spool, track = %track_addr, "recover: skipping, state inconsistent or unreadable");
+                    warn!(spool = %spool, track = %track_addr, "recover: skipping, state inconsistent or unreadable");
                     continue;
                 }
             }
@@ -208,18 +208,18 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 match reconstruct(&mut slicer, SliceIndex::new(position as usize), &peer_slices) {
                     Ok(recovered) => recovered,
                     Err(error) => {
-                        debug!(spool, track = %track_addr, %error, "reconstruct failed");
+                        debug!(spool = %spool, track = %track_addr, %error, "reconstruct failed");
                         continue;
                     }
                 };
 
-            if !track_data.verify_slice(position, &recovered) {
+            if !track_data.verify_slice(SpoolIndex::from(position as u64), &recovered) {
                 continue;
             }
 
             let recovered_len = recovered.len() as u64;
             if let Err(error) = ctx.store.put_slice(spool, track_addr, recovered) {
-                warn!(spool, track = %track_addr, %error, "put_slice failed");
+                warn!(spool = %spool, track = %track_addr, %error, "put_slice failed");
                 continue;
             }
 
@@ -251,7 +251,7 @@ async fn fetch_one_slice<Cluster: Api + 'static>(
     peer_manager: Arc<PeerManager>,
     api: Arc<Cluster>,
     token: CancellationToken,
-    candidates: [Option<NodeId>; 2],
+    candidates: [Option<Address>; 2],
     request: GetSliceReq,
     helper_slice: usize,
 ) -> Result<(SliceIndex, Vec<u8>), ()> {

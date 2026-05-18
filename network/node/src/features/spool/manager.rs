@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::{SPOOL_COUNT, GROUP_SIZE};
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{EpochNumber, GroupIndex, SpoolIndex, SpoolState, SpoolStatus};
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
@@ -53,7 +53,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     pub async fn run(mut self) -> Result<(), NodeError> {
 
         let mut state_rx = self.context.subscribe_state();
-        let mut observed_epoch = state_rx.borrow().epoch;
+        let mut observed_epoch = state_rx.borrow().epoch();
 
         self.advance(observed_epoch)?;
         self.try_spawn(observed_epoch)?;
@@ -99,16 +99,16 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                     let state = state_rx.borrow().clone();
 
-                    if state.epoch != observed_epoch {
+                    if state.epoch() != observed_epoch {
                         info!(
                             old_epoch = observed_epoch.0,
-                            new_epoch = state.epoch.0,
+                            new_epoch = state.epoch().0,
                             "spool: epoch advanced, resetting"
                         );
 
                         self.stop().await;
 
-                        observed_epoch = state.epoch;
+                        observed_epoch = state.epoch();
 
                         self.advance(observed_epoch)?;
                     }
@@ -273,7 +273,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     .get_spool_state(spool)
                     .map_err(|e| NodeError::Store(format!("get_spool_state({spool}): {e}")))?
                 else {
-                    debug!(spool, "spool: missing state for completed task");
+                    debug!(spool = %spool, "spool: missing state for completed task");
                     return Ok(());
                 };
 
@@ -289,7 +289,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     .set_spool_state(spool, state)
                     .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
 
-                info!(spool, epoch = observed_epoch.0, status = ?next_status, "spool: task completed");
+                info!(spool = %spool, epoch = observed_epoch.0, status = ?next_status, "spool: task completed");
             }
             TaskDone::Cancelled(action, result) => {
                 debug!(?action, ?result, "spool: task cancelled");
@@ -309,11 +309,17 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     ) -> Result<(), NodeError> {
 
         // Get the spools we've been assigned for the current epoch
-        let assignments : HashSet<SpoolIndex> = self.context.my_spools();
+        let assignments: HashSet<SpoolIndex> = self.context.my_spools();
+        let persisted = self
+            .context
+            .store
+            .iter_all_spools()
+            .map_err(|e| NodeError::Store(format!("iter_all_spools: {e}")))?;
 
-        // iterate over all spools
-        for spool in 0..SPOOL_COUNT {
-            let spool : SpoolIndex = spool as u16;
+        let mut spools = assignments.clone();
+        spools.extend(persisted.iter().map(|(spool, _)| *spool));
+
+        for spool in spools {
 
             let is_assigned = assignments.contains(&spool);
             let state = self.context.store.get_spool_state(spool)
@@ -335,12 +341,12 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                             epoch,
                             LOCKED_SPOOL_RETENTION_EPOCHS,
                         ) {
-                            info!(spool, epoch = epoch.0, "spool: purging locked spool after retention period");
+                            info!(spool = %spool, epoch = epoch.0, "spool: purging locked spool after retention period");
 
                             purge_locked_spool(self.context.as_ref(), spool)?;
                         }
                     } else {
-                        info!(spool, epoch = epoch.0, "spool: locking spool due to lost ownership");
+                        info!(spool = %spool, epoch = epoch.0, "spool: locking spool due to lost ownership");
 
                         reset_spool_state(self.context.as_ref(), spool)?;
 
@@ -357,7 +363,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                 // Assigned, no state → create state -> (sync)
                 (true, None) => {
-                    info!(spool, epoch = epoch.0, "spool: creating state for newly assigned spool");
+                    info!(spool = %spool, epoch = epoch.0, "spool: creating state for newly assigned spool");
 
                     // If we don't have a state for a spool but it's assigned to us, we need to
                     // create an initial state and start syncing it. The initial state will have
@@ -377,7 +383,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                 // Assigned, have state AND epoch doesn't match -> (sync)
                 (true, Some(_state)) => {
-                    info!(spool, epoch = epoch.0, "spool: refreshing assigned spool for new epoch");
+                    info!(spool = %spool, epoch = epoch.0, "spool: refreshing assigned spool for new epoch");
 
                     reset_spool_state(self.context.as_ref(), spool)?;
 

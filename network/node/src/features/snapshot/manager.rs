@@ -178,11 +178,11 @@ where
 
     async fn on_heartbeat(&mut self) -> Result<(), NodeError> {
         let state = self.context.state();
-        if state.epoch == EpochNumber(0) {
+        if state.epoch() == EpochNumber(0) {
             return Ok(());
         }
 
-        let snapshot_epoch = state.epoch
+        let snapshot_epoch = state.epoch()
             .saturating_sub(EpochNumber(1));
 
         submit_ready_reserves(&self.context, snapshot_epoch, &mut self.last_reserved_epoch, &self.cancel).await?;

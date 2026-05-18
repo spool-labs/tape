@@ -54,13 +54,13 @@ where
     Blockchain: Rpc + 'static,
 {
     let state = ctx.state();
-    let me = ctx.node_id();
+    let me = ctx.node_address();
 
-    let Some((member_index, _)) = state.find_member(me) else {
+    if state.find_member(me).is_none() {
         return Ok(VoteSummary::default());
-    };
+    }
 
-    let groups = member_groups(&state.member_spools(member_index));
+    let groups = member_groups(&state.member_spools(me));
     let mut write_votes = 0usize;
 
     for group in groups {
@@ -132,13 +132,13 @@ where
     Blockchain: Rpc + 'static,
 {
     let state = ctx.state();
-    let me = ctx.node_id();
+    let me = ctx.node_address();
 
-    let Some((member_index, _)) = state.find_member(me) else {
+    if state.find_member(me).is_none() {
         return Ok(VoteSummary::default());
-    };
+    }
 
-    let groups = member_groups(&state.member_spools(member_index));
+    let groups = member_groups(&state.member_spools(me));
     let mut finalize_votes = 0usize;
 
     for group in groups {
@@ -169,7 +169,7 @@ where
 }
 
 fn member_groups(spools: &[SpoolIndex]) -> Vec<GroupIndex> {
-    let mut groups = spools.iter().copied().map(GroupIndex::of).collect::<Vec<_>>();
+    let mut groups = spools.iter().copied().map(GroupIndex::containing).collect::<Vec<_>>();
     groups.sort_by_key(|group| group.0);
     groups.dedup_by_key(|group| group.0);
     groups

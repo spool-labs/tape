@@ -60,7 +60,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         {
             Ok(tracks) => tracks,
             Err(error) => {
-                warn!(spool, %error, "scan iter_tracks_from failed");
+                warn!(spool = %spool, %error, "scan iter_tracks_from failed");
                 had_error = true;
                 break;
             }
@@ -86,12 +86,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 Ok(Some(info)) if info.is_certified() => {}
                 Ok(Some(_)) => continue,
                 Ok(None) => {
-                    warn!(spool, track = %track_addr, "scan: track exists but ObjectInfo missing");
+                    warn!(spool = %spool, track = %track_addr, "scan: track exists but ObjectInfo missing");
                     had_error = true;
                     continue;
                 }
                 Err(error) => {
-                    warn!(spool, track = %track_addr, %error, "scan get_object_info failed");
+                    warn!(spool = %spool, track = %track_addr, %error, "scan get_object_info failed");
                     had_error = true;
                     continue;
                 }
@@ -101,7 +101,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             let has_slice = match ctx.store.has_slice(spool, *track_addr) {
                 Ok(has_slice) => has_slice,
                 Err(error) => {
-                    warn!(spool, track = %track_addr, %error, "scan has_slice failed");
+                    warn!(spool = %spool, track = %track_addr, %error, "scan has_slice failed");
                     had_error = true;
                     continue;
                 }
@@ -112,7 +112,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
 
             if let Err(error) = ctx.store.add_pending_repair(spool, *track_addr) {
-                warn!(spool, track = %track_addr, %error, "scan add_pending_repair failed");
+                warn!(spool = %spool, track = %track_addr, %error, "scan add_pending_repair failed");
                 had_error = true;
                 continue;
             }

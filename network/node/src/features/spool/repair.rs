@@ -9,7 +9,6 @@ use tape_core::types::SpoolIndex;
 use tape_core::system::SpoolState;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
-use tape_core::types::NodeId;
 use tape_core::types::{StorageUnits, StripeCount};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
@@ -119,7 +118,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         {
             Ok(pending) => pending,
             Err(error) => {
-                warn!(spool, %error, "iter_pending_repairs failed");
+                warn!(spool = %spool, %error, "iter_pending_repairs failed");
                 break;
             }
         };
@@ -136,7 +135,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             let has_slice = match ctx.store.has_slice(spool, track) {
                 Ok(has_slice) => has_slice,
                 Err(error) => {
-                    warn!(spool, track = %track, %error, "has_slice failed");
+                    warn!(spool = %spool, track = %track, %error, "has_slice failed");
                     continue;
                 }
             };
@@ -144,7 +143,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             // If slice already exists, just remove from pending_repairs and skip.
             if has_slice {
                 let _ = ctx.store.remove_pending_repair(spool, track);
-                info!(spool, track = %track, "slice already present, skipping");
+                info!(spool = %spool, track = %track, "slice already present, skipping");
                 continue;
             }
 
@@ -153,32 +152,32 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 Ok(Some(info)) => info,
                 Ok(None) => {
                     let _ = ctx.store.remove_pending_repair(spool, track);
-                    warn!(spool, track = %track, "track_info missing, removing");
+                    warn!(spool = %spool, track = %track, "track_info missing, removing");
                     continue;
                 }
                 Err(error) => {
-                    warn!(spool, track = %track, %error, "get_track failed");
+                    warn!(spool = %spool, track = %track, %error, "get_track failed");
                     continue;
                 }
             };
 
             if !track_info.is_blob() {
-                warn!(spool, track = %track, "non-blob track in repair queue");
+                warn!(spool = %spool, track = %track, "non-blob track in repair queue");
                 continue;
             }
 
             let track_data = match ctx.store.get_track_data(track) {
                 Ok(Some(TrackData::Blob(info))) => info,
                 Ok(Some(TrackData::Raw(_))) => {
-                    warn!(spool, track = %track, "blob track has raw track_data, keeping queued");
+                    warn!(spool = %spool, track = %track, "blob track has raw track_data, keeping queued");
                     continue;
                 }
                 Ok(None) => {
-                    warn!(spool, track = %track, "track_data missing, keeping queued");
+                    warn!(spool = %spool, track = %track, "track_data missing, keeping queued");
                     continue;
                 }
                 Err(error) => {
-                    warn!(spool, track = %track, %error, "get_track_data failed");
+                    warn!(spool = %spool, track = %track, %error, "get_track_data failed");
                     continue;
                 }
             };
@@ -191,7 +190,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     continue;
                 }
                 Ok(None) | Err(_) => {
-                    warn!(spool, track = %track, "repair: skipping, state inconsistent or unreadable");
+                    warn!(spool = %spool, track = %track, "repair: skipping, state inconsistent or unreadable");
                     continue;
                 }
             }
@@ -200,20 +199,20 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 Ok(data) => {
                     let repaired_len = data.len() as u64;
                     if let Err(error) = ctx.store.put_slice(spool, track, data) {
-                        warn!(spool, track = %track, %error, "put_slice failed");
+                        warn!(spool = %spool, track = %track, %error, "put_slice failed");
                         continue;
                     }
                     ctx.metrics.add_repair_persisted(repaired_len);
                     let _ = ctx.store.remove_pending_repair(spool, track);
                 }
                 Err(()) => {
-                    info!(spool, track = %track, "repair failed, escalating to recovery");
+                    info!(spool = %spool, track = %track, "repair failed, escalating to recovery");
                     match ctx.store.add_pending_recovery(spool, track) {
                         Ok(()) => {
                             let _ = ctx.store.remove_pending_repair(spool, track);
                         }
                         Err(error) => {
-                            warn!(spool, track = %track, %error, "add_pending_recovery failed, keeping in repair");
+                            warn!(spool = %spool, track = %track, %error, "add_pending_recovery failed, keeping in repair");
                         }
                     }
                     ctx.metrics.inc_repair_escalations();
@@ -228,8 +227,8 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
 /// Two peer maps: previous epoch helpers and current committee assignments.
 pub struct GroupPeers {
-    pub previous: HashMap<SpoolIndex, NodeId>,
-    pub current: HashMap<SpoolIndex, NodeId>,
+    pub previous: HashMap<SpoolIndex, Address>,
+    pub current: HashMap<SpoolIndex, Address>,
 }
 
 /// Build peer maps for a spool's group, excluding our own spool.
@@ -338,7 +337,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     .to_bytes();
 
     let repaired = slicer.repair(&plan, &helper_data, &metadata).map_err(|_| ())?;
-    if !track_data.verify_slice(position, &repaired) {
+    if !track_data.verify_slice(SpoolIndex::from(position as u64), &repaired) {
         return Err(());
     }
 
@@ -353,7 +352,7 @@ async fn fetch_one_helper<Cluster: Api + 'static>(
     peer_manager: Arc<PeerManager>,
     api: Arc<Cluster>,
     token: CancellationToken,
-    candidates: [Option<NodeId>; 2],
+    candidates: [Option<Address>; 2],
     req: RepairReq,
     slice_idx: SliceIndex,
 ) -> Result<(SliceIndex, Vec<u8>), SliceIndex> {

@@ -8,7 +8,7 @@ use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
-use tape_core::types::{NodeId, StorageUnits};
+use tape_core::types::StorageUnits;
 use tape_core::track::blob::BlobInfo;
 use tape_crypto::address::Address;
 use tape_protocol::{Api, ApiError};
@@ -73,7 +73,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             };
         }
         Err(error) => {
-            warn!(spool, %error, "failed to read spool state");
+            warn!(spool = %spool, %error, "failed to read spool state");
             return SyncResult::Done {
                 synced_tracks: 0,
                 synced_slices: 0,
@@ -100,7 +100,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     };
 
     // If we're the previous owner, then we can't sync slices from ourselves.
-    if prev_owner == ctx.node_id() {
+    if prev_owner == ctx.node_address() {
         return SyncResult::Done {
             synced_tracks,
             synced_slices: 0,
@@ -111,7 +111,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     let mut cursor = match ctx.store.get_spool_sync_cursor(spool) {
         Ok(cursor) => cursor,
         Err(error) => {
-            warn!(spool, %error, "failed to read sync cursor");
+            warn!(spool = %spool, %error, "failed to read sync cursor");
             None
         }
     };
@@ -145,12 +145,12 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     Some(c) => {
                         cursor = Some(c);
                         if let Err(error) = ctx.store.set_spool_sync_cursor(spool, c) {
-                            warn!(spool, %error, "set_spool_sync_cursor failed");
+                            warn!(spool = %spool, %error, "set_spool_sync_cursor failed");
                         }
                     }
                     None => {
                         if let Err(error) = ctx.store.remove_spool_sync_cursor(spool) {
-                            warn!(spool, %error, "remove_spool_sync_cursor failed");
+                            warn!(spool = %spool, %error, "remove_spool_sync_cursor failed");
                         }
                         return SyncResult::Done {
                             synced_tracks,
@@ -161,7 +161,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             }
 
             Err(e) => {
-                warn!(spool, %e, "pull_batch failed during sync");
+                warn!(spool = %spool, %e, "pull_batch failed during sync");
                 return SyncResult::Done {
                     synced_tracks,
                     synced_slices,
@@ -177,7 +177,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &RecoveryConfig,
     spool: SpoolIndex,
-    prev_owner: NodeId,
+    prev_owner: Address,
     cursor: Option<Address>,
     token: &CancellationToken,
 ) -> Result<SyncBatch, ApiError> {
@@ -209,43 +209,43 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         let track_info = match ctx.store.get_track(track_addr) {
             Ok(Some(info)) => info,
             Ok(None) => {
-                warn!(spool, track = %track_addr, "missing track metadata for synced slice, skipping");
+                warn!(spool = %spool, track = %track_addr, "missing track metadata for synced slice, skipping");
                 continue;
             }
             Err(error) => {
-                warn!(spool, track = %track_addr, %error, "failed to read track metadata, skipping");
+                warn!(spool = %spool, track = %track_addr, %error, "failed to read track metadata, skipping");
                 continue;
             }
         };
 
         if !track_info.is_blob() {
-            warn!(spool, track = %track_addr, "received synced slice for raw track, skipping");
+            warn!(spool = %spool, track = %track_addr, "received synced slice for raw track, skipping");
             continue;
         }
 
         let track_data = match ctx.store.get_track_data(track_addr) {
             Ok(Some(TrackData::Blob(data))) => data,
             Ok(Some(_)) => {
-                warn!(spool, track = %track_addr, "track data is not a blob, skipping");
+                warn!(spool = %spool, track = %track_addr, "track data is not a blob, skipping");
                 continue;
             }
             Ok(None) => {
-                warn!(spool, track = %track_addr, "missing blob track data for synced slice, skipping");
+                warn!(spool = %spool, track = %track_addr, "missing blob track data for synced slice, skipping");
                 continue;
             }
             Err(error) => {
-                warn!(spool, track = %track_addr, %error, "failed to read track data, skipping");
+                warn!(spool = %spool, track = %track_addr, %error, "failed to read track data, skipping");
                 continue;
             }
         };
 
         if !verify_slice(spool, &track_info, &track_data, &entry.slice_data) {
-            warn!(spool, track = %track_addr, "skipping invalid synced slice");
+            warn!(spool = %spool, track = %track_addr, "skipping invalid synced slice");
             continue;
         }
 
         if let Err(e) = ctx.store.put_slice(spool, track_addr, entry.slice_data) {
-            warn!(spool, track = %track_addr, %e, "put_slice failed, skipping");
+            warn!(spool = %spool, track = %track_addr, %e, "put_slice failed, skipping");
             continue;
         }
 
@@ -286,7 +286,7 @@ fn verify_slice(
         }
     }
 
-    track_data.verify_slice(position, data)
+    track_data.verify_slice(SpoolIndex::from(position as u64), data)
 }
 
 pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
@@ -307,7 +307,7 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
         let tracks = match ctx.store.iter_tracks_from(cursor, batch_size.max(1)) {
             Ok(tracks) => tracks,
             Err(error) => {
-                warn!(spool, %error, "iter_tracks_from failed during track-data sync");
+                warn!(spool = %spool, %error, "iter_tracks_from failed during track-data sync");
                 break;
             }
         };
@@ -329,7 +329,7 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
                 Ok(true) => continue,
                 Ok(false) => {}
                 Err(error) => {
-                    warn!(spool, track = %track_addr, %error, "has_track_data failed");
+                    warn!(spool = %spool, track = %track_addr, %error, "has_track_data failed");
                     continue;
                 }
             }
@@ -337,13 +337,13 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
             match fetch_track_data_from_group(ctx.as_ref(), *track_addr, &peers, token).await {
                 Ok(data) => {
                     if let Err(error) = ctx.store.put_track_data(*track_addr, data) {
-                        warn!(spool, track = %track_addr, %error, "put_track_data failed");
+                        warn!(spool = %spool, track = %track_addr, %error, "put_track_data failed");
                         continue;
                     }
                     synced += 1;
                 }
                 Err(()) => {
-                    warn!(spool, track = %track_addr, "failed to fetch track data from group");
+                    warn!(spool = %spool, track = %track_addr, "failed to fetch track data from group");
                 }
             }
         }
@@ -357,12 +357,12 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
 fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     spool: SpoolIndex,
-) -> Vec<NodeId> {
+) -> Vec<Address> {
     let group = GroupIndex::containing(spool);
     let mut peers = Vec::new();
 
     for (peer_spool, node_id) in ctx.state().group_peers(group) {
-        if peer_spool == spool || node_id == ctx.node_id() || peers.contains(&node_id) {
+        if peer_spool == spool || node_id == ctx.node_address() || peers.contains(&node_id) {
             continue;
         }
         peers.push(node_id);
@@ -374,7 +374,7 @@ fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
 async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     track: Address,
-    peers: &[NodeId],
+    peers: &[Address],
     token: &CancellationToken,
 ) -> Result<TrackData, ()> {
     for &node_id in peers {

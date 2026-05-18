@@ -246,7 +246,7 @@ async fn sweep_stale_recoveries<Db: Store>(store: &TapeStore<Db>) -> Result<(), 
 
 fn should_delete_slice<Db: Store>(
     store: &TapeStore<Db>,
-    spool_id: u16,
+    spool_id: SpoolIndex,
     track: Address,
 ) -> Result<bool, NodeError> {
     let Some(track_info) = store.get_track(track).map_err(store_error)? else {
@@ -263,7 +263,7 @@ fn should_delete_slice<Db: Store>(
 
 fn recovery_is_stale<Db: Store>(
     store: &TapeStore<Db>,
-    spool_id: u16,
+    spool_id: SpoolIndex,
     track: Address,
 ) -> Result<bool, NodeError> {
     let Some(track_info) = store.get_track(track).map_err(store_error)? else {

@@ -182,9 +182,9 @@ where
     .map_err(NodeError::from)?;
 
     debug!(
-        epoch = state.epoch.0,
-        phase = ?state.phase,
-        committee_size = state.committee.len(),
+        epoch = state.epoch().0,
+        phase = ?state.phase(),
+        committee_size = state.current.committee.len(),
         "loaded protocol state from RPC"
     );
 

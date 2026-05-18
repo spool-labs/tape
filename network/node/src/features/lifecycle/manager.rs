@@ -13,19 +13,19 @@
 //   Phase     | Condition                                   | Action
 //   ----------|---------------------------------------------|----------------
 //   Syncing   | in committee, spools not ready               | WaitSpoolReady
-//   Syncing   | in committee, spools ready, sync not done    | SyncEpoch
-//   Syncing   | SyncEpoch done or not in committee           | None (wait)
+//   Syncing   | in committee, spools ready, sync not done    | SyncSpools
+//   Syncing   | SyncSpools done or not in committee          | None (wait)
 //   Settling  | in committee or prev, pool not done          | AdvancePool
 //   Settling  | pool done or not in either                   | None (wait)
 //   Active    | pool not done, in committee or prev          | AdvancePool
-//   Active    | join not done, 90% time elapsed              | JoinNetwork
+//   Active    | join not done, 90% time elapsed              | JoinCommittee
 //   Active    | join done, advance not done                  | AdvanceEpoch
 //   Active    | all done                                     | None (wait)
 //
 // ── Phase skipping ──────────────────────────────────────────────────
 //
 //   If the node comes online mid-epoch (e.g. phase is already Settling):
-//     - SyncEpoch is skipped. The phase moved on; the on-chain program
+//     - SyncSpools is skipped. The phase moved on; the on-chain program
 //       would reject a late sync anyway.
 //
 //   If the phase jumps ahead while a task is running:
@@ -39,16 +39,16 @@
 //
 // ── Spool readiness (WaitSpoolReady) ─────────────────────────────────
 //
-//   Before submitting SyncEpoch, the node must have all its assigned
+//   Before submitting SyncSpool, the node must have all its assigned
 //   spools in a ready state. This is a separate lifecycle action
 //   (WaitSpoolReady) that polls the store until all owned spools are
-//   Active. Once done, the lifecycle advances to SyncEpoch.
+//   Active. Once done, the lifecycle advances to SyncSpools.
 //   Readiness is determined by polling the store (iter_all_spools) 
 //   not via a cross-feature channel.
 //
-// ── JoinNetwork timing gate ────────────────────────────────────────
+// ── JoinCommittee timing gate ──────────────────────────────────────
 //
-//   JoinNetwork should not be submitted until 90% of the epoch
+//   JoinCommittee should not be submitted until 90% of the epoch
 //   duration has elapsed. This prevents committing to the next epoch
 //   too early (which could be up to a week) and risking unavailability
 //   at the transition point.
@@ -67,7 +67,7 @@
 //
 //   This deliberately avoids a tight respawn loop when a task can
 //   reject quickly against unchanged local or on-chain state (for
-//   example JoinNetwork returning NotStaked/NodeStale). The system
+//   example JoinCommittee returning NotStaked/NodeStale). The system
 //   remains resilient to outages and resumes on its own, but retries
 //   are paced by the existing lifecycle interval instead of a raw
 //   completion-driven spin loop.
@@ -105,9 +105,9 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::types::EpochNumber;
 use tape_core::system::EpochPhase;
-use tape_core::types::NodeId;
+use tape_core::types::EpochNumber;
+use tape_crypto::Address;
 use tape_protocol::{Api, ProtocolState};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -116,7 +116,9 @@ use tracing::{debug, info, warn};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
-use crate::features::lifecycle::{advance_epoch, advance_pool, join_network, sync_epoch, wait_spool_ready};
+use crate::features::lifecycle::{
+    advance_epoch, advance_pool, join_committee, sync_spools, wait_spool_ready,
+};
 
 const LIFECYCLE_HEARTBEAT: Duration = Duration::from_secs(1);
 
@@ -140,7 +142,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
     pub async fn run(self) -> Result<(), NodeError> {
         let mut state_rx = self.context.subscribe_state();
-        let mut observed_epoch = state_rx.borrow().epoch;
+        let mut observed_epoch = state_rx.borrow().epoch();
         let mut done: HashSet<Action> = HashSet::new();
         let mut tasks: JoinSet<TaskDone> = JoinSet::new();
 
@@ -195,10 +197,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                     let state = state_rx.borrow().clone();
 
-                    if state.epoch != observed_epoch {
+                    if state.epoch() != observed_epoch {
                         info!(
                             old_epoch = observed_epoch.0,
-                            new_epoch = state.epoch.0,
+                            new_epoch = state.epoch().0,
                             "lifecycle: epoch advanced, resetting"
                         );
 
@@ -206,7 +208,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         tasks.abort_all();
                         running = None;
 
-                        observed_epoch = state.epoch;
+                        observed_epoch = state.epoch();
                     }
 
                     self.try_spawn_next(&mut tasks, &mut running, &mut done, observed_epoch);
@@ -242,9 +244,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         }
 
         let state = self.context.state();
-        let node_id = self.context.node_id();
+        let node = self.context.node_address();
 
-        let Some(action) = next_action(&state, node_id, done) else {
+        let Some(action) = next_action(&state, node, done) else {
             return;
         };
 
@@ -256,9 +258,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         tasks.spawn(async move {
             match action {
                 Action::WaitSpoolReady => wait_spool_ready::run(ctx, epoch, token).await,
-                Action::SyncEpoch      => sync_epoch::run(ctx, epoch, token).await,
+                Action::SyncSpools     => sync_spools::run(ctx, epoch, token).await,
                 Action::AdvancePool    => advance_pool::run(ctx, epoch, token).await,
-                Action::JoinNetwork    => join_network::run(ctx, epoch, token).await,
+                Action::JoinCommittee  => join_committee::run(ctx, epoch, token).await,
                 Action::AdvanceEpoch   => advance_epoch::run(ctx, epoch, token).await,
             }
         });
@@ -295,7 +297,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                 // Keep the action eligible, but let the heartbeat/state-change path pace retries.
                 // This avoids immediately respawning a task that just rejected against unchanged
-                // prerequisites (for example JoinNetwork on a stale or unstaked node).
+                // prerequisites (for example JoinCommittee on a stale or unstaked node).
             }
             TaskDone::Cancelled(action, epoch) => {
                 debug!(?action, epoch = epoch.0, "lifecycle: task cancelled");
@@ -311,29 +313,29 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 /// Returns None if no action is needed (waiting for phase change or next epoch).
 pub fn next_action(
     state: &ProtocolState,
-    node_id: NodeId,
+    node: Address,
     done: &HashSet<Action>,
 ) -> Option<Action> {
 
-    let in_current = state.find_member(node_id).is_some();
-    let in_next    = state.find_member_next(node_id).is_some();
+    let in_current = state.find_member(node).is_some();
+    let in_next    = state.find_member_next(node).is_some();
 
-    match state.phase {
-        EpochPhase::Syncing => {
+    match state.phase() {
+        EpochPhase::Sync => {
 
-            // Wait for our spools to be ready before attesting SyncEpoch.
+            // Wait for our spools to be ready before attesting SyncSpool.
             if in_current && !done.contains(&Action::WaitSpoolReady) {
                 return Some(Action::WaitSpoolReady);
             }
 
-            // Once spools are ready, we can submit SyncEpoch to attest that we're synced.
-            if in_current && !done.contains(&Action::SyncEpoch) {
-                return Some(Action::SyncEpoch);
+            // Once spools are ready, submit SyncSpool for each assigned spool.
+            if in_current && !done.contains(&Action::SyncSpools) {
+                return Some(Action::SyncSpools);
             }
 
             None
         }
-        EpochPhase::Settling => {
+        EpochPhase::Settle => {
             // AdvancePool is permissionless and should be called once per epoch.
             if !done.contains(&Action::AdvancePool) {
                 return Some(Action::AdvancePool);
@@ -347,9 +349,9 @@ pub fn next_action(
                 return Some(Action::AdvancePool);
             }
 
-            // JoinNetwork: gated by time, checked by the task itself.
-            if !in_next && !done.contains(&Action::JoinNetwork) {
-                return Some(Action::JoinNetwork);
+            // JoinCommittee: gated by time, checked by the task itself.
+            if !in_next && !done.contains(&Action::JoinCommittee) {
+                return Some(Action::JoinCommittee);
             }
 
             // AdvanceEpoch: anyone can submit it.
@@ -359,7 +361,10 @@ pub fn next_action(
 
             None
         }
-        EpochPhase::Unknown => None,
+        EpochPhase::Unknown
+        | EpochPhase::Snapshot
+        | EpochPhase::Closing
+        | EpochPhase::Completed => None,
     }
 }
 

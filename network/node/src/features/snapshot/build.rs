@@ -75,13 +75,13 @@ where
     Blockchain: Rpc + 'static,
 {
     let state = ctx.state();
-    let me = ctx.node_id();
+    let me = ctx.node_address();
 
-    let Some((member_index, _)) = state.find_member(me) else {
+    if state.find_member(me).is_none() {
         return Ok(BuildSummary::default());
-    };
+    }
 
-    let our_spools = state.member_spools(member_index);
+    let our_spools = state.member_spools(me);
     if our_spools.is_empty() {
         return Ok(BuildSummary::default());
     }
@@ -102,7 +102,7 @@ where
     let chunk_total = compressed.len().div_ceil(MAX_SEGMENT_BYTES).max(1);
     let chunk_size = compressed.len().div_ceil(chunk_total).max(1);
 
-    let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER);
+    let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER, state.current.groups.len());
     let mut chunk_count = 0usize;
 
     for chunk_index in 0..chunk_total {
@@ -118,13 +118,15 @@ where
 
         for &spool_index in &our_spools {
             let group = GroupIndex::containing(spool_index);
-            let bitmap_index = (spool_index - group.base_spool()) as u16;
+            let Some(bitmap_index) = group.position_of(spool_index) else {
+                continue;
+            };
             let built = encode_chunk(epoch, group, chunk, &symbols[group.0 as usize])?;
 
             let artifact = SnapshotArtifact {
                 spool_index,
                 blob: built.blob,
-                slice: built.slices[bitmap_index as usize].clone(),
+                slice: built.slices[bitmap_index].clone(),
             };
 
             ctx.store

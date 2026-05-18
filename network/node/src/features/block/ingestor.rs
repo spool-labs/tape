@@ -364,7 +364,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::BlockIngestor;
-    use crate::chain::{submit_join_network, submit_set_network_tls};
+    use crate::chain::{submit_join_committee, submit_set_network_tls};
     use crate::core::channels::{downstream_channels, store_channel};
     use crate::features::replay::manager::ReplayManager;
     use crate::harness::NodeHarness;
@@ -384,10 +384,10 @@ mod tests {
         let ctx = harness.ctx_for(NODE);
         let confirmed_tip = ctx.rpc.get_slot().await.expect("get confirmed tip");
 
-        // Block 1: the JoinNetwork we want to verify gets fanned out.
-        submit_join_network(&ctx)
+        // Block 1: the JoinCommittee we want to verify gets fanned out.
+        submit_join_committee(&ctx)
             .await
-            .expect("submit join network");
+            .expect("submit join committee");
         harness
             .rpc()
             .warp_to_slot(confirmed_tip + 1)
@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(batch.slot, join_slot);
         assert!(matches!(
             batch.events.as_slice(),
-            [ReplayableEvent::JoinNetwork { .. }]
+            [ReplayableEvent::JoinCommittee { .. }]
         ));
 
         let entries = ctx.store.get_epoch_events(EPOCH).expect("get epoch events");
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(entries[0].slot, join_slot);
         assert!(matches!(
             entries[0].events.as_slice(),
-            [ReplayableEvent::JoinNetwork { .. }]
+            [ReplayableEvent::JoinCommittee { .. }]
         ));
     }
 

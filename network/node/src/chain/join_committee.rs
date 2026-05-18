@@ -2,23 +2,24 @@ use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
 use store::Store;
-use tape_api::compute::JOIN_NETWORK_CU;
-use tape_api::instruction::build_join_network_ix;
+use tape_api::compute::JOIN_COMMITTEE_CU;
+use tape_api::instruction::build_join_committee_ix;
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 
 use crate::context::NodeContext;
 
-pub async fn submit_join_network<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn submit_join_committee<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
     let authority = ctx.pubkey().into();
     let node_address = ctx.node_address();
-    let ix = build_join_network_ix(fee_payer, authority, node_address);
+    let current_epoch = ctx.state().epoch();
+    let ix = build_join_committee_ix(fee_payer, authority, node_address, current_epoch);
 
     ctx.rpc
-        .send_instructions_with_compute_unit_limit(ctx.signer(), JOIN_NETWORK_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), JOIN_COMMITTEE_CU, vec![ix])
         .await
 }
 
@@ -29,7 +30,7 @@ mod tests {
     use tape_core::types::EpochNumber;
     use tape_core::types::coin::TAPE;
 
-    use super::submit_join_network;
+    use super::submit_join_committee;
     use crate::core::chain_tx::{TxOutcome, classify_tx};
     use crate::harness::NodeHarness;
 
@@ -47,9 +48,9 @@ mod tests {
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
 
-        submit_join_network(&ctx)
+        submit_join_committee(&ctx)
             .await
-            .expect("submit join network");
+            .expect("submit join committee");
 
         let system = ctx.rpc.get_system().await.expect("fetch system");
         assert!(system.committee_next.index_of(&harness.node(NODE).node_id).is_some());
@@ -67,7 +68,7 @@ mod tests {
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
 
-        let outcome = classify_tx(submit_join_network(&ctx).await);
+        let outcome = classify_tx(submit_join_committee(&ctx).await);
         assert!(matches!(outcome, TxOutcome::Program(TapeError::NotStaked)));
     }
 }

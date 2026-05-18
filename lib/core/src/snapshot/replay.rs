@@ -17,10 +17,10 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 #[cfg(feature = "wincode")]
 use crate::snapshot::error::SnapshotError;
 use crate::track::blob::BlobInfo;
+use crate::spooler::GroupIndex;
 use crate::track::types::CompressedTrack;
-use crate::types::{EpochNumber, NodeId, SlotNumber};
+use crate::types::{EpochNumber, SlotNumber, SpoolIndex};
 use tape_crypto::address::Address;
-use tape_crypto::hash::Hash;
 
 /// Wire-format version for the framed snapshot binary.
 pub const SNAPSHOT_VERSION: u8 = 1;
@@ -65,16 +65,12 @@ pub enum ReplayableEvent {
         new_epoch: EpochNumber,
     },
 
-    /// Node synced for epoch.
-    /// TODO(v2): per-spool shape. See `solana/api/src/instruction/node.rs`
-    /// `SyncSpool` for the on-chain ix shape that this event will mirror once
-    /// block_ingestor lands. Fields kept as-is to avoid pulling network/node
-    /// into the current rename pass.
+    /// Node synced one spool for an epoch.
     SyncSpool {
         node: Address,
-        node_id: NodeId,
         epoch: EpochNumber,
-        spools_hash: Hash,
+        group: GroupIndex,
+        spool: SpoolIndex,
     },
 
     /// Tape was reserved.
@@ -230,6 +226,7 @@ impl SnapshotLog {
 mod tests {
     use crate::spooler::GroupIndex;
     use crate::track::types::{TrackKind, TrackState};
+    use tape_crypto::hash::Hash;
     #[cfg(feature = "wincode")]
     use crate::encoding::EncodingProfile;
     #[cfg(feature = "wincode")]
@@ -302,9 +299,9 @@ mod tests {
             },
             ReplayableEvent::SyncSpool {
                 node: Address::from([5u8; 32]),
-                node_id: NodeId(1),
                 epoch: EpochNumber(10),
-                spools_hash: Hash::default(),
+                group: GroupIndex(0),
+                spool: SpoolIndex::from(1),
             },
             ReplayableEvent::ReserveTape {
                 tape: Address::from([6u8; 32]),
@@ -386,9 +383,9 @@ mod tests {
                     }),
                     ReplayableEvent::SyncSpool {
                         node: Address::from([0xCD; 32]),
-                        node_id: NodeId(7),
                         epoch: EpochNumber(42),
-                        spools_hash: Hash::default(),
+                        group: GroupIndex(0),
+                        spool: SpoolIndex::from(7),
                     },
                 ],
             }],
@@ -456,9 +453,9 @@ mod tests {
                         },
                         ReplayableEvent::SyncSpool {
                             node: Address::from([0xCD; 32]),
-                            node_id: NodeId(7),
                             epoch: EpochNumber(42),
-                            spools_hash: Hash::default(),
+                            group: GroupIndex(0),
+                            spool: SpoolIndex::from(7),
                         },
                     ],
                 },

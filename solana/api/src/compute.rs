@@ -9,7 +9,8 @@
 // BLS aggregate verify is the load. ~250k CU observed in SBF tests.
 pub const CERTIFY_TRACK_CU:    u32 = 400_000;
 pub const INVALIDATE_TRACK_CU: u32 = 400_000;
-pub const WRITE_SNAPSHOT_CU:   u32 = 400_000;
+pub const FINALIZE_SNAPSHOT_CU: u32 = 400_000;
+pub const FINALIZE_GROUP_CU:    u32 = 400_000;
 pub const VOTE_SNAPSHOT_CU:    u32 = 400_000;
 pub const VOTE_ASSIGNMENT_CU:  u32 = 400_000;
 
@@ -28,7 +29,8 @@ pub const ADVANCE_POOL_CU:     u32 =  50_000;
 pub const SETTLE_SPOOL_CU:     u32 =  50_000;
 pub const SYNC_SPOOL_CU:       u32 =  30_000;
 pub const JOIN_COMMITTEE_CU:   u32 =  50_000;
-pub const RESERVE_SNAPSHOT_CU: u32 =  30_000;
+pub const PROPOSE_SNAPSHOT_CU: u32 =  30_000;
+pub const PROPOSE_ASSIGNMENT_CU: u32 =  30_000;
 pub const RESIZE_ARCHIVE_CU:   u32 =  30_000;
 
 // Lightweight: small mutations + scheduled-state writes.

@@ -5,7 +5,6 @@
 
 use rpc::{Rpc, RpcError};
 use store::Store;
-use tape_core::snapshot::types::SnapshotState;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::MetaOps;
@@ -27,7 +26,7 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let current = context.state().epoch;
+    let current = context.state().epoch();
     let Some(newest) = newest_finalized_epoch(context, current).await? else {
         debug!(
             current = current.0,
@@ -67,8 +66,8 @@ where
     Ok(epochs)
 }
 
-/// Walk back from `current` to find the newest epoch whose Snapshot account
-/// is in the `Finalized` state.
+/// Walk back from `current` to find the newest epoch whose snapshot tape
+/// exists on-chain.
 async fn newest_finalized_epoch<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     current: EpochNumber,
@@ -108,8 +107,8 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    match context.rpc.get_snapshot(epoch).await {
-        Ok(snapshot) => Ok(SnapshotState::try_from(snapshot.state) == Ok(SnapshotState::Finalized)),
+    match context.rpc.get_snapshot_tape(epoch).await {
+        Ok(tape) => Ok(tape.is_snapshot_tape(epoch)),
         Err(RpcError::AccountNotFound(_)) => Ok(false),
         Err(error) => Err(NodeError::Rpc(error)),
     }

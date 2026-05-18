@@ -1,10 +1,9 @@
-use tape_api::program::tapedrive::{snapshot_tape_pda, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::SYSTEM_ADDRESS;
 use tape_blocks::{ParseError, ParsedInstruction};
-use tape_core::snapshot::chunk::snapshot_chunk_key;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::track::data::TrackData;
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{EpochNumber, SlotNumber};
+use tape_core::track::types::CompressedTrack;
+use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
 
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
@@ -80,25 +79,24 @@ fn capture_instruction(
                 raw_track: None,
             }
         },
-        ParsedInstruction::SyncEpoch { event } => CapturedTrackWrite {
+        ParsedInstruction::SyncSpool { event, .. } => CapturedTrackWrite {
             event: CapturedEvent {
                     epoch: *current_epoch,
-                    event: ReplayableEvent::SyncEpoch {
+                    event: ReplayableEvent::SyncSpool {
                         node: event.node,
-                        node_id: event.id,
                         epoch: event.epoch,
-                        spools_hash: event.spools_hash,
+                        group: event.group,
+                        spool: SpoolIndex::from(u64::from_le_bytes(event.spool)),
                 },
             },
             raw_track: None,
         },
-        ParsedInstruction::ReserveSnapshot { event } => {
-            let snapshot_tape = snapshot_tape_pda(event.epoch).0;
+        ParsedInstruction::FinalizeSnapshot { event, .. } => {
             CapturedTrackWrite {
                 event: CapturedEvent {
                     epoch: *current_epoch,
                     event: ReplayableEvent::ReserveTape {
-                        tape: snapshot_tape,
+                        tape: event.snapshot_tape,
                         authority: SYSTEM_ADDRESS,
                         active_epoch: event.epoch,
                         expiry_epoch: EpochNumber(u64::MAX),
@@ -107,49 +105,11 @@ fn capture_instruction(
                 raw_track: None,
             }
         }
-        ParsedInstruction::WriteSnapshot {
-            group,
-            chunk,
-            blob,
-            event,
-        } => {
-            let snapshot_tape = snapshot_tape_pda(event.epoch).0;
-            let key = snapshot_chunk_key(event.epoch, *group, *chunk);
-            let track = CompressedTrack {
-                tape: snapshot_tape,
-                key,
-                track_number: event.track_number,
-                kind: TrackKind::Blob as u64,
-                state: TrackState::Certified as u64,
-                size: blob.size,
-                group: *group,
-                value_hash: blob.get_hash(),
-            };
-
-            // Sanity check: the reconstructed track must commit to the same hash the
-            // program logged. If this fires, capture is drifting from the program's
-            // CompressedTrack derivation.
-            if track.get_hash() != event.track_hash {
-                return Err(ParseError::Deserialization(
-                    "snapshot chunk hash mismatch between capture and program".into(),
-                )
-                .into());
-            }
-
-            CapturedTrackWrite {
-                event: CapturedEvent {
-                    epoch: *current_epoch,
-                    event: ReplayableEvent::Track(ReplayTrack {
-                        state: track,
-                        epoch: event.epoch,
-                        blob: Some(*blob),
-                    }),
-                },
-                raw_track: None,
-            }
-        }
-        ParsedInstruction::SignSnapshot { .. } => return Ok(None),
-        ParsedInstruction::CloseVote { .. } => return Ok(None),
+        ParsedInstruction::ProposeSnapshot { .. }
+        | ParsedInstruction::VoteSnapshot { .. }
+        | ParsedInstruction::ProposeAssignment { .. }
+        | ParsedInstruction::VoteAssignment { .. }
+        | ParsedInstruction::FinalizeGroup { .. } => return Ok(None),
         ParsedInstruction::TrackWrite {
             track,
             key,
@@ -258,16 +218,18 @@ fn capture_instruction(
             },
             raw_track: None,
         },
-        ParsedInstruction::JoinNetwork { node, .. } => CapturedTrackWrite {
+        ParsedInstruction::JoinCommittee { node, .. } => CapturedTrackWrite {
             event: CapturedEvent {
                 epoch: *current_epoch,
-                event: ReplayableEvent::JoinNetwork {
+                event: ReplayableEvent::JoinCommittee {
                     node: (*node).into(),
                 },
             },
             raw_track: None,
         },
         ParsedInstruction::AdvancePool { .. } => return Ok(None),
+        ParsedInstruction::CommitEpoch { .. } => return Ok(None),
+        ParsedInstruction::SettleSpool { .. } => return Ok(None),
     };
 
     Ok(Some(captured))

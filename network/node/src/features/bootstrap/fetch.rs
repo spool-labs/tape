@@ -14,7 +14,7 @@ use tape_core::types::SpoolIndex;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{ChunkNumber, EpochNumber, NodeId, TrackNumber};
+use tape_core::types::{ChunkNumber, EpochNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_protocol::api::{GetSliceReq, GetTrackDataReq, ListTracksByTapeReq};
 use tape_protocol::Api;
@@ -50,11 +50,7 @@ where
         match decode_snapshot_tracks(context, epoch, tracks, cancel).await {
             Ok(log) => return Ok(log),
             Err(error) => {
-                warn!(
-                    node = peer.0,
-                    ?error,
-                    "bootstrap: candidate snapshot track list failed"
-                );
+                warn!(node = %peer, ?error, "bootstrap: candidate snapshot track list failed");
                 last_error = Some(error);
             }
         }
@@ -222,7 +218,7 @@ where
 
 async fn fetch_verified_slices<Cluster: Api>(
     api: &Cluster,
-    peers: &[(SpoolIndex, NodeId)],
+    peers: &[(SpoolIndex, Address)],
     group: GroupIndex,
     track: Address,
     blob: &BlobInfo,
@@ -241,23 +237,23 @@ async fn fetch_verified_slices<Cluster: Api>(
             .await
         {
             Ok(res) => {
-                if !blob.verify_slice(leaf_idx, &res.data) {
+                if !blob.verify_slice(SpoolIndex::from(leaf_idx as u64), &res.data) {
                     warn!(
-                        node = peer.0,
-                        spool = spool,
+                        node = %peer,
+                        spool = %spool,
                         "bootstrap: slice failed leaf verification"
                     );
                     continue;
                 }
-                out.push((leaf_idx as usize, res.data));
+                out.push((leaf_idx, res.data));
                 if out.len() >= K_INNER {
                     return Ok(out);
                 }
             }
             Err(error) => {
                 trace!(
-                    node = peer.0,
-                    spool = spool,
+                    node = %peer,
+                    spool = %spool,
                     ?error,
                     "bootstrap: get_slice failed"
                 );
@@ -274,7 +270,7 @@ async fn fetch_verified_slices<Cluster: Api>(
 
 async fn fetch_blob<Cluster: Api>(
     api: &Cluster,
-    peers: &[(SpoolIndex, NodeId)],
+    peers: &[(SpoolIndex, Address)],
     track: Address,
 ) -> Result<BlobInfo, NodeError> {
     let mut last_error: Option<NodeError> = None;
@@ -301,17 +297,18 @@ async fn fetch_blob<Cluster: Api>(
 async fn list_snapshot_track_candidates<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     tape: Address,
-) -> Result<Vec<(NodeId, Vec<CompressedTrack>)>, NodeError>
+) -> Result<Vec<(Address, Vec<CompressedTrack>)>, NodeError>
 where
     Db: Store,
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let peers: Vec<NodeId> = context
+    let peers: Vec<Address> = context
         .state()
+        .current
         .committee
         .iter()
-        .map(|m| m.id)
+        .map(|m| m.node)
         .collect();
     if peers.is_empty() {
         return Err(NodeError::Store(
@@ -325,14 +322,14 @@ where
         match list_tracks_from_peer(context.api.as_ref(), *peer, tape).await {
             Ok(tracks) if tracks.is_empty() => {
                 debug!(
-                    node = peer.0,
+                    node = %peer,
                     ?tape,
                     "bootstrap: peer returned empty snapshot track list"
                 );
             }
             Ok(tracks) => candidates.push((*peer, tracks)),
             Err(error) => {
-                warn!(node = peer.0, ?error, "bootstrap: list_tracks_by_tape failed");
+                warn!(node = %peer, ?error, "bootstrap: list_tracks_by_tape failed");
                 last_error = Some(error);
             }
         }
@@ -351,7 +348,7 @@ where
 
 async fn list_tracks_from_peer<Cluster: Api>(
     api: &Cluster,
-    peer: NodeId,
+    peer: Address,
     tape: Address,
 ) -> Result<Vec<CompressedTrack>, NodeError> {
     let mut out = Vec::new();
@@ -426,7 +423,13 @@ fn outer_decode_segments(
                 chunk.0
             )));
         }
-        let mut coder = OuterCoder::new(K_OUTER);
+        let n = symbols
+            .iter()
+            .map(|(i, _)| i + 1)
+            .max()
+            .unwrap_or(K_OUTER)
+            .max(K_OUTER);
+        let mut coder = OuterCoder::new(K_OUTER, n);
         let refs: Vec<(usize, &[u8])> = symbols.iter().map(|(i, d)| (*i, d.as_slice())).collect();
         let packed = coder.decode(&refs).map_err(|e| {
             NodeError::Store(format!(
@@ -584,7 +587,7 @@ mod tests {
             .append_event(
                 epoch,
                 SlotNumber(150),
-                &ReplayableEvent::JoinNetwork {
+                &ReplayableEvent::JoinCommittee {
                     node: [9u8; 32].into(),
                 },
             )
@@ -620,7 +623,7 @@ mod tests {
         ));
         assert!(matches!(
             &log.entries[1].events[0],
-            ReplayableEvent::JoinNetwork { .. }
+            ReplayableEvent::JoinCommittee { .. }
         ));
     }
 

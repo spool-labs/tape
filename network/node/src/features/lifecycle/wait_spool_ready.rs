@@ -18,25 +18,9 @@ use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::spool::manager::has_pending_work;
 
 // Purpose: Wait until all spools assigned to this node are Active.
-//          This is a precondition for submitting SyncEpoch, the node
+//          This is a precondition for submitting SyncSpool, the node
 //          should not attest that it has synced until all spool data
 //          is actually ready.
-//
-// Algorithm:
-// 1. Loop (checking cancel each iteration):
-//    a. Read current protocol state to get our committee index.
-//    b. Get our assigned spools via state.member_spools(index).
-//       If not in committee or no spools assigned → return Done
-//       immediately (nothing to wait for).
-//    c. For each assigned spool, read SpoolState from store.
-//       A spool is ready if its status is Active.
-//       A spool with no persisted state is not ready.
-//    d. If all assigned spools are Active → return Done.
-//    e. Otherwise → sleep for spool_poll_interval, then retry.
-//
-// The poll is cheap: at most 50 spools (MAX_SPOOL_ALLOCATION),
-// each a single store lookup. The interval is configurable
-// (default: 1 second).
 //
 // This task does not submit any transactions. It only reads
 // local state. It exits via Done or Cancelled.
@@ -50,12 +34,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
-        if ctx.state().epoch != epoch {
+        if ctx.state().epoch() != epoch {
             info!(epoch = epoch.0, "wait_spool_ready: epoch already advanced");
             return TaskDone::Rejected(Action::WaitSpoolReady, epoch);
         }
 
-        if ctx.phase() > EpochPhase::Syncing {
+        if ctx.phase() > EpochPhase::Sync {
             info!(epoch = epoch.0, phase = ?ctx.phase(), "wait_spool_ready: past syncing phase");
             return TaskDone::Rejected(Action::WaitSpoolReady, epoch);
         }
@@ -90,13 +74,13 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Result<Readiness, NodeError> {
     let state = ctx.state();
-    let node_id = ctx.node_id();
+    let node = ctx.node_address();
 
-    let Some((member_index, _)) = state.find_member(node_id) else {
+    if state.find_member(node).is_none() {
         return Ok(Readiness::Ready);
-    };
+    }
 
-    let assigned: Vec<SpoolIndex> = state.member_spools(member_index);
+    let assigned: Vec<SpoolIndex> = state.member_spools(node);
     if assigned.is_empty() {
         return Ok(Readiness::Ready);
     }

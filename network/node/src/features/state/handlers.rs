@@ -3,9 +3,6 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::NodeJoinedCommittee;
-use tape_core::erasure::MEMBER_COUNT;
-use tape_core::system::{Committee, CommitteeMember, EpochPhase};
-use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_protocol::{Api, fetch::fetch_state};
@@ -33,7 +30,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
     }
 
     pub async fn handle_advance_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
-        let previous_epoch = self.context.state().epoch;
+        let previous_epoch = self.context.state().epoch();
         let context = self.context.clone();
 
         let state = retry_if(
@@ -45,7 +42,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
                     let state = fetch_state(&context.rpc).await
                         .map_err(NodeError::from)?;
 
-                    if state.epoch < epoch {
+                    if state.epoch() < epoch {
                         return Err(NodeError::StateUnavailable { expected_epoch: epoch });
                     }
 
@@ -73,18 +70,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
         Ok(())
     }
 
-    pub async fn handle_sync_epoch(&self, epoch: EpochNumber, phase: u64) -> Result<(), NodeError> {
-        let state = self.context.state();
-
-        if state.epoch == epoch {
-            if let Ok(phase) = EpochPhase::try_from(phase) {
-                if phase != state.phase {
-                    self.context.update_phase(phase)?;
-                }
-            }
-        }
-
-        debug!(epoch = epoch.0, "received sync epoch");
+    pub async fn handle_sync_spool(
+        &self,
+        node: Address,
+        epoch: EpochNumber,
+    ) -> Result<(), NodeError> {
+        debug!(node = %node, epoch = epoch.0, "received sync spool");
         Ok(())
     }
 
@@ -92,62 +83,59 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
         &self,
         node: Address,
         epoch: EpochNumber,
-        phase: u64,
     ) -> Result<(), NodeError> {
-        let state = self.context.state();
-
-        if state.epoch == epoch {
-            if let Ok(phase) = EpochPhase::try_from(phase) {
-                if phase != state.phase {
-                    self.context.update_phase(phase)?;
-                }
-            }
-        }
-
         debug!(node = %node, epoch = epoch.0, "received advance pool");
         Ok(())
     }
 
-    pub async fn handle_join_network(&self, event: NodeJoinedCommittee) -> Result<(), NodeError> {
-        debug!(node_id = event.id.0, "received join network");
+    pub async fn handle_join_committee(&self, event: NodeJoinedCommittee) -> Result<(), NodeError> {
+        debug!(node = %event.node, "received join committee");
 
-        let mut state = (*self.context.state()).clone();
-        let expected_activation_epoch = state.epoch + EpochNumber(1);
+        let expected_activation_epoch = self.context.state().epoch() + EpochNumber(1);
 
         if event.activation_epoch != expected_activation_epoch {
             debug!(
-                node_id = event.id.0,
-                current_epoch = state.epoch.0,
+                node = %event.node,
+                current_epoch = self.context.state().epoch().0,
                 activation_epoch = event.activation_epoch.0,
-                "ignoring join network for stale epoch"
+                "ignoring join committee for stale epoch"
             );
             return Ok(());
         }
 
-        let member = CommitteeMember {
-            id: event.id,
-            stake: Coin::<TAPE>::new(u64::from_le_bytes(event.stake)),
-            key: event.key,
-            blacklist: event.blacklist,
-            preferences: event.preferences,
-            weight: 0,
-        };
+        let node = event.node;
+        let activation_epoch = event.activation_epoch;
+        let context = self.context.clone();
 
-        if let Some((_, existing)) = state.find_member_next(event.id) {
-            if *existing == member {
-                debug!(node_id = event.id.0, "join network already applied");
-                return Ok(());
-            }
-        }
+        let state = retry_if(
+            RetryConfig::infinite(),
+            Some(&self.cancel),
+            move || {
+                let context = context.clone();
+                async move {
+                    let state = fetch_state(&context.rpc).await
+                        .map_err(NodeError::from)?;
 
-        let mut committee_next = Committee::<MEMBER_COUNT>::from_members(&state.committee_next);
+                    if state.find_member_next(node).is_none() {
+                        return Err(NodeError::StateUnavailable {
+                            expected_epoch: activation_epoch,
+                        });
+                    }
 
-        if let Err(error) = committee_next.try_join(&member) {
-            warn!(?error, node_id = event.id.0, "join network state diverged");
-        } else {
-            state.committee_next = committee_next.iter().copied().collect();
-            self.context.set_state(state)?;
-        }
+                    Ok(state)
+                }
+            },
+            |error| match error {
+                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
+                NodeError::StateUnavailable { expected_epoch } => {
+                    *expected_epoch == activation_epoch
+                }
+                _ => false,
+            },
+        )
+        .await?;
+
+        self.context.set_state(state)?;
 
         Ok(())
     }
@@ -155,12 +143,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster
 
 #[cfg(test)]
 mod tests {
-    use tape_api::event::NodeJoinedCommittee;
-    use tape_core::system::NodePreferences;
     use tape_core::system::EpochPhase;
-    use tape_core::types::coin::TAPE;
     use tape_core::types::EpochNumber;
-    use tape_core::types::StorageUnits;
     use tokio_util::sync::CancellationToken;
 
     use super::ProtocolStateHandlers;
@@ -194,16 +178,16 @@ mod tests {
             .expect("handle advance epoch");
 
         let state = ctx.state();
-        assert_eq!(state.epoch, EPOCH + EpochNumber(1));
-        assert_eq!(state.phase, EpochPhase::Syncing);
+        assert_eq!(state.epoch(), EPOCH + EpochNumber(1));
+        assert_eq!(state.phase(), EpochPhase::Sync);
     }
 
     #[tokio::test]
-    async fn sync_phase() {
+    async fn sync_spool_does_not_mutate_protocol_state() {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Syncing)
+            .phase(EpochPhase::Sync)
             .build()
             .await
             .expect("build harness");
@@ -211,24 +195,18 @@ mod tests {
         let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         handlers
-            .handle_sync_epoch(EPOCH, EpochPhase::Settling as u64)
+            .handle_sync_spool(harness.node(NODE).node_address.into(), EPOCH)
             .await
-            .expect("handle sync epoch");
-        assert_eq!(ctx.state().phase, EpochPhase::Settling);
-
-        handlers
-            .handle_sync_epoch(EPOCH + EpochNumber(1), EpochPhase::Active as u64)
-            .await
-            .expect("ignore mismatched epoch");
-        assert_eq!(ctx.state().phase, EpochPhase::Settling);
+            .expect("handle sync spool");
+        assert_eq!(ctx.state().phase(), EpochPhase::Sync);
     }
 
     #[tokio::test]
-    async fn pool_phase() {
+    async fn advance_pool_does_not_mutate_protocol_state() {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Settling)
+            .phase(EpochPhase::Settle)
             .build()
             .await
             .expect("build harness");
@@ -236,74 +214,9 @@ mod tests {
         let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         handlers
-            .handle_advance_pool(
-                harness.node(NODE).node_address.into(),
-                EPOCH,
-                EpochPhase::Active as u64,
-            )
+            .handle_advance_pool(harness.node(NODE).node_address.into(), EPOCH)
             .await
             .expect("handle advance pool");
-        assert_eq!(ctx.state().phase, EpochPhase::Active);
-
-        handlers
-            .handle_advance_pool(
-                harness.node(NODE).node_address.into(),
-                EPOCH + EpochNumber(1),
-                EpochPhase::Syncing as u64,
-            )
-            .await
-            .expect("ignore mismatched epoch");
-        assert_eq!(ctx.state().phase, EpochPhase::Active);
-    }
-
-    #[tokio::test]
-    async fn join_updates_committee_next() {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Active)
-            .next_committee_size(0)
-            .build()
-            .await
-            .expect("build harness");
-
-        let ctx = harness.ctx_for(NODE);
-
-        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
-
-        let joined = harness.node(NODE);
-        let key = joined
-            .bls_keypair()
-            .public_key()
-            .expect("bls public key");
-
-        let preferences = NodePreferences {
-            storage_capacity: StorageUnits::mb(123),
-            storage_price: TAPE(7),
-        };
-
-        handlers
-            .handle_join_network(NodeJoinedCommittee {
-                node: joined.node_address.into(),
-                id: joined.node_id,
-                stake: 500u64.to_le_bytes(),
-                key,
-                blacklist: StorageUnits::mb(11),
-                preferences,
-                activation_epoch: EPOCH + EpochNumber(1),
-            })
-            .await
-            .expect("handle join network");
-
-        let state = ctx.state();
-        let (_, member) = state
-            .find_member_next(joined.node_id)
-            .expect("member added to committee_next");
-
-        assert_eq!(member.stake, TAPE(500));
-        assert_eq!(member.key, key);
-        assert_eq!(member.blacklist, StorageUnits::mb(11));
-        assert_eq!(member.preferences, preferences);
-        assert_eq!(member.weight, 0);
+        assert_eq!(ctx.state().phase(), EpochPhase::Settle);
     }
 }

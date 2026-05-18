@@ -42,7 +42,7 @@ impl StateBus {
 
         loop {
             let current = rx.borrow().clone();
-            if current.epoch >= epoch {
+            if current.epoch() >= epoch {
                 return Ok(current);
             }
 

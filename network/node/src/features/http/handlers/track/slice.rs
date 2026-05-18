@@ -7,8 +7,9 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
 use tape_core::track::data::TrackData;
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 use tape_protocol::Api;
@@ -21,9 +22,9 @@ use crate::features::http::state::AppState;
 
 pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    Path((track_id, spool_id)): Path<(String, u16)>,
+    Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
 ) -> Result<impl IntoResponse, RouteError> {
-    trace!(track_id = %track_id, spool_id, "http get_slice start");
+    trace!(track_id = %track_id, spool_id = %spool_id, "http get_slice start");
 
     let track: Address = track_id
         .parse()
@@ -62,12 +63,12 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    Path((track_id, spool_id)): Path<(String, u16)>,
+    Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
     body: Bytes,
 ) -> Result<StatusCode, RouteError> {
     trace!(
         track_id = %track_id,
-        spool_id,
+        spool_id = %spool_id,
         payload_bytes = body.len(),
         "http put_slice start"
     );
@@ -113,7 +114,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("leaf hash mismatch".into()));
     }
 
-    let leaf_pos = (spool_id as usize) % GROUP_SIZE;
+    let leaf_pos = spool_id.as_usize() % GROUP_SIZE;
 
     if !verify_proof(
         &payload.data,
@@ -144,7 +145,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?;
     state.context.metrics.add_uploaded(data_len);
 
-    debug!(track_id = %track_id, spool_id, "http put_slice success");
+    debug!(track_id = %track_id, spool_id = %spool_id, "http put_slice success");
 
     Ok(StatusCode::OK)
 }

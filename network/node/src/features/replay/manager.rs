@@ -45,7 +45,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
             "replay manager started"
         );
 
-        let mut current_epoch = self.context.state().epoch;
+        let mut current_epoch = self.context.state().epoch();
 
         loop {
             tokio::select! {

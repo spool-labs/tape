@@ -13,9 +13,7 @@ pub async fn submit_advance_pool<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
-    let authority = ctx.pubkey().into();
-    let node_address = ctx.node_address();
-    let ix = build_advance_pool_ix(fee_payer, authority, node_address);
+    let ix = build_advance_pool_ix(fee_payer, ctx.node_address(), ctx.state().epoch());
 
     ctx.rpc
         .send_instructions_with_compute_unit_limit(ctx.signer(), ADVANCE_POOL_CU, vec![ix])

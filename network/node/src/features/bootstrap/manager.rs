@@ -123,9 +123,13 @@ where
         return Ok(resume);
     }
 
+    let system = context
+        .rpc
+        .get_system_with_commitment(CommitmentLevel::Finalized)
+        .await?;
     let epoch = context
         .rpc
-        .get_epoch_with_commitment(CommitmentLevel::Finalized)
+        .get_epoch_with_commitment(system.current_epoch, CommitmentLevel::Finalized)
         .await?;
 
     debug!(

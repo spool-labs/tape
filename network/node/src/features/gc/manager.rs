@@ -52,7 +52,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
         }
 
         let mut state_rx = self.context.subscribe_state();
-        let mut observed_epoch = state_rx.borrow().epoch;
+        let mut observed_epoch = state_rx.borrow().epoch();
 
         catch_up_epochs(&self.context, &self.config, observed_epoch).await?;
 
@@ -64,7 +64,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
             select! {
                 _ = self.cancel.cancelled() => return Ok(()),
                 _ = ticker.tick() => {
-                    let current_epoch = self.context.state().epoch;
+                    let current_epoch = self.context.state().epoch();
 
                     if next_pending_epoch(self.context.store.as_ref(), current_epoch)?.is_some() {
                         catch_up_epochs(&self.context, &self.config, current_epoch).await?;
@@ -79,7 +79,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
                         return Ok(());
                     }
 
-                    let current_epoch = state_rx.borrow().epoch;
+                    let current_epoch = state_rx.borrow().epoch();
                     if current_epoch > observed_epoch {
                         catch_up_epochs(&self.context, &self.config, current_epoch).await?;
                         observed_epoch = current_epoch;

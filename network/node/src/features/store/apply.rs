@@ -63,9 +63,9 @@ pub fn apply_event<Db: Store>(
             let _ = delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
         }
         ReplayableEvent::AdvanceEpoch { .. }
-        | ReplayableEvent::SyncEpoch { .. }
+        | ReplayableEvent::SyncSpool { .. }
         | ReplayableEvent::RegisterNode { .. }
-        | ReplayableEvent::JoinNetwork { .. } => {}
+        | ReplayableEvent::JoinCommittee { .. } => {}
     }
 
     Ok(())
@@ -203,9 +203,6 @@ fn enqueue_certified_repairs<Db: Store>(
 
         store.add_pending_repair(spool, track).map_err(store_error)?;
 
-        // Only transition Active → Repair. Active means no worker is running,
-        // so this is safe. For other states, the in-flight worker will see the
-        // pending entry via reconcile_terminal when it completes.
         if state.status == SpoolStatus::Active {
             state.set_status(SpoolStatus::Repair);
             store.set_spool_state(spool, state).map_err(store_error)?;

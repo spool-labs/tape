@@ -1,11 +1,3 @@
-//! `SyncSpool` handler.
-//!
-//! A node attests it has synced one of its assigned spools by setting the
-//! corresponding bit in the current epoch's group. The first attestation
-//! that lifts a group across the supermajority threshold bumps the
-//! epoch's synced count. When `synced_count` matches the live group count,
-//! the epoch advances passively from `Sync` to `Settle`.
-
 use tape_api::program::prelude::*;
 use tape_api::event::SpoolSynced;
 
