@@ -1,5 +1,6 @@
 pub mod advance_epoch;
 pub mod advance_pool;
+pub mod commit_epoch;
 pub mod join_committee;
 pub mod manager;
 pub mod settle_spools;

@@ -19,11 +19,15 @@
 //   Settling  | settlement done, pool not done               | AdvancePool
 //   Snapshot  | previous spools not settled                  | SettleSpools
 //   Snapshot  | settlement done, pool not done               | AdvancePool
+//   Snapshot  | settlement done, pool done                   | None (snapshot manager)
 //   Active    | previous spools not settled                  | SettleSpools
 //   Active    | settlement done, pool not done               | AdvancePool
 //   Active    | join not done, 90% time elapsed              | JoinCommittee
-//   Active    | join done, advance not done                  | AdvanceEpoch
+//   Active    | join done, commit not done                   | CommitEpoch
 //   Active    | all done                                     | None (wait)
+//   Closing   | assignment incomplete                        | None (assignment manager)
+//   Closing   | assignment complete, advance not done        | AdvanceEpoch
+//   Closing   | advance done                                 | None (wait)
 //
 // ── Phase skipping ──────────────────────────────────────────────────
 //
@@ -120,7 +124,8 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::{
-    advance_epoch, advance_pool, join_committee, settle_spools, sync_spools, wait_spool_ready,
+    advance_epoch, advance_pool, commit_epoch, join_committee, settle_spools, sync_spools,
+    wait_spool_ready,
 };
 
 const LIFECYCLE_HEARTBEAT: Duration = Duration::from_secs(1);
@@ -265,6 +270,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 Action::SettleSpools   => settle_spools::run(ctx, epoch, token).await,
                 Action::AdvancePool    => advance_pool::run(ctx, epoch, token).await,
                 Action::JoinCommittee  => join_committee::run(ctx, epoch, token).await,
+                Action::CommitEpoch    => commit_epoch::run(ctx, epoch, token).await,
                 Action::AdvanceEpoch   => advance_epoch::run(ctx, epoch, token).await,
             }
         });
@@ -372,6 +378,7 @@ pub fn next_action(
         }
 
         EpochPhase::Snapshot => {
+            // SnapshotManager owns proposal, voting, and finalization.
             None
         }
 
@@ -381,18 +388,33 @@ pub fn next_action(
                 return Some(Action::JoinCommittee);
             }
 
-            // AdvanceEpoch: anyone can submit it.
-            if !done.contains(&Action::AdvanceEpoch) {
-                return Some(Action::AdvanceEpoch);
+            // CommitEpoch: captures the next-epoch nonce and enters Closing.
+            if !done.contains(&Action::CommitEpoch) {
+                return Some(Action::CommitEpoch);
             }
 
             None
         }
 
         EpochPhase::Unknown
-        | EpochPhase::Closing
         | EpochPhase::Completed => None,
+
+        EpochPhase::Closing => {
+            if assignment_ready(state) && !done.contains(&Action::AdvanceEpoch) {
+                return Some(Action::AdvanceEpoch);
+            }
+
+            None
+        }
     }
+}
+
+fn assignment_ready(state: &ProtocolState) -> bool {
+    let Some(next_epoch) = state.next_epoch.as_ref() else {
+        return false;
+    };
+
+    next_epoch.has_assignment_hash() && next_epoch.total_groups == state.system.target_group_count
 }
 
 fn phase_allows_advance_pool(phase: EpochPhase) -> bool {
@@ -424,7 +446,7 @@ mod tests {
     use tape_core::system::{EpochPhase, Member};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits};
-    use tape_crypto::Address;
+    use tape_crypto::{Address, Hash};
     use tape_protocol::{EpochBundle, ProtocolState};
 
     use super::next_action;
@@ -469,6 +491,23 @@ mod tests {
         state
     }
 
+    fn state_with_next_assignment(
+        phase: EpochPhase,
+        assignment_hash: Hash,
+        total_groups: u64,
+        target_group_count: u64,
+    ) -> ProtocolState {
+        let mut state = state_with_phase(phase);
+        state.system.target_group_count = target_group_count;
+        state.next_epoch = Some(Epoch {
+            id: EpochNumber(2),
+            assignment_hash,
+            total_groups,
+            ..Epoch::zeroed()
+        });
+        state
+    }
+
     #[test]
     fn settle_runs_before_advance_pool() {
         let node = Address::new_unique();
@@ -499,6 +538,52 @@ mod tests {
         state.next_committee = Some(vec![member(node)]);
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, Some(Action::CommitEpoch));
+    }
+
+    #[test]
+    fn snapshot_waits_after_settlement_and_pool_done() {
+        let node = Address::new_unique();
+        let state = state_with_previous_spool(node, EpochPhase::Snapshot);
+        let mut done = HashSet::new();
+        done.insert(Action::SettleSpools);
+        done.insert(Action::AdvancePool);
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn closing_waits_when_assignment_hash_missing() {
+        let node = Address::new_unique();
+        let state = state_with_next_assignment(EpochPhase::Closing, Hash::zeroed(), 8, 8);
+        let done = HashSet::new();
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn closing_waits_when_assignment_groups_incomplete() {
+        let node = Address::new_unique();
+        let state = state_with_next_assignment(EpochPhase::Closing, Hash::from([7; 32]), 7, 8);
+        let done = HashSet::new();
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn closing_advances_when_assignment_complete() {
+        let node = Address::new_unique();
+        let state = state_with_next_assignment(EpochPhase::Closing, Hash::from([7; 32]), 8, 8);
+        let done = HashSet::new();
 
         let action = next_action(&state, node, &done);
 

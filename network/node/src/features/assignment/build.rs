@@ -16,12 +16,12 @@ use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
 use tape_crypto::{Address, Hash};
 use tape_protocol::{Api, ProtocolState};
 use tape_spooler::migrate_dhondt;
+use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::assignment::size::{AssignmentSizeError, group_size};
+use crate::features::assignment::size::group_sizes;
 
 #[derive(Debug, Clone)]
 pub struct AssignmentCandidate {
@@ -49,7 +49,9 @@ where
     Blockchain: Rpc + 'static,
 {
     let state = ctx.state();
-    let task = tokio::task::spawn_blocking(move || build_assignment_blocking(&state));
+    let store = ctx.store.clone();
+    let task =
+        tokio::task::spawn_blocking(move || build_assignment_blocking(store.as_ref(), &state));
 
     tokio::select! {
         result = task => result
@@ -59,7 +61,8 @@ where
     }
 }
 
-fn build_assignment_blocking(
+fn build_assignment_blocking<Db: Store>(
+    store: &TapeStore<Db>,
     state: &ProtocolState,
 ) -> Result<Option<AssignmentCandidate>, NodeError> {
     let Some(next_epoch) = state.next_epoch.as_ref() else {
@@ -86,9 +89,7 @@ fn build_assignment_blocking(
         )));
     }
 
-    let Some(sizes) = assignment_group_sizes(state, next_epoch.id, target_groups)? else {
-        return Ok(None);
-    };
+    let sizes = assignment_group_sizes(store, state, next_epoch.id, target_groups)?;
 
     let current_spools = current_spool_owners(state, target_groups)?;
     let spool_count = SpoolCount((target_groups * GROUP_SIZE) as u64);
@@ -213,27 +214,14 @@ fn assignment_payloads(
     Ok(payloads)
 }
 
-fn assignment_group_sizes(
+fn assignment_group_sizes<Db: Store>(
+    store: &TapeStore<Db>,
     state: &ProtocolState,
     target_epoch: EpochNumber,
     target_groups: usize,
-) -> Result<Option<Vec<StorageUnits>>, NodeError> {
-    let mut sizes = Vec::with_capacity(target_groups);
-    for group_index in 0..target_groups {
-        let group = GroupIndex(group_index as u64);
-        match group_size(state, target_epoch, group) {
-            Ok(size) => sizes.push(size),
-            Err(AssignmentSizeError::Unavailable) => {
-                debug!(
-                    epoch = target_epoch.0,
-                    group = group.0,
-                    "assignment: size calculation unavailable"
-                );
-                return Ok(None);
-            }
-        }
-    }
-    Ok(Some(sizes))
+) -> Result<Vec<StorageUnits>, NodeError> {
+    group_sizes(store, state.epoch(), target_epoch, target_groups)
+        .map_err(|e| NodeError::Store(format!("assignment size calculation: {e}")))
 }
 
 #[allow(dead_code)]

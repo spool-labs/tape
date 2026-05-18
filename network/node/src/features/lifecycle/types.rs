@@ -8,6 +8,7 @@ pub enum Action {
     SettleSpools,
     AdvancePool,
     JoinCommittee,
+    CommitEpoch,
     AdvanceEpoch,
 }
 
