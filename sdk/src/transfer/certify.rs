@@ -10,22 +10,22 @@
 //! 3. **Aggregate Signatures**: Combine individual BLS signatures into one
 //! 4. **Build Transaction**: Create the CertifyTrack instruction with bitmap + aggregated signature
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use futures::stream::{self, StreamExt};
 use tape_crypto::address::Address;
 use thiserror::Error;
 
 use tape_api::instruction::build_certify_track_ix;
-use tape_api::state::System;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
-use tape_core::erasure::{spool_for_slice, GROUP_SIZE};
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrackProof;
-use tape_core::types::{CommitteeBitmap, EpochNumber, NodeId};
-use tape_retry::{retry, RetryConfig};
+use tape_core::types::{BitmapRead, EpochNumber, SpoolBitmap};
 use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
+use tape_protocol::ProtocolState;
+use tape_retry::{retry, RetryConfig};
 
 /// Errors that can occur during certification.
 #[derive(Debug, Error)]
@@ -43,8 +43,8 @@ pub enum CertificationError {
     AggregationFailed(String),
 
     /// Failed to connect to node.
-    #[error("failed to connect to node {node_id}: {message}")]
-    ConnectionFailed { node_id: NodeId, message: String },
+    #[error("failed to connect to node {node}: {message}")]
+    ConnectionFailed { node: Address, message: String },
 
     /// RPC error.
     #[error("RPC error: {0}")]
@@ -59,11 +59,11 @@ pub enum CertificationError {
     Cancelled,
 
     /// Nodes returned signatures for different epochs.
-    #[error("epoch mismatch: expected {expected}, got {got} from node {node_id}")]
+    #[error("epoch mismatch: expected {expected}, got {got} from node {node}")]
     EpochMismatch {
         expected: u64,
         got: u64,
-        node_id: NodeId,
+        node: Address,
     },
 }
 
@@ -150,18 +150,18 @@ impl CertificationConfig {
 pub struct CollectedSignatures {
     /// The aggregated BLS signature.
     pub aggregated_signature: BlsSignature,
-    /// Bitmap indicating which committee members signed.
-    pub bitmap: CommitteeBitmap,
+    /// Bitmap indicating which group spool positions signed.
+    pub bitmap: SpoolBitmap,
     /// Number of signatures collected.
     pub signature_count: usize,
-    /// Total committee size.
-    pub committee_size: usize,
+    /// Total spool positions in the group.
+    pub spool_count: usize,
     /// The epoch that was signed (all responses must agree).
     pub epoch: u64,
     /// Individual responses (for debugging/verification).
     pub responses: Vec<CertifyRes>,
     /// Nodes that failed and why (for diagnostics).
-    pub failures: Vec<(NodeId, NodeSignError)>,
+    pub failures: Vec<(Address, NodeSignError)>,
     /// Whether collection exited early (supermajority reached before all responses).
     pub early_exit: bool,
 }
@@ -188,41 +188,19 @@ impl CertificationCollector {
         peer_client: &P,
         track_address: &Address,
         group: GroupIndex,
-        system: &System,
+        state: &ProtocolState,
     ) -> Result<CollectedSignatures, CertificationError> {
-        let committee = &system.committee;
-        let committee_size = committee.size();
         let group_total_weight = GROUP_SIZE as u64;
 
-        if committee_size == 0 {
+        if state.current.committee.is_empty() {
             return Err(CertificationError::NoCommitteeMembers);
         }
 
-        let group_members = collect_group_members(group, system);
-
-        // Build signature requests
-        let mut remaining_node_weight = 0u64;
-        let mut signature_requests: Vec<SignatureRequest> = Vec::new();
-
-        for (member_idx, member) in system.committee.iter().enumerate() {
-            if !group_members.contains(&(member_idx as u8)) {
-                continue;
-            }
-
-            let node_id = member.id;
-            let member_bitmap = CommitteeBitmap::from_indices(&[member_idx], committee_size);
-            let node_weight = system.spools.group_weight(group, &member_bitmap);
-            if node_weight == 0 {
-                continue;
-            }
-
-            remaining_node_weight += node_weight;
-            signature_requests.push(SignatureRequest {
-                node_id,
-                member_idx: member_idx as u8,
-                weight: node_weight,
-            });
-        }
+        let signature_requests = collect_signature_requests(group, state)?;
+        let mut remaining_node_weight = signature_requests
+            .iter()
+            .map(|request| request.weight)
+            .sum::<u64>();
 
         if signature_requests.is_empty() {
             return Err(CertificationError::InsufficientSignatures {
@@ -242,10 +220,10 @@ impl CertificationCollector {
                     max_retries: Some(max_retries as u32),
                     ..RetryConfig::ten()
                 };
-                let result = retry(config, None, || peer_client.certify(request.node_id, &req)).await;
+                let result = retry(config, None, || peer_client.certify(request.node, &req)).await;
                 NodeResult {
-                    node_id: request.node_id,
-                    member_idx: request.member_idx,
+                    node: request.node,
+                    positions: request.positions,
                     weight: request.weight,
                     result: result.map_err(NodeSignError::from),
                 }
@@ -255,7 +233,7 @@ impl CertificationCollector {
 
         // Collect results, potentially exiting early
         let mut epoch_buckets: HashMap<u64, SignatureBucket> = HashMap::new();
-        let mut failures: Vec<(NodeId, NodeSignError)> = Vec::new();
+        let mut failures: Vec<(Address, NodeSignError)> = Vec::new();
         let mut early_exit_triggered = false;
 
         while let Some(node_result) = requests.next().await {
@@ -266,8 +244,8 @@ impl CertificationCollector {
                 Ok(response) => {
                     let epoch_key = response.epoch.0;
                     tracing::debug!(
-                        node_id = node_result.node_id.as_u64(),
-                        member_idx = node_result.member_idx,
+                        node = %node_result.node,
+                        positions = ?node_result.positions,
                         epoch = epoch_key,
                         "Got signature from node"
                     );
@@ -276,8 +254,7 @@ impl CertificationCollector {
                         &mut epoch_buckets,
                         epoch_key,
                         response,
-                        node_result.member_idx as usize,
-                        node_result.weight,
+                        &node_result.positions,
                     );
                     let bucket = epoch_buckets
                         .get(&epoch_key)
@@ -286,7 +263,7 @@ impl CertificationCollector {
                     if self.config.early_exit
                         && is_supermajority(bucket.weight, group_total_weight)
                     {
-                        let bitmap = CommitteeBitmap::from_indices(&bucket.member_indices, committee_size);
+                        let bitmap = SpoolBitmap::from_indices(&bucket.positions);
                         let responses = bucket.responses.clone();
                         tracing::info!(
                             signatures = bucket.responses.len(),
@@ -297,17 +274,13 @@ impl CertificationCollector {
                         );
                         early_exit_triggered = true;
 
-                        let signatures: Vec<BlsSignature> = responses
-                            .iter()
-                            .map(|response| response.signature)
-                            .collect();
-                        let aggregated_signature = BlsSignature::aggregate(&signatures)
+                        let aggregated_signature = BlsSignature::aggregate(&bucket.signatures)
                             .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
                         return Ok(CollectedSignatures {
                             aggregated_signature,
                             bitmap,
-                            signature_count: signatures.len(),
-                            committee_size,
+                            signature_count: responses.len(),
+                            spool_count: GROUP_SIZE,
                             epoch: epoch_key,
                             responses,
                             failures,
@@ -319,19 +292,19 @@ impl CertificationCollector {
                     match &e {
                         NodeSignError::NotFound => {
                             tracing::debug!(
-                                node_id = node_result.node_id.as_u64(),
+                                node = %node_result.node,
                                 "Node doesn't have track data"
                             );
                         }
                         _ => {
                             tracing::warn!(
-                                node_id = node_result.node_id.as_u64(),
+                                node = %node_result.node,
                                 error = ?e,
                                 "Failed to get signature from node"
                             );
                         }
                     }
-                    failures.push((node_result.node_id, e));
+                    failures.push((node_result.node, e));
                 }
             }
 
@@ -358,9 +331,8 @@ impl CertificationCollector {
         let selected_epoch = selected_epoch.expect("selected epoch");
         let selected_bucket = epoch_buckets.remove(&selected_epoch).expect("selected epoch should exist");
         let signature_count = selected_bucket.responses.len();
-        let member_indices = selected_bucket.member_indices.clone();
-        let check_bitmap = CommitteeBitmap::from_indices(&member_indices, committee_size);
-        let final_weight = system.spools.group_weight(group, &check_bitmap);
+        let check_bitmap = SpoolBitmap::from_indices(&selected_bucket.positions);
+        let final_weight = check_bitmap.count_ones() as u64;
         if !is_supermajority(final_weight, group_total_weight) {
             return Err(CertificationError::InsufficientSignatures {
                 got: final_weight as usize,
@@ -369,13 +341,7 @@ impl CertificationCollector {
         }
 
         let bitmap = check_bitmap;
-        let signatures: Vec<BlsSignature> = selected_bucket
-            .responses
-            .iter()
-            .map(|response| response.signature)
-            .collect();
-
-        let aggregated_signature = BlsSignature::aggregate(&signatures)
+        let aggregated_signature = BlsSignature::aggregate(&selected_bucket.signatures)
             .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
 
         let responses = selected_bucket.responses;
@@ -384,7 +350,7 @@ impl CertificationCollector {
             aggregated_signature,
             bitmap,
             signature_count,
-            committee_size,
+            spool_count: GROUP_SIZE,
             epoch: selected_epoch,
             responses,
             failures,
@@ -411,49 +377,72 @@ impl CertificationCollector {
 }
 
 struct NodeResult {
-    node_id: NodeId,
-    member_idx: u8,
+    node: Address,
+    positions: Vec<usize>,
     weight: u64,
     result: Result<CertifyRes, NodeSignError>,
 }
 
 struct SignatureBucket {
     responses: Vec<CertifyRes>,
+    signatures: Vec<BlsSignature>,
     weight: u64,
-    member_indices: Vec<usize>,
+    positions: Vec<usize>,
 }
 
 struct SignatureRequest {
-    node_id: NodeId,
-    member_idx: u8,
+    node: Address,
+    positions: Vec<usize>,
     weight: u64,
 }
 
-fn collect_group_members(group: GroupIndex, system: &System) -> HashSet<u8> {
-    let mut members = HashSet::new();
-    for i in 0..GROUP_SIZE {
-        let spool = spool_for_slice(group, i);
-        let member = system.spools.0[spool as usize];
-        members.insert(member);
+fn collect_signature_requests(
+    group: GroupIndex,
+    state: &ProtocolState,
+) -> Result<Vec<SignatureRequest>, CertificationError> {
+    let spools = state
+        .spools_in_group(group)
+        .ok_or_else(|| CertificationError::SystemState(format!("group {group} not found")))?;
+
+    let mut by_node = HashMap::<Address, SignatureRequest>::new();
+    for (spool_index, spool) in spools {
+        if spool.node == Address::default() {
+            continue;
+        }
+        let position = group
+            .position_of(spool_index)
+            .ok_or_else(|| CertificationError::SystemState(format!("spool {spool_index} is outside group {group}")))?;
+        let request = by_node.entry(spool.node).or_insert_with(|| SignatureRequest {
+            node: spool.node,
+            positions: Vec::new(),
+            weight: 0,
+        });
+        request.positions.push(position);
+        request.weight += 1;
     }
-    members
+
+    Ok(by_node.into_values().collect())
 }
 
 fn record_signature_response(
     epoch_buckets: &mut HashMap<u64, SignatureBucket>,
     epoch_key: u64,
     response: CertifyRes,
-    member_idx: usize,
-    node_weight: u64,
+    positions: &[usize],
 ) {
+    let signature = response.signature;
     let bucket = epoch_buckets.entry(epoch_key).or_insert(SignatureBucket {
         responses: Vec::new(),
+        signatures: Vec::new(),
         weight: 0,
-        member_indices: Vec::new(),
+        positions: Vec::new(),
     });
     bucket.responses.push(response);
-    bucket.weight += node_weight;
-    bucket.member_indices.push(member_idx);
+    bucket.weight += positions.len() as u64;
+    bucket.positions.extend_from_slice(positions);
+    bucket
+        .signatures
+        .extend(std::iter::repeat(signature).take(positions.len()));
 }
 
 fn can_reach_supermajority(
@@ -591,9 +580,11 @@ mod tests {
     }
 
     fn mock_certify_res(epoch: u64, node_id: u64) -> CertifyRes {
+        let mut bytes = [0u8; 32];
+        bytes[0] = node_id as u8;
         CertifyRes {
             signature: BlsSignature(tape_crypto::bls12254::min_sig::G1CompressedPoint([1u8; 32])),
-            node_id: NodeId::new(node_id),
+            node: Address::new(bytes),
             epoch: EpochNumber(epoch),
         }
     }
@@ -609,13 +600,15 @@ mod tests {
         let buckets = HashMap::from([
             (8, SignatureBucket {
                 responses: Vec::new(),
+                signatures: Vec::new(),
                 weight: 9,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
             (9, SignatureBucket {
                 responses: Vec::new(),
+                signatures: Vec::new(),
                 weight: 6,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
         ]);
 
@@ -628,13 +621,15 @@ mod tests {
         let buckets = HashMap::from([
             (8, SignatureBucket {
                 responses: Vec::new(),
+                signatures: Vec::new(),
                 weight: 6,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
             (9, SignatureBucket {
                 responses: Vec::new(),
+                signatures: Vec::new(),
                 weight: 5,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
         ]);
 
@@ -646,18 +641,21 @@ mod tests {
         let buckets = HashMap::from([
             (7, SignatureBucket {
                 responses: Vec::new(),
+                signatures: Vec::new(),
                 weight: 13,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
             (8, SignatureBucket {
                 responses: Vec::new(),
+                signatures: Vec::new(),
                 weight: 14,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
             (9, SignatureBucket {
                 responses: Vec::new(),
+                signatures: Vec::new(),
                 weight: 14,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
         ]);
 
@@ -669,13 +667,15 @@ mod tests {
         let buckets = HashMap::from([
             (7, SignatureBucket {
                 responses: vec![mock_certify_res(7, 1), mock_certify_res(7, 2)],
+                signatures: Vec::new(),
                 weight: 12,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
             (8, SignatureBucket {
                 responses: vec![mock_certify_res(8, 3)],
+                signatures: Vec::new(),
                 weight: 13,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
         ]);
 
@@ -690,13 +690,15 @@ mod tests {
         let buckets = HashMap::from([
             (7, SignatureBucket {
                 responses: vec![mock_certify_res(7, 1)],
+                signatures: Vec::new(),
                 weight: 12,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
             (8, SignatureBucket {
                 responses: vec![mock_certify_res(8, 2), mock_certify_res(8, 3)],
+                signatures: Vec::new(),
                 weight: 12,
-                member_indices: Vec::new(),
+                positions: Vec::new(),
             }),
         ]);
 

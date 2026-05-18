@@ -49,6 +49,7 @@ impl<Blockchain: Rpc, Cluster: Api>
                 stake_key.pubkey().into(),
                 pool,
                 amount,
+                self.rpc().get_system().await?.current_epoch,
             ),
         );
 
@@ -67,11 +68,15 @@ impl<Blockchain: Rpc, Cluster: Api>
     /// Advance a node's staking pool to the current epoch.
     pub async fn advance_pool(
         &self,
-        node_authority: Address,
+        _node_authority: Address,
         pool: Address,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
-        let ix = build_advance_pool_ix(payer.pubkey().into(), node_authority, pool);
+        let ix = build_advance_pool_ix(
+            payer.pubkey().into(),
+            pool,
+            self.rpc().get_system().await?.current_epoch,
+        );
 
         self.rpc()
             .send_instructions_with_compute_unit_limit(payer, ADVANCE_POOL_CU, vec![ix])

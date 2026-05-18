@@ -33,7 +33,7 @@ use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
-use crate::track::{bootstrap_network_state, queries};
+use crate::track::{bootstrap_network_state, query};
 use crate::transfer::certify::CertificationCollector;
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 
@@ -322,6 +322,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     let locate = client.timer(operation, Phase::Locate);
     let state = bootstrap_network_state(client, Some(operation)).await;
     locate.finish_result(&state);
+
     let state = state?;
 
     let uploader = DistributedUploader::new(track_address, group, slices, &state)
@@ -487,10 +488,10 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
 
     let collect = client.timer(operation, Phase::CertifyCollect);
     let result = async {
-        let system = client.rpc().get_system().await?;
+        let state = bootstrap_network_state(client, Some(operation)).await?;
         let collector = CertificationCollector::with_defaults();
         collector
-            .collect_signatures(client.api.as_ref(), &track_address, group, &system)
+            .collect_signatures(client.api.as_ref(), &track_address, group, &state)
             .await
             .map_err(TapedriveError::Certification)
     }
@@ -499,7 +500,7 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     let collected = result?;
 
     let proof_timer = client.timer(operation, Phase::CertifyProof);
-    let proof = queries::query_track_proof(client, &track_address).await;
+    let proof = query::query_track_proof(client, &track_address).await;
     proof_timer.finish_result(&proof);
     let proof = proof?;
 
@@ -542,7 +543,7 @@ async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
         write_retry_config(),
         None,
         || async {
-            let track = queries::query_track_by_number(client, tape, track_number)
+            let track = query::query_track_by_number(client, tape, track_number)
                 .await
                 .map_err(TrackCompletionError::from)?;
             if track.is_certified() {

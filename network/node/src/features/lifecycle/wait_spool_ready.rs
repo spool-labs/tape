@@ -5,7 +5,7 @@ use tracing::{debug, info};
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::SpoolIndex;
+use tape_core::types::SpoolIndex;
 use tape_core::system::{EpochPhase, SpoolStatus};
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;

@@ -1,8 +1,8 @@
 use rpc::Rpc;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
-use tape_core::types::{NodeId, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use tape_core::types::TrackNumber;
 use tape_protocol::api::{
     ApiError, FindTrackReq, FindTrackVersion, GetTrackByNumberReq, GetTrackProofReq,
     GetTrackReq, ListTracksByTapeReq,
@@ -51,12 +51,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
 pub(crate) async fn queryable_peers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-) -> Result<Vec<NodeId>, TapedriveError> {
+) -> Result<Vec<Address>, TapedriveError> {
     let state = bootstrap_network_state(client, None).await?;
-    let mut peers = Vec::with_capacity(state.committee.len());
-    for member in &state.committee {
-        if !peers.contains(&member.id) {
-            peers.push(member.id);
+    let mut peers = Vec::with_capacity(state.current.committee.len());
+    for member in &state.current.committee {
+        if !peers.contains(&member.node) {
+            peers.push(member.node);
         }
     }
 

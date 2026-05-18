@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_api::errors::TapeError;
-use tape_core::spooler::SpoolIndex;
+use tape_core::types::SpoolIndex;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;

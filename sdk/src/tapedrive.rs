@@ -125,6 +125,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let total = self
             .timer(Operation::Write, Phase::Total)
             .bytes(data.len() as u64);
+
         let tape_key = TapeKey::generate();
         let capacity = StorageUnits::from_bytes(data.len() as u64);
         let reserve_capacity = capacity + StorageUnits::mb(1);

@@ -10,12 +10,13 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use tape_api::state::Group;
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use tape_core::bls::BlsPrivateKey;
-use tape_core::spooler::SpoolIndex;
-use tape_core::system::Committee;
-use tape_core::types::NodeId;
+use tape_core::system::Member;
+use tape_core::types::SpoolIndex;
+use tape_crypto::Address;
 use tape_crypto::ed25519::errors::KeypairFileError;
 use tape_crypto::ed25519::Keypair;
 use tape_crypto::Hash;
@@ -42,7 +43,7 @@ pub enum HelperError {
 
     /// Node not found in committee.
     #[error("Node {0} not found in committee")]
-    NodeNotInCommittee(NodeId),
+    NodeNotInCommittee(Address),
 
     /// RPC client creation failed.
     #[error("Failed to create RPC client: {0}")]
@@ -208,41 +209,53 @@ pub fn parse_hex_bytes(hex_str: &str, name: &str, expected_len: usize) -> Result
 // Committee Operations
 // ============================================================================
 
-/// Find a node's index in the committee by NodeId.
+/// Find a node's index in the committee by node account address.
 ///
 /// Returns `None` if the node is not in the committee.
 ///
 /// # Example
 /// ```rust,ignore
 /// let system = client.get_system().await?;
-/// if let Some(idx) = find_member_index(&system.committee, node_id) {
+/// if let Some(idx) = find_member_index(&committee, node) {
 ///     println!("Node is at index {}", idx);
 /// }
 /// ```
-pub fn find_member_index<const N: usize>(committee: &Committee<N>, node_id: NodeId) -> Option<usize> {
-    committee.iter().position(|m| m.id == node_id)
+pub fn find_member_index(committee: &[Member], node: Address) -> Option<usize> {
+    committee.iter().position(|m| m.node == node)
 }
 
 /// Get the spool indices assigned to a node in the current epoch.
 ///
-/// This looks up the node's member index and returns all spools assigned to it.
+/// This scans the current epoch's group accounts and returns all spools assigned to it.
 ///
 /// # Example
 /// ```rust,ignore
 /// let system = client.get_system().await?;
-/// let node = client.get_node(&authority).await?;
-/// let spools = get_node_assigned_spools(&system.committee, &system.spools, node.id)?;
+/// let spools = get_node_assigned_spools(&groups, node)?;
 /// println!("Node is responsible for {} spools", spools.len());
 /// ```
-pub fn get_node_assigned_spools<const N: usize, const S: usize>(
-    committee: &Committee<N>,
-    spools: &tape_core::spooler::SpoolAssignment<S>,
-    node_id: NodeId,
+pub fn get_node_assigned_spools(
+    groups: &[Group],
+    node: Address,
 ) -> Result<Vec<SpoolIndex>, HelperError> {
-    let member_index = find_member_index(committee, node_id)
-        .ok_or(HelperError::NodeNotInCommittee(node_id))?;
+    let spools = groups
+        .iter()
+        .flat_map(|group| {
+            group
+                .spools
+                .iter()
+                .enumerate()
+                .filter_map(move |(position, spool)| {
+                    (spool.node == node).then_some(group.id.spool_at(position))
+                })
+        })
+        .collect::<Vec<_>>();
 
-    Ok(spools.spools_for_member(member_index))
+    if spools.is_empty() {
+        return Err(HelperError::NodeNotInCommittee(node));
+    }
+
+    Ok(spools)
 }
 
 // ============================================================================

@@ -4,8 +4,8 @@
 //! from downloaded slices using erasure code decoding.
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
-use tape_core::spooler::SpoolIndex;
 use tape_core::erasure::GROUP_SIZE;
+use tape_core::types::SpoolIndex;
 use tape_slicer::{
     ClayCoder, DEFAULT_STRIPE_SIZE, ErasureCoder, ReedSolomonCoder, Slicer, SliceMetadata,
 };
@@ -167,7 +167,7 @@ impl BlobDecoder {
 
         // Validate indices and build refs
         for &(idx, _) in &slices {
-            if idx as usize >= GROUP_SIZE {
+            if idx.as_usize() >= GROUP_SIZE {
                 return Err(DownloadError::InvalidSliceIndex(idx));
             }
         }
@@ -175,7 +175,7 @@ impl BlobDecoder {
         // Convert to (usize, &[u8]) format expected by Slicer trait
         let chunks: Vec<(usize, &[u8])> = slices
             .iter()
-            .map(|(idx, data)| (*idx as usize, data.as_slice()))
+            .map(|(idx, data)| (idx.as_usize(), data.as_slice()))
             .collect();
 
         self.decode_internal(&chunks)
@@ -303,12 +303,15 @@ mod tests {
         let mut slices: Vec<_> = encoder.encode(original).unwrap();
 
         // Replace one slice's index with an invalid one (>= GROUP_SIZE)
-        slices[0].0 = 9999;
+        slices[0].0 = SpoolIndex::from(9999);
 
         let mut decoder = test_decoder();
         let result = decoder.decode(slices);
 
-        assert!(matches!(result, Err(DownloadError::InvalidSliceIndex(9999))));
+        assert!(matches!(
+            result,
+            Err(DownloadError::InvalidSliceIndex(idx)) if idx == SpoolIndex::from(9999)
+        ));
     }
 
     #[test]

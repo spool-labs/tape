@@ -1,7 +1,6 @@
 //! Error types for SDK operations.
 
-use tape_core::spooler::SpoolIndex;
-use tape_core::types::StorageUnits;
+use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_protocol::ApiError;
 use thiserror::Error;
 use rpc::RpcError;

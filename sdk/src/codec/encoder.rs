@@ -5,7 +5,7 @@
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::SpoolIndex;
+use tape_core::types::SpoolIndex;
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, root_from_leaf_hashes};
 use tape_crypto::Hash;
 use tape_slicer::{
@@ -133,7 +133,7 @@ impl BlobEncoder {
         let output: Vec<(SpoolIndex, Vec<u8>)> = chunks
             .into_iter()
             .enumerate()
-            .map(|(i, data)| (i as SpoolIndex, data))
+            .map(|(i, data)| (SpoolIndex::from(i as u64), data))
             .collect();
 
         Ok(output)
@@ -176,7 +176,7 @@ impl BlobEncoder {
         let output: Vec<(SpoolIndex, Vec<u8>)> = chunks
             .into_iter()
             .enumerate()
-            .map(|(i, data)| (i as SpoolIndex, data))
+            .map(|(i, data)| (SpoolIndex::from(i as u64), data))
             .collect();
 
         Ok((output, root))
@@ -249,7 +249,7 @@ impl BlobEncoder {
             }
 
             output.push(SliceWithProof::new(
-                idx as SpoolIndex,
+                SpoolIndex::from(idx as u64),
                 chunk,
                 leaf_hash,
                 proof_arr,
@@ -270,7 +270,7 @@ impl BlobEncoder {
         let (slices, root) = self.encode_with_proofs(data)?;
         let mut leaves = [Hash::default(); GROUP_SIZE];
         for s in &slices {
-            leaves[s.index as usize] = s.leaf_hash;
+            leaves[s.index.as_usize()] = s.leaf_hash;
         }
         Ok((slices, root, leaves))
     }
@@ -296,7 +296,7 @@ mod tests {
 
         // Verify indices are sequential
         for (idx, (slice_idx, _)) in slices.iter().enumerate() {
-            assert_eq!(*slice_idx as usize, idx);
+            assert_eq!(slice_idx.as_usize(), idx);
         }
     }
 
@@ -371,7 +371,7 @@ mod tests {
                 &slice.data,
                 &root,
                 &slice.merkle_proof,
-                slice.index as u64,
+                slice.index.as_u64(),
                 SLICE_TREE_HEIGHT,
             );
             assert!(valid, "Proof verification failed for slice {}", slice.index);
@@ -386,7 +386,7 @@ mod tests {
 
         // Verify indices are sequential
         for (expected_idx, slice) in slices_with_proofs.iter().enumerate() {
-            assert_eq!(slice.index as usize, expected_idx);
+            assert_eq!(slice.index.as_usize(), expected_idx);
         }
     }
 

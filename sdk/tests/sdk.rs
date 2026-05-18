@@ -8,19 +8,20 @@ use peer_memory::MemoryApi;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use tape_api::program::tapedrive::{self, tape_pda, track_pda};
-use tape_api::state::Tape;
+use tape_api::state::{Group, Tape};
 use tape_core::bls::BlsPubkey;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
+use tape_core::system::{Member, NodePreferences, Spool};
 use tape_core::track::data::TrackData;
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
     CompressedTrack, CompressedTrackProof, TrackKind, TrackState,
 };
-use tape_core::system::CommitteeMember;
-use tape_core::types::coin::{Coin, TAPE};
+use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::{hash, Hash};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair;
@@ -55,7 +56,7 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
         PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(unexpected_error())),
         PeerReq::Repair(_) => PeerRes::Repair(Err(unexpected_error())),
         PeerReq::Certify(_) => PeerRes::Certify(Err(unexpected_error())),
-        PeerReq::SnapshotVote(_) => PeerRes::SnapshotVote(Err(unexpected_error())),
+        PeerReq::Vote(_) => PeerRes::Vote(Err(unexpected_error())),
         PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(unexpected_error())),
         PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(unexpected_error())),
         PeerReq::GetStats(_) => PeerRes::GetStats(Err(unexpected_error())),
@@ -170,7 +171,7 @@ fn setup() -> Fixture {
             PeerReq::SyncTracks(_) => unexpected_peer_response(&req),
             PeerReq::Repair(_) => unexpected_peer_response(&req),
             PeerReq::Certify(_) => unexpected_peer_response(&req),
-            PeerReq::SnapshotVote(_) => unexpected_peer_response(&req),
+            PeerReq::Vote(_) => unexpected_peer_response(&req),
             PeerReq::Invalidate(_) => unexpected_peer_response(&req),
             PeerReq::GetHealth(_) => unexpected_peer_response(&req),
             PeerReq::GetStats(_) => unexpected_peer_response(&req),
@@ -180,12 +181,25 @@ fn setup() -> Fixture {
     }));
 
     let peer_manager = Arc::new(PeerManager::new());
-    peer_manager.add_peer(make_peer(NodeId(1), 3001));
+    let node = address(1);
+    peer_manager.add_peer(make_peer(node, 3001));
 
     let mut state = ProtocolState::default();
+    state.current.epoch.id = EpochNumber(1);
     state
+        .current
         .committee
-        .push(CommitteeMember::new(NodeId(1), Coin::<TAPE>::new(1000)));
+        .push(Member::new(node, TAPE(1000)));
+    let mut group = Group {
+        id: GroupIndex(0),
+        epoch: EpochNumber(1),
+        size: StorageUnits::mb(1),
+        ..Group::zeroed()
+    };
+    for position in 0..GROUP_SIZE {
+        group.spools[position] = Spool::new(node, BlsPubkey::zeroed());
+    }
+    state.current.groups.push(group);
 
     let client = Tapedrive::from_parts(
         ArcSwap::from_pointee(state),
@@ -203,15 +217,20 @@ fn setup() -> Fixture {
     }
 }
 
-fn make_peer(node_id: NodeId, port: u16) -> PeerNode {
+fn make_peer(node: Address, port: u16) -> PeerNode {
     PeerNode {
-        node_id,
-        authority: Address::new_unique(),
-        state_address: Address::new_unique(),
+        node,
         bls_pubkey: BlsPubkey::zeroed(),
         tls_pubkey: NetworkTlsPubkey::new_unique(),
         network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
+        preferences: NodePreferences::zeroed(),
     }
+}
+
+fn address(byte: u8) -> Address {
+    let mut bytes = [0u8; 32];
+    bytes[0] = byte;
+    Address::new(bytes)
 }
 
 fn pipe(rpc: &LiteSvmRpc, address: Address, packed: &[u8]) {

@@ -12,8 +12,8 @@ use std::time::Instant;
 use futures::stream::{self, StreamExt};
 use tape_core::bft::{max_faulty, min_correct};
 use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
-use tape_core::spooler::{GroupIndex, SpoolIndex};
-use tape_core::types::NodeId;
+use tape_core::spooler::GroupIndex;
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_protocol::api::{Api, ApiError, SlicePayload, PutSliceReq};
@@ -59,9 +59,7 @@ pub struct DistributedUploader {
     track: Address,
     group: GroupIndex,
     slices: Vec<SliceWithProof>,
-    /// Spool-to-node map for this group, built from ProtocolState at construction.
-    group_peers: Vec<(SpoolIndex, NodeId)>,
-    /// Unique member count in this group (for quorum checks).
+    group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
     concurrency_limit: Arc<Semaphore>,
 }
@@ -116,10 +114,10 @@ impl DistributedUploader {
             return Err(UploadError::NoNodesAvailable);
         }
 
-        // Group spools by NodeId
-        let mut node_groups: HashMap<NodeId, Vec<SpoolIndex>> = HashMap::new();
-        for &(spool, node_id) in &self.group_peers {
-            node_groups.entry(node_id).or_default().push(spool);
+        // Group spools by node account address.
+        let mut node_groups: HashMap<Address, Vec<SpoolIndex>> = HashMap::new();
+        for &(spool, node) in &self.group_peers {
+            node_groups.entry(node).or_default().push(spool);
         }
 
         // Build a lookup: global spool index → slice data
@@ -127,7 +125,7 @@ impl DistributedUploader {
             .slices
             .iter()
             .map(|s| {
-                let global_spool = spool_for_slice(self.group, s.index as usize);
+                let global_spool = spool_for_slice(self.group, s.index.as_usize());
                 (global_spool, s)
             })
             .collect();
@@ -140,7 +138,7 @@ impl DistributedUploader {
         // full retry budget; after quorum, remaining uploads get one attempt.
         let upload_futures: Vec<_> = node_groups
             .into_iter()
-            .map(|(node_id, spools)| {
+            .map(|(node, spools)| {
                 let track = self.track;
                 let permit = self.concurrency_limit.clone();
                 let quorum_reached = quorum_reached.clone();
@@ -172,7 +170,7 @@ impl DistributedUploader {
 
                         if let Err(e) = upload_slice_with_retry(
                             peer_client,
-                            node_id,
+                            node,
                             track,
                             req,
                             payload_bytes,
@@ -180,8 +178,8 @@ impl DistributedUploader {
                         ).await {
                             warn!(
                                 track = %track,
-                                slice = global_spool,
-                                node = %node_id,
+                                slice = %global_spool,
+                                node = %node,
                                 error = %e,
                                 "Slice upload failed, left for recovery"
                             );
@@ -285,7 +283,7 @@ impl DistributedUploader {
 
 async fn upload_slice_with_retry<P: Api>(
     peer_client: &P,
-    node_id: NodeId,
+    node: Address,
     track: Address,
     req: PutSliceReq,
     payload_bytes: usize,
@@ -295,14 +293,14 @@ async fn upload_slice_with_retry<P: Api>(
     let mut backoff = Backoff::new(RetryConfig::ten());
 
     loop {
-        match peer_client.put_slice(node_id, &req).await {
+        match peer_client.put_slice(node, &req).await {
             Ok(_) => return Ok(()),
             Err(error) => {
                 if !error.is_retryable() {
                     warn!(
                         track = %track,
-                        node = %node_id,
-                        slice = req.spool,
+                        node = %node,
+                        slice = %req.spool,
                         bytes = payload_bytes,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         error = %error,
@@ -314,8 +312,8 @@ async fn upload_slice_with_retry<P: Api>(
                 if quorum_reached.load(Ordering::Relaxed) {
                     warn!(
                         track = %track,
-                        node = %node_id,
-                        slice = req.spool,
+                        node = %node,
+                        slice = %req.spool,
                         bytes = payload_bytes,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         error = %error,
@@ -327,8 +325,8 @@ async fn upload_slice_with_retry<P: Api>(
                 let Some(delay) = backoff.next_delay() else {
                     warn!(
                         track = %track,
-                        node = %node_id,
-                        slice = req.spool,
+                        node = %node,
+                        slice = %req.spool,
                         bytes = payload_bytes,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         error = %error,
@@ -339,8 +337,8 @@ async fn upload_slice_with_retry<P: Api>(
 
                 warn!(
                     track = %track,
-                    node = %node_id,
-                    slice = req.spool,
+                    node = %node,
+                    slice = %req.spool,
                     bytes = payload_bytes,
                     attempt = backoff.attempt(),
                     delay_ms = delay.as_millis() as u64,
@@ -354,8 +352,8 @@ async fn upload_slice_with_retry<P: Api>(
                 if quorum_reached.load(Ordering::Relaxed) {
                     warn!(
                         track = %track,
-                        node = %node_id,
-                        slice = req.spool,
+                        node = %node,
+                        slice = %req.spool,
                         bytes = payload_bytes,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         error = %error,
@@ -371,17 +369,19 @@ async fn upload_slice_with_retry<P: Api>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::SPOOL_COUNT;
-    use tape_core::spooler::SpoolAssignment;
-    use tape_core::system::CommitteeMember;
-    use tape_core::types::coin::{Coin, TAPE};
+    use bytemuck::Zeroable;
+    use tape_api::state::Group;
+    use tape_core::bls::BlsPubkey;
+    use tape_core::system::{Member, Spool};
+    use tape_core::types::coin::TAPE;
+    use tape_core::types::{EpochNumber, StorageUnits};
     use tape_slicer::SLICE_TREE_HEIGHT;
     use tape_crypto::address::Address;
 
     fn make_test_slices(count: usize) -> Vec<SliceWithProof> {
         (0..count)
             .map(|i| SliceWithProof {
-                index: i as u16,
+                index: SpoolIndex::from(i as u64),
                 data: vec![i as u8; 100],
                 leaf_hash: Hash::default(),
                 merkle_proof: [Hash::default(); SLICE_TREE_HEIGHT],
@@ -391,17 +391,27 @@ mod tests {
 
     fn make_test_state(member_count: usize) -> ProtocolState {
         let mut state = ProtocolState::default();
+        state.current.epoch.id = EpochNumber(1);
         for i in 0..member_count {
-            state.committee.push(CommitteeMember::new(
-                NodeId(i as u64 + 1),
-                Coin::<TAPE>::new(1000 - i as u64),
+            let mut bytes = [0u8; 32];
+            bytes[0] = i as u8 + 1;
+            state.current.committee.push(Member::new(
+                Address::new(bytes),
+                TAPE(1000 - i as u64),
             ));
         }
-        let mut spools = [0u8; SPOOL_COUNT];
-        for (i, s) in spools.iter_mut().enumerate() {
-            *s = (i % member_count) as u8;
+
+        let mut group = Group {
+            id: GroupIndex(0),
+            epoch: EpochNumber(1),
+            size: StorageUnits::mb(1),
+            ..Group::zeroed()
+        };
+        for i in 0..GROUP_SIZE {
+            let owner = state.current.committee[i % member_count].node;
+            group.spools[i] = Spool::new(owner, BlsPubkey::zeroed());
         }
-        state.spools = SpoolAssignment::new(spools);
+        state.current.groups.push(group);
         state
     }
 
@@ -424,7 +434,7 @@ mod tests {
     #[test]
     fn slice_with_proof_to_payload() {
         let slice = SliceWithProof {
-            index: 42,
+            index: SpoolIndex::from(42),
             data: vec![0xAB; 500],
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); SLICE_TREE_HEIGHT],

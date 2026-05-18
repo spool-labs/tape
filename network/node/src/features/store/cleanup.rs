@@ -1,6 +1,7 @@
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::{GroupIndex, SpoolIndex};
+use tape_core::spooler::GroupIndex;
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
 use tape_store::TapeStore;

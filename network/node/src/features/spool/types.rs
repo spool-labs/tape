@@ -1,4 +1,4 @@
-use tape_core::spooler::SpoolIndex;
+use tape_core::types::SpoolIndex;
 use tape_core::types::EpochNumber;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

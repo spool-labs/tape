@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tape_core::spooler::SpoolIndex;
-use tape_core::types::NodeId;
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_protocol::api::{Api, ApiError, GetSliceReq, GetSliceRes};
 use tape_retry::{Backoff, RetryConfig, Retryable};
@@ -23,12 +22,9 @@ const DEFAULT_CONCURRENCY: usize = 8;
 /// Parallel downloader for retrieving slices from storage nodes.
 pub struct ParallelDownloader {
     track: Address,
-    /// Maps slice_index → NodeId (for proper spool-based routing)
-    slice_to_node: HashMap<SpoolIndex, NodeId>,
+    slice_to_node: HashMap<SpoolIndex, Address>,
     concurrency: usize,
-    /// Minimum slices needed for reconstruction (k from track's encoding profile).
     min_slices: usize,
-    /// Slice indices to exclude from downloads (e.g., for recovery).
     exclude_slices: HashSet<SpoolIndex>,
 }
 
@@ -36,7 +32,7 @@ impl ParallelDownloader {
     /// Create a new downloader with spool-based routing.
     pub fn new(
         track: Address,
-        slice_to_node: HashMap<SpoolIndex, NodeId>,
+        slice_to_node: HashMap<SpoolIndex, Address>,
         min_slices: usize,
     ) -> Self {
         Self {
@@ -51,7 +47,7 @@ impl ParallelDownloader {
     /// Create a new downloader with custom concurrency limit.
     pub fn with_concurrency(
         track: Address,
-        slice_to_node: HashMap<SpoolIndex, NodeId>,
+        slice_to_node: HashMap<SpoolIndex, Address>,
         min_slices: usize,
         concurrency: usize,
     ) -> Self {
@@ -88,19 +84,19 @@ impl ParallelDownloader {
         let mut collected_slices = Vec::with_capacity(self.min_slices);
         let mut futures = FuturesUnordered::new();
 
-        let semaphore = Arc::new(Semaphore::new(self.concurrency));
+        let sem = Arc::new(Semaphore::new(self.concurrency));
 
-        for (&slice_idx, &node_id) in &self.slice_to_node {
+        for (&slice_idx, &node) in &self.slice_to_node {
             if self.exclude_slices.contains(&slice_idx) {
                 continue;
             }
 
             let track = self.track;
-            let sem = semaphore.clone();
+            let sem = sem.clone();
 
             futures.push(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
-                let result = download_slice_with_retry(peer_client, track, node_id, slice_idx).await;
+                let result = download_slice_with_retry(peer_client, track, node, slice_idx).await;
                 (slice_idx, result)
             });
         }
@@ -115,7 +111,7 @@ impl ParallelDownloader {
                 }
                 Err(error) => {
                     warn!(
-                        slice = slice_idx,
+                        slice = %slice_idx,
                         error = %error,
                         "slice fetch failed, continuing with others"
                     );
@@ -135,10 +131,10 @@ impl ParallelDownloader {
 
     /// Download a specific slice via the Api trait.
     pub async fn download_slice<P: Api>(&self, peer_client: &P, slice_idx: SpoolIndex) -> Result<Vec<u8>, DownloadError> {
-        let &node_id = self.slice_to_node.get(&slice_idx)
+        let &node = self.slice_to_node.get(&slice_idx)
             .ok_or(DownloadError::InvalidSliceIndex(slice_idx))?;
 
-        let res = download_slice_with_retry(peer_client, self.track, node_id, slice_idx)
+        let res = download_slice_with_retry(peer_client, self.track, node, slice_idx)
             .await
             .map_err(|e| DownloadError::Node(e.to_string()))?;
 
@@ -149,7 +145,7 @@ impl ParallelDownloader {
 async fn download_slice_with_retry<P: Api>(
     peer_client: &P,
     track: Address,
-    node_id: NodeId,
+    node: Address,
     slice_idx: SpoolIndex,
 ) -> Result<GetSliceRes, ApiError> {
     let req = GetSliceReq {
@@ -160,13 +156,13 @@ async fn download_slice_with_retry<P: Api>(
 
     loop {
         let started = Instant::now();
-        match peer_client.get_slice(node_id, &req).await {
+        match peer_client.get_slice(node, &req).await {
             Ok(res) => return Ok(res),
             Err(error) if !error.is_retryable() => {
                 warn!(
                     track = %track,
-                    node = %node_id,
-                    slice = slice_idx,
+                    node = %node,
+                    slice = %slice_idx,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     error = %error,
                     "slice fetch failed with non-retryable error"
@@ -178,8 +174,8 @@ async fn download_slice_with_retry<P: Api>(
                 let Some(delay) = backoff.next_delay() else {
                     warn!(
                         track = %track,
-                        node = %node_id,
-                        slice = slice_idx,
+                        node = %node,
+                        slice = %slice_idx,
                         attempt = backoff.attempt(),
                         elapsed_ms,
                         error = %error,
@@ -190,8 +186,8 @@ async fn download_slice_with_retry<P: Api>(
 
                 warn!(
                     track = %track,
-                    node = %node_id,
-                    slice = slice_idx,
+                    node = %node,
+                    slice = %slice_idx,
                     attempt = backoff.attempt(),
                     delay_ms = delay.as_millis() as u64,
                     elapsed_ms,
@@ -210,9 +206,9 @@ mod tests {
     use super::*;
     use tape_crypto::address::Address;
 
-    fn make_slice_map(count: usize) -> HashMap<SpoolIndex, NodeId> {
+    fn make_slice_map(count: usize) -> HashMap<SpoolIndex, Address> {
         (0..count)
-            .map(|i| (i as SpoolIndex, NodeId::new(i as u64 + 1)))
+            .map(|i| (SpoolIndex::from(i as u64), Address::new_unique()))
             .collect()
     }
 
@@ -233,28 +229,34 @@ mod tests {
     fn downloader_with_exclusions() {
         let slice_map = make_slice_map(1);
         let min_slices = 6;
+        let first = SpoolIndex::from(42);
+        let second = SpoolIndex::from(100);
 
         let downloader = ParallelDownloader::new(Address::new_unique(), slice_map, min_slices)
-            .exclude_slice(42)
-            .exclude_slice(100);
+            .exclude_slice(first)
+            .exclude_slice(second);
 
         assert_eq!(downloader.exclude_slices.len(), 2);
-        assert!(downloader.exclude_slices.contains(&42));
-        assert!(downloader.exclude_slices.contains(&100));
+        assert!(downloader.exclude_slices.contains(&first));
+        assert!(downloader.exclude_slices.contains(&second));
     }
 
     #[test]
     fn downloader_with_excluded_slices_iter() {
         let slice_map = make_slice_map(1);
         let min_slices = 10;
-        let excludes: Vec<SpoolIndex> = vec![10, 20, 30];
+        let excludes: Vec<SpoolIndex> = vec![
+            SpoolIndex::from(10),
+            SpoolIndex::from(20),
+            SpoolIndex::from(30),
+        ];
 
         let downloader = ParallelDownloader::new(Address::new_unique(), slice_map, min_slices)
             .with_excluded_slices(excludes);
 
         assert_eq!(downloader.exclude_slices.len(), 3);
-        assert!(downloader.exclude_slices.contains(&10));
-        assert!(downloader.exclude_slices.contains(&20));
-        assert!(downloader.exclude_slices.contains(&30));
+        assert!(downloader.exclude_slices.contains(&SpoolIndex::from(10)));
+        assert!(downloader.exclude_slices.contains(&SpoolIndex::from(20)));
+        assert!(downloader.exclude_slices.contains(&SpoolIndex::from(30)));
     }
 }

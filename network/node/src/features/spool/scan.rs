@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::{GroupIndex, SpoolIndex};
+use tape_core::spooler::GroupIndex;
+use tape_core::types::SpoolIndex;
 use tape_protocol::Api;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rpc::Rpc;
 use tape_core::erasure::group_start;
-use tape_core::prelude::{NodeId, GroupIndex, SpoolIndex, TrackData};
+use tape_core::prelude::{GroupIndex, SpoolIndex, TrackData};
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::hash::hash;
 use tape_protocol::api::{ApiError, GetTrackDataReq};
@@ -48,7 +48,7 @@ pub fn localize_slices(
     let base = group_start(group);
     slices
         .into_iter()
-        .map(|(global_idx, data)| ((global_idx - base) as SpoolIndex, data))
+        .map(|(global_idx, data)| (global_idx - base, data))
         .collect()
 }
 
@@ -98,16 +98,19 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let locate = client.timer(operation, Phase::Locate);
         let state = bootstrap_network_state(client, Some(operation)).await;
         locate.finish_result(&state);
+
         let state = state?;
-        let slice_to_node: HashMap<SpoolIndex, NodeId> =
+        let slice_to_node: HashMap<SpoolIndex, Address> =
             state.group_peers(group).into_iter().collect();
 
         let downloader = ParallelDownloader::new(*track, slice_to_node, k);
         let download = client.timer(operation, Phase::Download);
+
         let slices = downloader
             .download_enough_slices(client.api.as_ref())
             .await
             .map_err(ClientError::Download);
+
         let download = match &slices {
             Ok(slices) => download
                 .bytes(slices.iter().map(|(_, data)| data.len() as u64).sum())
@@ -189,6 +192,7 @@ async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<TrackData, TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;
+
     let mut peers = Vec::new();
     let mut saw_not_found = false;
     let mut last_error = None;

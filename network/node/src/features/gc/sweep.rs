@@ -3,7 +3,8 @@ use tokio::task::yield_now;
 
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::spooler::{GroupIndex, SpoolIndex};
+use tape_core::spooler::GroupIndex;
+use tape_core::types::SpoolIndex;
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_store::{
@@ -317,7 +318,8 @@ mod tests {
 
     use tape_crypto::address::Address;
     use store_memory::MemoryStore;
-    use tape_core::spooler::{GroupIndex, SpoolIndex};
+    use tape_core::spooler::GroupIndex;
+use tape_core::types::SpoolIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};

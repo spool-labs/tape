@@ -7,8 +7,8 @@ use crate::error::TapedriveError;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 
-mod mutations;
-mod queries;
+mod delete;
+mod query;
 mod read;
 pub mod write;
 
@@ -17,7 +17,7 @@ pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
     operation: Option<Operation>,
 ) -> Result<arc_swap::Guard<Arc<ProtocolState>>, TapedriveError> {
     let state = client.state();
-    if !state.committee.is_empty() {
+    if !state.current.committee.is_empty() {
         return Ok(state);
     }
     drop(state);
@@ -35,12 +35,12 @@ pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
     match operation {
         Some(operation) => {
             let timer = client.timer(operation, Phase::ResolvePeers);
-            let result = client.peer_manager.resolve_peers(&client.rpc, &state).await;
+            let result = client.peer_manager.resolve_peers(&state);
             timer.finish_result(&result);
             result?;
         }
         None => {
-            client.peer_manager.resolve_peers(&client.rpc, &state).await?;
+            client.peer_manager.resolve_peers(&state)?;
         }
     }
 
