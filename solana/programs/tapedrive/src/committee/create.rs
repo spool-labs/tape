@@ -1,9 +1,9 @@
-use core::mem::size_of;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 use tape_solana::*;
+use tape_api::dynamic::DynamicState;
+use tape_api::event::CommitteeCreated;
 use tape_api::program::prelude::*;
 use tape_api::state::Committee;
-use tape_core::system::Member;
 
 pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = CreateCommittee::try_from_bytes(data)?;
@@ -43,8 +43,7 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     };
 
     let initial_size = if genesis_capacity > 0 {
-        Committee::get_size()
-            .saturating_add((genesis_capacity as usize).saturating_mul(size_of::<Member>()))
+        Committee::size_for_capacity(genesis_capacity)
     } else {
         MAX_PERMITTED_DATA_INCREASE.min(Committee::get_size())
     };
@@ -64,6 +63,12 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         committee.epoch = epoch;
         committee.members = Tail::empty(genesis_capacity);
     }
+
+    CommitteeCreated {
+        epoch,
+        capacity: genesis_capacity.to_le_bytes(),
+    }
+    .log();
 
     Ok(())
 }

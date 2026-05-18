@@ -19,6 +19,47 @@ pub fn merge(
 
     for ix in instructions {
         let parsed = match ix {
+            RawInstruction::CreateEpoch { epoch } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::EpochCreated(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected EpochCreated event")),
+                };
+                if event.epoch != epoch {
+                    return Err(ParseError::EventMismatch("unexpected EpochCreated event"));
+                }
+                ParsedInstruction::CreateEpoch { epoch, event }
+            }
+
+            RawInstruction::CreateCommittee { epoch } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::CommitteeCreated(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected CommitteeCreated event")),
+                };
+                if event.epoch != epoch {
+                    return Err(ParseError::EventMismatch("unexpected CommitteeCreated event"));
+                }
+                ParsedInstruction::CreateCommittee { epoch, event }
+            }
+
+            RawInstruction::ResizeCommittee { epoch } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::CommitteeResized(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected CommitteeResized event")),
+                };
+                if event.epoch != epoch {
+                    return Err(ParseError::EventMismatch("unexpected CommitteeResized event"));
+                }
+                ParsedInstruction::ResizeCommittee { epoch, event }
+            }
+
+            RawInstruction::ResizePeerSet => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::PeerSetResized(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected PeerSetResized event")),
+                };
+                ParsedInstruction::ResizePeerSet { event }
+            }
+
             RawInstruction::CommitEpoch => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::EpochCommitted(e)) => e,

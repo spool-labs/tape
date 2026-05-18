@@ -115,12 +115,12 @@ impl<R: Rpc> RpcClient<R> {
             .await
     }
 
-    /// Fetch the active members for an epoch-scoped Committee account at an explicit commitment.
-    pub async fn get_committee_with_commitment(
+    /// Fetch active committee members and the backing account capacity.
+    pub async fn get_committee_account_with_commitment(
         &self,
         epoch: EpochNumber,
         commitment: CommitmentLevel,
-    ) -> Result<Vec<Member>, RpcError> {
+    ) -> Result<(u64, Vec<Member>), RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
@@ -140,7 +140,7 @@ impl<R: Rpc> RpcClient<R> {
                 )));
             }
 
-            Ok(members)
+            Ok((committee.members.capacity, members))
         }
         .await;
 
@@ -155,17 +155,28 @@ impl<R: Rpc> RpcClient<R> {
         result
     }
 
+    /// Fetch the active members for an epoch-scoped Committee account at an explicit commitment.
+    pub async fn get_committee_with_commitment(
+        &self,
+        epoch: EpochNumber,
+        commitment: CommitmentLevel,
+    ) -> Result<Vec<Member>, RpcError> {
+        self.get_committee_account_with_commitment(epoch, commitment)
+            .await
+            .map(|(_, members)| members)
+    }
+
     /// Fetch active peer entries from the PeerSet singleton account.
     pub async fn get_peer_set(&self) -> Result<Vec<Peer>, RpcError> {
         self.get_peer_set_with_commitment(self.rpc().commitment())
             .await
     }
 
-    /// Fetch active peer entries from the PeerSet singleton account at an explicit commitment.
-    pub async fn get_peer_set_with_commitment(
+    /// Fetch active peer entries and the backing account capacity.
+    pub async fn get_peer_set_account_with_commitment(
         &self,
         commitment: CommitmentLevel,
-    ) -> Result<Vec<Peer>, RpcError> {
+    ) -> Result<(u64, Vec<Peer>), RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
@@ -174,8 +185,8 @@ impl<R: Rpc> RpcClient<R> {
                 .rpc()
                 .get_account_with_commitment(&PEER_SET_ADDRESS, commitment)
                 .await?;
-            let (_, peers) = unpack_dynamic_entries::<PeerSet>(&account.data, "PeerSet")?;
-            Ok(peers)
+            let (peer_set, peers) = unpack_dynamic_entries::<PeerSet>(&account.data, "PeerSet")?;
+            Ok((peer_set.peers.capacity, peers))
         }
         .await;
 
@@ -188,6 +199,16 @@ impl<R: Rpc> RpcClient<R> {
         }
 
         result
+    }
+
+    /// Fetch active peer entries from the PeerSet singleton account at an explicit commitment.
+    pub async fn get_peer_set_with_commitment(
+        &self,
+        commitment: CommitmentLevel,
+    ) -> Result<Vec<Peer>, RpcError> {
+        self.get_peer_set_account_with_commitment(commitment)
+            .await
+            .map(|(_, peers)| peers)
     }
 
     /// Fetch the Archive singleton account

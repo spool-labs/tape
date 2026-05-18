@@ -1,11 +1,11 @@
-use core::mem::size_of;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 use solana_program::sysvar::rent::Rent;
 use solana_program::sysvar::Sysvar;
 use tape_solana::*;
+use tape_api::dynamic::DynamicState;
+use tape_api::event::PeerSetResized;
 use tape_api::program::prelude::*;
 use tape_api::state::PeerSet;
-use tape_core::system::Peer;
 
 pub fn process_resize_peer_set(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
@@ -36,8 +36,7 @@ pub fn process_resize_peer_set(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
         .committee_size
         .saturating_mul(3);
 
-    let target_size = PeerSet::get_size()
-        .saturating_add((target_capacity as usize).saturating_mul(size_of::<Peer>()));
+    let target_size = PeerSet::size_for_capacity(target_capacity);
 
     let current_size = peer_set_info.data_len();
 
@@ -68,6 +67,17 @@ pub fn process_resize_peer_set(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     }
     // else target == current: no-op
 
+    log_peer_set_resized(peer_set_info)?;
+
+    Ok(())
+}
+
+fn log_peer_set_resized(peer_set_info: &AccountInfo<'_>) -> ProgramResult {
+    let capacity = PeerSet::header(peer_set_info, &tapedrive::ID)?.peers.capacity;
+    PeerSetResized {
+        capacity: capacity.to_le_bytes(),
+    }
+    .log();
     Ok(())
 }
 

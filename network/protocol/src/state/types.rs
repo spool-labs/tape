@@ -24,10 +24,12 @@ pub struct EpochBundle {
 pub struct ProtocolState {
     pub system: System,
     pub peers: Vec<Peer>,
+    pub peer_capacity: u64,
     pub current: EpochBundle,
     pub previous: Option<EpochBundle>,
     pub next_epoch: Option<Epoch>,
     pub next_committee: Option<Vec<Member>>,
+    pub next_committee_capacity: Option<u64>,
 }
 
 impl Default for EpochBundle {
@@ -45,10 +47,12 @@ impl Default for ProtocolState {
         Self {
             system: System::zeroed(),
             peers: Vec::new(),
+            peer_capacity: 0,
             current: EpochBundle::default(),
             previous: None,
             next_epoch: None,
             next_committee: None,
+            next_committee_capacity: None,
         }
     }
 }

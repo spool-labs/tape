@@ -34,6 +34,10 @@ pub enum EventType {
     // Epoch
     EpochCommitted = 0x40,
     EpochAdvanced = 0x41,
+    EpochCreated = 0x42,
+    CommitteeCreated = 0x43,
+    CommitteeResized = 0x44,
+    PeerSetResized = 0x45,
 
     // Staking
     StakeDeposited = 0x50,
@@ -275,6 +279,56 @@ pub struct EpochCommitted {
 }
 
 tape_solana::event!(EventType, EpochCommitted);
+
+/// Emitted when an epoch account is created.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct EpochCreated {
+    /// Created epoch account.
+    pub epoch: EpochNumber,
+}
+
+tape_solana::event!(EventType, EpochCreated);
+
+/// Emitted when an epoch-scoped committee account is created.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct CommitteeCreated {
+    /// Committee epoch.
+    pub epoch: EpochNumber,
+
+    /// Allocated member capacity.
+    pub capacity: [u8; 8],
+}
+
+tape_solana::event!(EventType, CommitteeCreated);
+
+/// Emitted when an epoch-scoped committee account is resized.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct CommitteeResized {
+    /// Committee epoch.
+    pub epoch: EpochNumber,
+
+    /// Allocated member capacity after this resize. Intermediate resize
+    /// transactions may report the previous capacity until the target size is
+    /// reached.
+    pub capacity: [u8; 8],
+}
+
+tape_solana::event!(EventType, CommitteeResized);
+
+/// Emitted when the singleton peer-set account is resized.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct PeerSetResized {
+    /// Allocated peer capacity after this resize. Intermediate resize
+    /// transactions may report the previous capacity until the target size is
+    /// reached.
+    pub capacity: [u8; 8],
+}
+
+tape_solana::event!(EventType, PeerSetResized);
 
 /// Emitted on `advance_epoch` (Closing → next Syncing).
 #[repr(C)]

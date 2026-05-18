@@ -1,4 +1,5 @@
 use tape_solana::*;
+use tape_api::event::EpochCreated;
 use tape_api::program::prelude::*;
 
 pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -41,6 +42,8 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let epoch_acct = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
     epoch_acct.id = epoch;
+
+    EpochCreated { epoch }.log();
 
     Ok(())
 }

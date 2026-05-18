@@ -30,8 +30,8 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
     let current = build_epoch_bundle_with_commitment(rpc, current_epoch, commitment)
         .await?;
 
-    let peers = rpc
-        .get_peer_set_with_commitment(commitment)
+    let (peer_capacity, peers) = rpc
+        .get_peer_set_account_with_commitment(commitment)
         .await?;
 
     let previous = if system.current_epoch.is_zero() {
@@ -46,18 +46,24 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
         .await
     )?;
 
-    let next_committee = optional_account(
-        rpc.get_committee_with_commitment(next, commitment)
+    let next_committee_account = optional_account(
+        rpc.get_committee_account_with_commitment(next, commitment)
         .await
     )?;
+    let (next_committee_capacity, next_committee) = match next_committee_account {
+        Some((capacity, members)) => (Some(capacity), Some(members)),
+        None => (None, None),
+    };
 
     Ok(ProtocolState {
         system,
         peers,
+        peer_capacity,
         current,
         previous,
         next_epoch,
         next_committee,
+        next_committee_capacity,
     })
 }
 

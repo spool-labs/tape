@@ -1,10 +1,10 @@
 //! Tapedrive event parsing from transaction logs.
 
 use tape_api::event::{
-    AssignmentGroupFinalized, EpochAdvanced, EpochCommitted, EventType, NodeJoinedCommittee,
-    NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSettled, SpoolSynced, TapeDestroyed,
-    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed,
-    VoteRecorded,
+    AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
+    EpochCreated, EventType, NodeJoinedCommittee, NodeRegistered, PeerSetResized, PoolAdvanced,
+    SnapshotFinalized, SpoolSettled, SpoolSynced, TapeDestroyed, TapeReserved, TrackCertified,
+    TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 
 use crate::error::ParseError;
@@ -20,6 +20,10 @@ pub enum TapedriveEvent {
     VoteRecorded(VoteRecorded),
     SnapshotFinalized(SnapshotFinalized),
     AssignmentGroupFinalized(AssignmentGroupFinalized),
+    EpochCreated(EpochCreated),
+    CommitteeCreated(CommitteeCreated),
+    CommitteeResized(CommitteeResized),
+    PeerSetResized(PeerSetResized),
     EpochCommitted(EpochCommitted),
     EpochAdvanced(EpochAdvanced),
     TrackCertified(TrackCertified),
@@ -83,6 +87,26 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
             let event = bytemuck::try_from_bytes::<EpochCommitted>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::EpochCommitted(*event)))
+        }
+        EventType::EpochCreated => {
+            let event = bytemuck::try_from_bytes::<EpochCreated>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::EpochCreated(*event)))
+        }
+        EventType::CommitteeCreated => {
+            let event = bytemuck::try_from_bytes::<CommitteeCreated>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::CommitteeCreated(*event)))
+        }
+        EventType::CommitteeResized => {
+            let event = bytemuck::try_from_bytes::<CommitteeResized>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::CommitteeResized(*event)))
+        }
+        EventType::PeerSetResized => {
+            let event = bytemuck::try_from_bytes::<PeerSetResized>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::PeerSetResized(*event)))
         }
         EventType::EpochAdvanced => {
             let event = bytemuck::try_from_bytes::<EpochAdvanced>(event_data)

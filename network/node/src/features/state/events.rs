@@ -16,12 +16,7 @@ pub fn apply_join_committee_event(
         spools: 0,
     };
 
-    let Some(next_committee) = state.next_committee.as_mut() else {
-        return Err(NodeError::Store(format!(
-            "join committee event for node {} but next committee is missing",
-            event.node
-        )));
-    };
+    let next_committee = state.next_committee.get_or_insert_with(Vec::new);
 
     apply_member_join(
         next_committee,

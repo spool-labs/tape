@@ -1,8 +1,13 @@
 use std::sync::Arc;
 
+use bytemuck::Zeroable;
 use rpc::Rpc;
 use store::Store;
-use tape_api::event::{AssignmentGroupFinalized, NodeJoinedCommittee, VoteRecorded};
+use tape_api::event::{
+    AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
+    NodeJoinedCommittee, PeerSetResized, VoteRecorded,
+};
+use tape_api::state::Epoch;
 use tape_core::system::{EpochPhase, VoteKind};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
@@ -121,6 +126,89 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
             next_epoch = epoch.saturating_add(EpochNumber(1)).0,
             "published committed epoch state"
         );
+        Ok(())
+    }
+
+    pub async fn handle_create_epoch(&self, event: EpochCreated) -> Result<(), NodeError> {
+        let mut state = (*self.context.state()).clone();
+        let expected_next = state.epoch().saturating_add(EpochNumber(1));
+
+        if event.epoch != expected_next {
+            debug!(
+                event_epoch = event.epoch.0,
+                current_epoch = state.epoch().0,
+                "ignoring epoch creation outside next epoch"
+            );
+            return Ok(());
+        }
+
+        if !state
+            .next_epoch
+            .as_ref()
+            .is_some_and(|epoch| epoch.id == event.epoch)
+        {
+            let mut epoch = Epoch::zeroed();
+            epoch.id = event.epoch;
+            state.next_epoch = Some(epoch);
+        }
+
+        self.context.set_state(state)?;
+        Ok(())
+    }
+
+    pub async fn handle_create_committee(
+        &self,
+        event: CommitteeCreated,
+    ) -> Result<(), NodeError> {
+        self.publish_next_committee_capacity(
+            event.epoch,
+            u64::from_le_bytes(event.capacity),
+        ).await
+    }
+
+    pub async fn handle_resize_committee(
+        &self,
+        event: CommitteeResized,
+    ) -> Result<(), NodeError> {
+        self.publish_next_committee_capacity(
+            event.epoch,
+            u64::from_le_bytes(event.capacity),
+        ).await
+    }
+
+    pub async fn handle_resize_peer_set(
+        &self,
+        event: PeerSetResized,
+    ) -> Result<(), NodeError> {
+        let mut state = (*self.context.state()).clone();
+        state.peer_capacity = u64::from_le_bytes(event.capacity);
+        self.context.set_state(state)?;
+        Ok(())
+    }
+
+    async fn publish_next_committee_capacity(
+        &self,
+        epoch: EpochNumber,
+        capacity: u64,
+    ) -> Result<(), NodeError> {
+        let mut state = (*self.context.state()).clone();
+        let expected_next = state.epoch().saturating_add(EpochNumber(1));
+
+        if epoch != expected_next {
+            debug!(
+                event_epoch = epoch.0,
+                current_epoch = state.epoch().0,
+                "ignoring committee setup outside next epoch"
+            );
+            return Ok(());
+        }
+
+        if state.next_committee.is_none() {
+            state.next_committee = Some(Vec::new());
+        }
+        state.next_committee_capacity = Some(capacity);
+        self.context.set_state(state)?;
+
         Ok(())
     }
 

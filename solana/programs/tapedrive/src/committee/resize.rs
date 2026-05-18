@@ -1,11 +1,11 @@
-use core::mem::size_of;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 use solana_program::sysvar::rent::Rent;
 use solana_program::sysvar::Sysvar;
 use tape_solana::*;
+use tape_api::dynamic::DynamicState;
+use tape_api::event::CommitteeResized;
 use tape_api::program::prelude::*;
 use tape_api::state::Committee;
-use tape_core::system::Member;
 
 pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ResizeCommittee::try_from_bytes(data)?;
@@ -38,10 +38,10 @@ pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .as_account::<System>(&tapedrive::ID)?
         .committee_size;
 
-    let target_size = Committee::get_size()
-        .saturating_add((target_capacity as usize).saturating_mul(size_of::<Member>()));
+    let target_size = Committee::size_for_capacity(target_capacity);
     let current_size = committee_info.data_len();
     if current_size >= target_size {
+        log_committee_resized(committee_info, epoch)?;
         return Ok(());
     }
 
@@ -72,6 +72,20 @@ pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         header.members.count = 0;
     }
 
+    log_committee_resized(committee_info, epoch)?;
+
+    Ok(())
+}
+
+fn log_committee_resized(committee_info: &AccountInfo<'_>, epoch: EpochNumber) -> ProgramResult {
+    let capacity = Committee::header(committee_info, &tapedrive::ID)?
+        .members
+        .capacity;
+    CommitteeResized {
+        epoch,
+        capacity: capacity.to_le_bytes(),
+    }
+    .log();
     Ok(())
 }
 

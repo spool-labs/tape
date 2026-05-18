@@ -1,9 +1,8 @@
-use core::mem::size_of;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 use tape_solana::*;
+use tape_api::dynamic::DynamicState;
 use tape_api::program::prelude::*;
 use tape_api::state::PeerSet;
-use tape_core::system::Peer;
 
 pub fn process_create_peer_set(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
@@ -40,8 +39,7 @@ pub fn process_create_peer_set(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     };
 
     let initial_size = if genesis_capacity > 0 {
-        PeerSet::get_size()
-            .saturating_add((genesis_capacity as usize).saturating_mul(size_of::<Peer>()))
+        PeerSet::size_for_capacity(genesis_capacity)
     } else {
         MAX_PERMITTED_DATA_INCREASE.min(PeerSet::get_size())
     };
@@ -88,8 +86,7 @@ mod tests {
             rent_sysvar(),
         ];
 
-        let initial_size = PeerSet::get_size()
-            .saturating_add(GROUP_SIZE.saturating_mul(size_of::<Peer>()));
+        let initial_size = PeerSet::size_for_capacity(GROUP_SIZE as u64);
 
         let env = test_env();
         env.process_instruction(

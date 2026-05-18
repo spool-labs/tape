@@ -22,7 +22,8 @@
 //   Snapshot  | settlement done, pool done                   | None (snapshot manager)
 //   Active    | previous spools not settled                  | SettleSpools
 //   Active    | settlement done, pool not done               | AdvancePool
-//   Active    | join not done, 90% time elapsed              | JoinCommittee
+//   Active    | next epoch setup incomplete                  | PrepareNextEpoch
+//   Active    | setup done, join not done, 90% time elapsed  | JoinCommittee
 //   Active    | join done, commit not done                   | CommitEpoch
 //   Active    | all done                                     | None (wait)
 //   Closing   | assignment incomplete                        | None (assignment manager)
@@ -124,8 +125,8 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::{
-    advance_epoch, advance_pool, commit_epoch, join_committee, settle_spools, sync_spools,
-    wait_spool_ready,
+    advance_epoch, advance_pool, commit_epoch, join_committee, prepare_next_epoch, settle_spools,
+    sync_spools, wait_spool_ready,
 };
 
 const LIFECYCLE_HEARTBEAT: Duration = Duration::from_secs(1);
@@ -269,6 +270,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 Action::SyncSpools     => sync_spools::run(ctx, epoch, token).await,
                 Action::SettleSpools   => settle_spools::run(ctx, epoch, token).await,
                 Action::AdvancePool    => advance_pool::run(ctx, epoch, token).await,
+                Action::PrepareNextEpoch => prepare_next_epoch::run(ctx, epoch, token).await,
                 Action::JoinCommittee  => join_committee::run(ctx, epoch, token).await,
                 Action::CommitEpoch    => commit_epoch::run(ctx, epoch, token).await,
                 Action::AdvanceEpoch   => advance_epoch::run(ctx, epoch, token).await,
@@ -383,6 +385,13 @@ pub fn next_action(
         }
 
         EpochPhase::Active => {
+            // Epoch(N+1) and Committee(N+1) must exist before any joins or commit.
+            if (!next_epoch_setup_ready(state) || !done.contains(&Action::PrepareNextEpoch))
+                && !done.contains(&Action::CommitEpoch)
+            {
+                return Some(Action::PrepareNextEpoch);
+            }
+
             // JoinCommittee: gated by time, checked by the task itself.
             if !in_next && !done.contains(&Action::JoinCommittee) {
                 return Some(Action::JoinCommittee);
@@ -415,6 +424,21 @@ fn assignment_ready(state: &ProtocolState) -> bool {
     };
 
     next_epoch.has_assignment_hash() && next_epoch.total_groups == state.system.target_group_count
+}
+
+fn next_epoch_setup_ready(state: &ProtocolState) -> bool {
+    let next = state.epoch().saturating_add(EpochNumber(1));
+    let next_epoch_ready = state
+        .next_epoch
+        .as_ref()
+        .is_some_and(|epoch| epoch.id == next);
+    let next_committee_ready = state.next_committee.is_some()
+        && state
+            .next_committee_capacity
+            .is_some_and(|capacity| capacity == state.system.committee_size);
+    let peer_set_ready = state.peer_capacity >= state.system.committee_size.saturating_mul(3);
+
+    next_epoch_ready && next_committee_ready && peer_set_ready
 }
 
 fn phase_allows_advance_pool(phase: EpochPhase) -> bool {
@@ -532,12 +556,31 @@ mod tests {
     }
 
     #[test]
+    fn active_prepares_next_epoch_before_join_or_commit() {
+        let node = Address::new_unique();
+        let state = state_with_phase(EpochPhase::Active);
+        let mut done = HashSet::new();
+        done.insert(Action::AdvancePool);
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, Some(Action::PrepareNextEpoch));
+    }
+
+    #[test]
     fn active_skips_join_when_already_in_next_committee() {
         let node = Address::new_unique();
         let mut state = state_with_phase(EpochPhase::Active);
+        state.next_epoch = Some(Epoch {
+            id: state.epoch().saturating_add(EpochNumber(1)),
+            ..Epoch::zeroed()
+        });
         state.next_committee = Some(vec![member(node)]);
+        state.next_committee_capacity = Some(state.system.committee_size);
+        state.peer_capacity = state.system.committee_size.saturating_mul(3);
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
+        done.insert(Action::PrepareNextEpoch);
 
         let action = next_action(&state, node, &done);
 

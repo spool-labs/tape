@@ -2,13 +2,15 @@
 
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
-    AssignmentGroupFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee, NodeRegistered,
-    PoolAdvanced, SnapshotFinalized, SpoolSettled, SpoolSynced, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
+    AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
+    EpochCreated, NodeJoinedCommittee, NodeRegistered, PeerSetResized, PoolAdvanced, SnapshotFinalized,
+    SpoolSettled, SpoolSynced, TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted,
+    TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 use tape_api::instruction::{
-    self as ix, FinalizeGroup, FinalizeSnapshot, ProposeAssignment, ProposeSnapshot,
-    SettleSpool, SyncSpool, TapeInstruction, VoteAssignment, VoteSnapshot,
+    self as ix, CreateCommittee, CreateEpoch, FinalizeGroup, FinalizeSnapshot,
+    ProposeAssignment, ProposeSnapshot, ResizeCommittee, ResizePeerSet, SettleSpool, SyncSpool,
+    TapeInstruction, VoteAssignment, VoteSnapshot,
 };
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
@@ -27,6 +29,16 @@ use crate::error::ParseError;
 /// Use `merge()` to combine with events.
 #[derive(Debug, Clone)]
 pub enum RawInstruction {
+    CreateEpoch {
+        epoch: EpochNumber,
+    },
+    CreateCommittee {
+        epoch: EpochNumber,
+    },
+    ResizeCommittee {
+        epoch: EpochNumber,
+    },
+    ResizePeerSet,
     CommitEpoch,
     AdvanceEpoch,
     SyncSpool {
@@ -100,6 +112,21 @@ pub enum RawInstruction {
 #[derive(Debug, Clone)]
 pub enum ParsedInstruction {
     // Epoch boundary
+    CreateEpoch {
+        epoch: EpochNumber,
+        event: EpochCreated,
+    },
+    CreateCommittee {
+        epoch: EpochNumber,
+        event: CommitteeCreated,
+    },
+    ResizeCommittee {
+        epoch: EpochNumber,
+        event: CommitteeResized,
+    },
+    ResizePeerSet {
+        event: PeerSetResized,
+    },
     CommitEpoch {
         event: EpochCommitted,
     },
@@ -244,6 +271,36 @@ pub fn parse_raw_instruction(
     };
 
     match ix_type {
+        TapeInstruction::CreateEpoch => {
+            let args = CreateEpoch::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("create_epoch: {e:?}")))?;
+            Ok(Some(RawInstruction::CreateEpoch {
+                epoch: EpochNumber::unpack(args.epoch),
+            }))
+        }
+
+        TapeInstruction::CreateCommittee => {
+            let args = CreateCommittee::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("create_committee: {e:?}")))?;
+            Ok(Some(RawInstruction::CreateCommittee {
+                epoch: EpochNumber::unpack(args.epoch),
+            }))
+        }
+
+        TapeInstruction::ResizeCommittee => {
+            let args = ResizeCommittee::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("resize_committee: {e:?}")))?;
+            Ok(Some(RawInstruction::ResizeCommittee {
+                epoch: EpochNumber::unpack(args.epoch),
+            }))
+        }
+
+        TapeInstruction::ResizePeerSet => {
+            let _args = ResizePeerSet::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("resize_peer_set: {e:?}")))?;
+            Ok(Some(RawInstruction::ResizePeerSet))
+        }
+
         TapeInstruction::CommitEpoch => Ok(Some(RawInstruction::CommitEpoch)),
 
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),

@@ -69,6 +69,18 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
 
         for instruction in &block.instructions {
             match instruction {
+                ParsedInstruction::CreateEpoch { event, .. } => {
+                    handlers.handle_create_epoch(*event).await?;
+                }
+                ParsedInstruction::CreateCommittee { event, .. } => {
+                    handlers.handle_create_committee(*event).await?;
+                }
+                ParsedInstruction::ResizeCommittee { event, .. } => {
+                    handlers.handle_resize_committee(*event).await?;
+                }
+                ParsedInstruction::ResizePeerSet { event } => {
+                    handlers.handle_resize_peer_set(*event).await?;
+                }
                 ParsedInstruction::CommitEpoch { event } => {
                     handlers
                         .handle_commit_epoch(event.epoch, event.next_nonce)

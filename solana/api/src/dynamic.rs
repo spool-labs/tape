@@ -15,10 +15,18 @@ pub trait DynamicState: Pod + Discriminator {
     fn tail(&self) -> &Tail<Self::Entry>;
     fn tail_mut(&mut self) -> &mut Tail<Self::Entry>;
 
+    fn size_for_capacity(capacity: u64) -> usize
+    where Self: Sized
+    {
+        let header_size = 8 + size_of::<Self>();
+        header_size.saturating_add((capacity as usize)
+            .saturating_mul(size_of::<Self::Entry>()))
+    }
+
     fn pack_with(&self, entries: &[Self::Entry]) -> Vec<u8>
     where Self: Sized,
     {
-        let header_size = 8 + size_of::<Self>();
+        let header_size = Self::size_for_capacity(0);
         let mut out = vec![0u8; header_size + self.tail().trailing_size()];
         out[0] = Self::discriminator();
         out[8..header_size].copy_from_slice(bytemuck::bytes_of(self));

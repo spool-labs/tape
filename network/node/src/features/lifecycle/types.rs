@@ -7,6 +7,7 @@ pub enum Action {
     SyncSpools,
     SettleSpools,
     AdvancePool,
+    PrepareNextEpoch,
     JoinCommittee,
     CommitEpoch,
     AdvanceEpoch,

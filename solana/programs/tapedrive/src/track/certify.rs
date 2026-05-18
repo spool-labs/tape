@@ -166,12 +166,12 @@ mod tests {
 
         let (tape_address, _) = tape_pda(authority.into());
         let (system_address, _) = system_pda();
-        let group = GroupIndex(0);
-        let (group_address, _) = group_pda(curr, group);
+        let group_id = GroupIndex(0);
+        let (group_address, _) = group_pda(curr, group_id);
 
         const SIGNERS: usize = 14;
 
-        let (sks, group) = make_group(curr, group);
+        let (sks, group) = make_group(curr, group_id);
 
         let system = System {
             current_epoch: curr,
@@ -187,7 +187,7 @@ mod tests {
             kind: TrackKind::Blob as u64,
             state: TrackState::Registered as u64,
             size: StorageUnits::mb(250),
-            group,
+            group: group_id,
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();

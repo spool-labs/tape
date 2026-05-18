@@ -109,7 +109,11 @@ fn capture_instruction(
         | ParsedInstruction::VoteSnapshot { .. }
         | ParsedInstruction::ProposeAssignment { .. }
         | ParsedInstruction::VoteAssignment { .. }
-        | ParsedInstruction::FinalizeGroup { .. } => return Ok(None),
+        | ParsedInstruction::FinalizeGroup { .. }
+        | ParsedInstruction::CreateEpoch { .. }
+        | ParsedInstruction::CreateCommittee { .. }
+        | ParsedInstruction::ResizeCommittee { .. }
+        | ParsedInstruction::ResizePeerSet { .. } => return Ok(None),
         ParsedInstruction::TrackWrite {
             track,
             key,
