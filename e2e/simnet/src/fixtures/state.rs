@@ -2,8 +2,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use rpc_client::RpcClient;
-use tape_api::prelude::{Archive, Epoch, System};
+use tape_api::prelude::{Archive, Epoch, Group, System};
 use tape_api::program::MIN_COMMITTEE_SIZE;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::EpochNumber;
 use tape_protocol::fetch::fetch_state;
 use tracing::trace;
@@ -28,6 +29,30 @@ impl SimnetScenario<'_> {
     pub async fn read_archive(&self) -> Result<Archive> {
         let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client.get_archive().await.context("read archive")
+    }
+
+    pub async fn read_groups(
+        &self,
+        epoch: EpochNumber,
+        total_groups: u64,
+    ) -> Result<Vec<Group>> {
+        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        client
+            .get_groups(epoch, total_groups)
+            .await
+            .with_context(|| format!("read groups for epoch {}", epoch.0))
+    }
+
+    pub async fn read_group(
+        &self,
+        epoch: EpochNumber,
+        group: GroupIndex,
+    ) -> Result<Group> {
+        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        client
+            .get_group(epoch, group)
+            .await
+            .with_context(|| format!("read group {} for epoch {}", group.0, epoch.0))
     }
 
     pub async fn committee_size(&self) -> Result<usize> {

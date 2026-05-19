@@ -5,8 +5,8 @@ use solana_sdk::signer::Signer;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_advance_pool_ix, build_claim_commission_ix, build_join_committee_ix,
-    build_request_stake_unlock_ix, build_set_commission_ix, build_stake_with_pool_ix,
-    build_sync_spool_ix, build_unstake_from_pool_ix,
+    build_request_stake_unlock_ix, build_set_commission_ix, build_set_spool_groups_ix,
+    build_stake_with_pool_ix, build_sync_spool_ix, build_unstake_from_pool_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
 use tape_core::spooler::GroupIndex;
@@ -317,6 +317,41 @@ impl SimnetScenario<'_> {
         Ok(())
     }
 
+    pub async fn set_spool_groups(
+        &self,
+        node_index: usize,
+        spool_groups: u64,
+    ) -> Result<()> {
+        let payer = self.harness.admin();
+        let node = &self.harness.nodes()[node_index];
+
+        let ix = build_set_spool_groups_ix(
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
+            spool_groups,
+        );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
+
+        self.harness
+            .chain()
+            .send_instructions_with_signers_and_advance(
+                payer,
+                vec![cu_ix, ix],
+                &[node.keypair()],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("set spool groups for node {node_index}"))?;
+
+        trace!(
+            node_index,
+            spool_groups,
+            "set_spool_groups completed"
+        );
+        Ok(())
+    }
+
     pub async fn claim_commission(&self, node_index: usize) -> Result<()> {
         trace!(node_index, "submitting claim_commission instruction");
         let payer = self.harness.admin();
@@ -419,6 +454,34 @@ impl SimnetScenario<'_> {
         }
         trace!(count = node_indices.len(), "pool_many complete");
         append_log("pool many done");
+        Ok(())
+    }
+
+    pub async fn set_spool_groups_many(
+        &self,
+        node_indices: &[usize],
+        spool_groups: u64,
+    ) -> Result<()> {
+        trace!(
+            count = node_indices.len(),
+            spool_groups,
+            "set_spool_groups_many start"
+        );
+        append_log(&format!(
+            "set spool groups many start count={} spool_groups={spool_groups}",
+            node_indices.len()
+        ));
+        for &i in node_indices {
+            self.set_spool_groups(i, spool_groups)
+                .await
+                .with_context(|| format!("set spool groups for node {i}"))?;
+        }
+        trace!(
+            count = node_indices.len(),
+            spool_groups,
+            "set_spool_groups_many complete"
+        );
+        append_log("set spool groups many done");
         Ok(())
     }
 }
