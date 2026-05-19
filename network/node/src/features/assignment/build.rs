@@ -57,7 +57,7 @@ where
         result = task => result
             .map_err(|e| NodeError::Store(format!("build_assignment task join: {e}")))?,
         _ = cancel.cancelled() =>
-            Err(NodeError::Store("build_assignment: cancelled".into())),
+            Ok(None),
     }
 }
 

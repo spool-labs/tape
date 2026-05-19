@@ -86,7 +86,7 @@ where
         result = task => result
             .map_err(|e| NodeError::Store(format!("build_snapshot task join: {e}")))?,
         _ = cancel.cancelled() =>
-            Err(NodeError::Store(format!("build_snapshot({epoch}): cancelled"))),
+            Ok(None),
     }
 }
 

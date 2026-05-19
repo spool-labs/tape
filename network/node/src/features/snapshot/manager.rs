@@ -172,13 +172,13 @@ where
 
         let snapshot_epoch = state.epoch().saturating_sub(EpochNumber(1));
 
-        if let Some(hash) = canonical_snapshot_hash(&state, snapshot_epoch) {
-            drop(state);
-            self.on_snapshot_canonical(snapshot_epoch, hash).await?;
+        if state.phase() != EpochPhase::Snapshot {
             return Ok(());
         }
 
-        if state.phase() != EpochPhase::Snapshot {
+        if let Some(hash) = canonical_snapshot_hash(&state, snapshot_epoch) {
+            drop(state);
+            self.on_snapshot_canonical(snapshot_epoch, hash).await?;
             return Ok(());
         }
 
