@@ -4,23 +4,11 @@ use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 
 #[test]
 fn blob_upload() {
-    // The SDK write/read futures are large; run on a thread with extra stack.
-    let thread = std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(blob_upload_inner())
-        })
-        .expect("spawn test thread");
-
-    thread.join().unwrap();
+    run_simnet_test(blob_upload_inner);
 }
 
 async fn blob_upload_inner() {

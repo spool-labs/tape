@@ -73,7 +73,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match outcome {
             TxOutcome::Confirmed(sig) => {
-                info!(epoch = epoch.0, %spool, ?sig, "sync_spools: confirmed");
+                info!(epoch = epoch.0, %spool, %sig, "sync_spools: confirmed");
                 completed.insert(spool);
             }
             TxOutcome::Program(TapeError::AlreadySynced) => {

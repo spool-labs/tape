@@ -48,7 +48,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match outcome {
             TxOutcome::Confirmed(sig) => {
-                info!(epoch = epoch.0, ?sig, "commit_epoch: confirmed");
+                info!(epoch = epoch.0, %sig, "commit_epoch: confirmed");
                 return TaskDone::Done(Action::CommitEpoch, epoch);
             }
             TxOutcome::Program(err) => {

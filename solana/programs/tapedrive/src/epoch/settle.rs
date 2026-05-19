@@ -117,6 +117,7 @@ pub fn process_settle_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         epoch: prev,
         group: group_id,
         spool: args.spool,
+        phase: epoch.state.phase,
     }.log();
 
     Ok(())

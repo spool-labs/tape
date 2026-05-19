@@ -119,7 +119,7 @@ use tape_crypto::Address;
 use tape_protocol::{Api, ProtocolState};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -264,18 +264,21 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let ctx = self.context.clone();
         let token = self.cancel.child_token();
 
-        tasks.spawn(async move {
-            match action {
-                Action::WaitSpoolReady => wait_spool_ready::run(ctx, epoch, token).await,
-                Action::SyncSpools     => sync_spools::run(ctx, epoch, token).await,
-                Action::SettleSpools   => settle_spools::run(ctx, epoch, token).await,
-                Action::AdvancePool    => advance_pool::run(ctx, epoch, token).await,
-                Action::PrepareNextEpoch => prepare_next_epoch::run(ctx, epoch, token).await,
-                Action::JoinCommittee  => join_committee::run(ctx, epoch, token).await,
-                Action::CommitEpoch    => commit_epoch::run(ctx, epoch, token).await,
-                Action::AdvanceEpoch   => advance_epoch::run(ctx, epoch, token).await,
+        tasks.spawn(
+            async move {
+                match action {
+                    Action::WaitSpoolReady => wait_spool_ready::run(ctx, epoch, token).await,
+                    Action::SyncSpools => sync_spools::run(ctx, epoch, token).await,
+                    Action::SettleSpools => settle_spools::run(ctx, epoch, token).await,
+                    Action::AdvancePool => advance_pool::run(ctx, epoch, token).await,
+                    Action::PrepareNextEpoch => prepare_next_epoch::run(ctx, epoch, token).await,
+                    Action::JoinCommittee => join_committee::run(ctx, epoch, token).await,
+                    Action::CommitEpoch => commit_epoch::run(ctx, epoch, token).await,
+                    Action::AdvanceEpoch => advance_epoch::run(ctx, epoch, token).await,
+                }
             }
-        });
+            .in_current_span(),
+        );
 
         *running = Some(action);
     }

@@ -10,7 +10,7 @@ use tape_retry::{retry_if, RetryConfig};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, warn, Instrument};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::node::NodeConfig;
@@ -355,17 +355,20 @@ where
     let task_status = status.clone();
     let task_cancel = cancel.clone();
 
-    let task = tokio::spawn(async move {
-        let result = supervise_with_context(
-            context,
-            config,
-            start_slot,
-            task_cancel,
-        )
-        .await;
-        task_status.mark_stopped();
-        result
-    });
+    let task = tokio::spawn(
+        async move {
+            let result = supervise_with_context(
+                context,
+                config,
+                start_slot,
+                task_cancel,
+            )
+            .await;
+            task_status.mark_stopped();
+            result
+        }
+        .in_current_span(),
+    );
 
     Ok(NodeRuntimeHandle { cancel, task, status })
 }

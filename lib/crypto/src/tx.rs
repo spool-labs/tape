@@ -64,6 +64,13 @@ impl From<Txid> for [u8; 64] {
     }
 }
 
+#[cfg(not(target_os = "solana"))]
+impl fmt::Display for Txid {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&SolanaSignature::from(self.0), formatter)
+    }
+}
+
 impl Serialize for Txid {
     fn serialize<SerializerType>(
         &self,

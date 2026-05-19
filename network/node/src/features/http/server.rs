@@ -25,7 +25,7 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower::load_shed::LoadShedLayer;
 use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info};
+use tracing::{debug, info, Instrument};
 
 use crate::config::http::HttpConfig;
 use crate::config::https::HttpsConfig;
@@ -218,27 +218,33 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let https_handle = Handle::new();
         let shutdown_handle = https_handle.clone();
         let cancel = self.cancel.clone();
-        let shutdown_task = tokio::spawn(async move {
-            cancel.cancelled().await;
-            shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
-        });
+        let shutdown_task = tokio::spawn(
+            async move {
+                cancel.cancelled().await;
+                shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+            }
+            .in_current_span(),
+        );
 
         let http_cancel = self.cancel.clone();
-        let http_task = tokio::spawn(async move {
-            match tokio::net::TcpListener::bind(http_listen).await {
-                Ok(listener) => {
-                    info!(listen = %http_listen, "http listener bound");
-                    let _ = axum::serve(listener, http_router)
-                        .with_graceful_shutdown(async move {
-                            http_cancel.cancelled().await;
-                        })
-                        .await;
-                }
-                Err(err) => {
-                    tracing::error!(listen = %http_listen, error = %err, "http listener failed to bind");
+        let http_task = tokio::spawn(
+            async move {
+                match tokio::net::TcpListener::bind(http_listen).await {
+                    Ok(listener) => {
+                        info!(listen = %http_listen, "http listener bound");
+                        let _ = axum::serve(listener, http_router)
+                            .with_graceful_shutdown(async move {
+                                http_cancel.cancelled().await;
+                            })
+                            .await;
+                    }
+                    Err(err) => {
+                        tracing::error!(listen = %http_listen, error = %err, "http listener failed to bind");
+                    }
                 }
             }
-        });
+            .in_current_span(),
+        );
 
         let result = axum_server::bind(https_listen)
             .acceptor(acceptor)

@@ -2,23 +2,12 @@ use std::time::Duration;
 
 use tape_api::program::EPOCH_DURATION;
 use tape_core::types::{BasisPoints, EpochNumber};
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 use tape_store::ops::{MetaOps, TrackOps};
 
 #[test]
 fn bootstrap_late_join() {
-    let thread = std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(bootstrap_late_join_inner())
-        })
-        .expect("spawn test thread");
-
-    thread.join().unwrap();
+    run_simnet_test(bootstrap_late_join_inner);
 }
 
 async fn bootstrap_late_join_inner() {

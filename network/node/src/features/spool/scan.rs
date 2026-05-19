@@ -205,6 +205,14 @@ mod tests {
         }
     }
 
+    fn snapshot(track_address: Address) -> ObjectInfo {
+        ObjectInfo::Snapshot {
+            track_address,
+            epoch: EpochNumber(2),
+            slot: SlotNumber(10),
+        }
+    }
+
     #[tokio::test]
     async fn finds_gaps() {
         let ctx = test_context().await;
@@ -281,6 +289,26 @@ mod tests {
         ctx.store.put_object_info(a, certified(a)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, ScanResult::Done { gaps: 1 });
+        assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
+    }
+
+    #[tokio::test]
+    async fn scans_snapshot_tracks() {
+        let ctx = test_context().await;
+        let a = addr(1);
+        let group = GroupIndex::containing(SPOOL);
+
+        ctx.store.put_track(a, track(group)).unwrap();
+        ctx.store.put_object_info(a, snapshot(a)).unwrap();
+
+        let result = run(
+            ctx.clone(),
+            &RecoveryConfig::default(),
+            SPOOL,
+            &CancellationToken::new(),
+        )
+        .await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
         assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
     }

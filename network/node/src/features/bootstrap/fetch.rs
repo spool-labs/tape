@@ -18,16 +18,15 @@ use tape_core::types::{ChunkNumber, EpochNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_protocol::api::{GetSliceReq, GetTrackDataReq, ListTracksByTapeReq};
 use tape_protocol::Api;
-use tape_slicer::{ErasureCoder, OuterCoder, Slicer, SNAPSHOT_K_OUTER};
+use tape_slicer::{snapshot_outer_k, ErasureCoder, OuterCoder, Slicer};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace, warn, Instrument};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
 const K_INNER: usize = 7;
-const K_OUTER: usize = SNAPSHOT_K_OUTER;
 const LIST_TRACKS_LIMIT: u32 = 256;
 
 /// Fetch every chunk for an epoch's snapshot tape from peers, decode, and
@@ -88,14 +87,15 @@ where
     // Fan out: fetch + Clay-decode every track in parallel. Each task returns
     // the `(group, chunk, outer-symbol)` triple recovered from the Clay
     // payload. Tasks that fail are logged and skipped; outer RS recovers as
-    // long as >=K_OUTER groups succeed per segment.
+    // long as enough groups succeed per segment for this snapshot's group count.
     let mut join = JoinSet::new();
     for track in tracks {
         let context = context.clone();
         let cancel = cancel.clone();
-        join.spawn(async move {
-            fetch_and_decode_track(&context, epoch, track, &cancel).await
-        });
+        join.spawn(
+            async move { fetch_and_decode_track(&context, epoch, track, &cancel).await }
+                .in_current_span(),
+        );
     }
 
     let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
@@ -159,9 +159,9 @@ fn snapshot_track_group_count(
         .max()
         .unwrap_or(0);
 
-    if total_groups <= K_OUTER {
+    if total_groups == 0 {
         return Err(NodeError::Store(format!(
-            "bootstrap: snapshot for epoch {epoch} has {total_groups} groups, need more than {K_OUTER}"
+            "bootstrap: snapshot for epoch {epoch} has no groups"
         )));
     }
 
@@ -417,6 +417,14 @@ fn outer_decode_segments(
         )));
     }
 
+    let outer_k = snapshot_outer_k(total_groups);
+    if outer_k == 0 {
+        return Err(NodeError::Store(format!(
+            "bootstrap: snapshot for epoch {} has no groups",
+            epoch.0
+        )));
+    }
+
     // Chunks must be a contiguous 0..segment_count range — gaps mean not
     // enough groups decoded for some segment, which is a hard failure.
     let segment_count = symbols_by_segment
@@ -435,16 +443,16 @@ fn outer_decode_segments(
 
     let mut segments = Vec::with_capacity(segment_count);
     for (chunk, symbols) in symbols_by_segment {
-        if symbols.len() < K_OUTER {
+        if symbols.len() < outer_k {
             return Err(NodeError::Store(format!(
                 "bootstrap: only {}/{} groups decoded for epoch={} chunk={}",
                 symbols.len(),
-                K_OUTER,
+                outer_k,
                 epoch.0,
                 chunk.0
             )));
         }
-        let mut coder = OuterCoder::new(K_OUTER, total_groups);
+        let mut coder = OuterCoder::new(outer_k, total_groups);
         let refs: Vec<(usize, &[u8])> = symbols.iter().map(|(i, d)| (*i, d.as_slice())).collect();
         let packed = coder.decode(&refs).map_err(|e| {
             NodeError::Store(format!(
@@ -495,14 +503,14 @@ mod tests {
     use tape_core::snapshot::chunk::pack_segment;
     use tape_core::snapshot::replay::{ReplayableEvent, SnapshotLog};
     use tape_core::types::SlotNumber;
-    use tape_slicer::{OuterCoder, SNAPSHOT_K_OUTER};
+    use tape_slicer::{snapshot_max_segment_bytes, OuterCoder};
     use tape_store::ops::EventLogOps;
     use tape_store::TapeStore;
 
     use super::*;
-    use crate::features::snapshot::build::{encode_chunk, BuiltChunk, MAX_SEGMENT_BYTES};
+    use crate::features::snapshot::build::{encode_chunk, BuiltChunk};
 
-    const TEST_GROUP_COUNT: usize = SNAPSHOT_K_OUTER + 3;
+    const TEST_GROUP_COUNT: usize = 20;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -511,17 +519,21 @@ mod tests {
     /// Build every snapshot chunk for `epoch` across all test groups.
     /// Mirrors production encoding without the per-node slice/sig
     /// bookkeeping — tests only need the raw chunks for decode round-trips.
-    fn build_all_chunks(store: &TapeStore<MemoryStore>, epoch: EpochNumber) -> Vec<BuiltChunk> {
+    fn build_all_chunks_with_group_count(
+        store: &TapeStore<MemoryStore>,
+        epoch: EpochNumber,
+        group_count: usize,
+    ) -> Vec<BuiltChunk> {
         let entries = store.get_epoch_events(epoch).unwrap();
         let start_slot = entries.first().map(|e| e.slot).unwrap_or(SlotNumber(0));
         let end_slot = entries.last().map(|e| e.slot).unwrap_or(SlotNumber(0));
         let log = SnapshotLog { epoch, start_slot, end_slot, entries };
         let compressed = lz4_flex::compress_prepend_size(&log.to_bytes().unwrap());
-        let segment_count = compressed.len().div_ceil(MAX_SEGMENT_BYTES).max(1);
+        let segment_count = compressed.len().div_ceil(snapshot_max_segment_bytes(group_count)).max(1);
         let segment_size = compressed.len().div_ceil(segment_count).max(1);
 
-        let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER, TEST_GROUP_COUNT);
-        let mut chunks = Vec::with_capacity(segment_count * TEST_GROUP_COUNT);
+        let mut outer = OuterCoder::new(snapshot_outer_k(group_count), group_count);
+        let mut chunks = Vec::with_capacity(segment_count * group_count);
         for segment_idx in 0..segment_count {
             let start = segment_idx * segment_size;
             let end = start.saturating_add(segment_size).min(compressed.len());
@@ -533,6 +545,10 @@ mod tests {
             }
         }
         chunks
+    }
+
+    fn build_all_chunks(store: &TapeStore<MemoryStore>, epoch: EpochNumber) -> Vec<BuiltChunk> {
+        build_all_chunks_with_group_count(store, epoch, TEST_GROUP_COUNT)
     }
 
     fn append_advance(store: &TapeStore<MemoryStore>, epoch: EpochNumber, slot: u64) {
@@ -621,11 +637,11 @@ mod tests {
                 .push((built.group.0 as usize, data));
         }
 
-        // Keep only K_OUTER per segment — simulates a bootstrap that
-        // collected the minimum supermajority.
+        let outer_k = snapshot_outer_k(TEST_GROUP_COUNT);
+        // Keep only the derived outer threshold per segment.
         for symbols in symbols_by_segment.values_mut() {
             symbols.sort_by_key(|(i, _)| *i);
-            symbols.truncate(K_OUTER);
+            symbols.truncate(outer_k);
         }
 
         let segments = outer_decode_segments(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap();
@@ -679,6 +695,30 @@ mod tests {
     }
 
     #[test]
+    fn one_group_round_trip() {
+        let store = test_store();
+        let epoch = EpochNumber(22);
+        append_advance(&store, epoch, 100);
+
+        let chunks = build_all_chunks_with_group_count(&store, epoch, 1);
+        assert!(!chunks.is_empty());
+
+        let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
+        for built in &chunks {
+            let (chunk, data) = decode_built_chunk(built);
+            symbols_by_segment
+                .entry(chunk)
+                .or_default()
+                .push((built.group.0 as usize, data));
+        }
+
+        let segments = outer_decode_segments(&symbols_by_segment, epoch, 1).unwrap();
+        let log = decode_snapshot_log(segments, epoch).unwrap();
+        assert_eq!(log.epoch, epoch);
+        assert_eq!(log.entries.len(), 1);
+    }
+
+    #[test]
     fn outer_decode_rejects_insufficient_groups() {
         let store = test_store();
         let epoch = EpochNumber(30);
@@ -686,8 +726,9 @@ mod tests {
         let chunks = build_all_chunks(&store, epoch);
 
         let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
-        // Give segment 0 only K_OUTER-1 symbols.
-        for built in chunks.iter().take(K_OUTER - 1) {
+        let outer_k = snapshot_outer_k(TEST_GROUP_COUNT);
+        // Give segment 0 only outer_k - 1 symbols.
+        for built in chunks.iter().take(outer_k - 1) {
             let (chunk, data) = decode_built_chunk(built);
             symbols_by_segment
                 .entry(chunk)

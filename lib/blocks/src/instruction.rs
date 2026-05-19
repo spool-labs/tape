@@ -8,9 +8,8 @@ use tape_api::event::{
     TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 use tape_api::instruction::{
-    self as ix, CreateCommittee, CreateEpoch, FinalizeGroup, FinalizeSnapshot,
-    ProposeAssignment, ProposeSnapshot, ResizeCommittee, ResizePeerSet, SettleSpool, SyncSpool,
-    TapeInstruction, VoteAssignment, VoteSnapshot,
+    self as ix, CreateCommittee, CreateEpoch, ResizeCommittee, ResizePeerSet, SettleSpool,
+    SyncSpool, TapeInstruction,
 };
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
@@ -315,20 +314,20 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::ProposeSnapshot => {
-            let args = ProposeSnapshot::try_from_bytes(&ix_data[1..])
+            let args = ix::parse_propose_snapshot(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("propose_snapshot: {e:?}")))?;
             Ok(Some(RawInstruction::ProposeSnapshot { hash: args.hash }))
         }
 
         TapeInstruction::VoteSnapshot => {
-            let args = VoteSnapshot::try_from_bytes(&ix_data[1..])
+            let args = ix::parse_vote_snapshot(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_snapshot: {e:?}")))?;
             let group = GroupIndex::unpack(args.group);
             Ok(Some(RawInstruction::VoteSnapshot { hash: args.hash, group }))
         }
 
         TapeInstruction::FinalizeSnapshot => {
-            let args = FinalizeSnapshot::try_from_bytes(&ix_data[1..])
+            let args = ix::parse_finalize_snapshot(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("finalize_snapshot: {e:?}")))?;
             Ok(Some(RawInstruction::FinalizeSnapshot {
                 epoch: EpochNumber::unpack(args.epoch),
@@ -336,13 +335,13 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::ProposeAssignment => {
-            let args = ProposeAssignment::try_from_bytes(&ix_data[1..])
+            let args = ix::parse_propose_assignment(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("propose_assignment: {e:?}")))?;
             Ok(Some(RawInstruction::ProposeAssignment { hash: args.hash }))
         }
 
         TapeInstruction::VoteAssignment => {
-            let args = VoteAssignment::try_from_bytes(&ix_data[1..])
+            let args = ix::parse_vote_assignment(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_assignment: {e:?}")))?;
             let group = GroupIndex::unpack(args.group);
             Ok(Some(RawInstruction::VoteAssignment {
@@ -352,7 +351,7 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::FinalizeGroup => {
-            let args = FinalizeGroup::try_from_bytes(&ix_data[1..])
+            let args = ix::parse_finalize_group(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("finalize_group: {e:?}")))?;
             Ok(Some(RawInstruction::FinalizeGroup {
                 epoch: EpochNumber::unpack(args.epoch),
@@ -455,13 +454,14 @@ mod tests {
     use solana_sdk::instruction::Instruction;
     use solana_transaction_status::UiCompiledInstruction;
     use tape_api::instruction::{
-        build_vote_assignment_ix, build_vote_snapshot_ix,
+        build_finalize_group_ix, build_vote_assignment_ix, build_vote_snapshot_ix,
     };
     use tape_core::bls::BlsSignature;
+    use tape_core::cert::{AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT};
     use tape_core::spooler::GroupIndex;
     use tape_core::system::VoteKind;
     use tape_core::types::{
-        EpochNumber, SpoolBitmap,
+        EpochNumber, SpoolBitmap, StorageUnits,
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -523,6 +523,31 @@ mod tests {
                 assert_eq!(group, GroupIndex(3));
             }
             other => panic!("expected RawInstruction::VoteAssignment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_finalize_group() {
+        let group = GroupIndex(3);
+        let payload = AssignmentGroupPayload::new(
+            group,
+            core::array::from_fn(|i| i as u64),
+            StorageUnits::mb(100),
+        );
+        let proof = [Hash::zeroed(); ASSIGNMENT_TREE_HEIGHT];
+        let (ix, keys) = compiled_instruction(&build_finalize_group_ix(
+            Address::new_unique(),
+            EpochNumber(8),
+            payload,
+            proof,
+        ));
+
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::FinalizeGroup { epoch, group: parsed_group }) => {
+                assert_eq!(epoch, EpochNumber(8));
+                assert_eq!(parsed_group, group);
+            }
+            other => panic!("expected RawInstruction::FinalizeGroup, got {other:?}"),
         }
     }
 

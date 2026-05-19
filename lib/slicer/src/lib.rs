@@ -24,4 +24,7 @@ pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree,
 pub use slice_index::SliceIndex;
 pub use repair::{RepairPlan, StripeRepair, HelperPlan, extract_repair_data};
 pub use reed_solomon::MAX_SLICE_BYTES;
-pub use outer::{OuterCoder, DEFAULT_K_OUTER, MAX_CHUNK_BYTES, SNAPSHOT_K_OUTER};
+pub use outer::{
+    snapshot_max_segment_bytes, snapshot_outer_k, OuterCoder, MAX_CHUNK_BYTES,
+    SNAPSHOT_OUTER_DATA_DENOMINATOR,
+};

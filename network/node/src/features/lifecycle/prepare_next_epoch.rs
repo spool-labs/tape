@@ -241,7 +241,7 @@ fn log_setup_outcome(
 ) -> bool {
     match outcome {
         TxOutcome::Confirmed(txid) => {
-            debug!(action, epoch = epoch.0, target_epoch = target_epoch.0, ?txid, "prepare_next_epoch: confirmed");
+            debug!(action, epoch = epoch.0, target_epoch = target_epoch.0, %txid, "prepare_next_epoch: confirmed");
             false
         }
         TxOutcome::Program(err) => {

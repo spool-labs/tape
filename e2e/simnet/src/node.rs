@@ -21,6 +21,7 @@ use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
 use tape_store::{TapeStore, ops::MetaOps};
 use tokio::time::Duration;
+use tracing::Instrument;
 
 use crate::config::NodeRuntimeMode;
 
@@ -199,8 +200,10 @@ impl TestNode {
                 let mut config = self.app_config.clone();
                 config.solana.start_slot = Some(start_slot);
 
+                let node_id = context.node_id().0;
                 self.runtime = Some(
                     start_with_context(context, config)
+                        .instrument(tracing::info_span!("node", node_id))
                         .await
                         .context("start supervised node runtime")?,
                 );

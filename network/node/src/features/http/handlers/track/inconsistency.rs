@@ -242,10 +242,9 @@ mod tests {
         ctx.store
             .put_object_info(
                 track_address,
-                ObjectInfo::Valid {
+                ObjectInfo::Snapshot {
                     track_address,
-                    registered_epoch: epoch,
-                    certified_epoch: Some(epoch),
+                    epoch,
                     slot: SlotNumber(epoch.0),
                 },
             )

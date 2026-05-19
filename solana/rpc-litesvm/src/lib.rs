@@ -31,6 +31,8 @@ use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
 use tokio::task::JoinHandle;
 
+const DEFAULT_FINALIZED_LAG_SLOTS: u64 = 1;
+
 struct Inner {
     /// The in-memory SVM instance that processes transactions and maintains
     svm: LiteSVM,
@@ -54,10 +56,9 @@ struct Inner {
     /// transactions between block producer ticks share this slot.
     pending_slot: u64,
 
-    /// Optional pin for `get_finalized_slot()`. When `None`, finalization
-    /// matches `confirmed_tip` (LiteSVM has no asynchronous finality of its
-    /// own). Tests gate the block ingestor's promotion logic by setting
-    /// this to a value below `confirmed_tip` via [`LiteSvmRpc::set_finalized_tip`].
+    /// Optional pin for `get_finalized_slot()`. When `None`, finalized slot
+    /// lags confirmed slot by a small fixed amount so tests can exercise
+    /// both commitment levels.
     finalized_tip_override: Option<u64>,
 }
 
@@ -127,6 +128,7 @@ impl LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
         inner.svm.warp_to_slot(slot);
+        Self::close_slot_locked(&mut inner, slot);
         if slot > inner.confirmed_tip {
             inner.confirmed_tip = slot;
         }
@@ -145,7 +147,10 @@ impl LiteSvmRpc {
             loop {
                 tokio::time::sleep(interval).await;
                 let mut inner = rpc.inner.lock().expect("mutex poisoned");
-                inner.confirmed_tip = inner.pending_slot;
+                let slot = inner.pending_slot;
+                inner.svm.warp_to_slot(slot);
+                Self::close_slot_locked(&mut inner, slot);
+                inner.confirmed_tip = slot;
                 inner.pending_slot = inner.confirmed_tip + 1;
 
                 let mut clock = inner.svm.get_sysvar::<Clock>();
@@ -262,6 +267,32 @@ impl LiteSvmRpc {
             .collect()
     }
 
+    fn close_slot_locked(inner: &mut Inner, slot: Slot) {
+        if inner.slots.contains_key(&slot) {
+            return;
+        }
+
+        let previous_blockhash = inner
+            .last_recorded_slot
+            .and_then(|prev_slot| inner.slots.get(&prev_slot).map(|s| s.blockhash.clone()))
+            .unwrap_or_else(|| Hash::default().to_string());
+        let parent_slot = inner.last_recorded_slot.unwrap_or(0);
+
+        inner.current_block_height += 1;
+        inner.slots.insert(
+            slot,
+            SlotData {
+                blockhash: inner.svm.latest_blockhash().to_string(),
+                previous_blockhash,
+                parent_slot,
+                transactions: Vec::new(),
+                block_height: inner.current_block_height,
+            },
+        );
+        inner.last_recorded_slot = Some(slot);
+        inner.svm.expire_blockhash();
+    }
+
     fn record_transaction_locked(
         inner: &mut Inner,
         tx: solana_sdk::transaction::VersionedTransaction,
@@ -324,7 +355,9 @@ impl Rpc for LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        Ok(inner.finalized_tip_override.unwrap_or(inner.confirmed_tip))
+        Ok(inner
+            .finalized_tip_override
+            .unwrap_or_else(|| inner.confirmed_tip.saturating_sub(DEFAULT_FINALIZED_LAG_SLOTS)))
     }
 
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {

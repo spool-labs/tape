@@ -58,6 +58,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let target = EpochNumber(1);
     let group_id = GroupIndex(0);
+    let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
+    archive.schedule = EpochSchedule::new_at(target);
 
     let epoch = epoch_info
         .is_writable()?
@@ -345,6 +347,12 @@ mod tests {
                             ..EpochState::zeroed()
                         },
                         ..epoch
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&Pubkey::from(archive_address)).data(
+                    Archive {
+                        schedule: EpochSchedule::new_at(target),
+                        ..Archive::zeroed()
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&Pubkey::from(group_address))

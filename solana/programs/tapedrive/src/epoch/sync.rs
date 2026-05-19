@@ -89,6 +89,7 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         epoch: curr,
         group: group_id,
         spool: args.spool,
+        phase: epoch.state.phase,
     }.log();
 
     Ok(())

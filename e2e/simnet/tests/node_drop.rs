@@ -5,10 +5,14 @@ use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::SpoolStatus;
 use tape_core::types::BasisPoints;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 
-#[tokio::test]
-async fn spool_node_drop() {
+#[test]
+fn spool_node_drop() {
+    run_simnet_test(spool_node_drop_inner);
+}
+
+async fn spool_node_drop_inner() {
     let node_count = 25;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)

@@ -16,7 +16,7 @@ use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, warn, Instrument};
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
@@ -310,14 +310,17 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
         ];
         let request = GetSliceReq { track, spool: helper_spool };
-        join_set.spawn(fetch_one_slice(
-            ctx.peer_manager.clone(),
-            ctx.api.clone(),
-            token.clone(),
-            candidates,
-            request,
-            helper_slice,
-        ));
+        join_set.spawn(
+            fetch_one_slice(
+                ctx.peer_manager.clone(),
+                ctx.api.clone(),
+                token.clone(),
+                candidates,
+                request,
+                helper_slice,
+            )
+            .in_current_span(),
+        );
     }
 
     while let Some(result) = join_set.join_next().await {
@@ -347,14 +350,17 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                         curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
                     ];
                     let request = GetSliceReq { track, spool: helper_spool };
-                    join_set.spawn(fetch_one_slice(
-                        ctx.peer_manager.clone(),
-                        ctx.api.clone(),
-                        token.clone(),
-                        candidates,
-                        request,
-                        next_pos,
-                    ));
+                    join_set.spawn(
+                        fetch_one_slice(
+                            ctx.peer_manager.clone(),
+                            ctx.api.clone(),
+                            token.clone(),
+                            candidates,
+                            request,
+                            next_pos,
+                        )
+                        .in_current_span(),
+                    );
                 }
             }
             Ok(Err(())) => {
@@ -373,14 +379,17 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                         curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
                     ];
                     let request = GetSliceReq { track, spool: helper_spool };
-                    join_set.spawn(fetch_one_slice(
-                        ctx.peer_manager.clone(),
-                        ctx.api.clone(),
-                        token.clone(),
-                        candidates,
-                        request,
-                        next_pos,
-                    ));
+                    join_set.spawn(
+                        fetch_one_slice(
+                            ctx.peer_manager.clone(),
+                            ctx.api.clone(),
+                            token.clone(),
+                            candidates,
+                            request,
+                            next_pos,
+                        )
+                        .in_current_span(),
+                    );
                 }
             }
             Err(_join_error) => {

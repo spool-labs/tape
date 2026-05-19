@@ -2,7 +2,7 @@ use std::future::Future;
 
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, Instrument};
 
 use crate::core::error::NodeError;
 use crate::core::signals::wait_for_shutdown_signal;
@@ -25,7 +25,8 @@ impl Supervisor {
     where
         F: Future<Output = Result<(), NodeError>> + Send + 'static,
     {
-        self.services.spawn(async move { (service, future.await) });
+        self.services
+            .spawn(async move { (service, future.await) }.in_current_span());
     }
 
     pub async fn supervise(mut self) -> Result<(), NodeError> {

@@ -169,11 +169,9 @@ async fn sweep_orphan_tracks<Db: Store>(
                 continue;
             }
 
-            match store.get_object_info(*track).map_err(store_error)? {
-                Some(ObjectInfo::Valid { .. }) => {}
-                Some(ObjectInfo::Invalid { .. }) | Some(ObjectInfo::Blacklisted) | None => {
-                    stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
-                }
+            let object = store.get_object_info(*track).map_err(store_error)?;
+            if !object.is_some_and(|info| info.is_live()) {
+                stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
             }
         }
 
@@ -258,7 +256,7 @@ fn should_delete_slice<Db: Store>(
     }
 
     let object = store.get_object_info(track).map_err(store_error)?;
-    Ok(!matches!(object, Some(ObjectInfo::Valid { .. })))
+    Ok(!object.is_some_and(|info| info.is_live()))
 }
 
 fn recovery_is_stale<Db: Store>(
@@ -275,7 +273,7 @@ fn recovery_is_stale<Db: Store>(
     }
 
     let object = store.get_object_info(track).map_err(store_error)?;
-    Ok(!matches!(object, Some(ObjectInfo::Valid { .. })))
+    Ok(!object.is_some_and(|info| info.is_live()))
 }
 
 fn track_batch(config: &GcConfig) -> usize {
@@ -478,6 +476,53 @@ use tape_core::types::SpoolIndex;
             Some(ObjectInfo::Invalid { .. })
         ));
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_snapshot_slices() {
+        let store = test_store();
+        let config = test_config();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let spool_id = SpoolIndex(20);
+
+        store
+            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .unwrap();
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    end_epoch: EpochNumber(u64::MAX),
+                    next_track_number: TrackNumber(0),
+                },
+            )
+            .unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Snapshot {
+                    track_address: track,
+                    epoch: EpochNumber(3),
+                    slot: SlotNumber(30),
+                },
+            )
+            .unwrap();
+        store.put_slice(spool_id, track, vec![8, 8, 8]).unwrap();
+        store.add_pending_recovery(spool_id, track).unwrap();
+
+        sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]))
+            .await
+            .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_some());
+        assert!(matches!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Snapshot { .. })
+        ));
+        assert!(store.get_slice(spool_id, track).unwrap().is_some());
+        assert!(store.has_pending_recovery(spool_id, track).unwrap());
     }
 
     #[tokio::test]

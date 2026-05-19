@@ -231,6 +231,9 @@ pub struct SpoolSynced {
 
     /// Index within the group (0 .. GROUP_SIZE)
     pub spool: [u8; 8],
+
+    /// Resulting current epoch phase after this sync.
+    pub phase: u64,
 }
 
 tape_solana::event!(EventType, SpoolSynced);
@@ -250,6 +253,9 @@ pub struct SpoolSettled {
 
     /// Index within the group (0 .. GROUP_SIZE)
     pub spool: [u8; 8],
+
+    /// Resulting current epoch phase after this settle.
+    pub phase: u64,
 }
 
 tape_solana::event!(EventType, SpoolSettled);

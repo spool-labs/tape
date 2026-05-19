@@ -42,7 +42,7 @@ where
             info!(
                 epoch = candidate.target_epoch.0,
                 hash = ?candidate.hash,
-                ?txid,
+                %txid,
                 "snapshot: proposal submitted"
             );
         }
@@ -145,7 +145,7 @@ where
                 info!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
-                    ?txid,
+                    %txid,
                     "snapshot: group vote submitted"
                 );
             }
@@ -212,7 +212,7 @@ where
             info!(
                 epoch = candidate.target_epoch.0,
                 hash = ?candidate.hash,
-                ?txid,
+                %txid,
                 "snapshot: finalized"
             );
         }

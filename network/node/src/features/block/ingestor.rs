@@ -64,7 +64,7 @@ pub struct BlockIngestor<Db: Store, Cluster: Api, Blockchain: Rpc> {
     cancel: CancellationToken,
     queue: PendingBlocks,
     /// Most recently observed finalized slot. Refreshed on every iteration
-    /// and consulted by the witness-rule promotion check.
+    /// and consulted by the queue promotion check.
     finalized_tip: SlotNumber,
 }
 
@@ -275,10 +275,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     }
 
     /// Promote every queue head whose slot is at or below the finalized tip,
-    /// provided the queue still has a witness block past that tip. Each
-    /// promoted block is fanned out to the existing consumers; pending track
-    /// entries are dropped later by StoreManager after durable state has
-    /// caught up.
+    /// provided the queue has also seen a later confirmed block. Each promoted
+    /// block is fanned out to the existing consumers; pending track entries are
+    /// dropped later by StoreManager after durable state has caught up.
     async fn promote(&mut self) -> Result<(), NodeError> {
         let progress = self.context.ingest.progress();
 
@@ -389,7 +388,7 @@ mod tests {
     const NODE: usize = 24;
 
     #[tokio::test]
-    async fn forwards_batch_after_witness_seen() {
+    async fn forwards_batch_after_later_confirmed_block() {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
@@ -412,10 +411,9 @@ mod tests {
             .await
             .expect("discover join slot");
 
-        // Block 2: a subsequent transaction at a later slot that exists only
-        // to act as the finality witness for the join block. SetNetworkTls is
-        // cheap, idempotent, and may fail at the program level — either way
-        // it produces a recorded block at the next slot.
+        // Block 2: a subsequent transaction at a later confirmed slot.
+        // SetNetworkTls is cheap, idempotent, and may fail at the program
+        // level; either way it produces a recorded block at the next slot.
         let _ = submit_set_network_tls(
             &ctx.rpc,
             ctx.signer(),
@@ -426,14 +424,14 @@ mod tests {
         harness
             .rpc()
             .warp_to_slot(join_slot.0 + 2)
-            .expect("confirm witness block");
-        let witness_slot = produced_slot(harness.rpc(), &[join_slot.0 + 1, join_slot.0 + 2])
+            .expect("confirm later block");
+        let later_slot = produced_slot(harness.rpc(), &[join_slot.0 + 1, join_slot.0 + 2])
             .await
-            .expect("discover witness slot");
+            .expect("discover later confirmed slot");
 
         // Pin finalized at the join slot. The join block is at-or-below
-        // finalized; the witness block is strictly past it, so the join
-        // block becomes promotable.
+        // finalized; the later confirmed block is strictly past it, so the
+        // join block becomes promotable.
         harness
             .rpc()
             .set_finalized_tip(join_slot.0)
@@ -456,8 +454,8 @@ mod tests {
             CancellationToken::new(),
         );
 
-        // First fetch: queues the join block but cannot promote yet (no
-        // witness past finalized).
+        // First fetch: queues the join block but cannot promote yet because
+        // the ingestor has not seen a later confirmed block.
         ingestor
             .fetch_parse_and_dispatch(join_slot)
             .await
@@ -466,14 +464,14 @@ mod tests {
             timeout(Duration::from_millis(100), store_rx.recv())
                 .await
                 .is_err(),
-            "join block should not be promoted without a witness past finalized"
+            "join block should not promote before a later confirmed block is queued"
         );
 
-        // Second fetch: queues the witness, which lets the join block promote.
+        // Second fetch: queues the later block, which lets the join block promote.
         ingestor
-            .fetch_parse_and_dispatch(witness_slot)
+            .fetch_parse_and_dispatch(later_slot)
             .await
-            .expect("dispatch witness slot");
+            .expect("dispatch later confirmed slot");
 
         let batch = timeout(Duration::from_secs(1), store_rx.recv())
             .await

@@ -5,11 +5,11 @@ use tape_core::types::BasisPoints;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 
 #[test]
-fn basic_flow() {
-    run_simnet_test(basic_flow_inner);
+fn multi_epoch() {
+    run_simnet_test(multi_epoch_inner);
 }
 
-async fn basic_flow_inner() {
+async fn multi_epoch_inner() {
     let node_count = 20;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)
@@ -25,18 +25,28 @@ async fn basic_flow_inner() {
         .expect("bootstrap nodes");
 
     let all: Vec<usize> = (0..node_count).collect();
-    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
+    let active_timeout = Duration::from_secs(60);
+    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
     let scenario = harness.scenario();
 
     scenario
-        .wait_nodes_active(&all, Duration::from_secs(20))
+        .wait_nodes_active(&all, active_timeout)
         .await
         .expect("all nodes active");
 
-    scenario
-        .self_advance_epoch(epoch_timeout)
-        .await
-        .expect("self advance epoch");
+    for expected_epoch in 2..=5 {
+        let epoch = scenario
+            .self_advance_epoch(epoch_timeout)
+            .await
+            .expect("self advance epoch");
+
+        assert_eq!(epoch, expected_epoch, "unexpected epoch after advance");
+
+        scenario
+            .wait_nodes_active(&all, active_timeout)
+            .await
+            .expect("all nodes active after epoch advance");
+    }
 
     harness.stop_all().await.expect("stop runtimes");
 }

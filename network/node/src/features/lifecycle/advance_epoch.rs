@@ -35,7 +35,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match outcome {
             TxOutcome::Confirmed(sig) => {
-                info!(epoch = epoch.0, ?sig, "advance_epoch: confirmed");
+                info!(epoch = epoch.0, %sig, "advance_epoch: confirmed");
                 return TaskDone::Done(Action::AdvanceEpoch, epoch);
             }
             TxOutcome::Program(err) => {

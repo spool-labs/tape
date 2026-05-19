@@ -6,20 +6,36 @@
 //! construction by the caller.
 
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
+use tape_core::snapshot::chunk::SEGMENT_HEADER_SIZE;
 
 use crate::errors::{DecodeError, EncodeError};
 
-/// Default number of data chunks for outer RS code.
-/// At n=50 this gives 72% group failure tolerance with k=14.
-pub const DEFAULT_K_OUTER: usize = 14;
-
-/// Outer RS `k` used by the snapshot pipeline.
-/// At n=50 this gives ~1/3 recovery threshold (17/50).
-pub const SNAPSHOT_K_OUTER: usize = 17;
+/// Snapshot outer RS data threshold is one third of the active group count,
+/// rounded up. At n=50 this preserves the old fixed threshold: ceil(50/3)=17.
+pub const SNAPSHOT_OUTER_DATA_DENOMINATOR: usize = 3;
 
 /// Maximum per-symbol size for the outer RS coder, set by the
 /// `reed_solomon_simd` shard-size constraint.
 pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Derive the snapshot outer RS `k` from the active group count.
+pub const fn snapshot_outer_k(total_groups: usize) -> usize {
+    if total_groups == 0 {
+        0
+    } else {
+        total_groups.div_ceil(SNAPSHOT_OUTER_DATA_DENOMINATOR)
+    }
+}
+
+/// Maximum compressed bytes carried by one snapshot outer RS segment.
+pub const fn snapshot_max_segment_bytes(total_groups: usize) -> usize {
+    let k = snapshot_outer_k(total_groups);
+    if k == 0 {
+        0
+    } else {
+        k * MAX_CHUNK_BYTES - SEGMENT_HEADER_SIZE
+    }
+}
 
 /// Outer Reed-Solomon coder for snapshot distribution across spool groups.
 ///
@@ -29,8 +45,8 @@ pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 pub struct OuterCoder {
     k: usize,
     n: usize,
-    encoder: ReedSolomonEncoder,
-    decoder: ReedSolomonDecoder,
+    encoder: Option<ReedSolomonEncoder>,
+    decoder: Option<ReedSolomonDecoder>,
 }
 
 impl OuterCoder {
@@ -41,10 +57,14 @@ impl OuterCoder {
         assert!(k <= n, "k must be <= n");
 
         let m = n - k;
-        let encoder =
-            ReedSolomonEncoder::new(k, m, MAX_CHUNK_BYTES).expect("RS encoder init");
-        let decoder =
-            ReedSolomonDecoder::new(k, m, MAX_CHUNK_BYTES).expect("RS decoder init");
+        let (encoder, decoder) = if m == 0 {
+            (None, None)
+        } else {
+            (
+                Some(ReedSolomonEncoder::new(k, m, MAX_CHUNK_BYTES).expect("RS encoder init")),
+                Some(ReedSolomonDecoder::new(k, m, MAX_CHUNK_BYTES).expect("RS decoder init")),
+            )
+        };
 
         Self {
             k,
@@ -89,10 +109,6 @@ impl OuterCoder {
             return Err(EncodeError::TooMuchData);
         }
 
-        self.encoder
-            .reset(k, m, chunk_bytes)
-            .map_err(|_| EncodeError::TooMuchData)?;
-
         // Pad data to k * chunk_bytes
         let total_len = k * chunk_bytes;
         let mut padded = data.to_vec();
@@ -101,15 +117,25 @@ impl OuterCoder {
         // Feed k original chunks
         let mut data_chunks = Vec::with_capacity(k);
         for chunk in padded.chunks(chunk_bytes) {
-            self.encoder
-                .add_original_shard(chunk)
-                .expect("adding chunks of the configured size should succeed");
             data_chunks.push(chunk.to_vec());
         }
 
+        let Some(encoder) = self.encoder.as_mut() else {
+            return Ok(data_chunks);
+        };
+
+        encoder
+            .reset(k, m, chunk_bytes)
+            .map_err(|_| EncodeError::TooMuchData)?;
+
+        for chunk in &data_chunks {
+            encoder
+                .add_original_shard(chunk)
+                .expect("adding chunks of the configured size should succeed");
+        }
+
         // Generate parity chunks
-        let output = self
-            .encoder
+        let output = encoder
             .encode()
             .expect("should be able to encode after k data chunks were added");
         let parity_chunks: Vec<Vec<u8>> = output.recovery_iter().map(<[u8]>::to_vec).collect();
@@ -139,18 +165,30 @@ impl OuterCoder {
 
         let m = self.m();
 
-        self.decoder
+        if m == 0 {
+            let mut payload = Vec::with_capacity(self.k * chunk_bytes);
+            for data_idx in 0..self.k {
+                let Some((_, data)) = chunks.iter().find(|(idx, _)| *idx == data_idx) else {
+                    return Err(DecodeError::InvalidLayout);
+                };
+                payload.extend_from_slice(data);
+            }
+            return Ok(payload);
+        }
+
+        let decoder = self.decoder.as_mut().ok_or(DecodeError::InvalidLayout)?;
+        decoder
             .reset(self.k, m, chunk_bytes)
             .map_err(|_| DecodeError::TooMuchData)?;
 
         for &(idx, data) in chunks {
             if idx < self.k {
-                self.decoder
+                decoder
                     .add_original_shard(idx, data)
                     .map_err(|_| DecodeError::InvalidLayout)?;
             } else if idx < self.n {
                 let offset = idx - self.k;
-                self.decoder
+                decoder
                     .add_recovery_shard(offset, data)
                     .map_err(|_| DecodeError::InvalidLayout)?;
             } else {
@@ -158,8 +196,7 @@ impl OuterCoder {
             }
         }
 
-        let restored = self
-            .decoder
+        let restored = decoder
             .decode()
             .map_err(|_| DecodeError::InvalidLayout)?;
 
@@ -190,6 +227,7 @@ mod tests {
     use super::*;
 
     const SPOOL_GROUP_COUNT: usize = 50;
+    const TEST_K: usize = snapshot_outer_k(SPOOL_GROUP_COUNT);
 
     fn make_data(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -197,14 +235,14 @@ mod tests {
 
     #[test]
     fn test_chunk_count() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
         let data = make_data(100_000);
         let chunks = coder.encode(&data).unwrap();
 
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
-        assert_eq!(coder.k(), DEFAULT_K_OUTER);
+        assert_eq!(coder.k(), TEST_K);
         assert_eq!(coder.n(), SPOOL_GROUP_COUNT);
-        assert_eq!(coder.m(), SPOOL_GROUP_COUNT - DEFAULT_K_OUTER);
+        assert_eq!(coder.m(), SPOOL_GROUP_COUNT - TEST_K);
 
         // All chunks should be the same size
         let size = chunks[0].len();
@@ -212,8 +250,34 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_outer_k_scales_with_group_count() {
+        assert_eq!(snapshot_outer_k(0), 0);
+        assert_eq!(snapshot_outer_k(1), 1);
+        assert_eq!(snapshot_outer_k(2), 1);
+        assert_eq!(snapshot_outer_k(3), 1);
+        assert_eq!(snapshot_outer_k(20), 7);
+        assert_eq!(snapshot_outer_k(50), 17);
+        assert_eq!(snapshot_outer_k(100), 34);
+    }
+
+    #[test]
+    fn single_group_roundtrip_has_no_parity() {
+        let mut coder = OuterCoder::new(snapshot_outer_k(1), 1);
+        let original = make_data(10_000);
+        let chunks = coder.encode(&original).unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(coder.k(), 1);
+        assert_eq!(coder.m(), 0);
+
+        let available = [(0, chunks[0].as_slice())];
+        let recovered = coder.decode(&available).unwrap();
+        assert_eq!(&recovered[..original.len()], &original);
+    }
+
+    #[test]
     fn test_roundtrip_all_chunks() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -229,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_data_chunks_only() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -237,7 +301,7 @@ mod tests {
         let available: Vec<(usize, &[u8])> = chunks
             .iter()
             .enumerate()
-            .take(DEFAULT_K_OUTER)
+            .take(TEST_K)
             .map(|(i, c)| (i, c.as_slice()))
             .collect();
 
@@ -247,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_parity_chunks_only() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -255,8 +319,8 @@ mod tests {
         let available: Vec<(usize, &[u8])> = chunks
             .iter()
             .enumerate()
-            .skip(DEFAULT_K_OUTER)
-            .take(DEFAULT_K_OUTER)
+            .skip(TEST_K)
+            .take(TEST_K)
             .map(|(i, c)| (i, c.as_slice()))
             .collect();
 
@@ -266,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_mixed_chunks() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
         let original = make_data(100_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -275,18 +339,18 @@ mod tests {
             .iter()
             .enumerate()
             .filter(|(i, _)| i % 3 == 0)
-            .take(DEFAULT_K_OUTER)
+            .take(TEST_K)
             .map(|(i, c)| (i, c.as_slice()))
             .collect();
 
-        assert!(available.len() >= DEFAULT_K_OUTER);
+        assert!(available.len() >= TEST_K);
         let recovered = coder.decode(&available).unwrap();
         assert_eq!(&recovered[..original.len()], &original);
     }
 
     #[test]
     fn test_insufficient_chunks() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -294,7 +358,7 @@ mod tests {
         let available: Vec<(usize, &[u8])> = chunks
             .iter()
             .enumerate()
-            .take(DEFAULT_K_OUTER - 1)
+            .take(TEST_K - 1)
             .map(|(i, c)| (i, c.as_slice()))
             .collect();
 
@@ -304,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_empty_data() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
         let chunks = coder.encode(&[]).unwrap();
         assert_eq!(chunks.len(), SPOOL_GROUP_COUNT);
 
@@ -319,8 +383,8 @@ mod tests {
 
     #[test]
     fn test_various_sizes() {
-        let mut coder = OuterCoder::new(DEFAULT_K_OUTER, SPOOL_GROUP_COUNT);
-        let sizes = [1, 13, DEFAULT_K_OUTER, 1000, 50_000, 200_000];
+        let mut coder = OuterCoder::new(TEST_K, SPOOL_GROUP_COUNT);
+        let sizes = [1, 13, TEST_K, 1000, 50_000, 200_000];
 
         for &sz in &sizes {
             let original = make_data(sz);
@@ -329,7 +393,7 @@ mod tests {
             let available: Vec<(usize, &[u8])> = chunks
                 .iter()
                 .enumerate()
-                .take(DEFAULT_K_OUTER)
+                .take(TEST_K)
                 .map(|(i, c)| (i, c.as_slice()))
                 .collect();
 

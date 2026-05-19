@@ -19,7 +19,7 @@ use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{info, warn, Instrument};
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
@@ -403,14 +403,17 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             prev_id,
             curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
         ];
-        join_set.spawn(fetch_one_helper(
-            ctx.peer_manager.clone(),
-            ctx.api.clone(),
-            token.clone(),
-            candidates,
-            req,
-            slice_idx,
-        ));
+        join_set.spawn(
+            fetch_one_helper(
+                ctx.peer_manager.clone(),
+                ctx.api.clone(),
+                token.clone(),
+                candidates,
+                req,
+                slice_idx,
+            )
+            .in_current_span(),
+        );
     }
 
     while let Some(result) = join_set.join_next().await {
@@ -432,14 +435,17 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                         prev_id,
                         curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
                     ];
-                    join_set.spawn(fetch_one_helper(
-                        ctx.peer_manager.clone(),
-                        ctx.api.clone(),
-                        token.clone(),
-                        candidates,
-                        next_req,
-                        next_idx,
-                    ));
+                    join_set.spawn(
+                        fetch_one_helper(
+                            ctx.peer_manager.clone(),
+                            ctx.api.clone(),
+                            token.clone(),
+                            candidates,
+                            next_req,
+                            next_idx,
+                        )
+                        .in_current_span(),
+                    );
                 }
             }
             Ok(Err(_failed_idx)) => {

@@ -83,6 +83,24 @@ mod tests {
     }
 
     #[test]
+    fn test_object_info_snapshot() {
+        let store = test_store();
+        let addr = Address::new_unique();
+
+        let info = ObjectInfo::Snapshot {
+            track_address: addr,
+            epoch: EpochNumber(7),
+            slot: SlotNumber(70),
+        };
+
+        store.put_object_info(addr, info.clone()).unwrap();
+        let retrieved = store.get_object_info(addr).unwrap().unwrap();
+        assert_eq!(retrieved, info);
+        assert!(retrieved.is_certified());
+        assert!(retrieved.is_live());
+    }
+
+    #[test]
     fn test_object_info_invalid() {
         let store = test_store();
         let addr = Address::new_unique();

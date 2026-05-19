@@ -12,12 +12,16 @@ use rand::thread_rng;
 use reqwest::StatusCode;
 use tape_core::types::BasisPoints;
 use tape_crypto::ed25519::Keypair as EdKeypair;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 
 const NODE_COUNT: usize = 5;
 
-#[tokio::test]
-async fn peer_only_routes_reject_non_peers() {
+#[test]
+fn peer_only_routes_reject_non_peers() {
+    run_simnet_test(peer_only_routes_reject_non_peers_inner);
+}
+
+async fn peer_only_routes_reject_non_peers_inner() {
     peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()

@@ -327,7 +327,7 @@ mod tests {
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
-    use tape_core::system::{NodePreferences, VoteKind};
+    use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
     use tape_core::track::data::TrackData;
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
@@ -820,6 +820,7 @@ mod tests {
             epoch: EpochNumber(5),
             group: GroupIndex(7),
             spool: 3u64.to_le_bytes(),
+            phase: EpochPhase::Sync as u64,
         };
         let merged = merge(
             vec![RawInstruction::SyncSpool { node, spool: 3 }],
@@ -847,6 +848,7 @@ mod tests {
             epoch: EpochNumber(4),
             group: GroupIndex(2),
             spool: 1u64.to_le_bytes(),
+            phase: EpochPhase::Settle as u64,
         };
         let merged = merge(
             vec![RawInstruction::SettleSpool { node, spool: 1 }],

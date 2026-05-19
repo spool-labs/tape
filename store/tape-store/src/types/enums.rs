@@ -23,11 +23,31 @@ pub enum ObjectInfo {
         certified_epoch: Option<EpochNumber>,
         slot: SlotNumber,
     },
+    /// System-owned snapshot track. These are certified bootstrap data, but
+    /// are not counted as user objects for assignment sizing.
+    Snapshot {
+        track_address: Address,
+        epoch: EpochNumber,
+        slot: SlotNumber,
+    },
 }
 
 impl ObjectInfo {
     pub fn is_certified(&self) -> bool {
-        matches!(self, ObjectInfo::Valid { certified_epoch: Some(_), .. })
+        matches!(
+            self,
+            ObjectInfo::Valid {
+                certified_epoch: Some(_),
+                ..
+            } | ObjectInfo::Snapshot { .. }
+        )
+    }
+
+    pub fn is_live(&self) -> bool {
+        matches!(
+            self,
+            ObjectInfo::Valid { .. } | ObjectInfo::Snapshot { .. }
+        )
     }
 }
 
@@ -58,6 +78,11 @@ mod tests {
                 registered_epoch: EpochNumber(7),
                 certified_epoch: None,
                 slot: SlotNumber(70),
+            },
+            ObjectInfo::Snapshot {
+                track_address: Address::new([3u8; 32]),
+                epoch: EpochNumber(8),
+                slot: SlotNumber(80),
             },
         ];
 

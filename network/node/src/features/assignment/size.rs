@@ -38,7 +38,7 @@ pub enum AssignmentSizeError {
 /// `registered_epoch < N` and `certified_epoch < N` are counted.
 ///
 ///  Rules implemented:
-///   - include only ObjectInfo::Valid tracks with registered_epoch < voting_epoch;
+///   - include only user ObjectInfo::Valid tracks with registered_epoch < voting_epoch;
 ///   - require certified_epoch < voting_epoch;
 ///   - skip invalidated/deleted/uncertified/current-epoch tracks;
 ///   - skip tapes with end_epoch <= target_epoch;
@@ -104,9 +104,9 @@ fn active_track_footprint<Db: Store>(
     target_epoch: EpochNumber,
 ) -> Result<Option<StorageUnits>, AssignmentSizeError> {
 
-    // ObjectInfo is the user/accounted-track index. System-owned snapshot
-    // tracks are real TrackCol/TrackDataCol entries, but intentionally have no
-    // ObjectInfo so they do not enter assignment sizing.
+    // Only ObjectInfo::Valid is accounted user data. System-owned snapshot
+    // tracks use ObjectInfo::Snapshot so repair/GC can treat them as live
+    // without entering assignment sizing.
     let info = store
         .get_object_info(track)
         .map_err(store_error)?;

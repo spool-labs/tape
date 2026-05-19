@@ -6,24 +6,13 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::SpoolStatus;
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 
 /// Full spool recovery flow: upload blob, drop nodes, verify
 /// Sync/Scan/Repair/Recover workers converge back to Active, then download.
 #[test]
 fn spool_recovery() {
-    let thread = std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(spool_recovery_inner())
-        })
-        .expect("spawn test thread");
-
-    thread.join().unwrap();
+    run_simnet_test(spool_recovery_inner);
 }
 
 async fn spool_recovery_inner() {

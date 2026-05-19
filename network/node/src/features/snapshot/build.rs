@@ -13,9 +13,7 @@ use store::Store;
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
 use tape_api::state::Tape;
 use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
-use tape_core::snapshot::chunk::{
-    pack_segment, snapshot_chunk_key, SnapshotChunkPayload, SEGMENT_HEADER_SIZE,
-};
+use tape_core::snapshot::chunk::{pack_segment, snapshot_chunk_key, SnapshotChunkPayload};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobInfo;
@@ -30,17 +28,16 @@ use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_crypto::Address;
 use tape_protocol::Api;
 use tape_slicer::{
-    num_stripes, ErasureCoder, OuterCoder, Slicer, MAX_CHUNK_BYTES, SNAPSHOT_K_OUTER,
+    num_stripes, snapshot_max_segment_bytes, snapshot_outer_k, ErasureCoder, OuterCoder, Slicer,
 };
-use tape_store::ops::{EventLogOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps};
-use tape_store::types::{SnapshotArtifact, TapeInfo};
+use tape_store::ops::{
+    EventLogOps, ObjectInfoOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps,
+};
+use tape_store::types::{ObjectInfo, SnapshotArtifact, TapeInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-
-/// Maximum compressed bytes carried by a single outer RS round's segment.
-pub const MAX_SEGMENT_BYTES: usize = SNAPSHOT_K_OUTER * MAX_CHUNK_BYTES - SEGMENT_HEADER_SIZE;
 
 /// One encoded snapshot chunk, in memory between build and persistence.
 #[derive(Debug, Clone)]
@@ -56,6 +53,7 @@ pub struct BuiltChunk {
 pub struct SnapshotCandidate {
     pub voting_epoch: EpochNumber,
     pub target_epoch: EpochNumber,
+    pub end_slot: SlotNumber,
     pub hash: Hash,
     pub tape: Tape,
     pub tracks: Vec<SnapshotTrack>,
@@ -116,10 +114,9 @@ where
     let voting_epoch = state.epoch();
     let total_groups = usize::try_from(state.current.epoch.total_groups)
         .map_err(|_| NodeError::Store("snapshot total_groups overflow".into()))?;
-    if total_groups <= SNAPSHOT_K_OUTER {
-        return Err(NodeError::Store(format!(
-            "snapshot total_groups {total_groups} must exceed outer threshold {SNAPSHOT_K_OUTER}"
-        )));
+    let outer_k = snapshot_outer_k(total_groups);
+    if outer_k == 0 {
+        return Err(NodeError::Store("snapshot total_groups must be non-zero".into()));
     }
 
     let entries = ctx
@@ -141,7 +138,8 @@ where
         .map_err(|e| NodeError::Store(format!("snapshot log serialize({epoch}): {e}")))?;
 
     let compressed = lz4_flex::compress_prepend_size(&serialized);
-    let chunk_total = compressed.len().div_ceil(MAX_SEGMENT_BYTES).max(1);
+    let max_segment_bytes = snapshot_max_segment_bytes(total_groups);
+    let chunk_total = compressed.len().div_ceil(max_segment_bytes).max(1);
     let chunk_size = compressed.len().div_ceil(chunk_total).max(1);
 
     let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
@@ -154,7 +152,7 @@ where
         ..Tape::zeroed()
     };
 
-    let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER, total_groups);
+    let mut outer = OuterCoder::new(outer_k, total_groups);
     let mut tracks = Vec::with_capacity(chunk_total * total_groups);
 
     for chunk_index in 0..chunk_total {
@@ -218,6 +216,7 @@ where
     Ok(Some(SnapshotCandidate {
         voting_epoch,
         target_epoch: epoch,
+        end_slot,
         hash,
         tape,
         tracks,
@@ -255,6 +254,16 @@ where
         ctx.store
             .put_track_data(track_address, TrackData::Blob(track.blob))
             .map_err(store_err("put_track_data"))?;
+        ctx.store
+            .put_object_info(
+                track_address,
+                ObjectInfo::Snapshot {
+                    track_address,
+                    epoch: candidate.target_epoch,
+                    slot: candidate.end_slot,
+                },
+            )
+            .map_err(store_err("put_object_info"))?;
 
         if let Some(artifact) = ctx
             .store

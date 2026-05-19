@@ -268,7 +268,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
 
     match result {
         Ok(txid) => {
-            info!(txid = ?txid, "node registered successfully");
+            info!(%txid, "node registered successfully");
             Ok(())
         }
         Err(reg_err) => {

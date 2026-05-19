@@ -236,7 +236,7 @@ mod tests {
     use solana_sdk::hash::Hash as SolanaHash;
     use solana_sdk::sysvar;
     use tape_core::spooler::GroupIndex;
-    use tape_core::system::NodePreferences;
+    use tape_core::system::{EpochPhase, NodePreferences};
     use bytemuck::Zeroable;
     use solana_transaction_status::{
         EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
@@ -358,6 +358,7 @@ mod tests {
                     epoch: 1u64.into(),
                     group: GroupIndex(7),
                     spool: 3u64.to_le_bytes(),
+                    phase: EpochPhase::Sync as u64,
                 }),
             ],
         };

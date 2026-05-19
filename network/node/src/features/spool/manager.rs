@@ -10,7 +10,7 @@ use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument};
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
@@ -218,28 +218,31 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
             info!(?action, epoch = epoch.0, "spool: spawning task");
 
-            self.join_set.spawn(async move {
-                let result = match action {
-                    Action::Sync { spool, .. } => {
-                        TaskResult::Sync(sync::run(ctx, &config, spool, &token).await)
-                    }
-                    Action::Scan { spool, .. } => {
-                        TaskResult::Scan(scan::run(ctx, &config, spool, &token).await)
-                    }
-                    Action::Repair { spool, .. } => {
-                        TaskResult::Repair(repair::run(ctx, &config, spool, &token).await)
-                    }
-                    Action::Recover { spool, .. } => {
-                        TaskResult::Recover(recover::run(ctx, &config, spool, &token).await)
-                    }
-                };
+            self.join_set.spawn(
+                async move {
+                    let result = match action {
+                        Action::Sync { spool, .. } => {
+                            TaskResult::Sync(sync::run(ctx, &config, spool, &token).await)
+                        }
+                        Action::Scan { spool, .. } => {
+                            TaskResult::Scan(scan::run(ctx, &config, spool, &token).await)
+                        }
+                        Action::Repair { spool, .. } => {
+                            TaskResult::Repair(repair::run(ctx, &config, spool, &token).await)
+                        }
+                        Action::Recover { spool, .. } => {
+                            TaskResult::Recover(recover::run(ctx, &config, spool, &token).await)
+                        }
+                    };
 
-                if token.is_cancelled() {
-                    TaskDone::Cancelled(action, result)
-                } else {
-                    TaskDone::Done(action, result)
+                    if token.is_cancelled() {
+                        TaskDone::Cancelled(action, result)
+                    } else {
+                        TaskDone::Done(action, result)
+                    }
                 }
-            });
+                .in_current_span(),
+            );
         }
 
         Ok(())

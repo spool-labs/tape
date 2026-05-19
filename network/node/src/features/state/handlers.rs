@@ -5,11 +5,11 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::event::{
     AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
-    NodeJoinedCommittee, PeerSetResized, VoteRecorded,
+    NodeJoinedCommittee, PeerSetResized, SpoolSettled, SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
 use tape_core::system::{EpochPhase, VoteKind};
-use tape_core::types::EpochNumber;
+use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::{fetch::fetch_state, Api};
@@ -212,12 +212,85 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         Ok(())
     }
 
-    pub async fn handle_sync_spool(
-        &self,
-        node: Address,
-        epoch: EpochNumber,
-    ) -> Result<(), NodeError> {
-        debug!(node = %node, epoch = epoch.0, "received sync spool");
+    pub async fn handle_sync_spool(&self, event: SpoolSynced) -> Result<(), NodeError> {
+        debug!(
+            node = %event.node,
+            epoch = event.epoch.0,
+            group = event.group.0,
+            "received sync spool"
+        );
+
+        let mut state = (*self.context.state()).clone();
+        if state.epoch() != event.epoch {
+            return Ok(());
+        }
+
+        let spool = SpoolIndex::unpack(event.spool);
+        let Some(position) = event.group.position_of(spool) else {
+            return Ok(());
+        };
+
+        let Some(group) = state
+            .current
+            .groups
+            .iter_mut()
+            .find(|group| group.id == event.group)
+        else {
+            return Ok(());
+        };
+
+        if !group.synced.is_set(position) {
+            group.synced.set(position);
+        }
+
+        apply_event_phase(&mut state, event.phase);
+
+        self.context.set_state(state)?;
+        Ok(())
+    }
+
+    pub async fn handle_settle_spool(&self, event: SpoolSettled) -> Result<(), NodeError> {
+        debug!(
+            node = %event.node,
+            epoch = event.epoch.0,
+            group = event.group.0,
+            "received settle spool"
+        );
+
+        let mut state = (*self.context.state()).clone();
+        let expected_previous = state.epoch().saturating_sub(EpochNumber(1));
+        if event.epoch != expected_previous {
+            return Ok(());
+        }
+
+        let Some(previous) = state.previous.as_mut() else {
+            return Ok(());
+        };
+
+        if previous.epoch.id != event.epoch {
+            return Ok(());
+        }
+
+        let spool = SpoolIndex::unpack(event.spool);
+        let Some(position) = event.group.position_of(spool) else {
+            return Ok(());
+        };
+
+        let Some(group) = previous
+            .groups
+            .iter_mut()
+            .find(|group| group.id == event.group)
+        else {
+            return Ok(());
+        };
+
+        if !group.settled.is_set(position) {
+            group.settled.set(position);
+        }
+
+        apply_event_phase(&mut state, event.phase);
+
+        self.context.set_state(state)?;
         Ok(())
     }
 
@@ -331,10 +404,21 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     }
 }
 
+fn apply_event_phase(state: &mut tape_protocol::ProtocolState, phase: u64) {
+    let Ok(event_phase) = EpochPhase::try_from(phase) else {
+        return;
+    };
+
+    if event_phase >= state.phase() {
+        state.current.epoch.state.phase = phase;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use tape_api::event::{SpoolSettled, SpoolSynced};
     use tape_core::system::EpochPhase;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{BitmapRead, EpochNumber};
     use tokio_util::sync::CancellationToken;
 
     use super::ProtocolStateHandlers;
@@ -373,7 +457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_spool_does_not_mutate_protocol_state() {
+    async fn sync_spool_updates_group_and_phase() {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
@@ -384,11 +468,63 @@ mod tests {
         let ctx = harness.ctx_for(NODE);
         let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
+        let group = ctx.state().current.groups[0];
+        let spool = group.id.spool_at(0);
         handlers
-            .handle_sync_spool(harness.node(NODE).node_address.into(), EPOCH)
+            .handle_sync_spool(SpoolSynced {
+                node: group.spools[0].node,
+                epoch: EPOCH,
+                group: group.id,
+                spool: spool.pack(),
+                phase: EpochPhase::Settle as u64,
+            })
             .await
             .expect("handle sync spool");
-        assert_eq!(ctx.state().phase(), EpochPhase::Sync);
+
+        let state = ctx.state();
+        assert_eq!(state.phase(), EpochPhase::Settle);
+        assert!(state.current.groups[0].synced.is_set(0));
+    }
+
+    #[tokio::test]
+    async fn settle_spool_updates_group_and_phase() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settle)
+            .prev_committee_size(20)
+            .prev_group_count(1)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
+
+        let previous = ctx.state().previous.as_ref().expect("previous epoch").clone();
+        let group = previous.groups[0];
+        let spool = group.id.spool_at(0);
+        handlers
+            .handle_settle_spool(SpoolSettled {
+                node: group.spools[0].node,
+                epoch: previous.epoch.id,
+                group: group.id,
+                spool: spool.pack(),
+                phase: EpochPhase::Snapshot as u64,
+            })
+            .await
+            .expect("handle settle spool");
+
+        let state = ctx.state();
+        assert_eq!(state.phase(), EpochPhase::Snapshot);
+        assert!(
+            state
+                .previous
+                .as_ref()
+                .expect("previous epoch")
+                .groups[0]
+                .settled
+                .is_set(0)
+        );
     }
 
     #[tokio::test]

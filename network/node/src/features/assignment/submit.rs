@@ -43,7 +43,7 @@ where
             info!(
                 epoch = candidate.target_epoch.0,
                 hash = ?candidate.hash,
-                ?txid,
+                %txid,
                 "assignment: proposal submitted"
             );
         }
@@ -146,7 +146,7 @@ where
                 info!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
-                    ?txid,
+                    %txid,
                     "assignment: group vote submitted"
                 );
             }
@@ -212,7 +212,7 @@ where
                 info!(
                     epoch = candidate.target_epoch.0,
                     group = group.group.0,
-                    ?txid,
+                    %txid,
                     "assignment: group finalized"
                 );
             }
