@@ -314,20 +314,20 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::ProposeSnapshot => {
-            let args = ix::parse_propose_snapshot(&ix_data[1..])
+            let args = ix::ProposeSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("propose_snapshot: {e:?}")))?;
             Ok(Some(RawInstruction::ProposeSnapshot { hash: args.hash }))
         }
 
         TapeInstruction::VoteSnapshot => {
-            let args = ix::parse_vote_snapshot(&ix_data[1..])
+            let args = ix::VoteSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_snapshot: {e:?}")))?;
             let group = GroupIndex::unpack(args.group);
             Ok(Some(RawInstruction::VoteSnapshot { hash: args.hash, group }))
         }
 
         TapeInstruction::FinalizeSnapshot => {
-            let args = ix::parse_finalize_snapshot(&ix_data[1..])
+            let args = ix::FinalizeSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("finalize_snapshot: {e:?}")))?;
             Ok(Some(RawInstruction::FinalizeSnapshot {
                 epoch: EpochNumber::unpack(args.epoch),
@@ -335,13 +335,13 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::ProposeAssignment => {
-            let args = ix::parse_propose_assignment(&ix_data[1..])
+            let args = ix::ProposeAssignment::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("propose_assignment: {e:?}")))?;
             Ok(Some(RawInstruction::ProposeAssignment { hash: args.hash }))
         }
 
         TapeInstruction::VoteAssignment => {
-            let args = ix::parse_vote_assignment(&ix_data[1..])
+            let args = ix::VoteAssignment::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_assignment: {e:?}")))?;
             let group = GroupIndex::unpack(args.group);
             Ok(Some(RawInstruction::VoteAssignment {
@@ -351,7 +351,7 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::FinalizeGroup => {
-            let args = ix::parse_finalize_group(&ix_data[1..])
+            let args = ix::FinalizeGroup::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("finalize_group: {e:?}")))?;
             Ok(Some(RawInstruction::FinalizeGroup {
                 epoch: EpochNumber::unpack(args.epoch),
@@ -379,21 +379,21 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::DeleteTrack => {
             let owner = get_account(1)?;
-            let args = ix::parse_delete_track(&ix_data[1..])
+            let args = ix::DeleteTrack::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             let track = track_pda(args.track.state.tape, args.track.state.track_number).0;
             Ok(Some(RawInstruction::DeleteTrack { owner, track }))
         }
 
         TapeInstruction::CertifyTrack => {
-            let args = ix::parse_certify_track(&ix_data[1..])
+            let args = ix::CertifyTrack::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             let track = track_pda(args.track.state.tape, args.track.state.track_number).0;
             Ok(Some(RawInstruction::CertifyTrack { track }))
         }
 
         TapeInstruction::InvalidateTrack => {
-            let args = ix::parse_invalidate_track(&ix_data[1..])
+            let args = ix::InvalidateTrack::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             let track = track_pda(args.track.state.tape, args.track.state.track_number).0;
             Ok(Some(RawInstruction::InvalidateTrack { track }))

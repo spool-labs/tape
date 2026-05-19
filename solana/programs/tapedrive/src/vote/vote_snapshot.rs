@@ -4,7 +4,7 @@ use tape_core::cert::SnapshotSignMessage;
 use tape_crypto::bls12254::min_sig::*;
 
 pub fn process_vote_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_vote_snapshot(data)?;
+    let args = VoteSnapshot::try_from_bytes(data)?;
     let [
         fee_payer_info,
         system_info,

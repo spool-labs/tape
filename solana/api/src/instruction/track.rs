@@ -217,21 +217,6 @@ pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, TrackDataSlice<'_>)
 }
 
 #[inline(always)]
-pub fn parse_delete_track(data: &[u8]) -> Result<DeleteTrack, ProgramError> {
-    read_instruction_pod::<DeleteTrack>(data)
-}
-
-#[inline(always)]
-pub fn parse_certify_track(data: &[u8]) -> Result<CertifyTrack, ProgramError> {
-    read_instruction_pod::<CertifyTrack>(data)
-}
-
-#[inline(always)]
-pub fn parse_invalidate_track(data: &[u8]) -> Result<InvalidateTrack, ProgramError> {
-    read_instruction_pod::<InvalidateTrack>(data)
-}
-
-#[inline(always)]
 fn make_raw(key: Hash, raw: &[u8]) -> Result<Vec<u8>, ProgramError> {
     if raw.len() > TRACK_WRITE_MAX_BYTES {
         return Err(ProgramError::InvalidInstructionData);

@@ -3,7 +3,7 @@ use tape_api::program::prelude::*;
 use tape_core::cert::verify_assignment_group_payload;
 
 pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_finalize_group(data)?;
+    let args = FinalizeGroup::try_from_bytes(data)?;
     let [
         fee_payer_info,
         system_info,

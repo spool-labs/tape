@@ -8,7 +8,7 @@ use tape_crypto::bls12254::min_sig::*;
 
 
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_certify_track(data)?;
+    let args = CertifyTrack::try_from_bytes(data)?;
     let [
         fee_payer_info,
         authority_info,

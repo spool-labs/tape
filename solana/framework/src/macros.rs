@@ -60,10 +60,14 @@ macro_rules! impl_instruction_from_bytes {
         impl $struct_name {
             pub fn try_from_bytes(
                 data: &[u8],
-            ) -> Result<&Self, solana_program::program_error::ProgramError> {
-                bytemuck::try_from_bytes::<Self>(data).or(Err(
-                    solana_program::program_error::ProgramError::InvalidInstructionData,
-                ))
+            ) -> Result<Self, solana_program::program_error::ProgramError> {
+                if data.len() != core::mem::size_of::<Self>() {
+                    return Err(solana_program::program_error::ProgramError::InvalidInstructionData);
+                }
+
+                let mut value = <Self as bytemuck::Zeroable>::zeroed();
+                bytemuck::bytes_of_mut(&mut value).copy_from_slice(data);
+                Ok(value)
             }
         }
     };

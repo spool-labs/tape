@@ -4,7 +4,7 @@ use tape_api::event::VoteProposed;
 use tape_api::program::prelude::*;
 
 pub fn process_propose_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_propose_snapshot(data)?;
+    let args = ProposeSnapshot::try_from_bytes(data)?;
     let [
         fee_payer_info,
         system_info,

@@ -4,7 +4,7 @@ use tape_api::program::prelude::*;
 use tape_crypto::hash::hash as hash_bytes;
 
 pub fn process_finalize_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_finalize_snapshot(data)?;
+    let args = FinalizeSnapshot::try_from_bytes(data)?;
     let [
         fee_payer_info,
         target_epoch_info,

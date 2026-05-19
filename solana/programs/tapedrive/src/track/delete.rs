@@ -2,7 +2,7 @@ use tape_api::program::prelude::*;
 use tape_api::event::TrackDeleted;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_delete_track(data)?;
+    let args = DeleteTrack::try_from_bytes(data)?;
     let [
         fee_payer_info,
         authority_info,

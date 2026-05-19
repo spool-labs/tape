@@ -2,7 +2,7 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 
 pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_add_to_blacklist(data)?;
+    let args = AddToBlacklist::try_from_bytes(data)?;
     let proof = args.0;
     let [
         fee_payer_info,

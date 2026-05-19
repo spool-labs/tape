@@ -8,7 +8,7 @@ use tape_crypto::bls12254::min_sig::*;
 
 
 pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = parse_invalidate_track(data)?;
+    let args = InvalidateTrack::try_from_bytes(data)?;
     let [
         fee_payer_info,
 

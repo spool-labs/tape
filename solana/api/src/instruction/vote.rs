@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 use solana_program::instruction::{AccountMeta, Instruction};
-use solana_program::program_error::ProgramError;
 
 use tape_core::bls::BlsSignature;
 use tape_core::cert::{AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT};
@@ -14,7 +13,6 @@ use crate::program::tapedrive::{
     assignment_vote_pda, committee_pda, epoch_pda, group_pda, peer_set_pda,
     snapshot_tape_pda, snapshot_vote_pda, system_pda,
 };
-use crate::helpers::read_instruction_pod;
 use crate::state::Tape;
 
 #[repr(C)]
@@ -60,36 +58,6 @@ pub struct FinalizeGroup {
     pub epoch: [u8; 8],
     pub payload: AssignmentGroupPayload,
     pub proof: [Hash; ASSIGNMENT_TREE_HEIGHT],
-}
-
-#[inline(always)]
-pub fn parse_propose_snapshot(data: &[u8]) -> Result<ProposeSnapshot, ProgramError> {
-    read_instruction_pod::<ProposeSnapshot>(data)
-}
-
-#[inline(always)]
-pub fn parse_vote_snapshot(data: &[u8]) -> Result<VoteSnapshot, ProgramError> {
-    read_instruction_pod::<VoteSnapshot>(data)
-}
-
-#[inline(always)]
-pub fn parse_finalize_snapshot(data: &[u8]) -> Result<FinalizeSnapshot, ProgramError> {
-    read_instruction_pod::<FinalizeSnapshot>(data)
-}
-
-#[inline(always)]
-pub fn parse_propose_assignment(data: &[u8]) -> Result<ProposeAssignment, ProgramError> {
-    read_instruction_pod::<ProposeAssignment>(data)
-}
-
-#[inline(always)]
-pub fn parse_vote_assignment(data: &[u8]) -> Result<VoteAssignment, ProgramError> {
-    read_instruction_pod::<VoteAssignment>(data)
-}
-
-#[inline(always)]
-pub fn parse_finalize_group(data: &[u8]) -> Result<FinalizeGroup, ProgramError> {
-    read_instruction_pod::<FinalizeGroup>(data)
 }
 
 pub fn build_propose_snapshot_ix(
