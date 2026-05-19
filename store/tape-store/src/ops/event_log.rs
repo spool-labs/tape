@@ -127,7 +127,7 @@ mod tests {
     use tape_core::snapshot::replay::ReplayTrack;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::hash::Hash;
 
@@ -304,9 +304,9 @@ mod tests {
                     slot,
                     &ReplayableEvent::SyncSpool {
                         node: [i; 32].into(),
-                        node_id: tape_core::types::NodeId(i as u64),
                         epoch,
-                        spools_hash: Hash::default(),
+                        group: GroupIndex::containing(SpoolIndex(i as u64)),
+                        spool: SpoolIndex(i as u64),
                     },
                 )
                 .unwrap();

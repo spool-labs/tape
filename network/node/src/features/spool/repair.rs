@@ -548,29 +548,44 @@ pub fn extract_repair_data(
 
 #[cfg(test)]
 mod tests {
-    use tape_crypto::address::Address;
     use super::*;
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SLICE_TREE_HEIGHT;
+    use tape_core::system::SpoolStatus;
+    use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_protocol::api::ops::{PeerReq, PeerRes, RepairRes};
     use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
-    use tape_core::track::blob::BlobInfo;
     use tape_store::ops::ObjectInfoOps;
     use tape_store::types::ObjectInfo;
-    use tape_core::system::SpoolStatus;
 
-    use crate::context::test_utils::{test_context, test_context_with_api};
+    use crate::harness::{NodeHarness, TestContext};
 
-    const SPOOL: SpoolIndex = 5;
+    const SPOOL: SpoolIndex = SpoolIndex(5);
 
     fn addr(n: u8) -> Address {
         Address::from([n; 32])
+    }
+
+    async fn test_context() -> TestContext {
+        test_context_with_api(MemoryApi::noop()).await
+    }
+
+    async fn test_context_with_api(api: MemoryApi) -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .api(api)
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(SPOOL.as_usize())
     }
 
     fn clay_track(size: u64, slices: &[Vec<u8>]) -> CompressedTrack {
@@ -614,14 +629,14 @@ mod tests {
     fn repair_state(epoch: EpochNumber) -> SpoolState {
         let mut state = SpoolState::new(SpoolStatus::Repair, epoch);
         for (slice, helper) in state.prev_helpers.iter_mut().enumerate() {
-            *helper = Some(NodeId(100 + slice as u64));
+            *helper = Some(addr(100 + slice as u8));
         }
         state
     }
 
     #[tokio::test]
     async fn empty_queue() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         ctx.store
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
@@ -632,7 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn skip_present() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(1);
 
         ctx.store
@@ -679,7 +694,8 @@ mod tests {
                 PeerRes::Repair(Ok(RepairRes { data }))
             }
             _ => panic!("unexpected request"),
-        }));
+        }))
+        .await;
 
         ctx.store
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
@@ -697,7 +713,7 @@ mod tests {
 
     #[tokio::test]
     async fn escalates_failure() {
-        let ctx = test_context(); // noop api, no peers
+        let ctx = test_context().await; // noop api, no peers
         let a = addr(1);
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
@@ -725,7 +741,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_track() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         ctx.store
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
@@ -738,7 +754,7 @@ mod tests {
 
     #[tokio::test]
     async fn skips_uncertified() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(2);
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
@@ -773,17 +789,10 @@ mod tests {
         assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
     }
 
-    /// The repair plan requires d=16 helpers. Previous map covers positions 0..9 (excluding 5),
-    /// current map covers positions 10..19. Neither alone satisfies all plan helpers.
-    /// Per-helper fallback finds each helper in whichever map has it.
+    /// Per-helper fallback can combine previous helpers from local spool state
+    /// with current helpers from protocol state and complete the repair.
     #[tokio::test]
     async fn split_peers() {
-        use tape_core::erasure::SPOOL_COUNT;
-        use tape_core::spooler::SpoolAssignment;
-        use tape_core::system::CommitteeMember;
-        use tape_core::types::coin::{Coin, TAPE};
-        use tape_protocol::ProtocolState;
-
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
@@ -813,29 +822,16 @@ mod tests {
                 PeerRes::Repair(Ok(RepairRes { data }))
             }
             _ => panic!("unexpected request"),
-        }));
+        }))
+        .await;
 
         // Previous: positions 0..9 (excluding 5) → 9 helpers
         let mut state = SpoolState::new(SpoolStatus::Repair, EpochNumber(3));
         for pos in 0..10 {
             if pos != 5 {
-                state.prev_helpers[pos] = Some(NodeId(100 + pos as u64));
+                state.prev_helpers[pos] = Some(addr(100 + pos as u8));
             }
         }
-
-        // Current: positions 10..19 → 10 helpers
-        let mut protocol = ProtocolState::default();
-        for i in 0..10u64 {
-            protocol
-                .committee
-                .push(CommitteeMember::new(NodeId(300 + i), Coin::<TAPE>::new(1000)));
-        }
-        let mut mapping = [255u8; SPOOL_COUNT];
-        for i in 0..10 {
-            mapping[group.spool_at(10 + i) as usize] = i as u8;
-        }
-        protocol.spools = SpoolAssignment::new(mapping);
-        ctx.set_state(protocol).unwrap();
 
         ctx.store.set_spool_state(SPOOL, state).unwrap();
         ctx.store.put_track(track, track_info).unwrap();

@@ -49,7 +49,7 @@ mod tests {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Syncing)
+            .phase(EpochPhase::Sync)
             .build()
             .await
             .expect("build harness");

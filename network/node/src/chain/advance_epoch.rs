@@ -40,31 +40,36 @@ mod tests {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Active)
-            .onchain_time_elapsed()
+            .phase(EpochPhase::Closing)
             .next_committee_size(20)
+            .next_assignment_ready()
             .build()
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
+        let next_epoch = EPOCH.saturating_add(EpochNumber(1));
 
         submit_advance_epoch(&ctx)
             .await
             .expect("submit advance epoch");
 
-        let epoch = ctx.rpc.get_epoch().await.expect("fetch epoch");
-        assert_eq!(epoch.id, EPOCH + EpochNumber(1));
-        assert_eq!(EpochPhase::try_from(epoch.state.phase), Ok(EpochPhase::Syncing));
+        let system = ctx.rpc.get_system().await.expect("fetch system");
+        let current = ctx.rpc.get_epoch(EPOCH).await.expect("fetch current epoch");
+        let next = ctx.rpc.get_epoch(next_epoch).await.expect("fetch next epoch");
+
+        assert_eq!(system.current_epoch, next_epoch);
+        assert_eq!(current.state.phase(), Some(EpochPhase::Completed));
+        assert_eq!(next.id, next_epoch);
+        assert_eq!(next.state.phase(), Some(EpochPhase::Sync));
     }
 
     #[tokio::test]
-    async fn insufficient_committee() {
+    async fn assignment_missing() {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Active)
-            .onchain_time_elapsed()
-            .next_committee_size(1)
+            .phase(EpochPhase::Closing)
+            .next_committee_size(20)
             .build()
             .await
             .expect("build harness");
@@ -73,7 +78,7 @@ mod tests {
         let outcome = classify_tx(submit_advance_epoch(&ctx).await);
         assert!(matches!(
             outcome,
-            TxOutcome::Program(TapeError::InsufficientCommittee)
+            TxOutcome::Program(TapeError::SpoolsNotSettled)
         ));
     }
 }

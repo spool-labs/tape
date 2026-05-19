@@ -161,12 +161,9 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
-    use peer_memory::MemoryApi;
-    use rpc_litesvm::LiteSvmRpc;
-    use store_memory::MemoryStore;
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
@@ -182,13 +179,20 @@ mod tests {
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
-    use crate::context::NodeContext;
-    use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
+    use crate::harness::{NodeHarness, TestContext};
 
-    fn seed_projected_snapshot_track(
-        ctx: &NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>,
-    ) -> (Address, u16, Vec<u8>) {
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
+
+    fn seed_projected_snapshot_track(ctx: &TestContext) -> (Address, SpoolIndex, Vec<u8>) {
         let epoch = EpochNumber(5);
 
         let group = GroupIndex(2);
@@ -265,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn serves_slice() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let (track_address, owned_spool, slice_bytes) = seed_projected_snapshot_track(&ctx);
 
         let result = get_slice(

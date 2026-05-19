@@ -379,7 +379,7 @@ use tape_core::types::SpoolIndex;
         let config = test_config();
         let tape = Address::new_unique();
         let track = Address::new_unique();
-        let spool_id = 20;
+        let spool_id = SpoolIndex(20);
         let slot = SlotNumber(10);
 
         store
@@ -416,7 +416,7 @@ use tape_core::types::SpoolIndex;
         let config = test_config();
         let tape = Address::new_unique();
         let track = Address::new_unique();
-        let spool_id = 20;
+        let spool_id = SpoolIndex(20);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
@@ -442,7 +442,7 @@ use tape_core::types::SpoolIndex;
         let config = test_config();
         let tape = Address::new_unique();
         let track = Address::new_unique();
-        let spool_id = 20;
+        let spool_id = SpoolIndex(20);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
@@ -486,7 +486,7 @@ use tape_core::types::SpoolIndex;
         let config = test_config();
         let tape = Address::new_unique();
         let track = Address::new_unique();
-        let spool_id = 20;
+        let spool_id = SpoolIndex(20);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
@@ -525,7 +525,7 @@ use tape_core::types::SpoolIndex;
         let config = test_config();
         let tape = Address::new_unique();
         let track = Address::new_unique();
-        let spool_id = 20;
+        let spool_id = SpoolIndex(20);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))

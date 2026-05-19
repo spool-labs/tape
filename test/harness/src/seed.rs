@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -5,109 +6,152 @@ use bytemuck::Zeroable;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
+use tape_api::dynamic::DynamicState;
 use tape_api::program::tapedrive::{
-    archive_pda, epoch_pda, history_pda, node_pda, snapshot_pda, system_pda,
+    archive_pda, committee_pda, epoch_pda, group_pda, history_pda, node_pda, peer_set_pda,
+    snapshot_tape_pda, system_pda, SYSTEM_ADDRESS,
 };
-use tape_api::state::{Archive, Epoch, History, Node, Snapshot, System};
+use tape_api::state::{Archive, Committee, Epoch, Group, History, Node, PeerSet, System, Tape};
 use tape_core::bls::BlsPrivateKey;
-use tape_core::erasure::SPOOL_GROUP_COUNT;
-use tape_core::prelude::NodeId;
-use tape_core::snapshot::types::SnapshotState;
-use tape_core::spooler::SpoolAssignment;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::spooler::GroupIndex;
 use tape_core::staking::{PoolHistory, StakingPool};
-use tape_core::system::{Committee, CommitteeMember, EpochSchedule, NodeMetadata, NodePreferences};
-use tape_core::types::{EpochNumber, GroupBitmap, ShareAmount, VersionId};
-use tape_crypto::Hash;
-use tape_protocol::ProtocolState;
+use tape_core::system::{
+    EpochPhase, EpochSchedule, Member, NodeMetadata, NodePreferences, Peer, Spool,
+};
+use tape_core::types::{
+    EpochNumber, ShareAmount, StorageUnits, Tail, TapeNumber, VersionId,
+};
+use tape_crypto::{Address, Hash};
+use tape_protocol::{EpochBundle, ProtocolState};
 
 use crate::node::HarnessNode;
-use crate::spec::{HarnessSpec, HarnessNodeSpec, previous_epoch};
+use crate::spec::{previous_epoch, HarnessNodeSpec, HarnessSpec};
 
-pub(crate) struct SeedAccount<T> {
+const DEFAULT_GROUP_SIZE: StorageUnits = StorageUnits(StorageUnits::GB);
+
+pub(crate) struct SeedAccount {
     pub address: Pubkey,
-    pub data: T,
+    pub data: Vec<u8>,
 }
 
 pub(crate) struct SeededWorld {
     pub protocol_state: ProtocolState,
-    pub system: SeedAccount<System>,
-    pub epoch: SeedAccount<Epoch>,
-    pub archive: SeedAccount<Archive>,
-    /// Fully-sealed snapshot at `spec.epoch - 1`. Required by the
-    /// `advance_epoch` gate for any non-bootstrap epoch (`spec.epoch > 1`).
-    /// Set to `None` when `spec.epoch <= 1`.
-    pub prev_snapshot_manifest: Option<SeedAccount<Snapshot>>,
+    pub system: SeedAccount,
+    pub epochs: Vec<SeedAccount>,
+    pub committees: Vec<SeedAccount>,
+    pub peer_set: SeedAccount,
+    pub groups: Vec<SeedAccount>,
+    pub archive: SeedAccount,
+    pub prev_snapshot_tape: Option<SeedAccount>,
     pub nodes: Vec<HarnessNode>,
-    pub node_accounts: Vec<SeedAccount<Node>>,
-    pub history_accounts: Vec<SeedAccount<History>>,
+    pub node_accounts: Vec<SeedAccount>,
+    pub history_accounts: Vec<SeedAccount>,
 }
 
 pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
     let identities = build_identities(spec.nodes.len());
 
-    let prev_members = committee_members(&spec.prev_committee_nodes, spec, &identities);
-    let curr_members = committee_members(&spec.current_committee_nodes, spec, &identities);
-    let next_members = committee_members(&spec.next_committee_nodes, spec, &identities);
+    let committee_capacity = committee_capacity(spec);
+    let prev_epoch = previous_epoch(spec.epoch);
+    let next_epoch = spec.epoch.saturating_add(EpochNumber(1));
 
-    let mut committee_prev = Committee::from_members(&prev_members);
-    let mut committee = Committee::from_members(&curr_members);
-    let committee_next = Committee::from_members(&next_members);
-
-    let spools_prev = spool_assignment(&spec.prev_spool_counts);
-    let spools = spool_assignment(&spec.current_spool_counts);
-
-    committee_prev.apply_weights_from_spools(&spools_prev);
-    committee.apply_weights_from_spools(&spools);
-
-    let (system_address, _) = system_pda();
-    let system = System {
-        version: VersionId(1),
-        total_nodes: spec.nodes.len() as u64,
-        committee_prev,
-        committee,
-        committee_next,
-        spools_prev,
-        spools,
+    let prev = build_epoch_bundle(
+        prev_epoch,
+        &spec.prev_committee_nodes,
+        spec.prev_group_count,
+        spec,
+        &identities,
+    );
+    let current = build_epoch_bundle(
+        spec.epoch,
+        &spec.current_committee_nodes,
+        spec.current_group_count,
+        spec,
+        &identities,
+    );
+    let next = if spec.next_assignment_ready {
+        build_epoch_bundle(
+            next_epoch,
+            &spec.next_committee_nodes,
+            spec.current_group_count,
+            spec,
+            &identities,
+        )
+    } else {
+        EpochBundle {
+            epoch: Epoch {
+                id: next_epoch,
+                state: epoch_state(EpochPhase::Unknown),
+                ..Epoch::zeroed()
+            },
+            committee: committee_members(&spec.next_committee_nodes, spec, &identities),
+            groups: Vec::new(),
+        }
     };
 
-    let (epoch_address, _) = epoch_pda();
-    let epoch = Epoch {
+    let peer_capacity = committee_capacity.saturating_mul(3);
+    let peers = peer_set(spec, &identities);
+
+    let system = System {
+        current_epoch: spec.epoch,
+        min_version: VersionId(1),
+        total_nodes: spec.nodes.len() as u64,
+        committee_size: committee_capacity,
+        target_group_count: spec.current_group_count,
+        live_group_count: spec.current_group_count,
+    };
+
+    let current_epoch_account = Epoch {
         id: spec.epoch,
+        start_time: spec.last_epoch,
         state: spec.epoch_state(),
-        last_epoch: spec.last_epoch,
         nonce: Hash::default(),
+        total_groups: spec.current_group_count,
+        total_assigned: total_assigned(&current.groups),
         ..Epoch::zeroed()
     };
 
-    let (archive_address, _) = archive_pda();
+    let prev_epoch_account = Epoch {
+        id: prev_epoch,
+        state: epoch_state(EpochPhase::Completed),
+        nonce: Hash::default(),
+        total_groups: spec.prev_group_count,
+        total_assigned: total_assigned(&prev.groups),
+        ..Epoch::zeroed()
+    };
+
+    let next_epoch_account = if spec.next_assignment_ready {
+        Epoch {
+            id: next_epoch,
+            state: epoch_state(EpochPhase::Unknown),
+            assignment_hash: Hash::from([0x88; 32]),
+            total_groups: next.epoch.total_groups,
+            total_assigned: next.epoch.total_assigned,
+            ..Epoch::zeroed()
+        }
+    } else {
+        next.epoch
+    };
+
     let archive = Archive {
         schedule: EpochSchedule::new_at(spec.epoch),
         ..Archive::zeroed()
     };
 
-    // For any non-bootstrap epoch the on-chain `advance_epoch` gate requires
-    // the previous epoch's snapshot manifest to be fully sealed. We seed a
-    // synthetic fully-sealed manifest at `spec.epoch - 1` so the harness can
-    // exercise the advance path without first running the actual snapshot
-    // build/init/certify/finalize flow. Tests that exercise the snapshot
-    // pipeline itself opt out via `seed_prev_snapshot_manifest = false`, so
-    // the manifest PDA is empty when init tries to create it.
-    let prev_snapshot_manifest = if spec.seed_prev_snapshot_manifest && spec.epoch > EpochNumber(1)
-    {
-        let prev_epoch = spec.epoch - EpochNumber(1);
-        let (manifest_address, _) = snapshot_pda(prev_epoch);
-        let mut group_bitmap = GroupBitmap::zeroed();
-        for group_index in 0..SPOOL_GROUP_COUNT {
-            group_bitmap.set(group_index);
-        }
-        let snapshot = Snapshot {
-            epoch: prev_epoch,
-            state: SnapshotState::Finalized as u64,
-            group_bitmap,
+    let prev_snapshot_tape = if spec.seed_prev_snapshot_tape && spec.epoch > EpochNumber(1) {
+        let (snapshot_address, _) = snapshot_tape_pda(prev_epoch);
+        let tape = Tape {
+            id: TapeNumber(0),
+            authority: SYSTEM_ADDRESS,
+            capacity: StorageUnits(u64::MAX),
+            active_epoch: prev_epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            ..Tape::zeroed()
         };
         Some(SeedAccount {
-            address: manifest_address.into(),
-            data: snapshot,
+            address: snapshot_address.into(),
+            data: tape.pack(),
         })
     } else {
         None
@@ -117,22 +161,21 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
     let mut node_accounts = Vec::with_capacity(spec.nodes.len());
     let mut history_accounts = Vec::with_capacity(spec.nodes.len());
 
-    for (index, identity) in identities.into_iter().enumerate() {
-        let node_id = NodeId(index as u64);
-        let node_spec = &spec.nodes[index];
-        let bls_pubkey = identity.bls_keypair.public_key().expect("bls public key");
+    let current_index = member_index_by_node(&spec.current_committee_nodes);
+    let prev_index = member_index_by_node(&spec.prev_committee_nodes);
+    let next_index = member_index_by_node(&spec.next_committee_nodes);
 
-        let preferences = NodePreferences {
-            storage_capacity: node_spec.storage_capacity,
-            storage_price: node_spec.storage_price,
-        };
+    for (index, identity) in identities.iter().enumerate() {
+        let node_spec = &spec.nodes[index];
+        let node_id = tape_core::types::NodeId(index as u64);
+        let bls_pubkey = identity.bls_keypair.public_key().expect("bls public key");
+        let preferences = node_preferences(node_spec, committee_capacity, spec.current_group_count);
 
         let node = Node {
             id: node_id,
             authority: identity.authority.into(),
             metadata: NodeMetadata {
                 bls_pubkey,
-                next_bls_pubkey: bls_pubkey,
                 ..NodeMetadata::zeroed()
             },
             preferences,
@@ -154,65 +197,80 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             registered_epoch: node_spec.registered_epoch,
             latest_epoch: previous_epoch(spec.epoch),
             inner: PoolHistory::new(),
-            ..History::zeroed()
         };
 
-        let harness_node = HarnessNode::new(
+        nodes.push(HarnessNode::new(
             index,
             node_id,
             identity.authority,
             identity.node_address,
-            system.committee.index_of(&node_id),
-            system.committee_prev.index_of(&node_id),
-            system.committee_next.index_of(&node_id),
-            identity.keypair,
-            identity.bls_keypair,
-        );
-
-        nodes.push(harness_node);
+            current_index.get(&index).copied(),
+            prev_index.get(&index).copied(),
+            next_index.get(&index).copied(),
+            identity.keypair.clone(),
+            identity.bls_keypair.clone(),
+        ));
         node_accounts.push(SeedAccount {
             address: identity.node_address,
-            data: node,
+            data: node.pack(),
         });
         history_accounts.push(SeedAccount {
             address: history_address.into(),
-            data: history,
+            data: history.pack(),
         });
     }
 
+    let mut protocol_current = current.clone();
+    protocol_current.epoch = current_epoch_account;
+
+    let mut protocol_prev = prev.clone();
+    protocol_prev.epoch = prev_epoch_account;
+
+    let protocol_previous = if spec.epoch.is_zero() {
+        None
+    } else {
+        Some(protocol_prev)
+    };
+
     let protocol_state = ProtocolState {
-        epoch: spec.epoch,
-        phase: spec.phase,
-        last_epoch: spec.last_epoch,
-        nonce: epoch.nonce,
-        committee: system.committee.iter().copied().collect(),
-        committee_prev: system.committee_prev.iter().copied().collect(),
-        committee_next: system.committee_next.iter().copied().collect(),
-        spools: system.spools,
-        spools_prev: system.spools_prev,
+        system,
+        peers: peers.clone(),
+        peer_capacity,
+        current: protocol_current,
+        previous: protocol_previous,
+        next_epoch: Some(next_epoch_account),
+        next_committee: Some(next.committee.clone()),
+        next_committee_capacity: Some(committee_capacity),
     };
 
     Ok(SeededWorld {
         protocol_state,
-        system: SeedAccount {
-            address: system_address.into(),
-            data: system,
-        },
-        epoch: SeedAccount {
-            address: epoch_address.into(),
-            data: epoch,
-        },
-        archive: SeedAccount {
-            address: archive_address.into(),
-            data: archive,
-        },
-        prev_snapshot_manifest,
+        system: seed(system_pda().0, system.pack()),
+        epochs: vec![
+            seed(epoch_pda(prev_epoch).0, prev_epoch_account.pack()),
+            seed(epoch_pda(spec.epoch).0, current_epoch_account.pack()),
+            seed(epoch_pda(next_epoch).0, next_epoch_account.pack()),
+        ],
+        committees: vec![
+            seed_committee(prev_epoch, committee_capacity, &prev.committee),
+            seed_committee(spec.epoch, committee_capacity, &current.committee),
+            seed_committee(next_epoch, committee_capacity, &next.committee),
+        ],
+        peer_set: seed_peer_set(peer_capacity, &peers),
+        groups: seed_groups(&prev.groups)
+            .into_iter()
+            .chain(seed_groups(&current.groups))
+            .chain(seed_groups(&next.groups))
+            .collect(),
+        archive: seed(archive_pda().0, archive.pack()),
+        prev_snapshot_tape,
         nodes,
         node_accounts,
         history_accounts,
     })
 }
 
+#[derive(Clone)]
 struct NodeIdentity {
     authority: Pubkey,
     node_address: Pubkey,
@@ -237,39 +295,181 @@ fn build_identities(count: usize) -> Vec<NodeIdentity> {
         .collect()
 }
 
+fn build_epoch_bundle(
+    epoch: EpochNumber,
+    indices: &[usize],
+    group_count: u64,
+    spec: &HarnessSpec,
+    identities: &[NodeIdentity],
+) -> EpochBundle {
+    let mut members = committee_members(indices, spec, identities);
+    let groups = groups_for_members(epoch, indices, identities, &mut members, group_count);
+
+    EpochBundle {
+        epoch: Epoch {
+            id: epoch,
+            total_groups: group_count,
+            total_assigned: total_assigned(&groups),
+            ..Epoch::zeroed()
+        },
+        committee: members,
+        groups,
+    }
+}
+
 fn committee_members(
     indices: &[usize],
     spec: &HarnessSpec,
     identities: &[NodeIdentity],
-) -> Vec<CommitteeMember> {
+) -> Vec<Member> {
     indices
         .iter()
-        .map(|&index| committee_member(index, &spec.nodes[index], &identities[index]))
+        .map(|&index| {
+            let node_spec = &spec.nodes[index];
+            Member {
+                node: identities[index].node_address.into(),
+                stake: node_spec.stake,
+                blacklist: StorageUnits::zero(),
+                spools: 0,
+            }
+        })
         .collect()
 }
 
-fn committee_member(
-    index: usize,
-    node_spec: &HarnessNodeSpec,
-    identity: &NodeIdentity,
-) -> CommitteeMember {
-    CommitteeMember {
-        id: NodeId(index as u64),
-        stake: node_spec.stake,
-        key: identity.bls_keypair.public_key().expect("bls public key"),
-        blacklist: 0u64.into(),
-        preferences: NodePreferences {
-            storage_capacity: node_spec.storage_capacity,
-            storage_price: node_spec.storage_price,
-        },
-        weight: 0,
+fn groups_for_members(
+    epoch: EpochNumber,
+    indices: &[usize],
+    identities: &[NodeIdentity],
+    members: &mut [Member],
+    group_count: u64,
+) -> Vec<Group> {
+    if indices.is_empty() || group_count == 0 {
+        return Vec::new();
+    }
+
+    (0..group_count)
+        .map(|group_number| {
+            let group_id = GroupIndex(group_number);
+            let mut group = Group {
+                id: group_id,
+                epoch,
+                size: DEFAULT_GROUP_SIZE,
+                ..Group::zeroed()
+            };
+
+            for position in 0..GROUP_SIZE {
+                let member_idx = ((group_number as usize * GROUP_SIZE) + position) % indices.len();
+                let node_index = indices[member_idx];
+                let identity = &identities[node_index];
+                group.spools[position] = Spool::new(
+                    identity.node_address.into(),
+                    identity.bls_keypair.public_key().expect("bls public key"),
+                );
+                members[member_idx].spools = members[member_idx].spools.saturating_add(1);
+            }
+
+            group
+        })
+        .collect()
+}
+
+fn peer_set(spec: &HarnessSpec, identities: &[NodeIdentity]) -> Vec<Peer> {
+    let mut selected = BTreeSet::new();
+    selected.extend(spec.prev_committee_nodes.iter().copied());
+    selected.extend(spec.current_committee_nodes.iter().copied());
+    selected.extend(spec.next_committee_nodes.iter().copied());
+    let committee_size = committee_capacity(spec);
+
+    selected
+        .into_iter()
+        .map(|index| {
+            let node_spec = &spec.nodes[index];
+            let identity = &identities[index];
+            Peer {
+                node: identity.node_address.into(),
+                bls_pubkey: identity.bls_keypair.public_key().expect("bls public key"),
+                preferences: node_preferences(node_spec, committee_size, spec.current_group_count),
+                ..Peer::zeroed()
+            }
+        })
+        .collect()
+}
+
+fn node_preferences(
+    spec: &HarnessNodeSpec,
+    committee_size: u64,
+    spool_groups: u64,
+) -> NodePreferences {
+    NodePreferences {
+        storage_capacity: spec.storage_capacity,
+        storage_price: spec.storage_price,
+        committee_size,
+        spool_groups,
+        min_version: VersionId(1),
     }
 }
 
-fn spool_assignment(counts: &[u16]) -> SpoolAssignment<{ tape_core::erasure::SPOOL_COUNT }> {
-    if counts.is_empty() {
-        SpoolAssignment::zeroed()
-    } else {
-        SpoolAssignment::try_from_counts(counts).expect("validated spool counts")
+fn member_index_by_node(indices: &[usize]) -> std::collections::BTreeMap<usize, usize> {
+    indices
+        .iter()
+        .enumerate()
+        .map(|(member_index, node_index)| (*node_index, member_index))
+        .collect()
+}
+
+fn total_assigned(groups: &[Group]) -> StorageUnits {
+    let total_spools = groups.len().saturating_mul(GROUP_SIZE) as u64;
+    StorageUnits(DEFAULT_GROUP_SIZE.0.saturating_mul(total_spools))
+}
+
+fn committee_capacity(spec: &HarnessSpec) -> u64 {
+    let max_committee = spec
+        .current_committee_nodes
+        .len()
+        .max(spec.prev_committee_nodes.len())
+        .max(spec.next_committee_nodes.len())
+        .max(tape_api::program::MIN_COMMITTEE_SIZE);
+    max_committee as u64
+}
+
+fn epoch_state(phase: EpochPhase) -> tape_core::system::EpochState {
+    tape_core::system::EpochState {
+        phase: phase as u64,
+        ..tape_core::system::EpochState::zeroed()
     }
+}
+
+fn seed(address: Address, data: Vec<u8>) -> SeedAccount {
+    SeedAccount {
+        address: address.into(),
+        data,
+    }
+}
+
+fn seed_committee(epoch: EpochNumber, capacity: u64, members: &[Member]) -> SeedAccount {
+    seed(
+        committee_pda(epoch).0,
+        Committee {
+            epoch,
+            members: Tail::new(capacity, members.len() as u64),
+        }
+        .pack_with(members),
+    )
+}
+
+fn seed_peer_set(capacity: u64, peers: &[Peer]) -> SeedAccount {
+    seed(
+        peer_set_pda().0,
+        PeerSet {
+            peers: Tail::new(capacity, peers.len() as u64),
+        }
+        .pack_with(peers),
+    )
+}
+
+fn seed_groups(groups: &[Group]) -> Vec<SeedAccount> {
+    groups
+        .iter()
+        .map(|group| seed(group_pda(group.epoch, group.id).0, group.pack()))
+        .collect()
 }

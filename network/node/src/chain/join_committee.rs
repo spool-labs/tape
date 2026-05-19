@@ -52,8 +52,17 @@ mod tests {
             .await
             .expect("submit join committee");
 
-        let system = ctx.rpc.get_system().await.expect("fetch system");
-        assert!(system.committee_next.index_of(&harness.node(NODE).node_id).is_some());
+        let next_epoch = EPOCH.saturating_add(EpochNumber(1));
+        let committee = ctx
+            .rpc
+            .get_committee(next_epoch)
+            .await
+            .expect("fetch next committee");
+        let peers = ctx.rpc.get_peer_set().await.expect("fetch peer set");
+        let node = ctx.node_address();
+
+        assert!(committee.iter().any(|member| member.node == node));
+        assert!(peers.iter().any(|peer| peer.node == node));
     }
 
     #[tokio::test]

@@ -117,59 +117,62 @@ where
 #[cfg(test)]
 mod tests {
     use bytemuck::Zeroable;
-    use tape_api::program::tapedrive::{self, snapshot_pda};
-    use tape_api::state::Snapshot;
-    use tape_core::snapshot::types::SnapshotState;
-    use tape_core::types::{EpochNumber, GroupBitmap};
-    use tape_protocol::ProtocolState;
+    use tape_api::program::tapedrive::{self, snapshot_tape_pda, SYSTEM_ADDRESS};
+    use tape_api::state::Tape;
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
     use tape_store::ops::MetaOps;
 
     use super::discover_missing_epochs;
-    use crate::context::test_utils::{test_context, TestContext};
+    use crate::harness::{NodeHarness, TestContext};
 
-    fn set_epoch(context: &TestContext, epoch: EpochNumber) {
-        let mut state = ProtocolState::default();
-        state.epoch = epoch;
-        context.set_state(state).expect("publish state");
+    async fn context_at(epoch: EpochNumber) -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .epoch(epoch)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
     }
 
-    fn write_snapshot(context: &TestContext, epoch: EpochNumber, state: SnapshotState) {
-        let snapshot = Snapshot {
-            epoch,
-            state: state as u64,
-            group_bitmap: GroupBitmap::zeroed(),
+    fn write_snapshot_tape(context: &TestContext, epoch: EpochNumber) {
+        let tape = Tape {
+            id: TapeNumber(0),
+            authority: SYSTEM_ADDRESS,
+            capacity: StorageUnits(u64::MAX),
+            active_epoch: epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            ..Tape::zeroed()
         };
-        let (address, _) = snapshot_pda(epoch);
+        let (address, _) = snapshot_tape_pda(epoch);
         context
             .rpc
             .rpc()
-            .set_account_data(address, tapedrive::ID, &snapshot.pack())
-            .expect("write snapshot account");
+            .set_account_data(address, tapedrive::ID, &tape.pack())
+            .expect("write snapshot tape");
     }
 
     #[tokio::test]
     async fn empty_when_no_finalized_snapshots() {
-        let context = test_context();
-        set_epoch(&context, EpochNumber(3));
-        // No Snapshot account written for prev or prev-prev.
+        let context = context_at(EpochNumber(3)).await;
+        // No snapshot tape written for prev or prev-prev.
         let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
         assert!(epochs.is_empty());
     }
 
     #[tokio::test]
     async fn empty_at_epoch_zero() {
-        let context = test_context();
-        set_epoch(&context, EpochNumber(0));
+        let context = context_at(EpochNumber(0)).await;
         let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
         assert!(epochs.is_empty());
     }
 
     #[tokio::test]
     async fn range_from_first_snapshot_when_no_cursor() {
-        let context = test_context();
-        set_epoch(&context, EpochNumber(4));
-        // prev (3) is Finalized → newest = 3, no cursor → start = 1.
-        write_snapshot(&context, EpochNumber(3), SnapshotState::Finalized);
+        let context = context_at(EpochNumber(4)).await;
+        // prev (3) has a finalized snapshot tape, no cursor -> start = 1.
+        write_snapshot_tape(&context, EpochNumber(3));
 
         let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
         assert_eq!(
@@ -183,12 +186,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falls_back_to_prev_prev_when_prev_not_finalized() {
-        let context = test_context();
-        set_epoch(&context, EpochNumber(5));
-        // prev (4) is PartiallyCertified, prev_prev (3) is Finalized.
-        write_snapshot(&context, EpochNumber(4), SnapshotState::PartiallyCertified);
-        write_snapshot(&context, EpochNumber(3), SnapshotState::Finalized);
+    async fn falls_back_to_prev_prev_when_prev_missing() {
+        let context = context_at(EpochNumber(5)).await;
+        // prev (4) has no snapshot tape, prev_prev (3) does.
+        write_snapshot_tape(&context, EpochNumber(3));
 
         let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
         assert_eq!(epochs.last(), Some(&EpochNumber(3)));
@@ -197,9 +198,8 @@ mod tests {
 
     #[tokio::test]
     async fn resumes_from_cursor() {
-        let context = test_context();
-        set_epoch(&context, EpochNumber(10));
-        write_snapshot(&context, EpochNumber(9), SnapshotState::Finalized);
+        let context = context_at(EpochNumber(10)).await;
+        write_snapshot_tape(&context, EpochNumber(9));
         context
             .store
             .set_bootstrap_target_epoch(EpochNumber(6))
@@ -218,9 +218,8 @@ mod tests {
 
     #[tokio::test]
     async fn empty_when_cursor_caught_up() {
-        let context = test_context();
-        set_epoch(&context, EpochNumber(10));
-        write_snapshot(&context, EpochNumber(9), SnapshotState::Finalized);
+        let context = context_at(EpochNumber(10)).await;
+        write_snapshot_tape(&context, EpochNumber(9));
         // Cursor already at or past the newest finalized epoch.
         context
             .store
@@ -232,12 +231,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prev_prev_not_finalized_returns_empty() {
-        let context = test_context();
-        set_epoch(&context, EpochNumber(5));
-        // Neither prev (4) nor prev_prev (3) is Finalized.
-        write_snapshot(&context, EpochNumber(4), SnapshotState::Registered);
-        write_snapshot(&context, EpochNumber(3), SnapshotState::PartiallyCertified);
+    async fn prev_prev_missing_returns_empty() {
+        let context = context_at(EpochNumber(5)).await;
+        // Neither prev (4) nor prev_prev (3) has a snapshot tape.
 
         let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
         assert!(epochs.is_empty());

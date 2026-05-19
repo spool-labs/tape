@@ -241,15 +241,17 @@ fn capture_instruction(
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::Zeroable;
     use tape_api::event::{
         EpochAdvanced, SnapshotFinalized, TapeReserved, TrackCertified, TrackWritten,
     };
     use tape_api::program::tapedrive::{snapshot_tape_pda, SYSTEM_ADDRESS};
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
+    use tape_core::system::NodePreferences;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{TrackKind, TrackState};
@@ -359,12 +361,10 @@ mod tests {
                 old_epoch,
                 new_epoch,
                 timestamp: 0u64.to_le_bytes(),
-                committee_size: 128u64.to_le_bytes(),
                 total_stake: 1_000u64.to_le_bytes(),
-                storage_price: 5u64.to_le_bytes(),
-                storage_capacity: StorageUnits::mb(1_000),
+                committee_count: 128u64.to_le_bytes(),
+                preferences: NodePreferences::zeroed(),
                 nonce: Hash::new_unique(),
-                phase: 0,
             },
         }
     }

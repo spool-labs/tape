@@ -180,10 +180,20 @@ mod tests {
 
     use super::{next_pending_epoch, run_epoch_sweep};
     use crate::config::store::GcConfig;
-    use crate::context::test_utils::test_context;
+    use crate::harness::{NodeHarness, TestContext};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
     }
 
     fn test_config() -> GcConfig {
@@ -234,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn marks_complete() {
-        let context = test_context();
+        let context = test_context().await;
         let config = test_config();
 
         run_epoch_sweep(&context, &config, EpochNumber(3)).await.unwrap();

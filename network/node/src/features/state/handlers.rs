@@ -349,9 +349,9 @@ mod tests {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Active)
-            .onchain_time_elapsed()
+            .phase(EpochPhase::Closing)
             .next_committee_size(20)
+            .next_assignment_ready()
             .build()
             .await
             .expect("build harness");

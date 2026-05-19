@@ -109,13 +109,23 @@ mod tests {
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
-    use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
+    use crate::harness::{NodeHarness, TestContext};
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
 
     // repair handler returns sub-chunk bytes for a projected snapshot track
     #[tokio::test]
     async fn returns_sub_chunk() {
-        let ctx = test_context();
+        let ctx = test_context().await;
 
         // Build a real Clay-encoded snapshot chunk: 20 slices, each carrying
         // the per-slice metadata suffix that `extract_repair_data` parses.

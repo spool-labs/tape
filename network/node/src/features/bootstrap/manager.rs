@@ -174,13 +174,23 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::config::node::NodeConfig;
-    use crate::context::test_utils::test_context;
+    use crate::harness::{NodeHarness, TestContext};
 
     use super::{advance_cursors, run};
 
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
+
     #[tokio::test]
     async fn override_wins_when_nothing_to_replay() {
-        let context = test_context();
+        let context = test_context().await;
         let mut config = NodeConfig::default();
         config.solana.start_slot = Some(SlotNumber(42));
         let cancel = CancellationToken::new();
@@ -195,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_cursor_used_when_no_override_and_nothing_to_replay() {
-        let context = test_context();
+        let context = test_context().await;
         let config = NodeConfig::default();
         let cancel = CancellationToken::new();
 
@@ -211,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_op_path_leaves_cursor_untouched() {
-        let context = test_context();
+        let context = test_context().await;
         let mut config = NodeConfig::default();
         // Avoid the chain fetch by forcing the override path.
         config.solana.start_slot = Some(SlotNumber(1));
@@ -225,9 +235,9 @@ mod tests {
         assert!(after.is_none());
     }
 
-    #[test]
-    fn advance_cursors_records_bootstrap_epoch_and_sync_slot() {
-        let context = test_context();
+    #[tokio::test]
+    async fn advance_cursors_records_bootstrap_epoch_and_sync_slot() {
+        let context = test_context().await;
         let epoch = EpochNumber(5);
         let end_slot = SlotNumber(1234);
 

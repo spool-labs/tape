@@ -116,44 +116,36 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
-    use tape_crypto::address::Address;
     use super::*;
-    use tape_core::erasure::SPOOL_COUNT;
-    use tape_core::spooler::SpoolAssignment;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::system::{CommitteeMember, EpochPhase};
-    use tape_core::types::NodeId;
-    use tape_core::types::coin::{Coin, TAPE};
-    use tape_protocol::ProtocolState;
+    use tape_crypto::address::Address;
 
-    use crate::context::test_utils::test_context;
+    use crate::harness::{NodeHarness, TestContext};
 
     const EPOCH: EpochNumber = EpochNumber(2);
 
-    fn owned_state(spools: &[SpoolIndex]) -> ProtocolState {
-        let mut state = ProtocolState::default();
-        state.epoch = EPOCH;
-        state.phase = EpochPhase::Syncing;
-        state
-            .committee
-            .push(CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000)));
-
-        let mut mapping = [255u8; SPOOL_COUNT];
-        for &spool in spools {
-            mapping[spool as usize] = 0;
-        }
-        state.spools = SpoolAssignment::new(mapping);
-        state
+    async fn test_context() -> (TestContext, SpoolIndex) {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Sync)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let spool = harness.owned_spools(0)[0];
+        (harness.ctx_for(0), spool)
     }
 
-    #[test]
-    fn active_with_pending_not_ready() {
-        let ctx = test_context();
-        ctx.set_state(owned_state(&[5])).unwrap();
+    #[tokio::test]
+    async fn active_with_pending_not_ready() {
+        let (ctx, spool) = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
+        ctx.store
+            .add_pending_repair(spool, Address::from([1; 32]))
+            .unwrap();
 
         let result = check_readiness(&ctx).unwrap();
         assert!(matches!(result, Readiness::NotReady { .. }));

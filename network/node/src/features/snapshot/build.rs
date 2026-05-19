@@ -116,9 +116,9 @@ where
     let voting_epoch = state.epoch();
     let total_groups = usize::try_from(state.current.epoch.total_groups)
         .map_err(|_| NodeError::Store("snapshot total_groups overflow".into()))?;
-    if total_groups < SNAPSHOT_K_OUTER {
+    if total_groups <= SNAPSHOT_K_OUTER {
         return Err(NodeError::Store(format!(
-            "snapshot total_groups {total_groups} is below outer threshold {SNAPSHOT_K_OUTER}"
+            "snapshot total_groups {total_groups} must exceed outer threshold {SNAPSHOT_K_OUTER}"
         )));
     }
 

@@ -171,21 +171,27 @@ mod tests {
     };
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
-    use tape_protocol::ProtocolState;
     use tape_protocol::api::{InconsistencyProof, InconsistencyRequest};
     use tape_store::ops::{ObjectInfoOps, TapeOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
-    use crate::context::test_utils::test_context;
     use crate::features::http::state::AppState;
+    use crate::harness::{NodeHarness, TestContext};
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
 
     #[tokio::test]
     async fn matching_root_rejected() {
-        let ctx = test_context();
-        let mut state = ProtocolState::default();
-        state.current.epoch.id = EpochNumber(6);
-        ctx.set_state(state).expect("set state");
+        let ctx = test_context().await;
 
         let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);

@@ -134,18 +134,28 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
-    use tape_crypto::address::Address;
     use super::*;
     use tape_core::encoding::EncodingProfile;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::ops::ObjectInfoOps;
     use tape_store::types::ObjectInfo;
 
-    use crate::context::test_utils::test_context;
+    use crate::harness::{NodeHarness, TestContext};
 
-    const SPOOL: SpoolIndex = 5;
+    const SPOOL: SpoolIndex = SpoolIndex(5);
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(SPOOL.as_usize())
+    }
 
     fn addr(n: u8) -> Address {
         Address::from([n; 32])
@@ -167,14 +177,14 @@ mod tests {
 
     #[tokio::test]
     async fn no_tracks() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let result = run(ctx, &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 0 });
     }
 
     #[tokio::test]
     async fn all_present() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(1);
         let group = GroupIndex::containing(SPOOL);
 
@@ -197,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn finds_gaps() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(1);
         let group = GroupIndex::containing(SPOOL);
 
@@ -213,9 +223,9 @@ mod tests {
 
     #[tokio::test]
     async fn skips_other_groups() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(1);
-        let other_group = GroupIndex::containing(SPOOL + 20); // Different group.
+        let other_group = GroupIndex::containing(SPOOL + SpoolIndex(20)); // Different group.
 
         ctx.store.put_track(a, track(other_group)).unwrap();
 
@@ -225,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn idempotent_adds() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(1);
         let group = GroupIndex::containing(SPOOL);
 
@@ -242,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn skips_uncertified() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(1);
         let group = GroupIndex::containing(SPOOL);
 
@@ -262,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn scans_certified() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         let a = addr(1);
         let group = GroupIndex::containing(SPOOL);
 

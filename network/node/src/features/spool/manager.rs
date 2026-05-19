@@ -568,44 +568,37 @@ fn check_expiry(
 
 #[cfg(test)]
 mod tests {
+    use tape_core::system::{EpochPhase, SpoolState, SpoolStatus};
+    use tape_core::types::{EpochNumber, SpoolIndex};
     use tape_crypto::address::Address;
-    use tape_core::spooler::{SpoolAssignment, SpoolIndex};
-    use tape_core::system::{CommitteeMember, EpochPhase};
-    use tape_core::types::EpochNumber;
-    use tape_core::types::coin::{Coin, TAPE};
-    use tape_core::types::NodeId;
-    use tape_protocol::ProtocolState;
     use tape_store::ops::SpoolOps;
-    use tape_core::system::{SpoolState, SpoolStatus};
     use tokio_util::sync::CancellationToken;
 
     use super::SpoolManager;
     use crate::config::recovery::RecoveryConfig;
-    use crate::context::test_utils::test_context;
-    use crate::features::spool::types::{Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult};
-    use tape_core::erasure::SPOOL_COUNT;
+    use crate::features::spool::types::{
+        Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult,
+    };
+    use crate::harness::{NodeHarness, TestContext};
+
     const EPOCH: EpochNumber = EpochNumber(2);
+    const SPOOL: SpoolIndex = SpoolIndex(5);
 
-    fn owned_state(spools: &[SpoolIndex]) -> ProtocolState {
-        let mut state = ProtocolState::default();
-        state.epoch = EPOCH;
-        state.phase = EpochPhase::Syncing;
-        state
-            .committee
-            .push(CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000)));
-
-        let mut mapping = [255u8; SPOOL_COUNT];
-        for &spool in spools {
-            mapping[spool as usize] = 0;
-        }
-        state.spools = SpoolAssignment::new(mapping);
-        state
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Sync)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(SPOOL.as_usize())
     }
 
-    #[test]
-    fn advance_creates_sync_state_for_new_spool() {
-        let ctx = test_context();
-        ctx.set_state(owned_state(&[5])).unwrap();
+    #[tokio::test]
+    async fn advance_creates_sync_state_for_new_spool() {
+        let ctx = test_context().await;
 
         let manager = SpoolManager::new(
             ctx.clone(),
@@ -615,22 +608,22 @@ mod tests {
 
         manager.advance(EPOCH).unwrap();
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Sync);
         assert_eq!(state.epoch, EPOCH);
     }
 
-    #[test]
-    fn next_action_prefers_sync_then_lowest_spool() {
-        let ctx = test_context();
+    #[tokio::test]
+    async fn next_action_prefers_sync_then_lowest_spool() {
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(7, SpoolState::new(SpoolStatus::Repair, EPOCH))
+            .set_spool_state(SpoolIndex(7), SpoolState::new(SpoolStatus::Repair, EPOCH))
             .unwrap();
         ctx.store
-            .set_spool_state(6, SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .set_spool_state(SpoolIndex(6), SpoolState::new(SpoolStatus::Sync, EPOCH))
             .unwrap();
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Sync, EPOCH))
             .unwrap();
 
         let manager = SpoolManager::new(
@@ -642,17 +635,17 @@ mod tests {
         assert_eq!(
             manager.next_action(EPOCH).unwrap(),
             Some(Action::Sync {
-                spool: 5,
+                spool: SPOOL,
                 epoch: EPOCH,
             })
         );
     }
 
-    #[test]
-    fn handle_task_done_advances_state() {
-        let ctx = test_context();
+    #[tokio::test]
+    async fn handle_task_done_advances_state() {
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Sync, EPOCH))
             .unwrap();
 
         let mut manager = SpoolManager::new(
@@ -665,7 +658,7 @@ mod tests {
             .handle_done(
                 TaskDone::Done(
                     Action::Sync {
-                        spool: 5,
+                        spool: SPOOL,
                         epoch: EPOCH,
                     },
                     TaskResult::Sync(SyncResult::Done {
@@ -677,50 +670,54 @@ mod tests {
             )
             .unwrap();
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Scan);
         assert_eq!(state.epoch, EPOCH);
     }
 
-    #[test]
-    fn active_pending_repair() {
-        let ctx = test_context();
-        ctx.set_state(owned_state(&[5])).unwrap();
+    #[tokio::test]
+    async fn active_pending_repair() {
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
+        ctx.store
+            .add_pending_repair(SPOOL, Address::from([1; 32]))
+            .unwrap();
 
         let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
             manager.next_action(EPOCH).unwrap(),
-            Some(Action::Repair { spool: 5, epoch: EPOCH })
+            Some(Action::Repair { spool: SPOOL, epoch: EPOCH })
         );
     }
 
-    #[test]
-    fn active_pending_recovery() {
-        let ctx = test_context();
-        ctx.set_state(owned_state(&[5])).unwrap();
+    #[tokio::test]
+    async fn active_pending_recovery() {
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_recovery(5, Address::from([1; 32])).unwrap();
+        ctx.store
+            .add_pending_recovery(SPOOL, Address::from([1; 32]))
+            .unwrap();
 
         let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
             manager.next_action(EPOCH).unwrap(),
-            Some(Action::Recover { spool: 5, epoch: EPOCH })
+            Some(Action::Recover { spool: SPOOL, epoch: EPOCH })
         );
     }
 
-    #[test]
-    fn reconcile_stays_repair_with_pending() {
-        let ctx = test_context();
+    #[tokio::test]
+    async fn reconcile_stays_repair_with_pending() {
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Scan, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Scan, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
+        ctx.store
+            .add_pending_repair(SPOOL, Address::from([1; 32]))
+            .unwrap();
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
@@ -731,22 +728,22 @@ mod tests {
         manager
             .handle_done(
                 TaskDone::Done(
-                    Action::Scan { spool: 5, epoch: EPOCH },
+                    Action::Scan { spool: SPOOL, epoch: EPOCH },
                     TaskResult::Scan(ScanResult::Done { gaps: 0 }),
                 ),
                 EPOCH,
             )
             .unwrap();
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Repair);
     }
 
-    #[test]
-    fn scan_retry_stays_scan() {
-        let ctx = test_context();
+    #[tokio::test]
+    async fn scan_retry_stays_scan() {
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Scan, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Scan, EPOCH))
             .unwrap();
 
         let mut manager = SpoolManager::new(
@@ -758,22 +755,22 @@ mod tests {
         manager
             .handle_done(
                 TaskDone::Done(
-                    Action::Scan { spool: 5, epoch: EPOCH },
+                    Action::Scan { spool: SPOOL, epoch: EPOCH },
                     TaskResult::Scan(ScanResult::Retry),
                 ),
                 EPOCH,
             )
             .unwrap();
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Scan);
     }
 
-    #[test]
-    fn reconcile_active_when_empty() {
-        let ctx = test_context();
+    #[tokio::test]
+    async fn reconcile_active_when_empty() {
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Repair, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Repair, EPOCH))
             .unwrap();
 
         let mut manager = SpoolManager::new(
@@ -785,25 +782,26 @@ mod tests {
         manager
             .handle_done(
                 TaskDone::Done(
-                    Action::Repair { spool: 5, epoch: EPOCH },
+                    Action::Repair { spool: SPOOL, epoch: EPOCH },
                     TaskResult::Repair(RepairResult::Done { unrepairable: 0 }),
                 ),
                 EPOCH,
             )
             .unwrap();
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Active);
     }
 
     #[tokio::test]
     async fn try_spawn_persists_repair_before_worker() {
-        let ctx = test_context();
-        ctx.set_state(owned_state(&[5])).unwrap();
+        let ctx = test_context().await;
         ctx.store
-            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
-        ctx.store.add_pending_repair(5, Address::from([1; 32])).unwrap();
+        ctx.store
+            .add_pending_repair(SPOOL, Address::from([1; 32]))
+            .unwrap();
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
@@ -813,8 +811,8 @@ mod tests {
 
         manager.try_spawn(EPOCH).unwrap();
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Repair);
-        assert!(manager.is_running(5));
+        assert!(manager.is_running(SPOOL));
     }
 }

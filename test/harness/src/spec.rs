@@ -1,8 +1,8 @@
 use tape_api::program::EPOCH_DURATION;
-use tape_core::spooler::SpoolCount;
 use tape_core::system::{EpochPhase, EpochState};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
+use bytemuck::Zeroable;
 
 #[derive(Clone, Debug)]
 pub struct HarnessSpec {
@@ -13,14 +13,16 @@ pub struct HarnessSpec {
     pub current_committee_nodes: Vec<usize>,
     pub prev_committee_nodes: Vec<usize>,
     pub next_committee_nodes: Vec<usize>,
-    pub current_spool_counts: Vec<SpoolCount>,
-    pub prev_spool_counts: Vec<SpoolCount>,
-    /// Whether to seed a fully-sealed snapshot manifest at `epoch - 1`.
-    /// `true` (the default) lets `advance_epoch` transactions pass the
-    /// snapshot gate without first running the snapshot pipeline. Tests that
-    /// exercise the snapshot init/certify/finalize submitters set this to
-    /// `false` so the manifest PDA is empty when init tries to create it.
-    pub seed_prev_snapshot_manifest: bool,
+    pub current_group_count: u64,
+    pub prev_group_count: u64,
+    /// Whether to seed the next epoch as having a finalized assignment.
+    /// This is useful for exercising `AdvanceEpoch`, which now requires the
+    /// assignment manager to have completed before lifecycle can advance.
+    pub next_assignment_ready: bool,
+    /// Whether to seed the previous epoch's finalized snapshot tape.
+    /// `true` (the default) lets `commit_epoch` pass its previous-snapshot
+    /// gate without first running the snapshot pipeline.
+    pub seed_prev_snapshot_tape: bool,
 }
 
 impl HarnessSpec {
@@ -46,7 +48,7 @@ impl HarnessNodeSpec {
             stake: TAPE(1_000),
             registered_epoch: EpochNumber(1),
             latest_sync_epoch: previous_epoch(epoch),
-            latest_advance_epoch: previous_epoch(epoch),
+            latest_advance_epoch: previous_epoch(previous_epoch(epoch)),
             commission_rate: BasisPoints(0),
             storage_capacity: StorageUnits::mb(1_000_000),
             storage_price: TAPE(10),
@@ -59,11 +61,9 @@ pub(crate) fn previous_epoch(epoch: EpochNumber) -> EpochNumber {
 }
 
 pub(crate) fn phase_to_epoch_state(phase: EpochPhase) -> EpochState {
-    match phase {
-        EpochPhase::Unknown => EpochState::new(),
-        EpochPhase::Syncing => EpochState::syncing(),
-        EpochPhase::Settling => EpochState::settling(),
-        EpochPhase::Active => EpochState::active(),
+    EpochState {
+        phase: phase as u64,
+        ..EpochState::zeroed()
     }
 }
 

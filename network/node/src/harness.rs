@@ -31,6 +31,13 @@ impl NodeHarness {
     }
 
     pub async fn from_chain(chain: ChainHarness) -> Result<Self> {
+        Self::from_chain_with_api(chain, None).await
+    }
+
+    pub async fn from_chain_with_api(
+        chain: ChainHarness,
+        api: Option<Arc<MemoryApi>>,
+    ) -> Result<Self> {
         let mut contexts = Vec::new();
 
         for index in 0..chain.node_count() {
@@ -38,7 +45,7 @@ impl NodeHarness {
             let store = TapeStore::new(MemoryStore::new());
             let rpc = RpcClient::from_rpc(chain.rpc().clone());
             let peer_manager = Arc::new(PeerManager::new());
-            let api = Arc::new(MemoryApi::noop());
+            let api = api.clone().unwrap_or_else(|| Arc::new(MemoryApi::noop()));
 
             let mut rng = rand::thread_rng();
             let tls = Arc::new(tape_crypto::ed25519::Keypair::new(&mut rng));
@@ -111,6 +118,7 @@ impl NodeHarness {
 #[derive(Default)]
 pub struct NodeHarnessBuilder {
     chain: ChainHarnessBuilder,
+    api: Option<Arc<MemoryApi>>,
 }
 
 impl NodeHarnessBuilder {
@@ -191,24 +199,34 @@ impl NodeHarnessBuilder {
         self
     }
 
-    pub fn current_spool_counts(mut self, counts: &[usize]) -> Self {
-        self.chain = self.chain.current_spool_counts(counts);
+    pub fn current_group_count(mut self, count: u64) -> Self {
+        self.chain = self.chain.current_group_count(count);
         self
     }
 
-    pub fn prev_spool_counts(mut self, counts: &[usize]) -> Self {
-        self.chain = self.chain.prev_spool_counts(counts);
+    pub fn prev_group_count(mut self, count: u64) -> Self {
+        self.chain = self.chain.prev_group_count(count);
         self
     }
 
-    pub fn no_prev_snapshot_manifest(mut self) -> Self {
-        self.chain = self.chain.no_prev_snapshot_manifest();
+    pub fn next_assignment_ready(mut self) -> Self {
+        self.chain = self.chain.next_assignment_ready();
+        self
+    }
+
+    pub fn no_prev_snapshot_tape(mut self) -> Self {
+        self.chain = self.chain.no_prev_snapshot_tape();
+        self
+    }
+
+    pub fn api(mut self, api: MemoryApi) -> Self {
+        self.api = Some(Arc::new(api));
         self
     }
 
     pub async fn build(self) -> Result<NodeHarness> {
         let chain = self.chain.build().await?;
-        NodeHarness::from_chain(chain).await
+        NodeHarness::from_chain_with_api(chain, self.api).await
     }
 }
 

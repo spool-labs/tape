@@ -76,6 +76,7 @@ where
 {
     let tape = Address::from(snapshot_tape_pda(epoch).0);
     validate_snapshot_track_list(epoch, tape, &tracks)?;
+    let total_groups = snapshot_track_group_count(epoch, &tracks)?;
 
     debug!(
         epoch = epoch.0,
@@ -116,7 +117,7 @@ where
         }
     }
 
-    let segments = outer_decode_segments(&symbols_by_segment, epoch)?;
+    let segments = outer_decode_segments(&symbols_by_segment, epoch, total_groups)?;
     decode_snapshot_log(segments, epoch)
 }
 
@@ -146,6 +147,25 @@ fn validate_snapshot_track_list(
     }
 
     Ok(())
+}
+
+fn snapshot_track_group_count(
+    epoch: EpochNumber,
+    tracks: &[CompressedTrack],
+) -> Result<usize, NodeError> {
+    let total_groups = tracks
+        .iter()
+        .map(|track| track.group.0 as usize + 1)
+        .max()
+        .unwrap_or(0);
+
+    if total_groups <= K_OUTER {
+        return Err(NodeError::Store(format!(
+            "bootstrap: snapshot for epoch {epoch} has {total_groups} groups, need more than {K_OUTER}"
+        )));
+    }
+
+    Ok(total_groups)
 }
 
 struct Decoded {
@@ -388,6 +408,7 @@ fn clay_decode(slices: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, tape_slicer::Deco
 fn outer_decode_segments(
     symbols_by_segment: &BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>>,
     epoch: EpochNumber,
+    total_groups: usize,
 ) -> Result<Vec<Vec<u8>>, NodeError> {
     if symbols_by_segment.is_empty() {
         return Err(NodeError::Store(format!(
@@ -423,13 +444,7 @@ fn outer_decode_segments(
                 chunk.0
             )));
         }
-        let n = symbols
-            .iter()
-            .map(|(i, _)| i + 1)
-            .max()
-            .unwrap_or(K_OUTER)
-            .max(K_OUTER);
-        let mut coder = OuterCoder::new(K_OUTER, n);
+        let mut coder = OuterCoder::new(K_OUTER, total_groups);
         let refs: Vec<(usize, &[u8])> = symbols.iter().map(|(i, d)| (*i, d.as_slice())).collect();
         let packed = coder.decode(&refs).map_err(|e| {
             NodeError::Store(format!(
@@ -477,7 +492,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use store_memory::MemoryStore;
-    use tape_core::erasure::SPOOL_GROUP_COUNT;
     use tape_core::snapshot::chunk::pack_segment;
     use tape_core::snapshot::replay::{ReplayableEvent, SnapshotLog};
     use tape_core::types::SlotNumber;
@@ -488,12 +502,14 @@ mod tests {
     use super::*;
     use crate::features::snapshot::build::{encode_chunk, BuiltChunk, MAX_SEGMENT_BYTES};
 
+    const TEST_GROUP_COUNT: usize = SNAPSHOT_K_OUTER + 3;
+
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
     }
 
-    /// Build every snapshot chunk for `epoch` across all SPOOL_GROUP_COUNT
-    /// groups. Mirrors production encoding without the per-node slice/sig
+    /// Build every snapshot chunk for `epoch` across all test groups.
+    /// Mirrors production encoding without the per-node slice/sig
     /// bookkeeping — tests only need the raw chunks for decode round-trips.
     fn build_all_chunks(store: &TapeStore<MemoryStore>, epoch: EpochNumber) -> Vec<BuiltChunk> {
         let entries = store.get_epoch_events(epoch).unwrap();
@@ -504,8 +520,8 @@ mod tests {
         let segment_count = compressed.len().div_ceil(MAX_SEGMENT_BYTES).max(1);
         let segment_size = compressed.len().div_ceil(segment_count).max(1);
 
-        let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER);
-        let mut chunks = Vec::with_capacity(segment_count * SPOOL_GROUP_COUNT);
+        let mut outer = OuterCoder::new(SNAPSHOT_K_OUTER, TEST_GROUP_COUNT);
+        let mut chunks = Vec::with_capacity(segment_count * TEST_GROUP_COUNT);
         for segment_idx in 0..segment_count {
             let start = segment_idx * segment_size;
             let end = start.saturating_add(segment_size).min(compressed.len());
@@ -612,7 +628,7 @@ mod tests {
             symbols.truncate(K_OUTER);
         }
 
-        let segments = outer_decode_segments(&symbols_by_segment, epoch).unwrap();
+        let segments = outer_decode_segments(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap();
         let log = decode_snapshot_log(segments, epoch).unwrap();
 
         assert_eq!(log.epoch, epoch);
@@ -656,7 +672,7 @@ mod tests {
         }
         assert_eq!(symbols_by_segment.len(), segment_count);
 
-        let segments = outer_decode_segments(&symbols_by_segment, epoch).unwrap();
+        let segments = outer_decode_segments(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap();
         assert_eq!(segments.len(), segment_count);
         let log = decode_snapshot_log(segments, epoch).unwrap();
         assert_eq!(log.epoch, epoch);
@@ -679,7 +695,7 @@ mod tests {
                 .push((built.group.0 as usize, data));
         }
 
-        let err = outer_decode_segments(&symbols_by_segment, epoch).unwrap_err();
+        let err = outer_decode_segments(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap_err();
         assert!(format!("{err}").contains("groups decoded"));
     }
 }

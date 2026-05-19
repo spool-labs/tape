@@ -36,11 +36,12 @@ mod tests {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Settling)
+            .phase(EpochPhase::Settle)
             .build()
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
+        let prev_epoch = EPOCH.saturating_sub(EpochNumber(1));
 
         submit_advance_pool(&ctx).await.expect("submit advance pool");
 
@@ -52,7 +53,7 @@ mod tests {
             .await
             .expect("fetch history");
 
-        assert_eq!(node.latest_advance_epoch, EPOCH);
-        assert_eq!(history.latest_epoch, EPOCH);
+        assert_eq!(node.latest_advance_epoch, prev_epoch);
+        assert_eq!(history.latest_epoch, prev_epoch);
     }
 }

@@ -414,13 +414,31 @@ mod tests {
     use tape_core::system::{SpoolState, SpoolStatus};
 
     use super::*;
-    use crate::context::test_utils::{test_context, test_context_with_api};
+    use crate::harness::{NodeHarness, TestContext};
 
-    const SPOOL: SpoolIndex = 5;
-    const PEER: NodeId = NodeId(99);
+    const SPOOL: SpoolIndex = SpoolIndex(5);
 
     fn addr(n: u8) -> Address {
         Address::from([n; 32])
+    }
+
+    fn peer() -> Address {
+        addr(99)
+    }
+
+    async fn test_context() -> TestContext {
+        test_context_with_api(MemoryApi::noop()).await
+    }
+
+    async fn test_context_with_api(api: MemoryApi) -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .api(api)
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(SPOOL.as_usize())
     }
 
     fn entry(track: Address, data: &[u8]) -> SyncSliceEntry {
@@ -430,7 +448,7 @@ mod tests {
         }
     }
 
-    fn sync_state(epoch: EpochNumber, prev: Option<NodeId>) -> SpoolState {
+    fn sync_state(epoch: EpochNumber, prev: Option<Address>) -> SpoolState {
         let mut state = SpoolState::new(SpoolStatus::Sync, epoch);
         state.prev_owner = prev;
         state
@@ -492,7 +510,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_prev_owner() {
-        let ctx = test_context();
+        let ctx = test_context().await;
         ctx.store
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), None))
             .unwrap();
@@ -513,10 +531,11 @@ mod tests {
                 next_cursor: None,
             })),
             _ => panic!("unexpected request"),
-        }));
+        }))
+        .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
         ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
@@ -548,10 +567,11 @@ mod tests {
                 next_cursor: None,
             })),
             _ => panic!("unexpected request"),
-        }));
+        }))
+        .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
 
         ctx.store.put_track(a, track_info).unwrap();
@@ -573,9 +593,9 @@ mod tests {
 
     #[tokio::test]
     async fn peer_unavailable() {
-        let ctx = test_context(); // noop api returns errors
+        let ctx = test_context().await; // noop api returns errors
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -600,10 +620,11 @@ mod tests {
                 next_cursor: None,
             })),
             _ => panic!("unexpected request"),
-        }));
+        }))
+        .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
 
@@ -633,10 +654,11 @@ mod tests {
                 next_cursor: None,
             })),
             _ => panic!("unexpected request"),
-        }));
+        }))
+        .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
         ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
@@ -679,10 +701,11 @@ mod tests {
                 }
             }
             _ => panic!("unexpected request"),
-        }));
+        }))
+        .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track(a1, track_info1).unwrap();
         ctx.store.put_track(a2, track_info2).unwrap();

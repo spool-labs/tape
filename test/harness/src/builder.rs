@@ -5,10 +5,10 @@ use anyhow::{Context, Result, bail, ensure};
 use tape_api::program::EPOCH_DURATION;
 use tape_api::program::tapedrive;
 use tape_api::program::MIN_COMMITTEE_SIZE;
-use tape_core::erasure::SPOOL_COUNT;
-use tape_core::spooler::{SpoolCount, SpoolIndex};
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SpoolIndex};
+use tape_crypto::Address;
 use tape_protocol::ProtocolState;
 
 use crate::fixture::ChainFixture;
@@ -75,10 +75,8 @@ impl ChainHarness {
     }
 
     pub fn owned_spools(&self, index: usize) -> Vec<SpoolIndex> {
-        match self.nodes[index].member_index {
-            Some(member_index) => self.protocol_state.member_spools(member_index),
-            None => Vec::new(),
-        }
+        self.protocol_state
+            .member_spools(Address::from(self.nodes[index].node_address))
     }
 }
 
@@ -94,10 +92,11 @@ pub struct ChainHarnessBuilder {
     current_committee_nodes: Option<Vec<usize>>,
     prev_committee_nodes: Option<Vec<usize>>,
     next_committee_nodes: Option<Vec<usize>>,
-    current_spool_counts: Option<Vec<SpoolCount>>,
-    prev_spool_counts: Option<Vec<SpoolCount>>,
+    current_group_count: Option<u64>,
+    prev_group_count: Option<u64>,
     node_specs: Vec<HarnessNodeSpec>,
-    seed_prev_snapshot_manifest: bool,
+    next_assignment_ready: bool,
+    seed_prev_snapshot_tape: bool,
 }
 
 impl Default for ChainHarnessBuilder {
@@ -113,10 +112,11 @@ impl Default for ChainHarnessBuilder {
             current_committee_nodes: None,
             prev_committee_nodes: None,
             next_committee_nodes: None,
-            current_spool_counts: None,
-            prev_spool_counts: None,
+            current_group_count: None,
+            prev_group_count: None,
             node_specs: default_node_specs(DEFAULT_NODES, DEFAULT_EPOCH),
-            seed_prev_snapshot_manifest: true,
+            next_assignment_ready: false,
+            seed_prev_snapshot_tape: true,
         }
     }
 }
@@ -225,21 +225,24 @@ impl ChainHarnessBuilder {
         self
     }
 
-    pub fn current_spool_counts(mut self, counts: &[usize]) -> Self {
-        self.current_spool_counts = Some(counts.iter().map(|count| *count as SpoolCount).collect());
+    pub fn current_group_count(mut self, count: u64) -> Self {
+        self.current_group_count = Some(count);
         self
     }
 
-    pub fn prev_spool_counts(mut self, counts: &[usize]) -> Self {
-        self.prev_spool_counts = Some(counts.iter().map(|count| *count as SpoolCount).collect());
+    pub fn prev_group_count(mut self, count: u64) -> Self {
+        self.prev_group_count = Some(count);
         self
     }
 
-    /// Disable seeding of the previous-epoch snapshot manifest. Use this in
-    /// tests that exercise the snapshot init/certify/finalize submitters,
-    /// where init needs the manifest PDA to be empty so it can create it.
-    pub fn no_prev_snapshot_manifest(mut self) -> Self {
-        self.seed_prev_snapshot_manifest = false;
+    pub fn next_assignment_ready(mut self) -> Self {
+        self.next_assignment_ready = true;
+        self
+    }
+
+    /// Disable seeding of the previous-epoch snapshot tape.
+    pub fn no_prev_snapshot_tape(mut self) -> Self {
+        self.seed_prev_snapshot_tape = false;
         self
     }
 
@@ -288,16 +291,22 @@ impl ChainHarnessBuilder {
             "next committee",
         )?;
 
-        let current_spool_counts = resolve_spool_counts(
-            self.current_spool_counts,
+        let current_group_count = resolve_group_count(
+            self.current_group_count,
             current_committee_nodes.len(),
-            "current spool counts",
+            "current group count",
         )?;
-        let prev_spool_counts = resolve_spool_counts(
-            self.prev_spool_counts,
+        let prev_group_count = resolve_group_count(
+            self.prev_group_count,
             prev_committee_nodes.len(),
-            "previous spool counts",
+            "previous group count",
         )?;
+        if self.next_assignment_ready && current_group_count > 0 {
+            ensure!(
+                next_committee_nodes.len() >= GROUP_SIZE,
+                "next assignment requires at least {GROUP_SIZE} committee members"
+            );
+        }
 
         Ok(HarnessSpec {
             epoch: self.epoch,
@@ -307,9 +316,10 @@ impl ChainHarnessBuilder {
             current_committee_nodes,
             prev_committee_nodes,
             next_committee_nodes,
-            current_spool_counts,
-            prev_spool_counts,
-            seed_prev_snapshot_manifest: self.seed_prev_snapshot_manifest,
+            current_group_count,
+            prev_group_count,
+            next_assignment_ready: self.next_assignment_ready,
+            seed_prev_snapshot_tape: self.seed_prev_snapshot_tape,
         })
     }
 }
@@ -321,36 +331,29 @@ fn seed_fixture(fixture: &ChainFixture, seeded: &SeededWorld) -> Result<()> {
             .with_context(|| format!("airdrop {}", node.authority))?;
     }
 
-    fixture.seed_account(
-        &seeded.system.address,
-        &tapedrive::ID,
-        &seeded.system.data.pack(),
-    )?;
-    fixture.seed_account(
-        &seeded.epoch.address,
-        &tapedrive::ID,
-        &seeded.epoch.data.pack(),
-    )?;
-    fixture.seed_account(
-        &seeded.archive.address,
-        &tapedrive::ID,
-        &seeded.archive.data.pack(),
-    )?;
+    fixture.seed_account(&seeded.system.address, &tapedrive::ID, &seeded.system.data)?;
+    for account in &seeded.epochs {
+        fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
+    }
+    for account in &seeded.committees {
+        fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
+    }
+    fixture.seed_account(&seeded.peer_set.address, &tapedrive::ID, &seeded.peer_set.data)?;
+    for account in &seeded.groups {
+        fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
+    }
+    fixture.seed_account(&seeded.archive.address, &tapedrive::ID, &seeded.archive.data)?;
 
-    if let Some(manifest_account) = &seeded.prev_snapshot_manifest {
-        fixture.seed_account(
-            &manifest_account.address,
-            &tapedrive::ID,
-            &manifest_account.data.pack(),
-        )?;
+    if let Some(snapshot_tape) = &seeded.prev_snapshot_tape {
+        fixture.seed_account(&snapshot_tape.address, &tapedrive::ID, &snapshot_tape.data)?;
     }
 
     for account in &seeded.node_accounts {
-        fixture.seed_account(&account.address, &tapedrive::ID, &account.data.pack())?;
+        fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
     }
 
     for account in &seeded.history_accounts {
-        fixture.seed_account(&account.address, &tapedrive::ID, &account.data.pack())?;
+        fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
     }
 
     Ok(())
@@ -380,48 +383,25 @@ fn resolve_committee_selection(
     Ok(selected)
 }
 
-fn resolve_spool_counts(
-    counts: Option<Vec<SpoolCount>>,
+fn resolve_group_count(
+    count: Option<u64>,
     member_count: usize,
     label: &str,
-) -> Result<Vec<SpoolCount>> {
-    let counts = match counts {
-        Some(counts) => counts,
-        None => balanced_spool_counts(member_count),
-    };
-
+) -> Result<u64> {
     if member_count == 0 {
-        ensure!(counts.is_empty(), "{label} must be empty when the committee is empty");
-        return Ok(counts);
+        let count = count.unwrap_or(0);
+        ensure!(count == 0, "{label} must be 0 when the committee is empty");
+        return Ok(0);
     }
 
-    ensure!(
-        counts.len() == member_count,
-        "{label} length {} must match committee size {member_count}",
-        counts.len()
-    );
-
-    let total: usize = counts.iter().map(|count| *count as usize).sum();
-    ensure!(
-        total == SPOOL_COUNT,
-        "{label} total {total} must equal {SPOOL_COUNT}",
-    );
-
-    Ok(counts)
-}
-
-fn balanced_spool_counts(member_count: usize) -> Vec<SpoolCount> {
-    if member_count == 0 {
-        return Vec::new();
+    let count = count.unwrap_or(1);
+    if count > 0 {
+        ensure!(
+            member_count >= GROUP_SIZE,
+            "{label} requires at least {GROUP_SIZE} committee members"
+        );
     }
-
-    let base = SPOOL_COUNT / member_count;
-    let remainder = SPOOL_COUNT % member_count;
-    let mut counts = vec![base as SpoolCount; member_count];
-    for count in counts.iter_mut().take(remainder) {
-        *count += 1;
-    }
-    counts
+    Ok(count)
 }
 
 fn default_node_specs(count: usize, epoch: EpochNumber) -> Vec<HarnessNodeSpec> {
@@ -466,19 +446,28 @@ mod tests {
     }
 
     #[test]
-    fn explicit_committee_nodes_drive_member_indices() {
+    fn explicit_committee_nodes_drive_group_ownership() {
+        let selected = [
+            7, 3, 1, 0, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+        ];
         let spec = ChainHarness::builder()
-            .nodes(8)
-            .current_committee_nodes([7, 3, 1])
-            .current_spool_counts(&[300, 350, 350])
+            .nodes(20)
+            .current_committee_nodes(selected)
+            .current_group_count(1)
             .finalize_spec()
             .expect("spec");
 
         let seeded = build_seeded_world(&spec).expect("seeded world");
 
-        assert_eq!(seeded.nodes[1].member_index, Some(0));
+        assert_eq!(seeded.nodes[7].member_index, Some(0));
         assert_eq!(seeded.nodes[3].member_index, Some(1));
-        assert_eq!(seeded.nodes[7].member_index, Some(2));
-        assert_eq!(seeded.protocol_state.member_spools(2).len(), 350);
+        assert_eq!(seeded.nodes[1].member_index, Some(2));
+        assert_eq!(
+            seeded
+                .protocol_state
+                .member_spools(seeded.nodes[7].node_address.into())
+                .len(),
+            1
+        );
     }
 }
