@@ -54,8 +54,7 @@ impl SimnetHarness {
                 .stake_all(stake_amount_tape)
                 .await
                 .context("stake_all")?;
-            scenario.pool_all().await.context("pool_all")?;
-            scenario.join_all().await.context("join_all")?;
+            scenario.start_network().await.context("start_network")?;
         }
 
         self.start_all_with_retry(START_TRIES, Duration::from_millis(START_DELAY_MS))

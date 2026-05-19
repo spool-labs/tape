@@ -2,11 +2,11 @@ use std::time::{Duration, Instant};
 
 use rand::Rng as _;
 use tape_api::program::EPOCH_DURATION;
-use tape_core::erasure::{SPOOL_COUNT, GROUP_SIZE};
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::system::SpoolStatus;
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
-use tape_core::system::SpoolStatus;
 
 /// Full spool recovery flow: upload blob, drop nodes, verify
 /// Sync/Scan/Repair/Recover workers converge back to Active, then download.
@@ -135,7 +135,13 @@ async fn spool_recovery_inner() {
     let alive_total = scenario
         .total_spool_count(&alive_indices)
         .expect("total spool count");
-    assert_eq!(alive_total, SPOOL_COUNT);
+    let expected_spool_count = scenario
+        .read_system()
+        .await
+        .expect("read system")
+        .live_group_count as usize
+        * GROUP_SIZE;
+    assert_eq!(alive_total, expected_spool_count);
 
     // Poll until any Sync spools transition into later phases.
     let sync_timeout = Duration::from_secs(120);

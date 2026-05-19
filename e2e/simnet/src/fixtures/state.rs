@@ -2,8 +2,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use rpc_client::RpcClient;
-use tape_protocol::fetch::fetch_state;
 use tape_api::prelude::{Archive, Epoch, System};
+use tape_api::program::MIN_COMMITTEE_SIZE;
+use tape_core::types::EpochNumber;
+use tape_protocol::fetch::fetch_state;
 use tracing::trace;
 
 use crate::scenario::SimnetScenario;
@@ -16,7 +18,11 @@ impl SimnetScenario<'_> {
 
     pub async fn read_epoch(&self) -> Result<Epoch> {
         let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
-        client.get_epoch().await.context("read epoch")
+        let system = client.get_system().await.context("read system for epoch")?;
+        client
+            .get_epoch(system.current_epoch)
+            .await
+            .context("read epoch")
     }
 
     pub async fn read_archive(&self) -> Result<Archive> {
@@ -25,23 +31,29 @@ impl SimnetScenario<'_> {
     }
 
     pub async fn committee_size(&self) -> Result<usize> {
-        Ok(self.read_system().await?.committee.size())
+        let system = self.read_system().await?;
+        self.committee_len(system.current_epoch).await
     }
 
     pub async fn committee_next_size(&self) -> Result<usize> {
-        Ok(self.read_system().await?.committee_next.size())
+        let system = self.read_system().await?;
+        self.committee_len(system.current_epoch + EpochNumber(1)).await
     }
 
     pub async fn is_bootstrap_mode(&self) -> Result<bool> {
-        Ok(self.read_system().await?.committee_prev_empty())
+        let system = self.read_system().await?;
+        Ok(self
+            .committee_len(system.current_epoch.saturating_sub(EpochNumber(1)))
+            .await?
+            == 0)
     }
 
     pub async fn is_low_quorum(&self) -> Result<bool> {
-        Ok(self.read_system().await?.is_low_quorum())
+        Ok(self.committee_size().await? < MIN_COMMITTEE_SIZE)
     }
 
     pub async fn would_block_advance(&self) -> Result<bool> {
-        Ok(self.read_system().await?.will_be_low_quorum())
+        Ok(self.committee_next_size().await? < MIN_COMMITTEE_SIZE)
     }
 
     pub async fn wait_quorum(&self, min_size: usize, timeout: Duration) -> Result<()> {
@@ -101,5 +113,14 @@ impl SimnetScenario<'_> {
                 .with_context(|| format!("refresh node {i}"))?;
         }
         Ok(())
+    }
+
+    async fn committee_len(&self, epoch: EpochNumber) -> Result<usize> {
+        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        match client.get_committee(epoch).await {
+            Ok(members) => Ok(members.len()),
+            Err(rpc::RpcError::AccountNotFound(_)) => Ok(0),
+            Err(error) => Err(error).context("read committee"),
+        }
     }
 }

@@ -9186,6 +9186,7 @@ dependencies = [
  "tape-retry",
  "tape-slicer",
  "tape-store",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

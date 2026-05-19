@@ -120,7 +120,7 @@ async fn bootstrap_late_join_inner() {
         .get_bootstrap_target_epoch()
         .expect("read bootstrap target")
         .expect("late node should have replayed snapshots");
-    let current = ctx.state().epoch;
+    let current = ctx.state().epoch();
     let lower = EpochNumber(current.0.saturating_sub(2));
     let upper = EpochNumber(current.0.saturating_sub(1));
 

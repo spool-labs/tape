@@ -116,9 +116,17 @@ impl TryFrom<&G1CompressedPoint> for G1Point {
     type Error = BLSError;
 
     fn try_from(value: &G1CompressedPoint) -> Result<Self, Self::Error> {
-        Ok(G1Point(
-            alt_bn128_g1_decompress(&value.0).map_err(|_| BLSError::G1PointDecompressionError)?,
-        ))
+        if value.0 == [0u8; 32] {
+            return Err(BLSError::G1PointDecompressionError);
+        }
+
+        let point = alt_bn128_g1_decompress(&value.0)
+            .map_err(|_| BLSError::G1PointDecompressionError)?;
+        if point == [0u8; 64] {
+            return Err(BLSError::G1PointDecompressionError);
+        }
+
+        Ok(G1Point(point))
     }
 }
 
@@ -149,6 +157,17 @@ mod tests {
             G1Point::try_from(&pk_compressed).expect("decompress again")
         ).expect("recompress");
         assert_eq!(roundtrip.0, pk_compressed.0, "G1 compress->decompress->compress changed bytes");
+    }
+
+    #[test]
+    fn g1_decompress_rejects_identity() {
+        let compressed_identity = G1CompressedPoint([0u8; 32]);
+        let err = G1Point::try_from(&compressed_identity).unwrap_err();
+
+        assert_eq!(
+            err,
+            crate::bls12254::errors::BLSError::G1PointDecompressionError
+        );
     }
 
     #[test]

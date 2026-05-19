@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use tape_core::system::EpochPhase;
 use tracing::trace;
 use tape_core::types::EpochNumber;
 
@@ -13,14 +14,14 @@ impl SimnetScenario<'_> {
 
     pub async fn current_epoch_phase(&self) -> Result<&'static str> {
         let epoch = self.read_epoch().await?;
-        if epoch.state.is_syncing() {
-            Ok("Syncing")
-        } else if epoch.state.is_settling() {
-            Ok("Settling")
-        } else if epoch.state.is_active() {
-            Ok("Active")
-        } else {
-            Ok("Unknown")
+        match epoch.state.phase() {
+            Some(EpochPhase::Sync) => Ok("Sync"),
+            Some(EpochPhase::Settle) => Ok("Settle"),
+            Some(EpochPhase::Snapshot) => Ok("Snapshot"),
+            Some(EpochPhase::Active) => Ok("Active"),
+            Some(EpochPhase::Closing) => Ok("Closing"),
+            Some(EpochPhase::Completed) => Ok("Completed"),
+            Some(EpochPhase::Unknown) | None => Ok("Unknown"),
         }
     }
 

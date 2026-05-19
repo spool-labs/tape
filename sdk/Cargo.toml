@@ -68,3 +68,4 @@ rpc-litesvm = { path = "../solana/rpc-litesvm" }
 peer-memory = { path = "../network/peer-memory" }
 axum = { workspace = true }
 serial_test = "3.1"
+tempfile = "3"

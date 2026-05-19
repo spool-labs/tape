@@ -181,12 +181,20 @@ impl TestNode {
                     .context("read sync cursor")?
                 {
                     Some(slot) => SlotNumber(slot.0.saturating_add(1)),
-                    None => context
-                        .rpc
-                        .get_epoch()
-                        .await
-                        .context("read current epoch account")?
-                        .start_slot,
+                    None => {
+                        let current_epoch = context
+                            .rpc
+                            .get_system()
+                            .await
+                            .context("read system for current epoch")?
+                            .current_epoch;
+                        context
+                            .rpc
+                            .get_epoch(current_epoch)
+                            .await
+                            .context("read current epoch account")?
+                            .start_slot
+                    }
                 };
                 let mut config = self.app_config.clone();
                 config.solana.start_slot = Some(start_slot);
@@ -257,7 +265,8 @@ fn test_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
     config.node.bls_keypair = PathBuf::from("/dev/null");
     config.solana.rpc = "http://127.0.0.1:8899".into();
     config.solana.start_slot = Some(SlotNumber(1));
-    config.http.listen = bind_addr;
+    config.https.listen = bind_addr;
+    config.http.listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     config.store.path = PathBuf::from("/tmp");
     Ok(config)
 }

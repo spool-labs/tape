@@ -4,14 +4,15 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
-    build_advance_pool_ix, build_claim_commission_ix, build_epoch_sync_ix, build_join_network_ix,
+    build_advance_pool_ix, build_claim_commission_ix, build_join_committee_ix,
     build_request_stake_unlock_ix, build_set_commission_ix, build_stake_with_pool_ix,
-    build_unstake_from_pool_ix,
+    build_sync_spool_ix, build_unstake_from_pool_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
-use tape_core::types::coin::TAPE;
-use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::spooler::GroupIndex;
 use tape_core::system::NodeStatus;
+use tape_core::types::coin::TAPE;
+use tape_core::types::BasisPoints;
 use tape_store::ops::SpoolOps;
 use tracing::trace;
 
@@ -70,11 +71,13 @@ impl SimnetScenario<'_> {
                 amount,
             )?);
         }
+        let current_epoch = self.read_system().await?.current_epoch;
         ixs.push(build_stake_with_pool_ix(
             payer.pubkey().into(),
             authority.into(),
             node_address.into(),
             amount,
+            current_epoch,
         ));
         if !payer_is_authority {
             ixs.push(build_close_ata_ix(authority.into(), payer.pubkey().into())?);
@@ -150,14 +153,16 @@ impl SimnetScenario<'_> {
     }
 
     pub async fn join_node(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting join_network instruction");
+        trace!(node_index, "submitting join_committee instruction");
         let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
+        let current_epoch = self.read_system().await?.current_epoch;
 
-        let ix = build_join_network_ix(
+        let ix = build_join_committee_ix(
             payer.pubkey().into(),
             node.authority().into(),
             self.node_address(node_index).into(),
+            current_epoch,
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
@@ -190,11 +195,11 @@ impl SimnetScenario<'_> {
     pub async fn advance_pool(&self, node_index: usize) -> Result<()> {
         trace!(node_index, "submitting advance_pool instruction");
         let payer = self.harness.admin();
-        let authority = self.harness.nodes()[node_index].authority();
+        let current_epoch = self.read_system().await?.current_epoch;
         let ix = build_advance_pool_ix(
             payer.pubkey().into(),
-            authority.into(),
             self.node_address(node_index).into(),
+            current_epoch,
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
@@ -224,41 +229,43 @@ impl SimnetScenario<'_> {
     }
 
     pub async fn sync_node(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting sync_network instruction");
+        trace!(node_index, "submitting sync_spool instruction");
         let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
-        let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
-        let epoch = client.get_epoch().await.context("read epoch for sync")?;
+        let epoch = self.read_system().await?.current_epoch;
 
-        let spools: Vec<u16> = node
+        let spools = node
             .context()
             .store
             .iter_all_spools()
             .with_context(|| format!("read spools for node {node_index}"))?
             .into_iter()
             .map(|(spool_id, _)| spool_id)
-            .collect();
+            .collect::<Vec<_>>();
 
-        let ix = build_epoch_sync_ix(
-            payer.pubkey().into(),
-            node.authority().into(),
-            self.node_address(node_index).into(),
-            EpochNumber(epoch.id.as_u64()),
-            &spools,
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
+        for spool in spools {
+            let ix = build_sync_spool_ix(
+                payer.pubkey().into(),
+                node.authority().into(),
+                self.node_address(node_index).into(),
+                epoch,
+                GroupIndex::containing(spool),
+                spool,
+            );
+            let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
-        self.harness
-            .chain()
-            .send_instructions_with_signers_and_advance(
-                payer,
-                vec![cu_ix, ix],
-                &[node.keypair()],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("sync node {node_index}"))?;
+            self.harness
+                .chain()
+                .send_instructions_with_signers_and_advance(
+                    payer,
+                    vec![cu_ix, ix],
+                    &[node.keypair()],
+                    self.harness.config().slot_advance_per_tx,
+                )
+                .await
+                .with_context(|| format!("sync node {node_index} spool {spool}"))?;
+        }
 
         trace!(node_index, "sync_node completed");
         Ok(())
@@ -340,7 +347,7 @@ impl SimnetScenario<'_> {
     pub fn node_status(&self, index: usize) -> Option<NodeStatus> {
         let ctx = self.harness.nodes()[index].context();
         let state = ctx.state();
-        if !state.epoch.is_zero() {
+        if !state.epoch().is_zero() {
             Some(ctx.node_status())
         } else {
             None

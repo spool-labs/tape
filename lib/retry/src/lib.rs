@@ -47,7 +47,7 @@ impl RetryConfig {
         }
     }
 
-    /// Unlimited retries, 500ms base, 30s max.
+    /// Unlimited retries, 500ms base, 5s max.
     pub fn infinite() -> Self {
         Self {
             base_delay: Duration::from_millis(500),
@@ -327,12 +327,12 @@ mod tests {
         let ten = RetryConfig::ten();
         assert_eq!(ten.max_retries, Some(10));
         assert_eq!(ten.base_delay, Duration::from_secs(1));
-        assert_eq!(ten.max_delay, Duration::from_secs(30));
+        assert_eq!(ten.max_delay, Duration::from_secs(5));
 
         let inf = RetryConfig::infinite();
         assert_eq!(inf.max_retries, None);
         assert_eq!(inf.base_delay, Duration::from_millis(500));
-        assert_eq!(inf.max_delay, Duration::from_secs(30));
+        assert_eq!(inf.max_delay, Duration::from_secs(5));
     }
 
     #[tokio::test]

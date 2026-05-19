@@ -69,10 +69,10 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     s_sum: &G1Point,
 ) -> Result<(), BLSError> {
     let k = signer_pubkeys.len();
-    if k == 0 {
+    if k == 0 || s_sum.0 == [0u8; 64] {
         return Err(BLSError::SerializationError);
     }
-    if !check_no_duplicate_pubkeys(signer_pubkeys) {
+    if !check_pubkeys(signer_pubkeys) {
         return Err(BLSError::SerializationError);
     }
 
@@ -103,8 +103,12 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     }
 }
 
-fn check_no_duplicate_pubkeys(pubkeys: &[G2Point]) -> bool {
+fn check_pubkeys(pubkeys: &[G2Point]) -> bool {
     for i in 0..pubkeys.len() {
+        if pubkeys[i].0 == [0u8; 128] {
+            return false;
+        }
+
         for j in (i + 1)..pubkeys.len() {
             if pubkeys[i].0 == pubkeys[j].0 {
                 return false;
@@ -213,6 +217,27 @@ mod tests {
         let agg = aggregate_partials(&[s.clone(), s]).unwrap();
 
         let err = verify_aggregate(msg, &[pubkey, pubkey], &agg).unwrap_err();
+        assert_eq!(err, BLSError::SerializationError);
+    }
+
+    #[test]
+    fn test_zero_aggregate_signature_rejected() {
+        let msg = b"zero-sig";
+        let (_secret, pubkey) = member();
+        let zero_sig = G1Point([0u8; 64]);
+
+        let err = verify_aggregate(msg, &[pubkey], &zero_sig).unwrap_err();
+        assert_eq!(err, BLSError::SerializationError);
+    }
+
+    #[test]
+    fn test_zero_pubkey_rejected() {
+        let msg = b"zero-pubkey";
+        let (secret, _pubkey) = member();
+        let sig = secret.sign(msg).expect("sign");
+        let zero_pubkey = G2Point([0u8; 128]);
+
+        let err = verify_aggregate(msg, &[zero_pubkey], &sig).unwrap_err();
         assert_eq!(err, BLSError::SerializationError);
     }
 

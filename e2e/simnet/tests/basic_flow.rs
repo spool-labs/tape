@@ -6,8 +6,9 @@ use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 
 #[tokio::test]
 async fn basic_flow() {
+    let node_count = 20;
     let mut harness = SimnetBuilder::new()
-        .node_count(20)
+        .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
         .build()
@@ -19,7 +20,7 @@ async fn basic_flow() {
         .await
         .expect("bootstrap nodes");
 
-    let all: Vec<usize> = (0..30).collect();
+    let all: Vec<usize> = (0..node_count).collect();
     let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
     let scenario = harness.scenario();
     scenario

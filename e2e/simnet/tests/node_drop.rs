@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use rand::Rng as _;
 use tape_api::program::EPOCH_DURATION;
-use tape_core::erasure::SPOOL_COUNT;
-use tape_core::types::BasisPoints;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::SpoolStatus;
+use tape_core::types::BasisPoints;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 
 #[tokio::test]
@@ -44,7 +44,16 @@ async fn spool_node_drop() {
         .map(|&i| scenario.node_spool_count(i).expect("spool count"))
         .collect();
     let initial_total: usize = initial_counts.iter().sum();
-    assert_eq!(initial_total, SPOOL_COUNT, "all spools assigned at epoch 2");
+    let expected_spool_count = scenario
+        .read_system()
+        .await
+        .expect("read system")
+        .live_group_count as usize
+        * GROUP_SIZE;
+    assert_eq!(
+        initial_total, expected_spool_count,
+        "all spools assigned at epoch 2"
+    );
 
     // Pick 5 random nodes to crash (keep 20 = MIN_COMMITTEE_SIZE)
     let mut rng = rand::thread_rng();
@@ -76,15 +85,15 @@ async fn spool_node_drop() {
     // Wait for nodes to process the epoch change and apply spool ownership changes
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Verify spool redistribution: alive nodes have at least SPOOL_COUNT spools.
+    // Verify spool redistribution: alive nodes have at least the live spool count.
     // May overcount due to deferred GC: old owner keeps LockedToMove alongside
     // new owner's ActiveSync until cleanup runs 2 epochs later.
     let alive_total = scenario
         .total_spool_count(&alive_indices)
         .expect("total spool count");
     assert!(
-        alive_total >= SPOOL_COUNT,
-        "expected >= {SPOOL_COUNT} spools on alive nodes, got {alive_total}"
+        alive_total >= expected_spool_count,
+        "expected >= {expected_spool_count} spools on alive nodes, got {alive_total}"
     );
 
     // Verify some surviving nodes gained ownership after redistribution.

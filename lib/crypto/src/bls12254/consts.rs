@@ -2,12 +2,23 @@
 
 use dashu::integer::UBig;
 
-/// MODULUS: The modulus Fq2
+/// MODULUS: The BN254 base-field modulus Fq.
 /// 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47
 pub static MODULUS: UBig = unsafe {
     UBig::from_static_words(&[
         0x3c208c16d87cfd47,
         0x97816a916871ca8d,
+        0xb85045b68181585d,
+        0x30644e72e131a029,
+    ])
+};
+
+/// BN254 scalar-field modulus Fr.
+/// 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001
+pub static SCALAR_MODULUS: UBig = unsafe {
+    UBig::from_static_words(&[
+        0x43e1f593f0000001,
+        0x2833e84879b97091,
         0xb85045b68181585d,
         0x30644e72e131a029,
     ])

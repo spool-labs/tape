@@ -107,7 +107,10 @@ pub fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey, HelperError> {
 
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
-    Ok(BlsPrivateKey(tape_crypto::bls12254::min_sig::PrivKey(arr)))
+    let secret = tape_crypto::bls12254::min_sig::PrivKey::try_from_bytes(arr).map_err(|_| {
+        KeypairFileError::InvalidKeypair("invalid BLS private key scalar".to_string())
+    })?;
+    Ok(BlsPrivateKey(secret))
 }
 
 /// Load an Ed25519 keypair from `path`, or generate and persist a fresh one
@@ -295,6 +298,7 @@ pub fn create_rpc_client_with_config(config: RpcConfig) -> Result<RpcClient<Sola
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_parse_hash_valid() {
@@ -323,5 +327,33 @@ mod tests {
         let result = parse_hex_bytes(hex, "test", 4);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), vec![0xff, 0x00, 0xff, 0x00]);
+    }
+
+    #[test]
+    fn load_bls_keypair_accepts_valid_scalar() {
+        let file = NamedTempFile::new().expect("temp file");
+        let mut bytes = vec![0u8; 32];
+        bytes[31] = 1;
+        std::fs::write(file.path(), serde_json::to_vec(&bytes).expect("json"))
+            .expect("write key");
+
+        let result = load_bls_keypair(file.path());
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_bls_keypair_rejects_zero_scalar() {
+        let file = NamedTempFile::new().expect("temp file");
+        let bytes = vec![0u8; 32];
+        std::fs::write(file.path(), serde_json::to_vec(&bytes).expect("json"))
+            .expect("write key");
+
+        let result = load_bls_keypair(file.path());
+
+        assert!(matches!(
+            result,
+            Err(HelperError::KeypairFile(KeypairFileError::InvalidKeypair(_)))
+        ));
     }
 }

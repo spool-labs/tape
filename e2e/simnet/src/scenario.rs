@@ -4,18 +4,21 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
+use solana_sdk::signer::Signer;
 use tape_api::consts::NAME_LENGTH;
-use tape_api::errors::is_account_state_pending_error;
 use tape_api::instruction::{
-    build_advance_epoch_ix, build_create_system_ix, build_expand_system_ix, build_create_archive_ix,
-    build_initialize_mint_ix, build_join_network_ix, build_register_node_ix,
+    build_advance_epoch_ix, build_create_archive_ix, build_create_committee_ix,
+    build_create_epoch_ix, build_create_peer_set_ix, build_create_system_ix,
+    build_initialize_mint_ix, build_join_committee_ix, build_register_node_ix,
+    build_start_network_ix,
 };
+use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_api::program::tapedrive::node_pda;
 use tape_api::utils::to_name;
-use solana_sdk::signer::Signer;
-use tape_crypto::address::Address;
-use tape_core::types::network::NetworkAddress;
 use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::types::network::NetworkAddress;
+use tape_crypto::address::Address;
+
 use crate::chain::ChainFixture;
 use crate::simnet::SimnetHarness;
 
@@ -71,37 +74,14 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_create_system_ix(admin_pub.into(), admin_pub.into())],
+                vec![
+                    build_create_system_ix(admin_pub.into(), admin_pub.into()),
+                    build_create_peer_set_ix(admin_pub.into()),
+                ],
                 slot_bump,
             )
             .await
-            .context("create_system")?;
-
-        for _ in 0..10 {
-            let result = self
-                .harness
-                .chain()
-                .send_instructions_and_advance(
-                    admin,
-                    vec![build_expand_system_ix(admin_pub.into(), admin_pub.into())],
-                    slot_bump,
-                )
-                .await;
-
-            match result {
-                Ok(_) => {}
-                Err(e) => {
-                    let es = format!("{e:?}");
-                    if es.contains("AccountAlreadyInitialized")
-                        || es.contains("already initialized")
-                        || is_account_state_pending_error(&es)
-                    {
-                        break;
-                    }
-                    return Err(e).context("expand_system");
-                }
-            }
-        }
+            .context("create_system/peer_set")?;
 
         self.harness
             .chain()
@@ -113,7 +93,51 @@ impl<'a> SimnetScenario<'a> {
             .await
             .context("initialize archive/epoch")?;
 
+        let genesis_epoch = EpochNumber(1);
+        self.harness
+            .chain()
+            .send_instructions_and_advance(
+                admin,
+                vec![
+                    build_create_epoch_ix(admin_pub.into(), genesis_epoch),
+                    build_create_committee_ix(admin_pub.into(), genesis_epoch),
+                ],
+                slot_bump,
+            )
+            .await
+            .context("create genesis epoch/committee")?;
+
         Ok(())
+    }
+
+    pub async fn start_network(&self) -> Result<Signature> {
+        let slot_bump = self.harness.config().slot_advance_per_tx;
+        let admin = self.harness.admin();
+        let admin_pub = admin.pubkey();
+        let genesis_nodes = self
+            .harness
+            .nodes()
+            .iter()
+            .take(MIN_COMMITTEE_SIZE)
+            .map(|node| {
+                let (node_address, _) = node_pda(Address::from(node.authority()));
+                node_address
+            })
+            .collect::<Vec<_>>();
+
+        let committee_size = self.harness.nodes().len().max(MIN_COMMITTEE_SIZE) as u64;
+        let ix = build_start_network_ix(
+            admin_pub.into(),
+            committee_size,
+            1,
+            &genesis_nodes,
+        );
+
+        self.harness
+            .chain()
+            .send_instructions_and_advance(admin, vec![ix], slot_bump)
+            .await
+            .context("start_network")
     }
 
     pub async fn register_node(
@@ -191,7 +215,18 @@ impl<'a> SimnetScenario<'a> {
         for node in self.harness.nodes() {
             let authority = Address::from(node.authority());
             let (node_address, _) = node_pda(authority);
-            let ix = build_join_network_ix(authority, authority, node_address);
+            let current_epoch = match self.read_system().await {
+                Ok(system) => system.current_epoch,
+                Err(error) => {
+                    out.push(JoinResult {
+                        node_id: node.id(),
+                        authority: node.authority(),
+                        result: Err(format!("{error:#}")),
+                    });
+                    continue;
+                }
+            };
+            let ix = build_join_committee_ix(authority, authority, node_address, current_epoch);
 
             let result = self
                 .harness
@@ -216,15 +251,8 @@ impl<'a> SimnetScenario<'a> {
             .node(authority_node_index)
             .context("authority node missing")?;
 
-        // Fetch the current epoch first so the ix-builder can pin the
-        // previous-epoch snapshot manifest PDA into the account list.
-        let epoch = self.read_epoch().await?;
-
-        let ix = build_advance_epoch_ix(
-            authority.authority().into(),
-            authority.authority().into(),
-            epoch.id,
-        );
+        let current_epoch = self.read_system().await?.current_epoch;
+        let ix = build_advance_epoch_ix(authority.authority().into(), current_epoch);
 
         self.harness
             .chain()
@@ -263,7 +291,7 @@ impl<'a> SimnetScenario<'a> {
                     .harness
                     .node(i)
                     .with_context(|| format!("node {i} missing"))?;
-                let got = Some(node.context().state().epoch);
+                let got = Some(node.context().state().epoch());
                 last_seen.push(got);
 
                 match expected {
