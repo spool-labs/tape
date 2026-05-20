@@ -1,11 +1,10 @@
 use tape_core::erasure::slice_for_spool;
-use tape_core::spooler::SpoolIndex;
 use tape_core::track::data::TrackData;
 use tape_e2e_simnet::TestNode;
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::StorageUnits;
+use tape_core::types::{SpoolIndex, StorageUnits};
 
 /// Verify all slices in Active spools match their track commitments.
 /// Logs errors for any integrity violations found.
@@ -113,7 +112,7 @@ fn validate_slice_entry(
         return Err("slice exceeds expected decoded size".to_string());
     }
 
-    if !blob_info.verify_slice(slice_index, data) {
+    if !blob_info.verify_slice(SpoolIndex::from(slice_index as u64), data) {
         return Err("slice does not match commitment".to_string());
     }
 

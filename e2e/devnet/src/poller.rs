@@ -1,21 +1,24 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
+use peer_http::HttpApi;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use tape_core::erasure::SPOOL_COUNT;
+use store_memory::MemoryStore;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
-use peer_http::HttpApi;
+use tape_core::types::EpochNumber;
+use tape_crypto::Address;
 use tape_node::context::NodeContext;
 use tape_node::runtime::NodeRuntimeStatus;
-use store_memory::MemoryStore;
 use tape_store::ops::SpoolOps;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
 
-use crate::app::{NodeSnapshot, PollSnapshot};
+use crate::app::{NodeSnapshot, PollSnapshot, SpoolSnapshot};
 use crate::log_layer::LogHistogram;
 
 /// Shared snapshot handle created in main and passed to both poller and TUI.
@@ -67,6 +70,7 @@ impl PollerHandle {
         Self { tx }
     }
 
+    #[cfg(test)]
     pub fn spawn_noop() -> Self {
         let (tx, _rx) = mpsc::unbounded_channel();
         Self { tx }
@@ -265,51 +269,110 @@ async fn poll_once(
     histogram: &LogHistogram,
 ) {
     let slot = state.rpc.get_slot().await.unwrap_or(0);
-    let epoch_account = state.rpc.get_epoch().await.ok();
+    let system = state.rpc.get_system().await.ok();
+    let current_epoch = system.map(|system| system.current_epoch);
+    let epoch_account = match current_epoch {
+        Some(epoch) => state.rpc.get_epoch(epoch).await.ok(),
+        None => None,
+    };
     let epoch = epoch_account.map(|e| e.id.as_u64()).unwrap_or(0);
     let (epoch_phase, epoch_phase_weight) = match &epoch_account {
         Some(e) => {
-            let phase = match EpochPhase::try_from(e.state.phase) {
-                Ok(EpochPhase::Syncing) => "Syncing",
-                Ok(EpochPhase::Settling) => "Settling",
-                Ok(EpochPhase::Active) => "Active",
-                _ => "?",
+            let phase = match e.state.phase() {
+                Some(EpochPhase::Sync) => "Sync",
+                Some(EpochPhase::Settle) => "Settle",
+                Some(EpochPhase::Snapshot) => "Snapshot",
+                Some(EpochPhase::Active) => "Active",
+                Some(EpochPhase::Closing) => "Closing",
+                Some(EpochPhase::Completed) => "Completed",
+                Some(EpochPhase::Unknown) | None => "?",
             };
-            (phase.to_string(), e.state.weight())
+            let weight = match e.state.phase() {
+                Some(EpochPhase::Sync) => Some(e.state.synced_count),
+                Some(EpochPhase::Settle) => Some(e.state.settled_count),
+                _ => None,
+            };
+            (phase.to_string(), weight)
         }
         None => (String::new(), None),
     };
     let now = Instant::now();
 
-    let mut spool_owners = [0u8; SPOOL_COUNT];
-    let mut committee_prev_size = 0;
-    let mut committee_size = 0;
-    let mut committee_next_size = 0;
-    if let Ok(system) = state.rpc.get_system().await {
-        for (i, owner) in system.spools.0.iter().enumerate() {
-            if i < SPOOL_COUNT {
-                spool_owners[i] = *owner;
+    let mut previous_committee_size = 0;
+    let mut current_committee_size = 0;
+    let mut next_committee_size = 0;
+    let mut target_group_count = 0;
+    let mut live_group_count = 0;
+    let mut spools = Vec::new();
+
+    if let Some(system) = system {
+        target_group_count = system.target_group_count;
+        live_group_count = system.live_group_count;
+
+        if let Ok(members) = state.rpc.get_committee(system.current_epoch).await {
+            current_committee_size = members.len();
+        }
+        if let Ok(members) = state
+            .rpc
+            .get_committee(system.current_epoch.saturating_sub(EpochNumber(1)))
+            .await
+        {
+            previous_committee_size = members.len();
+        }
+        if let Ok(members) = state
+            .rpc
+            .get_committee(system.current_epoch + EpochNumber(1))
+            .await
+        {
+            next_committee_size = members.len();
+        }
+
+        let node_ids_by_address: HashMap<Address, usize> = state
+            .nodes
+            .iter()
+            .map(|node| (node.ctx.node_address(), node.id))
+            .collect();
+
+        let total_spools = usize::try_from(live_group_count)
+            .ok()
+            .and_then(|groups| groups.checked_mul(GROUP_SIZE))
+            .unwrap_or(0);
+        spools = vec![SpoolSnapshot::default(); total_spools];
+
+        if let Ok(groups) = state
+            .rpc
+            .get_groups(system.current_epoch, live_group_count)
+            .await
+        {
+            for group in groups {
+                let group_id = group.id;
+                for (position, spool) in group.spools.iter().enumerate() {
+                    let index = group_id.spool_at(position).as_usize();
+                    if index >= spools.len() {
+                        continue;
+                    }
+                    spools[index].owner = node_ids_by_address.get(&spool.node).copied();
+                }
             }
         }
-        committee_prev_size = system.committee_prev.size();
-        committee_size = system.committee.size();
-        committee_next_size = system.committee_next.size();
     }
 
     // Build per-spool availability: a spool is available if ANY node has it Active.
     // Multiple nodes may have the same spool (Active on the current owner,
     // LockedToMove on the former owner), so we must not let a non-Active
     // status overwrite an Active one.
-    let mut spool_available = [false; SPOOL_COUNT];
     for tracked in &state.nodes {
         if !tracked.runtime_status.is_running() {
             continue;
         }
 
-        if let Ok(spools) = tracked.ctx.store.iter_all_spools() {
-            for (spool_id, spool_state) in spools {
-                if (spool_id as usize) < SPOOL_COUNT && spool_state.is_active() {
-                    spool_available[spool_id as usize] = true;
+        if let Ok(local_spools) = tracked.ctx.store.iter_all_spools() {
+            for (spool_id, spool_state) in local_spools {
+                let index = spool_id.as_usize();
+                if let Some(spool) = spools.get_mut(index) {
+                    if spool_state.is_active() {
+                        spool.available = true;
+                    }
                 }
             }
         }
@@ -361,9 +424,9 @@ async fn poll_once(
         total_recovery_delta += recovery_delta;
         total_upload_delta += upload_delta;
 
-        let state = tracked.ctx.state();
+        let protocol = tracked.ctx.state();
         let spool_count = tracked.ctx.my_spools().len();
-        let node_status = if is_running && !state.epoch.is_zero() {
+        let node_status = if is_running && !protocol.epoch().is_zero() {
             Some(tracked.ctx.node_status())
         } else {
             None
@@ -383,11 +446,11 @@ async fn poll_once(
             recovery_bytes: recovery,
             upload_bytes: upload,
             spool_count,
-                pool_stake: tracked.pool_stake,
-                node_status,
-                event_history: tracked.event_history.clone(),
-                sync_bw_history: Vec::new(),
-            };
+            pool_stake: tracked.pool_stake,
+            node_status,
+            event_history: tracked.event_history.clone(),
+            sync_bw_history: Vec::new(),
+        };
 
         // We'll just store the delta as the latest bw for the sparkline
         ns.sync_bw_history.push(sync_delta);
@@ -455,14 +518,15 @@ async fn poll_once(
         epoch,
         epoch_phase,
         epoch_phase_weight,
-        committee_prev_size,
-        committee_size,
-        committee_next_size,
+        previous_committee_size,
+        current_committee_size,
+        next_committee_size,
+        target_group_count,
+        live_group_count,
         tx_count: 0,
         runtime_secs: state.start.elapsed().as_secs_f64(),
         nodes: node_snapshots,
-        spool_owners,
-        spool_available,
+        spools,
         node_count: running_node_count,
         tracked_node_count,
         dead_node_count,

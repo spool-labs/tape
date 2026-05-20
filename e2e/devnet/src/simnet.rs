@@ -1,32 +1,16 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use peer_tls::{apply_pinned_tls, install_default_provider};
 use rand::RngCore;
 use reqwest::Client;
-use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
-use tape_api::errors::{is_account_state_pending_error, ProgramError, TapeError};
-use tape_api::helpers::build_authority_with_tokens_ix;
-use tape_api::instruction::{
-    build_advance_pool_ix, build_create_system_ix, build_expand_system_ix, build_create_archive_ix,
-    build_initialize_mint_ix, build_join_network_ix, build_register_node_ix,
-    build_stake_with_pool_ix,
-};
-use tape_api::program::tapedrive::node_pda;
-use tape_api::utils::to_name;
-use tape_core::types::coin::TAPE;
-use tape_core::types::network::NetworkAddress;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_core::types::BasisPoints;
-use tape_core::types::StorageUnits;
-use tape_e2e_simnet::tls::pick_bind;
-use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
+use tape_core::types::{BasisPoints, StorageUnits};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::hash;
@@ -46,14 +30,15 @@ use crate::stake_fuzzer::StakeFuzzer;
 use crate::verify::verify_spool_integrity;
 
 const SLOT_BUMP: u64 = 1;
-const CU_HIGH: u32 = 1_400_000;
-const CU_MED: u32 = 400_000;
 const UPLOAD_EPOCHS: u64 = 100;
 const UPLOAD_RETRY_BASE_MS: u64 = 500;
 const UPLOAD_RETRY_MAX_MS: u64 = 60_000;
 const UPLOAD_STALL_THRESHOLD_SECS: u64 = 20;
 const HTTP_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const HTTP_HEALTH_TIMEOUT: Duration = Duration::from_millis(750);
+const INITIAL_NODES: usize = GROUP_SIZE;
+const INITIAL_STAKE_TAPE: u64 = 1_000;
+const DEFAULT_TARGET_GROUPS: u64 = 5;
 
 enum UploadResult {
     AttemptStarted {
@@ -71,28 +56,6 @@ enum UploadResult {
     Failed {
         upload_id: Address,
     },
-}
-
-fn is_already_advanced(error: &anyhow::Error) -> bool {
-    for cause in error.chain() {
-        if let Some(ProgramError::Tape(TapeError::AlreadyAdvanced)) =
-            ProgramError::from_error_string(&cause.to_string())
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_join_done(error: &anyhow::Error) -> bool {
-    for cause in error.chain() {
-        if let Some(ProgramError::Tape(TapeError::UnexpectedState)) =
-            ProgramError::from_error_string(&cause.to_string())
-        {
-            return true;
-        }
-    }
-    false
 }
 
 pub fn run(
@@ -114,12 +77,9 @@ async fn async_run(
     snapshot: SnapshotHandle,
     histogram: LogHistogram,
 ) {
-    tracing::info!("creating chain");
-    let chain = ChainFixture::new();
-
-    tracing::info!("loading programs");
-    let admin = match init_chain(&chain).await {
-        Ok(admin) => admin,
+    tracing::info!("starting devnet harness");
+    let harness = match init_harness().await {
+        Ok(harness) => harness,
         Err(e) => {
             tracing::error!("init failed: {e:#}");
             while let Some(cmd) = cmd_rx.recv().await {
@@ -131,18 +91,13 @@ async fn async_run(
         }
     };
 
-    tracing::info!("starting block producer");
-    let _block_producer = chain.rpc().start_block_producer(Duration::from_secs(1));
-
-    let rpc = chain.rpc().clone();
+    let rpc = harness.chain().rpc().clone();
     let poller = PollerHandle::spawn(rpc.clone(), snapshot, histogram);
+    publish_running_nodes(&harness, &poller);
 
     let (upload_tx, upload_rx) = mpsc::unbounded_channel();
     let mut state = SimnetState {
-        chain,
-        admin,
-        nodes: Vec::new(),
-        next_id: 0,
+        harness,
         poller,
         stake_fuzzer: StakeFuzzer::new(),
         stake_fuzz_enabled: false,
@@ -173,7 +128,7 @@ async fn async_run(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(Command::AddNode) => {
-                        let id = state.next_id;
+                        let id = state.harness.nodes().len();
                         tracing::info!("adding node {id}");
                         if let Err(e) = state.add_node().await {
                             tracing::error!("add_node failed: {e:#}");
@@ -194,8 +149,8 @@ async fn async_run(
                         let upload_id = tape_key.address();
                         state.upload_pending += 1;
                         state.upload_running.insert(upload_id, Instant::now());
-                        let rpc = state.chain.rpc().clone();
-                        let admin_bytes = state.admin.to_bytes();
+                        let rpc = state.harness.chain().rpc().clone();
+                        let admin_bytes = state.harness.admin().to_bytes();
                         let tx = state.upload_tx.clone();
                         tokio::spawn(async move {
                             tracing::info!("uploading blob");
@@ -218,12 +173,7 @@ async fn async_run(
                     Some(Command::ToggleStakeFuzz) => {
                         state.stake_fuzz_enabled = !state.stake_fuzz_enabled;
                         if state.stake_fuzz_enabled {
-                            let rpc = state.chain.rpc().clone();
-                            state.prev_epoch = RpcClient::from_rpc(rpc)
-                                .get_epoch()
-                                .await
-                                .map(|e| e.id.as_u64())
-                                .unwrap_or(0);
+                            state.prev_epoch = state.current_epoch().await;
                         }
                         tracing::info!("stake fuzz {}", if state.stake_fuzz_enabled { "on" } else { "off" });
                         state.poller.send(PollerUpdate::StakeFuzzStatus {
@@ -234,25 +184,8 @@ async fn async_run(
                     }
                     Some(Command::Quit) | None => {
                         tracing::info!("shutting down");
-                        let mut stops = JoinSet::new();
-                        for mut node in std::mem::take(&mut state.nodes) {
-                            stops.spawn(async move {
-                                let id = node.id();
-                                let result = node.stop().await;
-                                (id, result)
-                            });
-                        }
-
-                        while let Some(result) = stops.join_next().await {
-                            match result {
-                                Ok((id, Err(error))) => {
-                                    tracing::warn!(id, "node stop failed during shutdown: {error:#}");
-                                }
-                                Ok((_id, Ok(()))) => {}
-                                Err(error) => {
-                                    tracing::warn!("node stop task join failed during shutdown: {error}");
-                                }
-                            }
+                        if let Err(error) = state.harness.stop_all().await {
+                            tracing::warn!("node stop failed during shutdown: {error:#}");
                         }
                         break;
                     }
@@ -313,12 +246,8 @@ async fn async_run(
                 });
             }
             _ = epoch_interval.tick() => {
-                let rpc = state.chain.rpc().clone();
-                let epoch = RpcClient::from_rpc(rpc.clone())
-                    .get_epoch()
-                    .await
-                    .map(|e| e.id.as_u64())
-                    .unwrap_or(0);
+                let rpc = state.harness.chain().rpc().clone();
+                let epoch = state.current_epoch().await;
 
                 // Upload status
                 let certified = state.upload_completed.iter().filter(|e| **e > epoch).count() as u64;
@@ -340,13 +269,22 @@ async fn async_run(
 
                 // Spool integrity check on epoch change
                 if epoch != state.prev_epoch && epoch > 0 {
-                    verify_spool_integrity(&state.nodes);
+                    verify_spool_integrity(state.harness.nodes());
                 }
 
                 // Stake fuzzing
                 if state.stake_fuzz_enabled && epoch != state.prev_epoch {
-                    let authorities: Vec<_> = state.nodes.iter().map(|n| n.authority()).collect();
-                    state.stake_fuzzer.step_epoch(&rpc, &state.admin, &authorities).await;
+                    let authorities: Vec<_> = state
+                        .harness
+                        .nodes()
+                        .iter()
+                        .filter(|node| node.is_running())
+                        .map(|node| node.authority())
+                        .collect();
+                    state
+                        .stake_fuzzer
+                        .step_epoch(&rpc, state.harness.admin(), &authorities)
+                        .await;
                     state.poller.send(PollerUpdate::StakeFuzzStatus {
                         enabled: state.stake_fuzz_enabled,
                         succeeded: state.stake_fuzzer.tx_succeeded,
@@ -381,83 +319,63 @@ async fn async_run(
     }
 }
 
-fn workspace_root() -> Result<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    ChainFixture::workspace_root_from_manifest(&manifest_dir)
-}
+async fn init_harness() -> Result<SimnetHarness> {
+    let mut harness = SimnetBuilder::new()
+        .node_count(INITIAL_NODES)
+        .runtime_mode(NodeRuntimeMode::Full)
+        .slot_advance_per_tx(SLOT_BUMP)
+        .build()
+        .context("build harness")?;
 
-async fn init_chain(chain: &ChainFixture) -> Result<Keypair> {
-    let workspace = workspace_root()?;
-    chain
-        .load_default_programs(&workspace)
-        .context("load_default_programs")?;
-
-    let admin = Keypair::new();
-    chain
-        .airdrop(&admin.pubkey(), 50_000_000_000)
-        .context("airdrop init admin")?;
-
-    let admin_pub = admin.pubkey();
-
-    chain
-        .send_instructions_and_advance(
-            &admin,
-            vec![build_initialize_mint_ix(admin_pub.into(), admin_pub.into())],
-            SLOT_BUMP,
-        )
-        .await
-        .context("initialize_mint")?;
-
-    chain
-        .send_instructions_and_advance(
-            &admin,
-            vec![build_create_system_ix(admin_pub.into(), admin_pub.into())],
-            SLOT_BUMP,
-        )
-        .await
-        .context("create_system")?;
-
-    for _ in 0..10 {
-        let result = chain
-            .send_instructions_and_advance(
-                &admin,
-                vec![build_expand_system_ix(admin_pub.into(), admin_pub.into())],
-                SLOT_BUMP,
-            )
-            .await;
-
-        match result {
-            Ok(_) => {}
-            Err(e) => {
-                let es = format!("{e:?}");
-                if es.contains("AccountAlreadyInitialized")
-                    || es.contains("already initialized")
-                    || is_account_state_pending_error(&es)
-                {
-                    break;
-                }
-                return Err(e).context("expand_system");
-            }
-        }
+    let initial_nodes: Vec<usize> = (0..INITIAL_NODES).collect();
+    {
+        let scenario = harness.scenario();
+        scenario.init_system().await.context("init system")?;
+        scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .context("register initial nodes")?;
+        scenario
+            .stake_all(INITIAL_STAKE_TAPE)
+            .await
+            .context("stake initial nodes")?;
+        scenario
+            .set_spool_groups_many(&initial_nodes, DEFAULT_TARGET_GROUPS)
+            .await
+            .context("set initial spool group preferences")?;
+        scenario
+            .set_committee_size_many(&initial_nodes, INITIAL_NODES as u64)
+            .await
+            .context("set initial committee size preferences")?;
+        scenario.start_network().await.context("start network")?;
     }
 
-    chain
-        .send_instructions_and_advance(
-            &admin,
-            vec![build_create_archive_ix(admin_pub.into(), admin_pub.into())],
-            SLOT_BUMP,
-        )
+    harness
+        .start_all_with_retry(3, Duration::from_millis(200))
         .await
-        .context("initialize archive/epoch")?;
+        .context("start initial runtimes")?;
 
-    Ok(admin)
+    Ok(harness)
+}
+
+fn publish_running_nodes(harness: &SimnetHarness, poller: &PollerHandle) {
+    for node in harness.nodes() {
+        if !node.is_running() {
+            continue;
+        }
+        let Some(runtime_status) = node.runtime_status() else {
+            continue;
+        };
+        poller.send(PollerUpdate::AddNode(
+            node.id(),
+            node.context(),
+            runtime_status,
+        ));
+    }
 }
 
 struct SimnetState {
-    chain: ChainFixture,
-    admin: Keypair,
-    nodes: Vec<TestNode>,
-    next_id: usize,
+    harness: SimnetHarness,
     poller: PollerHandle,
     stake_fuzzer: StakeFuzzer,
     stake_fuzz_enabled: bool,
@@ -478,274 +396,74 @@ struct SimnetState {
 
 impl SimnetState {
     async fn add_node(&mut self) -> Result<()> {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.harness.add_node().context("add node to harness")?;
 
-        let bind = pick_bind(id as u64).context("pick_bind")?;
-        let port = bind.port();
-        let rpc = self.chain.rpc().clone();
-
-        let mut node = TestNode::new(
-            id,
-            rpc,
-            NodeRuntimeMode::Full,
-            bind,
-            port,
-            Duration::from_secs(5),
-        )
-        .with_context(|| format!("TestNode::new({id})"))?;
-
-        self.chain
-            .airdrop(&node.authority(), 10_000_000_000)
-            .with_context(|| format!("airdrop node {id}"))?;
-
-        // Register node
-        let name = {
-            let s = format!("sim-node-{id}");
-            to_name(s)
-        };
-        let network_address: NetworkAddress = node.network_address();
-        let network_tls = node.tls_pubkey();
-        let bls_pubkey = node
-            .bls_keypair()
-            .public_key()
-            .map_err(|e| anyhow::anyhow!("bls public_key: {e:?}"))?;
-        let bls_pop = node
-            .bls_keypair()
-            .proof_of_possession()
-            .map_err(|e| anyhow::anyhow!("bls pop: {e:?}"))?;
-
-        let ix = build_register_node_ix(
-            node.authority().into(),
-            node.authority().into(),
-            name,
-            BasisPoints(0),
-            network_address,
-            network_tls,
-            bls_pubkey,
-            bls_pop,
-        );
-
-        self.chain
-            .send_instructions_and_advance(node.keypair(), vec![ix], SLOT_BUMP)
-            .await
-            .with_context(|| format!("register_node {id}"))?;
-
-        // Stake
-        let authority = Address::from(node.authority());
-        let (node_address, _) = node_pda(authority);
-        let amount = TAPE::parse("100").map_err(|_| anyhow::anyhow!("parse stake amount"))?;
-
-        let mut stake_ixs =
-            vec![ComputeBudgetInstruction::set_compute_unit_limit(CU_HIGH)];
-        stake_ixs.extend(build_authority_with_tokens_ix(
-            self.admin.pubkey().into(),
-            authority,
-            amount,
-        )?);
-        stake_ixs.push(build_stake_with_pool_ix(
-            self.admin.pubkey().into(),
-            authority,
-            node_address,
-            amount,
-        ));
-
-        self.chain
-            .send_instructions_with_signers_and_advance(
-                &self.admin,
-                stake_ixs,
-                &[node.keypair()],
-                SLOT_BUMP,
-            )
-            .await
-            .with_context(|| format!("stake node {id}"))?;
-
-        // Advance pool (tolerate AlreadyAdvanced)
-        let adv_ix = build_advance_pool_ix(
-            self.admin.pubkey().into(),
-            authority,
-            node_address,
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
-
-        if let Err(e) = self.chain
-            .send_instructions_and_advance(&self.admin, vec![cu_ix, adv_ix], SLOT_BUMP)
-            .await
         {
-            if !is_already_advanced(&e) {
-                return Err(e).with_context(|| format!("advance pool {id}"));
-            }
+            let scenario = self.harness.scenario();
+            scenario
+                .register_many(&[id], BasisPoints(100))
+                .await
+                .with_context(|| format!("register node {id}"))?;
+            scenario
+                .stake_many(&[id], INITIAL_STAKE_TAPE)
+                .await
+                .with_context(|| format!("stake node {id}"))?;
+            scenario
+                .set_spool_groups(id, DEFAULT_TARGET_GROUPS)
+                .await
+                .with_context(|| format!("set spool group preference for node {id}"))?;
+
+            let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
+            scenario
+                .set_committee_size_many(&all, self.harness.nodes().len() as u64)
+                .await
+                .context("set committee size preferences")?;
         }
 
-        // Join network non-fatal if stake is pending activation
-        let join_ix =
-            build_join_network_ix(self.admin.pubkey().into(), authority, node_address);
-        let cu_ix2 = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
-
-        if let Err(e) = self.chain
-            .send_instructions_with_signers_and_advance(
-                &self.admin,
-                vec![cu_ix2, join_ix],
-                &[node.keypair()],
-                SLOT_BUMP,
-            )
+        self.harness
+            .start_nodes_with_retry(&[id], 3, Duration::from_millis(200))
             .await
-        {
-            if !is_join_done(&e) {
-                tracing::warn!(id, "join_network deferred (stake pending): {e:#}");
-            }
-        }
+            .with_context(|| format!("start node {id}"))?;
 
-        // Start runtime
-        node.start().await.with_context(|| format!("start node {id}"))?;
-
-        let ctx = node.context();
+        let node = self
+            .harness
+            .node(id)
+            .with_context(|| format!("node {id} missing after start"))?;
         let runtime_status = node
             .runtime_status()
             .expect("runtime status available after start");
         self.poller
-            .send(PollerUpdate::AddNode(id, ctx, runtime_status));
-        self.nodes.push(node);
-
-        Ok(())
-    }
-
-    async fn add_node_no_start(&mut self) -> Result<()> {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let bind = pick_bind(id as u64).context("pick_bind")?;
-        let port = bind.port();
-        let rpc = self.chain.rpc().clone();
-
-        let node = TestNode::new(
-            id,
-            rpc,
-            NodeRuntimeMode::Full,
-            bind,
-            port,
-            Duration::from_secs(5),
-        )
-        .with_context(|| format!("TestNode::new({id})"))?;
-
-        self.chain
-            .airdrop(&node.authority(), 10_000_000_000)
-            .with_context(|| format!("airdrop node {id}"))?;
-
-        let name = {
-            let s = format!("sim-node-{id}");
-            to_name(s)
-        };
-        let network_address: NetworkAddress = node.network_address();
-        let network_tls = node.tls_pubkey();
-        let bls_pubkey = node
-            .bls_keypair()
-            .public_key()
-            .map_err(|e| anyhow::anyhow!("bls public_key: {e:?}"))?;
-        let bls_pop = node
-            .bls_keypair()
-            .proof_of_possession()
-            .map_err(|e| anyhow::anyhow!("bls pop: {e:?}"))?;
-
-        let ix = build_register_node_ix(
-            node.authority().into(),
-            node.authority().into(),
-            name,
-            BasisPoints(0),
-            network_address,
-            network_tls,
-            bls_pubkey,
-            bls_pop,
-        );
-
-        self.chain
-            .send_instructions_and_advance(node.keypair(), vec![ix], SLOT_BUMP)
-            .await
-            .with_context(|| format!("register_node {id}"))?;
-
-        let authority = Address::from(node.authority());
-        let (node_address, _) = node_pda(authority);
-        let amount = TAPE::parse("100").map_err(|_| anyhow::anyhow!("parse stake amount"))?;
-
-        let mut stake_ixs =
-            vec![ComputeBudgetInstruction::set_compute_unit_limit(CU_HIGH)];
-        stake_ixs.extend(build_authority_with_tokens_ix(
-            self.admin.pubkey().into(),
-            authority,
-            amount,
-        )?);
-        stake_ixs.push(build_stake_with_pool_ix(
-            self.admin.pubkey().into(),
-            authority,
-            node_address,
-            amount,
-        ));
-
-        self.chain
-            .send_instructions_with_signers_and_advance(
-                &self.admin,
-                stake_ixs,
-                &[node.keypair()],
-                SLOT_BUMP,
-            )
-            .await
-            .with_context(|| format!("stake node {id}"))?;
-
-        let adv_ix = build_advance_pool_ix(
-            self.admin.pubkey().into(),
-            authority,
-            node_address,
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
-
-        if let Err(e) = self.chain
-            .send_instructions_and_advance(&self.admin, vec![cu_ix, adv_ix], SLOT_BUMP)
-            .await
-        {
-            if !is_already_advanced(&e) {
-                return Err(e).with_context(|| format!("advance pool {id}"));
-            }
-        }
-
-        let join_ix =
-            build_join_network_ix(self.admin.pubkey().into(), authority, node_address);
-        let cu_ix2 = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
-
-        if let Err(e) = self.chain
-            .send_instructions_with_signers_and_advance(
-                &self.admin,
-                vec![cu_ix2, join_ix],
-                &[node.keypair()],
-                SLOT_BUMP,
-            )
-            .await
-        {
-            if !is_join_done(&e) {
-                tracing::warn!(id, "join_network deferred (stake pending): {e:#}");
-            }
-        }
-
-        self.nodes.push(node);
+            .send(PollerUpdate::AddNode(id, node.context(), runtime_status));
         Ok(())
     }
 
     async fn remove_node(&mut self) -> Result<()> {
-        if let Some(mut node) = self.nodes.pop() {
-            let id = node.id();
-            self.poller.send(PollerUpdate::RemoveNode(id));
-            self.health_clients.remove(&id);
-            node.stop()
-                .await
-                .with_context(|| format!("stop node {id}"))?;
-        }
+        let Some(id) = self
+            .harness
+            .nodes()
+            .iter()
+            .rev()
+            .find(|node| node.is_running())
+            .map(|node| node.id())
+        else {
+            return Ok(());
+        };
+
+        self.harness
+            .stop_nodes(&[id])
+            .await
+            .with_context(|| format!("stop node {id}"))?;
+        self.poller.send(PollerUpdate::RemoveNode(id));
+        self.health_clients.remove(&id);
         Ok(())
     }
 
     async fn poll_http_health(&mut self) {
         // Snapshot enough about each running node to build clients without
-        // holding a borrow on `self.nodes` during the cache-mutating call.
+        // holding a borrow on `self.harness` during the cache-mutating call.
         let snapshots: Vec<(usize, String, NetworkTlsPubkey)> = self
-            .nodes
+            .harness
+            .nodes()
             .iter()
             .filter(|node| node.is_running())
             .map(|node| {
@@ -815,6 +533,14 @@ impl SimnetState {
 
         self.health_clients.insert(id, client.clone());
         Some(client)
+    }
+
+    async fn current_epoch(&self) -> u64 {
+        self.harness
+            .scenario()
+            .current_epoch_number()
+            .await
+            .unwrap_or(0)
     }
 
     fn refresh_upload_retry_countdown(&mut self) {
@@ -939,11 +665,10 @@ mod tests {
                     .build()
                     .unwrap();
                 rt.block_on(async {
-                    let chain = ChainFixture::new();
-                    let admin = init_chain(&chain).await.expect("init_chain");
-                    let payer = CryptoKeypair::from_solana_keypair(&admin)
+                    let mut harness = init_harness().await.expect("init harness");
+                    let payer = CryptoKeypair::from_solana_keypair(harness.admin())
                         .expect("convert admin keypair");
-                    let sdk = Tapedrive::new(chain.rpc().clone(), payer);
+                    let sdk = Tapedrive::new(harness.chain().rpc().clone(), payer);
                     let tape_key = TapeKey::generate();
 
                     let tape = sdk
@@ -954,6 +679,7 @@ mod tests {
                     assert_eq!(tape.authority, tape_key.pubkey().into());
                     assert_eq!(tape.capacity, StorageUnits::mb(2));
                     assert_eq!(tape.expiry_epoch.as_u64(), tape.active_epoch.as_u64() + UPLOAD_EPOCHS);
+                    harness.stop_all().await.expect("stop harness");
                 });
             })
             .expect("spawn reserve test thread");
@@ -962,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn add_20_nodes() {
+    fn add_late_node() {
         let handle = std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {
@@ -971,17 +697,10 @@ mod tests {
                     .build()
                     .unwrap();
                 rt.block_on(async {
-                    let chain = ChainFixture::new();
-                    let admin = init_chain(&chain).await.expect("init_chain");
-
-                    let _bp = chain.rpc().start_block_producer(Duration::from_secs(1));
-
+                    let harness = init_harness().await.expect("init harness");
                     let (upload_tx, upload_rx) = mpsc::unbounded_channel();
                     let mut state = SimnetState {
-                        chain,
-                        admin,
-                        nodes: Vec::new(),
-                        next_id: 0,
+                        harness,
                         poller: PollerHandle::spawn_noop(),
                         stake_fuzzer: StakeFuzzer::new(),
                         stake_fuzz_enabled: false,
@@ -1000,12 +719,11 @@ mod tests {
                         health_clients: HashMap::new(),
                     };
 
-                    for i in 0..25 {
-                        eprintln!("adding node {i}...");
-                        state.add_node_no_start().await
-                            .unwrap_or_else(|e| panic!("add_node {i} failed: {e:#}"));
-                        eprintln!("node {i} ok");
-                    }
+                    state
+                        .add_node()
+                        .await
+                        .unwrap_or_else(|e| panic!("add_node failed: {e:#}"));
+                    state.harness.stop_all().await.expect("stop harness");
                 });
             })
             .unwrap();

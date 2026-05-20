@@ -29,20 +29,28 @@ pub struct NodeSnapshot {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Default)]
+pub struct SpoolSnapshot {
+    pub owner: Option<usize>,
+    pub available: bool,
+}
+
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct PollSnapshot {
     pub slot: u64,
     pub epoch: u64,
     pub epoch_phase: String,
     pub epoch_phase_weight: Option<u64>,
-    pub committee_prev_size: usize,
-    pub committee_size: usize,
-    pub committee_next_size: usize,
+    pub previous_committee_size: usize,
+    pub current_committee_size: usize,
+    pub next_committee_size: usize,
+    pub target_group_count: u64,
+    pub live_group_count: u64,
     pub tx_count: u64,
     pub runtime_secs: f64,
     pub nodes: Vec<NodeSnapshot>,
-    pub spool_owners: [u8; 1000],
-    pub spool_available: [bool; 1000],
+    pub spools: Vec<SpoolSnapshot>,
     pub node_count: usize,
     pub tracked_node_count: usize,
     pub dead_node_count: usize,
@@ -82,14 +90,15 @@ impl Default for PollSnapshot {
             epoch: 0,
             epoch_phase: String::new(),
             epoch_phase_weight: None,
-            committee_prev_size: 0,
-            committee_size: 0,
-            committee_next_size: 0,
+            previous_committee_size: 0,
+            current_committee_size: 0,
+            next_committee_size: 0,
+            target_group_count: 0,
+            live_group_count: 0,
             tx_count: 0,
             runtime_secs: 0.0,
             nodes: Vec::new(),
-            spool_owners: [0u8; 1000],
-            spool_available: [true; 1000],
+            spools: Vec::new(),
             node_count: 0,
             tracked_node_count: 0,
             dead_node_count: 0,

@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use tape_api::program::EPOCH_DURATION;
-use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, GROUP_SIZE};
+use tape_core::erasure::GROUP_SIZE;
 
 use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
 use crate::sparkline::{render_braille_sparkline, render_node_sparkline};
@@ -113,9 +113,10 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
     );
     let term_h = area.height as usize;
 
+    let group_count = snap.spools.len().div_ceil(GROUP_SIZE).max(1);
     let spool_inner_w = area.width.saturating_sub(2) as usize;
     let groups_per_row = ((spool_inner_w + 1) / (GROUP_COLS + 1)).max(1);
-    let bands = (SPOOL_GROUP_COUNT + groups_per_row - 1) / groups_per_row;
+    let bands = group_count.div_ceil(groups_per_row);
     let spool_grid_height = (bands * (GROUP_ROWS + 1)) as u16 + 2;
 
     let node_inner_w = area.width.saturating_sub(2) as usize;
@@ -157,9 +158,11 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let phase_color = match snap.epoch_phase.as_str() {
-        "Syncing" => Color::Cyan,
-        "Settling" => Color::Yellow,
+        "Sync" => Color::Cyan,
+        "Settle" => Color::Yellow,
+        "Snapshot" => Color::Magenta,
         "Active" => Color::Green,
+        "Closing" => Color::Blue,
         _ => Color::DarkGray,
     };
     let phase_detail = match snap.epoch_phase_weight {
@@ -172,14 +175,16 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
         Span::styled(
             format!(
-                "  Nodes: {}  Dead: {}  Http: {}  Stake: {}  C[{}/{}/{}]",
+                "  Nodes: {}  Dead: {}  Http: {}  Stake: {}  Groups:{}/{}  C[{}/{}/{}]",
                 snap.node_count,
                 snap.dead_node_count,
                 snap.http_unhealthy_count,
                 format_tape(snap.total_stake),
-                snap.committee_prev_size,
-                snap.committee_size,
-                snap.committee_next_size,
+                snap.live_group_count,
+                snap.target_group_count,
+                snap.previous_committee_size,
+                snap.current_committee_size,
+                snap.next_committee_size,
             ),
             Style::default().fg(Color::White),
         ),
@@ -219,12 +224,19 @@ fn pad_left(area: Rect) -> Rect {
 
 fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let latest_total_store = snap.total_store_history.last().copied().unwrap_or(0);
-    let spool_size = format_spool_size(latest_total_store / (SPOOL_COUNT as u64));
-    let available = snap.spool_available.iter().filter(|&&a| a).count();
-    let title = if available < SPOOL_COUNT {
-        format!(" Spools {}/{} ({spool_size} each) ", available, SPOOL_COUNT)
+    let spool_count = snap.spools.len();
+    let spool_size = format_spool_size(latest_total_store / (spool_count.max(1) as u64));
+    let available = snap.spools.iter().filter(|spool| spool.available).count();
+    let title = if available < spool_count {
+        format!(
+            " Spools {}/{} live groups {}/{} ({spool_size} each) ",
+            available, spool_count, snap.live_group_count, snap.target_group_count
+        )
     } else {
-        format!(" Spools ({spool_size} each) ")
+        format!(
+            " Spools live groups {}/{} ({spool_size} each) ",
+            snap.live_group_count, snap.target_group_count
+        )
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -237,8 +249,9 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         return;
     }
 
+    let group_count = snap.spools.len().div_ceil(GROUP_SIZE);
     let groups_per_row = ((inner.width as usize + 1) / (GROUP_COLS + 1)).max(1);
-    let bands = (SPOOL_GROUP_COUNT + groups_per_row - 1) / groups_per_row;
+    let bands = group_count.div_ceil(groups_per_row);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -246,7 +259,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         let mut label_spans: Vec<Span> = Vec::new();
         for col in 0..groups_per_row {
             let group = band * groups_per_row + col;
-            if group >= SPOOL_GROUP_COUNT {
+            if group >= group_count {
                 break;
             }
             let label = format!("{:^width$}", group, width = GROUP_COLS);
@@ -259,7 +272,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
             let mut spans: Vec<Span> = Vec::new();
             for col in 0..groups_per_row {
                 let group = band * groups_per_row + col;
-                if group >= SPOOL_GROUP_COUNT {
+                if group >= group_count {
                     break;
                 }
                 for c in 0..GROUP_COLS {
@@ -269,15 +282,17 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
                         continue;
                     }
                     let spool_idx = group * GROUP_SIZE + spool_in_group;
-                    if spool_idx >= SPOOL_COUNT {
+                    let Some(spool) = snap.spools.get(spool_idx) else {
                         spans.push(Span::raw(" "));
                         continue;
-                    }
-                    let owner = snap.spool_owners[spool_idx] as usize;
-                    if !snap.spool_available[spool_idx] {
+                    };
+                    if !spool.available {
                         spans.push(Span::styled("\u{00d7}", Style::default().fg(Color::Red)));
                     } else {
-                        let color = node_color(owner);
+                        let color = spool
+                            .owner
+                            .map(|owner| node_color(owner + 1))
+                            .unwrap_or(Color::DarkGray);
                         spans.push(Span::styled("\u{258c}", Style::default().fg(color)));
                     }
                 }

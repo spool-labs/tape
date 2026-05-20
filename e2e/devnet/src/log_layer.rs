@@ -128,13 +128,13 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         warn!(
-            err = ?tape_api::errors::TapeError::SnapshotIncomplete,
+            err = ?tape_api::errors::TapeError::BadEpochState,
             "advance_epoch: program error"
         );
 
         let rows = histogram.snapshot_top(10);
         let message = &rows[0].2;
         assert!(message.contains("advance_epoch: program error"));
-        assert!(message.contains("SnapshotIncomplete"));
+        assert!(message.contains("BadEpochState"));
     }
 }
