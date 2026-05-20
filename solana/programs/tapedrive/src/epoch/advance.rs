@@ -61,10 +61,22 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::BadSchedule.into());
     }
 
-    // Aggregate preferences across the next-epoch committee, weighted by each
-    // member's spool count.
     next_committee_info.is_committee(next)?;
-    let (next_committee, next_members) = Committee::read(next_committee_info, &tapedrive::ID)?;
+    let (next_committee, next_members) = 
+        Committee::read(next_committee_info, &tapedrive::ID)?;
+
+    if next_committee.epoch != next {
+        return Err(TapeError::BadEpochId.into());
+    }
+
+    if next_committee.members.capacity != system.committee_size {
+        return Err(TapeError::InsufficientCommittee.into());
+    }
+
+    if (next_committee.members.count as usize) < GROUP_SIZE {
+        return Err(TapeError::InsufficientCommittee.into());
+    }
+
     let committee_count = next_committee.members.count;
 
     peer_set_info.is_peer_set()?;
@@ -401,9 +413,11 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let next_committee_data =
-            Committee { epoch: next, members: Tail::new(COMMITTEE_SIZE, next_members.len() as u64) }
-                .pack_with(&next_members);
+        let next_committee_data = Committee {
+            epoch: next,
+            members: Tail::new(system.committee_size, next_members.len() as u64),
+        }
+        .pack_with(&next_members);
         let peer_set_data = PeerSet { peers: Tail::new(20, next_peers.len() as u64) }
             .pack_with(&next_peers);
 

@@ -1,7 +1,4 @@
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
-use solana_program::sysvar::rent::Rent;
-use solana_program::sysvar::Sysvar;
-use tape_solana::*;
 use tape_api::dynamic::DynamicState;
 use tape_api::event::PeerSetResized;
 use tape_api::program::prelude::*;
@@ -52,32 +49,17 @@ pub fn process_resize_peer_set(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     if target_size > current_size {
         let next_size = (current_size + MAX_PERMITTED_DATA_INCREASE).min(target_size);
         resize_account(peer_set_info, system_program_info, fee_payer_info, next_size)?;
-        if next_size == target_size {
-            PeerSet::header_mut(peer_set_info, &tapedrive::ID)?.peers.capacity = target_capacity;
-        }
-    } else if target_size < current_size {
-        let refund = peer_set_info
-            .lamports()
-            .saturating_sub(Rent::get()?.minimum_balance(target_size));
-        peer_set_info.resize(target_size)?;
-        if refund > 0 {
-            peer_set_info.send(refund, fee_payer_info);
-        }
+    }
+
+    if peer_set_info.data_len() >= target_size {
         PeerSet::header_mut(peer_set_info, &tapedrive::ID)?.peers.capacity = target_capacity;
     }
-    // else target == current: no-op
 
-    log_peer_set_resized(peer_set_info)?;
-
-    Ok(())
-}
-
-fn log_peer_set_resized(peer_set_info: &AccountInfo<'_>) -> ProgramResult {
-    let capacity = PeerSet::header(peer_set_info, &tapedrive::ID)?.peers.capacity;
     PeerSetResized {
-        capacity: capacity.to_le_bytes(),
+        capacity: target_capacity.to_le_bytes(),
     }
     .log();
+
     Ok(())
 }
 

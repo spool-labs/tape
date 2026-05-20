@@ -45,6 +45,16 @@ impl Hash {
     }
 }
 
+#[cfg(not(target_os = "solana"))]
+impl core::fmt::Display for Hash {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(
+            &solana_program::hash::Hash::new_from_array(self.0),
+            formatter,
+        )
+    }
+}
+
 impl FromStr for Hash {
     type Err = solana_program::hash::ParseHashError;
 
@@ -64,4 +74,18 @@ pub fn hashv(data: &[&[u8]]) -> Hash {
 pub fn hash(data: &[u8]) -> Hash {
     let res = solana_program::hash::hash(data);
     Hash(res.to_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_uses_solana_hash_encoding() {
+        let hash = Hash([7u8; HASH_BYTES]);
+        let expected = solana_program::hash::Hash::new_from_array(hash.0).to_string();
+
+        assert_eq!(hash.to_string(), expected);
+        assert!(!hash.to_string().contains('['));
+    }
 }

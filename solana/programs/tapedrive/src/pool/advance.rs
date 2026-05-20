@@ -1,26 +1,3 @@
-//! `AdvancePool` handler.
-//!
-//! Drains the rewards accumulated by `SettleSpool` into the pool's commission
-//! + stake, snapshots the new exchange rate to the node's history, and
-//! resets the pending accumulator. Permissionless: anyone can pay the fee to
-//! advance a node's pool.
-//!
-//! Grief gate: AdvancePool can be called for any prev epoch the node hasn't
-//! drained yet. We split that into two cases:
-//!
-//! - **At-the-edge** (`latest_advance_epoch + 1 == prev`): one epoch behind
-//!   the last successful drain. Settles for `prev` may still land any time
-//!   during the current epoch, so we require all of this node's prev-epoch
-//!   spools to be settled (`pending_settled == k`) before draining.
-//!   Otherwise an early drain could split a single epoch's rewards across
-//!   two exchange-rate snapshots and corrupt staker accounting.
-//!
-//! - **Catching up** (`latest_advance_epoch + 1 < prev`): more than one epoch
-//!   has passed since the last drain. The prev shifts forward each epoch
-//!   boundary, so settles for stale prev epochs are no longer addressable —
-//!   any partial pending state is permanent loss. Drain whatever's there
-//!   and bump `latest_advance_epoch` so the node isn't stuck.
-
 use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::event::PoolAdvanced;
@@ -59,10 +36,13 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(TapeError::AlreadyAdvanced.into());
     }
 
-    // K = the node's prev-epoch spool count. Linear scan of Committee(prev);
-    // a node absent from prev's committee has K = 0.
     prev_committee_info.is_committee(prev)?;
-    let (_, prev_members) = Committee::read(prev_committee_info, &tapedrive::ID)?;
+    let (prev_committee, prev_members) = 
+        Committee::read(prev_committee_info, &tapedrive::ID)?;
+    if prev_committee.epoch != prev {
+        return Err(TapeError::BadEpochId.into());
+    }
+
     let k = prev_members
         .iter()
         .find(|m| m.node == pool_address)

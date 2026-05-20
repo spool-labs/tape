@@ -86,4 +86,50 @@ impl SimnetScenario<'_> {
 
         Ok(count)
     }
+
+    /// Count slices stored by the canonical current owners of a track's group.
+    pub async fn count_current_owner_slices(
+        &self,
+        track: &Address,
+        group: GroupIndex,
+    ) -> Result<usize> {
+        let system = self.read_system().await?;
+        let group_account = self.read_group(system.current_epoch, group).await?;
+        let mut count = 0usize;
+
+        for (position, spool) in group_account.spools.iter().enumerate() {
+            let owner = spool.node;
+            if owner == Address::default() {
+                continue;
+            }
+
+            let Some(node) = self
+                .harness
+                .nodes()
+                .iter()
+                .find(|node| {
+                    node.is_running() && Address::from(self.node_address(node.id())) == owner
+                })
+            else {
+                continue;
+            };
+
+            let spool_id = group.spool_at(position);
+            if node
+                .context()
+                .store
+                .has_slice(spool_id, *track)
+                .with_context(|| {
+                    format!(
+                        "has_slice node {} spool {spool_id} current owner",
+                        node.id()
+                    )
+                })?
+            {
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
 }

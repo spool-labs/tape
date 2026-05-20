@@ -41,7 +41,12 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     }
 
     curr_committee_info.is_committee(curr)?;
-    let (_, curr_members) = Committee::read(curr_committee_info, &tapedrive::ID)?;
+    let (curr_committee, curr_members) = 
+        Committee::read(curr_committee_info, &tapedrive::ID)?;
+
+    if curr_committee.epoch != curr {
+        return Err(TapeError::BadEpochId.into());
+    }
 
     next_committee_info
         .is_writable()?
@@ -49,6 +54,9 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 
     let (next_committee, next_members) =
         Committee::read_mut(next_committee_info, &tapedrive::ID)?;
+    if next_committee.epoch != next {
+        return Err(TapeError::BadEpochId.into());
+    }
 
     if next_committee.members.capacity < system.committee_size {
         return Err(TapeError::InsufficientCommittee.into());

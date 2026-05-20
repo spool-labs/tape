@@ -54,6 +54,10 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_committee(next)?;
 
     let (committee_header, _) = Committee::read(next_committee_info, &tapedrive::ID)?;
+
+    if committee_header.epoch != next {
+        return Err(TapeError::BadEpochId.into());
+    }
     if committee_header.members.capacity != system.committee_size {
         return Err(TapeError::InsufficientCommittee.into());
     }

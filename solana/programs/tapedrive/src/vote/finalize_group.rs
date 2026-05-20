@@ -69,7 +69,10 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_writable()?
         .is_committee(target_epoch_id)?;
 
-    let (_, members) = Committee::read_mut(committee_info, &tapedrive::ID)?;
+    let (committee, members) = Committee::read_mut(committee_info, &tapedrive::ID)?;
+    if committee.epoch != target_epoch_id {
+        return Err(TapeError::BadEpochId.into());
+    }
 
     let (group_address, bump) = group_pda(target_epoch_id, group_id);
 

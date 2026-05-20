@@ -453,6 +453,7 @@ fn should_retry_upload(err: &TapedriveError) -> bool {
 
 fn should_retry_certification(err: &TapedriveError) -> bool {
     match err {
+        TapedriveError::NotFound => true,
         TapedriveError::Certification(_) => true,
         TapedriveError::Peer(err) => err.is_retryable(),
         TapedriveError::Rpc(rpc) => {
@@ -712,5 +713,10 @@ mod tests {
         assert!(should_retry_certification(&TapedriveError::Peer(
             ApiError::StaleTrackProof,
         )));
+    }
+
+    #[test]
+    fn certification_retries_missing_track_proof() {
+        assert!(should_retry_certification(&TapedriveError::NotFound));
     }
 }

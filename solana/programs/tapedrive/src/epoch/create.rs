@@ -85,7 +85,14 @@ mod tests {
                 Check::account(&Pubkey::from(epoch_address))
                     .space(Epoch::get_size())
                     .owner(&tapedrive::ID)
-                    .data_slice(0, &[Epoch::discriminator()])
+                    .data(
+                        Epoch {
+                            id: target,
+                            ..Epoch::zeroed()
+                        }
+                        .pack()
+                        .as_ref(),
+                    )
                     .build(),
             ],
         );

@@ -52,6 +52,9 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     committee_next_info.is_committee(next_epoch)?;
 
     let (committee_next, _) = Committee::read(committee_next_info, &tapedrive::ID)?;
+    if committee_next.epoch != next_epoch {
+        return Err(TapeError::BadEpochId.into());
+    }
 
     let node = node_info
         .is_writable()?

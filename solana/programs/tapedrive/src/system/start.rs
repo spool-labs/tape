@@ -78,7 +78,19 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .is_committee(target)?;
 
+    ensure_committee_capacity(
+        committee_info,
+        system_program_info,
+        fee_payer_info,
+        target,
+        GROUP_SIZE as u64,
+    )?;
+
     let (committee_header, members) = Committee::read_mut(committee_info, &tapedrive::ID)?;
+
+    if committee_header.epoch != target {
+        return Err(TapeError::BadEpochId.into());
+    }
 
     if committee_header.members.capacity < GROUP_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
@@ -91,6 +103,13 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     peer_set_info
         .is_writable()?
         .is_peer_set()?;
+
+    ensure_peer_set_capacity(
+        peer_set_info,
+        system_program_info,
+        fee_payer_info,
+        GROUP_SIZE as u64,
+    )?;
 
     let (peer_header, peers) = PeerSet::read_mut(peer_set_info, &tapedrive::ID)?;
 
@@ -201,6 +220,61 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     Ok(())
 }
 
+fn ensure_committee_capacity<'info>(
+    committee_info: &AccountInfo<'info>,
+    system_program_info: &AccountInfo<'info>,
+    fee_payer_info: &AccountInfo<'info>,
+    epoch: EpochNumber,
+    capacity: u64,
+) -> ProgramResult {
+
+    let header = Committee::header(committee_info, &tapedrive::ID)?;
+    if header.epoch != epoch {
+        return Err(TapeError::BadEpochId.into());
+    }
+    if header.members.capacity >= capacity {
+        return Ok(());
+    }
+
+    resize_account(
+        committee_info,
+        system_program_info,
+        fee_payer_info,
+        Committee::size_for_capacity(capacity),
+    )?;
+
+    let header = Committee::header_mut(committee_info, &tapedrive::ID)?;
+    header.epoch = epoch;
+    header.members.capacity = capacity;
+
+    Ok(())
+}
+
+fn ensure_peer_set_capacity<'info>(
+    peer_set_info: &AccountInfo<'info>,
+    system_program_info: &AccountInfo<'info>,
+    fee_payer_info: &AccountInfo<'info>,
+    capacity: u64,
+) -> ProgramResult {
+
+    let header = PeerSet::header(peer_set_info, &tapedrive::ID)?;
+    if header.peers.capacity >= capacity {
+        return Ok(());
+    }
+
+    resize_account(
+        peer_set_info,
+        system_program_info,
+        fee_payer_info,
+        PeerSet::size_for_capacity(capacity),
+    )?;
+
+    let header = PeerSet::header_mut(peer_set_info, &tapedrive::ID)?;
+    header.peers.capacity = capacity;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,10 +347,10 @@ mod tests {
         };
 
         let committee_data =
-            Committee { epoch: target, members: Tail::empty(GROUP_SIZE as u64) }
+            Committee { epoch: target, members: Tail::empty(0) }
                 .pack_with(&[]);
         let peer_set_data =
-            PeerSet { peers: Tail::empty(GROUP_SIZE as u64) }
+            PeerSet { peers: Tail::empty(0) }
                 .pack_with(&[]);
 
         let committee_size: u64 = 128;

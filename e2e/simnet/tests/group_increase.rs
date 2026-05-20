@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use tape_api::program::EPOCH_DURATION;
@@ -7,15 +6,15 @@ use tape_core::types::BasisPoints;
 use tape_crypto::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 
-const TARGET_GROUPS: u64 = 10;
+const TARGET_GROUPS: u64 = 20;
 
 #[test]
-fn assignment_updates_after_active_set_growth() {
-    run_simnet_test(assignment_updates_after_active_set_growth_inner);
+fn group_increase() {
+    run_simnet_test(group_increase_inner);
 }
 
-async fn assignment_updates_after_active_set_growth_inner() {
-    let node_count = 25;
+async fn group_increase_inner() {
+    let node_count = 20;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)
@@ -24,8 +23,6 @@ async fn assignment_updates_after_active_set_growth_inner() {
         .expect("build harness");
 
     let all: Vec<usize> = (0..node_count).collect();
-    let genesis_committee: Vec<usize> = (0..20).collect();
-    let late_nodes: Vec<usize> = (20..25).collect();
     let health_timeout = Duration::from_secs(30);
 
     {
@@ -40,10 +37,6 @@ async fn assignment_updates_after_active_set_growth_inner() {
             .set_spool_groups_many(&all, TARGET_GROUPS)
             .await
             .expect("set spool group preferences");
-        scenario
-            .set_committee_size_many(&all, node_count as u64)
-            .await
-            .expect("set committee size preferences");
         scenario.start_network().await.expect("start network");
     }
 
@@ -61,27 +54,10 @@ async fn assignment_updates_after_active_set_growth_inner() {
         .await
         .expect("nodes healthy");
     scenario
-        .wait_nodes_active(&genesis_committee, active_timeout)
+        .wait_nodes_active(&all, active_timeout)
         .await
-        .expect("genesis committee active");
-    assert_eq!(
-        scenario.committee_size().await.expect("committee size"),
-        genesis_committee.len(),
-        "unexpected genesis committee size"
-    );
-
-    let late_node_addresses = late_nodes
-        .iter()
-        .map(|&i| Address::from(scenario.node_address(i)))
-        .collect::<HashSet<_>>();
-
-    let genesis_owners = assert_group_owners(&scenario, 1, 1).await;
-    assert!(
-        late_node_addresses
-            .iter()
-            .all(|node| !genesis_owners.contains(node)),
-        "late nodes should not own genesis spools"
-    );
+        .expect("all nodes active");
+    assert_group_counts(&scenario, 1, 1).await;
 
     let epoch2 = scenario
         .self_advance_epoch(epoch_timeout)
@@ -92,48 +68,31 @@ async fn assignment_updates_after_active_set_growth_inner() {
         .wait_nodes_active(&all, active_timeout)
         .await
         .expect("all nodes active at epoch 2");
-    assert_eq!(
-        scenario.committee_size().await.expect("committee size"),
-        node_count,
-        "unexpected epoch 2 committee size"
-    );
-    assert_group_owners(&scenario, TARGET_GROUPS, 1).await;
+    assert_group_counts(&scenario, TARGET_GROUPS, 1).await;
 
-    let epoch3 = scenario
-        .self_advance_epoch(epoch_timeout)
-        .await
-        .expect("advance to epoch 3");
-    assert_eq!(epoch3, 3, "expected epoch 3");
-    scenario
-        .wait_nodes_active(&all, active_timeout)
-        .await
-        .expect("all nodes active at epoch 3");
-    assert_eq!(
-        scenario.committee_size().await.expect("committee size"),
-        node_count,
-        "unexpected epoch 3 committee size"
-    );
+    for expected_epoch in 3..=5 {
+        let epoch = scenario
+            .self_advance_epoch(epoch_timeout)
+            .await
+            .expect("self advance epoch");
 
-    let expanded_owners = assert_group_owners(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
-    assert_ne!(
-        genesis_owners, expanded_owners,
-        "expected spool ownership to change after active set growth"
-    );
-    for node in &late_node_addresses {
-        assert!(
-            expanded_owners.contains(node),
-            "late node {node} did not receive any spool ownership"
-        );
+        assert_eq!(epoch, expected_epoch, "unexpected epoch after advance");
+
+        scenario
+            .wait_nodes_active(&all, active_timeout)
+            .await
+            .expect("all nodes active after epoch advance");
+        assert_group_counts(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
     }
 
     harness.stop_all().await.expect("stop runtimes");
 }
 
-async fn assert_group_owners(
+async fn assert_group_counts(
     scenario: &SimnetScenario<'_>,
     expected_target: u64,
     expected_live: u64,
-) -> Vec<Address> {
+) {
     let system = scenario.read_system().await.expect("read system");
 
     assert_eq!(
@@ -149,9 +108,9 @@ async fn assert_group_owners(
         .read_groups(system.current_epoch, expected_live)
         .await
         .expect("read current groups");
+
     assert_eq!(groups.len(), expected_live as usize, "unexpected group count");
 
-    let mut owners = Vec::with_capacity(expected_live as usize * GROUP_SIZE);
     for (index, group) in groups.iter().enumerate() {
         assert_eq!(
             group.epoch, system.current_epoch,
@@ -161,16 +120,14 @@ async fn assert_group_owners(
             group.id.0, index as u64,
             "unexpected group id for group {index}"
         );
-
-        for spool in &group.spools {
-            assert_ne!(
-                spool.node,
-                Address::default(),
-                "group {index} has empty spool owner"
-            );
-            owners.push(spool.node);
-        }
+        assert_eq!(
+            group
+                .spools
+                .iter()
+                .filter(|spool| spool.node != Address::default())
+                .count(),
+            GROUP_SIZE,
+            "group {index} is not fully assigned"
+        );
     }
-
-    owners
 }

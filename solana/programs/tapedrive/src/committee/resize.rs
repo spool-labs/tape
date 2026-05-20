@@ -1,7 +1,4 @@
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
-use solana_program::sysvar::rent::Rent;
-use solana_program::sysvar::Sysvar;
-use tape_solana::*;
 use tape_api::dynamic::DynamicState;
 use tape_api::event::CommitteeResized;
 use tape_api::program::prelude::*;
@@ -22,6 +19,7 @@ pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     fee_payer_info
         .is_signer()?
         .is_writable()?;
+
     system_program_info
         .is_program(&system_program::ID)?;
     rent_sysvar_info
@@ -40,52 +38,33 @@ pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     let target_size = Committee::size_for_capacity(target_capacity);
     let current_size = committee_info.data_len();
-    if current_size >= target_size {
-        log_committee_resized(committee_info, epoch)?;
-        return Ok(());
+
+    let current = {
+        let header = Committee::header(committee_info, &tapedrive::ID)?;
+        header.members
+    };
+
+    if current.would_orphan(target_capacity) {
+        return Err(TapeError::ResizeWouldOrphan.into());
     }
 
-    let next_size = (current_size + MAX_PERMITTED_DATA_INCREASE).min(target_size);
-    let needed = Rent::get()?
-        .minimum_balance(next_size)
-        .saturating_sub(committee_info.lamports());
-    if needed > 0 {
-        solana_program::program::invoke(
-            &solana_program::system_instruction::transfer(
-                fee_payer_info.key,
-                committee_info.key,
-                needed,
-            ),
-            &[
-                fee_payer_info.clone(),
-                committee_info.clone(),
-                system_program_info.clone(),
-            ],
-        )?;
+    if target_size > current_size {
+        let next_size = (current_size + MAX_PERMITTED_DATA_INCREASE).min(target_size);
+        resize_account(committee_info, system_program_info, fee_payer_info, next_size)?;
     }
-    committee_info.resize(next_size)?;
 
-    if next_size == target_size {
+    if committee_info.data_len() >= target_size {
         let header = Committee::header_mut(committee_info, &tapedrive::ID)?;
         header.epoch = epoch;
         header.members.capacity = target_capacity;
-        header.members.count = 0;
     }
 
-    log_committee_resized(committee_info, epoch)?;
-
-    Ok(())
-}
-
-fn log_committee_resized(committee_info: &AccountInfo<'_>, epoch: EpochNumber) -> ProgramResult {
-    let capacity = Committee::header(committee_info, &tapedrive::ID)?
-        .members
-        .capacity;
     CommitteeResized {
         epoch,
-        capacity: capacity.to_le_bytes(),
+        capacity: target_capacity.to_le_bytes(),
     }
     .log();
+
     Ok(())
 }
 

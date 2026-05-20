@@ -1,64 +1,84 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use rand::Rng as _;
+use anyhow::{bail, Result};
 use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::system::SpoolStatus;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::BasisPoints;
-use tape_crypto::hash;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
+use tape_crypto::{hash, Address};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 
-/// Full spool recovery flow: upload blob, drop nodes, verify
-/// Sync/Scan/Repair/Recover workers converge back to Active, then download.
+const TARGET_GROUPS: u64 = 5;
+const NODE_COUNT: usize = 25;
+
 #[test]
 fn spool_recovery() {
     run_simnet_test(spool_recovery_inner);
 }
 
 async fn spool_recovery_inner() {
-    let node_count = 25;
     let mut harness = SimnetBuilder::new()
-        .node_count(node_count)
+        .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
         .build()
         .expect("build harness");
 
+    let all: Vec<usize> = (0..NODE_COUNT).collect();
+    let genesis_committee: Vec<usize> = (0..GROUP_SIZE).collect();
+    let late_nodes: Vec<usize> = (GROUP_SIZE..NODE_COUNT).collect();
     let health_timeout = Duration::from_secs(30);
+
+    {
+        let scenario = harness.scenario();
+        scenario.init_system().await.expect("init system");
+        scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .expect("register nodes");
+        scenario
+            .stake_many(&genesis_committee, 1_000)
+            .await
+            .expect("stake genesis nodes");
+        scenario
+            .stake_many(&late_nodes, 3_000)
+            .await
+            .expect("stake late nodes");
+        scenario
+            .set_spool_groups_many(&all, TARGET_GROUPS)
+            .await
+            .expect("set spool group preferences");
+        scenario
+            .set_committee_size_many(&all, NODE_COUNT as u64)
+            .await
+            .expect("set committee size preferences");
+        scenario.start_network().await.expect("start network");
+    }
+
     harness
-        .bootstrap_nodes(BasisPoints(100), 1_000, health_timeout)
+        .start_all_with_retry(3, Duration::from_millis(200))
         .await
-        .expect("bootstrap nodes");
+        .expect("start runtimes");
 
-    let all: Vec<usize> = (0..node_count).collect();
-    let timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
-
+    let active_timeout = Duration::from_secs(60);
+    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
+    let recovery_timeout = Duration::from_secs(120);
     let scenario = harness.scenario();
+
     scenario
-        .wait_nodes_active(&all, timeout)
+        .wait_nodes_healthy(health_timeout)
         .await
-        .expect("all nodes active");
-
-    // Advance to epoch 2 then 3 so committee is fully active
-    let epoch2 = scenario
-        .self_advance_epoch(epoch_timeout)
+        .expect("nodes healthy");
+    scenario
+        .wait_nodes_active(&genesis_committee, active_timeout)
         .await
-        .expect("advance to epoch 2");
-    assert_eq!(epoch2, 2);
+        .expect("genesis committee active");
+    assert_group_counts(&scenario, 1, 1).await;
 
-    let epoch3 = scenario
-        .self_advance_epoch(epoch_timeout)
-        .await
-        .expect("advance to epoch 3");
-    assert_eq!(epoch3, 3);
-
-    // Upload a small blob
-    let key = hash::hash(b"spool-recovery-test");
-    let data: Vec<u8> = (0..10_240).map(|i| (i % 256) as u8).collect();
-
+    let data: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
     let (_tape_key, track_address, track) = scenario
-        .upload(harness.admin(), key, &data, 4)
+        .upload(harness.admin(), hash::hash(b"spool-recovery"), &data, 6)
         .await
         .expect("upload blob");
 
@@ -67,135 +87,154 @@ async fn spool_recovery_inner() {
         track.is_certified(),
         "uploaded blob track should be certified"
     );
+    assert_eq!(
+        track.group,
+        GroupIndex(0),
+        "genesis upload should land in the only live group"
+    );
 
-    // Verify all slices are stored
-    let group = track.group;
-    let slice_count = scenario
-        .count_slices(&track_address, group)
-        .expect("count slices");
-    assert_eq!(slice_count, GROUP_SIZE);
+    let epoch1_owners = group_owners(&scenario, track.group).await;
+    wait_current_owner_slices(
+        &scenario,
+        &track_address,
+        track.group,
+        GROUP_SIZE,
+        recovery_timeout,
+    )
+    .await
+    .expect("genesis owners store all blob slices");
 
-    // Crash 5 random nodes (previous spool owners will be unreachable)
-    let mut rng = rand::thread_rng();
-    let mut indices: Vec<usize> = (0..node_count).collect();
-    let mut drop_indices = Vec::with_capacity(5);
-    for _ in 0..5 {
-        let pick = rng.gen_range(0..indices.len());
-        drop_indices.push(indices.swap_remove(pick));
-    }
-    drop_indices.sort();
-    let alive_indices = indices;
-
-    drop(scenario);
-    harness
-        .kill_nodes(&drop_indices)
-        .expect("kill dropped nodes");
-
-    // Advance epoch 3 → 4 (surviving nodes get reassigned spools and begin Sync).
-    let scenario = harness.scenario();
-    let epoch4 = scenario
+    let epoch2 = scenario
         .self_advance_epoch(epoch_timeout)
         .await
-        .expect("advance to epoch 4");
-    assert_eq!(epoch4, 4);
-
+        .expect("advance to epoch 2");
+    assert_eq!(epoch2, 2, "expected epoch 2");
     scenario
-        .wait_nodes_active(&alive_indices, timeout)
+        .wait_nodes_active(&all, active_timeout)
         .await
-        .expect("alive nodes active at epoch 4");
+        .expect("all nodes active at epoch 2");
+    assert_group_counts(&scenario, TARGET_GROUPS, 1).await;
 
-    // Advance epoch 4 → 5 so dead nodes drop out of committee
-    // (they joined during epoch 3 so they're still in epoch 4's committee)
-    let epoch5 = scenario
-        .self_advance_epoch(epoch_timeout)
-        .await
-        .expect("advance to epoch 5");
-    assert_eq!(epoch5, 5);
+    let epoch2_owners = group_owners(&scenario, track.group).await;
+    assert_ne!(
+        epoch1_owners, epoch2_owners,
+        "expected group ownership to change after high-stake late nodes join"
+    );
+    assert!(
+        includes_late_owner(&scenario, &late_nodes, &epoch2_owners),
+        "expected at least one late node to receive track group ownership"
+    );
 
-    scenario
-        .wait_nodes_active(&alive_indices, timeout)
-        .await
-        .expect("alive nodes active at epoch 5");
+    wait_current_owner_slices(
+        &scenario,
+        &track_address,
+        track.group,
+        GROUP_SIZE,
+        recovery_timeout,
+    )
+    .await
+    .expect("epoch 2 owners sync all blob slices");
 
-    // Wait for spool reconciliation
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // Verify all spools are assigned to alive nodes
-    let alive_total = scenario
-        .total_spool_count(&alive_indices)
-        .expect("total spool count");
-    let expected_spool_count = scenario
-        .read_system()
-        .await
-        .expect("read system")
-        .live_group_count as usize
-        * GROUP_SIZE;
-    assert_eq!(alive_total, expected_spool_count);
-
-    // Poll until any Sync spools transition into later phases.
-    let sync_timeout = Duration::from_secs(120);
-    let start = Instant::now();
-    loop {
-        let mut any_sync = false;
-        for &i in &alive_indices {
-            let statuses = scenario.node_spool_statuses(i).expect("spool statuses");
-            for (_, state) in &statuses {
-                if matches!(state.status, SpoolStatus::Sync) {
-                    any_sync = true;
-                    break;
-                }
-            }
-            if any_sync {
-                break;
-            }
-        }
-
-        if !any_sync {
-            break;
-        }
-
-        assert!(
-            start.elapsed() < sync_timeout,
-            "timed out waiting for Sync spools to transition"
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    // Poll until all spools reach terminal states again.
-    let active_timeout = Duration::from_secs(120);
-    let start = Instant::now();
-    loop {
-        let mut all_active = true;
-        for &i in &alive_indices {
-            let statuses = scenario.node_spool_statuses(i).expect("spool statuses");
-            for (_, state) in &statuses {
-                if !matches!(state.status, SpoolStatus::Active | SpoolStatus::LockedToMove) {
-                    all_active = false;
-                    break;
-                }
-            }
-            if !all_active {
-                break;
-            }
-        }
-
-        if all_active {
-            break;
-        }
-
-        assert!(
-            start.elapsed() < active_timeout,
-            "timed out waiting for all spools to reach Active"
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    // Download the blob and verify data integrity
-    let downloaded = scenario
+    let epoch2_read = scenario
         .download(harness.admin(), &track_address)
         .await
-        .expect("download blob after recovery");
-    assert_eq!(downloaded, data, "downloaded data should match original");
+        .expect("download blob after epoch 2 reassignment");
+    assert_eq!(epoch2_read, data, "epoch 2 download should match upload");
 
-    harness.stop_all().await.expect("stop all");
+    let epoch3 = scenario
+        .self_advance_epoch(epoch_timeout)
+        .await
+        .expect("advance to epoch 3");
+    assert_eq!(epoch3, 3, "expected epoch 3");
+    scenario
+        .wait_nodes_active(&all, active_timeout)
+        .await
+        .expect("all nodes active at epoch 3");
+    assert_group_counts(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
+
+    wait_current_owner_slices(
+        &scenario,
+        &track_address,
+        track.group,
+        GROUP_SIZE,
+        recovery_timeout,
+    )
+    .await
+    .expect("expanded group owners keep all blob slices available");
+
+    let epoch3_read = scenario
+        .download(harness.admin(), &track_address)
+        .await
+        .expect("download blob after group expansion");
+    assert_eq!(epoch3_read, data, "epoch 3 download should match upload");
+
+    harness.stop_all().await.expect("stop runtimes");
+}
+
+async fn wait_current_owner_slices(
+    scenario: &SimnetScenario<'_>,
+    track: &Address,
+    group: GroupIndex,
+    expected: usize,
+    timeout: Duration,
+) -> Result<()> {
+    let start = Instant::now();
+
+    loop {
+        let observed = scenario
+            .count_current_owner_slices(track, group)
+            .await
+            .expect("count current owner slices");
+        if observed == expected {
+            return Ok(());
+        }
+
+        if start.elapsed() >= timeout {
+            bail!(
+                "timed out waiting for current group owners to hold {expected} slices, observed {observed}"
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn group_owners(scenario: &SimnetScenario<'_>, group: GroupIndex) -> Vec<Address> {
+    let system = scenario.read_system().await.expect("read system");
+    let group = scenario
+        .read_group(system.current_epoch, group)
+        .await
+        .expect("read group");
+
+    group.spools.iter().map(|spool| spool.node).collect()
+}
+
+fn includes_late_owner(
+    scenario: &SimnetScenario<'_>,
+    late_nodes: &[usize],
+    owners: &[Address],
+) -> bool {
+    let late_node_addresses = late_nodes
+        .iter()
+        .map(|&i| Address::from(scenario.node_address(i)))
+        .collect::<HashSet<_>>();
+
+    owners.iter().any(|owner| late_node_addresses.contains(owner))
+}
+
+async fn assert_group_counts(
+    scenario: &SimnetScenario<'_>,
+    expected_target: u64,
+    expected_live: u64,
+) {
+    let system = scenario.read_system().await.expect("read system");
+
+    assert_eq!(
+        system.target_group_count, expected_target,
+        "unexpected target group count"
+    );
+    assert_eq!(
+        system.live_group_count, expected_live,
+        "unexpected live group count"
+    );
 }

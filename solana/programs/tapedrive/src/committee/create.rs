@@ -1,5 +1,3 @@
-use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
-use tape_solana::*;
 use tape_api::dynamic::DynamicState;
 use tape_api::event::CommitteeCreated;
 use tape_api::program::prelude::*;
@@ -20,13 +18,13 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     fee_payer_info
         .is_signer()?
         .is_writable()?;
+
     system_program_info
         .is_program(&system_program::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
-    let system = system_info
-        .is_system()?
-        .as_account::<System>(&tapedrive::ID)?;
+    system_info
+        .is_system()?;
 
     let epoch = EpochNumber::unpack(args.epoch);
     let (committee_address, bump) = committee_pda(epoch);
@@ -36,37 +34,23 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_writable()?
         .has_address(&committee_address.into())?;
 
-    let genesis_capacity = if system.current_epoch == EpochNumber(0) && epoch == EpochNumber(1) {
-        GROUP_SIZE as u64
-    } else {
-        0
-    };
-
-    let initial_size = if genesis_capacity > 0 {
-        Committee::size_for_capacity(genesis_capacity)
-    } else {
-        MAX_PERMITTED_DATA_INCREASE.min(Committee::get_size())
-    };
-
     create_account_with_size::<Committee>(
         committee_info,
         system_program_info,
         fee_payer_info,
-        initial_size,
+        Committee::get_size(),
         &tapedrive::ID,
         &[COMMITTEE, &epoch.pack()],
         bump,
     )?;
 
-    if genesis_capacity > 0 {
-        let committee = Committee::header_mut(committee_info, &tapedrive::ID)?;
-        committee.epoch = epoch;
-        committee.members = Tail::empty(genesis_capacity);
-    }
+    let committee = Committee::header_mut(committee_info, &tapedrive::ID)?;
+    committee.epoch = epoch;
+    committee.members = Tail::empty(0);
 
     CommitteeCreated {
         epoch,
-        capacity: genesis_capacity.to_le_bytes(),
+        capacity: 0u64.to_le_bytes(),
     }
     .log();
 
@@ -102,8 +86,6 @@ mod tests {
             rent_sysvar(),
         ];
 
-        let initial_size = MAX_PERMITTED_DATA_INCREASE.min(Committee::get_size());
-
         let env = test_env();
         env.process_instruction(
             &instruction,
@@ -111,9 +93,16 @@ mod tests {
             &[
                 Check::success(),
                 Check::account(&Pubkey::from(committee_address))
-                    .space(initial_size)
+                    .space(Committee::get_size())
                     .owner(&tapedrive::ID)
-                    .data_slice(0, &[Committee::discriminator()])
+                    .data(
+                        Committee {
+                            epoch: target,
+                            members: Tail::empty(0),
+                        }
+                        .pack_with(&[])
+                        .as_ref(),
+                    )
                     .build(),
             ],
         );

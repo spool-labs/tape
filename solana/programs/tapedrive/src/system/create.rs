@@ -73,9 +73,9 @@ mod tests {
                 Check::account(&Pubkey::from(system_address))
                     .space(System::get_size())
                     .owner(&tapedrive::ID)
-                    .data_slice(0, &[System::discriminator()])
+                    .data(System::zeroed().pack().as_ref())
                     .build(),
-            ]
+            ],
         );
     }
 }

@@ -11,16 +11,7 @@ use solana_sdk::signature::Signature as SolanaSignature;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[repr(transparent)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct Txid([u8; 64]);
 
