@@ -1,20 +1,17 @@
 //! Verifies that peer-only routes reject unauthenticated and non-peer
 //! clients, while public routes remain open.
-//!
-//! Exercises the full stack: `PeerIdentityAcceptor` extracts the client's
-//! SPKI (or lack thereof) from the TLS session, `require_committee_peer`
-//! middleware maps it to a known peer in `PeerManager` and checks committee
-//! membership, and the handler is reached only when both checks pass.
 
 use std::time::Duration;
 
 use rand::thread_rng;
 use reqwest::StatusCode;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::BasisPoints;
 use tape_crypto::ed25519::Keypair as EdKeypair;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
+use tape_protocol::api::VOTE_PATH;
 
-const NODE_COUNT: usize = 5;
+const NODE_COUNT: usize = GROUP_SIZE;
 
 #[test]
 fn peer_only_routes_reject_non_peers() {
@@ -31,14 +28,32 @@ async fn peer_only_routes_reject_non_peers_inner() {
         .build()
         .expect("build harness");
 
+    let all: Vec<usize> = (0..NODE_COUNT).collect();
+    let health_timeout = Duration::from_secs(30);
+
+    {
+        let scenario = harness.scenario();
+        scenario.init_system().await.expect("init system");
+        scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .expect("register nodes");
+        scenario.stake_all(1_000).await.expect("stake nodes");
+        scenario.start_network().await.expect("start network");
+    }
+
     harness
-        .bootstrap_nodes(BasisPoints(100), 1_000, Duration::from_secs(30))
+        .start_all_with_retry(3, Duration::from_millis(200))
         .await
-        .expect("bootstrap nodes");
+        .expect("start runtimes");
 
     let scenario = harness.scenario();
     scenario
-        .wait_nodes_active(&(0..NODE_COUNT).collect::<Vec<_>>(), Duration::from_secs(20))
+        .wait_nodes_healthy(health_timeout)
+        .await
+        .expect("nodes healthy");
+    scenario
+        .wait_nodes_active(&all, Duration::from_secs(20))
         .await
         .expect("all nodes active");
 
@@ -85,16 +100,16 @@ async fn peer_only_routes_reject_non_peers_inner() {
     );
 
     let vote = anon
-        .post(format!("{base}/v1/snapshots/vote"))
+        .post(format!("{base}{VOTE_PATH}"))
         .body(Vec::<u8>::new())
         .send()
         .await
-        .expect("anon snapshot_vote");
+        .expect("anon vote");
 
     assert_eq!(
         vote.status(),
         StatusCode::FORBIDDEN,
-        "anonymous client must be rejected from peer-only /v1/snapshots/vote"
+        "anonymous client must be rejected from peer-only {VOTE_PATH}"
     );
 
     // Impostor: valid Ed25519 client cert, but key is not on-chain
@@ -107,11 +122,11 @@ async fn peer_only_routes_reject_non_peers_inner() {
     };
 
     let impostor_vote = impostor
-        .post(format!("{base}/v1/snapshots/vote"))
+        .post(format!("{base}{VOTE_PATH}"))
         .body(Vec::<u8>::new())
         .send()
         .await
-        .expect("impostor snapshot_vote");
+        .expect("impostor vote");
 
     assert_eq!(
         impostor_vote.status(),
@@ -149,6 +164,18 @@ async fn peer_only_routes_reject_non_peers_inner() {
         peer_stats.status(),
         StatusCode::OK,
         "registered committee peer should reach public /v1/stats"
+    );
+
+    let peer_vote = peer
+        .post(format!("{base}{VOTE_PATH}"))
+        .body(Vec::<u8>::new())
+        .send()
+        .await
+        .expect("peer vote");
+    assert_eq!(
+        peer_vote.status(),
+        StatusCode::BAD_REQUEST,
+        "registered committee peer should pass auth and fail only on malformed vote body"
     );
 
     harness.stop_all().await.expect("stop runtimes");

@@ -18,17 +18,33 @@ async fn multi_epoch_inner() {
         .build()
         .expect("build harness");
 
-    let health_timeout = Duration::from_secs(30);
-    harness
-        .bootstrap_nodes(BasisPoints(100), 1_000, health_timeout)
-        .await
-        .expect("bootstrap nodes");
-
     let all: Vec<usize> = (0..node_count).collect();
+    let health_timeout = Duration::from_secs(30);
+
+    {
+        let scenario = harness.scenario();
+        scenario.init_system().await.expect("init system");
+        scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .expect("register nodes");
+        scenario.stake_all(1_000).await.expect("stake nodes");
+        scenario.start_network().await.expect("start network");
+    }
+
+    harness
+        .start_all_with_retry(3, Duration::from_millis(200))
+        .await
+        .expect("start runtimes");
+
     let active_timeout = Duration::from_secs(60);
     let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
     let scenario = harness.scenario();
 
+    scenario
+        .wait_nodes_healthy(health_timeout)
+        .await
+        .expect("nodes healthy");
     scenario
         .wait_nodes_active(&all, active_timeout)
         .await

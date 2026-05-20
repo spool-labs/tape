@@ -42,7 +42,7 @@ where
         TxOutcome::Confirmed(txid) => {
             info!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 %txid,
                 "assignment: proposal submitted"
             );
@@ -50,7 +50,7 @@ where
         TxOutcome::Program(err) => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 ?err,
                 "assignment: proposal program error"
             );
@@ -58,7 +58,7 @@ where
         TxOutcome::Transport(err) => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 %err,
                 "assignment: proposal transport error"
             );
@@ -66,7 +66,7 @@ where
         TxOutcome::SkippedStale => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 "assignment: proposal deferred, ingest stale"
             );
         }

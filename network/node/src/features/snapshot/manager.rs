@@ -123,8 +123,8 @@ where
         if candidate.hash != hash {
             warn!(
                 epoch = epoch.0,
-                local_hash = ?candidate.hash,
-                canonical_hash = ?hash,
+                local_hash = %candidate.hash,
+                canonical_hash = %hash,
                 "snapshot: local candidate does not match canonical hash"
             );
             return Ok(());
@@ -140,8 +140,8 @@ where
             } else {
                 warn!(
                     epoch = epoch.0,
-                    local_hash = ?candidate.hash,
-                    finalized_hash = ?hash,
+                    local_hash = %candidate.hash,
+                    finalized_hash = %hash,
                     "snapshot: finalized hash does not match local candidate"
                 );
             }

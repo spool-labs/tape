@@ -41,7 +41,7 @@ where
         TxOutcome::Confirmed(txid) => {
             info!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 %txid,
                 "snapshot: proposal submitted"
             );
@@ -49,7 +49,7 @@ where
         TxOutcome::Program(err) => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 ?err,
                 "snapshot: proposal program error"
             );
@@ -57,7 +57,7 @@ where
         TxOutcome::Transport(err) => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 %err,
                 "snapshot: proposal transport error"
             );
@@ -65,7 +65,7 @@ where
         TxOutcome::SkippedStale => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 "snapshot: proposal deferred, ingest stale"
             );
         }
@@ -211,7 +211,7 @@ where
         TxOutcome::Confirmed(txid) => {
             info!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 %txid,
                 "snapshot: finalized"
             );
@@ -219,7 +219,7 @@ where
         TxOutcome::Program(err) => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 ?err,
                 "snapshot: finalize program error"
             );
@@ -227,7 +227,7 @@ where
         TxOutcome::Transport(err) => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 %err,
                 "snapshot: finalize transport error"
             );
@@ -235,7 +235,7 @@ where
         TxOutcome::SkippedStale => {
             debug!(
                 epoch = candidate.target_epoch.0,
-                hash = ?candidate.hash,
+                hash = %candidate.hash,
                 "snapshot: finalize deferred, ingest stale"
             );
         }

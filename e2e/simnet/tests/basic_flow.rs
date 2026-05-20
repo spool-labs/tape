@@ -18,25 +18,42 @@ async fn basic_flow_inner() {
         .build()
         .expect("build harness");
 
-    let health_timeout = Duration::from_secs(30);
-    harness
-        .bootstrap_nodes(BasisPoints(100), 1_000, health_timeout)
-        .await
-        .expect("bootstrap nodes");
-
     let all: Vec<usize> = (0..node_count).collect();
-    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
+    let health_timeout = Duration::from_secs(30);
+
+    {
+        let scenario = harness.scenario();
+        scenario.init_system().await.expect("init system");
+        scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .expect("register nodes");
+        scenario.stake_all(1_000).await.expect("stake nodes");
+        scenario.start_network().await.expect("start network");
+    }
+
+    harness
+        .start_all_with_retry(3, Duration::from_millis(200))
+        .await
+        .expect("start runtimes");
+
+    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
     let scenario = harness.scenario();
 
+    scenario
+        .wait_nodes_healthy(health_timeout)
+        .await
+        .expect("nodes healthy");
     scenario
         .wait_nodes_active(&all, Duration::from_secs(20))
         .await
         .expect("all nodes active");
 
-    scenario
+    let epoch = scenario
         .self_advance_epoch(epoch_timeout)
         .await
         .expect("self advance epoch");
+    assert_eq!(epoch, 2, "expected epoch 2");
 
     harness.stop_all().await.expect("stop runtimes");
 }

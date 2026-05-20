@@ -132,8 +132,8 @@ where
             warn!(
                 epoch = epoch.0,
                 local_epoch = candidate.target_epoch.0,
-                local_hash = ?candidate.hash,
-                canonical_hash = ?hash,
+                local_hash = %candidate.hash,
+                canonical_hash = %hash,
                 "assignment: local candidate does not match canonical assignment"
             );
             return Ok(());
