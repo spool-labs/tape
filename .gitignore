@@ -11,6 +11,7 @@
 /test-ledger
 */**/test-ledger
 /db_tapestore*
+.regit-state.toml
 
 /*.json
 
