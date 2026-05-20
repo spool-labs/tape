@@ -21,7 +21,8 @@ use tape_core::erasure::GROUP_SIZE;
 use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
 use crate::sparkline::{render_braille_sparkline, render_node_sparkline};
 
-const GROUP_COLS: usize = 7;
+const GROUP_SPOOL_COLS: usize = 7;
+const GROUP_WIDTH: usize = 11;
 const GROUP_ROWS: usize = 3;
 const CHIP_WIDTH: usize = 27;
 const NODE_ID_WIDTH: usize = 3;
@@ -54,6 +55,9 @@ pub fn run_tui(
                         }
                         KeyCode::Char('u') => {
                             let _ = cmd_tx.send(Command::UploadBlob);
+                        }
+                        KeyCode::Char('g') => {
+                            let _ = cmd_tx.send(Command::IncreaseGroupCount);
                         }
                         KeyCode::Char('s') => {
                             let _ = cmd_tx.send(Command::ToggleStakeFuzz);
@@ -115,9 +119,9 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
 
     let group_count = snap.spools.len().div_ceil(GROUP_SIZE).max(1);
     let spool_inner_w = area.width.saturating_sub(2) as usize;
-    let groups_per_row = ((spool_inner_w + 1) / (GROUP_COLS + 1)).max(1);
+    let groups_per_row = ((spool_inner_w + 1) / (GROUP_WIDTH + 1)).max(1);
     let bands = group_count.div_ceil(groups_per_row);
-    let spool_grid_height = (bands * (GROUP_ROWS + 1)) as u16 + 2;
+    let spool_grid_height = (bands * (GROUP_ROWS + 2)) as u16 + 2;
 
     let node_inner_w = area.width.saturating_sub(2) as usize;
     let chips_per_row = (node_inner_w / CHIP_WIDTH).max(1);
@@ -175,13 +179,13 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
         Span::styled(
             format!(
-                "  Nodes: {}  Dead: {}  Http: {}  Stake: {}  Groups:{}/{}  C[{}/{}/{}]",
+                "  Nodes: {}  Dead: {}  Http: {}  Stake: {}  Groups: [{}/{}]  C[{}/{}/{}]",
                 snap.node_count,
                 snap.dead_node_count,
                 snap.http_unhealthy_count,
                 format_tape(snap.total_stake),
                 snap.live_group_count,
-                snap.target_group_count,
+                snap.desired_group_count,
                 snap.previous_committee_size,
                 snap.current_committee_size,
                 snap.next_committee_size,
@@ -223,25 +227,10 @@ fn pad_left(area: Rect) -> Rect {
 }
 
 fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
-    let latest_total_store = snap.total_store_history.last().copied().unwrap_or(0);
-    let spool_count = snap.spools.len();
-    let spool_size = format_spool_size(latest_total_store / (spool_count.max(1) as u64));
-    let available = snap.spools.iter().filter(|spool| spool.available).count();
-    let title = if available < spool_count {
-        format!(
-            " Spools {}/{} live groups {}/{} ({spool_size} each) ",
-            available, spool_count, snap.live_group_count, snap.target_group_count
-        )
-    } else {
-        format!(
-            " Spools live groups {}/{} ({spool_size} each) ",
-            snap.live_group_count, snap.target_group_count
-        )
-    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(title);
+        .title(" Spools ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -250,7 +239,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     }
 
     let group_count = snap.spools.len().div_ceil(GROUP_SIZE);
-    let groups_per_row = ((inner.width as usize + 1) / (GROUP_COLS + 1)).max(1);
+    let groups_per_row = ((inner.width as usize + 1) / (GROUP_WIDTH + 1)).max(1);
     let bands = group_count.div_ceil(groups_per_row);
 
     let mut lines: Vec<Line> = Vec::new();
@@ -262,7 +251,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
             if group >= group_count {
                 break;
             }
-            let label = format!("{:^width$}", group, width = GROUP_COLS);
+            let label = format_group_number_label(group);
             label_spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
             label_spans.push(Span::raw(" "));
         }
@@ -275,8 +264,8 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
                 if group >= group_count {
                     break;
                 }
-                for c in 0..GROUP_COLS {
-                    let spool_in_group = row * GROUP_COLS + c;
+                for c in 0..GROUP_SPOOL_COLS {
+                    let spool_in_group = row * GROUP_SPOOL_COLS + c;
                     if spool_in_group >= GROUP_SIZE {
                         spans.push(Span::raw(" "));
                         continue;
@@ -296,10 +285,26 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
                         spans.push(Span::styled("\u{258c}", Style::default().fg(color)));
                     }
                 }
-                spans.push(Span::raw(" "));
+                spans.push(Span::raw(" ".repeat(
+                    GROUP_WIDTH.saturating_sub(GROUP_SPOOL_COLS) + 1,
+                )));
             }
             lines.push(Line::from(spans));
         }
+
+        let mut size_spans: Vec<Span> = Vec::new();
+        for col in 0..groups_per_row {
+            let group = band * groups_per_row + col;
+            if group >= group_count {
+                break;
+            }
+            let label = format_group_size_label(
+                snap.group_spool_bytes.get(group).copied().unwrap_or(0),
+            );
+            size_spans.push(Span::styled(label, Style::default().fg(Color::DarkGray)));
+            size_spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(size_spans));
     }
 
     let p = Paragraph::new(lines);
@@ -642,14 +647,29 @@ fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
 }
 
 fn render_help_bar(frame: &mut Frame<'_>, area: Rect, disconnected: bool) {
-    let mut spans = vec![
-        Span::styled(" [a]dd  [r]emove  [u]pload  [s]take-fuzz  [q]uit", Style::default().fg(Color::DarkGray)),
-    ];
+    let mut spans = vec![Span::styled(
+        " [a]dd  [r]emove  [u]pload  [g]roups+  [s]take-fuzz  [q]uit",
+        Style::default().fg(Color::DarkGray),
+    )];
     if disconnected {
         spans.push(Span::styled("  DISCONNECTED", Style::default().fg(Color::Red)));
     }
     let p = Paragraph::new(Line::from(spans));
     frame.render_widget(p, area);
+}
+
+fn format_group_number_label(group: usize) -> String {
+    let label = group.to_string();
+    format!("{label:^width$}", width = GROUP_WIDTH)
+}
+
+fn format_group_size_label(spool_bytes: u64) -> String {
+    let label = format_group_spool_size(spool_bytes);
+    if label.len() <= GROUP_WIDTH {
+        return format!("{label:^width$}", width = GROUP_WIDTH);
+    }
+
+    format!("{:>width$}", label, width = GROUP_WIDTH)
 }
 
 fn format_duration(secs: f64) -> String {
@@ -725,13 +745,13 @@ fn format_tape_fixed_width(flux: u64, width: usize) -> String {
     format!("{:>width$}", raw, width = width)
 }
 
-fn format_spool_size(bytes: u64) -> String {
+fn format_group_spool_size(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
-        format!("{:.1}GiB", bytes as f64 / 1_073_741_824.0)
+        format!("{:.1}G", bytes as f64 / 1_073_741_824.0)
     } else if bytes >= 1_048_576 {
-        format!("{:.1}MiB", bytes as f64 / 1_048_576.0)
+        format!("{:.1}M", bytes as f64 / 1_048_576.0)
     } else if bytes >= 1024 {
-        format!("{:.1}KiB", bytes as f64 / 1024.0)
+        format!("{:.1}K", bytes as f64 / 1024.0)
     } else {
         format!("{bytes}B")
     }

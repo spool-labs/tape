@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -8,12 +8,13 @@ use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use store_memory::MemoryStore;
 use tape_core::erasure::GROUP_SIZE;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_node::context::NodeContext;
 use tape_node::runtime::NodeRuntimeStatus;
-use tape_store::ops::SpoolOps;
+use tape_store::ops::{SliceOps, SpoolOps};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
@@ -39,6 +40,9 @@ pub enum PollerUpdate {
         enabled: bool,
         succeeded: u64,
         failed: u64,
+    },
+    GroupPreference {
+        groups: u64,
     },
     UploadStatus {
         pending: u64,
@@ -119,6 +123,7 @@ struct PollerState {
     stake_fuzz_enabled: bool,
     stake_fuzz_succeeded: u64,
     stake_fuzz_failed: u64,
+    desired_group_count: u64,
     uploads_pending: u64,
     uploads_certified: u64,
     uploads_expired: u64,
@@ -172,6 +177,7 @@ async fn poller_task(
         stake_fuzz_enabled: false,
         stake_fuzz_succeeded: 0,
         stake_fuzz_failed: 0,
+        desired_group_count: 0,
         uploads_pending: 0,
         uploads_certified: 0,
         uploads_expired: 0,
@@ -230,6 +236,9 @@ async fn poller_task(
                         state.stake_fuzz_enabled = enabled;
                         state.stake_fuzz_succeeded = succeeded;
                         state.stake_fuzz_failed = failed;
+                    }
+                    Some(PollerUpdate::GroupPreference { groups }) => {
+                        state.desired_group_count = groups;
                     }
                     Some(PollerUpdate::UploadStatus {
                         pending,
@@ -301,12 +310,11 @@ async fn poll_once(
     let mut previous_committee_size = 0;
     let mut current_committee_size = 0;
     let mut next_committee_size = 0;
-    let mut target_group_count = 0;
     let mut live_group_count = 0;
     let mut spools = Vec::new();
+    let mut group_bytes = Vec::new();
 
     if let Some(system) = system {
-        target_group_count = system.target_group_count;
         live_group_count = system.live_group_count;
 
         if let Ok(members) = state.rpc.get_committee(system.current_epoch).await {
@@ -338,6 +346,7 @@ async fn poll_once(
             .and_then(|groups| groups.checked_mul(GROUP_SIZE))
             .unwrap_or(0);
         spools = vec![SpoolSnapshot::default(); total_spools];
+        group_bytes = vec![0u64; usize::try_from(live_group_count).unwrap_or(0)];
 
         if let Ok(groups) = state
             .rpc
@@ -361,6 +370,7 @@ async fn poll_once(
     // Multiple nodes may have the same spool (Active on the current owner,
     // LockedToMove on the former owner), so we must not let a non-Active
     // status overwrite an Active one.
+    let mut counted_spools = HashSet::new();
     for tracked in &state.nodes {
         if !tracked.runtime_status.is_running() {
             continue;
@@ -372,11 +382,31 @@ async fn poll_once(
                 if let Some(spool) = spools.get_mut(index) {
                     if spool_state.is_active() {
                         spool.available = true;
+                        if counted_spools.insert(spool_id) {
+                            let group = GroupIndex::containing(spool_id).0 as usize;
+                            if let Some(bytes) = group_bytes.get_mut(group) {
+                                if let Ok(slices) =
+                                    tracked.ctx.store.iter_slices_by_spool(spool_id)
+                                {
+                                    *bytes = bytes.saturating_add(
+                                        slices
+                                            .iter()
+                                            .map(|(_, data)| data.len() as u64)
+                                            .sum::<u64>(),
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    let group_spool_bytes = group_bytes
+        .into_iter()
+        .map(|bytes| bytes / GROUP_SIZE as u64)
+        .collect::<Vec<_>>();
 
     let mut total_sync_delta = 0u64;
     let mut total_repair_delta = 0u64;
@@ -512,6 +542,7 @@ async fn poll_once(
     let total_stake: u64 = node_snapshots.iter().map(|n| n.pool_stake).sum();
 
     let log = histogram.snapshot_top(20);
+    let desired_group_count = state.desired_group_count.max(live_group_count);
 
     let snap = PollSnapshot {
         slot,
@@ -521,12 +552,13 @@ async fn poll_once(
         previous_committee_size,
         current_committee_size,
         next_committee_size,
-        target_group_count,
         live_group_count,
+        desired_group_count,
         tx_count: 0,
         runtime_secs: state.start.elapsed().as_secs_f64(),
         nodes: node_snapshots,
         spools,
+        group_spool_bytes,
         node_count: running_node_count,
         tracked_node_count,
         dead_node_count,

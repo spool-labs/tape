@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use peer_tls::{apply_pinned_tls, install_default_provider};
 use rand::RngCore;
 use reqwest::Client;
@@ -38,7 +38,7 @@ const HTTP_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const HTTP_HEALTH_TIMEOUT: Duration = Duration::from_millis(750);
 const INITIAL_NODES: usize = GROUP_SIZE;
 const INITIAL_STAKE_TAPE: u64 = 1_000;
-const DEFAULT_TARGET_GROUPS: u64 = 5;
+const INITIAL_TARGET_GROUPS: u64 = 1;
 
 enum UploadResult {
     AttemptStarted {
@@ -93,6 +93,9 @@ async fn async_run(
 
     let rpc = harness.chain().rpc().clone();
     let poller = PollerHandle::spawn(rpc.clone(), snapshot, histogram);
+    poller.send(PollerUpdate::GroupPreference {
+        groups: INITIAL_TARGET_GROUPS,
+    });
     publish_running_nodes(&harness, &poller);
 
     let (upload_tx, upload_rx) = mpsc::unbounded_channel();
@@ -101,6 +104,7 @@ async fn async_run(
         poller,
         stake_fuzzer: StakeFuzzer::new(),
         stake_fuzz_enabled: false,
+        desired_group_count: INITIAL_TARGET_GROUPS,
         prev_epoch: 0,
         upload_pending: 0,
         upload_completed: Vec::new(),
@@ -169,6 +173,12 @@ async fn async_run(
                                 }
                             }
                         });
+                    }
+                    Some(Command::IncreaseGroupCount) => {
+                        match state.increase_group_count().await {
+                            Ok(target) => tracing::info!(target, "group count preference increased"),
+                            Err(e) => tracing::error!("increase group count failed: {e:#}"),
+                        }
                     }
                     Some(Command::ToggleStakeFuzz) => {
                         state.stake_fuzz_enabled = !state.stake_fuzz_enabled;
@@ -340,7 +350,7 @@ async fn init_harness() -> Result<SimnetHarness> {
             .await
             .context("stake initial nodes")?;
         scenario
-            .set_spool_groups_many(&initial_nodes, DEFAULT_TARGET_GROUPS)
+            .set_spool_groups_many(&initial_nodes, INITIAL_TARGET_GROUPS)
             .await
             .context("set initial spool group preferences")?;
         scenario
@@ -379,6 +389,7 @@ struct SimnetState {
     poller: PollerHandle,
     stake_fuzzer: StakeFuzzer,
     stake_fuzz_enabled: bool,
+    desired_group_count: u64,
     prev_epoch: u64,
     upload_pending: u64,
     upload_completed: Vec<u64>,
@@ -400,6 +411,7 @@ impl SimnetState {
 
         {
             let scenario = self.harness.scenario();
+            let target_groups = self.desired_group_count.max(1);
             scenario
                 .register_many(&[id], BasisPoints(100))
                 .await
@@ -409,7 +421,7 @@ impl SimnetState {
                 .await
                 .with_context(|| format!("stake node {id}"))?;
             scenario
-                .set_spool_groups(id, DEFAULT_TARGET_GROUPS)
+                .set_spool_groups(id, target_groups)
                 .await
                 .with_context(|| format!("set spool group preference for node {id}"))?;
 
@@ -435,6 +447,37 @@ impl SimnetState {
         self.poller
             .send(PollerUpdate::AddNode(id, node.context(), runtime_status));
         Ok(())
+    }
+
+    async fn increase_group_count(&mut self) -> Result<u64> {
+        let scenario = self.harness.scenario();
+        let system = scenario.read_system().await.context("read system")?;
+        let target = self
+            .desired_group_count
+            .max(system.target_group_count)
+            .max(system.live_group_count)
+            .max(1)
+            .saturating_add(1);
+        let running_nodes = self
+            .harness
+            .nodes()
+            .iter()
+            .filter(|node| node.is_running())
+            .map(|node| node.id())
+            .collect::<Vec<_>>();
+
+        if running_nodes.is_empty() {
+            bail!("cannot increase group count without running nodes");
+        }
+
+        scenario
+            .set_spool_groups_many(&running_nodes, target)
+            .await
+            .with_context(|| format!("set group count preference to {target}"))?;
+        self.desired_group_count = target;
+        self.poller
+            .send(PollerUpdate::GroupPreference { groups: target });
+        Ok(target)
     }
 
     async fn remove_node(&mut self) -> Result<()> {
@@ -704,6 +747,7 @@ mod tests {
                         poller: PollerHandle::spawn_noop(),
                         stake_fuzzer: StakeFuzzer::new(),
                         stake_fuzz_enabled: false,
+                        desired_group_count: INITIAL_TARGET_GROUPS,
                         prev_epoch: 0,
                         upload_pending: 0,
                         upload_completed: Vec::new(),
