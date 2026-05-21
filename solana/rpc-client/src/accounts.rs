@@ -792,13 +792,15 @@ mod tests {
             Member {
                 node: address(1),
                 stake: TAPE(100),
-                blacklist: StorageUnits::zero(),
+                assigned: StorageUnits::zero(),
+                refused: StorageUnits::zero(),
                 spools: 3,
             },
             Member {
                 node: address(2),
                 stake: TAPE(90),
-                blacklist: StorageUnits::zero(),
+                assigned: StorageUnits::zero(),
+                refused: StorageUnits::zero(),
                 spools: 2,
             },
         ];
@@ -806,7 +808,8 @@ mod tests {
         body.push(Member {
             node: address(3),
             stake: TAPE(1),
-            blacklist: StorageUnits::zero(),
+            assigned: StorageUnits::zero(),
+            refused: StorageUnits::zero(),
             spools: 0,
         });
 

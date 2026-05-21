@@ -72,6 +72,9 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let current = current_epoch(system);
     let commission_rate = BasisPoints::unpack(args.commission_rate);
+    if !commission_rate.is_valid() {
+        return Err(ProgramError::InvalidArgument);
+    }
 
     let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
 
@@ -235,6 +238,52 @@ mod tests {
                 }.pack().as_ref()
                 ).build(),
             ]
+        );
+    }
+
+    #[test]
+    fn register_rejects_invalid_commission_rate() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let secret = BlsPrivateKey::from_random();
+        let bls_pubkey = secret.public_key().expect("pubkey");
+        let bls_pop = secret.proof_of_possession().expect("pop");
+
+        let instruction = build_register_node_ix(
+            fee_payer.into(),
+            authority.into(),
+            to_name("node"),
+            BasisPoints(BasisPoints::MAX + 1),
+            NetworkAddress::default(),
+            NetworkTlsPubkey::new_unique(),
+            bls_pubkey,
+            bls_pop,
+        );
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (node_address, _) = node_pda(authority.into());
+        let (history_address, _) = history_pda(node_address);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+
+            pda(system_address, System::zeroed().pack(), tapedrive::ID),
+            pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
+            empty(node_address),
+            empty(history_address),
+
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(ProgramError::InvalidArgument)]
         );
     }
 }

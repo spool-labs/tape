@@ -289,7 +289,6 @@ async fn poll_once(
         Some(e) => {
             let phase = match e.state.phase() {
                 Some(EpochPhase::Sync) => "Sync",
-                Some(EpochPhase::Settle) => "Settle",
                 Some(EpochPhase::Snapshot) => "Snapshot",
                 Some(EpochPhase::Active) => "Active",
                 Some(EpochPhase::Closing) => "Closing",
@@ -298,7 +297,6 @@ async fn poll_once(
             };
             let weight = match e.state.phase() {
                 Some(EpochPhase::Sync) => Some(e.state.synced_count),
-                Some(EpochPhase::Settle) => Some(e.state.settled_count),
                 _ => None,
             };
             (phase.to_string(), weight)

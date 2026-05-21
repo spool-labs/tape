@@ -92,9 +92,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 ParsedInstruction::SyncSpool { event, .. } => {
                     handlers.handle_sync_spool(*event).await?;
                 }
-                ParsedInstruction::SettleSpool { event, .. } => {
-                    handlers.handle_settle_spool(*event).await?;
-                }
                 ParsedInstruction::AdvancePool { node, event } => {
                     handlers.handle_advance_pool(*node, event.epoch).await?;
                 }

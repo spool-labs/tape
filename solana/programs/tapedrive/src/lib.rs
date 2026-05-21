@@ -34,7 +34,6 @@ use crate::epoch::{
     process_advance_epoch,
     process_commit_epoch,
     process_create_epoch,
-    process_settle_spool,
     process_sync_spool,
 };
 use crate::node::{
@@ -117,7 +116,6 @@ pub fn process_instruction(
 
         // Epoch
         TapeInstruction::SyncSpool => process_sync_spool(accounts, data)?,
-        TapeInstruction::SettleSpool => process_settle_spool(accounts, data)?,
         TapeInstruction::CommitEpoch => process_commit_epoch(accounts, data)?,
         TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
 

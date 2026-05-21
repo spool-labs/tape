@@ -28,8 +28,7 @@ pub enum EventType {
     NodeRegistered = 0x30,
     NodeJoinedCommittee = 0x31,
     SpoolSynced = 0x32,
-    SpoolSettled = 0x33,
-    PoolAdvanced = 0x34,
+    PoolAdvanced = 0x33,
 
     // Epoch
     EpochCommitted = 0x40,
@@ -204,9 +203,6 @@ pub struct NodeJoinedCommittee {
     /// Current BLS public key used once this node rotates into the active committee
     pub key: BlsPubkey,
 
-    /// Total blacklisted storage units carried into committee scoring/rewards
-    pub blacklist: StorageUnits,
-
     /// Storage preferences used when the joined committee rotates into active service
     pub preferences: NodePreferences,
 
@@ -238,29 +234,7 @@ pub struct SpoolSynced {
 
 tape_solana::event!(EventType, SpoolSynced);
 
-/// Emitted when a single spool's pool reward is credited via `SettleSpool`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SpoolSettled {
-    /// Node account address (owner of the settled spool)
-    pub node: Address,
-
-    /// Previous epoch being settled
-    pub epoch: EpochNumber,
-
-    /// Spool group containing the spool
-    pub group: GroupIndex,
-
-    /// Index within the group (0 .. GROUP_SIZE)
-    pub spool: [u8; 8],
-
-    /// Resulting current epoch phase after this settle.
-    pub phase: u64,
-}
-
-tape_solana::event!(EventType, SpoolSettled);
-
-/// Emitted when a pool drains its accumulated `pending_rewards` via `AdvancePool`.
+/// Emitted when a pool applies its previous-epoch reward claim via `AdvancePool`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct PoolAdvanced {
@@ -336,7 +310,7 @@ pub struct PeerSetResized {
 
 tape_solana::event!(EventType, PeerSetResized);
 
-/// Emitted on `advance_epoch` (Closing → next Syncing).
+/// Emitted on `advance_epoch` (Closing -> next Sync).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct EpochAdvanced {
@@ -567,8 +541,7 @@ mod tests {
         assert_eq!(EventType::VoteProposed as u8, 0x70);
         assert_eq!(EventType::VoteRecorded as u8, 0x71);
         assert_eq!(EventType::SnapshotFinalized as u8, 0x72);
-        assert_eq!(EventType::SpoolSettled as u8, 0x33);
-        assert_eq!(EventType::PoolAdvanced as u8, 0x34);
+        assert_eq!(EventType::PoolAdvanced as u8, 0x33);
         assert_eq!(EventType::AssignmentGroupFinalized as u8, 0x80);
     }
 
@@ -580,7 +553,6 @@ mod tests {
         assert!(EpochCommitted::size_of() < 1024);
         assert!(EpochAdvanced::size_of() < 1024);
         assert!(SpoolSynced::size_of() < 1024);
-        assert!(SpoolSettled::size_of() < 1024);
         assert!(PoolAdvanced::size_of() < 1024);
         assert!(StakeDeposited::size_of() < 1024);
         assert!(VoteProposed::size_of() < 1024);

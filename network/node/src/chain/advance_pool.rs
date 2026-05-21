@@ -36,7 +36,7 @@ mod tests {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Settle)
+            .phase(EpochPhase::Snapshot)
             .build()
             .await
             .expect("build harness");

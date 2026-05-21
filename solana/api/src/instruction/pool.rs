@@ -1,17 +1,10 @@
 use tape_solana::*;
 use tape_crypto::address::Address;
-use tape_core::types::{GroupIndex, SpoolIndex};
 use tape_core::types::EpochNumber;
 use tape_core::types::coin::{Coin, TAPE};
 use crate::program::{staking, tapedrive};
 use crate::utils::ata;
 use crate::program::*;
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SettleSpool {
-    pub spool: [u8; 8],                   // Index within the group (0 .. GROUP_SIZE)
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -41,40 +34,6 @@ pub struct SplitPoolStake {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct MergePoolStake {}
 
-pub fn build_settle_spool_ix(
-    fee_payer: Address,
-    pool: Address,
-    current_epoch: EpochNumber,
-    spool: SpoolIndex,
-) -> Instruction {
-
-    let prev = current_epoch.saturating_sub(EpochNumber(1));
-    let group = GroupIndex::containing(spool);
-
-    let (system_address, _) = system_pda();
-    let (archive_address, _) = archive_pda();
-    let (curr_epoch_address, _) = epoch_pda(current_epoch);
-    let (prev_epoch_address, _) = epoch_pda(prev);
-    let (prev_group_address, _) = group_pda(prev, group);
-
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-
-            AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new(archive_address.into(), false),
-            AccountMeta::new(curr_epoch_address.into(), false),
-            AccountMeta::new_readonly(prev_epoch_address.into(), false),
-            AccountMeta::new(prev_group_address.into(), false),
-            AccountMeta::new(pool.into(), false),
-        ],
-        data: SettleSpool {
-            spool: spool.pack(),
-        }.to_bytes(),
-    }
-}
-
 pub fn build_advance_pool_ix(
     fee_payer: Address,
     pool: Address,
@@ -84,6 +43,8 @@ pub fn build_advance_pool_ix(
     let prev = current_epoch.saturating_sub(EpochNumber(1));
 
     let (system_address, _) = system_pda();
+    let (archive_address, _) = archive_pda();
+    let (prev_epoch_address, _) = epoch_pda(prev);
     let (prev_committee_address, _) = committee_pda(prev);
     let (history_address, _) = history_pda(pool);
 
@@ -93,6 +54,8 @@ pub fn build_advance_pool_ix(
             AccountMeta::new(fee_payer.into(), true),
 
             AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new_readonly(prev_epoch_address.into(), false),
             AccountMeta::new_readonly(prev_committee_address.into(), false),
             AccountMeta::new(pool.into(), false),
             AccountMeta::new(history_address.into(), false),

@@ -204,9 +204,11 @@ impl Observer {
             cluster: ClusterView {
                 epoch: chain.protocol.epoch.0,
                 phase: match chain.protocol.phase {
-                    EpochPhase::Syncing => "Syncing",
-                    EpochPhase::Settling => "Settling",
+                    EpochPhase::Sync => "Sync",
+                    EpochPhase::Snapshot => "Snapshot",
                     EpochPhase::Active => "Active",
+                    EpochPhase::Closing => "Closing",
+                    EpochPhase::Completed => "Completed",
                     _ => "Unknown",
                 }
                 .to_string(),

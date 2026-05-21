@@ -4,7 +4,6 @@ pub mod commit_epoch;
 pub mod join_committee;
 pub mod manager;
 pub mod prepare_next_epoch;
-pub mod settle_spools;
 pub mod sync_spools;
 pub mod types;
 pub mod wait_spool_ready;

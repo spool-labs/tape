@@ -233,7 +233,6 @@ fn capture_instruction(
         },
         ParsedInstruction::AdvancePool { .. } => return Ok(None),
         ParsedInstruction::CommitEpoch { .. } => return Ok(None),
-        ParsedInstruction::SettleSpool { .. } => return Ok(None),
     };
 
     Ok(Some(captured))

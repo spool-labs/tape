@@ -5,7 +5,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::event::{
     AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
-    NodeJoinedCommittee, PeerSetResized, SpoolSettled, SpoolSynced, VoteRecorded,
+    NodeJoinedCommittee, PeerSetResized, SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
 use tape_core::system::{EpochPhase, VoteKind};
@@ -249,51 +249,6 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         Ok(())
     }
 
-    pub async fn handle_settle_spool(&self, event: SpoolSettled) -> Result<(), NodeError> {
-        debug!(
-            node = %event.node,
-            epoch = event.epoch.0,
-            group = event.group.0,
-            "received settle spool"
-        );
-
-        let mut state = (*self.context.state()).clone();
-        let expected_previous = state.epoch().saturating_sub(EpochNumber(1));
-        if event.epoch != expected_previous {
-            return Ok(());
-        }
-
-        let Some(previous) = state.previous.as_mut() else {
-            return Ok(());
-        };
-
-        if previous.epoch.id != event.epoch {
-            return Ok(());
-        }
-
-        let spool = SpoolIndex::unpack(event.spool);
-        let Some(position) = event.group.position_of(spool) else {
-            return Ok(());
-        };
-
-        let Some(group) = previous
-            .groups
-            .iter_mut()
-            .find(|group| group.id == event.group)
-        else {
-            return Ok(());
-        };
-
-        if !group.settled.is_set(position) {
-            group.settled.set(position);
-        }
-
-        apply_event_phase(&mut state, event.phase);
-
-        self.context.set_state(state)?;
-        Ok(())
-    }
-
     pub async fn handle_advance_pool(
         &self,
         node: Address,
@@ -416,7 +371,7 @@ fn apply_event_phase(state: &mut tape_protocol::ProtocolState, phase: u64) {
 
 #[cfg(test)]
 mod tests {
-    use tape_api::event::{SpoolSettled, SpoolSynced};
+    use tape_api::event::SpoolSynced;
     use tape_core::system::EpochPhase;
     use tape_core::types::{BitmapRead, EpochNumber};
     use tokio_util::sync::CancellationToken;
@@ -476,55 +431,14 @@ mod tests {
                 epoch: EPOCH,
                 group: group.id,
                 spool: spool.pack(),
-                phase: EpochPhase::Settle as u64,
+                phase: EpochPhase::Snapshot as u64,
             })
             .await
             .expect("handle sync spool");
 
         let state = ctx.state();
-        assert_eq!(state.phase(), EpochPhase::Settle);
-        assert!(state.current.groups[0].synced.is_set(0));
-    }
-
-    #[tokio::test]
-    async fn settle_spool_updates_group_and_phase() {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Settle)
-            .prev_committee_size(20)
-            .prev_group_count(1)
-            .build()
-            .await
-            .expect("build harness");
-        let ctx = harness.ctx_for(NODE);
-        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
-
-        let previous = ctx.state().previous.as_ref().expect("previous epoch").clone();
-        let group = previous.groups[0];
-        let spool = group.id.spool_at(0);
-        handlers
-            .handle_settle_spool(SpoolSettled {
-                node: group.spools[0].node,
-                epoch: previous.epoch.id,
-                group: group.id,
-                spool: spool.pack(),
-                phase: EpochPhase::Snapshot as u64,
-            })
-            .await
-            .expect("handle settle spool");
-
-        let state = ctx.state();
         assert_eq!(state.phase(), EpochPhase::Snapshot);
-        assert!(
-            state
-                .previous
-                .as_ref()
-                .expect("previous epoch")
-                .groups[0]
-                .settled
-                .is_set(0)
-        );
+        assert!(state.current.groups[0].synced.is_set(0));
     }
 
     #[tokio::test]
@@ -532,7 +446,7 @@ mod tests {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
-            .phase(EpochPhase::Settle)
+            .phase(EpochPhase::Snapshot)
             .build()
             .await
             .expect("build harness");
@@ -543,6 +457,6 @@ mod tests {
             .handle_advance_pool(harness.node(NODE).node_address.into(), EPOCH)
             .await
             .expect("handle advance pool");
-        assert_eq!(ctx.state().phase(), EpochPhase::Settle);
+        assert_eq!(ctx.state().phase(), EpochPhase::Snapshot);
     }
 }

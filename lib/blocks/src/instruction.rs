@@ -4,12 +4,12 @@ use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
     EpochCreated, NodeJoinedCommittee, NodeRegistered, PeerSetResized, PoolAdvanced, SnapshotFinalized,
-    SpoolSettled, SpoolSynced, TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted,
+    SpoolSynced, TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted,
     TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 use tape_api::instruction::{
-    self as ix, CreateCommittee, CreateEpoch, ResizeCommittee, ResizePeerSet, SettleSpool,
-    SyncSpool, TapeInstruction,
+    self as ix, CreateCommittee, CreateEpoch, ResizeCommittee, ResizePeerSet, SyncSpool,
+    TapeInstruction,
 };
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
@@ -64,10 +64,6 @@ pub enum RawInstruction {
     FinalizeGroup {
         epoch: EpochNumber,
         group: GroupIndex,
-    },
-    SettleSpool {
-        node: Address,
-        spool: u64,
     },
     AdvancePool {
         node: Address,
@@ -163,11 +159,6 @@ pub enum ParsedInstruction {
         epoch: EpochNumber,
         group: GroupIndex,
         event: AssignmentGroupFinalized,
-    },
-    SettleSpool {
-        node: Address,
-        spool: u64,
-        event: SpoolSettled,
     },
     AdvancePool {
         node: Address,
@@ -423,20 +414,10 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::JoinCommittee { node }))
         }
 
-        TapeInstruction::SettleSpool => {
-            let args = SettleSpool::try_from_bytes(&ix_data[1..])
-                .map_err(|e| ParseError::Deserialization(format!("settle_spool: {e:?}")))?;
-            // Account layout from build_settle_spool_ix:
-            // [fee_payer, system, archive, curr_epoch, prev_epoch, prev_group, pool]
-            let node = get_account(6)?;
-            let spool = u64::from_le_bytes(args.spool);
-            Ok(Some(RawInstruction::SettleSpool { node, spool }))
-        }
-
         TapeInstruction::AdvancePool => {
             // Account layout from build_advance_pool_ix:
-            // [fee_payer, system, prev_committee, pool, history]
-            let node = get_account(3)?;
+            // [fee_payer, system, archive, prev_epoch, prev_committee, pool, history]
+            let node = get_account(5)?;
             Ok(Some(RawInstruction::AdvancePool { node }))
         }
 

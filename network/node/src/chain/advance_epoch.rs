@@ -78,7 +78,7 @@ mod tests {
         let outcome = classify_tx(submit_advance_epoch(&ctx).await);
         assert!(matches!(
             outcome,
-            TxOutcome::Program(TapeError::SpoolsNotSettled)
+            TxOutcome::Program(TapeError::AssignmentIncomplete)
         ));
     }
 }

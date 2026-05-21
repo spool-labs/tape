@@ -290,14 +290,6 @@ pub fn merge(
                 }
             }
 
-            RawInstruction::SettleSpool { node, spool } => {
-                let event = match events.pop_front() {
-                    Some(TapedriveEvent::SpoolSettled(e)) => e,
-                    _ => return Err(ParseError::EventMismatch("expected SpoolSettled event")),
-                };
-                ParsedInstruction::SettleSpool { node, spool, event }
-            }
-
             RawInstruction::AdvancePool { node } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::PoolAdvanced(e)) => e,
@@ -319,9 +311,9 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::event::{
         AssignmentGroupFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee,
-        NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSettled, SpoolSynced,
-        TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
-        TrackWritten, VoteProposed, VoteRecorded,
+        NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeDestroyed,
+        TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
+        VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::GROUP_SIZE;
@@ -777,7 +769,6 @@ mod tests {
                     node: join_node,
                     stake: [0; 8],
                     key: BlsPubkey::new_unique(),
-                    blacklist: StorageUnits::default(),
                     preferences: NodePreferences::zeroed(),
                     activation_epoch: EpochNumber(1),
                 }),
@@ -837,34 +828,6 @@ mod tests {
                 assert_eq!(event.group, GroupIndex(7));
             }
             _ => panic!("Expected SyncSpool"),
-        }
-    }
-
-    #[test]
-    fn merge_settle_spool_with_event() {
-        let node = Address::new_unique();
-        let event = SpoolSettled {
-            node,
-            epoch: EpochNumber(4),
-            group: GroupIndex(2),
-            spool: 1u64.to_le_bytes(),
-            phase: EpochPhase::Settle as u64,
-        };
-        let merged = merge(
-            vec![RawInstruction::SettleSpool { node, spool: 1 }],
-            vec![TapedriveEvent::SpoolSettled(event)],
-        )
-        .unwrap();
-
-        assert_eq!(merged.len(), 1);
-        match &merged[0] {
-            ParsedInstruction::SettleSpool { node: n, spool, event } => {
-                assert_eq!(*n, node);
-                assert_eq!(*spool, 1);
-                assert_eq!(event.epoch, EpochNumber(4));
-                assert_eq!(event.group, GroupIndex(2));
-            }
-            _ => panic!("Expected SettleSpool"),
         }
     }
 

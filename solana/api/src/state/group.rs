@@ -20,9 +20,6 @@ pub struct Group {
     /// Bitmap of spools that are done syncing.
     pub synced: SpoolBitmap,
 
-    /// Bitmap of spools that are settled.
-    pub settled: SpoolBitmap,
-
     /// Owners and BLS keys for this group's 20 spools.
     pub spools: [Spool; GROUP_SIZE],
 }

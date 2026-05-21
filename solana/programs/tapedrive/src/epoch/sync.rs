@@ -78,7 +78,7 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     if !was_supermajority && now_supermajority {
         epoch.state.synced_count = epoch.state.synced_count.saturating_add(1);
         if epoch.state.synced_count == system.live_group_count {
-            epoch.state.phase = EpochPhase::Settle as u64;
+            epoch.state.phase = EpochPhase::Snapshot as u64;
         }
     }
 

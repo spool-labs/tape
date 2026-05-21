@@ -309,7 +309,8 @@ mod tests {
         Member {
             node,
             stake: TAPE(stake),
-            blacklist: StorageUnits::zero(),
+            assigned: StorageUnits::zero(),
+            refused: StorageUnits::zero(),
             spools: 0,
         }
     }

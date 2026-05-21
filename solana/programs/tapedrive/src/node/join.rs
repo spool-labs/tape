@@ -96,7 +96,8 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let member = Member {
         node: node_address,
         stake,
-        blacklist: node.blacklist.total_size(),
+        assigned: StorageUnits::zero(),
+        refused: StorageUnits::zero(),
         spools: 0,
     };
 
@@ -132,7 +133,6 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         node: node_address,
         stake: stake.as_u64().to_le_bytes(),
         key: node.metadata.bls_pubkey,
-        blacklist: member.blacklist,
         preferences: node.preferences,
         activation_epoch: next,
     }.log();
@@ -388,7 +388,8 @@ mod tests {
             Member {
                 node: node_address,
                 stake: TAPE(3_000),
-                blacklist: StorageUnits::zero(),
+                assigned: StorageUnits::zero(),
+                refused: StorageUnits::zero(),
                 spools: 0,
             },
             member(6, 2_000),

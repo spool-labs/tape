@@ -150,9 +150,10 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
         .count();
 
     let phase_color = match view.cluster.phase.as_str() {
-        "Syncing" => Color::Cyan,
-        "Settling" => Color::Yellow,
+        "Sync" => Color::Cyan,
+        "Snapshot" => Color::Yellow,
         "Active" => Color::Green,
+        "Closing" => Color::Magenta,
         _ => Color::DarkGray,
     };
 

@@ -50,11 +50,11 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
     if !next_epoch.has_assignment_hash() {
-        return Err(TapeError::SpoolsNotSettled.into());
+        return Err(TapeError::AssignmentIncomplete.into());
     }
 
     if next_epoch.total_groups != system.target_group_count {
-        return Err(TapeError::SpoolsNotSettled.into());
+        return Err(TapeError::AssignmentIncomplete.into());
     }
 
     if archive.schedule.current_epoch() != curr {
@@ -224,7 +224,8 @@ mod tests {
                 Member {
                     node: Address::new(bytes),
                     stake: TAPE(1_000),
-                    blacklist: StorageUnits::zero(),
+                    assigned: StorageUnits::zero(),
+                    refused: StorageUnits::zero(),
                     spools: 50,
                 }
             })
@@ -371,7 +372,8 @@ mod tests {
                 Member {
                     node: Address::new(bytes),
                     stake: TAPE(1_000),
-                    blacklist: StorageUnits::zero(),
+                    assigned: StorageUnits::zero(),
+                    refused: StorageUnits::zero(),
                     spools: 50,
                 }
             })

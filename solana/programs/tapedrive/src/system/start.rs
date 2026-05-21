@@ -184,7 +184,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         members[i] = Member {
             node: node_address,
             stake,
-            blacklist: node.blacklist.total_size(),
+            assigned: StorageUnits::zero(),
+            refused: StorageUnits::zero(),
             spools: 1,
         };
         peers[i] = Peer {
@@ -302,7 +303,8 @@ mod tests {
             expected_members.push(Member {
                 node: addr,
                 stake: node.pool.stake,
-                blacklist: StorageUnits::zero(),
+                assigned: StorageUnits::zero(),
+                refused: StorageUnits::zero(),
                 spools: 1,
             });
             expected_peers.push(Peer {

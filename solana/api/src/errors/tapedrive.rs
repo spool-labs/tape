@@ -66,10 +66,8 @@ pub enum TapeError {
     RewardsOverflow = 0x54,
     #[error("no commission")]
     NoCommission = 0x55,
-    #[error("already settled")]
-    AlreadySettled = 0x56,
-    #[error("spools not settled")]
-    SpoolsNotSettled = 0x57,
+    #[error("assignment incomplete")]
+    AssignmentIncomplete = 0x56,
 
     // Staking
     #[error("staking failed")]
@@ -131,7 +129,6 @@ impl TapeError {
             Self::BadEpochState
                 | Self::AlreadyAdvanced
                 | Self::AlreadySynced
-                | Self::AlreadySettled
                 | Self::AlreadyInvalidated
                 | Self::AlreadyCertified
                 | Self::UnexpectedState
@@ -144,7 +141,7 @@ impl TapeError {
             self,
             Self::TooSoon
                 | Self::InsufficientCommittee
-                | Self::SpoolsNotSettled
+                | Self::AssignmentIncomplete
         )
     }
 
@@ -181,8 +178,7 @@ impl TapeError {
             Self::ResizeWouldOrphan => "Cannot shrink: account holds more entries than the target capacity",
             Self::NodeStale => "Node is behind - run advance-pool first",
             Self::AlreadySynced => "Node has already synced",
-            Self::AlreadySettled => "Spool has already been settled",
-            Self::SpoolsNotSettled => "Not all of this node's prev-epoch spools have been settled yet",
+            Self::AssignmentIncomplete => "Next epoch assignment is incomplete",
             Self::AlreadyAdvanced => "Already advanced",
             Self::RewardsOverflow => "Rewards calculation overflow",
             Self::NoCommission => "No commission to claim",

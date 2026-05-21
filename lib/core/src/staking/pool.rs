@@ -31,12 +31,6 @@ pub struct StakingPool<const N: usize> {
     /// The rewards this pool has earned from being active and available to distribute to stakers
     pub rewards: Coin<TAPE>,
 
-    /// Rewards accumulated by per-spool settlements.
-    pub pending_rewards: Coin<TAPE>,
-
-    /// Count of spools that have been added to the pending_rewards so far.
-    pub pending_settled: u64,
-
     /// The commission earned by the pool operator, available for withdrawal.
     pub commission: Coin<TAPE>,
 
@@ -56,8 +50,6 @@ impl<const N: usize> StakingPool<N> {
             shares: ShareAmount::zero(),
             stake: Coin::<TAPE>::zero(),
             rewards: Coin::<TAPE>::zero(),
-            pending_rewards: Coin::<TAPE>::zero(),
-            pending_settled: 0,
             commission: Coin::<TAPE>::zero(),
             commission_rate,
             schedule: PoolSchedule::new(),
@@ -117,28 +109,18 @@ impl<const N: usize> StakingPool<N> {
         Ok(amount)
     }
 
-    /// Accumulate one spool's reward into this pool's pending balance.
-    pub fn credit_spool(&mut self, reward: Coin<TAPE>) {
-        self.pending_rewards = self.pending_rewards.saturating_add(reward);
-        self.pending_settled = self.pending_settled.saturating_add(1);
-    }
-
     /// Advance the pool state to the next epoch, applying any scheduled changes and distributing
     /// rewards.
     pub fn advance_epoch(
         &mut self,
         current_epoch: EpochNumber,
+        rewards_earned: Coin<TAPE>,
     ) -> Result<(), PoolError> {
 
         // Apply scheduled commission changes
         if let Some(commission_rate) = self.schedule.take_commission_change(current_epoch) {
             self.commission_rate = commission_rate;
         }
-
-        // Consume accumulated per-spool rewards.
-        let rewards_earned = self.pending_rewards;
-        self.pending_rewards = Coin::<TAPE>::zero();
-        self.pending_settled = 0;
 
         // Split rewards into commission and net, then add to pool stake
         if rewards_earned > TAPE::zero() {
@@ -457,9 +439,9 @@ mod tests {
         let mut s = p.stake_with_pool(epoch(1), tape(700)).unwrap();
 
         // Walk to activation and make stake active
-        p.advance_epoch(epoch(1)).unwrap();
-        p.advance_epoch(epoch(2)).unwrap();
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+        p.advance_epoch(epoch(3), tape(0)).unwrap();
 
         // Cancel after activation should error
         let err = p.request_cancel(&mut s, epoch(3)).unwrap_err();
@@ -488,12 +470,11 @@ mod tests {
 
         // Activate 1_000 at E1 (raw insert for immediate activation)
         p.schedule.stake(epoch(1), tape(1_000)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
         assert_eq!(p.stake, tape(1_000));
 
         // Add 500 gross at E2 → 10% commission, 450 net
-        p.credit_spool(tape(500));
-        p.advance_epoch(epoch(2)).unwrap();
+        p.advance_epoch(epoch(2), tape(500)).unwrap();
         assert_eq!(p.commission, tape(50));
         assert_eq!(p.rewards, tape(450));
         assert_eq!(p.stake, tape(1_450));
@@ -502,9 +483,7 @@ mod tests {
     #[test]
     fn adv_no_stake_err() {
         let mut p = TestPool::new(BasisPoints(0));
-
-        p.credit_spool(tape(10));
-        let err = p.advance_epoch(epoch(1)).unwrap_err();
+        let err = p.advance_epoch(epoch(1), tape(10)).unwrap_err();
         assert!(matches!(err, PoolError::StakeInvalid));
     }
 
@@ -513,14 +492,14 @@ mod tests {
         let mut p = TestPool::new(BasisPoints(1000));
 
         p.schedule.stake(epoch(1), tape(100)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
 
         p.schedule.set_commission(epoch(4), BasisPoints(2000)).unwrap(); // applies at E4
 
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(3), tape(0)).unwrap();
         assert_eq!(p.commission_rate, BasisPoints(1000));
 
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(0)).unwrap();
         assert_eq!(p.commission_rate, BasisPoints(2000));
     }
 
@@ -529,7 +508,7 @@ mod tests {
         let mut p = TestPool::new(BasisPoints(0));
 
         p.schedule.stake(epoch(1), tape(1000)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
 
         let r1 = p.get_current_rate();
 
@@ -542,7 +521,7 @@ mod tests {
         let mut p = TestPool::new(BasisPoints(0));
 
         p.schedule.stake(epoch(1), tape(1000)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap(); // balance=1000
+        p.advance_epoch(epoch(1), tape(0)).unwrap(); // balance=1000
 
         // Schedule more stake for E5 and a withdraw at E6
         p.schedule.stake(epoch(5), tape(600)).unwrap();
@@ -561,7 +540,7 @@ mod tests {
         p.schedule.stake(epoch(3), tape(100)).unwrap();
         p.schedule.cancel(epoch(3), tape(200)).unwrap();
 
-        let err = p.advance_epoch(epoch(3)).unwrap_err();
+        let err = p.advance_epoch(epoch(3), tape(0)).unwrap_err();
         assert!(matches!(err, PoolError::BalanceExceeded));
     }
 
@@ -570,10 +549,10 @@ mod tests {
         let mut p = TestPool::new(BasisPoints(0));
 
         p.schedule.stake(epoch(1), tape(1000)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
 
         p.schedule.unstake(epoch(2), shares(1500)).unwrap();
-        let err = p.advance_epoch(epoch(2)).unwrap_err();
+        let err = p.advance_epoch(epoch(2), tape(0)).unwrap_err();
 
         assert!(matches!(err, PoolError::BalanceExceeded));
     }
@@ -606,9 +585,9 @@ mod tests {
         let mut s = p.stake_with_pool(epoch(1), tape(1000)).unwrap();
 
         // Advance epochs so activation snapshot exists and stake is active
-        p.advance_epoch(epoch(1)).unwrap();
-        p.advance_epoch(epoch(2)).unwrap();
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+        p.advance_epoch(epoch(3), tape(0)).unwrap();
 
         // Request at E3 → withdraw at E5; shares computed from rate at activation (E3)
         let activation_rate = flat;
@@ -627,8 +606,8 @@ mod tests {
         p.request_cancel(&mut s, epoch(5)).unwrap(); // withdraw E7
 
         // Walk epochs
-        p.advance_epoch(epoch(6)).unwrap();
-        p.advance_epoch(epoch(7)).unwrap();
+        p.advance_epoch(epoch(6), tape(0)).unwrap();
+        p.advance_epoch(epoch(7), tape(0)).unwrap();
 
         // No rewards owed for pre-active cancel
         let paid = p.unstake_from_pool(&mut s, epoch(8), tape(0)).unwrap();
@@ -647,19 +626,17 @@ mod tests {
         let mut s = p.stake_with_pool(epoch(1), tape(100)).unwrap();
 
         // E1: activate seed
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
         let r1 = p.get_current_rate();
         assert_eq!(r1, ExchangeRate { tape: 100, other: 100 });
 
         // E2: rewards 10
-        p.credit_spool(tape(10));
-        p.advance_epoch(epoch(2)).unwrap();
+        p.advance_epoch(epoch(2), tape(10)).unwrap();
         let r2 = p.get_current_rate();
         assert_eq!(r2, ExchangeRate { tape: 110, other: 100 });
 
         // E3: rewards 10, user's 100 activates → shares mint at snapshot (120/100)
-        p.credit_spool(tape(10));
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(3), tape(10)).unwrap();
         let r3 = p.get_current_rate();
         assert_eq!(r3, ExchangeRate { tape: 220, other: 183 });
 
@@ -668,14 +645,12 @@ mod tests {
         p.request_withdraw(&mut s, epoch(3), activation_rate).unwrap();
 
         // E4: rewards 30 (user accrues E4 rewards)
-        p.credit_spool(tape(30));
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(30)).unwrap();
         let r4 = p.get_current_rate();
         assert_eq!(r4, ExchangeRate { tape: 250, other: 183 });
 
         // E5: rewards 30, then process share withdrawal (burn)
-        p.credit_spool(tape(30));
-        p.advance_epoch(epoch(5)).unwrap();
+        p.advance_epoch(epoch(5), tape(30)).unwrap();
         let r5 = p.get_current_rate();
 
         // After burning 83 shares at the E5 snapshot, stake and shares should be:
@@ -711,20 +686,18 @@ mod tests {
 
         // Seed and activate 100 at E1
         p.schedule.stake(epoch(0), tape(100)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
         assert_eq!(p.stake, tape(100));
         assert_eq!(p.shares, shares(100));
 
         // E2 +50 rewards; shares unchanged
-        p.credit_spool(tape(50));
-        p.advance_epoch(epoch(2)).unwrap();
+        p.advance_epoch(epoch(2), tape(50)).unwrap();
         assert_eq!(p.stake, tape(150));
         assert_eq!(p.shares, shares(100));
         assert_eq!(p.rewards, tape(50));
 
         // E3 +25 rewards; shares unchanged
-        p.credit_spool(tape(25));
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(3), tape(25)).unwrap();
         assert_eq!(p.stake, tape(175));
         assert_eq!(p.shares, shares(100));
         assert_eq!(p.rewards, tape(75));
@@ -746,9 +719,9 @@ mod tests {
         assert_eq!(we, epoch(3));
 
         // Walk epochs; since it was pre-active, no shares should be minted ever
-        p.advance_epoch(epoch(1)).unwrap();
-        p.advance_epoch(epoch(2)).unwrap();
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+        p.advance_epoch(epoch(3), tape(0)).unwrap();
 
         assert_eq!(p.shares, shares(0));
         assert_eq!(p.stake, tape(0));
@@ -769,11 +742,9 @@ mod tests {
         // Alice stakes at E1 -> activation E3
         let mut a = p.stake_with_pool(epoch(1), tape(100)).unwrap();
 
-        p.advance_epoch(epoch(1)).unwrap();   // E1
-        p.credit_spool(tape(60));
-        p.advance_epoch(epoch(2)).unwrap();  // E2: rewards 60, A not yet active
-        p.credit_spool(tape(40));
-        p.advance_epoch(epoch(3)).unwrap();  // E3: rewards 40, A activates this epoch
+        p.advance_epoch(epoch(1), tape(0)).unwrap();   // E1
+        p.advance_epoch(epoch(2), tape(60)).unwrap();  // E2: rewards 60, A not yet active
+        p.advance_epoch(epoch(3), tape(40)).unwrap();  // E3: rewards 40, A activates this epoch
 
         let r3 = p.get_current_rate();
 
@@ -784,12 +755,11 @@ mod tests {
         p.request_withdraw(&mut a, epoch(3), r3).unwrap();
 
         // E4: rewards 50 (A accrues this epoch; Bob not yet active)
-        p.credit_spool(tape(50));
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(50)).unwrap();
         let r4 = p.get_current_rate();
 
         // E5: rewards 0; process Alices withdrawal
-        p.advance_epoch(epoch(5)).unwrap();
+        p.advance_epoch(epoch(5), tape(0)).unwrap();
         let r5 = p.get_current_rate();
 
         // Compute A owed from activation rate r3 to r4 only
@@ -804,12 +774,11 @@ mod tests {
         p.request_withdraw(&mut b, epoch(5), r5_activation).unwrap();
 
         // E6: add rewards 30 (Bob accrues this epoch)
-        p.credit_spool(tape(30));
-        p.advance_epoch(epoch(6)).unwrap();
+        p.advance_epoch(epoch(6), tape(30)).unwrap();
         let r6 = p.get_current_rate();
 
         // E7: process Bob withdrawal
-        p.advance_epoch(epoch(7)).unwrap();
+        p.advance_epoch(epoch(7), tape(0)).unwrap();
 
         // Compute Bob owed from r5 to r6 only
         let b_shares: ShareAmount = r5_activation.convert_to_other_amount(b.amount.into()).into();
@@ -834,17 +803,13 @@ mod tests {
         // Create a user stake at current=E1 → activation=E3 (E+2)
         let mut s = p.stake_with_pool(epoch(1), tape(100)).unwrap();
 
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
         let r1 = p.get_current_rate();
         assert_eq!(r1, ExchangeRate { tape: 100, other: 100 });
-
-        p.credit_spool(tape(10));
-        p.advance_epoch(epoch(2)).unwrap();
+        p.advance_epoch(epoch(2), tape(10)).unwrap();
         let r2 = p.get_current_rate();
         assert_eq!(r2, ExchangeRate { tape: 110, other: 100 });
-
-        p.credit_spool(tape(10));
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(3), tape(10)).unwrap();
         let r3 = p.get_current_rate();
         assert_eq!(r3, ExchangeRate { tape: 220, other: 183 });
 
@@ -853,13 +818,10 @@ mod tests {
         p.request_withdraw(&mut s, epoch(3), activation_rate).unwrap();
 
         // Add rewards AFTER activation, s accrues rewards (E4 only).
-        p.credit_spool(tape(30));
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(30)).unwrap();
         let r4 = p.get_current_rate();
         assert_eq!(r4, ExchangeRate { tape: 250, other: 183 });
-
-        p.credit_spool(tape(30));
-        p.advance_epoch(epoch(5)).unwrap();
+        p.advance_epoch(epoch(5), tape(30)).unwrap();
 
         // Cap rewards pool to 10
         p.rewards = tape(10);
@@ -879,16 +841,16 @@ mod tests {
 
         // Stake at E1 → activate E3
         let mut s = p.stake_with_pool(epoch(1), tape(100)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap();
-        p.advance_epoch(epoch(2)).unwrap();
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+        p.advance_epoch(epoch(3), tape(0)).unwrap();
 
         // Request at E3 → withdraw at E5
         let activation_rate = p.get_current_rate();
         p.request_withdraw(&mut s, epoch(3), activation_rate).unwrap();
 
         // Try to claim at E4 < withdraw → error
-        p.advance_epoch(epoch(4)).unwrap(); // advance to E4
+        p.advance_epoch(epoch(4), tape(0)).unwrap(); // advance to E4
  
         let r4 = p.get_current_rate();
         let shares = activation_rate.convert_to_other_amount(s.amount.into());
@@ -905,22 +867,21 @@ mod tests {
         let mut alice = p.stake_with_pool(epoch(0), tape(1000)).unwrap();
 
         // E1: no rewards, still pre-active
-        p.advance_epoch(epoch(1)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
 
         // E2: activation (no rewards)
-        p.advance_epoch(epoch(2)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
         let r2 = p.get_current_rate();
         assert_eq!(r2, ExchangeRate { tape: 1000, other: 1000 });
 
         // E3: pool earns 1000
-        p.credit_spool(tape(1000));
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(3), tape(1000)).unwrap();
 
         // Request withdraw at E3 → withdraw at E5
         p.request_withdraw(&mut alice, epoch(3), r2).unwrap();
 
         // E4: no rewards; compute owed at E4 (pre-withdraw snapshot)
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(0)).unwrap();
         let r4 = p.get_current_rate();
 
         // Compute owed using activation shares and E4 rate
@@ -929,7 +890,7 @@ mod tests {
         let owed = tape(tape_at_r4.saturating_sub(alice.amount.into()));
 
         // E5: process withdraw; then pay rewards
-        p.advance_epoch(epoch(5)).unwrap();
+        p.advance_epoch(epoch(5), tape(0)).unwrap();
 
         let paid = p.unstake_from_pool(&mut alice, epoch(5), owed).unwrap();
         assert_eq!(paid, owed);
@@ -944,13 +905,12 @@ mod tests {
         let mut alice = p.stake_with_pool(epoch(0), tape(1000)).unwrap();
         let mut bob   = p.stake_with_pool(epoch(0), tape(1000)).unwrap();
 
-        p.advance_epoch(epoch(1)).unwrap();
-        p.advance_epoch(epoch(2)).unwrap(); // E2: both active
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap(); // E2: both active
         let r2 = p.get_current_rate();
 
         // E3: rewards 1000
-        p.credit_spool(tape(1000));
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(3), tape(1000)).unwrap();
 
         // Both request at E3 → withdraw E5
         let activation_rate = r2;
@@ -960,11 +920,11 @@ mod tests {
         assert_eq!(wb, epoch(5));
 
         // E4: settle, no rewards
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(0)).unwrap();
         let r4 = p.get_current_rate();
 
         // E5: claim
-        p.advance_epoch(epoch(5)).unwrap();
+        p.advance_epoch(epoch(5), tape(0)).unwrap();
 
         let shares = activation_rate.convert_to_other_amount(tape(1000).into());
         let owed_each = tape(r4.convert_to_tape_amount(shares).saturating_sub(1000));
@@ -983,12 +943,10 @@ mod tests {
         // E0 stake → activate E2
         let mut alice = p.stake_with_pool(epoch(0), tape(1000)).unwrap();
 
-        p.advance_epoch(epoch(1)).unwrap();   // E1
-        p.advance_epoch(epoch(2)).unwrap();   // E2 active
+        p.advance_epoch(epoch(1), tape(0)).unwrap();   // E1
+        p.advance_epoch(epoch(2), tape(0)).unwrap();   // E2 active
         let r2 = p.get_current_rate();
-
-        p.credit_spool(tape(202));
-        p.advance_epoch(epoch(3)).unwrap(); // E3 rewards gross=202 → commission=20, net=182
+        p.advance_epoch(epoch(3), tape(202)).unwrap(); // E3 rewards gross=202 → commission=20, net=182
 
         assert_eq!(p.commission, tape(20));
         assert_eq!(p.rewards, tape(182));
@@ -996,10 +954,10 @@ mod tests {
         // Request at E3 → withdraw E5; no more rewards
         let activation_rate = r2;
         p.request_withdraw(&mut alice, epoch(3), activation_rate).unwrap();
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(0)).unwrap();
 
         let r4 = p.get_current_rate();
-        p.advance_epoch(epoch(5)).unwrap();
+        p.advance_epoch(epoch(5), tape(0)).unwrap();
 
         let shares = activation_rate.convert_to_other_amount(alice.amount.into());
         let owed = tape(r4.convert_to_tape_amount(shares).saturating_sub(alice.amount.into()));
@@ -1017,8 +975,8 @@ mod tests {
         let mut alice = p.stake_with_pool(epoch(1), tape(500)).unwrap();
 
         // Make sure activation snapshot exists
-        p.advance_epoch(epoch(2)).unwrap();
-        p.advance_epoch(epoch(3)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+        p.advance_epoch(epoch(3), tape(0)).unwrap();
         let r3 = p.get_current_rate();
 
         // Request at E3 → withdraw E5
@@ -1026,7 +984,7 @@ mod tests {
         p.request_withdraw(&mut alice, epoch(3), activation_rate).unwrap();
 
         // Trying to claim at E4 (< E5) must error
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(0)).unwrap();
 
         let shares = activation_rate.convert_to_other_amount(alice.amount.into());
         let owed = tape(r3.convert_to_tape_amount(shares).saturating_sub(alice.amount.into()));
@@ -1041,14 +999,13 @@ mod tests {
 
         // Alice stakes 1000 at E0 (E2 active)
         let mut alice = p.stake_with_pool(epoch(0), tape(1000)).unwrap();
-        p.advance_epoch(epoch(1)).unwrap();
-        p.advance_epoch(epoch(2)).unwrap();
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
         let r2 = p.get_current_rate();
 
         // Bob stakes 2000 at E1 (E3 active)
         let mut bob = p.stake_with_pool(epoch(1), tape(2000)).unwrap();
-        p.credit_spool(tape(1000));
-        p.advance_epoch(epoch(3)).unwrap(); // Rewards when both are active
+        p.advance_epoch(epoch(3), tape(1000)).unwrap(); // Rewards when both are active
         let r3 = p.get_current_rate();
 
         // Alice requests at E3 → E5
@@ -1056,15 +1013,14 @@ mod tests {
         p.request_withdraw(&mut alice, epoch(3), activation_rate_e2).unwrap();
 
         // Bob requests at E4 → E6
-        p.credit_spool(tape(1000));
-        p.advance_epoch(epoch(4)).unwrap();
+        p.advance_epoch(epoch(4), tape(1000)).unwrap();
         let r4 = p.get_current_rate();
 
         let activation_rate_e3 = r3;
         p.request_withdraw(&mut bob, epoch(4), activation_rate_e3).unwrap();
 
         // Walk to E5 and let Alice claim
-        p.advance_epoch(epoch(5)).unwrap();
+        p.advance_epoch(epoch(5), tape(0)).unwrap();
         let r5 = p.get_current_rate();
 
         let alice_shares = activation_rate_e2.convert_to_other_amount(alice.amount.into());
@@ -1072,7 +1028,7 @@ mod tests {
         let ra = p.unstake_from_pool(&mut alice, epoch(5), ra_owed).unwrap();
 
         // Walk to E6 and let Bob claim
-        p.advance_epoch(epoch(6)).unwrap();
+        p.advance_epoch(epoch(6), tape(0)).unwrap();
         let bob_shares = activation_rate_e3.convert_to_other_amount(bob.amount.into());
         let rb_owed = tape(r5.convert_to_tape_amount(bob_shares).saturating_sub(bob.amount.into()));
         let rb = p.unstake_from_pool(&mut bob, epoch(6), rb_owed).unwrap();

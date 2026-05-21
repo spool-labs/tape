@@ -10,10 +10,6 @@ pub enum EpochPhase {
     /// epoch's assignments.
     Sync,
 
-    /// Previous-epoch committee members are crediting their per-spool rewards
-    /// into their pool accumulators.
-    Settle,
-
     /// The new committee is producing the metadata snapshot of the
     /// previous epoch.
     Snapshot,
@@ -39,10 +35,6 @@ pub struct EpochState {
 
     /// Number of spool groups that have reached the sync threshold.
     pub synced_count: u64,
-
-    /// Number of spool groups that have reached the settle threshold.
-    pub settled_count: u64,
-
 }
 
 impl EpochState {

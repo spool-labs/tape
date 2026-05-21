@@ -79,7 +79,6 @@ pub enum TapeInstruction {
 
     // Epoch
     SyncSpool = 0x50,
-    SettleSpool,
     CommitEpoch,
     AdvanceEpoch,
 
@@ -158,7 +157,6 @@ tape_solana::instruction!(TapeInstruction, ResizePeerSet);
 tape_solana::instruction!(TapeInstruction, StartNetwork);
 
 tape_solana::instruction!(TapeInstruction, SyncSpool);
-tape_solana::instruction!(TapeInstruction, SettleSpool);
 tape_solana::instruction!(TapeInstruction, CommitEpoch);
 tape_solana::instruction!(TapeInstruction, AdvanceEpoch);
 

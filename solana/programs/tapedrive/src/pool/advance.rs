@@ -7,6 +7,8 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let [
         fee_payer_info,
         system_info,
+        archive_info,
+        prev_epoch_info,
         prev_committee_info,
         pool_info,
         history_info,
@@ -24,6 +26,15 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let curr = system.current_epoch;
     let prev = curr.saturating_sub(EpochNumber(1));
+
+    let archive = archive_info
+        .is_writable()?
+        .is_archive()?
+        .as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    let prev_epoch = prev_epoch_info
+        .is_epoch(prev)?
+        .as_account::<Epoch>(&tapedrive::ID)?;
 
     let pool_address: Address = (*pool_info.key).into();
 
@@ -43,24 +54,24 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(TapeError::BadEpochId.into());
     }
 
-    let k = prev_members
+    let claim = prev_members
         .iter()
         .find(|m| m.node == pool_address)
-        .map(|m| m.spools)
-        .unwrap_or(0);
+        .map(|m| compute_member_share(m, prev_epoch.total_assigned, archive.rewards_pool))
+        .transpose()?
+        .unwrap_or_else(TAPE::zero);
 
-    // If we're at-the-edge, require all K spools to be settled before draining. Otherwise, allow
-    // partial settles to be drained when the node is behind multiple epochs, since those unsettled
-    // rewards are effectively lost.
-
-    let at_edge = node.latest_advance_epoch
-        .saturating_add(EpochNumber(1)) == prev;
-    if at_edge && node.pool.pending_settled != k {
-        return Err(TapeError::SpoolsNotSettled.into());
+    let next_paid = archive
+        .rewards_paid
+        .checked_add(claim)
+        .ok_or(TapeError::RewardsOverflow)?;
+    if next_paid > archive.rewards_pool {
+        return Err(TapeError::RewardsOverflow.into());
     }
 
-    // Drain the pool's pending rewards into the stake and commission, and reset the pending state
-    node.pool.advance_epoch(curr)
+    archive.rewards_paid = next_paid;
+
+    node.pool.advance_epoch(curr, claim)
         .map_err(|_| TapeError::PoolAccountingFailed)?;
 
     let new_rate = node.pool.get_current_rate();
@@ -85,6 +96,33 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     Ok(())
 }
 
+fn compute_member_share(
+    member: &Member,
+    total_assigned: StorageUnits,
+    rewards_pool: Coin<TAPE>,
+) -> Result<Coin<TAPE>, TapeError> {
+    if total_assigned.is_zero() {
+        return Ok(TAPE::zero());
+    }
+
+    let weight = member
+        .assigned
+        .checked_sub(member.refused)
+        .ok_or(TapeError::UnexpectedState)?;
+
+    let raw = rewards_pool
+        .as_u128()
+        .checked_mul(weight.as_u128())
+        .ok_or(TapeError::RewardsOverflow)?
+        / total_assigned.as_u128();
+
+    if raw > u64::MAX as u128 {
+        return Err(TapeError::RewardsOverflow);
+    }
+
+    Ok(TAPE(raw as u64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,27 +133,30 @@ mod tests {
     const COMMITTEE_SIZE: u64 = 128;
     const POOL_SCHEDULE_SIZE: usize = 4;
 
-    fn make_test_pool(stake: u64, pending: u64, settled: u64) -> StakingPool<POOL_SCHEDULE_SIZE> {
+    fn make_test_pool(stake: u64) -> StakingPool<POOL_SCHEDULE_SIZE> {
         let mut pool = StakingPool::<POOL_SCHEDULE_SIZE>::new(BasisPoints(1000)); // 10% commission
         pool.stake = TAPE(stake);
         pool.shares = ShareAmount(stake);
-        pool.pending_rewards = TAPE(pending);
-        pool.pending_settled = settled;
         pool
     }
 
-    fn pack_committee(epoch: EpochNumber, node: Address, spools: u64) -> Vec<u8> {
+    fn pack_committee(
+        epoch: EpochNumber,
+        node: Address,
+        assigned: StorageUnits,
+        refused: StorageUnits,
+    ) -> Vec<u8> {
         let members = [Member {
             node,
             stake: TAPE(1_000),
-            blacklist: StorageUnits::zero(),
-            spools,
+            assigned,
+            refused,
+            spools: 0,
         }];
         Committee { epoch, members: Tail::new(COMMITTEE_SIZE, members.len() as u64) }
             .pack_with(&members)
     }
 
-    // Happy path: at-the-edge with all spools settled → drain succeeds.
     #[test]
     fn advance() {
         let fee_payer = Pubkey::new_unique();
@@ -125,6 +166,8 @@ mod tests {
         let prev = EpochNumber(9);
 
         let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (prev_epoch_address, _) = epoch_pda(prev);
         let (prev_committee_address, _) = committee_pda(prev);
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
@@ -135,12 +178,21 @@ mod tests {
             ..System::zeroed()
         };
 
-        // Node held 3 spools in prev, all 3 settled.
-        let k = 3u64;
+        let archive = Archive {
+            rewards_pool: TAPE(1_000),
+            rewards_paid: TAPE::zero(),
+            ..Archive::zeroed()
+        };
+        let prev_epoch_data = Epoch {
+            id: prev,
+            total_assigned: StorageUnits::mb(1_000),
+            ..Epoch::zeroed()
+        };
+
         let node = Node {
             authority: authority.into(),
             latest_advance_epoch: prev.saturating_sub(EpochNumber(1)), // at-the-edge
-            pool: make_test_pool(1_000, 300, k),
+            pool: make_test_pool(1_000),
             ..Node::zeroed()
         };
 
@@ -152,19 +204,28 @@ mod tests {
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(prev_committee_address, pack_committee(prev, node_address, k), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(prev_epoch_address, prev_epoch_data.pack(), tapedrive::ID),
+            pda(
+                prev_committee_address,
+                pack_committee(
+                    prev,
+                    node_address,
+                    StorageUnits::mb(300),
+                    StorageUnits::zero(),
+                ),
+                tapedrive::ID,
+            ),
             pda(node_address, node.pack(), tapedrive::ID),
             pda(history_address, history.pack(), tapedrive::ID),
         ];
 
-        // 10% commission on 300 → 30 commission, 270 to stake.
+        // 300 / 1000 * 1000 = 300, with 10% commission.
         let mut expected_node = node;
         expected_node.latest_advance_epoch = prev;
         expected_node.pool.stake = TAPE(1_270);
         expected_node.pool.rewards = TAPE(270);
         expected_node.pool.commission = TAPE(30);
-        expected_node.pool.pending_rewards = TAPE::zero();
-        expected_node.pool.pending_settled = 0;
 
         let env = test_env();
         env.process_instruction(
@@ -172,6 +233,12 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
+                Check::account(&Pubkey::from(archive_address))
+                    .data(Archive {
+                        rewards_paid: TAPE(300),
+                        ..archive
+                    }.pack().as_ref())
+                    .build(),
                 Check::account(&Pubkey::from(node_address))
                     .data(expected_node.pack().as_ref())
                     .build(),
@@ -179,9 +246,8 @@ mod tests {
         );
     }
 
-    // Grief prevention: at-the-edge with partial settles -> reject.
     #[test]
-    fn rejects_partial_at_edge() {
+    fn refused_weight_is_unpaid() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -189,6 +255,8 @@ mod tests {
         let prev = EpochNumber(9);
 
         let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (prev_epoch_address, _) = epoch_pda(prev);
         let (prev_committee_address, _) = committee_pda(prev);
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
@@ -199,12 +267,20 @@ mod tests {
             ..System::zeroed()
         };
 
-        // Node holds 5 spools, only 3 settled so far. At-the-edge.
-        let k = 5u64;
+        let archive = Archive {
+            rewards_pool: TAPE(1_000),
+            rewards_paid: TAPE::zero(),
+            ..Archive::zeroed()
+        };
+        let prev_epoch_data = Epoch {
+            id: prev,
+            total_assigned: StorageUnits::mb(1_000),
+            ..Epoch::zeroed()
+        };
         let node = Node {
             authority: authority.into(),
             latest_advance_epoch: prev.saturating_sub(EpochNumber(1)),
-            pool: make_test_pool(1_000, 300, 3),
+            pool: make_test_pool(1_000),
             ..Node::zeroed()
         };
 
@@ -216,16 +292,44 @@ mod tests {
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(prev_committee_address, pack_committee(prev, node_address, k), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(prev_epoch_address, prev_epoch_data.pack(), tapedrive::ID),
+            pda(
+                prev_committee_address,
+                pack_committee(
+                    prev,
+                    node_address,
+                    StorageUnits::mb(300),
+                    StorageUnits::mb(100),
+                ),
+                tapedrive::ID,
+            ),
             pda(node_address, node.pack(), tapedrive::ID),
             pda(history_address, history.pack(), tapedrive::ID),
         ];
+
+        let mut expected_node = node;
+        expected_node.latest_advance_epoch = prev;
+        expected_node.pool.stake = TAPE(1_180);
+        expected_node.pool.rewards = TAPE(180);
+        expected_node.pool.commission = TAPE(20);
 
         let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
-            &[Check::err(TapeError::SpoolsNotSettled.into())],
+            &[
+                Check::success(),
+                Check::account(&Pubkey::from(archive_address))
+                    .data(Archive {
+                        rewards_paid: TAPE(200),
+                        ..archive
+                    }.pack().as_ref())
+                    .build(),
+                Check::account(&Pubkey::from(node_address))
+                    .data(expected_node.pack().as_ref())
+                    .build(),
+            ],
         );
     }
 
@@ -238,6 +342,8 @@ mod tests {
         let prev = EpochNumber(9);
 
         let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (prev_epoch_address, _) = epoch_pda(prev);
         let (prev_committee_address, _) = committee_pda(prev);
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
@@ -248,13 +354,20 @@ mod tests {
             ..System::zeroed()
         };
 
-        // Node holds 5 spools in prev, only 3 settled. But latest_advance_epoch
-        // is far behind (epoch 5) grief gate skipped.
-        let k = 5u64;
+        let archive = Archive {
+            rewards_pool: TAPE(1_000),
+            rewards_paid: TAPE::zero(),
+            ..Archive::zeroed()
+        };
+        let prev_epoch_data = Epoch {
+            id: prev,
+            total_assigned: StorageUnits::mb(1_000),
+            ..Epoch::zeroed()
+        };
         let node = Node {
             authority: authority.into(),
             latest_advance_epoch: EpochNumber(5),
-            pool: make_test_pool(1_000, 300, 3),
+            pool: make_test_pool(1_000),
             ..Node::zeroed()
         };
 
@@ -266,19 +379,27 @@ mod tests {
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(prev_committee_address, pack_committee(prev, node_address, k), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(prev_epoch_address, prev_epoch_data.pack(), tapedrive::ID),
+            pda(
+                prev_committee_address,
+                pack_committee(
+                    prev,
+                    node_address,
+                    StorageUnits::mb(300),
+                    StorageUnits::zero(),
+                ),
+                tapedrive::ID,
+            ),
             pda(node_address, node.pack(), tapedrive::ID),
             pda(history_address, history.pack(), tapedrive::ID),
         ];
 
-        // Drain proceeds with the partial 300 TAPE pending.
         let mut expected_node = node;
         expected_node.latest_advance_epoch = prev;
         expected_node.pool.stake = TAPE(1_270);
         expected_node.pool.rewards = TAPE(270);
         expected_node.pool.commission = TAPE(30);
-        expected_node.pool.pending_rewards = TAPE::zero();
-        expected_node.pool.pending_settled = 0;
 
         let env = test_env();
         env.process_instruction(

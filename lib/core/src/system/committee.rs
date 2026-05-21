@@ -12,7 +12,8 @@ use crate::types::*;
 pub struct Member {
     pub node: Address,
     pub stake: Coin<TAPE>,
-    pub blacklist: StorageUnits,
+    pub assigned: StorageUnits,
+    pub refused: StorageUnits,
     pub spools: u64,
 }
 

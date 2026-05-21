@@ -117,6 +117,10 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
             .ok_or(TapeError::BadMember)?;
 
         member.spools = member.spools.saturating_add(1);
+        member.assigned = member
+            .assigned
+            .checked_add(args.payload.size)
+            .ok_or(TapeError::RewardsOverflow)?;
     }
 
     target_epoch.total_groups = target_epoch.total_groups
@@ -214,7 +218,8 @@ mod tests {
             members.push(Member {
                 node: addr,
                 stake: TAPE(0),
-                blacklist: StorageUnits::zero(),
+                assigned: StorageUnits::zero(),
+                refused: StorageUnits::zero(),
                 spools: 0,
             });
             peers.push(Peer {
@@ -261,6 +266,7 @@ mod tests {
         let mut expected_members = members.clone();
         for member in &mut expected_members {
             member.spools = 1;
+            member.assigned = size;
         }
 
         let expected_target_epoch = Epoch {

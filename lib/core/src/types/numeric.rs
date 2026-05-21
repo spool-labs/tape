@@ -72,7 +72,7 @@ impl StorageUnits {
     /// Convert to MB (ceiling).
     #[inline]
     pub fn to_mb(&self) -> u64 {
-        (self.0 + Self::MB - 1) / Self::MB
+        self.0.div_ceil(Self::MB)
     }
 }
 

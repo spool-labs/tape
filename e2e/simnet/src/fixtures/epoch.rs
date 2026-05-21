@@ -16,7 +16,6 @@ impl SimnetScenario<'_> {
         let epoch = self.read_epoch().await?;
         match epoch.state.phase() {
             Some(EpochPhase::Sync) => Ok("Sync"),
-            Some(EpochPhase::Settle) => Ok("Settle"),
             Some(EpochPhase::Snapshot) => Ok("Snapshot"),
             Some(EpochPhase::Active) => Ok("Active"),
             Some(EpochPhase::Closing) => Ok("Closing"),

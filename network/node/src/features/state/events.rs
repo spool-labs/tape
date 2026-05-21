@@ -12,7 +12,8 @@ pub fn apply_join_committee_event(
     let member = Member {
         node: event.node,
         stake: TAPE(u64::from_le_bytes(event.stake)),
-        blacklist: event.blacklist,
+        assigned: Default::default(),
+        refused: Default::default(),
         spools: 0,
     };
 

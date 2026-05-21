@@ -1,43 +1,21 @@
 use tape_crypto::address::Address;
 
-use crate::types::*;
 use super::Member;
+use crate::types::*;
 
-pub fn get_pool_score(
-    allocated: StorageUnits,
-    blacklisted: StorageUnits,
-    weight: u64,
-) -> u128 {
-    if weight == 0 {
+pub fn get_pool_score(assigned: StorageUnits, refused: StorageUnits) -> u128 {
+    if refused >= assigned {
         return 0;
     }
 
-    let weight = weight as u128;
-    let stored = allocated
-        .saturating_sub(blacklisted)
-        .as_u128();
-    let score = weight
-        .saturating_mul(stored);
-
-    score
+    assigned.saturating_sub(refused).as_u128()
 }
 
-pub fn get_committee_score(
-    allocated: StorageUnits,
-    members: &[Member],
-) -> u128 {
+pub fn get_committee_score(members: &[Member]) -> u128 {
     let mut score: u128 = 0;
 
     for member in members {
-        if member.blacklist >= allocated || member.spools == 0 {
-            continue;
-        }
-
-        let member_score = get_pool_score(
-            allocated,
-            member.blacklist,
-            member.spools,
-        );
+        let member_score = get_pool_score(member.assigned, member.refused);
 
         score = score.saturating_add(member_score);
     }
@@ -47,36 +25,25 @@ pub fn get_committee_score(
 
 pub fn calc_rewards(
     node: Address,
-    allocated: StorageUnits,
     members: &[Member],
     reward_pool: Coin<TAPE>,
 ) -> Coin<TAPE> {
-    if allocated.is_zero() {
-        return TAPE::zero();
-    }
-
     let Some(member) = members.iter().find(|m| m.node == node) else {
         return TAPE::zero();
     };
 
-    if member.spools == 0 || member.blacklist >= allocated {
+    let pool_score = get_pool_score(member.assigned, member.refused);
+    if pool_score == 0 {
         return TAPE::zero();
     }
 
-    let pool_score = get_pool_score(
-        allocated,
-        member.blacklist,
-        member.spools,
-    );
-
-    let total_score = get_committee_score(
-        allocated,
-        members,
-    );
+    let total_score = get_committee_score(members);
 
     // rewards = floor(reward_pool * pool_score / total_score)
-    let rewards = reward_pool.as_u128()
-        .saturating_mul(pool_score)
+    let rewards = reward_pool
+        .as_u128()
+        .checked_mul(pool_score)
+        .unwrap_or(u128::MAX)
         .checked_div(total_score)
         .unwrap_or(0);
 
@@ -89,20 +56,15 @@ mod tests {
 
     #[test]
     fn score_basic() {
-        // weight * max(allocated - blacklist, 0)
-        let s = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(200), 3);
-        assert_eq!(s, 3u128 * 800u128 * StorageUnits::MB as u128);
+        let s = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(200));
+        assert_eq!(s, 800u128 * StorageUnits::MB as u128);
 
-        // Fully blacklisted
-        let s2 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1000), 5);
+        // Fully refused
+        let s2 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1000));
         assert_eq!(s2, 0);
 
-        // Over-blacklisted (saturating_sub → 0)
-        let s3 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1200), 7);
+        // Over-refused
+        let s3 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1200));
         assert_eq!(s3, 0);
-
-        // Zero weight
-        let s4 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(100), 0);
-        assert_eq!(s4, 0);
     }
 }
