@@ -17,6 +17,7 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     fee_payer_info
         .is_signer()?
         .is_writable()?;
+
     system_program_info
         .is_program(&system_program::ID)?;
     rent_sysvar_info

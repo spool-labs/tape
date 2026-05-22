@@ -47,9 +47,11 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_system()?
         .as_account::<System>(&tapedrive::ID)?;
 
-    let next_epoch = system.current_epoch.saturating_add(EpochNumber(1));
+    let next_epoch = system.current_epoch
+        .saturating_add(EpochNumber(1));
 
-    committee_next_info.is_committee(next_epoch)?;
+    committee_next_info
+        .is_committee(next_epoch)?;
 
     let (committee_next, _) = Committee::read(committee_next_info, &tapedrive::ID)?;
     if committee_next.epoch != next_epoch {
