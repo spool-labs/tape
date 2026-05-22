@@ -256,6 +256,9 @@ pub struct EpochCommitted {
 
     /// Slot hash captured as the next epoch's nonce
     pub next_nonce: Hash,
+
+    /// Network-level preferences committed for the candidate epoch.
+    pub preferences: NodePreferences,
 }
 
 tape_solana::event!(EventType, EpochCommitted);

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::{Api, ProtocolState};
@@ -26,16 +27,16 @@ enum SetupStep {
     InvalidCommitteeCapacity { capacity: u64, target: u64 },
 }
 
-// Purpose: ensure Epoch(N+1) and Committee(N+1) exist and are allocated before
-// JoinCommittee and CommitEpoch need them. Group(N+1, *) accounts are created
-// later by assignment finalization.
+// Purpose: while Epoch(N) is closing, ensure Epoch(N+2) and Committee(N+2)
+// exist and are allocated before AdvanceEpoch enters Epoch(N+1).
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    let target_epoch = epoch.saturating_add(EpochNumber(1));
+    let next_epoch = epoch.saturating_add(EpochNumber(1));
+    let candidate_epoch = next_epoch.saturating_add(EpochNumber(1));
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
@@ -50,8 +51,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         match state.phase() {
-            EpochPhase::Active => {}
-            EpochPhase::Closing | EpochPhase::Completed => {
+            EpochPhase::Closing => {}
+            EpochPhase::Completed => {
                 info!(
                     epoch = epoch.0,
                     phase = ?state.phase(),
@@ -60,19 +61,19 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 return TaskDone::Done(Action::PrepareNextEpoch, epoch);
             }
             phase => {
-                info!(epoch = epoch.0, ?phase, "prepare_next_epoch: outside active phase");
+                info!(epoch = epoch.0, ?phase, "prepare_next_epoch: outside closing phase");
                 return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
             }
         }
 
-        let step = next_setup_step(&state, target_epoch);
+        let step = next_setup_step(&state, next_epoch, candidate_epoch);
         drop(state);
 
         match step {
             SetupStep::Done => {
                 info!(
                     epoch = epoch.0,
-                    target_epoch = target_epoch.0,
+                    candidate_epoch = candidate_epoch.0,
                     "prepare_next_epoch: setup complete"
                 );
                 return TaskDone::Done(Action::PrepareNextEpoch, epoch);
@@ -80,15 +81,15 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             SetupStep::InvalidCommitteeCapacity { capacity, target } => {
                 warn!(
                     epoch = epoch.0,
-                    target_epoch = target_epoch.0,
+                    candidate_epoch = candidate_epoch.0,
                     capacity,
                     target,
-                    "prepare_next_epoch: next committee capacity exceeds target"
+                    "prepare_next_epoch: invalid committee capacity"
                 );
                 return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
             }
             step => {
-                if submit_setup_step(&ctx, epoch, target_epoch, step).await {
+                if submit_setup_step(&ctx, epoch, candidate_epoch, step).await {
                     return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
                 }
             }
@@ -102,17 +103,50 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     TaskDone::Cancelled(Action::PrepareNextEpoch, epoch)
 }
 
-fn next_setup_step(state: &ProtocolState, target_epoch: EpochNumber) -> SetupStep {
-    if !has_next_epoch(state, target_epoch) {
+fn next_setup_step(
+    state: &ProtocolState,
+    next_epoch: EpochNumber,
+    candidate_epoch: EpochNumber,
+) -> SetupStep {
+    let committee_target = state
+        .next_epoch
+        .as_ref()
+        .filter(|epoch| epoch.id == next_epoch)
+        .map(|epoch| epoch.preferences.committee_size)
+        .unwrap_or(0);
+
+    if committee_target < MIN_COMMITTEE_SIZE as u64 {
+        return SetupStep::InvalidCommitteeCapacity {
+            capacity: committee_target,
+            target: MIN_COMMITTEE_SIZE as u64,
+        };
+    }
+
+    let candidate_epoch_ready = state
+        .candidate_epoch
+        .as_ref()
+        .is_some_and(|epoch| epoch.id == candidate_epoch);
+    if !candidate_epoch_ready {
         return SetupStep::CreateEpoch;
     }
 
-    if !has_next_committee(state, target_epoch) {
-        return SetupStep::CreateCommittee;
-    }
+    decide_setup_step(
+        state.system.committee_size,
+        committee_target,
+        state.candidate_committee_capacity,
+        state.peer_capacity,
+    )
+}
 
-    let committee_target = state.system.committee_size;
-    let committee_capacity = state.next_committee_capacity.unwrap_or(0);
+fn decide_setup_step(
+    current_committee_capacity: u64,
+    committee_target: u64,
+    committee_capacity: Option<u64>,
+    peer_capacity: u64,
+) -> SetupStep {
+    let Some(committee_capacity) = committee_capacity else {
+        return SetupStep::CreateCommittee;
+    };
 
     if committee_capacity < committee_target {
         return SetupStep::ResizeCommittee;
@@ -125,9 +159,11 @@ fn next_setup_step(state: &ProtocolState, target_epoch: EpochNumber) -> SetupSte
         };
     }
 
-    let peer_target = committee_target.saturating_mul(3);
+    let peer_target = current_committee_capacity
+        .max(committee_target)
+        .saturating_mul(3);
 
-    if state.peer_capacity < peer_target {
+    if peer_capacity < peer_target {
         return SetupStep::ResizePeerSet;
     }
 
@@ -137,7 +173,7 @@ fn next_setup_step(state: &ProtocolState, target_epoch: EpochNumber) -> SetupSte
 async fn submit_setup_step<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
-    target_epoch: EpochNumber,
+    candidate_epoch: EpochNumber,
     step: SetupStep,
 ) -> bool
 where
@@ -146,9 +182,9 @@ where
     Blockchain: Rpc,
 {
     match step {
-        SetupStep::CreateEpoch => submit_create_epoch_step(ctx, epoch, target_epoch).await,
-        SetupStep::CreateCommittee => submit_create_committee_step(ctx, epoch, target_epoch).await,
-        SetupStep::ResizeCommittee => submit_resize_committee_step(ctx, epoch, target_epoch).await,
+        SetupStep::CreateEpoch => submit_create_epoch_step(ctx, epoch, candidate_epoch).await,
+        SetupStep::CreateCommittee => submit_create_committee_step(ctx, epoch, candidate_epoch).await,
+        SetupStep::ResizeCommittee => submit_resize_committee_step(ctx, epoch, candidate_epoch).await,
         SetupStep::ResizePeerSet => submit_resize_peer_set_step(ctx, epoch).await,
         SetupStep::Done | SetupStep::InvalidCommitteeCapacity { .. } => false,
     }
@@ -157,7 +193,7 @@ where
 async fn submit_create_epoch_step<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
-    target_epoch: EpochNumber,
+    candidate_epoch: EpochNumber,
 ) -> bool
 where
     Db: Store,
@@ -166,17 +202,17 @@ where
 {
     info!(
         epoch = epoch.0,
-        target_epoch = target_epoch.0,
+        candidate_epoch = candidate_epoch.0,
         "prepare_next_epoch: creating epoch account"
     );
-    let outcome = submit_if_at_tip(&ctx.ingest, submit_create_epoch(ctx, target_epoch)).await;
-    log_setup_outcome("create_epoch", epoch, target_epoch, outcome)
+    let outcome = submit_if_at_tip(&ctx.ingest, submit_create_epoch(ctx, candidate_epoch)).await;
+    log_setup_outcome("create_epoch", epoch, candidate_epoch, outcome)
 }
 
 async fn submit_create_committee_step<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
-    target_epoch: EpochNumber,
+    candidate_epoch: EpochNumber,
 ) -> bool
 where
     Db: Store,
@@ -185,17 +221,17 @@ where
 {
     info!(
         epoch = epoch.0,
-        target_epoch = target_epoch.0,
+        candidate_epoch = candidate_epoch.0,
         "prepare_next_epoch: creating committee account"
     );
-    let outcome = submit_if_at_tip(&ctx.ingest, submit_create_committee(ctx, target_epoch)).await;
-    log_setup_outcome("create_committee", epoch, target_epoch, outcome)
+    let outcome = submit_if_at_tip(&ctx.ingest, submit_create_committee(ctx, candidate_epoch)).await;
+    log_setup_outcome("create_committee", epoch, candidate_epoch, outcome)
 }
 
 async fn submit_resize_committee_step<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
-    target_epoch: EpochNumber,
+    candidate_epoch: EpochNumber,
 ) -> bool
 where
     Db: Store,
@@ -204,11 +240,11 @@ where
 {
     info!(
         epoch = epoch.0,
-        target_epoch = target_epoch.0,
+        candidate_epoch = candidate_epoch.0,
         "prepare_next_epoch: resizing committee account"
     );
-    let outcome = submit_if_at_tip(&ctx.ingest, submit_resize_committee(ctx, target_epoch)).await;
-    log_setup_outcome("resize_committee", epoch, target_epoch, outcome)
+    let outcome = submit_if_at_tip(&ctx.ingest, submit_resize_committee(ctx)).await;
+    log_setup_outcome("resize_committee", epoch, candidate_epoch, outcome)
 }
 
 async fn submit_resize_peer_set_step<Db, Cluster, Blockchain>(
@@ -220,101 +256,69 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let target_epoch = epoch.saturating_add(EpochNumber(1));
+    let candidate_epoch = epoch.saturating_add(EpochNumber(2));
 
     info!(
         epoch = epoch.0,
-        target_epoch = target_epoch.0,
+        candidate_epoch = candidate_epoch.0,
         "prepare_next_epoch: resizing peer set account"
     );
 
     let outcome = submit_if_at_tip(&ctx.ingest, submit_resize_peer_set(ctx)).await;
 
-    log_setup_outcome("resize_peer_set", epoch, target_epoch, outcome)
+    log_setup_outcome("resize_peer_set", epoch, candidate_epoch, outcome)
 }
 
 fn log_setup_outcome(
     action: &'static str,
     epoch: EpochNumber,
-    target_epoch: EpochNumber,
+    candidate_epoch: EpochNumber,
     outcome: TxOutcome,
 ) -> bool {
     match outcome {
         TxOutcome::Confirmed(txid) => {
-            debug!(action, epoch = epoch.0, target_epoch = target_epoch.0, %txid, "prepare_next_epoch: confirmed");
+            debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, %txid, "prepare_next_epoch: confirmed");
             false
         }
         TxOutcome::Program(err) => {
-            warn!(action, epoch = epoch.0, target_epoch = target_epoch.0, ?err, "prepare_next_epoch: program error");
+            warn!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, ?err, "prepare_next_epoch: program error");
             false
         }
         TxOutcome::Transport(err) => {
-            debug!(action, epoch = epoch.0, target_epoch = target_epoch.0, %err, "prepare_next_epoch: transport error");
+            debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, %err, "prepare_next_epoch: transport error");
             false
         }
         TxOutcome::SkippedStale => {
-            debug!(action, epoch = epoch.0, target_epoch = target_epoch.0, "prepare_next_epoch: ingest stale, deferring");
+            debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, "prepare_next_epoch: ingest stale, deferring");
             true
         }
     }
 }
 
-fn has_next_epoch(state: &ProtocolState, target_epoch: EpochNumber) -> bool {
-    state
-        .next_epoch
-        .as_ref()
-        .is_some_and(|epoch| epoch.id == target_epoch)
-}
-
-fn has_next_committee(state: &ProtocolState, target_epoch: EpochNumber) -> bool {
-    state.next_committee.is_some() && target_epoch == state.epoch() + EpochNumber(1)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{next_setup_step, SetupStep};
-    use tape_api::state::Epoch;
-    use tape_core::types::EpochNumber;
-    use tape_protocol::ProtocolState;
-    use bytemuck::Zeroable;
-
-    fn setup_state() -> ProtocolState {
-        let mut state = ProtocolState::default();
-        state.current.epoch.id = EpochNumber(7);
-        state.system.committee_size = 20;
-        state
-    }
+    use super::{decide_setup_step, SetupStep};
 
     #[test]
-    fn setup_step_creates_epoch_first() {
-        let state = setup_state();
+    fn setup_step_creates_committee_after_epoch() {
         assert_eq!(
-            next_setup_step(&state, EpochNumber(8)),
-            SetupStep::CreateEpoch
+            decide_setup_step(20, 20, None, 0),
+            SetupStep::CreateCommittee
         );
     }
 
     #[test]
     fn setup_step_resizes_one_account_at_a_time() {
-        let mut state = setup_state();
-        state.next_epoch = Some(Epoch {
-            id: EpochNumber(8),
-            ..Epoch::zeroed()
-        });
-        state.next_committee = Some(Vec::new());
-
         assert_eq!(
-            next_setup_step(&state, EpochNumber(8)),
+            decide_setup_step(20, 20, Some(0), 0),
             SetupStep::ResizeCommittee
         );
 
-        state.next_committee_capacity = Some(20);
         assert_eq!(
-            next_setup_step(&state, EpochNumber(8)),
+            decide_setup_step(20, 20, Some(20), 0),
             SetupStep::ResizePeerSet
         );
 
-        state.peer_capacity = 60;
-        assert_eq!(next_setup_step(&state, EpochNumber(8)), SetupStep::Done);
+        assert_eq!(decide_setup_step(20, 20, Some(20), 60), SetupStep::Done);
     }
 }

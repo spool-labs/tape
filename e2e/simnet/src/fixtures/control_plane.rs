@@ -60,13 +60,11 @@ impl SimnetScenario<'_> {
                 amount,
             )?);
         }
-        let current_epoch = self.read_system().await?.current_epoch;
         ixs.push(build_stake_with_pool_ix(
             payer.pubkey().into(),
             authority.into(),
             node_address.into(),
             amount,
-            current_epoch,
         ));
         if !payer_is_authority {
             ixs.push(build_close_ata_ix(authority.into(), payer.pubkey().into())?);

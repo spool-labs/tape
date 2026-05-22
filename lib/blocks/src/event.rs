@@ -194,6 +194,7 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytemuck::Zeroable;
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{NodePreferences, VoteKind};
@@ -215,6 +216,7 @@ mod tests {
         let event = EpochCommitted {
             epoch: EpochNumber(5),
             next_nonce: Hash::from([0x42; 32]),
+            preferences: NodePreferences::zeroed(),
         };
 
         let log = encode_event(EventType::EpochCommitted, &event);

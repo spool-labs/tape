@@ -96,6 +96,7 @@ pub struct ChainHarnessBuilder {
     prev_group_count: Option<u64>,
     node_specs: Vec<HarnessNodeSpec>,
     next_assignment_ready: bool,
+    candidate_ready: bool,
     seed_prev_snapshot_tape: bool,
 }
 
@@ -116,6 +117,7 @@ impl Default for ChainHarnessBuilder {
             prev_group_count: None,
             node_specs: default_node_specs(DEFAULT_NODES, DEFAULT_EPOCH),
             next_assignment_ready: false,
+            candidate_ready: false,
             seed_prev_snapshot_tape: true,
         }
     }
@@ -240,6 +242,17 @@ impl ChainHarnessBuilder {
         self
     }
 
+    pub fn candidate_ready(mut self) -> Self {
+        self.candidate_ready = true;
+        self
+    }
+
+    pub fn advance_ready(mut self) -> Self {
+        self.next_assignment_ready = true;
+        self.candidate_ready = true;
+        self
+    }
+
     /// Disable seeding of the previous-epoch snapshot tape.
     pub fn no_prev_snapshot_tape(mut self) -> Self {
         self.seed_prev_snapshot_tape = false;
@@ -319,6 +332,7 @@ impl ChainHarnessBuilder {
             current_group_count,
             prev_group_count,
             next_assignment_ready: self.next_assignment_ready,
+            candidate_ready: self.candidate_ready,
             seed_prev_snapshot_tape: self.seed_prev_snapshot_tape,
         })
     }

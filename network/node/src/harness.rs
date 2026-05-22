@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use peer_manager::PeerManager;
 use peer_memory::MemoryApi;
 use rpc_client::RpcClient;
@@ -100,10 +100,13 @@ impl NodeHarness {
         spool: SpoolIndex,
         status: SpoolStatus,
     ) -> Result<()> {
-        let ctx = self.contexts.get(index).ok_or_else(|| anyhow::anyhow!("node index {index} out of range"))?;
+        let ctx = self
+            .contexts
+            .get(index)
+            .ok_or_else(|| anyhow!("node index {index} out of range"))?;
         ctx.store
             .set_spool_state(spool, SpoolState::new(status, self.epoch()))
-            .map_err(|error| anyhow::anyhow!("set_spool_state({spool}): {error}"))
+            .map_err(|error| anyhow!("set_spool_state({spool}): {error}"))
     }
 
     pub fn set_all_owned_spools_status(&self, index: usize, status: SpoolStatus) -> Result<()> {
@@ -211,6 +214,16 @@ impl NodeHarnessBuilder {
 
     pub fn next_assignment_ready(mut self) -> Self {
         self.chain = self.chain.next_assignment_ready();
+        self
+    }
+
+    pub fn candidate_ready(mut self) -> Self {
+        self.chain = self.chain.candidate_ready();
+        self
+    }
+
+    pub fn advance_ready(mut self) -> Self {
+        self.chain = self.chain.advance_ready();
         self
     }
 

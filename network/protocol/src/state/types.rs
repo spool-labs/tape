@@ -30,6 +30,8 @@ pub struct ProtocolState {
     pub next_epoch: Option<Epoch>,
     pub next_committee: Option<Vec<Member>>,
     pub next_committee_capacity: Option<u64>,
+    pub candidate_epoch: Option<Epoch>,
+    pub candidate_committee_capacity: Option<u64>,
 }
 
 impl Default for EpochBundle {
@@ -53,6 +55,8 @@ impl Default for ProtocolState {
             next_epoch: None,
             next_committee: None,
             next_committee_capacity: None,
+            candidate_epoch: None,
+            candidate_committee_capacity: None,
         }
     }
 }

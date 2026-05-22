@@ -83,7 +83,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 }
                 ParsedInstruction::CommitEpoch { event } => {
                     handlers
-                        .handle_commit_epoch(event.epoch, event.next_nonce)
+                        .handle_commit_epoch(event.epoch, event.next_nonce, event.preferences)
                         .await?;
                 }
                 ParsedInstruction::AdvanceEpoch { event } => {

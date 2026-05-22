@@ -8,7 +8,7 @@ use tape_api::event::{
     NodeJoinedCommittee, PeerSetResized, SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
-use tape_core::system::{EpochPhase, VoteKind};
+use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
 use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -84,6 +84,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         &self,
         epoch: EpochNumber,
         next_nonce: Hash,
+        preferences: NodePreferences,
     ) -> Result<(), NodeError> {
         let mut state = (*self.context.state()).clone();
         if state.epoch() != epoch {
@@ -118,6 +119,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         }
 
         next.nonce = next_nonce;
+        next.preferences = preferences;
 
         self.context.set_state(state)?;
 
@@ -132,24 +134,35 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     pub async fn handle_create_epoch(&self, event: EpochCreated) -> Result<(), NodeError> {
         let mut state = (*self.context.state()).clone();
         let expected_next = state.epoch().saturating_add(EpochNumber(1));
+        let expected_candidate = expected_next.saturating_add(EpochNumber(1));
 
-        if event.epoch != expected_next {
+        if event.epoch == expected_next {
+            if !state
+                .next_epoch
+                .as_ref()
+                .is_some_and(|epoch| epoch.id == event.epoch)
+            {
+                let mut epoch = Epoch::zeroed();
+                epoch.id = event.epoch;
+                state.next_epoch = Some(epoch);
+            }
+        } else if event.epoch == expected_candidate {
+            if !state
+                .candidate_epoch
+                .as_ref()
+                .is_some_and(|epoch| epoch.id == event.epoch)
+            {
+                let mut epoch = Epoch::zeroed();
+                epoch.id = event.epoch;
+                state.candidate_epoch = Some(epoch);
+            }
+        } else {
             debug!(
                 event_epoch = event.epoch.0,
                 current_epoch = state.epoch().0,
-                "ignoring epoch creation outside next epoch"
+                "ignoring epoch creation outside tracked epochs"
             );
             return Ok(());
-        }
-
-        if !state
-            .next_epoch
-            .as_ref()
-            .is_some_and(|epoch| epoch.id == event.epoch)
-        {
-            let mut epoch = Epoch::zeroed();
-            epoch.id = event.epoch;
-            state.next_epoch = Some(epoch);
         }
 
         self.context.set_state(state)?;
@@ -160,7 +173,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         &self,
         event: CommitteeCreated,
     ) -> Result<(), NodeError> {
-        self.publish_next_committee_capacity(
+        self.publish_tracked_committee_capacity(
             event.epoch,
             u64::from_le_bytes(event.capacity),
         ).await
@@ -170,7 +183,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         &self,
         event: CommitteeResized,
     ) -> Result<(), NodeError> {
-        self.publish_next_committee_capacity(
+        self.publish_tracked_committee_capacity(
             event.epoch,
             u64::from_le_bytes(event.capacity),
         ).await
@@ -186,27 +199,31 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         Ok(())
     }
 
-    async fn publish_next_committee_capacity(
+    async fn publish_tracked_committee_capacity(
         &self,
         epoch: EpochNumber,
         capacity: u64,
     ) -> Result<(), NodeError> {
         let mut state = (*self.context.state()).clone();
         let expected_next = state.epoch().saturating_add(EpochNumber(1));
+        let expected_candidate = expected_next.saturating_add(EpochNumber(1));
 
-        if epoch != expected_next {
+        if epoch == expected_next {
+            if state.next_committee.is_none() {
+                state.next_committee = Some(Vec::new());
+            }
+            state.next_committee_capacity = Some(capacity);
+        } else if epoch == expected_candidate {
+            state.candidate_committee_capacity = Some(capacity);
+        } else {
             debug!(
                 event_epoch = epoch.0,
                 current_epoch = state.epoch().0,
-                "ignoring committee setup outside next epoch"
+                "ignoring committee setup outside tracked epochs"
             );
             return Ok(());
         }
 
-        if state.next_committee.is_none() {
-            state.next_committee = Some(Vec::new());
-        }
-        state.next_committee_capacity = Some(capacity);
         self.context.set_state(state)?;
 
         Ok(())

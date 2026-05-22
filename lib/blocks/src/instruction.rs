@@ -34,9 +34,7 @@ pub enum RawInstruction {
     CreateCommittee {
         epoch: EpochNumber,
     },
-    ResizeCommittee {
-        epoch: EpochNumber,
-    },
+    ResizeCommittee,
     ResizePeerSet,
     CommitEpoch,
     AdvanceEpoch,
@@ -150,7 +148,6 @@ pub enum ParsedInstruction {
         event: CommitteeCreated,
     },
     ResizeCommittee {
-        epoch: EpochNumber,
         event: CommitteeResized,
     },
     ResizePeerSet {
@@ -353,11 +350,9 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::ResizeCommittee => {
-            let args = ix::ResizeCommittee::try_from_bytes(&ix_data[1..])
+            let _args = ix::ResizeCommittee::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("resize_committee: {e:?}")))?;
-            Ok(Some(RawInstruction::ResizeCommittee {
-                epoch: EpochNumber::unpack(args.epoch),
-            }))
+            Ok(Some(RawInstruction::ResizeCommittee))
         }
 
         TapeInstruction::ResizePeerSet => {
@@ -531,8 +526,8 @@ pub fn parse_raw_instruction(
                 .map_err(|e| ParseError::Deserialization(format!("stake_with_pool: {e:?}")))?;
             Ok(Some(RawInstruction::StakeWithPool {
                 authority: get_account(1)?,
-                pool: get_account(5)?,
-                stake: get_account(6)?,
+                pool: get_account(4)?,
+                stake: get_account(5)?,
                 amount: args.amount,
             }))
         }

@@ -6,7 +6,6 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let args = CreateEpoch::try_from_bytes(data)?;
     let [
         fee_payer_info,
-        system_info,
         epoch_info,
         system_program_info,
         rent_sysvar_info,
@@ -22,11 +21,9 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_program(&system_program::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
-    system_info
-        .is_system()?;
 
-    let epoch = EpochNumber::unpack(args.epoch);
-    let (epoch_address, _) = epoch_pda(epoch);
+    let id = EpochNumber::unpack(args.epoch);
+    let (epoch_address, _) = epoch_pda(id);
 
     epoch_info
         .is_empty()?
@@ -38,13 +35,17 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[EPOCH, &epoch.pack()],
+        &[EPOCH, &id.pack()],
     )?;
 
-    let epoch_acct = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
-    epoch_acct.id = epoch;
+    let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    EpochCreated { epoch }.log();
+    epoch.id = id;
+    epoch.state.phase = EpochPhase::Unknown as u64;
+
+    EpochCreated { 
+        epoch: id 
+    }.log();
 
     Ok(())
 }
@@ -59,19 +60,12 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let target = EpochNumber(7);
 
-        let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda(target);
-
-        let system = System {
-            current_epoch: EpochNumber(6),
-            ..System::zeroed()
-        };
 
         let instruction = build_create_epoch_ix(fee_payer.into(), target);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
-            pda(system_address, system.pack(), tapedrive::ID),
             empty(epoch_address),
             system_program(),
             rent_sysvar(),

@@ -7,7 +7,6 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let args = CreateCommittee::try_from_bytes(data)?;
     let [
         fee_payer_info,
-        system_info,
         committee_info,
         system_program_info,
         rent_sysvar_info,
@@ -23,8 +22,6 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_program(&system_program::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
-    system_info
-        .is_system()?;
 
     let epoch = EpochNumber::unpack(args.epoch);
     let (committee_address, bump) = committee_pda(epoch);
@@ -67,20 +64,12 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let target = EpochNumber(3);
 
-        let (system_address, _) = system_pda();
         let (committee_address, _) = committee_pda(target);
-
-        let system = System {
-            current_epoch: EpochNumber(2),
-            committee_size: 128,
-            ..System::zeroed()
-        };
 
         let instruction = build_create_committee_ix(fee_payer.into(), target);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
-            pda(system_address, system.pack(), tapedrive::ID),
             empty(committee_address),
             system_program(),
             rent_sysvar(),

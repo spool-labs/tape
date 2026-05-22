@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use bytemuck::Zeroable;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use tape_api::dynamic::DynamicState;
+use tape_api::program::{MIN_COMMITTEE_SIZE, MIN_STORAGE_CAPACITY, MIN_STORAGE_PRICE};
 use tape_api::program::tapedrive::{
     archive_pda, committee_pda, epoch_pda, group_pda, history_pda, node_pda, peer_set_pda,
     snapshot_tape_pda, system_pda, SYSTEM_ADDRESS,
@@ -17,10 +18,12 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::staking::{PoolHistory, StakingPool};
 use tape_core::system::{
-    EpochPhase, EpochSchedule, Member, NodeMetadata, NodePreferences, Peer, Spool,
+    aggregate_node_preferences, EpochPhase, EpochSchedule, EpochState, Member, NodeMetadata,
+    NodePreferences, Peer, Spool,
 };
+use tape_core::types::coin::TAPE;
 use tape_core::types::{
-    EpochNumber, ShareAmount, StorageUnits, Tail, TapeNumber, VersionId,
+    EpochNumber, NodeId, ShareAmount, StorageUnits, Tail, TapeNumber, VersionId,
 };
 use tape_crypto::{Address, Hash};
 use tape_protocol::{EpochBundle, ProtocolState};
@@ -55,6 +58,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
     let committee_capacity = committee_capacity(spec);
     let prev_epoch = previous_epoch(spec.epoch);
     let next_epoch = spec.epoch.saturating_add(EpochNumber(1));
+    let candidate_epoch = next_epoch.saturating_add(EpochNumber(1));
 
     let prev = build_epoch_bundle(
         prev_epoch,
@@ -90,8 +94,16 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         }
     };
 
-    let peer_capacity = committee_capacity.saturating_mul(3);
     let peers = peer_set(spec, &identities);
+    let committed_preferences = committed_preferences(spec, &current.committee, &peers)
+        .context("build committed preferences")?;
+    let peer_capacity = if spec.candidate_ready {
+        committee_capacity
+            .max(committed_preferences.committee_size)
+            .saturating_mul(3)
+    } else {
+        committee_capacity.saturating_mul(3)
+    };
 
     let system = System {
         current_epoch: spec.epoch,
@@ -126,13 +138,30 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             id: next_epoch,
             state: epoch_state(EpochPhase::Unknown),
             assignment_hash: Hash::from([0x88; 32]),
+            preferences: committed_preferences,
             total_groups: next.epoch.total_groups,
             total_assigned: next.epoch.total_assigned,
             ..Epoch::zeroed()
         }
     } else {
-        next.epoch
+        Epoch {
+            preferences: if spec.phase == EpochPhase::Closing || spec.candidate_ready {
+                committed_preferences
+            } else {
+                NodePreferences::zeroed()
+            },
+            ..next.epoch
+        }
     };
+
+    let candidate_epoch_account = spec.candidate_ready.then(|| Epoch {
+        id: candidate_epoch,
+        state: epoch_state(EpochPhase::Unknown),
+        ..Epoch::zeroed()
+    });
+    let candidate_committee_capacity = spec
+        .candidate_ready
+        .then_some(committed_preferences.committee_size);
 
     let archive = Archive {
         schedule: EpochSchedule::new_at(spec.epoch),
@@ -167,7 +196,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
 
     for (index, identity) in identities.iter().enumerate() {
         let node_spec = &spec.nodes[index];
-        let node_id = tape_core::types::NodeId(index as u64);
+        let node_id = NodeId(index as u64);
         let bls_pubkey = identity.bls_keypair.public_key().expect("bls public key");
         let preferences = node_preferences(node_spec, committee_capacity, spec.current_group_count);
 
@@ -241,21 +270,33 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         next_epoch: Some(next_epoch_account),
         next_committee: Some(next.committee.clone()),
         next_committee_capacity: Some(committee_capacity),
+        candidate_epoch: candidate_epoch_account,
+        candidate_committee_capacity,
     };
+
+    let mut epochs = vec![
+        seed(epoch_pda(prev_epoch).0, prev_epoch_account.pack()),
+        seed(epoch_pda(spec.epoch).0, current_epoch_account.pack()),
+        seed(epoch_pda(next_epoch).0, next_epoch_account.pack()),
+    ];
+    if let Some(epoch) = candidate_epoch_account {
+        epochs.push(seed(epoch_pda(candidate_epoch).0, epoch.pack()));
+    }
+
+    let mut committees = vec![
+        seed_committee(prev_epoch, committee_capacity, &prev.committee),
+        seed_committee(spec.epoch, committee_capacity, &current.committee),
+        seed_committee(next_epoch, committee_capacity, &next.committee),
+    ];
+    if let Some(capacity) = candidate_committee_capacity {
+        committees.push(seed_committee(candidate_epoch, capacity, &[]));
+    }
 
     Ok(SeededWorld {
         protocol_state,
         system: seed(system_pda().0, system.pack()),
-        epochs: vec![
-            seed(epoch_pda(prev_epoch).0, prev_epoch_account.pack()),
-            seed(epoch_pda(spec.epoch).0, current_epoch_account.pack()),
-            seed(epoch_pda(next_epoch).0, next_epoch_account.pack()),
-        ],
-        committees: vec![
-            seed_committee(prev_epoch, committee_capacity, &prev.committee),
-            seed_committee(spec.epoch, committee_capacity, &current.committee),
-            seed_committee(next_epoch, committee_capacity, &next.committee),
-        ],
+        epochs,
+        committees,
         peer_set: seed_peer_set(peer_capacity, &peers),
         groups: seed_groups(&prev.groups)
             .into_iter()
@@ -396,6 +437,23 @@ fn peer_set(spec: &HarnessSpec, identities: &[NodeIdentity]) -> Vec<Peer> {
         .collect()
 }
 
+fn committed_preferences(
+    spec: &HarnessSpec,
+    members: &[Member],
+    peers: &[Peer],
+) -> Result<NodePreferences> {
+    let bounds = NodePreferences {
+        storage_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
+        storage_price: TAPE(MIN_STORAGE_PRICE as u64),
+        committee_size: MIN_COMMITTEE_SIZE as u64,
+        spool_groups: spec.current_group_count,
+        min_version: VersionId(1),
+    };
+
+    aggregate_node_preferences(members, peers, bounds)
+        .map_err(|error| anyhow!("aggregate node preferences: {error:?}"))
+}
+
 fn node_preferences(
     spec: &HarnessNodeSpec,
     committee_size: u64,
@@ -429,14 +487,14 @@ fn committee_capacity(spec: &HarnessSpec) -> u64 {
         .len()
         .max(spec.prev_committee_nodes.len())
         .max(spec.next_committee_nodes.len())
-        .max(tape_api::program::MIN_COMMITTEE_SIZE);
+        .max(MIN_COMMITTEE_SIZE);
     max_committee as u64
 }
 
-fn epoch_state(phase: EpochPhase) -> tape_core::system::EpochState {
-    tape_core::system::EpochState {
+fn epoch_state(phase: EpochPhase) -> EpochState {
+    EpochState {
         phase: phase as u64,
-        ..tape_core::system::EpochState::zeroed()
+        ..EpochState::zeroed()
     }
 }
 

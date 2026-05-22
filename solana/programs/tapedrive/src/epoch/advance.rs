@@ -2,17 +2,21 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::event::EpochAdvanced;
 
-use tape_core::bft::{quorum_above, quorum_below};
-
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = AdvanceEpoch::try_from_bytes(data)?;
     let [
         fee_payer_info,
         system_info,
         archive_info,
+
         curr_epoch_info,
+
         next_epoch_info,
         next_committee_info,
+
+        candidate_epoch_info,
+        candidate_committee_info,
+
         peer_set_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -29,10 +33,12 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let curr = system.current_epoch;
     let next = curr.saturating_add(EpochNumber(1));
+    let candidate = next.saturating_add(EpochNumber(1));
 
     archive_info
         .is_writable()?
         .is_archive()?;
+
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
 
     let curr_epoch = curr_epoch_info
@@ -40,90 +46,93 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_epoch(curr)?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    if curr_epoch.state.phase != EpochPhase::Closing as u64 {
-        return Err(TapeError::BadEpochState.into());
-    }
-
     let next_epoch = next_epoch_info
         .is_writable()?
         .is_epoch(next)?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
+    if curr_epoch.id != curr {
+        return Err(TapeError::BadEpochId.into());
+    }
+    if curr_epoch.state.phase != EpochPhase::Closing as u64 {
+        return Err(TapeError::BadEpochState.into());
+    }
+
+    if next_epoch.id != next {
+        return Err(TapeError::BadEpochId.into());
+    }
     if !next_epoch.has_assignment_hash() {
         return Err(TapeError::AssignmentIncomplete.into());
     }
-
     if next_epoch.total_groups != system.target_group_count {
         return Err(TapeError::AssignmentIncomplete.into());
     }
+
+    let preferences = next_epoch.preferences;
+    validate_preferences(system, preferences)?;
 
     if archive.schedule.current_epoch() != curr {
         return Err(TapeError::BadSchedule.into());
     }
 
-    next_committee_info.is_committee(next)?;
+    let target_epoch = candidate_epoch_info
+        .is_epoch(candidate)?
+        .as_account::<Epoch>(&tapedrive::ID)?;
+
+    if target_epoch.id != candidate {
+        return Err(TapeError::BadEpochId.into());
+    }
+    if target_epoch.state.phase != EpochPhase::Unknown as u64 {
+        return Err(TapeError::BadEpochState.into());
+    }
+
+    next_committee_info
+        .is_committee(next)?;
+
+    candidate_committee_info
+        .is_committee(candidate)?;
+
     let (next_committee, next_members) =
         Committee::read(next_committee_info, &tapedrive::ID)?;
 
     if next_committee.epoch != next {
         return Err(TapeError::BadEpochId.into());
     }
-
     if next_committee.members.capacity != system.committee_size {
         return Err(TapeError::InsufficientCommittee.into());
     }
-
     if (next_committee.members.count as usize) < GROUP_SIZE {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
-    let committee_count = next_committee.members.count;
+    let (candidate_committee, _) =
+        Committee::read(candidate_committee_info, &tapedrive::ID)?;
 
-    peer_set_info.is_peer_set()?;
-    let (_, peers) = PeerSet::read(peer_set_info, &tapedrive::ID)?;
-
-    let mut total_weight: u64 = 0;
-    let mut total_stake: u64 = 0;
-    let mut storage_capacities: Vec<(u64, u64)> = Vec::new();
-    let mut storage_prices: Vec<(u64, u64)> = Vec::new();
-    let mut committee_sizes: Vec<(u64, u64)> = Vec::new();
-    let mut spool_group_counts: Vec<(u64, u64)> = Vec::new();
-    let mut min_versions: Vec<(u64, u64)> = Vec::new();
-
-    for member in next_members.iter() {
-        let peer = peers
-            .iter()
-            .find(|p| p.node == member.node)
-            .ok_or(TapeError::BadMember)?;
-        let weight = member.spools;
-
-        storage_capacities.push((peer.preferences.storage_capacity.0, weight));
-        storage_prices.push((peer.preferences.storage_price.0, weight));
-        committee_sizes.push((peer.preferences.committee_size, weight));
-        spool_group_counts.push((peer.preferences.spool_groups, weight));
-        min_versions.push((peer.preferences.min_version.0, weight));
-
-        total_weight = total_weight.saturating_add(weight);
-        total_stake = total_stake.saturating_add(member.stake.0);
+    if candidate_committee.epoch != candidate {
+        return Err(TapeError::BadEpochId.into());
+    }
+    if candidate_committee.members.capacity != preferences.committee_size {
+        return Err(TapeError::InsufficientCommittee.into());
+    }
+    if candidate_committee.members.count != 0 {
+        return Err(TapeError::UnexpectedState.into());
     }
 
-    let new_min_version : VersionId = VersionId(
-        quorum_above(&min_versions, total_weight)
-        .max(system.min_version.0)
-    );
-    let new_storage_capacity = StorageUnits(
-        quorum_above(&storage_capacities, total_weight)
-        .max(MIN_STORAGE_CAPACITY as u64)
-    );
-    let new_storage_price = TAPE(
-        quorum_below(&storage_prices, total_weight)
-        .max(MIN_STORAGE_PRICE as u64)
-    );
+    let committee_count = next_committee.members.count;
+    let total_stake = next_members
+        .iter()
+        .fold(0u64, |total, member| total.saturating_add(member.stake.0));
 
-    let new_committee_size = quorum_above(&committee_sizes, total_weight)
-        .max(MIN_COMMITTEE_SIZE as u64);
-    let new_spool_groups = quorum_above(&spool_group_counts, total_weight) 
-        .max(system.target_group_count);
+    peer_set_info.is_peer_set()?;
+    let peer_set = PeerSet::header(peer_set_info, &tapedrive::ID)?;
+    let required_peer_capacity = system
+        .committee_size
+        .max(preferences.committee_size)
+        .saturating_mul(3);
+
+    if peer_set.peers.capacity < required_peer_capacity {
+        return Err(TapeError::ListFull.into());
+    }
 
     // Archive schedule and rewards rollover. Unspent reward dust from the
     // closing epoch carries into next epoch's pool.
@@ -133,8 +142,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     archive.rewards_pool = epoch_usage.paid().saturating_add(leftover);
     archive.rewards_paid = TAPE::zero();
     archive.recent_usage = epoch_usage.reserved();
-    archive.storage_capacity = new_storage_capacity;
-    archive.storage_price = new_storage_price;
+    archive.storage_capacity = preferences.storage_capacity;
+    archive.storage_price = preferences.storage_price;
 
     // Light up the next epoch.
     let clock = Clock::get()?;
@@ -147,10 +156,10 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Update system with new epoch and preferences.
     system.current_epoch = next;
-    system.committee_size = new_committee_size;
-    system.target_group_count = new_spool_groups;
+    system.committee_size = preferences.committee_size;
+    system.target_group_count = preferences.spool_groups;
     system.live_group_count = next_epoch.total_groups;
-    system.min_version = new_min_version;
+    system.min_version = preferences.min_version;
 
     EpochAdvanced {
         old_epoch: curr,
@@ -158,15 +167,29 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         timestamp: (clock.unix_timestamp as u64).to_le_bytes(),
         total_stake: total_stake.to_le_bytes(),
         committee_count: committee_count.to_le_bytes(),
-        preferences: NodePreferences {
-            storage_capacity: new_storage_capacity,
-            storage_price: new_storage_price,
-            committee_size: new_committee_size,
-            spool_groups: new_spool_groups,
-            min_version: new_min_version,
-        },
+        preferences,
         nonce: next_epoch.nonce,
     }.log();
+
+    Ok(())
+}
+
+fn validate_preferences(system: &System, preferences: NodePreferences) -> ProgramResult {
+    if preferences.storage_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
+        return Err(TapeError::UnexpectedState.into());
+    }
+    if preferences.storage_price.0 < MIN_STORAGE_PRICE as u64 {
+        return Err(TapeError::UnexpectedState.into());
+    }
+    if preferences.committee_size < MIN_COMMITTEE_SIZE as u64 {
+        return Err(TapeError::InsufficientCommittee.into());
+    }
+    if preferences.spool_groups < system.target_group_count {
+        return Err(TapeError::UnexpectedState.into());
+    }
+    if preferences.min_version.0 < system.min_version.0 {
+        return Err(TapeError::UnexpectedState.into());
+    }
 
     Ok(())
 }
@@ -196,23 +219,21 @@ mod tests {
 
         let curr = EpochNumber(10);
         let next = EpochNumber(11);
+        let target = EpochNumber(12);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (curr_epoch_address, _) = epoch_pda(curr);
         let (next_epoch_address, _) = epoch_pda(next);
         let (next_committee_address, _) = committee_pda(next);
+        let (target_epoch_address, _) = epoch_pda(target);
+        let (target_committee_address, _) = committee_pda(target);
         let (peer_set_address, _) = peer_set_pda();
 
         let env = test_env();
         let now = env.now();
         let slot = env.slot();
 
-        // 20 next-committee members, each owning 50 spools (full 1000 spools
-        // distributed evenly). All agree on the same preferences so the
-        // quorum aggregation returns the unanimous value. Storage capacity
-        // is set above MIN_STORAGE_CAPACITY (1 GiB) so the floor doesn't
-        // override the aggregation.
         let prefs = pref(2_048, 950, 256, 75, 3);
         let next_members: Vec<Member> = (0..20)
             .map(|i| {
@@ -261,6 +282,12 @@ mod tests {
             total_groups: 50,
             nonce: nonce_value,
             assignment_hash: Hash::from([0x88; 32]),
+            preferences: prefs,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+        let target_epoch_data = Epoch {
+            id: target,
             state: EpochState::zeroed(),
             ..Epoch::zeroed()
         };
@@ -268,7 +295,12 @@ mod tests {
         let next_committee_data =
             Committee { epoch: next, members: Tail::new(COMMITTEE_SIZE, next_members.len() as u64) }
                 .pack_with(&next_members);
-        let peer_set_data = PeerSet { peers: Tail::new(20, next_peers.len() as u64) }
+        let target_committee_data =
+            Committee { epoch: target, members: Tail::empty(prefs.committee_size) }
+                .pack_with(&[]);
+        let peer_set_data = PeerSet {
+            peers: Tail::new(prefs.committee_size.saturating_mul(3), next_peers.len() as u64),
+        }
             .pack_with(&next_peers);
 
         let instruction = build_advance_epoch_ix(fee_payer.into(), curr);
@@ -280,6 +312,8 @@ mod tests {
             pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
             pda(next_epoch_address, next_epoch_data.pack(), tapedrive::ID),
             pda(next_committee_address, next_committee_data, tapedrive::ID),
+            pda(target_epoch_address, target_epoch_data.pack(), tapedrive::ID),
+            pda(target_committee_address, target_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
         ];
 
@@ -352,16 +386,18 @@ mod tests {
 
         let curr = EpochNumber(10);
         let next = EpochNumber(11);
+        let target = EpochNumber(12);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (curr_epoch_address, _) = epoch_pda(curr);
         let (next_epoch_address, _) = epoch_pda(next);
         let (next_committee_address, _) = committee_pda(next);
+        let (target_epoch_address, _) = epoch_pda(target);
+        let (target_committee_address, _) = committee_pda(target);
         let (peer_set_address, _) = peer_set_pda();
 
-        // Members vote for values BELOW the current system parameters.
-        let prefs = pref(2_048, 950, /*committee*/ 64, /*spool_groups*/ 30, /*min_version*/ 1);
+        let prefs = pref(2_048, 950, /*committee*/ 64, /*spool_groups*/ 75, /*min_version*/ 5);
         let next_members: Vec<Member> = (0..20)
             .map(|i| {
                 let mut bytes = [0u8; 32];
@@ -408,6 +444,12 @@ mod tests {
             id: next,
             total_groups: 75,
             assignment_hash: Hash::from([0x88; 32]),
+            preferences: prefs,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+        let target_epoch_data = Epoch {
+            id: target,
             state: EpochState::zeroed(),
             ..Epoch::zeroed()
         };
@@ -417,7 +459,14 @@ mod tests {
             members: Tail::new(system.committee_size, next_members.len() as u64),
         }
         .pack_with(&next_members);
-        let peer_set_data = PeerSet { peers: Tail::new(20, next_peers.len() as u64) }
+        let target_committee_data = Committee {
+            epoch: target,
+            members: Tail::empty(prefs.committee_size),
+        }
+        .pack_with(&[]);
+        let peer_set_data = PeerSet {
+            peers: Tail::new(system.committee_size.saturating_mul(3), next_peers.len() as u64),
+        }
             .pack_with(&next_peers);
 
         let instruction = build_advance_epoch_ix(fee_payer.into(), curr);
@@ -429,12 +478,11 @@ mod tests {
             pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
             pda(next_epoch_address, next_epoch_data.pack(), tapedrive::ID),
             pda(next_committee_address, next_committee_data, tapedrive::ID),
+            pda(target_epoch_address, target_epoch_data.pack(), tapedrive::ID),
+            pda(target_committee_address, target_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
         ];
 
-        // spool_groups: ratchet holds at 75 (vote of 30 ignored).
-        // min_version: ratchet holds at 5 (vote of 1 ignored).
-        // committee_size: shrinks to 64 (no ratchet; only floored at 20).
         let expected_system = System {
             current_epoch: next,
             committee_size: 64,

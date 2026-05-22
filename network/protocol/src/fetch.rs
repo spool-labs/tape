@@ -20,6 +20,7 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
 
     let next = system.current_epoch
         .saturating_add(EpochNumber::one());
+    let candidate = next.saturating_add(EpochNumber::one());
     let prev = system.current_epoch
         .saturating_sub(EpochNumber::one());
 
@@ -55,6 +56,17 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
         None => (None, None),
     };
 
+    let candidate_epoch = optional_account(
+        rpc.get_epoch_with_commitment(candidate, commitment)
+        .await
+    )?;
+
+    let candidate_committee_capacity = optional_account(
+        rpc.get_committee_account_with_commitment(candidate, commitment)
+        .await
+    )?
+    .map(|(capacity, _)| capacity);
+
     Ok(ProtocolState {
         system,
         peers,
@@ -64,6 +76,8 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
         next_epoch,
         next_committee,
         next_committee_capacity,
+        candidate_epoch,
+        candidate_committee_capacity,
     })
 }
 

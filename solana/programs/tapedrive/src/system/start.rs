@@ -10,6 +10,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         archive_info,
         epoch_info,
         committee_info,
+        candidate_epoch_info,
+        candidate_committee_info,
         peer_set_info,
         group_info,
         snapshot_tape_info,
@@ -39,7 +41,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_sysvar(&sysvar::rent::ID)?;
 
     let committee_size = u64::from_le_bytes(args.committee_size);
-    if committee_size < GROUP_SIZE as u64 {
+    if committee_size != GROUP_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -57,6 +59,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_archive()?;
 
     let target = EpochNumber(1);
+    let candidate = EpochNumber(2);
     let group_id = GroupIndex(0);
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.schedule = EpochSchedule::new_at(target);
@@ -68,6 +71,9 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     if epoch.state.phase != EpochPhase::Unknown as u64 {
         return Err(TapeError::BadEpochState.into());
+    }
+    if epoch.id != target {
+        return Err(TapeError::BadEpochId.into());
     }
 
     if epoch.total_groups != 0 {
@@ -83,7 +89,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         system_program_info,
         fee_payer_info,
         target,
-        GROUP_SIZE as u64,
+        committee_size,
     )?;
 
     let (committee_header, members) =
@@ -93,7 +99,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::BadEpochId.into());
     }
 
-    if committee_header.members.capacity < GROUP_SIZE as u64 {
+    if committee_header.members.capacity != committee_size {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -101,20 +107,53 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
+    let candidate_epoch = candidate_epoch_info
+        .is_writable()?
+        .is_epoch(candidate)?
+        .as_account::<Epoch>(&tapedrive::ID)?;
+
+    if candidate_epoch.id != candidate {
+        return Err(TapeError::BadEpochId.into());
+    }
+    if candidate_epoch.state.phase != EpochPhase::Unknown as u64 {
+        return Err(TapeError::BadEpochState.into());
+    }
+    if candidate_epoch.total_groups != 0 {
+        return Err(TapeError::UnexpectedState.into());
+    }
+
+    candidate_committee_info
+        .is_writable()?
+        .is_committee(candidate)?;
+
+    ensure_committee_capacity(
+        candidate_committee_info,
+        system_program_info,
+        fee_payer_info,
+        candidate,
+        committee_size,
+    )?;
+
+    let candidate_committee =
+        Committee::header(candidate_committee_info, &tapedrive::ID)?;
+    if candidate_committee.epoch != candidate {
+        return Err(TapeError::BadEpochId.into());
+    }
+    if candidate_committee.members.capacity != committee_size {
+        return Err(TapeError::InsufficientCommittee.into());
+    }
+    if candidate_committee.members.count != 0 {
+        return Err(TapeError::UnexpectedState.into());
+    }
+
+    let peer_capacity = committee_size;
     peer_set_info
         .is_writable()?
         .is_peer_set()?;
 
-    ensure_peer_set_capacity(
-        peer_set_info,
-        system_program_info,
-        fee_payer_info,
-        GROUP_SIZE as u64,
-    )?;
-
     let (peer_header, peers) = PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
 
-    if peer_header.peers.capacity < GROUP_SIZE as u64 {
+    if peer_header.peers.capacity < peer_capacity {
         return Err(TapeError::ListFull.into());
     }
 
@@ -229,7 +268,6 @@ fn ensure_committee_capacity<'info>(
     epoch: EpochNumber,
     capacity: u64,
 ) -> ProgramResult {
-
     let header = Committee::header(committee_info, &tapedrive::ID)?;
     if header.epoch != epoch {
         return Err(TapeError::BadEpochId.into());
@@ -248,31 +286,6 @@ fn ensure_committee_capacity<'info>(
     let header = Committee::header_mut(committee_info, &tapedrive::ID)?;
     header.epoch = epoch;
     header.members.capacity = capacity;
-
-    Ok(())
-}
-
-fn ensure_peer_set_capacity<'info>(
-    peer_set_info: &AccountInfo<'info>,
-    system_program_info: &AccountInfo<'info>,
-    fee_payer_info: &AccountInfo<'info>,
-    capacity: u64,
-) -> ProgramResult {
-
-    let header = PeerSet::header(peer_set_info, &tapedrive::ID)?;
-    if header.peers.capacity >= capacity {
-        return Ok(());
-    }
-
-    resize_account(
-        peer_set_info,
-        system_program_info,
-        fee_payer_info,
-        PeerSet::size_for_capacity(capacity),
-    )?;
-
-    let header = PeerSet::header_mut(peer_set_info, &tapedrive::ID)?;
-    header.peers.capacity = capacity;
 
     Ok(())
 }
@@ -326,12 +339,15 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
 
         let target = EpochNumber(1);
+        let candidate = EpochNumber(2);
         let group_id = GroupIndex(0);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda(target);
         let (committee_address, _) = committee_pda(target);
+        let (candidate_epoch_address, _) = epoch_pda(candidate);
+        let (candidate_committee_address, _) = committee_pda(candidate);
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
         let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
@@ -348,15 +364,24 @@ mod tests {
             state: EpochState::zeroed(),
             ..Epoch::zeroed()
         };
+        let candidate_epoch = Epoch {
+            id: candidate,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
 
+        let committee_size = GROUP_SIZE as u64;
+        let peer_capacity = committee_size;
         let committee_data =
             Committee { epoch: target, members: Tail::empty(0) }
                 .pack_with(&[]);
+        let candidate_committee_data =
+            Committee { epoch: candidate, members: Tail::empty(0) }
+                .pack_with(&[]);
         let peer_set_data =
-            PeerSet { peers: Tail::empty(0) }
+            PeerSet { peers: Tail::empty(peer_capacity) }
                 .pack_with(&[]);
 
-        let committee_size: u64 = 128;
         let spool_groups: u64 = 50;
         let instruction = build_start_network_ix(
             fee_payer.into(),
@@ -371,6 +396,8 @@ mod tests {
             pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(committee_address, committee_data, tapedrive::ID),
+            pda(candidate_epoch_address, candidate_epoch.pack(), tapedrive::ID),
+            pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
             empty(snapshot_tape_address),
@@ -448,12 +475,18 @@ mod tests {
                 Check::account(&Pubkey::from(committee_address))
                     .data(Committee {
                         epoch: target,
-                        members: Tail::new(GROUP_SIZE as u64, expected_members.len() as u64),
+                        members: Tail::new(committee_size, expected_members.len() as u64),
                     }.pack_with(&expected_members).as_ref())
+                    .build(),
+                Check::account(&Pubkey::from(candidate_committee_address))
+                    .data(Committee {
+                        epoch: candidate,
+                        members: Tail::empty(committee_size),
+                    }.pack_with(&[]).as_ref())
                     .build(),
                 Check::account(&Pubkey::from(peer_set_address))
                     .data(PeerSet {
-                        peers: Tail::new(GROUP_SIZE as u64, expected_peers.len() as u64),
+                        peers: Tail::new(peer_capacity, expected_peers.len() as u64),
                     }.pack_with(&expected_peers).as_ref())
                     .build(),
             ],
@@ -465,12 +498,15 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
 
         let target = EpochNumber(1);
+        let candidate = EpochNumber(2);
         let group_id = GroupIndex(0);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda(target);
         let (committee_address, _) = committee_pda(target);
+        let (candidate_epoch_address, _) = epoch_pda(candidate);
+        let (candidate_committee_address, _) = committee_pda(candidate);
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
         let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
@@ -488,17 +524,27 @@ mod tests {
             state: EpochState::zeroed(),
             ..Epoch::zeroed()
         };
+        let candidate_epoch = Epoch {
+            id: candidate,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
 
+        let committee_size = GROUP_SIZE as u64;
+        let peer_capacity = committee_size;
         let committee_data =
             Committee { epoch: target, members: Tail::empty(GROUP_SIZE as u64) }
                 .pack_with(&[]);
+        let candidate_committee_data =
+            Committee { epoch: candidate, members: Tail::empty(GROUP_SIZE as u64) }
+                .pack_with(&[]);
         let peer_set_data =
-            PeerSet { peers: Tail::empty(GROUP_SIZE as u64) }
+            PeerSet { peers: Tail::empty(peer_capacity) }
                 .pack_with(&[]);
 
         let instruction = build_start_network_ix(
             fee_payer.into(),
-            128,
+            committee_size,
             50,
             &genesis_nodes,
         );
@@ -509,6 +555,8 @@ mod tests {
             pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(committee_address, committee_data, tapedrive::ID),
+            pda(candidate_epoch_address, candidate_epoch.pack(), tapedrive::ID),
+            pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
             empty(snapshot_tape_address),

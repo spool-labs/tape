@@ -49,7 +49,6 @@ impl<Blockchain: Rpc, Cluster: Api>
                 stake_key.pubkey().into(),
                 pool,
                 amount,
-                self.rpc().get_system().await?.current_epoch,
             ),
         );
 

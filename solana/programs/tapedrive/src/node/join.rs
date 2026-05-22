@@ -36,11 +36,18 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_epoch(curr)?
         .as_account::<Epoch>(&tapedrive::ID)?;
 
+    // Joining the next committee must not be allowed once the current epoch is closing
     if curr_epoch.state.phase >= EpochPhase::Closing as u64 {
         return Err(TapeError::BadEpochState.into());
     }
 
-    curr_committee_info.is_committee(curr)?;
+    curr_committee_info
+        .is_committee(curr)?;
+
+    next_committee_info
+        .is_writable()?
+        .is_committee(next)?;
+
     let (curr_committee, curr_members) = 
         Committee::read(curr_committee_info, &tapedrive::ID)?;
 
@@ -48,17 +55,13 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         return Err(TapeError::BadEpochId.into());
     }
 
-    next_committee_info
-        .is_writable()?
-        .is_committee(next)?;
-
     let (next_committee, next_members) =
         Committee::read_full_mut(next_committee_info, &tapedrive::ID)?;
+
     if next_committee.epoch != next {
         return Err(TapeError::BadEpochId.into());
     }
-
-    if next_committee.members.capacity < system.committee_size {
+    if next_committee.members.capacity != system.committee_size {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -66,7 +69,8 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_writable()?
         .is_peer_set()?;
 
-    let (peer_set, peers) = PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
+    let (peer_set, peers) = 
+        PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
 
     let node = node_info
         .is_writable()?
@@ -102,14 +106,6 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         spools: 0,
     };
 
-    apply_member_join_slice(
-        next_members,
-        &mut next_committee.members.count,
-        next_committee.members.capacity,
-        member,
-    )
-        .map_err(|_| TapeError::UnexpectedState)?;
-
     let peer = Peer {
         node: node_address,
         bls_pubkey: node.metadata.bls_pubkey,
@@ -117,6 +113,14 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         network_tls: node.metadata.network_tls,
         preferences: node.preferences,
     };
+
+    apply_member_join_slice(
+        next_members,
+        &mut next_committee.members.count,
+        next_committee.members.capacity,
+        member,
+    )
+    .map_err(|_| TapeError::UnexpectedState)?;
 
     apply_peer_join_slice(
         peers,

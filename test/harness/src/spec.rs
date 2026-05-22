@@ -19,6 +19,9 @@ pub struct HarnessSpec {
     /// This is useful for exercising `AdvanceEpoch`, which now requires the
     /// assignment manager to have completed before lifecycle can advance.
     pub next_assignment_ready: bool,
+    /// Whether to seed the candidate E+2 epoch and committee accounts required
+    /// before `AdvanceEpoch` can enter E+1.
+    pub candidate_ready: bool,
     /// Whether to seed the previous epoch's finalized snapshot tape.
     /// `true` (the default) lets `commit_epoch` pass its previous-snapshot
     /// gate without first running the snapshot pipeline.

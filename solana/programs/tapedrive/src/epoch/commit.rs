@@ -1,6 +1,9 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::event::EpochCommitted;
+use tape_core::system::{
+    aggregate_node_preferences, NodePreferenceAggregationError,
+};
 
 pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = CommitEpoch::try_from_bytes(data)?;
@@ -9,7 +12,9 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         system_info,
         curr_epoch_info,
         next_epoch_info,
+        curr_committee_info,
         next_committee_info,
+        peer_set_info,
         snapshot_tape_info,
         slot_hashes_info,
     ] = accounts else {
@@ -26,11 +31,16 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let curr = system.current_epoch;
     let next = curr.saturating_add(EpochNumber(1));
+    let prev = curr.saturating_sub(EpochNumber(1));
 
     let curr_epoch = curr_epoch_info
         .is_writable()?
         .is_epoch(curr)?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
+
+    if curr_epoch.id != curr {
+        return Err(TapeError::BadEpochId.into());
+    }
 
     if curr_epoch.state.phase != EpochPhase::Active as u64 {
         return Err(TapeError::BadEpochState.into());
@@ -46,40 +56,83 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_epoch(next)?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
+    if next_epoch.id != next {
+        return Err(TapeError::BadEpochId.into());
+    }
     if next_epoch.state.phase != EpochPhase::Unknown as u64 {
         return Err(TapeError::BadEpochState.into());
     }
 
+    curr_committee_info
+        .is_committee(curr)?;
+
     next_committee_info
         .is_committee(next)?;
 
-    let (committee_header, _) = Committee::read(next_committee_info, &tapedrive::ID)?;
 
-    if committee_header.epoch != next {
+    let (curr_committee, curr_members) =
+        Committee::read(curr_committee_info, &tapedrive::ID)?;
+
+    if curr_committee.epoch != curr {
         return Err(TapeError::BadEpochId.into());
     }
-    if committee_header.members.capacity != system.committee_size {
-        return Err(TapeError::InsufficientCommittee.into());
+
+    let (next_committee, _) = 
+        Committee::read(next_committee_info, &tapedrive::ID)?;
+
+    if next_committee.epoch != next {
+        return Err(TapeError::BadEpochId.into());
     }
-    if (committee_header.members.count as usize) < GROUP_SIZE {
+    if (next_committee.members.count as usize) < GROUP_SIZE {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
-    let prev = curr.saturating_sub(EpochNumber(1));
+    peer_set_info
+        .is_peer_set()?;
+
+    let (_, peers) = 
+        PeerSet::read(peer_set_info, &tapedrive::ID)?;
+
+    let preferences = 
+        aggregate_preferences(system, curr_members, peers)?;
+
     snapshot_tape_info
         .is_snapshot_tape(prev)?;
 
     let next_nonce = slot_hash_seed(slot_hashes_info)?;
+
     next_epoch.nonce = next_nonce;
+    next_epoch.preferences = preferences;
 
     curr_epoch.state.phase = EpochPhase::Closing as u64;
 
     EpochCommitted {
         epoch: curr,
         next_nonce,
+        preferences,
     }.log();
 
     Ok(())
+}
+
+fn aggregate_preferences(
+    system: &System,
+    members: &[Member],
+    peers: &[Peer],
+) -> Result<NodePreferences, ProgramError> {
+
+    let bounds = NodePreferences {
+        storage_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
+        storage_price: TAPE(MIN_STORAGE_PRICE as u64),
+        committee_size: MIN_COMMITTEE_SIZE as u64,
+        spool_groups: system.target_group_count,
+        min_version: system.min_version,
+    };
+
+    aggregate_node_preferences(members, peers, bounds).map_err(|error| match error {
+        NodePreferenceAggregationError::MissingPeer { .. } => TapeError::BadMember.into(),
+        NodePreferenceAggregationError::ZeroWeight => TapeError::UnexpectedState.into(),
+    })
 }
 
 fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
@@ -98,7 +151,7 @@ fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_api::state::Committee;
+    use tape_api::state::{Committee, PeerSet};
     use tape_test::*;
 
     const COMMITTEE_SIZE: u64 = 128;
@@ -121,8 +174,18 @@ mod tests {
         )
     }
 
-    fn populated_committee(epoch: EpochNumber) -> Vec<u8> {
-        let members: Vec<Member> = (0..GROUP_SIZE)
+    fn test_preferences() -> NodePreferences {
+        NodePreferences {
+            storage_capacity: StorageUnits::mb(2_048),
+            storage_price: TAPE(950),
+            committee_size: 256,
+            spool_groups: 75,
+            min_version: VersionId(3),
+        }
+    }
+
+    fn members() -> Vec<Member> {
+        (0..GROUP_SIZE)
             .map(|i| {
                 let mut bytes = [0u8; 32];
                 bytes[0] = (i as u8) + 1;
@@ -131,12 +194,31 @@ mod tests {
                     stake: TAPE(1_000),
                     assigned: StorageUnits::zero(),
                     blacklisted: StorageUnits::zero(),
-                    spools: 0,
+                    spools: 1,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    fn populated_committee(epoch: EpochNumber) -> Vec<u8> {
+        let members = members();
         Committee { epoch, members: Tail::new(COMMITTEE_SIZE, members.len() as u64) }
             .pack_with(&members)
+    }
+
+    fn peer_set() -> Vec<u8> {
+        let prefs = test_preferences();
+        let peers: Vec<Peer> = members()
+            .iter()
+            .map(|m| Peer {
+                node: m.node,
+                preferences: prefs,
+                ..Peer::zeroed()
+            })
+            .collect();
+
+        PeerSet { peers: Tail::new(COMMITTEE_SIZE, peers.len() as u64) }
+            .pack_with(&peers)
     }
 
     #[test]
@@ -147,10 +229,11 @@ mod tests {
         let next = EpochNumber(11);
 
         let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
         let (curr_epoch_address, _) = epoch_pda(curr);
         let (next_epoch_address, _) = epoch_pda(next);
+        let (curr_committee_address, _) = committee_pda(curr);
         let (next_committee_address, _) = committee_pda(next);
+        let (peer_set_address, _) = peer_set_pda();
         let prev = curr.saturating_sub(EpochNumber(1));
         let (snapshot_tape_address, _) = snapshot_tape_pda(prev);
 
@@ -192,17 +275,16 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let archive_data = Archive::zeroed().pack();
-
         let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive_data, tapedrive::ID),
             pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
             pda(next_epoch_address, next_epoch.pack(), tapedrive::ID),
+            pda(curr_committee_address, populated_committee(curr), tapedrive::ID),
             pda(next_committee_address, populated_committee(next), tapedrive::ID),
+            pda(peer_set_address, peer_set(), tapedrive::ID),
             pda(snapshot_tape_address, snapshot_tape.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
@@ -214,6 +296,7 @@ mod tests {
 
         let mut expected_next = next_epoch;
         expected_next.nonce = expected_nonce;
+        expected_next.preferences = test_preferences();
 
         env.process_instruction(
             &instruction,
@@ -239,10 +322,11 @@ mod tests {
         let prev = curr.saturating_sub(EpochNumber(1));
 
         let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
         let (curr_epoch_address, _) = epoch_pda(curr);
         let (next_epoch_address, _) = epoch_pda(next);
+        let (curr_committee_address, _) = committee_pda(curr);
         let (next_committee_address, _) = committee_pda(next);
+        let (peer_set_address, _) = peer_set_pda();
         let (snapshot_tape_address, _) = snapshot_tape_pda(prev);
 
         let env = test_env();
@@ -282,16 +366,16 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let archive_data = Archive::zeroed().pack();
         let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive_data, tapedrive::ID),
             pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
             pda(next_epoch_address, next_epoch.pack(), tapedrive::ID),
+            pda(curr_committee_address, populated_committee(curr), tapedrive::ID),
             pda(next_committee_address, populated_committee(next), tapedrive::ID),
+            pda(peer_set_address, peer_set(), tapedrive::ID),
             pda(snapshot_tape_address, snapshot_tape.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];

@@ -69,13 +69,8 @@ pub fn build_stake_with_pool_ix(
     authority: Address,
     pool: Address,
     amount: Coin<TAPE>,
-    current_epoch: EpochNumber,
 ) -> Instruction {
-
-    let next = current_epoch.saturating_add(EpochNumber(1));
-
     let (system_address, _) = system_pda();
-    let (committee_next_address, _) = committee_pda(next);
     let (mint_address, _)   = mint_pda();
     let (stake_address, _)  = stake_pda(authority);
     let (vault_address, _)  = vault_pda(stake_address);
@@ -91,7 +86,6 @@ pub fn build_stake_with_pool_ix(
             AccountMeta::new(authority_ata.into(), false),
 
             AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new_readonly(committee_next_address.into(), false),
             AccountMeta::new(pool.into(), false),
             AccountMeta::new(stake_address.into(), false),
             AccountMeta::new(vault_address.into(), false),

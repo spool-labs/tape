@@ -5,13 +5,13 @@ use solana_sdk::signature::Signature;
 use solana_sdk::signer::Signer;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::{
-    build_create_archive_ix, build_create_committee_ix,
-    build_create_epoch_ix, build_create_peer_set_ix, build_create_system_ix,
-    build_initialize_mint_ix, build_register_node_ix, build_start_network_ix,
+    build_create_archive_ix, build_create_committee_ix, build_create_epoch_ix,
+    build_create_peer_set_ix, build_create_system_ix, build_initialize_mint_ix,
+    build_register_node_ix, build_start_network_ix,
 };
-use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_api::program::tapedrive::node_pda;
 use tape_api::utils::to_name;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::address::Address;
@@ -83,19 +83,25 @@ impl<'a> SimnetScenario<'a> {
             .await
             .context("initialize archive/epoch")?;
 
+        let bootstrap_epoch = EpochNumber(0);
         let genesis_epoch = EpochNumber(1);
+        let candidate_epoch = EpochNumber(2);
         self.harness
             .chain()
             .send_instructions_and_advance(
                 admin,
                 vec![
+                    build_create_epoch_ix(admin_pub.into(), bootstrap_epoch),
+                    build_create_committee_ix(admin_pub.into(), bootstrap_epoch),
                     build_create_epoch_ix(admin_pub.into(), genesis_epoch),
                     build_create_committee_ix(admin_pub.into(), genesis_epoch),
+                    build_create_epoch_ix(admin_pub.into(), candidate_epoch),
+                    build_create_committee_ix(admin_pub.into(), candidate_epoch),
                 ],
                 slot_bump,
             )
             .await
-            .context("create genesis epoch/committee")?;
+            .context("create bootstrap epochs/committees")?;
 
         Ok(())
     }
@@ -108,17 +114,16 @@ impl<'a> SimnetScenario<'a> {
             .harness
             .nodes()
             .iter()
-            .take(MIN_COMMITTEE_SIZE)
+            .take(GROUP_SIZE)
             .map(|node| {
                 let (node_address, _) = node_pda(Address::from(node.authority()));
                 node_address
             })
             .collect::<Vec<_>>();
 
-        let committee_size = self.harness.nodes().len().max(MIN_COMMITTEE_SIZE) as u64;
         let ix = build_start_network_ix(
             admin_pub.into(),
-            committee_size,
+            GROUP_SIZE as u64,
             1,
             &genesis_nodes,
         );

@@ -365,11 +365,8 @@ pub fn next_action(
         }
 
         EpochPhase::Active => {
-            // Epoch(N+1) and Committee(N+1) must exist before any joins or commit.
-            if (!next_epoch_setup_ready(state) || !done.contains(&Action::PrepareNextEpoch))
-                && !done.contains(&Action::CommitEpoch)
-            {
-                return Some(Action::PrepareNextEpoch);
+            if !next_epoch_setup_ready(state) {
+                return None;
             }
 
             // JoinCommittee: gated by time, checked by the task itself.
@@ -389,6 +386,10 @@ pub fn next_action(
         | EpochPhase::Completed => None,
 
         EpochPhase::Closing => {
+            if !done.contains(&Action::PrepareNextEpoch) {
+                return Some(Action::PrepareNextEpoch);
+            }
+
             if assignment_ready(state) && !done.contains(&Action::AdvanceEpoch) {
                 return Some(Action::AdvanceEpoch);
             }
@@ -416,9 +417,7 @@ fn next_epoch_setup_ready(state: &ProtocolState) -> bool {
         && state
             .next_committee_capacity
             .is_some_and(|capacity| capacity == state.system.committee_size);
-    let peer_set_ready = state.peer_capacity >= state.system.committee_size.saturating_mul(3);
-
-    next_epoch_ready && next_committee_ready && peer_set_ready
+    next_epoch_ready && next_committee_ready
 }
 
 fn phase_allows_advance_pool(phase: EpochPhase) -> bool {
@@ -527,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn active_prepares_next_epoch_before_join_or_commit() {
+    fn active_waits_when_next_epoch_setup_missing() {
         let node = Address::new_unique();
         let state = state_with_phase(EpochPhase::Active);
         let mut done = HashSet::new();
@@ -535,7 +534,7 @@ mod tests {
 
         let action = next_action(&state, node, &done);
 
-        assert_eq!(action, Some(Action::PrepareNextEpoch));
+        assert_eq!(action, None);
     }
 
     #[test]
@@ -551,7 +550,6 @@ mod tests {
         state.peer_capacity = state.system.committee_size.saturating_mul(3);
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
-        done.insert(Action::PrepareNextEpoch);
 
         let action = next_action(&state, node, &done);
 
@@ -562,7 +560,8 @@ mod tests {
     fn closing_waits_when_assignment_hash_missing() {
         let node = Address::new_unique();
         let state = state_with_next_assignment(EpochPhase::Closing, Hash::zeroed(), 8, 8);
-        let done = HashSet::new();
+        let mut done = HashSet::new();
+        done.insert(Action::PrepareNextEpoch);
 
         let action = next_action(&state, node, &done);
 
@@ -573,7 +572,8 @@ mod tests {
     fn closing_waits_when_assignment_groups_incomplete() {
         let node = Address::new_unique();
         let state = state_with_next_assignment(EpochPhase::Closing, Hash::from([7; 32]), 7, 8);
-        let done = HashSet::new();
+        let mut done = HashSet::new();
+        done.insert(Action::PrepareNextEpoch);
 
         let action = next_action(&state, node, &done);
 
@@ -584,10 +584,22 @@ mod tests {
     fn closing_advances_when_assignment_complete() {
         let node = Address::new_unique();
         let state = state_with_next_assignment(EpochPhase::Closing, Hash::from([7; 32]), 8, 8);
-        let done = HashSet::new();
+        let mut done = HashSet::new();
+        done.insert(Action::PrepareNextEpoch);
 
         let action = next_action(&state, node, &done);
 
         assert_eq!(action, Some(Action::AdvanceEpoch));
+    }
+
+    #[test]
+    fn closing_prepares_next_epoch_before_advance() {
+        let node = Address::new_unique();
+        let state = state_with_next_assignment(EpochPhase::Closing, Hash::from([7; 32]), 8, 8);
+        let done = HashSet::new();
+
+        let action = next_action(&state, node, &done);
+
+        assert_eq!(action, Some(Action::PrepareNextEpoch));
     }
 }

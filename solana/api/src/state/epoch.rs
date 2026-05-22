@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_core::system::EpochState;
+use tape_core::system::{EpochState, NodePreferences};
 use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
 use tape_crypto::Hash;
 
@@ -34,6 +34,9 @@ pub struct Epoch {
 
     /// Sum of spool storage assigned to nodes at the end of the last epoch.
     pub total_assigned: StorageUnits,
+
+    /// Protocol preferences committed while transitioning into this epoch.
+    pub preferences: NodePreferences,
 }
 
 tape_solana::state!(AccountType, Epoch);

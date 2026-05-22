@@ -41,15 +41,12 @@ pub fn merge(
                 ParsedInstruction::CreateCommittee { epoch, event }
             }
 
-            RawInstruction::ResizeCommittee { epoch } => {
+            RawInstruction::ResizeCommittee => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::CommitteeResized(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected CommitteeResized event")),
                 };
-                if event.epoch != epoch {
-                    return Err(ParseError::EventMismatch("unexpected CommitteeResized event"));
-                }
-                ParsedInstruction::ResizeCommittee { epoch, event }
+                ParsedInstruction::ResizeCommittee { event }
             }
 
             RawInstruction::ResizePeerSet => {
@@ -464,6 +461,7 @@ mod tests {
         let event = EpochCommitted {
             epoch: EpochNumber(5),
             next_nonce: Hash::from([0x42; 32]),
+            preferences: NodePreferences::zeroed(),
         };
 
         let merged = merge(
