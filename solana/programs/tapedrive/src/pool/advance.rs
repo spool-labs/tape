@@ -27,6 +27,19 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let curr = system.current_epoch;
     let prev = curr.saturating_sub(EpochNumber(1));
 
+    let pool_address: Address = (*pool_info.key).into();
+
+    let node = pool_info
+        .is_writable()?
+        .as_account_mut::<Node>(&tapedrive::ID)?;
+
+    // This check must happen before reading previous-epoch accounts so 
+    // the bootstrap epoch can cleanly report AlreadyAdvanced when epoch 0 
+    // accounts do not exist.
+    if node.latest_advance_epoch >= prev {
+        return Err(TapeError::AlreadyAdvanced.into());
+    }
+
     let archive = archive_info
         .is_writable()?
         .is_archive()?
@@ -35,17 +48,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let prev_epoch = prev_epoch_info
         .is_epoch(prev)?
         .as_account::<Epoch>(&tapedrive::ID)?;
-
-    let pool_address: Address = (*pool_info.key).into();
-
-    let node = pool_info
-        .is_writable()?
-        .as_account_mut::<Node>(&tapedrive::ID)?;
-
-    // Never drain a given prev epoch twice for the same node.
-    if node.latest_advance_epoch >= prev {
-        return Err(TapeError::AlreadyAdvanced.into());
-    }
 
     prev_committee_info.is_committee(prev)?;
     let (prev_committee, prev_members) = 
@@ -243,6 +245,53 @@ mod tests {
                     .data(expected_node.pack().as_ref())
                     .build(),
             ],
+        );
+    }
+
+    #[test]
+    fn already_advanced_skips_prev_accounts() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let curr = EpochNumber(1);
+        let prev = EpochNumber(0);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (prev_epoch_address, _) = epoch_pda(prev);
+        let (prev_committee_address, _) = committee_pda(prev);
+        let (node_address, _) = node_pda(authority.into());
+        let (history_address, _) = history_pda(node_address);
+
+        let system = System {
+            current_epoch: curr,
+            committee_size: COMMITTEE_SIZE,
+            ..System::zeroed()
+        };
+        let node = Node {
+            authority: authority.into(),
+            latest_advance_epoch: prev,
+            pool: make_test_pool(1_000),
+            ..Node::zeroed()
+        };
+
+        let instruction = build_advance_pool_ix(fee_payer.into(), node_address, curr);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_address, system.pack(), tapedrive::ID),
+            empty(archive_address),
+            empty(prev_epoch_address),
+            empty(prev_committee_address),
+            pda(node_address, node.pack(), tapedrive::ID),
+            empty(history_address),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::AlreadyAdvanced.into())],
         );
     }
 

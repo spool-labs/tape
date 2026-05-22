@@ -10,26 +10,10 @@ fn program_error(error: &Error) -> Option<ProgramError> {
     None
 }
 
-/// True when join operation is already completed/idempotent.
-pub fn join_done(error: &Error) -> bool {
-    matches!(
-        program_error(error),
-        Some(ProgramError::Tape(TapeError::UnexpectedState))
-    )
-}
-
 /// True when pool advancement was already processed for current epoch.
 pub fn adv_done(error: &Error) -> bool {
     matches!(
         program_error(error),
         Some(ProgramError::Tape(TapeError::AlreadyAdvanced))
-    )
-}
-
-/// True when sync operation is already done/idempotent.
-pub fn sync_done(error: &Error) -> bool {
-    matches!(
-        program_error(error),
-        Some(ProgramError::Tape(TapeError::AlreadySynced))
     )
 }

@@ -1,16 +1,13 @@
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::signer::Signer;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::{
-    build_advance_epoch_ix, build_create_archive_ix, build_create_committee_ix,
+    build_create_archive_ix, build_create_committee_ix,
     build_create_epoch_ix, build_create_peer_set_ix, build_create_system_ix,
-    build_initialize_mint_ix, build_join_committee_ix, build_register_node_ix,
-    build_start_network_ix,
+    build_initialize_mint_ix, build_register_node_ix, build_start_network_ix,
 };
 use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_api::program::tapedrive::node_pda;
@@ -21,13 +18,6 @@ use tape_crypto::address::Address;
 
 use crate::chain::ChainFixture;
 use crate::simnet::SimnetHarness;
-
-#[derive(Debug, Clone)]
-pub struct JoinResult {
-    pub node_id: usize,
-    pub authority: Pubkey,
-    pub result: Result<Signature, String>,
-}
 
 pub struct SimnetScenario<'a> {
     pub(crate) harness: &'a SimnetHarness,
@@ -206,122 +196,6 @@ impl<'a> SimnetScenario<'a> {
     pub async fn register_nodes(&self, commission: BasisPoints) -> Result<Vec<Signature>> {
         let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
         self.register_many(&all, commission).await
-    }
-
-    pub async fn join_network(&self) -> Vec<JoinResult> {
-        let mut out = Vec::with_capacity(self.harness.nodes().len());
-        let slot_bump = self.harness.config().slot_advance_per_tx;
-
-        for node in self.harness.nodes() {
-            let authority = Address::from(node.authority());
-            let (node_address, _) = node_pda(authority);
-            let current_epoch = match self.read_system().await {
-                Ok(system) => system.current_epoch,
-                Err(error) => {
-                    out.push(JoinResult {
-                        node_id: node.id(),
-                        authority: node.authority(),
-                        result: Err(format!("{error:#}")),
-                    });
-                    continue;
-                }
-            };
-            let ix = build_join_committee_ix(authority, authority, node_address, current_epoch);
-
-            let result = self
-                .harness
-                .chain()
-                .send_instructions_and_advance(node.keypair(), vec![ix], slot_bump)
-                .await
-                .map_err(|e| e.to_string());
-
-            out.push(JoinResult {
-                node_id: node.id(),
-                authority: node.authority(),
-                result,
-            });
-        }
-
-        out
-    }
-
-    pub async fn advance_epoch(&self, authority_node_index: usize) -> Result<Signature> {
-        let authority = self
-            .harness
-            .node(authority_node_index)
-            .context("authority node missing")?;
-
-        let current_epoch = self.read_system().await?.current_epoch;
-        let ix = build_advance_epoch_ix(authority.authority().into(), current_epoch);
-
-        self.harness
-            .chain()
-            .send_instructions_and_advance(
-                authority.keypair(),
-                vec![ix],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .context("advance_epoch")
-    }
-
-    pub async fn wait_for_all_nodes_epoch(
-        &self,
-        expected: Option<EpochNumber>,
-        timeout: Duration,
-    ) -> Result<()> {
-        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
-        self.wait_for_nodes_epoch(&all, expected, timeout).await
-    }
-
-    pub async fn wait_for_nodes_epoch(
-        &self,
-        indices: &[usize],
-        expected: Option<EpochNumber>,
-        timeout: Duration,
-    ) -> Result<()> {
-        let deadline = Instant::now() + timeout;
-        let mut last_seen: Vec<Option<EpochNumber>> = Vec::new();
-
-        loop {
-            let mut ready = true;
-            last_seen.clear();
-            for &i in indices {
-                let node = self
-                    .harness
-                    .node(i)
-                    .with_context(|| format!("node {i} missing"))?;
-                let got = Some(node.context().state().epoch());
-                last_seen.push(got);
-
-                match expected {
-                    Some(exp) => {
-                        if got != Some(exp) {
-                            ready = false;
-                            break;
-                        }
-                    }
-                    None => {
-                        if got.is_none() {
-                            ready = false;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if ready {
-                return Ok(());
-            }
-
-            if Instant::now() >= deadline {
-                anyhow::bail!(
-                    "timeout waiting for all nodes to converge epoch (expected={expected:?}, last_seen={last_seen:?})"
-                );
-            }
-
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
     }
 }
 

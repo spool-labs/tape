@@ -84,8 +84,9 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let node_address: Address = (*node_info.key).into();
 
     // A seated node must have advanced its pool through the previous epoch
-    // before re-joining. Without this gate, the bump below would skip past
-    // any pending rewards still waiting to be drained.
+    // before re-joining. Joining the next committee must not mark the current
+    // epoch as claimed; current-epoch rewards are not claimable until the next
+    // epoch.
     let in_current_committee = curr_members.iter().any(|m| m.node == node_address);
     if in_current_committee
         && node.latest_advance_epoch < curr.saturating_sub(EpochNumber(1))
@@ -125,10 +126,6 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     )
     .map_err(|_| TapeError::ListFull)?;
 
-    if node.latest_advance_epoch < curr {
-        node.latest_advance_epoch = curr;
-    }
-
     NodeJoinedCommittee {
         node: node_address,
         stake: stake.as_u64().to_le_bytes(),
@@ -162,7 +159,8 @@ mod tests {
         }
     }
 
-    // happy-path enrolment — adds a Member and a Peer
+    // happy-path re-enrolment — adds a Member and a Peer without marking the
+    // current epoch's rewards as claimed.
     #[test]
     fn join() {
         let fee_payer = Pubkey::new_unique();
@@ -189,8 +187,16 @@ mod tests {
         };
 
         let curr_epoch = epoch_in_phase(curr, EpochPhase::Active);
-        let curr_committee = Committee { epoch: curr, members: Tail::empty(committee_size) }
-            .pack_with(&[]);
+        let curr_members = [Member {
+            node: node_address,
+            stake: TAPE(1_000),
+            assigned: StorageUnits::zero(),
+            blacklisted: StorageUnits::zero(),
+            spools: 0,
+        }];
+        let curr_committee =
+            Committee { epoch: curr, members: Tail::new(committee_size, curr_members.len() as u64) }
+                .pack_with(&curr_members);
         let next_members = [member(3, 3_500), member(4, 2_100)];
         let next_committee =
             Committee { epoch: next, members: Tail::new(committee_size, next_members.len() as u64) }
@@ -212,6 +218,7 @@ mod tests {
                 shares: ShareAmount(1_000),
                 ..StakingPool::zeroed()
             },
+            latest_advance_epoch: curr.saturating_sub(EpochNumber(1)),
             preferences,
             ..Node::zeroed()
         };
@@ -231,7 +238,12 @@ mod tests {
         env.process_instruction(
             &instruction,
             &accounts,
-            &[Check::success()],
+            &[
+                Check::success(),
+                Check::account(&Pubkey::from(node_address))
+                    .data(node.pack().as_ref())
+                    .build(),
+            ],
         );
     }
 

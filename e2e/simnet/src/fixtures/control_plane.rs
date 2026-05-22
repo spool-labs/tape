@@ -4,20 +4,16 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
-    build_add_to_blacklist_ix, build_advance_pool_ix, build_claim_commission_ix,
-    build_create_blacklist_ix, build_join_committee_ix, build_request_stake_unlock_ix,
-    build_set_commission_ix, build_set_committee_size_ix, build_set_spool_groups_ix,
-    build_stake_with_pool_ix, build_sync_spool_ix, build_unstake_from_pool_ix,
+    build_add_to_blacklist_ix, build_advance_pool_ix, build_create_blacklist_ix,
+    build_set_committee_size_ix, build_set_spool_groups_ix, build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
-use tape_core::spooler::GroupIndex;
 use tape_core::system::{BlacklistEntry, NodeStatus};
 use tape_core::types::coin::TAPE;
-use tape_core::types::{BasisPoints, EpochNumber};
-use tape_store::ops::SpoolOps;
+use tape_core::types::EpochNumber;
 use tracing::trace;
 
-use crate::fixtures::err::{adv_done, join_done, sync_done};
+use crate::fixtures::err::adv_done;
 use crate::log::append_log;
 use crate::scenario::SimnetScenario;
 
@@ -35,14 +31,6 @@ impl SimnetScenario<'_> {
         let authority = self.harness.nodes()[index].authority();
         let (stake_address, _) = stake_pda(authority.into());
         stake_address.into()
-    }
-
-    pub fn fund_node(&self, index: usize, lamports: u64) -> Result<()> {
-        let authority = self.harness.nodes()[index].authority();
-        self.harness
-            .chain()
-            .airdrop(&authority, lamports)
-            .with_context(|| format!("airdrop node {index}"))
     }
 
     pub async fn stake_node(
@@ -97,100 +85,6 @@ impl SimnetScenario<'_> {
 
         trace!(node_index, "stake_node completed");
         Ok(self.stake_address(node_index))
-    }
-
-    pub async fn unlock_stake(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting unlock_stake instruction");
-        let payer = self.harness.admin();
-        let node = &self.harness.nodes()[node_index];
-
-        let ix = build_request_stake_unlock_ix(
-            payer.pubkey().into(),
-            node.authority().into(),
-            self.node_address(node_index).into(),
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
-
-        self.harness
-            .chain()
-            .send_instructions_with_signers_and_advance(
-                payer,
-                vec![cu_ix, ix],
-                &[node.keypair()],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("unlock stake for node {node_index}"))?;
-
-        trace!(node_index, "unlock_stake completed");
-        Ok(())
-    }
-
-    pub async fn withdraw_stake(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting withdraw_stake instruction");
-        let payer = self.harness.admin();
-        let node = &self.harness.nodes()[node_index];
-
-        let ix = build_unstake_from_pool_ix(
-            payer.pubkey().into(),
-            node.authority().into(),
-            self.node_address(node_index).into(),
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
-
-        self.harness
-            .chain()
-            .send_instructions_with_signers_and_advance(
-                payer,
-                vec![cu_ix, ix],
-                &[node.keypair()],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("withdraw stake for node {node_index}"))?;
-
-        trace!(node_index, "withdraw_stake completed");
-        Ok(())
-    }
-
-    pub async fn join_node(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting join_committee instruction");
-        let payer = self.harness.admin();
-        let node = &self.harness.nodes()[node_index];
-        let current_epoch = self.read_system().await?.current_epoch;
-
-        let ix = build_join_committee_ix(
-            payer.pubkey().into(),
-            node.authority().into(),
-            self.node_address(node_index).into(),
-            current_epoch,
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
-
-        self.harness
-            .chain()
-            .send_instructions_with_signers_and_advance(
-                payer,
-                vec![cu_ix, ix],
-                &[node.keypair()],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("join node {node_index}"))?;
-
-        trace!(node_index, "join_node completed");
-        Ok(())
-    }
-
-    pub async fn join_node_ok(&self, node_index: usize) -> Result<()> {
-        if let Err(error) = self.join_node(node_index).await {
-            if !join_done(&error) {
-                return Err(error);
-            }
-            trace!(node_index, "join_node idempotent completion");
-        }
-        trace!(node_index, "join_node_ok complete");
-        Ok(())
     }
 
     pub async fn advance_pool(&self, node_index: usize) -> Result<()> {
@@ -300,95 +194,6 @@ impl SimnetScenario<'_> {
         Ok(())
     }
 
-    pub async fn sync_node(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting sync_spool instruction");
-        let payer = self.harness.admin();
-        let node = &self.harness.nodes()[node_index];
-
-        let epoch = self.read_system().await?.current_epoch;
-
-        let spools = node
-            .context()
-            .store
-            .iter_all_spools()
-            .with_context(|| format!("read spools for node {node_index}"))?
-            .into_iter()
-            .map(|(spool_id, _)| spool_id)
-            .collect::<Vec<_>>();
-
-        for spool in spools {
-            let ix = build_sync_spool_ix(
-                payer.pubkey().into(),
-                node.authority().into(),
-                self.node_address(node_index).into(),
-                epoch,
-                GroupIndex::containing(spool),
-                spool,
-            );
-            let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
-
-            self.harness
-                .chain()
-                .send_instructions_with_signers_and_advance(
-                    payer,
-                    vec![cu_ix, ix],
-                    &[node.keypair()],
-                    self.harness.config().slot_advance_per_tx,
-                )
-                .await
-                .with_context(|| format!("sync node {node_index} spool {spool}"))?;
-        }
-
-        trace!(node_index, "sync_node completed");
-        Ok(())
-    }
-
-    pub async fn sync_node_ok(&self, node_index: usize) -> Result<()> {
-        if let Err(error) = self.sync_node(node_index).await {
-            if !sync_done(&error) {
-                return Err(error);
-            }
-            trace!(node_index, "sync_node idempotent completion");
-        }
-        trace!(node_index, "sync_node_ok complete");
-        Ok(())
-    }
-
-    pub async fn set_commission(
-        &self,
-        node_index: usize,
-        basis_points: u64,
-    ) -> Result<()> {
-        let payer = self.harness.admin();
-        let node = &self.harness.nodes()[node_index];
-
-        let ix = build_set_commission_ix(
-            payer.pubkey().into(),
-            node.authority().into(),
-            self.node_address(node_index).into(),
-            BasisPoints(basis_points),
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
-
-        self.harness
-            .chain()
-            .send_instructions_with_signers_and_advance(
-                payer,
-                vec![cu_ix, ix],
-                &[node.keypair()],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("set commission for node {node_index}"))?;
-
-        trace!(
-            node_index,
-            basis_points,
-            "set_commission completed"
-        );
-        Ok(())
-    }
-
     pub async fn set_spool_groups(
         &self,
         node_index: usize,
@@ -459,33 +264,6 @@ impl SimnetScenario<'_> {
         Ok(())
     }
 
-    pub async fn claim_commission(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting claim_commission instruction");
-        let payer = self.harness.admin();
-        let node = &self.harness.nodes()[node_index];
-
-        let ix = build_claim_commission_ix(
-            payer.pubkey().into(),
-            node.authority().into(),
-            self.node_address(node_index).into(),
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
-
-        self.harness
-            .chain()
-            .send_instructions_with_signers_and_advance(
-                payer,
-                vec![cu_ix, ix],
-                &[node.keypair()],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("claim commission for node {node_index}"))?;
-
-        trace!(node_index, "claim_commission completed");
-        Ok(())
-    }
-
     pub fn node_status(&self, index: usize) -> Option<NodeStatus> {
         let ctx = self.harness.nodes()[index].context();
         let state = ctx.state();
@@ -499,16 +277,6 @@ impl SimnetScenario<'_> {
     pub async fn stake_all(&self, amount_tape: u64) -> Result<()> {
         let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
         self.stake_many(&all, amount_tape).await
-    }
-
-    pub async fn join_all(&self) -> Result<()> {
-        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
-        self.join_many(&all).await
-    }
-
-    pub async fn pool_all(&self) -> Result<()> {
-        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
-        self.pool_many(&all).await
     }
 
     pub async fn stake_many(
@@ -535,19 +303,6 @@ impl SimnetScenario<'_> {
             "stake_many complete"
         );
         append_log("stake many done");
-        Ok(())
-    }
-
-    pub async fn join_many(&self, node_indices: &[usize]) -> Result<()> {
-        trace!(count = node_indices.len(), "join_many start");
-        append_log(&format!("join many start count={}", node_indices.len()));
-        for &i in node_indices {
-            self.join_node_ok(i)
-                .await
-                .with_context(|| format!("join node {i}"))?;
-        }
-        trace!(count = node_indices.len(), "join_many complete");
-        append_log("join many done");
         Ok(())
     }
 

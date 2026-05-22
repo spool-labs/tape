@@ -20,7 +20,7 @@ pub mod tls;
 pub use chain::ChainFixture;
 pub use config::{NodeRuntimeMode, SeededAccount, SimnetConfig};
 pub use node::TestNode;
-pub use scenario::{JoinResult, SimnetScenario};
+pub use scenario::SimnetScenario;
 pub use simnet::{SimnetBuilder, SimnetHarness};
 
 pub const SIMNET_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
