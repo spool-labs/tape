@@ -84,7 +84,6 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     node.latest_sync_epoch    = current;
     node.latest_advance_epoch = current;
 
-    node.blacklist = Blacklist::new();
     node.pool = StakingPool::new(commission_rate);
 
     node.metadata = NodeMetadata {
@@ -206,7 +205,6 @@ mod tests {
                         id: NodeId::new(0),
                         authority: authority.into(),
                         pool: StakingPool::new(commission_rate),
-                        blacklist: Blacklist::new(),
                         metadata: NodeMetadata {
                             name,
                             network_address,

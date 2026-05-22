@@ -13,7 +13,7 @@ pub fn apply_join_committee_event(
         node: event.node,
         stake: TAPE(u64::from_le_bytes(event.stake)),
         assigned: Default::default(),
-        refused: Default::default(),
+        blacklisted: Default::default(),
         spools: 0,
     };
 

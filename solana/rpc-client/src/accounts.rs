@@ -793,14 +793,14 @@ mod tests {
                 node: address(1),
                 stake: TAPE(100),
                 assigned: StorageUnits::zero(),
-                refused: StorageUnits::zero(),
+                blacklisted: StorageUnits::zero(),
                 spools: 3,
             },
             Member {
                 node: address(2),
                 stake: TAPE(90),
                 assigned: StorageUnits::zero(),
-                refused: StorageUnits::zero(),
+                blacklisted: StorageUnits::zero(),
                 spools: 2,
             },
         ];
@@ -809,7 +809,7 @@ mod tests {
             node: address(3),
             stake: TAPE(1),
             assigned: StorageUnits::zero(),
-            refused: StorageUnits::zero(),
+            blacklisted: StorageUnits::zero(),
             spools: 0,
         });
 

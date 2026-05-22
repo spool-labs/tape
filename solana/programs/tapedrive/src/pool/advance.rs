@@ -107,7 +107,7 @@ fn compute_member_share(
 
     let weight = member
         .assigned
-        .checked_sub(member.refused)
+        .checked_sub(member.blacklisted)
         .ok_or(TapeError::UnexpectedState)?;
 
     let raw = rewards_pool
@@ -144,13 +144,13 @@ mod tests {
         epoch: EpochNumber,
         node: Address,
         assigned: StorageUnits,
-        refused: StorageUnits,
+        blacklisted: StorageUnits,
     ) -> Vec<u8> {
         let members = [Member {
             node,
             stake: TAPE(1_000),
             assigned,
-            refused,
+            blacklisted,
             spools: 0,
         }];
         Committee { epoch, members: Tail::new(COMMITTEE_SIZE, members.len() as u64) }
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn refused_weight_is_unpaid() {
+    fn blacklisted_weight_is_unpaid() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 

@@ -86,7 +86,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         GROUP_SIZE as u64,
     )?;
 
-    let (committee_header, members) = Committee::read_mut(committee_info, &tapedrive::ID)?;
+    let (committee_header, members) =
+        Committee::read_full_mut(committee_info, &tapedrive::ID)?;
 
     if committee_header.epoch != target {
         return Err(TapeError::BadEpochId.into());
@@ -111,7 +112,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         GROUP_SIZE as u64,
     )?;
 
-    let (peer_header, peers) = PeerSet::read_mut(peer_set_info, &tapedrive::ID)?;
+    let (peer_header, peers) = PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
 
     if peer_header.peers.capacity < GROUP_SIZE as u64 {
         return Err(TapeError::ListFull.into());
@@ -185,7 +186,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
             node: node_address,
             stake,
             assigned: StorageUnits::zero(),
-            refused: StorageUnits::zero(),
+            blacklisted: StorageUnits::zero(),
             spools: 1,
         };
         peers[i] = Peer {
@@ -304,7 +305,7 @@ mod tests {
                 node: addr,
                 stake: node.pool.stake,
                 assigned: StorageUnits::zero(),
-                refused: StorageUnits::zero(),
+                blacklisted: StorageUnits::zero(),
                 spools: 1,
             });
             expected_peers.push(Peer {

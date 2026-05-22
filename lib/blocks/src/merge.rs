@@ -151,16 +151,16 @@ pub fn merge(
 
             RawInstruction::FinalizeGroup { epoch, group } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::AssignmentGroupFinalized(e)) => e,
+                    Some(TapedriveEvent::AssignmentFinalized(e)) => e,
                     _ => {
                         return Err(ParseError::EventMismatch(
-                            "expected AssignmentGroupFinalized event",
+                            "expected AssignmentFinalized event",
                         ))
                     }
                 };
                 if event.epoch != epoch || event.group != group {
                     return Err(ParseError::EventMismatch(
-                        "unexpected AssignmentGroupFinalized event",
+                        "unexpected AssignmentFinalized event",
                     ));
                 }
                 ParsedInstruction::FinalizeGroup { epoch, group, event }
@@ -290,6 +290,38 @@ pub fn merge(
                 }
             }
 
+            RawInstruction::CreateBlacklist { node } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeReserved(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected TapeReserved event")),
+                };
+                ParsedInstruction::CreateBlacklist { node, event }
+            }
+
+            RawInstruction::AddToBlacklist { node, entry } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TrackWritten(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected TrackWritten event")),
+                };
+                ParsedInstruction::AddToBlacklist { node, entry, event }
+            }
+
+            RawInstruction::RemoveFromBlacklist { node, track } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TrackDeleted(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected TrackDeleted event")),
+                };
+                ParsedInstruction::RemoveFromBlacklist { node, track, event }
+            }
+
+            RawInstruction::DestroyBlacklist { node } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeDestroyed(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected TapeDestroyed event")),
+                };
+                ParsedInstruction::DestroyBlacklist { node, event }
+            }
+
             RawInstruction::AdvancePool { node } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::PoolAdvanced(e)) => e,
@@ -297,9 +329,99 @@ pub fn merge(
                 };
                 ParsedInstruction::AdvancePool { node, event }
             }
+
+            RawInstruction::StakeWithPool {
+                authority,
+                pool,
+                stake,
+                amount,
+            } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::StakeDeposited(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected StakeDeposited event")),
+                };
+                if event.authority != authority
+                    || event.pool != pool
+                    || event.stake != stake
+                    || event.amount != amount
+                {
+                    return Err(ParseError::EventMismatch("unexpected StakeDeposited event"));
+                }
+                ParsedInstruction::StakeWithPool {
+                    authority,
+                    pool,
+                    stake,
+                    event,
+                }
+            }
+
+            RawInstruction::RequestStakeUnlock {
+                authority,
+                pool,
+                stake,
+            } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::StakeUnlockRequested(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected StakeUnlockRequested event",
+                        ))
+                    }
+                };
+                if event.authority != authority || event.pool != pool || event.stake != stake {
+                    return Err(ParseError::EventMismatch(
+                        "unexpected StakeUnlockRequested event",
+                    ));
+                }
+                ParsedInstruction::RequestStakeUnlock {
+                    authority,
+                    pool,
+                    stake,
+                    event,
+                }
+            }
+
+            RawInstruction::UnstakeFromPool {
+                authority,
+                pool,
+                stake,
+            } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::StakeWithdrawn(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected StakeWithdrawn event")),
+                };
+                if event.authority != authority || event.pool != pool || event.stake != stake {
+                    return Err(ParseError::EventMismatch("unexpected StakeWithdrawn event"));
+                }
+                ParsedInstruction::UnstakeFromPool {
+                    authority,
+                    pool,
+                    stake,
+                    event,
+                }
+            }
+
+            RawInstruction::ClaimCommission { authority, node } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::CommissionClaimed(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected CommissionClaimed event")),
+                };
+                if event.authority != authority || event.node != node {
+                    return Err(ParseError::EventMismatch("unexpected CommissionClaimed event"));
+                }
+                ParsedInstruction::ClaimCommission {
+                    authority,
+                    node,
+                    event,
+                }
+            }
         };
 
         result.push(parsed);
+    }
+
+    if !events.is_empty() {
+        return Err(ParseError::EventMismatch("unmatched event"));
     }
 
     Ok(result)
@@ -310,7 +432,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_api::event::{
-        AssignmentGroupFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee,
+        AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee,
         NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeDestroyed,
         TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
         VoteProposed, VoteRecorded,
@@ -439,7 +561,7 @@ mod tests {
             hash: assignment_hash,
             total_groups: 5u64.to_le_bytes(),
         };
-        let group_finalized = AssignmentGroupFinalized {
+        let group_finalized = AssignmentFinalized {
             epoch: EpochNumber(9),
             hash: assignment_hash,
             group: GroupIndex(2),
@@ -469,7 +591,7 @@ mod tests {
                 TapedriveEvent::VoteProposed(snapshot_vote),
                 TapedriveEvent::SnapshotFinalized(snapshot_finalized),
                 TapedriveEvent::VoteProposed(assignment_vote),
-                TapedriveEvent::AssignmentGroupFinalized(group_finalized),
+                TapedriveEvent::AssignmentFinalized(group_finalized),
             ],
         )
         .unwrap();

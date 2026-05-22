@@ -310,7 +310,7 @@ mod tests {
             node,
             stake: TAPE(stake),
             assigned: StorageUnits::zero(),
-            refused: StorageUnits::zero(),
+            blacklisted: StorageUnits::zero(),
             spools: 0,
         }
     }

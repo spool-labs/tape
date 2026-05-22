@@ -1,14 +1,20 @@
-use tape_solana::*;
+use bytemuck::bytes_of;
 use tape_api::program::prelude::*;
+use tape_core::track::data::TrackMeta;
+use tape_core::track::types::{TrackKind, TrackState};
+use tape_crypto::hash::hash;
+
+use crate::track::helpers::append_track;
 
 pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = AddToBlacklist::try_from_bytes(data)?;
-    let proof = args.0;
     let [
         fee_payer_info,
         authority_info,
         node_info,
-        tape_info,
+        system_info,
+        blacklist_info,
+        slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -20,29 +26,47 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     authority_info
         .is_signer()?;
 
-    let node = node_info
-        .is_writable()?
-        .as_account_mut::<Node>(&tapedrive::ID)?;
+    if !args.entry.is_valid() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
 
-    let tape = tape_info
-        .is_type::<Tape>(&tapedrive::ID)?
-        .as_account::<Tape>(&tapedrive::ID)?;
-
+    let node = node_info.as_account::<Node>(&tapedrive::ID)?;
     if node.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if proof.state.tape != (*tape_info.key).into() {
+    let node_address = (*node_info.key).into();
+    let (blacklist_address, _) = blacklist_pda(node_address);
+
+    let system = system_info
+        .is_system()?
+        .as_account::<System>(&tapedrive::ID)?;
+
+    let tape = blacklist_info
+        .is_writable()?
+        .has_address(&blacklist_address.into())?
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
+
+    if tape.authority != node_address {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    tape.tracks
-        .verify(&proof)
-        .map_err(|_| TapeError::BadProof)?;
+    let entry_bytes = bytes_of(&args.entry);
+    let meta = TrackMeta {
+        kind: TrackKind::Raw,
+        state: TrackState::Certified,
+        size: StorageUnits::from_bytes(entry_bytes.len() as u64),
+        value_hash: hash(entry_bytes),
+    };
 
-    node.blacklist
-        .add(proof.state.key, proof.state.size)
-        .map_err(|_| TapeError::ListFull)?;
+    append_track(
+        system,
+        tape,
+        slot_hashes_info,
+        blacklist_address,
+        args.entry.key(),
+        meta,
+    )?;
 
     Ok(())
 }
@@ -50,78 +74,106 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_crypto::Hash;
+    use core::mem::size_of;
+    use solana_sdk::account::Account;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
+    use tape_core::track::types::CompressedTrack;
+    use tape_crypto::merkle::MerkleTree;
     use tape_test::*;
 
+    fn slot_hashes_account(seed: Hash) -> (Pubkey, Account) {
+        let mut data = vec![0u8; 48];
+        data[0] = 1;
+        data[16..48].copy_from_slice(&seed.0);
+
+        (
+            sysvar::slot_hashes::ID,
+            Account {
+                lamports: 1,
+                data,
+                owner: sysvar::ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+    }
+
+    fn selected_group(seed: Hash, tape_id: TapeNumber, track_number: TrackNumber, groups: u64) -> GroupIndex {
+        let tape_number: u64 = tape_id.into();
+        let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
+            .wrapping_add(tape_number)
+            .wrapping_add(track_number.0);
+        GroupIndex(mixed % groups)
+    }
+
     #[test]
-    fn test_add_to_blacklist() {
+    fn add_to_blacklist() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
+        let node_address = Pubkey::new_unique();
+        let (system_address, _) = system_pda();
+        let (blacklist_address, _) = blacklist_pda(node_address.into());
 
-        // PDAs
-        let blob_hash = Hash::new_unique();
-        let (node_address, _) = node_pda(authority.into());
-        let (tape_address, _) = tape_pda(authority.into());
+        let entry = BlacklistEntry::track(Address::new_unique());
+        let entry_size = size_of::<BlacklistEntry>() as u64;
+        let tape_id = TapeNumber(1);
         let track_number = TrackNumber(0);
-        let size = StorageUnits::mb(500);
-        let track = CompressedTrack {
-            tape: tape_address,
-            key: blob_hash,
-            track_number,
-            kind: TrackKind::Raw as u64,
-            state: TrackState::Certified as u64,
-            size,
-            group: GroupIndex(3),
-            value_hash: Hash::new_unique(),
-        };
-        let track_hash = track.get_hash();
-        let mut track_tree = tape_crypto::merkle::MerkleTree::<TRACK_TREE_HEIGHT>::new();
-        track_tree.add_leaf_hash(track_hash).unwrap();
-        let proof: [Hash; TRACK_TREE_HEIGHT] =
-            tape_crypto::merkle::create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
-                &[track_hash],
-                track_number.0 as usize,
-            )
-            .expect("track proof is valid")
-            .try_into()
-            .expect("proof has correct length");
+        let seed = Hash::from([0x42; 32]);
+        let live_group_count = 50;
 
-        // Instruction
-        let instruction = build_add_to_blacklist_ix(fee_payer.into(), authority.into(),
-            node_address,
-            CompressedTrackProof { state: track, proof },
+        let instruction = build_add_to_blacklist_ix(
+            fee_payer.into(),
+            authority.into(),
+            node_address.into(),
+            entry,
         );
 
-        // Prepare node with initialized blacklist
-        let mut node = Node::zeroed();
-        node.authority = authority.into();
-        node.blacklist = Blacklist::new();
+        let system = System {
+            current_epoch: EpochNumber(2),
+            live_group_count,
+            ..System::zeroed()
+        };
+        let node = Node {
+            authority: authority.into(),
+            ..Node::zeroed()
+        };
         let tape = Tape {
+            id: tape_id,
+            authority: node_address.into(),
+            capacity: StorageUnits::from_bytes(entry_size * 2),
+            active_epoch: EpochNumber(0),
+            expiry_epoch: EpochNumber(10),
             tracks: TrackArchive {
-                tree: track_tree,
-                next_number: TrackNumber(1),
-                num_tracks: 1,
+                num_tracks: 0,
+                next_number: track_number,
+                tree: MerkleTree::<TRACK_TREE_HEIGHT>::new(),
             },
             ..Tape::zeroed()
         };
 
-        // Build accounts
+        let group = selected_group(seed, tape_id, track_number, live_group_count);
+        let track = CompressedTrack {
+            tape: blacklist_address,
+            key: entry.key(),
+            track_number,
+            kind: TrackKind::Raw as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(entry_size),
+            group,
+            value_hash: hash(bytes_of(&entry)),
+        };
+        let mut expected_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        expected_tree.add_leaf_hash(track.get_hash()).unwrap();
+
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(node_address, node.pack(), tapedrive::ID),
-            pda(tape_address, tape.pack(), tapedrive::ID),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(blacklist_address, tape.pack(), tapedrive::ID),
+            slot_hashes_account(seed),
         ];
-
-        // Expected node after blacklisting
-        let mut expected_node = node.clone();
-        expected_node
-            .blacklist
-            .add(blob_hash, size)
-            .expect("blacklist add");
 
         let env = test_env();
         env.process_instruction(
@@ -129,10 +181,20 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-
-                // Verify node updated with blacklist containing the track
-                Check::account(&Pubkey::from(node_address))
-                    .data(expected_node.pack().as_ref())
+                Check::account(&Pubkey::from(blacklist_address))
+                    .data(
+                        Tape {
+                            used: StorageUnits::from_bytes(entry_size),
+                            tracks: TrackArchive {
+                                num_tracks: 1,
+                                next_number: TrackNumber(1),
+                                tree: expected_tree,
+                            },
+                            ..tape
+                        }
+                        .pack()
+                        .as_ref(),
+                    )
                     .build(),
             ],
         );

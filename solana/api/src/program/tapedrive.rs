@@ -16,8 +16,6 @@ pub const FUTURE_EPOCHS:          usize = 256;
 pub const EPOCH_HISTORY:          usize = 256;
 pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
 pub const EPOCH_DURATION:           i64 = 100;  // 100 seconds for local testing (60s testnet, 604800s mainnet)
-pub const BLACKLIST_SIZE:         usize = 24;   // 2^24 blob entries in blocklist
-pub const STREAM_SEGMENTS:        usize = 18;   // 2^18 = 262,144 segments (32MiB with 128B segments)
 
 tape_solana::declare_id!("FyT7KRYoqq7TsrdKokuuFpQSY5Krbx1Wz1JjxmXyBih8");
 
@@ -35,14 +33,15 @@ pub const COMMITTEE:          &[u8] = b"committee";
 pub const GROUP:              &[u8] = b"group";
 pub const PEER_SET:           &[u8] = b"peer-set";
 pub const NODE:               &[u8] = b"node";
+pub const BLACKLIST:          &[u8] = b"blacklist";
 pub const HISTORY:            &[u8] = b"history";
 pub const CASSETTE:           &[u8] = b"cassette";
 pub const TRACK:              &[u8] = b"track";
 pub const STAKE:              &[u8] = b"stake";
-pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
 pub const VOTE:               &[u8] = b"vote";
 pub const VOTE_SNAPSHOT:      &[u8] = b"snapshot";
 pub const VOTE_ASSIGNMENT:    &[u8] = b"assignment";
+pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
 
 pub const SYSTEM_ADDRESS: Address =
     Address::new(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
@@ -180,6 +179,11 @@ pub fn tape_pda(authority: Address) -> (Address, u8) {
 #[inline(always)]
 pub fn track_pda(tape: Address, track_number: TrackNumber) -> (Address, u8) {
     Address::find_program_address(&[TRACK, tape.as_ref(), &track_number.pack()], id())
+}
+
+#[inline(always)]
+pub fn blacklist_pda(node: Address) -> (Address, u8) {
+    Address::find_program_address(&[BLACKLIST, node.as_ref()], id())
 }
 
 #[inline(always)]

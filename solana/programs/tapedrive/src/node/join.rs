@@ -53,7 +53,7 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_committee(next)?;
 
     let (next_committee, next_members) =
-        Committee::read_mut(next_committee_info, &tapedrive::ID)?;
+        Committee::read_full_mut(next_committee_info, &tapedrive::ID)?;
     if next_committee.epoch != next {
         return Err(TapeError::BadEpochId.into());
     }
@@ -66,7 +66,7 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_writable()?
         .is_peer_set()?;
 
-    let (peer_set, peers) = PeerSet::read_mut(peer_set_info, &tapedrive::ID)?;
+    let (peer_set, peers) = PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
 
     let node = node_info
         .is_writable()?
@@ -97,7 +97,7 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         node: node_address,
         stake,
         assigned: StorageUnits::zero(),
-        refused: StorageUnits::zero(),
+        blacklisted: StorageUnits::zero(),
         spools: 0,
     };
 
@@ -389,7 +389,7 @@ mod tests {
                 node: node_address,
                 stake: TAPE(3_000),
                 assigned: StorageUnits::zero(),
-                refused: StorageUnits::zero(),
+                blacklisted: StorageUnits::zero(),
                 spools: 0,
             },
             member(6, 2_000),

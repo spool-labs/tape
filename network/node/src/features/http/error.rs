@@ -7,6 +7,7 @@ pub enum RouteError {
     BadRequest(String),
     Forbidden(String),
     NotResponsible,
+    BlacklistedObject,
     NotInCommittee,
     InvalidSignature,
     Internal(String),
@@ -19,6 +20,9 @@ impl IntoResponse for RouteError {
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, message).into_response(),
             Self::NotResponsible => (StatusCode::FORBIDDEN, "not responsible").into_response(),
+            Self::BlacklistedObject => {
+                (StatusCode::FORBIDDEN, "blacklisted object").into_response()
+            }
             Self::NotInCommittee => (StatusCode::FORBIDDEN, "not in committee").into_response(),
             Self::InvalidSignature => {
                 (StatusCode::UNAUTHORIZED, "invalid signature").into_response()

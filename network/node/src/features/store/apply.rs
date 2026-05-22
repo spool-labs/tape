@@ -84,19 +84,13 @@ fn put_track_object<Db: Store>(
     store.put_track(track, replay.state)
         .map_err(store_error)?;
 
-    if let Some(mut tape_info) = store
-        .get_tape(Address::from(replay.state.tape))
-        .map_err(store_error)?
-    {
-        let next_track_number = TrackNumber(replay.state.track_number.0 + 1);
-
-        if tape_info.next_track_number < next_track_number {
-            tape_info.next_track_number = next_track_number;
-            store
-                .put_tape(Address::from(replay.state.tape), tape_info)
-                .map_err(store_error)?;
-        }
-    }
+    // We need to advance the track cursor so that merkle proofs for this tape don't break due to
+    // using the wrong index when tracks are deleted.
+    advance_track_cursor(
+        store, 
+        replay.state.tape, 
+        replay.state.track_number
+    )?;
 
     if let Some(blob) = replay.blob {
         store
@@ -119,6 +113,33 @@ fn put_track_object<Db: Store>(
             },
         )
         .map_err(store_error)
+}
+
+fn advance_track_cursor<Db: Store>(
+    store: &TapeStore<Db>,
+    tape: Address,
+    track_number: TrackNumber,
+) -> Result<(), NodeError> {
+    let info = store.get_tape(tape).map_err(store_error)?;
+    let Some(mut tape_info) = info else {
+        return Ok(());
+    };
+
+    let next_track_number = TrackNumber(
+        track_number
+            .0
+            .checked_add(1)
+            .ok_or_else(|| NodeError::Store("track number overflow".into()))?,
+    );
+
+    if tape_info.next_track_number < next_track_number {
+        tape_info.next_track_number = next_track_number;
+        store
+            .put_tape(tape, tape_info)
+            .map_err(store_error)?;
+    }
+
+    Ok(())
 }
 
 fn validate_replay_track(replay: &ReplayTrack) -> Result<(), NodeError> {

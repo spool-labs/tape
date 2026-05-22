@@ -3,19 +3,19 @@ use tape_crypto::address::Address;
 use super::Member;
 use crate::types::*;
 
-pub fn get_pool_score(assigned: StorageUnits, refused: StorageUnits) -> u128 {
-    if refused >= assigned {
+pub fn get_pool_score(assigned: StorageUnits, blacklisted: StorageUnits) -> u128 {
+    if blacklisted >= assigned {
         return 0;
     }
 
-    assigned.saturating_sub(refused).as_u128()
+    assigned.saturating_sub(blacklisted).as_u128()
 }
 
 pub fn get_committee_score(members: &[Member]) -> u128 {
     let mut score: u128 = 0;
 
     for member in members {
-        let member_score = get_pool_score(member.assigned, member.refused);
+        let member_score = get_pool_score(member.assigned, member.blacklisted);
 
         score = score.saturating_add(member_score);
     }
@@ -32,7 +32,7 @@ pub fn calc_rewards(
         return TAPE::zero();
     };
 
-    let pool_score = get_pool_score(member.assigned, member.refused);
+    let pool_score = get_pool_score(member.assigned, member.blacklisted);
     if pool_score == 0 {
         return TAPE::zero();
     }
@@ -59,11 +59,11 @@ mod tests {
         let s = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(200));
         assert_eq!(s, 800u128 * StorageUnits::MB as u128);
 
-        // Fully refused
+        // Fully blacklisted
         let s2 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1000));
         assert_eq!(s2, 0);
 
-        // Over-refused
+        // Over-blacklisted
         let s3 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1200));
         assert_eq!(s3, 0);
     }

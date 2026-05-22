@@ -23,8 +23,10 @@ use crate::system::{
     process_start_network,
 };
 use crate::blacklist::{
+    process_create_blacklist,
     process_add_to_blacklist,
     process_remove_from_blacklist,
+    process_destroy_blacklist,
 };
 use crate::committee::{
     process_create_committee,
@@ -134,8 +136,10 @@ pub fn process_instruction(
         TapeInstruction::SetSpoolGroups => process_set_spool_groups(accounts, data)?,
         TapeInstruction::SetMinVersion => process_set_min_version(accounts, data)?,
         TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
+        TapeInstruction::CreateBlacklist => process_create_blacklist(accounts, data)?,
         TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
         TapeInstruction::RemoveFromBlacklist => process_remove_from_blacklist(accounts, data)?,
+        TapeInstruction::DestroyBlacklist => process_destroy_blacklist(accounts, data)?,
 
         // Pool
         TapeInstruction::AdvancePool => process_advance_pool(accounts, data)?,

@@ -4,16 +4,16 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
-    build_advance_pool_ix, build_claim_commission_ix, build_join_committee_ix,
-    build_request_stake_unlock_ix, build_set_commission_ix, build_set_committee_size_ix,
-    build_set_spool_groups_ix, build_stake_with_pool_ix, build_sync_spool_ix,
-    build_unstake_from_pool_ix,
+    build_add_to_blacklist_ix, build_advance_pool_ix, build_claim_commission_ix,
+    build_create_blacklist_ix, build_join_committee_ix, build_request_stake_unlock_ix,
+    build_set_commission_ix, build_set_committee_size_ix, build_set_spool_groups_ix,
+    build_stake_with_pool_ix, build_sync_spool_ix, build_unstake_from_pool_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
 use tape_core::spooler::GroupIndex;
-use tape_core::system::NodeStatus;
+use tape_core::system::{BlacklistEntry, NodeStatus};
 use tape_core::types::coin::TAPE;
-use tape_core::types::BasisPoints;
+use tape_core::types::{BasisPoints, EpochNumber};
 use tape_store::ops::SpoolOps;
 use tracing::trace;
 
@@ -226,6 +226,77 @@ impl SimnetScenario<'_> {
             trace!(node_index, "advance_pool idempotent completion");
         }
         trace!(node_index, "advance_pool_ok complete");
+        Ok(())
+    }
+
+    pub async fn create_blacklist(
+        &self,
+        node_index: usize,
+        capacity: u64,
+        expiry_epoch: EpochNumber,
+    ) -> Result<()> {
+        trace!(node_index, capacity, "submitting create_blacklist instruction");
+        let payer = self.harness.admin();
+        let node = &self.harness.nodes()[node_index];
+
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_HIGH)];
+        ixs.extend(build_authority_with_tokens_ix(
+            payer.pubkey().into(),
+            node.authority().into(),
+            TAPE::from("100"),
+        )?);
+        ixs.push(build_create_blacklist_ix(
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
+            capacity,
+            expiry_epoch,
+        ));
+
+        self.harness
+            .chain()
+            .send_instructions_with_signers_and_advance(
+                payer,
+                ixs,
+                &[node.keypair()],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("create blacklist for node {node_index}"))?;
+
+        trace!(node_index, "create_blacklist completed");
+        Ok(())
+    }
+
+    pub async fn add_to_blacklist(
+        &self,
+        node_index: usize,
+        entry: BlacklistEntry,
+    ) -> Result<()> {
+        trace!(node_index, "submitting add_to_blacklist instruction");
+        let payer = self.harness.admin();
+        let node = &self.harness.nodes()[node_index];
+
+        let ix = build_add_to_blacklist_ix(
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
+            entry,
+        );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
+
+        self.harness
+            .chain()
+            .send_instructions_with_signers_and_advance(
+                payer,
+                vec![cu_ix, ix],
+                &[node.keypair()],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("add blacklist entry for node {node_index}"))?;
+
+        trace!(node_index, "add_to_blacklist completed");
         Ok(())
     }
 

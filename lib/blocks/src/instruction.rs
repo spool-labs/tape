@@ -2,19 +2,19 @@
 
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
-    AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
-    EpochCreated, NodeJoinedCommittee, NodeRegistered, PeerSetResized, PoolAdvanced, SnapshotFinalized,
-    SpoolSynced, TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted,
-    TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
+    AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
+    EpochAdvanced, EpochCommitted, EpochCreated, NodeJoinedCommittee, NodeRegistered,
+    PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
+    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeReserved, TrackCertified,
+    TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
-use tape_api::instruction::{
-    self as ix, CreateCommittee, CreateEpoch, ResizeCommittee, ResizePeerSet, SyncSpool,
-    TapeInstruction,
-};
+use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
 use tape_core::spooler::GroupIndex;
+use tape_core::system::BlacklistEntry;
 use tape_core::track::data::{TrackData, TrackDataSlice};
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -68,6 +68,26 @@ pub enum RawInstruction {
     AdvancePool {
         node: Address,
     },
+    StakeWithPool {
+        authority: Address,
+        pool: Address,
+        stake: Address,
+        amount: [u8; 8],
+    },
+    RequestStakeUnlock {
+        authority: Address,
+        pool: Address,
+        stake: Address,
+    },
+    UnstakeFromPool {
+        authority: Address,
+        pool: Address,
+        stake: Address,
+    },
+    ClaimCommission {
+        authority: Address,
+        node: Address,
+    },
     TrackWrite {
         authority: Address,
         key: Hash,
@@ -96,6 +116,20 @@ pub enum RawInstruction {
         node: Address,
     },
     JoinCommittee {
+        node: Address,
+    },
+    CreateBlacklist {
+        node: Address,
+    },
+    AddToBlacklist {
+        node: Address,
+        entry: BlacklistEntry,
+    },
+    RemoveFromBlacklist {
+        node: Address,
+        track: CompressedTrackProof,
+    },
+    DestroyBlacklist {
         node: Address,
     },
 }
@@ -158,11 +192,34 @@ pub enum ParsedInstruction {
     FinalizeGroup {
         epoch: EpochNumber,
         group: GroupIndex,
-        event: AssignmentGroupFinalized,
+        event: AssignmentFinalized,
     },
     AdvancePool {
         node: Address,
         event: PoolAdvanced,
+    },
+    StakeWithPool {
+        authority: Address,
+        pool: Address,
+        stake: Address,
+        event: StakeDeposited,
+    },
+    RequestStakeUnlock {
+        authority: Address,
+        pool: Address,
+        stake: Address,
+        event: StakeUnlockRequested,
+    },
+    UnstakeFromPool {
+        authority: Address,
+        pool: Address,
+        stake: Address,
+        event: StakeWithdrawn,
+    },
+    ClaimCommission {
+        authority: Address,
+        node: Address,
+        event: CommissionClaimed,
     },
 
     // Track management
@@ -208,6 +265,24 @@ pub enum ParsedInstruction {
     JoinCommittee {
         node: Address,
         event: NodeJoinedCommittee,
+    },
+    CreateBlacklist {
+        node: Address,
+        event: TapeReserved,
+    },
+    AddToBlacklist {
+        node: Address,
+        entry: BlacklistEntry,
+        event: TrackWritten,
+    },
+    RemoveFromBlacklist {
+        node: Address,
+        track: CompressedTrackProof,
+        event: TrackDeleted,
+    },
+    DestroyBlacklist {
+        node: Address,
+        event: TapeDestroyed,
     },
 }
 
@@ -262,7 +337,7 @@ pub fn parse_raw_instruction(
 
     match ix_type {
         TapeInstruction::CreateEpoch => {
-            let args = CreateEpoch::try_from_bytes(&ix_data[1..])
+            let args = ix::CreateEpoch::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("create_epoch: {e:?}")))?;
             Ok(Some(RawInstruction::CreateEpoch {
                 epoch: EpochNumber::unpack(args.epoch),
@@ -270,7 +345,7 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::CreateCommittee => {
-            let args = CreateCommittee::try_from_bytes(&ix_data[1..])
+            let args = ix::CreateCommittee::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("create_committee: {e:?}")))?;
             Ok(Some(RawInstruction::CreateCommittee {
                 epoch: EpochNumber::unpack(args.epoch),
@@ -278,7 +353,7 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::ResizeCommittee => {
-            let args = ResizeCommittee::try_from_bytes(&ix_data[1..])
+            let args = ix::ResizeCommittee::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("resize_committee: {e:?}")))?;
             Ok(Some(RawInstruction::ResizeCommittee {
                 epoch: EpochNumber::unpack(args.epoch),
@@ -286,7 +361,7 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::ResizePeerSet => {
-            let _args = ResizePeerSet::try_from_bytes(&ix_data[1..])
+            let _args = ix::ResizePeerSet::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("resize_peer_set: {e:?}")))?;
             Ok(Some(RawInstruction::ResizePeerSet))
         }
@@ -296,7 +371,7 @@ pub fn parse_raw_instruction(
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
 
         TapeInstruction::SyncSpool => {
-            let args = SyncSpool::try_from_bytes(&ix_data[1..])
+            let args = ix::SyncSpool::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("sync_spool: {e:?}")))?;
             // Account layout from build_sync_spool_ix: [fee_payer, authority, system, epoch, group, node]
             let node = get_account(5)?;
@@ -414,6 +489,36 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::JoinCommittee { node }))
         }
 
+        TapeInstruction::CreateBlacklist => {
+            let node = get_account(3)?;
+            Ok(Some(RawInstruction::CreateBlacklist { node }))
+        }
+
+        TapeInstruction::AddToBlacklist => {
+            let args = ix::AddToBlacklist::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("add_to_blacklist: {e:?}")))?;
+            let node = get_account(2)?;
+            Ok(Some(RawInstruction::AddToBlacklist {
+                node,
+                entry: args.entry,
+            }))
+        }
+
+        TapeInstruction::RemoveFromBlacklist => {
+            let args = ix::RemoveFromBlacklist::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("remove_from_blacklist: {e:?}")))?;
+            let node = get_account(2)?;
+            Ok(Some(RawInstruction::RemoveFromBlacklist {
+                node,
+                track: args.track,
+            }))
+        }
+
+        TapeInstruction::DestroyBlacklist => {
+            let node = get_account(2)?;
+            Ok(Some(RawInstruction::DestroyBlacklist { node }))
+        }
+
         TapeInstruction::AdvancePool => {
             // Account layout from build_advance_pool_ix:
             // [fee_payer, system, archive, prev_epoch, prev_committee, pool, history]
@@ -421,8 +526,55 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::AdvancePool { node }))
         }
 
-        // Instructions we don't need to track
-        _ => Ok(None),
+        TapeInstruction::StakeWithPool => {
+            let args = ix::StakeWithPool::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("stake_with_pool: {e:?}")))?;
+            Ok(Some(RawInstruction::StakeWithPool {
+                authority: get_account(1)?,
+                pool: get_account(5)?,
+                stake: get_account(6)?,
+                amount: args.amount,
+            }))
+        }
+
+        TapeInstruction::RequestStakeUnlock => Ok(Some(RawInstruction::RequestStakeUnlock {
+            authority: get_account(1)?,
+            stake: get_account(2)?,
+            pool: get_account(4)?,
+        })),
+
+        TapeInstruction::UnstakeFromPool => Ok(Some(RawInstruction::UnstakeFromPool {
+            authority: get_account(1)?,
+            stake: get_account(5)?,
+            pool: get_account(8)?,
+        })),
+
+        TapeInstruction::ClaimCommission => Ok(Some(RawInstruction::ClaimCommission {
+            authority: get_account(1)?,
+            node: get_account(5)?,
+        })),
+
+        TapeInstruction::Unknown
+        | TapeInstruction::CreateSystem
+        | TapeInstruction::CreateArchive
+        | TapeInstruction::CreatePeerSet
+        | TapeInstruction::StartNetwork
+        | TapeInstruction::SetAuthority
+        | TapeInstruction::SetName
+        | TapeInstruction::SetBlsPubkey
+        | TapeInstruction::SetNetworkAddress
+        | TapeInstruction::SetNetworkTls
+        | TapeInstruction::SetCommissionRate
+        | TapeInstruction::SetStoragePrice
+        | TapeInstruction::SetStorageCapacity
+        | TapeInstruction::SetCommitteeSize
+        | TapeInstruction::SetSpoolGroups
+        | TapeInstruction::SetMinVersion
+        | TapeInstruction::SplitPoolStake
+        | TapeInstruction::MergePoolStake
+        | TapeInstruction::SplitTapeByEpoch
+        | TapeInstruction::SplitTapeBySize
+        | TapeInstruction::MergeTape => Ok(None),
     }
 }
 
@@ -437,16 +589,15 @@ mod tests {
     use tape_api::instruction::{
         build_finalize_group_ix, build_vote_assignment_ix, build_vote_snapshot_ix,
     };
+    use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
     use tape_core::bls::BlsSignature;
     use tape_core::cert::{AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT};
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::VoteKind;
-    use tape_core::types::{
-        EpochNumber, SpoolBitmap, StorageUnits,
-    };
+    use tape_core::types::{EpochNumber, SpoolBitmap, StorageUnits};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
-    use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
 
     fn compiled_instruction(instruction: &Instruction) -> (UiCompiledInstruction, Vec<String>) {
         let mut account_keys = vec![TAPE_PROGRAM_ID.to_string()];
@@ -514,6 +665,7 @@ mod tests {
             group,
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
+            [StorageUnits::zero(); GROUP_SIZE],
         );
         let proof = [Hash::zeroed(); ASSIGNMENT_TREE_HEIGHT];
         let (ix, keys) = compiled_instruction(&build_finalize_group_ix(

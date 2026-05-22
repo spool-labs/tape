@@ -14,23 +14,28 @@ pub struct AssignmentGroupPayload {
     /// Group index within the target epoch.
     pub group: GroupIndex,
 
-    /// Indices into the canonical peer set.
-    pub peer_indices: [u64; GROUP_SIZE],
+    /// Indices into the target epoch committee.
+    pub member_indices: [u64; GROUP_SIZE],
 
     /// Uniform size assigned to every spool in this group.
     pub size: StorageUnits,
+
+    /// Blacklisted size for each assigned spool owner in this group.
+    pub blacklisted: [StorageUnits; GROUP_SIZE],
 }
 
 impl AssignmentGroupPayload {
     pub const fn new(
         group: GroupIndex,
-        peer_indices: [u64; GROUP_SIZE],
+        member_indices: [u64; GROUP_SIZE],
         size: StorageUnits,
+        blacklisted: [StorageUnits; GROUP_SIZE],
     ) -> Self {
         Self {
             group,
-            peer_indices,
+            member_indices,
             size,
+            blacklisted,
         }
     }
 
@@ -73,6 +78,7 @@ mod tests {
             GroupIndex(3),
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
+            [StorageUnits::zero(); GROUP_SIZE],
         );
 
         assert_eq!(payload.hash(), payload.hash());
@@ -84,10 +90,16 @@ mod tests {
             GroupIndex(3),
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
+            [StorageUnits::zero(); GROUP_SIZE],
         );
         let mut payload2 = payload1;
-        payload2.peer_indices[0] = 99;
+        payload2.member_indices[0] = 99;
 
         assert_ne!(payload1.hash(), payload2.hash());
+
+        let mut payload3 = payload1;
+        payload3.blacklisted[0] = StorageUnits::mb(1);
+
+        assert_ne!(payload1.hash(), payload3.hash());
     }
 }

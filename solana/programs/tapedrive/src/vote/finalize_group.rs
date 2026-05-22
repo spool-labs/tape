@@ -1,4 +1,4 @@
-use tape_api::event::AssignmentGroupFinalized;
+use tape_api::event::AssignmentFinalized;
 use tape_api::program::prelude::*;
 use tape_core::cert::verify_assignment_group_payload;
 
@@ -28,7 +28,10 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .as_account::<System>(&tapedrive::ID)?;
 
     let target_epoch_id = EpochNumber::unpack(args.epoch);
-    let expected_target = system.current_epoch.saturating_add(EpochNumber(1));
+    let expected_target = system
+        .current_epoch
+        .checked_add(EpochNumber(1))
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     if target_epoch_id != expected_target {
         return Err(TapeError::BadEpochId.into());
@@ -60,10 +63,10 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         return Err(TapeError::BadProof.into());
     }
 
-    require_unique(&args.payload.peer_indices)?;
+    require_unique(&args.payload.member_indices)?;
 
     peer_set_info.is_peer_set()?;
-    let (peer_set, peers) = PeerSet::read(peer_set_info, &tapedrive::ID)?;
+    let (_, peers) = PeerSet::read(peer_set_info, &tapedrive::ID)?;
 
     committee_info
         .is_writable()?
@@ -98,40 +101,65 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     group.size = args.payload.size;
 
     for i in 0..GROUP_SIZE {
-        let peer_index = usize::try_from(args.payload.peer_indices[i])
+        let member_index = usize::try_from(args.payload.member_indices[i])
             .map_err(|_| TapeError::BadMember)?;
 
-        if peer_index >= peer_set.peers.count as usize {
-            return Err(TapeError::BadMember.into());
-        }
+        let member = members
+            .get_mut(member_index)
+            .ok_or(TapeError::BadMember)?;
+        let node = member.node;
 
-        let peer = peers.get(peer_index).ok_or(TapeError::BadMember)?;
+        let peer = peers
+            .iter()
+            .find(|p| p.node == node)
+            .ok_or(TapeError::BadMember)?;
+
         group.spools[i] = Spool {
-            node: peer.node,
+            node,
             bls_pubkey: peer.bls_pubkey,
         };
 
-        let member = members
-            .iter_mut()
-            .find(|m| m.node == peer.node)
-            .ok_or(TapeError::BadMember)?;
+        member.spools = member
+            .spools
+            .checked_add(1)
+            .ok_or(TapeError::RewardsOverflow)?;
 
-        member.spools = member.spools.saturating_add(1);
         member.assigned = member
             .assigned
             .checked_add(args.payload.size)
             .ok_or(TapeError::RewardsOverflow)?;
+
+        if args.payload.blacklisted[i] > args.payload.size {
+            return Err(TapeError::RewardsOverflow.into());
+        }
+
+        member.blacklisted = member
+            .blacklisted
+            .checked_add(args.payload.blacklisted[i])
+            .ok_or(TapeError::RewardsOverflow)?;
     }
 
-    target_epoch.total_groups = target_epoch.total_groups
-        .saturating_add(1);
+    target_epoch.total_groups = target_epoch
+        .total_groups
+        .checked_add(1)
+        .ok_or(TapeError::RewardsOverflow)?;
 
-    let group_total = args.payload.size.0.saturating_mul(GROUP_SIZE as u64);
+    let group_total = args
+        .payload
+        .size
+        .0
+        .checked_mul(GROUP_SIZE as u64)
+        .ok_or(TapeError::RewardsOverflow)?;
 
-    target_epoch.total_assigned =
-        StorageUnits(target_epoch.total_assigned.0.saturating_add(group_total));
+    target_epoch.total_assigned = StorageUnits(
+        target_epoch
+            .total_assigned
+            .0
+            .checked_add(group_total)
+            .ok_or(TapeError::RewardsOverflow)?,
+    );
 
-    AssignmentGroupFinalized {
+    AssignmentFinalized {
         epoch: target_epoch_id,
         hash: target_epoch.assignment_hash,
         group: group_id,
@@ -145,10 +173,10 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     Ok(())
 }
 
-fn require_unique(peer_indices: &[u64; GROUP_SIZE]) -> ProgramResult {
+fn require_unique(member_indices: &[u64; GROUP_SIZE]) -> ProgramResult {
     for i in 0..GROUP_SIZE {
         for j in (i + 1)..GROUP_SIZE {
-            if peer_indices[i] == peer_indices[j] {
+            if member_indices[i] == member_indices[j] {
                 return Err(TapeError::BadMember.into());
             }
         }
@@ -166,27 +194,72 @@ mod tests {
     };
     use tape_test::*;
 
-    #[test]
-    fn finalize_group() {
-        let fee_payer = Pubkey::new_unique();
-        let current_epoch_id = EpochNumber(12);
-        let target_epoch_id = EpochNumber(13);
-        let group_id = GroupIndex(0);
-        let size = StorageUnits::gb(2);
-        let peer_indices = core::array::from_fn(|i| i as u64);
+    fn assignment_inputs(
+        group_id: GroupIndex,
+        size: StorageUnits,
+        blacklisted: [StorageUnits; GROUP_SIZE],
+    ) -> (
+        AssignmentGroupPayload,
+        Hash,
+        [Hash; ASSIGNMENT_TREE_HEIGHT],
+    ) {
+        let member_indices = core::array::from_fn(|i| i as u64);
         let payload =
-            AssignmentGroupPayload::new(group_id, peer_indices, size);
+            AssignmentGroupPayload::new(group_id, member_indices, size, blacklisted);
         let leaf_hash = payload.hash();
         let assignment_hash =
             root_from_leaf_hashes::<ASSIGNMENT_TREE_HEIGHT>(&[leaf_hash]);
-        let proof: [Hash; ASSIGNMENT_TREE_HEIGHT] =
-            create_proof_from_leaf_hashes::<ASSIGNMENT_TREE_HEIGHT>(
-                &[leaf_hash],
-                group_id.0 as usize,
-            )
-            .expect("assignment proof")
-            .try_into()
-            .expect("proof length");
+        let proof = create_proof_from_leaf_hashes::<ASSIGNMENT_TREE_HEIGHT>(
+            &[leaf_hash],
+            group_id.0 as usize,
+        )
+        .expect("assignment proof")
+        .try_into()
+        .expect("proof length");
+
+        (payload, assignment_hash, proof)
+    }
+
+    fn members_and_peers() -> (Vec<Member>, Vec<Peer>) {
+        let mut members = Vec::with_capacity(GROUP_SIZE);
+        let mut peers = Vec::with_capacity(GROUP_SIZE);
+
+        for i in 0..GROUP_SIZE {
+            let sk = BlsPrivateKey::from_random();
+            let pk = sk.public_key().expect("pubkey");
+            let mut bytes = [0u8; 32];
+            bytes[0] = (i as u8) + 1;
+            let addr = Address::new(bytes);
+
+            members.push(Member {
+                node: addr,
+                stake: TAPE(0),
+                assigned: StorageUnits::zero(),
+                blacklisted: StorageUnits::zero(),
+                spools: 0,
+            });
+            peers.push(Peer {
+                node: addr,
+                bls_pubkey: pk,
+                ..Peer::zeroed()
+            });
+        }
+
+        (members, peers)
+    }
+
+    #[test]
+    fn finalize_group() {
+        let fee_payer = Pubkey::new_unique();
+
+        let current_epoch_id = EpochNumber(12);
+        let target_epoch_id = EpochNumber(13);
+
+        let group_id = GroupIndex(0);
+        let size = StorageUnits::gb(2);
+        let blacklisted = [StorageUnits::zero(); GROUP_SIZE];
+        let (payload, assignment_hash, proof) =
+            assignment_inputs(group_id, size, blacklisted);
 
         let (system_address, _) = system_pda();
         let (target_epoch_address, _) = epoch_pda(target_epoch_id);
@@ -206,28 +279,8 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let mut members = Vec::with_capacity(GROUP_SIZE);
-        let mut peers = Vec::with_capacity(GROUP_SIZE);
-        for i in 0..GROUP_SIZE {
-            let sk = BlsPrivateKey::from_random();
-            let pk = sk.public_key().expect("pubkey");
-            let mut bytes = [0u8; 32];
-            bytes[0] = (i as u8) + 1;
-            let addr = Address::new(bytes);
-
-            members.push(Member {
-                node: addr,
-                stake: TAPE(0),
-                assigned: StorageUnits::zero(),
-                refused: StorageUnits::zero(),
-                spools: 0,
-            });
-            peers.push(Peer {
-                node: addr,
-                bls_pubkey: pk,
-                ..Peer::zeroed()
-            });
-        }
+        let (members, mut peers) = members_and_peers();
+        peers.reverse();
 
         let committee = Committee {
             epoch: target_epoch_id,
@@ -257,9 +310,13 @@ mod tests {
             ..Group::zeroed()
         };
         for i in 0..GROUP_SIZE {
+            let peer = peers
+                .iter()
+                .find(|peer| peer.node == members[i].node)
+                .expect("peer for member");
             expected_group.spools[i] = Spool {
-                node: peers[i].node,
-                bls_pubkey: peers[i].bls_pubkey,
+                node: members[i].node,
+                bls_pubkey: peer.bls_pubkey,
             };
         }
 
@@ -302,6 +359,68 @@ mod tests {
                     )
                     .build(),
             ],
+        );
+    }
+
+    #[test]
+    fn finalize_group_rejects_total_assigned_overflow() {
+        let fee_payer = Pubkey::new_unique();
+
+        let current_epoch_id = EpochNumber(12);
+        let target_epoch_id = EpochNumber(13);
+
+        let group_id = GroupIndex(0);
+        let size = StorageUnits((u64::MAX / GROUP_SIZE as u64) + 1);
+        let blacklisted = [StorageUnits::zero(); GROUP_SIZE];
+        let (payload, assignment_hash, proof) =
+            assignment_inputs(group_id, size, blacklisted);
+
+        let (system_address, _) = system_pda();
+        let (target_epoch_address, _) = epoch_pda(target_epoch_id);
+        let (group_address, _) = group_pda(target_epoch_id, group_id);
+        let (committee_address, _) = committee_pda(target_epoch_id);
+        let (peer_set_address, _) = peer_set_pda();
+
+        let system = System {
+            current_epoch: current_epoch_id,
+            target_group_count: 1,
+            ..System::zeroed()
+        };
+
+        let target_epoch = Epoch {
+            id: target_epoch_id,
+            assignment_hash,
+            ..Epoch::zeroed()
+        };
+
+        let (members, peers) = members_and_peers();
+
+        let committee = Committee {
+            epoch: target_epoch_id,
+            members: Tail::new(GROUP_SIZE as u64, members.len() as u64),
+        };
+        let peer_set = PeerSet {
+            peers: Tail::new(GROUP_SIZE as u64, peers.len() as u64),
+        };
+
+        let instruction =
+            build_finalize_group_ix(fee_payer.into(), target_epoch_id, payload, proof);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(target_epoch_address, target_epoch.pack(), tapedrive::ID),
+            empty(group_address),
+            pda(committee_address, committee.pack_with(&members), tapedrive::ID),
+            pda(peer_set_address, peer_set.pack_with(&peers), tapedrive::ID),
+            system_program(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::RewardsOverflow.into())],
         );
     }
 }

@@ -13,7 +13,7 @@ pub struct Member {
     pub node: Address,
     pub stake: Coin<TAPE>,
     pub assigned: StorageUnits,
-    pub refused: StorageUnits,
+    pub blacklisted: StorageUnits,
     pub spools: u64,
 }
 

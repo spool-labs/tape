@@ -13,6 +13,7 @@ use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 
+use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 use crate::features::spool::repair::extract_repair_data;
@@ -47,6 +48,18 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or(RouteError::NotFound)?;
     if !track.is_blob() {
         return Err(RouteError::BadRequest("raw tracks do not support repair".into()));
+    }
+
+    if refuses_object(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        state.context.state().epoch(),
+        track_key,
+        track.tape,
+    )
+    .map_err(store_error)?
+    {
+        return Err(RouteError::BlacklistedObject);
     }
 
     let track_data = state

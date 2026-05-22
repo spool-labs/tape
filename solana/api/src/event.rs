@@ -54,7 +54,7 @@ pub enum EventType {
     SnapshotFinalized = 0x72,
 
     // Assignment
-    AssignmentGroupFinalized = 0x80,
+    AssignmentFinalized = 0x80,
 }
 
 /// Emitted when a track achieves certification quorum.
@@ -500,7 +500,7 @@ tape_solana::event!(EventType, SnapshotFinalized);
 /// Emitted when one group from the canonical assignment is finalized.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct AssignmentGroupFinalized {
+pub struct AssignmentFinalized {
     /// Epoch the assignment group belongs to.
     pub epoch: EpochNumber,
 
@@ -523,7 +523,7 @@ pub struct AssignmentGroupFinalized {
     pub total_assigned: StorageUnits,
 }
 
-tape_solana::event!(EventType, AssignmentGroupFinalized);
+tape_solana::event!(EventType, AssignmentFinalized);
 
 #[cfg(test)]
 mod tests {
@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(EventType::VoteRecorded as u8, 0x71);
         assert_eq!(EventType::SnapshotFinalized as u8, 0x72);
         assert_eq!(EventType::PoolAdvanced as u8, 0x33);
-        assert_eq!(EventType::AssignmentGroupFinalized as u8, 0x80);
+        assert_eq!(EventType::AssignmentFinalized as u8, 0x80);
     }
 
     #[test]
@@ -558,6 +558,6 @@ mod tests {
         assert!(VoteProposed::size_of() < 1024);
         assert!(VoteRecorded::size_of() < 1024);
         assert!(SnapshotFinalized::size_of() < 1024);
-        assert!(AssignmentGroupFinalized::size_of() < 1024);
+        assert!(AssignmentFinalized::size_of() < 1024);
     }
 }

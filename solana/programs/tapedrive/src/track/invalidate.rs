@@ -11,7 +11,6 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let args = InvalidateTrack::try_from_bytes(data)?;
     let [
         fee_payer_info,
-
         system_info,
         group_info,
         tape_info,

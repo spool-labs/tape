@@ -35,15 +35,46 @@ pub trait DynamicState: Pod + Discriminator {
         out
     }
 
-    fn read<'a>(
+    fn read_full<'a>(
         info: &'a AccountInfo<'_>,
         program_id: &Pubkey,
     ) -> Result<(&'a Self, &'a [Self::Entry]), ProgramError>
     where Self: Sized,
     {
         let header: &Self = info.from_slice(program_id, 0, size_of::<Self>())?;
-        let cap = header.tail().capacity as usize;
+        let cap = usize::try_from(header.tail().capacity)
+            .map_err(|_| ProgramError::InvalidAccountData)?;
         let body: &[Self::Entry] = info.from_slice_array(program_id, size_of::<Self>(), cap)?;
+
+        Ok((header, body))
+    }
+
+    fn read<'a>(
+        info: &'a AccountInfo<'_>,
+        program_id: &Pubkey,
+    ) -> Result<(&'a Self, &'a [Self::Entry]), ProgramError>
+    where Self: Sized,
+    {
+        let (header, body) = Self::read_full(info, program_id)?;
+        let count = usize::try_from(header.tail().count)
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        let body = body
+            .get(..count)
+            .ok_or(ProgramError::InvalidAccountData)?;
+
+        Ok((header, body))
+    }
+
+    fn read_full_mut<'a>(
+        info: &'a AccountInfo<'_>,
+        program_id: &Pubkey,
+    ) -> Result<(&'a mut Self, &'a mut [Self::Entry]), ProgramError>
+    where Self: Sized,
+    {
+        let header: &mut Self = info.from_slice_mut(program_id, 0, size_of::<Self>())?;
+        let cap = usize::try_from(header.tail().capacity)
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        let body: &mut [Self::Entry] = info.from_slice_array_mut(program_id, size_of::<Self>(), cap)?;
 
         Ok((header, body))
     }
@@ -54,9 +85,12 @@ pub trait DynamicState: Pod + Discriminator {
     ) -> Result<(&'a mut Self, &'a mut [Self::Entry]), ProgramError>
     where Self: Sized,
     {
-        let header: &mut Self = info.from_slice_mut(program_id, 0, size_of::<Self>())?;
-        let cap = header.tail().capacity as usize;
-        let body: &mut [Self::Entry] = info.from_slice_array_mut(program_id, size_of::<Self>(), cap)?;
+        let (header, body) = Self::read_full_mut(info, program_id)?;
+        let count = usize::try_from(header.tail().count)
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        let body = body
+            .get_mut(..count)
+            .ok_or(ProgramError::InvalidAccountData)?;
 
         Ok((header, body))
     }

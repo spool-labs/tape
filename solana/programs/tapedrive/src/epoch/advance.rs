@@ -62,7 +62,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     next_committee_info.is_committee(next)?;
-    let (next_committee, next_members) = 
+    let (next_committee, next_members) =
         Committee::read(next_committee_info, &tapedrive::ID)?;
 
     if next_committee.epoch != next {
@@ -91,9 +91,6 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let mut min_versions: Vec<(u64, u64)> = Vec::new();
 
     for member in next_members.iter() {
-        if member.node == Address::default() {
-            continue;
-        }
         let peer = peers
             .iter()
             .find(|p| p.node == member.node)
@@ -225,7 +222,7 @@ mod tests {
                     node: Address::new(bytes),
                     stake: TAPE(1_000),
                     assigned: StorageUnits::zero(),
-                    refused: StorageUnits::zero(),
+                    blacklisted: StorageUnits::zero(),
                     spools: 50,
                 }
             })
@@ -373,7 +370,7 @@ mod tests {
                     node: Address::new(bytes),
                     stake: TAPE(1_000),
                     assigned: StorageUnits::zero(),
-                    refused: StorageUnits::zero(),
+                    blacklisted: StorageUnits::zero(),
                     spools: 50,
                 }
             })

@@ -31,6 +31,20 @@ pub enum AssignmentSizeError {
     Overflow { group: GroupIndex },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveTrackFootprint {
+    pub track: Address,
+    pub tape: Address,
+    pub group: GroupIndex,
+    pub footprint: StorageUnits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignmentGroupWeights {
+    pub sizes: Vec<StorageUnits>,
+    pub tracks: Vec<ActiveTrackFootprint>,
+}
+
 /// Compute per-spool storage size for every target group.
 ///
 /// During Closing for epoch N, nodes are building the N+1 assignment. The
@@ -50,7 +64,17 @@ pub fn group_sizes<Db: Store>(
     target_epoch: EpochNumber,
     target_groups: usize,
 ) -> Result<Vec<StorageUnits>, AssignmentSizeError> {
+    Ok(group_weights(store, voting_epoch, target_epoch, target_groups)?.sizes)
+}
+
+pub fn group_weights<Db: Store>(
+    store: &TapeStore<Db>,
+    voting_epoch: EpochNumber,
+    target_epoch: EpochNumber,
+    target_groups: usize,
+) -> Result<AssignmentGroupWeights, AssignmentSizeError> {
     let mut sizes = vec![StorageUnits::zero(); target_groups];
+    let mut active_tracks = Vec::new();
     let mut cursor = None;
 
     loop {
@@ -63,14 +87,14 @@ pub fn group_sizes<Db: Store>(
         }
 
         for (track, metadata) in &tracks {
-            let Some(footprint) =
+            let Some(active) =
                 active_track_footprint(store, *track, metadata, voting_epoch, target_epoch)?
             else {
                 continue;
             };
 
-            let group_index = usize::try_from(metadata.group.0).map_err(|_| {
-                invalid_track(*track, format!("group index {} overflows usize", metadata.group.0))
+            let group_index = usize::try_from(active.group.0).map_err(|_| {
+                invalid_track(*track, format!("group index {} overflows usize", active.group.0))
             })?;
 
             if group_index >= target_groups {
@@ -78,22 +102,26 @@ pub fn group_sizes<Db: Store>(
                     *track,
                     format!(
                         "group {} exceeds target group count {target_groups}",
-                        metadata.group.0
+                        active.group.0
                     ),
                 ));
             }
 
             sizes[group_index] = sizes[group_index]
-                .checked_add(footprint)
+                .checked_add(active.footprint)
                 .ok_or(AssignmentSizeError::Overflow {
-                    group: metadata.group,
+                    group: active.group,
                 })?;
+            active_tracks.push(active);
         }
 
         cursor = tracks.last().map(|(track, _)| *track);
     }
 
-    Ok(sizes)
+    Ok(AssignmentGroupWeights {
+        sizes,
+        tracks: active_tracks,
+    })
 }
 
 fn active_track_footprint<Db: Store>(
@@ -102,7 +130,7 @@ fn active_track_footprint<Db: Store>(
     metadata: &CompressedTrack,
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
-) -> Result<Option<StorageUnits>, AssignmentSizeError> {
+) -> Result<Option<ActiveTrackFootprint>, AssignmentSizeError> {
 
     // Only ObjectInfo::Valid is accounted user data. System-owned snapshot
     // tracks use ObjectInfo::Snapshot so repair/GC can treat them as live
@@ -156,7 +184,13 @@ fn active_track_footprint<Db: Store>(
         return Ok(None);
     }
 
-    track_footprint(store, track, metadata).map(Some)
+    let footprint = track_footprint(store, track, metadata)?;
+    Ok(Some(ActiveTrackFootprint {
+        track,
+        tape: metadata.tape,
+        group: metadata.group,
+        footprint,
+    }))
 }
 
 fn track_footprint<Db: Store>(
@@ -235,8 +269,9 @@ fn blob_footprint(track: Address, blob: BlobInfo) -> Result<StorageUnits, Assign
     };
 
     let bytes = (stripe_count as u128)
-        .saturating_mul(chunk_size as u128)
-        .saturating_add(SliceMetadata::SIZE as u128);
+        .checked_mul(chunk_size as u128)
+        .and_then(|bytes| bytes.checked_add(SliceMetadata::SIZE as u128))
+        .ok_or_else(|| invalid_track(track, "blob footprint overflows u128"))?;
     let bytes =
         u64::try_from(bytes).map_err(|_| invalid_track(track, "blob footprint overflows u64"))?;
 

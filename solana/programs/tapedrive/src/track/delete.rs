@@ -1,12 +1,12 @@
 use tape_api::program::prelude::*;
-use tape_api::event::TrackDeleted;
+
+use crate::track::helpers::delete_track;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = DeleteTrack::try_from_bytes(data)?;
     let [
         fee_payer_info,
         authority_info,
-
         tape_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -26,7 +26,6 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let (tape_address, _) = tape_pda(tape.authority);
 
     let proof = args.track;
-    let track_address = track_pda(proof.state.tape, proof.state.track_number).0;
 
     if tape.authority != (*authority_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
@@ -36,16 +35,11 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let size = proof.state.size;
-    tape.delete_track(&proof)
-        .map_err(|_| TapeError::BadProof)?;
-
-    TrackDeleted {
-        track: track_address,
-        tape: tape_address,
-        key: proof.state.key,
-        size,
-    }.log();
+    delete_track(
+        tape,
+        tape_address,
+        proof
+    )?;
 
     Ok(())
 }

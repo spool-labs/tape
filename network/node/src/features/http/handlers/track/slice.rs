@@ -17,6 +17,7 @@ use tape_protocol::api::{BINARY_CONTENT, SlicePayload};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tracing::{debug, trace};
 
+use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
@@ -38,12 +39,24 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotResponsible)?;
 
-    state
+    let track = state
         .context
         .store
         .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+
+    if refuses_object(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        state.context.state().epoch(),
+        track_key,
+        track.tape,
+    )
+    .map_err(store_error)?
+    {
+        return Err(RouteError::BlacklistedObject);
+    }
 
     let data = state
         .context
@@ -92,6 +105,18 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .pending
         .apply_to_track(track_key, in_store)
         .ok_or(RouteError::NotFound)?;
+
+    if refuses_object(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        state.context.state().epoch(),
+        track_key,
+        track.tape,
+    )
+    .map_err(store_error)?
+    {
+        return Err(RouteError::BlacklistedObject);
+    }
 
     if !track.is_blob() {
         return Err(RouteError::BadRequest("raw tracks do not accept slices".into()));

@@ -1,7 +1,7 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
-use tape_api::event::TapeReserved;
-use tape_core::tape::tape_reservation_cost;
+
+use crate::tape::helpers::{TapeSpec, create_tape_account, reserve_archive};
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ReserveTape::try_from_bytes(data)?;
@@ -63,90 +63,32 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .has_address(&tape_address.into())?;
 
-    let start_epoch = EpochNumber::unpack(args.activation_epoch);
-    let end_epoch = EpochNumber::unpack(args.expiry_epoch);
+    let spec = TapeSpec {
+        address: tape_address,
+        authority: (*authority_info.key).into(),
+        capacity: StorageUnits::unpack(args.storage_units),
+        active_epoch: EpochNumber::unpack(args.activation_epoch),
+        expiry_epoch: EpochNumber::unpack(args.expiry_epoch),
+    };
 
-    if start_epoch < current_epoch(system) {
-        return Err(ProgramError::InvalidArgument);
-    }
-    if end_epoch <= start_epoch {
-        return Err(ProgramError::InvalidArgument);
-    }
-
-    let num_epochs = end_epoch
-        .checked_sub(start_epoch)
-        .ok_or(ProgramError::InvalidArgument)?;
-
-    let total_units = StorageUnits::unpack(args.storage_units);
-
-    let fee_per_epoch = tape_reservation_cost(
-        archive.storage_price,
-        total_units,
-        1,
-    ).ok_or(ProgramError::InvalidArgument)?;
-
-    let total_cost = tape_reservation_cost(
-        archive.storage_price,
-        total_units,
-        num_epochs.as_u64(),
-    ).ok_or(ProgramError::InvalidArgument)?;
-
-    let current_epoch = current_epoch(system);
-    let current_capacity = archive.storage_capacity;
-
-    if archive.schedule.current_epoch() != current_epoch {
-        return Err(TapeError::UnexpectedState.into());
-    }
-
-    if !archive.schedule.has_capacity_for(
-        total_units, current_capacity, start_epoch, end_epoch) {
-        return Err(TapeError::NoCapacity.into());
-    }
-    
-    archive.schedule
-        .reserve_capacity(total_units, fee_per_epoch, start_epoch, end_epoch)
-        .map_err(|_| TapeError::UnexpectedState)?;
-
-    // Assign tape ID before incrementing count (1-indexed).
-    let tape_id = TapeNumber(archive.tape_count.checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?);
-
-    // Increment tape count for the new tape
-    archive.tape_count = tape_id.as_u64();
-
-    create_program_account::<Tape>(
-        tape_info,
-        system_program_info,
-        fee_payer_info,
-        &tapedrive::ID,
-        &[CASSETTE, authority_info.key.as_ref()],
-    )?;
-
-    let tape = tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
-
-    tape.id = tape_id;
-    tape.authority = (*authority_info.key).into();
-    tape.active_epoch = start_epoch;
-    tape.expiry_epoch = end_epoch;
-    tape.capacity = total_units;
-    tape.used = StorageUnits::zero();
+    let reservation = reserve_archive(system, archive, spec)?;
+    let seeds = [CASSETTE, authority_info.key.as_ref()];
 
     transfer(
         authority_info,
         authority_ata_info,
         archive_ata_info,
         token_program_info,
-        total_cost.as_u64(),
+        reservation.cost.as_u64(),
     )?;
 
-    TapeReserved {
-        tape: tape_address,
-        authority: (*authority_info.key).into(),
-        capacity: total_units,
-        active_epoch: start_epoch,
-        expiry_epoch: end_epoch,
-        cost: total_cost.as_u64().to_le_bytes(),
-    }.log();
+    create_tape_account(
+        tape_info,
+        system_program_info,
+        fee_payer_info,
+        &seeds,
+        reservation,
+    )?;
 
     Ok(())
 }

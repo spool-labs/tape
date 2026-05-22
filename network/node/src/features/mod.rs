@@ -1,4 +1,5 @@
 pub mod assignment;
+pub mod blacklist;
 pub mod block;
 pub mod bootstrap;
 pub mod gc;

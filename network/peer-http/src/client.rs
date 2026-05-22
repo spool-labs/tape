@@ -649,6 +649,8 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiE
             let body = resp.text().await.unwrap_or_default();
             if body.contains("not responsible") {
                 Err(ApiError::NotResponsible)
+            } else if body.contains("blacklisted object") {
+                Err(ApiError::BlacklistedObject)
             } else if body.contains("not in committee") {
                 Err(ApiError::NotInCommittee)
             } else {

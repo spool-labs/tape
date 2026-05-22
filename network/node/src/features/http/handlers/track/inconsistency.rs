@@ -280,6 +280,7 @@ mod tests {
             RouteError::BadRequest(message) => assert!(message.contains("roots match")),
             RouteError::NotFound
             | RouteError::NotResponsible
+            | RouteError::BlacklistedObject
             | RouteError::NotInCommittee
             | RouteError::InvalidSignature
             | RouteError::Forbidden(_)

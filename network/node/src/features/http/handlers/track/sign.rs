@@ -12,6 +12,7 @@ use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse};
 use tape_store::ops::{SliceOps, TrackOps};
 
+use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
 
@@ -42,6 +43,18 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest(
             "raw tracks do not require certification".into(),
         ));
+    }
+
+    if refuses_object(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        epoch,
+        track_key,
+        track.tape,
+    )
+    .map_err(store_error)?
+    {
+        return Err(RouteError::BlacklistedObject);
     }
 
     let protocol = state.context.state();

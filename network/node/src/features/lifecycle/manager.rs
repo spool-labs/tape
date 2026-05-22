@@ -451,7 +451,7 @@ mod tests {
             node,
             stake: TAPE(100),
             assigned: StorageUnits::zero(),
-            refused: StorageUnits::zero(),
+            blacklisted: StorageUnits::zero(),
             spools: 1,
         }
     }

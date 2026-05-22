@@ -130,7 +130,7 @@ mod tests {
                     node: Address::new(bytes),
                     stake: TAPE(1_000),
                     assigned: StorageUnits::zero(),
-                    refused: StorageUnits::zero(),
+                    blacklisted: StorageUnits::zero(),
                     spools: 0,
                 }
             })

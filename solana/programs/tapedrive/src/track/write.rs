@@ -1,11 +1,8 @@
 use tape_solana::*;
-use tape_api::event::TrackWritten;
 use tape_api::program::prelude::*;
-use tape_core::spooler::GroupIndex;
-use tape_core::track::types::CompressedTrack;
-use tape_crypto::Hash;
 
 use crate::error::TapeError;
+use crate::track::helpers::append_track;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let (args, data) = parse_track_write(data)?;
@@ -41,80 +38,16 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .has_address(&tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    let curr = current_epoch(system);
-    if curr < tape.active_epoch || tape.expiry_epoch <= curr {
-        return Err(TapeError::TapeExpired.into());
-    }
-
-    if system.live_group_count == 0 {
-        return Err(TapeError::UnexpectedState.into());
-    }
-
-    let track_number = tape.tracks.next_number();
-    let group = select_group(
-        tape.id,
-        track_number,
-        slot_hash_seed(slot_hashes_info)?,
-        system.live_group_count,
+    append_track(
+        system,
+        tape,
+        slot_hashes_info,
+        tape_address,
+        args.key,
+        meta
     )?;
 
-    let track = CompressedTrack {
-        tape: tape_address,
-        key: args.key,
-        track_number,
-        kind: meta.kind as u64,
-        state: meta.state as u64,
-        size: meta.size,
-        group,
-        value_hash: meta.value_hash,
-    };
-
-    let track_address = track_pda(track.tape, track.track_number).0;
-    let track_hash = track.get_hash();
-
-    tape.write_track(&track)?;
-
-    TrackWritten {
-        epoch: curr,
-        track: track_address,
-        tape: tape_address,
-        group,
-        track_number,
-        track_hash,
-    }.log();
-
     Ok(())
-}
-
-fn select_group(
-    tape_id: TapeNumber,
-    track_number: TrackNumber,
-    seed: Hash,
-    spool_groups: u64,
-) -> Result<GroupIndex, ProgramError> {
-    let tape_number: u64 = tape_id.into();
-    let mixed = u64::from_le_bytes(
-        seed.0[..8]
-            .try_into()
-            .map_err(|_| ProgramError::InvalidInstructionData)?,
-    )
-        .wrapping_add(tape_number)
-        .wrapping_add(track_number.0);
-
-    Ok(GroupIndex(mixed % spool_groups))
-}
-
-fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
-    slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
-    let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
-    let seed = Hash(
-        slot_hashes_data
-            .get(16..48)
-            .ok_or(TapeError::UnexpectedState)?
-            .try_into()
-            .map_err(|_| TapeError::UnexpectedState)?
-    );
-    Ok(seed)
 }
 
 #[cfg(test)]
@@ -124,7 +57,7 @@ mod tests {
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use solana_sdk::account::Account;
     use tape_crypto::merkle::{MerkleTree, root_from_leaf_hashes};
     use tape_test::*;

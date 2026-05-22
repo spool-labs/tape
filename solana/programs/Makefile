@@ -2,7 +2,7 @@
 #
 # Programs are excluded from the workspace default-members, so:
 #   - `cargo build` from root does NOT build these
-#   - `cargo build-sbf -p <program>` builds a specific program
+#   - `cargo build-sbf` from root builds workspace default members for SBF
 #   - `make build` (from here or root) builds all programs
 #
 # Usage:
@@ -21,20 +21,22 @@ LEDGER_DIR = test-ledger
 .PHONY: all
 all: build
 
-# Build target: run cargo build-sbf in each program directory
+# Build target: run cargo build-sbf in each program directory.
+# Clear RUSTC_WRAPPER so host-side wrappers do not intercept Solana's SBF rustc.
 .PHONY: build
 build: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
 		echo "Running cargo build-sbf in $$dir..."; \
-    (cd $$dir && cargo build-sbf) || exit $$?; \
+		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf) || exit $$?; \
 	done
 
-# Test target: run cargo test-sbf in each program directory
+# Test target: run cargo test-sbf in each program directory.
+# Clear RUSTC_WRAPPER so host-side wrappers do not intercept Solana's SBF rustc.
 .PHONY: test
 test: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
 		echo "Running cargo test-sbf in $$dir..."; \
-		(cd $$dir && cargo test-sbf) || exit $$?; \
+		(cd $$dir && RUSTC_WRAPPER= cargo test-sbf) || exit $$?; \
 	done
 
 # Local validator target

@@ -1,9 +1,10 @@
 //! Tapedrive event parsing from transaction logs.
 
 use tape_api::event::{
-    AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
-    EpochCreated, EventType, NodeJoinedCommittee, NodeRegistered, PeerSetResized, PoolAdvanced,
-    SnapshotFinalized, SpoolSynced, TapeDestroyed, TapeReserved, TrackCertified,
+    AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
+    EpochCreated, EventType, CommissionClaimed, NodeJoinedCommittee, NodeRegistered,
+    PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
+    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeReserved, TrackCertified,
     TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 
@@ -19,7 +20,7 @@ pub enum TapedriveEvent {
     VoteProposed(VoteProposed),
     VoteRecorded(VoteRecorded),
     SnapshotFinalized(SnapshotFinalized),
-    AssignmentGroupFinalized(AssignmentGroupFinalized),
+    AssignmentFinalized(AssignmentFinalized),
     EpochCreated(EpochCreated),
     CommitteeCreated(CommitteeCreated),
     CommitteeResized(CommitteeResized),
@@ -36,6 +37,10 @@ pub enum TapedriveEvent {
     NodeJoinedCommittee(NodeJoinedCommittee),
     SpoolSynced(SpoolSynced),
     PoolAdvanced(PoolAdvanced),
+    StakeDeposited(StakeDeposited),
+    StakeUnlockRequested(StakeUnlockRequested),
+    StakeWithdrawn(StakeWithdrawn),
+    CommissionClaimed(CommissionClaimed),
 }
 
 /// Parse event data from a "Program data:" log line.
@@ -77,10 +82,10 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::SnapshotFinalized(*event)))
         }
-        EventType::AssignmentGroupFinalized => {
-            let event = bytemuck::try_from_bytes::<AssignmentGroupFinalized>(event_data)
+        EventType::AssignmentFinalized => {
+            let event = bytemuck::try_from_bytes::<AssignmentFinalized>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::AssignmentGroupFinalized(*event)))
+            Ok(Some(TapedriveEvent::AssignmentFinalized(*event)))
         }
         EventType::EpochCommitted => {
             let event = bytemuck::try_from_bytes::<EpochCommitted>(event_data)
@@ -162,8 +167,27 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::PoolAdvanced(*event)))
         }
-        // Unknown event types are silently skipped
-        _ => Ok(None),
+        EventType::StakeDeposited => {
+            let event = bytemuck::try_from_bytes::<StakeDeposited>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::StakeDeposited(*event)))
+        }
+        EventType::StakeUnlockRequested => {
+            let event = bytemuck::try_from_bytes::<StakeUnlockRequested>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::StakeUnlockRequested(*event)))
+        }
+        EventType::StakeWithdrawn => {
+            let event = bytemuck::try_from_bytes::<StakeWithdrawn>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::StakeWithdrawn(*event)))
+        }
+        EventType::CommissionClaimed => {
+            let event = bytemuck::try_from_bytes::<CommissionClaimed>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::CommissionClaimed(*event)))
+        }
+        EventType::Unknown => Ok(None),
     }
 }
 
@@ -362,9 +386,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_assignment_group_finalized_event() {
+    fn parse_assignment_finalized_event() {
         let group_account = Address::new_unique();
-        let finalized = AssignmentGroupFinalized {
+        let finalized = AssignmentFinalized {
             epoch: EpochNumber(21),
             hash: Hash::from([0x66; 32]),
             group: GroupIndex(3),
@@ -374,18 +398,18 @@ mod tests {
             total_assigned: StorageUnits::mb(800),
         };
 
-        let log = encode_event(EventType::AssignmentGroupFinalized, &finalized);
+        let log = encode_event(EventType::AssignmentFinalized, &finalized);
         let parsed = parse_event_data(&log).unwrap().unwrap();
 
         match parsed {
-            TapedriveEvent::AssignmentGroupFinalized(decoded) => {
+            TapedriveEvent::AssignmentFinalized(decoded) => {
                 assert_eq!(decoded.epoch, finalized.epoch);
                 assert_eq!(decoded.hash, finalized.hash);
                 assert_eq!(decoded.group, finalized.group);
                 assert_eq!(decoded.group_account, group_account);
                 assert_eq!(decoded.total_groups, 4u64.to_le_bytes());
             }
-            _ => panic!("Expected AssignmentGroupFinalized event"),
+            _ => panic!("Expected AssignmentFinalized event"),
         }
     }
 
@@ -412,6 +436,76 @@ mod tests {
                 assert_eq!(e.capacity, StorageUnits::mb(1000));
             }
             _ => panic!("Expected TapeReserved event"),
+        }
+    }
+
+    #[test]
+    fn parse_stake_and_commission_events() {
+        let stake = Address::new_unique();
+        let authority = Address::new_unique();
+        let pool = Address::new_unique();
+        let node = Address::new_unique();
+
+        let deposited = StakeDeposited {
+            stake,
+            authority,
+            pool,
+            amount: 10u64.to_le_bytes(),
+            activation_epoch: EpochNumber(8),
+        };
+        let log = encode_event(EventType::StakeDeposited, &deposited);
+        match parse_event_data(&log).unwrap().unwrap() {
+            TapedriveEvent::StakeDeposited(event) => {
+                assert_eq!(event.stake, stake);
+                assert_eq!(event.amount, 10u64.to_le_bytes());
+            }
+            other => panic!("Expected StakeDeposited event, got {other:?}"),
+        }
+
+        let unlock = StakeUnlockRequested {
+            stake,
+            authority,
+            pool,
+            amount: 9u64.to_le_bytes(),
+            withdraw_epoch: EpochNumber(10),
+        };
+        let log = encode_event(EventType::StakeUnlockRequested, &unlock);
+        match parse_event_data(&log).unwrap().unwrap() {
+            TapedriveEvent::StakeUnlockRequested(event) => {
+                assert_eq!(event.stake, stake);
+                assert_eq!(event.withdraw_epoch, EpochNumber(10));
+            }
+            other => panic!("Expected StakeUnlockRequested event, got {other:?}"),
+        }
+
+        let withdrawn = StakeWithdrawn {
+            stake,
+            authority,
+            pool,
+            principal: 8u64.to_le_bytes(),
+            rewards: 7u64.to_le_bytes(),
+        };
+        let log = encode_event(EventType::StakeWithdrawn, &withdrawn);
+        match parse_event_data(&log).unwrap().unwrap() {
+            TapedriveEvent::StakeWithdrawn(event) => {
+                assert_eq!(event.stake, stake);
+                assert_eq!(event.rewards, 7u64.to_le_bytes());
+            }
+            other => panic!("Expected StakeWithdrawn event, got {other:?}"),
+        }
+
+        let commission = CommissionClaimed {
+            node,
+            authority,
+            amount: 6u64.to_le_bytes(),
+        };
+        let log = encode_event(EventType::CommissionClaimed, &commission);
+        match parse_event_data(&log).unwrap().unwrap() {
+            TapedriveEvent::CommissionClaimed(event) => {
+                assert_eq!(event.node, node);
+                assert_eq!(event.amount, 6u64.to_le_bytes());
+            }
+            other => panic!("Expected CommissionClaimed event, got {other:?}"),
         }
     }
 

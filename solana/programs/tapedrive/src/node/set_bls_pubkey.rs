@@ -37,10 +37,9 @@ pub fn process_set_bls_pubkey(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_writable()?
         .is_peer_set()?;
 
-    let (peer_set, peers) = PeerSet::read_mut(peer_set_info, &tapedrive::ID)?;
+    let (_, peers) = PeerSet::read_mut(peer_set_info, &tapedrive::ID)?;
     let node_address: Address = (*node_info.key).into();
-    let count = peer_set.peers.count as usize;
-    if let Some(idx) = peers[..count].iter().position(|p| p.node == node_address) {
+    if let Some(idx) = peers.iter().position(|p| p.node == node_address) {
         peers[idx].bls_pubkey = bls_pubkey;
     }
 

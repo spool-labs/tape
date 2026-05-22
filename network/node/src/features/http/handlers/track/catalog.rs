@@ -23,6 +23,7 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{TapeOps, TrackDataOps, TrackOps};
 
+use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
@@ -84,6 +85,18 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if !is_owner {
         return Err(RouteError::NotResponsible);
+    }
+
+    if refuses_object(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        state.context.state().epoch(),
+        track_addr,
+        track.tape,
+    )
+    .map_err(store_error)?
+    {
+        return Err(RouteError::BlacklistedObject);
     }
 
     let data_addr = track_pda(track.tape, track.track_number).0.into();

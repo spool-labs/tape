@@ -330,7 +330,7 @@ fn committee_members(
                 node: identities[index].node_address.into(),
                 stake: node_spec.stake,
                 assigned: StorageUnits::zero(),
-                refused: StorageUnits::zero(),
+                blacklisted: StorageUnits::zero(),
                 spools: 0,
             }
         })

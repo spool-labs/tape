@@ -26,6 +26,9 @@ pub enum ApiError {
     #[error("not responsible for this spool")]
     NotResponsible,
 
+    #[error("object blacklisted by peer")]
+    BlacklistedObject,
+
     #[error("not in committee")]
     NotInCommittee,
 
@@ -43,6 +46,7 @@ impl Retryable for ApiError {
             Self::ServerError { status, .. } => matches!(status, 408 | 429 | 500 | 502 | 503 | 504),
             Self::NotFound
             | Self::NotResponsible
+            | Self::BlacklistedObject
             | Self::NotInCommittee
             | Self::NodeUnresolved(_)
             | Self::Serialization(_)
@@ -61,5 +65,10 @@ mod tests {
     #[test]
     fn stale_track_proof_is_retryable() {
         assert!(ApiError::StaleTrackProof.is_retryable());
+    }
+
+    #[test]
+    fn blacklisted_object_is_not_retryable() {
+        assert!(!ApiError::BlacklistedObject.is_retryable());
     }
 }

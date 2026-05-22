@@ -12,7 +12,7 @@ pub struct Tail<T> {
     /// Trailing slice capacity (allocated entry count).
     pub capacity: u64,
 
-    /// Active entry count; positions 0..count are populated.
+    /// Populated entry count; positions 0..count are initialized.
     pub count: u64,
 
     _marker: PhantomData<T>,

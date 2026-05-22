@@ -15,6 +15,7 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 
+use crate::features::blacklist::refuses_object;
 use crate::features::http::auth::PeerAuth;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -50,13 +51,35 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
         None
     };
 
-    let entries = slices
-        .into_iter()
-        .map(|(track, slice_data)| SyncSliceEntry {
-            track_address: track.to_bytes(),
+    let current_epoch = state.context.state().epoch();
+    let mut entries = Vec::with_capacity(slices.len());
+    for (track_address, slice_data) in slices {
+        let Some(track) = state
+            .context
+            .store
+            .get_track(track_address)
+            .map_err(store_error)?
+        else {
+            continue;
+        };
+
+        if refuses_object(
+            state.context.store.as_ref(),
+            state.context.node_address(),
+            current_epoch,
+            track_address,
+            track.tape,
+        )
+        .map_err(store_error)?
+        {
+            continue;
+        }
+
+        entries.push(SyncSliceEntry {
+            track_address: track_address.to_bytes(),
             slice_data,
-        })
-        .collect();
+        });
+    }
 
     let response = SyncSlicesResponse {
         entries,
@@ -92,6 +115,7 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut scan_cursor = request.cursor.map(Address::new);
     let mut entries = Vec::with_capacity(limit);
     let mut next_cursor = None;
+    let current_epoch = state.context.state().epoch();
 
     loop {
         let tracks = state
@@ -109,6 +133,18 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
             next_cursor = Some(track_address.to_bytes());
 
             if !track.group.contains(request.spool_index) {
+                continue;
+            }
+
+            if refuses_object(
+                state.context.store.as_ref(),
+                state.context.node_address(),
+                current_epoch,
+                *track_address,
+                track.tape,
+            )
+            .map_err(store_error)?
+            {
                 continue;
             }
 

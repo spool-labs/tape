@@ -4,7 +4,7 @@ use bytemuck::Zeroable;
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::{
-    AssignmentGroupFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
+    AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
     NodeJoinedCommittee, PeerSetResized, SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
@@ -339,7 +339,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
 
     pub async fn handle_finalize_group(
         &self,
-        event: AssignmentGroupFinalized,
+        event: AssignmentFinalized,
     ) -> Result<(), NodeError> {
         let mut state = (*self.context.state()).clone();
 
