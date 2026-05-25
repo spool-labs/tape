@@ -76,6 +76,20 @@ impl Supervisor {
                             }
                         }
                         Ok((service, Err(error))) => {
+                            let shutdown_channel_error = matches!(
+                                &error,
+                                NodeError::ChannelSend { .. } | NodeError::ChannelClosed { .. }
+                            );
+                            if self.cancel.is_cancelled() && shutdown_channel_error {
+                                info!(
+                                    service = ?service,
+                                    error = %error,
+                                    "service stopped during shutdown: {}",
+                                    service.as_str()
+                                );
+                                continue;
+                            }
+
                             error!(
                                 service = ?service,
                                 error = %error,
@@ -106,5 +120,74 @@ impl Supervisor {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_util::sync::CancellationToken;
+
+    use super::Supervisor;
+    use crate::core::error::NodeError;
+    use crate::core::types::{ChannelName, ServiceName};
+
+    #[tokio::test]
+    async fn channel_send_after_cancel_is_graceful() {
+        let cancel = CancellationToken::new();
+        let mut supervisor = Supervisor::new(cancel.clone());
+
+        cancel.cancel();
+        supervisor.spawn(ServiceName::ReplayManager, async {
+            Err(NodeError::ChannelSend {
+                channel: ChannelName::StoreManager,
+            })
+        });
+
+        supervisor
+            .supervise()
+            .await
+            .expect("shutdown channel send should be graceful");
+    }
+
+    #[tokio::test]
+    async fn channel_send_before_cancel_is_fatal() {
+        let cancel = CancellationToken::new();
+        let mut supervisor = Supervisor::new(cancel);
+
+        supervisor.spawn(ServiceName::ReplayManager, async {
+            Err(NodeError::ChannelSend {
+                channel: ChannelName::StoreManager,
+            })
+        });
+
+        let error = supervisor
+            .supervise()
+            .await
+            .expect_err("channel send before shutdown should fail");
+
+        assert!(matches!(
+            error,
+            NodeError::ChannelSend {
+                channel: ChannelName::StoreManager,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_channel_error_after_cancel_is_fatal() {
+        let cancel = CancellationToken::new();
+        let mut supervisor = Supervisor::new(cancel.clone());
+
+        cancel.cancel();
+        supervisor.spawn(ServiceName::ReplayManager, async {
+            Err(NodeError::Store("write failed".into()))
+        });
+
+        let error = supervisor
+            .supervise()
+            .await
+            .expect_err("non-channel errors should fail after shutdown");
+
+        assert!(matches!(error, NodeError::Store(message) if message == "write failed"));
     }
 }

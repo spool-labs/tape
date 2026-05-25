@@ -5,6 +5,7 @@ use anyhow::{bail, Result};
 use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
+use tape_core::system::NodeStatus;
 use tape_core::types::BasisPoints;
 use tape_crypto::{hash, Address};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
@@ -110,20 +111,34 @@ async fn spool_recovery_inner() {
         .expect("advance to epoch 2");
     assert_eq!(epoch2, 2, "expected epoch 2");
     scenario
-        .wait_nodes_active(&all, active_timeout)
+        .wait_nodes_active(&genesis_committee, active_timeout)
         .await
-        .expect("all nodes active at epoch 2");
+        .expect("genesis committee active at epoch 2");
+    for &node in &late_nodes {
+        assert_eq!(
+            scenario.node_status(node),
+            Some(NodeStatus::Standby),
+            "late node {node} should not be active until epoch 3"
+        );
+    }
+    assert_eq!(
+        scenario.committee_size().await.expect("committee size"),
+        genesis_committee.len(),
+        "unexpected epoch 2 committee size"
+    );
+    scenario
+        .wait_next_quorum(NODE_COUNT, active_timeout)
+        .await
+        .expect("epoch 3 candidate committee reached expanded size");
+    assert_eq!(
+        scenario
+            .committee_next_size()
+            .await
+            .expect("next committee size"),
+        NODE_COUNT,
+        "unexpected epoch 3 candidate committee size"
+    );
     assert_group_counts(&scenario, TARGET_GROUPS, 1).await;
-
-    let epoch2_owners = group_owners(&scenario, track.group).await;
-    assert_ne!(
-        epoch1_owners, epoch2_owners,
-        "expected group ownership to change after high-stake late nodes join"
-    );
-    assert!(
-        includes_late_owner(&scenario, &late_nodes, &epoch2_owners),
-        "expected at least one late node to receive track group ownership"
-    );
 
     wait_current_owner_slices(
         &scenario,
@@ -133,12 +148,12 @@ async fn spool_recovery_inner() {
         recovery_timeout,
     )
     .await
-    .expect("epoch 2 owners sync all blob slices");
+    .expect("epoch 2 owners keep all blob slices available");
 
     let epoch2_read = scenario
         .download(harness.admin(), &track_address)
         .await
-        .expect("download blob after epoch 2 reassignment");
+        .expect("download blob after epoch 2 staging");
     assert_eq!(epoch2_read, data, "epoch 2 download should match upload");
 
     let epoch3 = scenario
@@ -150,7 +165,22 @@ async fn spool_recovery_inner() {
         .wait_nodes_active(&all, active_timeout)
         .await
         .expect("all nodes active at epoch 3");
+    assert_eq!(
+        scenario.committee_size().await.expect("committee size"),
+        NODE_COUNT,
+        "unexpected epoch 3 committee size"
+    );
     assert_group_counts(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
+
+    let epoch3_owners = group_owners(&scenario, track.group).await;
+    assert_ne!(
+        epoch1_owners, epoch3_owners,
+        "expected group ownership to change after high-stake late nodes join"
+    );
+    assert!(
+        includes_late_owner(&scenario, &late_nodes, &epoch3_owners),
+        "expected at least one late node to receive track group ownership"
+    );
 
     wait_current_owner_slices(
         &scenario,
