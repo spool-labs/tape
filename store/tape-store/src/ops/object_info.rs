@@ -46,6 +46,7 @@ impl<S: Store> ObjectInfoOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SystemObjectKind;
     use tape_core::types::{EpochNumber, SlotNumber};
     use store_memory::MemoryStore;
 
@@ -87,9 +88,13 @@ mod tests {
         let store = test_store();
         let addr = Address::new_unique();
 
-        let info = ObjectInfo::Snapshot {
+        let info = ObjectInfo::System {
+            kind: SystemObjectKind::Snapshot {
+                epoch: EpochNumber(7),
+            },
             track_address: addr,
-            epoch: EpochNumber(7),
+            registered_epoch: EpochNumber(7),
+            certified_epoch: None,
             slot: SlotNumber(70),
         };
 

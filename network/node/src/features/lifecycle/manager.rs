@@ -408,7 +408,7 @@ fn assignment_ready(state: &ProtocolState) -> bool {
 }
 
 fn next_epoch_setup_ready(state: &ProtocolState) -> bool {
-    let next = state.epoch().saturating_add(EpochNumber(1));
+    let next = state.epoch().next();
     let next_epoch_ready = state
         .next_epoch
         .as_ref()
@@ -542,7 +542,7 @@ mod tests {
         let node = Address::new_unique();
         let mut state = state_with_phase(EpochPhase::Active);
         state.next_epoch = Some(Epoch {
-            id: state.epoch().saturating_add(EpochNumber(1)),
+            id: state.epoch().next(),
             ..Epoch::zeroed()
         });
         state.next_committee = Some(vec![member(node)]);

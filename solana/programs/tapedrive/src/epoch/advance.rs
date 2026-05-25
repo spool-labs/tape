@@ -32,8 +32,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .as_account_mut::<System>(&tapedrive::ID)?;
 
     let curr = system.current_epoch;
-    let next = curr.saturating_add(EpochNumber(1));
-    let candidate = next.saturating_add(EpochNumber(1));
+    let next = curr.next();
+    let candidate = curr.saturating_add(EpochNumber(2));
 
     archive_info
         .is_writable()?

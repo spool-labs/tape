@@ -47,7 +47,7 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .has_address(&blacklist_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if tape.authority != node_address {
+    if !tape.is_blacklist_tape(node.id) {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -79,6 +79,7 @@ mod tests {
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::CompressedTrack;
+    use tape_crypto::hash::hashv;
     use tape_crypto::merkle::MerkleTree;
     use tape_test::*;
 
@@ -99,11 +100,20 @@ mod tests {
         )
     }
 
-    fn selected_group(seed: Hash, tape_id: TapeNumber, track_number: TrackNumber, groups: u64) -> GroupIndex {
-        let tape_number: u64 = tape_id.into();
-        let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
-            .wrapping_add(tape_number)
-            .wrapping_add(track_number.0);
+    fn selected_group(
+        seed: Hash,
+        tape_address: Address,
+        tape_id: TapeNumber,
+        track_number: TrackNumber,
+        groups: u64,
+    ) -> GroupIndex {
+        let mixed_hash = hashv(&[
+            seed.as_ref(),
+            tape_address.as_ref(),
+            &tape_id.pack(),
+            &track_number.pack(),
+        ]);
+        let mixed = u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap());
         GroupIndex(mixed % groups)
     }
 
@@ -117,7 +127,6 @@ mod tests {
 
         let entry = BlacklistEntry::track(Address::new_unique());
         let entry_size = size_of::<BlacklistEntry>() as u64;
-        let tape_id = TapeNumber(1);
         let track_number = TrackNumber(0);
         let seed = Hash::from([0x42; 32]);
         let live_group_count = 50;
@@ -135,24 +144,18 @@ mod tests {
             ..System::zeroed()
         };
         let node = Node {
+            id: NodeId(9),
             authority: authority.into(),
             ..Node::zeroed()
         };
-        let tape = Tape {
-            id: tape_id,
-            authority: node_address.into(),
-            capacity: StorageUnits::from_bytes(entry_size * 2),
-            active_epoch: EpochNumber(0),
-            expiry_epoch: EpochNumber(10),
-            tracks: TrackArchive {
-                num_tracks: 0,
-                next_number: track_number,
-                tree: MerkleTree::<TRACK_TREE_HEIGHT>::new(),
-            },
-            ..Tape::zeroed()
+        let mut tape = Tape::blacklist(node.id, EpochNumber(0));
+        tape.tracks = TrackArchive {
+            num_tracks: 0,
+            next_number: track_number,
+            tree: MerkleTree::<TRACK_TREE_HEIGHT>::new(),
         };
 
-        let group = selected_group(seed, tape_id, track_number, live_group_count);
+        let group = selected_group(seed, blacklist_address, tape.id, track_number, live_group_count);
         let track = CompressedTrack {
             tape: blacklist_address,
             key: entry.key(),

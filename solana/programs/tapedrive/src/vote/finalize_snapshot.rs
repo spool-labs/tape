@@ -77,14 +77,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let target_epoch_id = EpochNumber(11);
 
-        let tape = Tape {
-            id: TapeNumber(0),
-            authority: SYSTEM_ADDRESS,
-            capacity: StorageUnits(u64::MAX),
-            active_epoch: target_epoch_id,
-            expiry_epoch: EpochNumber(u64::MAX),
-            ..Tape::zeroed()
-        };
+        let tape = Tape::snapshot(target_epoch_id);
 
         let snapshot_hash = hash_bytes(bytes_of(&tape));
 
@@ -126,14 +119,8 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let target_epoch_id = EpochNumber(11);
 
-        let tape = Tape {
-            id: TapeNumber(7),
-            authority: SYSTEM_ADDRESS,
-            capacity: StorageUnits(u64::MAX),
-            active_epoch: target_epoch_id,
-            expiry_epoch: EpochNumber(u64::MAX),
-            ..Tape::zeroed()
-        };
+        let mut tape = Tape::snapshot(target_epoch_id);
+        tape.id = TapeNumber(7);
         let snapshot_hash = hash_bytes(bytes_of(&tape));
 
         let (target_epoch_address, _) = epoch_pda(target_epoch_id);

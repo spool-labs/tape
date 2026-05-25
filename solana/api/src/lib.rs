@@ -46,7 +46,6 @@ pub mod prelude {
         Epoch,
         Exchange,
         Group,
-        History,
         Node,
         PeerSet,
         Stake,

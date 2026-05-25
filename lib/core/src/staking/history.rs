@@ -1,63 +1,124 @@
-use bytemuck::{Pod, Zeroable};
+use bytemuck::{bytes_of, Pod, Zeroable};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+use tape_crypto::address::Address;
+use tape_crypto::hash::{hash, hashv};
+use tape_crypto::Hash;
+
+use crate::system::ExchangeRate;
+use crate::track::types::CompressedTrackProof;
 use crate::types::*;
-use crate::system::*;
+
+pub const RATE_SPAN_V1: &[u8; 16] = b"POOL_RATE_SPAN_1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HistoryError {
-    RateMissing,
+pub enum RateError {
+    EmptySpan,
+    EpochOutsideSpan,
 }
 
-/// Externalized exchange-rate history for a staking pool.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PoolHistory<const N: usize> {
-    history: PreviousRates<N>,
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct RateSpan {
+    pub node: Address,
+    pub start_epoch: EpochNumber,
+    pub end_epoch: EpochNumber,
+    pub rate: ExchangeRate,
 }
 
-unsafe impl<const N: usize> Zeroable for PoolHistory<N> {}
-unsafe impl<const N: usize> Pod for PoolHistory<N> {}
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+pub enum RateKind {
+    Current = 0,
+    ClosedSpan,
+}
 
-impl<const N: usize> PoolHistory<N> {
-    pub fn new() -> Self {
-        Self { history: PreviousRates::new() }
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct PoolRate {
+    pub kind: u64,
+    pub span: RateSpan,
+    pub track: CompressedTrackProof,
+}
+
+impl PoolRate {
+    pub fn current() -> Self {
+        Self {
+            kind: RateKind::Current.into(),
+            span: RateSpan::zeroed(),
+            track: CompressedTrackProof::zeroed(),
+        }
     }
 
-    /// Record the exchange rate snapshot for an epoch.
-    pub fn push(&mut self, epoch: EpochNumber, rate: ExchangeRate) {
-
-        // TODO: add a merkle tree proof for older rates. 
-        // Shapshots should add to a history root value.
-        // (the current desing will work for *years*)
-
-        self.history.push(epoch, rate);
+    pub fn closed_span(span: RateSpan, track: CompressedTrackProof) -> Self {
+        Self {
+            kind: RateKind::ClosedSpan.into(),
+            span,
+            track,
+        }
     }
 
-    /// Get the most recent rate at or before the given epoch.
-    pub fn rate_at(&self, epoch: EpochNumber) -> Option<ExchangeRate> {
-        self.history.on_or_before(epoch)
+    pub fn kind(&self) -> Option<RateKind> {
+        RateKind::try_from(self.kind).ok()
     }
 
-    /// Compute rewards from activation_epoch to withdraw_epoch via stored exchange rates.
-    pub fn calculate_rewards(
-        &self,
-        staked_principal: Coin<TAPE>,
-        activation_epoch: EpochNumber,
-        withdraw_epoch: EpochNumber,
-    ) -> Result<Coin<TAPE>, HistoryError> {
+    pub fn is_current(&self) -> bool {
+        matches!(self.kind(), Some(RateKind::Current))
+    }
 
-        let at_activation = self.rate_at(activation_epoch)
-            .ok_or(HistoryError::RateMissing)?;
+    pub fn is_closed_span(&self) -> bool {
+        matches!(self.kind(), Some(RateKind::ClosedSpan))
+    }
+}
 
-        let at_withdraw = self.rate_at(withdraw_epoch)
-            .ok_or(HistoryError::RateMissing)?;
+impl RateSpan {
+    #[inline(always)]
+    pub fn new(
+        node: Address,
+        start_epoch: EpochNumber,
+        end_epoch: EpochNumber,
+        rate: ExchangeRate,
+    ) -> Self {
+        Self {
+            node,
+            start_epoch,
+            end_epoch,
+            rate,
+        }
+    }
 
-        let shares = at_activation
-            .convert_to_other_amount(staked_principal.into());
+    #[inline(always)]
+    pub fn is_valid(&self) -> bool {
+        self.start_epoch < self.end_epoch
+    }
 
-        let net_rewards = at_withdraw
-            .convert_to_tape_amount(shares)
-            .saturating_sub(staked_principal.into());
+    #[inline(always)]
+    pub fn contains(&self, epoch: EpochNumber) -> bool {
+        self.start_epoch <= epoch && epoch < self.end_epoch
+    }
 
-        Ok(net_rewards.into())
+    pub fn check_contains(&self, epoch: EpochNumber) -> Result<(), RateError> {
+        if !self.is_valid() {
+            return Err(RateError::EmptySpan);
+        }
+        if !self.contains(epoch) {
+            return Err(RateError::EpochOutsideSpan);
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn key(&self) -> Hash {
+        hashv(&[
+            RATE_SPAN_V1,
+            self.node.as_ref(),
+            &self.start_epoch.pack(),
+            &self.end_epoch.pack(),
+        ])
+    }
+
+    #[inline(always)]
+    pub fn value_hash(&self) -> Hash {
+        hash(bytes_of(self))
     }
 }
 
@@ -65,78 +126,47 @@ impl<const N: usize> PoolHistory<N> {
 mod tests {
     use super::*;
 
-    fn epoch(n: u64) -> EpochNumber { EpochNumber(n) }
-    fn tape(v: u64) -> Coin<TAPE> { TAPE(v) }
-    fn rate(stake: u64, shares: u64) -> ExchangeRate {
-        ExchangeRate::new(stake, shares)
+    fn epoch(n: u64) -> EpochNumber {
+        EpochNumber(n)
     }
 
     #[test]
-    fn new_and_rate_none() {
-        let h = PoolHistory::<16>::new();
-        assert!(h.rate_at(epoch(0)).is_none());
-        assert!(h.rate_at(epoch(10)).is_none());
+    fn span_contains_start_and_excludes_end() {
+        let span = RateSpan::new(
+            Address::from([7; 32]),
+            epoch(10),
+            epoch(20),
+            ExchangeRate::flat(),
+        );
+
+        assert!(span.contains(epoch(10)));
+        assert!(span.contains(epoch(19)));
+        assert!(!span.contains(epoch(20)));
+        assert!(!span.contains(epoch(9)));
     }
 
     #[test]
-    fn push_and_lookup() {
-        let mut h = PoolHistory::<8>::new();
-        h.push(epoch(2), rate(200, 100));
-        h.push(epoch(5), rate(500, 200));
+    fn empty_span_is_invalid() {
+        let span = RateSpan::new(
+            Address::from([7; 32]),
+            epoch(10),
+            epoch(10),
+            ExchangeRate::flat(),
+        );
 
-        assert_eq!(h.rate_at(epoch(1)), None);
-        assert_eq!(h.rate_at(epoch(2)), Some(rate(200, 100)));
-        assert_eq!(h.rate_at(epoch(3)), Some(rate(200, 100)));
-        assert_eq!(h.rate_at(epoch(5)), Some(rate(500, 200)));
-        assert_eq!(h.rate_at(epoch(6)), Some(rate(500, 200)));
+        assert!(!span.is_valid());
+        assert!(matches!(
+            span.check_contains(epoch(10)),
+            Err(RateError::EmptySpan)
+        ));
     }
 
     #[test]
-    fn calc_minimal() {
-        let mut h = PoolHistory::<4>::new();
+    fn key_changes_with_bounds() {
+        let node = Address::from([7; 32]);
+        let a = RateSpan::new(node, epoch(10), epoch(20), ExchangeRate::flat());
+        let b = RateSpan::new(node, epoch(10), epoch(21), ExchangeRate::flat());
 
-        // E1: 100 stake / 100 shares
-        h.push(epoch(1), rate(100, 100));
-        // E2: 120 stake / 100 shares
-        h.push(epoch(2), rate(120, 100));
-
-        // Rewards from E1 -> E2 on 100 principal = 20
-        let r = h.calculate_rewards(tape(100), epoch(1), epoch(2)).unwrap();
-        assert_eq!(r, tape(20));
-    }
-
-    #[test]
-    fn rate_missing_err() {
-        let mut h = PoolHistory::<2>::new();
-        // Only push one rate at E2
-        h.push(epoch(2), rate(200, 100));
-        let err = h.calculate_rewards(tape(100), epoch(1), epoch(1)).unwrap_err();
-        assert!(matches!(err, HistoryError::RateMissing));
-    }
-
-    #[test]
-    fn zero_window_no_rewards() {
-        let mut h = PoolHistory::<8>::new();
-        h.push(epoch(5), rate(200, 100));
-
-        // activation == withdraw -> no rewards
-        let r = h.calculate_rewards(tape(100), epoch(5), epoch(5)).unwrap();
-        assert_eq!(r, tape(0));
-    }
-
-    #[test]
-    fn calculate_rewards_on_or_before() {
-        let mut h = PoolHistory::<8>::new();
-
-        // Snapshots exist at E2 and E5, but we query E4 and E6
-        h.push(epoch(2), rate(200, 100));
-        h.push(epoch(5), rate(500, 200));
-
-        // Uses on_or_before(E4)=E2 and on_or_before(E6)=E5
-        // shares = floor(100 * 100 / 200) = 50
-        // tape_at_withdraw = floor(50 * 500 / 200) = 125
-        // rewards = 125 - 100 = 25
-        let r = h.calculate_rewards(tape(100), epoch(4), epoch(6)).unwrap();
-        assert_eq!(r, tape(25));
+        assert_ne!(a.key(), b.key());
     }
 }

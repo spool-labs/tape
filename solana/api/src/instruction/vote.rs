@@ -65,7 +65,7 @@ pub fn build_propose_snapshot_ix(
     current_epoch: EpochNumber,
     hash: Hash,
 ) -> Instruction {
-    let target_epoch = current_epoch.saturating_sub(EpochNumber(1));
+    let target_epoch = current_epoch.prev();
     let (system_address, _) = system_pda();
     let (curr_epoch_address, _) = epoch_pda(current_epoch);
     let (target_epoch_address, _) = epoch_pda(target_epoch);
@@ -93,7 +93,7 @@ pub fn build_vote_snapshot_ix(
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
-    let target_epoch = current_epoch.saturating_sub(EpochNumber(1));
+    let target_epoch = current_epoch.prev();
     let (system_address, _) = system_pda();
     let (curr_epoch_address, _) = epoch_pda(current_epoch);
     let (target_epoch_address, _) = epoch_pda(target_epoch);
@@ -149,7 +149,7 @@ pub fn build_propose_assignment_ix(
     current_epoch: EpochNumber,
     hash: Hash,
 ) -> Instruction {
-    let target_epoch = current_epoch.saturating_add(EpochNumber(1));
+    let target_epoch = current_epoch.next();
     let (system_address, _) = system_pda();
     let (curr_epoch_address, _) = epoch_pda(current_epoch);
     let (target_epoch_address, _) = epoch_pda(target_epoch);
@@ -177,7 +177,7 @@ pub fn build_vote_assignment_ix(
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
-    let target_epoch = current_epoch.saturating_add(EpochNumber(1));
+    let target_epoch = current_epoch.next();
     let (system_address, _) = system_pda();
     let (curr_epoch_address, _) = epoch_pda(current_epoch);
     let (target_epoch_address, _) = epoch_pda(target_epoch);

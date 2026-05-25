@@ -5,11 +5,12 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
-use tape_store::{ops::*, types::*, TapeStore};
+use tape_store::{ops::*, TapeStore};
 
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
     CompressedTrack {

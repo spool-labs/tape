@@ -175,8 +175,8 @@ async fn late_join_inner() {
         .expect("read bootstrap target")
         .expect("late node should have replayed snapshots");
     let current = ctx.state().epoch();
-    let lower = EpochNumber(current.0.saturating_sub(2));
-    let upper = EpochNumber(current.0.saturating_sub(1));
+    let lower = current.saturating_sub(EpochNumber(2));
+    let upper = current.prev();
 
     assert!(
         cursor >= lower && cursor <= upper,

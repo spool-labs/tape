@@ -3,7 +3,6 @@ mod committee;
 mod epoch;
 mod exchange;
 mod group;
-mod history;
 mod node;
 mod peer;
 mod stake;
@@ -17,7 +16,6 @@ pub use committee::*;
 pub use epoch::*;
 pub use exchange::*;
 pub use group::*;
-pub use history::*;
 pub use node::*;
 pub use peer::*;
 pub use stake::*;
@@ -37,7 +35,6 @@ pub enum AccountType {
     Epoch,
     Exchange,
     Group,
-    History,
     Node,
     PeerSet,
     Stake,

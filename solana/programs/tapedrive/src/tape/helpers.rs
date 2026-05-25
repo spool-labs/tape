@@ -1,11 +1,12 @@
 use tape_api::event::{TapeDestroyed, TapeReserved};
 use tape_api::program::prelude::*;
-use tape_core::tape::tape_reservation_cost;
+use tape_core::tape::{tape_reservation_cost, user_tape_number};
 
 #[derive(Clone, Copy)]
 pub struct TapeSpec {
     pub address: Address,
     pub authority: Address,
+    pub flags: u64,
     pub capacity: StorageUnits,
     pub active_epoch: EpochNumber,
     pub expiry_epoch: EpochNumber,
@@ -59,14 +60,14 @@ pub fn reserve_archive(
         .reserve_capacity(spec.capacity, fee_per_epoch, spec.active_epoch, spec.expiry_epoch)
         .map_err(|_| TapeError::UnexpectedState)?;
 
-    let id = TapeNumber(
-        archive
-            .tape_count
-            .checked_add(1)
-            .ok_or(ProgramError::ArithmeticOverflow)?,
-    );
+    let next_count = archive
+        .tape_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let id = user_tape_number(next_count)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    archive.tape_count = id.as_u64();
+    archive.tape_count = next_count;
 
     Ok(TapeReservation { spec, id, cost })
 }
@@ -88,6 +89,7 @@ pub fn create_tape_account<'account_info>(
 
     let tape = tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
     tape.id = reservation.id;
+    tape.flags = reservation.spec.flags;
     tape.authority = reservation.spec.authority;
     tape.active_epoch = reservation.spec.active_epoch;
     tape.expiry_epoch = reservation.spec.expiry_epoch;
@@ -96,6 +98,8 @@ pub fn create_tape_account<'account_info>(
 
     TapeReserved {
         tape: reservation.spec.address,
+        id: reservation.id,
+        flags: reservation.spec.flags,
         authority: reservation.spec.authority,
         capacity: reservation.spec.capacity,
         active_epoch: reservation.spec.active_epoch,

@@ -76,7 +76,7 @@ impl SimnetScenario<'_> {
 
     pub async fn committee_next_size(&self) -> Result<usize> {
         let system = self.read_system().await?;
-        self.committee_len(system.current_epoch + EpochNumber(1)).await
+        self.committee_len(system.current_epoch.next()).await
     }
 
     pub async fn wait_next_quorum(&self, min_size: usize, timeout: Duration) -> Result<()> {

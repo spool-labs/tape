@@ -41,19 +41,19 @@ mod tests {
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
-        let prev_epoch = EPOCH.saturating_sub(EpochNumber(1));
+        let prev_epoch = EPOCH.prev();
 
         submit_advance_pool(&ctx).await.expect("submit advance pool");
 
         let authority = ctx.pubkey().address();
         let node = ctx.rpc.get_node(&authority).await.expect("fetch node");
-        let history = ctx
+        let history_tape = ctx
             .rpc
             .get_history(&harness.node(NODE).node_address.into())
             .await
-            .expect("fetch history");
+            .expect("fetch history tape");
 
         assert_eq!(node.latest_advance_epoch, prev_epoch);
-        assert_eq!(history.latest_epoch, prev_epoch);
+        assert_eq!(history_tape.tracks.num_tracks(), 1);
     }
 }

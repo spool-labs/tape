@@ -2,7 +2,7 @@
 
 use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_store::{ops::*, types::*, TapeStore};
@@ -77,6 +77,8 @@ fn all_column_families() {
 
     // Tape info
     let tape_info = TapeInfo {
+        id: TapeNumber(1),
+        flags: 0,
         end_epoch: EpochNumber(150),
         next_track_number: TrackNumber(0),
     };
@@ -382,6 +384,8 @@ fn tape_info_operations() {
 
     let tape = Address::new_unique();
     let info = TapeInfo {
+        id: TapeNumber(1),
+        flags: 0,
         end_epoch: EpochNumber(200),
         next_track_number: TrackNumber(0),
     };

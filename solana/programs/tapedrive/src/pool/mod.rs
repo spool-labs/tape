@@ -4,6 +4,7 @@ pub mod unlock;
 pub mod unstake;
 pub mod split;
 pub mod merge;
+pub mod helpers;
 
 pub use advance::*;
 pub use stake::*;

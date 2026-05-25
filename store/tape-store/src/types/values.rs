@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{EpochNumber, SpoolIndex, TrackNumber};
+use tape_core::types::{EpochNumber, SpoolIndex, TapeNumber, TrackNumber};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -35,11 +35,28 @@ pub struct SnapshotArtifact {
 /// Metadata about a tape (storage allocation)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct TapeInfo {
+    /// Unique tape identifier.
+    pub id: TapeNumber,
+
+    /// Tape behavior flags.
+    pub flags: u64,
+
     /// Epoch when the tape expires
     pub end_epoch: EpochNumber,
 
     /// Next monotonic track number expected for this tape.
     pub next_track_number: TrackNumber,
+}
+
+impl TapeInfo {
+    pub fn new(id: TapeNumber, flags: u64, end_epoch: EpochNumber, next_track_number: TrackNumber) -> Self {
+        Self {
+            id,
+            flags,
+            end_epoch,
+            next_track_number,
+        }
+    }
 }
 
 /// Proof data needed to submit an on-chain track invalidation
@@ -64,6 +81,8 @@ mod tests {
     #[test]
     fn test_tape_info_roundtrip() {
         let info = TapeInfo {
+            id: TapeNumber(1),
+            flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
         };

@@ -7,21 +7,20 @@
 
 use std::sync::Arc;
 
-use bytemuck::{bytes_of, Zeroable};
+use bytemuck::bytes_of;
 use rpc::Rpc;
 use store::Store;
-use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_api::state::Tape;
 use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
 use tape_core::snapshot::chunk::{pack_segment, snapshot_chunk_key, SnapshotChunkPayload};
 use tape_core::snapshot::replay::SnapshotLog;
+use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{
-    ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
-};
+use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
 use tape_crypto::hash::hash as hash_bytes;
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
@@ -33,7 +32,7 @@ use tape_slicer::{
 use tape_store::ops::{
     EventLogOps, ObjectInfoOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps,
 };
-use tape_store::types::{ObjectInfo, SnapshotArtifact, TapeInfo};
+use tape_store::types::{ObjectInfo, SnapshotArtifact, SystemObjectKind, TapeInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::context::NodeContext;
@@ -146,14 +145,7 @@ where
     let chunk_size = compressed.len().div_ceil(chunk_total).max(1);
 
     let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
-    let mut tape = Tape {
-        id: TapeNumber(0),
-        authority: SYSTEM_ADDRESS,
-        capacity: StorageUnits(u64::MAX),
-        active_epoch: epoch,
-        expiry_epoch: EpochNumber(u64::MAX),
-        ..Tape::zeroed()
-    };
+    let mut tape = Tape::snapshot(epoch);
 
     let mut outer = OuterCoder::new(outer_k, total_groups);
     let mut tracks = Vec::with_capacity(chunk_total * total_groups);
@@ -247,6 +239,8 @@ where
         .put_tape(
             snapshot_tape,
             TapeInfo {
+                id: snapshot_tape_number(candidate.target_epoch),
+                flags: TapeFlags::SYSTEM,
                 end_epoch: EpochNumber(u64::MAX),
                 next_track_number: candidate.tape.tracks.next_number(),
             },
@@ -264,9 +258,13 @@ where
         ctx.store
             .put_object_info(
                 track_address,
-                ObjectInfo::Snapshot {
+                ObjectInfo::System {
+                    kind: SystemObjectKind::Snapshot {
+                        epoch: candidate.target_epoch,
+                    },
                     track_address,
-                    epoch: candidate.target_epoch,
+                    registered_epoch: candidate.target_epoch,
+                    certified_epoch: Some(candidate.target_epoch),
                     slot: candidate.end_slot,
                 },
             )

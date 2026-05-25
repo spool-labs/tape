@@ -35,7 +35,7 @@ pub fn build_resize_peer_set_ix(
     current_epoch: EpochNumber,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let next_epoch = current_epoch.saturating_add(EpochNumber(1));
+    let next_epoch = current_epoch.next();
     let (current_epoch_address, _) = epoch_pda(current_epoch);
     let (next_epoch_address, _) = epoch_pda(next_epoch);
     let (peer_set_address, _) = peer_set_pda();

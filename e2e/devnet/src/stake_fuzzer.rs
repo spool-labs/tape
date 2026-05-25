@@ -11,8 +11,8 @@ use tape_sdk::tapedrive::Tapedrive;
 
 enum DelegationPhase {
     Idle,
-    Staked { pool: Address },
-    Unlocking { pool: Address },
+    Staked,
+    Unlocking,
 }
 
 struct DelegatedStake {
@@ -59,7 +59,7 @@ impl StakeFuzzer {
         for auth in node_authorities {
             let authority = Address::from(*auth);
             let (pool, _) = node_pda(authority);
-            if let Err(e) = sdk.advance_pool(authority, pool).await {
+            if let Err(e) = sdk.advance_pool(pool).await {
                 tracing::error!("advance_pool: {e:#}");
             }
         }
@@ -82,7 +82,7 @@ impl StakeFuzzer {
                     match sdk.stake_with_pool(&d.key, pool, amount).await {
                         Ok(()) => {
                             tracing::info!("staked {amount_tape} TAPE with pool");
-                            d.phase = DelegationPhase::Staked { pool };
+                            d.phase = DelegationPhase::Staked;
                             self.tx_succeeded += 1;
                         }
                         Err(e) => {
@@ -91,12 +91,11 @@ impl StakeFuzzer {
                         }
                     }
                 }
-                DelegationPhase::Staked { pool } => {
-                    let pool = *pool;
-                    match sdk.request_stake_unlock(&d.key, pool).await {
+                DelegationPhase::Staked => {
+                    match sdk.request_stake_unlock(&d.key).await {
                         Ok(()) => {
                             tracing::info!("requested stake unlock");
-                            d.phase = DelegationPhase::Unlocking { pool };
+                            d.phase = DelegationPhase::Unlocking;
                             self.tx_succeeded += 1;
                         }
                         Err(e) => {
@@ -105,9 +104,8 @@ impl StakeFuzzer {
                         }
                     }
                 }
-                DelegationPhase::Unlocking { pool } => {
-                    let pool = *pool;
-                    match sdk.unstake_from_pool(&d.key, pool).await {
+                DelegationPhase::Unlocking => {
+                    match sdk.unstake_from_pool(&d.key).await {
                         Ok(()) => {
                             tracing::info!("unstaked from pool");
                             d.phase = DelegationPhase::Idle;

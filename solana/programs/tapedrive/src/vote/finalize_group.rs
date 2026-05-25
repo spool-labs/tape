@@ -30,7 +30,7 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let target_epoch_id = EpochNumber::unpack(args.epoch);
     let expected_target = system
         .current_epoch
-        .checked_add(EpochNumber(1))
+        .checked_next()
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     if target_epoch_id != expected_target {

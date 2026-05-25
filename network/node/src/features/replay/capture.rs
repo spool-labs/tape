@@ -3,6 +3,7 @@ use tape_api::event::{TapeDestroyed, TapeReserved, TrackDeleted, TrackWritten};
 use tape_api::program::tapedrive::{track_pda, SYSTEM_ADDRESS};
 use tape_blocks::{ParseError, ParsedInstruction};
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
+use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
@@ -100,6 +101,8 @@ fn capture_instruction(
                     epoch: *current_epoch,
                     event: ReplayableEvent::ReserveTape {
                         tape: event.snapshot_tape,
+                        id: snapshot_tape_number(event.epoch),
+                        flags: TapeFlags::SYSTEM,
                         authority: SYSTEM_ADDRESS,
                         active_epoch: event.epoch,
                         expiry_epoch: EpochNumber(u64::MAX),
@@ -137,16 +140,13 @@ fn capture_instruction(
         },
         ParsedInstruction::ReserveTape { event, .. } => capture_tape(*current_epoch, event),
         ParsedInstruction::DestroyTape { event, .. } => capture_destroy(*current_epoch, event),
-        ParsedInstruction::RegisterNode {
-            authority,
-            node,
-            ..
-        } => Captured {
+        ParsedInstruction::RegisterNode { authority, event, .. } => Captured {
             event: CapturedEvent {
                 epoch: *current_epoch,
                 event: ReplayableEvent::RegisterNode {
                     authority: (*authority).into(),
-                    node: (*node).into(),
+                    node: event.node,
+                    id: event.id,
                 },
             },
             raw_track: None,
@@ -160,7 +160,6 @@ fn capture_instruction(
             },
             raw_track: None,
         },
-        ParsedInstruction::CreateBlacklist { event, .. } => capture_tape(*current_epoch, event),
         ParsedInstruction::AddToBlacklist { entry, event, .. } => {
             capture_track(
                 *current_epoch,
@@ -170,11 +169,21 @@ fn capture_instruction(
             )?
         }
         ParsedInstruction::RemoveFromBlacklist { event, .. } => capture_delete(*current_epoch, event),
-        ParsedInstruction::DestroyBlacklist { event, .. } => capture_destroy(*current_epoch, event),
+        ParsedInstruction::AdvancePool {
+            span,
+            track_event,
+            ..
+        } => {
+            capture_track(
+                *current_epoch,
+                track_event,
+                span.key(),
+                TrackDataSlice::Raw(bytes_of(span)),
+            )?
+        }
 
         // Empty variants that don't produce replay events.
-        ParsedInstruction::AdvancePool { .. }
-        | ParsedInstruction::StakeWithPool { .. }
+        ParsedInstruction::StakeWithPool { .. }
         | ParsedInstruction::RequestStakeUnlock { .. }
         | ParsedInstruction::UnstakeFromPool { .. }
         | ParsedInstruction::ClaimCommission { .. }
@@ -251,6 +260,8 @@ fn capture_tape(epoch: EpochNumber, event: &TapeReserved) -> Captured {
             epoch,
             event: ReplayableEvent::ReserveTape {
                 tape: event.tape,
+                id: event.id,
+                flags: event.flags,
                 authority: event.authority,
                 active_epoch: event.active_epoch,
                 expiry_epoch: event.expiry_epoch,
@@ -299,10 +310,13 @@ mod tests {
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{BlacklistEntry, NodePreferences};
+    use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{
+        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+    };
     use tape_crypto::address::Address;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_crypto::Hash;
@@ -435,6 +449,8 @@ mod tests {
             tape,
             event: TapeReserved {
                 tape,
+                id: TapeNumber(1),
+                flags: 0,
                 authority: Address::new_unique(),
                 capacity: StorageUnits::mb(10),
                 active_epoch,
@@ -614,11 +630,15 @@ mod tests {
         match &captured.events[0].event {
             ReplayableEvent::ReserveTape {
                 tape,
+                id,
+                flags,
                 authority,
                 active_epoch,
                 expiry_epoch,
             } => {
                 assert_eq!(*tape, snapshot_tape);
+                assert_eq!(*id, snapshot_tape_number(snapshot_epoch));
+                assert_eq!(*flags, TapeFlags::SYSTEM);
                 assert_eq!(*authority, SYSTEM_ADDRESS);
                 assert_eq!(*active_epoch, snapshot_epoch);
                 assert_eq!(*expiry_epoch, EpochNumber(u64::MAX));

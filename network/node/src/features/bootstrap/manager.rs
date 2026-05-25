@@ -17,14 +17,17 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::bootstrap::{discovery, fetch, replay};
 
+const BOOTSTRAP_EPOCH: EpochNumber = EpochNumber(0);
+const FIRST_LIVE_EPOCH: EpochNumber = EpochNumber(1);
+
 /// Run the bootstrap phase and return the slot the live ingestor should
 /// start from.
 ///
 /// When replay runs, the returned slot is the one immediately after the
 /// last replayed snapshot. Otherwise the slot is resolved from (in
 /// order): the explicit `config.solana.start_slot` override, the
-/// persisted `sync_cursor` from prior runs, or the current epoch's
-/// on-chain `start_slot`.
+/// persisted `sync_cursor` from prior runs, the genesis setup slot range,
+/// or the current epoch's on-chain `start_slot`.
 pub async fn run<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &NodeConfig,
@@ -77,7 +80,7 @@ where
     // Resume ingestion at the slot right after the last replayed snapshot's
     // end, so there's no gap and no double-application at the live boundary.
     let start_slot = match last_end_slot {
-        Some(end) => SlotNumber(end.0.saturating_add(1)),
+        Some(end) => end.next(),
         // Defensive: if the epochs list was non-empty we must have set
         // last_end_slot at least once. Fall through to the same
         // resolver the no-replay path uses rather than assuming.
@@ -94,7 +97,8 @@ where
 /// Pick a start slot when no snapshots need replaying. Order:
 /// 1. Explicit operator override (`config.solana.start_slot`).
 /// 2. Persisted `sync_cursor` from prior runs (resume where we left off).
-/// 3. Current epoch's `start_slot` from chain (fresh first run).
+/// 3. Epoch 0's start slot when the network is in its first live epoch.
+/// 4. Current epoch's `start_slot` from chain (fresh first run).
 async fn resolve_no_replay_start<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     config: &NodeConfig,
@@ -114,7 +118,7 @@ where
         .get_sync_cursor()
         .map_err(|error| NodeError::Store(format!("get_sync_cursor: {error}")))?;
     if let Some(c) = cursor {
-        let resume = SlotNumber(c.0.saturating_add(1));
+        let resume = c.next();
         debug!(
             cursor = c.0,
             start_slot = resume.0,
@@ -127,6 +131,22 @@ where
         .rpc
         .get_system_with_commitment(CommitmentLevel::Finalized)
         .await?;
+
+    if system.current_epoch <= FIRST_LIVE_EPOCH {
+        let epoch = context
+            .rpc
+            .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
+            .await?;
+
+        debug!(
+            epoch = system.current_epoch.0,
+            start_slot = epoch.start_slot.0,
+            "bootstrap: fresh node in first live epoch, replaying from epoch 0"
+        );
+
+        return Ok(epoch.start_slot);
+    }
+
     let epoch = context
         .rpc
         .get_epoch_with_commitment(system.current_epoch, CommitmentLevel::Finalized)
@@ -168,6 +188,7 @@ where
 mod tests {
     use std::time::Duration;
 
+    use rpc::CommitmentLevel;
     use tape_core::types::{EpochNumber, SlotNumber};
     use tape_store::ops::MetaOps;
     use tokio::time::timeout;
@@ -176,16 +197,21 @@ mod tests {
     use crate::config::node::NodeConfig;
     use crate::harness::{NodeHarness, TestContext};
 
-    use super::{advance_cursors, run};
+    use super::{advance_cursors, run, BOOTSTRAP_EPOCH, FIRST_LIVE_EPOCH};
 
-    async fn test_context() -> TestContext {
+    async fn test_context_at(epoch: EpochNumber) -> TestContext {
         NodeHarness::builder()
             .nodes(25)
+            .epoch(epoch)
             .no_prev_snapshot_tape()
             .build()
             .await
             .expect("build harness")
             .ctx_for(0)
+    }
+
+    async fn test_context() -> TestContext {
+        test_context_at(EpochNumber(5)).await
     }
 
     #[tokio::test]
@@ -217,6 +243,25 @@ mod tests {
             .expect("bootstrap returned ok");
 
         assert_eq!(slot, SlotNumber(1000));
+    }
+
+    #[tokio::test]
+    async fn first_live_epoch_starts_at_epoch_zero() {
+        let context = test_context_at(FIRST_LIVE_EPOCH).await;
+        let config = NodeConfig::default();
+        let cancel = CancellationToken::new();
+        let epoch = context
+            .rpc
+            .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
+            .await
+            .expect("epoch 0");
+
+        let slot = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
+            .await
+            .expect("bootstrap completed in time")
+            .expect("bootstrap returned ok");
+
+        assert_eq!(slot, epoch.start_slot);
     }
 
     #[tokio::test]

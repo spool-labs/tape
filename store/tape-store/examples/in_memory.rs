@@ -7,11 +7,14 @@
 //!
 //! Run with: cargo run --example in_memory
 
+use store_memory::MemoryStore;
+use tape_core::spooler::GroupIndex;
+use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
-use tape_store::{ops::*, types::*, MemoryStore, TapeStore};
+use tape_store::{ops::*, TapeStore};
 
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
     CompressedTrack {
@@ -46,18 +49,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Store slices for track 1
     let track_address = Address::new([1; 32]);
     for spool_id in 0..5u16 {
-        store.put_slice(spool_id, track_address, vec![spool_id as u8; 1024])?;
+        store.put_slice(
+            SpoolIndex(spool_id as u64),
+            track_address,
+            vec![spool_id as u8; 1024],
+        )?;
     }
 
     // Query slices by spool
     for spool_id in 0..5u16 {
-        let slices = store.iter_slices_by_spool(spool_id)?;
+        let slices = store.iter_slices_by_spool(SpoolIndex(spool_id as u64))?;
         println!("Spool {} has {} slices", spool_id, slices.len());
     }
 
     // Spool status (NOT epoch-namespaced)
     for spool_id in 0..3u16 {
-        store.set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))?;
+        store.set_spool_state(
+            SpoolIndex(spool_id as u64),
+            SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
+        )?;
     }
 
     let spools = store.iter_all_spools()?;

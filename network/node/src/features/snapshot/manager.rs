@@ -116,7 +116,7 @@ where
                 }
 
                 ParsedInstruction::FinalizeSnapshot { event, .. } => {
-                    let voting_epoch = event.epoch.saturating_add(EpochNumber(1));
+                    let voting_epoch = event.epoch.next();
 
                     let state = self.context.state();
                     let state = if state.epoch() >= voting_epoch {
@@ -215,7 +215,7 @@ where
             .map_err(|e| NodeError::Store(format!("delete_snapshot_epoch: {e}")))?;
         self.context
             .store
-            .delete_vote_epoch(epoch + EpochNumber(1))
+            .delete_vote_epoch(epoch.next())
             .map_err(|e| NodeError::Store(format!("delete_vote_epoch: {e}")))?;
 
         debug!(epoch = epoch.0, "snapshot: finalized local cleanup complete");
@@ -233,9 +233,7 @@ where
             return Ok(());
         }
 
-        let snapshot_epoch = state
-            .epoch()
-            .saturating_sub(EpochNumber(1));
+        let snapshot_epoch = state.epoch().prev();
 
         let Some(previous) = state.previous.as_ref() else {
             return Ok(());
@@ -312,7 +310,7 @@ fn validate_block_state(
         return false;
     }
 
-    if target_epoch.saturating_add(EpochNumber(1)) != voting_epoch {
+    if target_epoch.next() != voting_epoch {
         return false;
     }
 

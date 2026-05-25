@@ -1,5 +1,8 @@
 use tape_solana::*;
 use tape_core::prelude::*;
+use tape_core::tape::{
+    blacklist_tape_number, history_tape_number, snapshot_tape_number, TapeFlags,
+};
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;
@@ -13,6 +16,9 @@ use super::AccountType;
 pub struct Tape {
     /// The unique identifier for this tape.
     pub id: TapeNumber,
+
+    /// Tape behavior flags.
+    pub flags: u64,
 
     /// The authority that owns this tape.
     pub authority: Address,
@@ -34,12 +40,70 @@ pub struct Tape {
 }
 
 impl Tape {
+    pub fn snapshot(epoch: EpochNumber) -> Self {
+        Self {
+            id: snapshot_tape_number(epoch),
+            flags: TapeFlags::SYSTEM,
+            authority: SYSTEM_ADDRESS,
+            capacity: StorageUnits(u64::MAX),
+            active_epoch: epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            ..Self::zeroed()
+        }
+    }
+
+    pub fn history(node: NodeId, active_epoch: EpochNumber) -> Self {
+        Self {
+            id: history_tape_number(node),
+            flags: TapeFlags::SYSTEM,
+            authority: SYSTEM_ADDRESS,
+            capacity: StorageUnits(u64::MAX),
+            active_epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            ..Self::zeroed()
+        }
+    }
+
+    pub fn blacklist(node: NodeId, active_epoch: EpochNumber) -> Self {
+        Self {
+            id: blacklist_tape_number(node),
+            flags: TapeFlags::SYSTEM,
+            authority: SYSTEM_ADDRESS,
+            capacity: StorageUnits(u64::MAX),
+            active_epoch,
+            expiry_epoch: EpochNumber(u64::MAX),
+            ..Self::zeroed()
+        }
+    }
+
     pub fn is_snapshot_tape(&self, epoch: EpochNumber) -> bool {
-        self.id == TapeNumber(0)
+        self.id == snapshot_tape_number(epoch)
+            && self.is_system()
             && self.authority == SYSTEM_ADDRESS
             && self.capacity == StorageUnits(u64::MAX)
             && self.active_epoch == epoch
             && self.expiry_epoch == EpochNumber(u64::MAX)
+    }
+
+    pub fn is_history_tape(&self, node: NodeId) -> bool {
+        self.id == history_tape_number(node)
+            && self.is_system()
+            && self.authority == SYSTEM_ADDRESS
+            && self.capacity == StorageUnits(u64::MAX)
+            && self.expiry_epoch == EpochNumber(u64::MAX)
+    }
+
+    pub fn is_blacklist_tape(&self, node: NodeId) -> bool {
+        self.id == blacklist_tape_number(node)
+            && self.is_system()
+            && self.authority == SYSTEM_ADDRESS
+            && self.capacity == StorageUnits(u64::MAX)
+            && self.expiry_epoch == EpochNumber(u64::MAX)
+    }
+
+    #[inline(always)]
+    pub fn is_system(&self) -> bool {
+        TapeFlags::is_system(self.flags)
     }
 
     pub fn write_track(&mut self, track: &CompressedTrack) -> ProgramResult {

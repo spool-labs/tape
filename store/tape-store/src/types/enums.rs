@@ -6,16 +6,26 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 
+/// System-owned object categories.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub enum SystemObjectKind {
+    Snapshot { epoch: EpochNumber },
+    History,
+    Blacklist,
+}
+
 /// Information about a tracked object
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum ObjectInfo {
     /// Object has been blacklisted
     Blacklisted,
+
     /// Object is invalid
     Invalid {
         epoch: EpochNumber,
         slot: SlotNumber,
     },
+
     /// Object is valid
     Valid {
         track_address: Address,
@@ -23,11 +33,14 @@ pub enum ObjectInfo {
         certified_epoch: Option<EpochNumber>,
         slot: SlotNumber,
     },
-    /// System-owned snapshot track. These are certified bootstrap data, but
-    /// are not counted as user objects for assignment sizing.
-    Snapshot {
+
+    /// System/protocol track. These are live protocol metadata and are not
+    /// counted as user objects for assignment sizing.
+    System {
+        kind: SystemObjectKind,
         track_address: Address,
-        epoch: EpochNumber,
+        registered_epoch: EpochNumber,
+        certified_epoch: Option<EpochNumber>,
         slot: SlotNumber,
     },
 }
@@ -39,14 +52,21 @@ impl ObjectInfo {
             ObjectInfo::Valid {
                 certified_epoch: Some(_),
                 ..
-            } | ObjectInfo::Snapshot { .. }
+            } | ObjectInfo::System {
+                    kind: SystemObjectKind::Snapshot { .. },
+                    ..
+                }
+                | ObjectInfo::System {
+                    certified_epoch: Some(_),
+                    ..
+                }
         )
     }
 
     pub fn is_live(&self) -> bool {
         matches!(
             self,
-            ObjectInfo::Valid { .. } | ObjectInfo::Snapshot { .. }
+            ObjectInfo::Valid { .. } | ObjectInfo::System { .. }
         )
     }
 }
@@ -79,9 +99,20 @@ mod tests {
                 certified_epoch: None,
                 slot: SlotNumber(70),
             },
-            ObjectInfo::Snapshot {
+            ObjectInfo::System {
+                kind: SystemObjectKind::Snapshot {
+                    epoch: EpochNumber(8),
+                },
                 track_address: Address::new([3u8; 32]),
-                epoch: EpochNumber(8),
+                registered_epoch: EpochNumber(8),
+                certified_epoch: None,
+                slot: SlotNumber(80),
+            },
+            ObjectInfo::System {
+                kind: SystemObjectKind::History,
+                track_address: Address::new([4u8; 32]),
+                registered_epoch: EpochNumber(8),
+                certified_epoch: Some(EpochNumber(8)),
                 slot: SlotNumber(80),
             },
         ];

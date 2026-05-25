@@ -2,11 +2,13 @@
 //!
 //! Run with: cargo run --example atomic_operations
 
+use tape_core::spooler::GroupIndex;
+use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-use tape_core::types::{StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
-use tape_store::{error::Result, ops::*, types::*, TapeStore};
+use tape_store::{error::Result, ops::*, TapeStore};
 
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
     CompressedTrack {
@@ -42,25 +44,32 @@ fn main() -> Result<()> {
     // SliceDataOps - store slices
     let track_address = Address::new([1; 32]);
     for spool_id in 0..10 {
-        store.put_slice(spool_id, track_address, vec![spool_id as u8; 1024])?;
+        store.put_slice(
+            SpoolIndex(spool_id),
+            track_address,
+            vec![spool_id as u8; 1024],
+        )?;
     }
     println!("Stored 10 slices for track 1");
 
     // Query slices by spool
-    let spool_5_slices = store.iter_slices_by_spool(5)?;
+    let spool_5_slices = store.iter_slices_by_spool(SpoolIndex(5))?;
     println!("Spool 5 has {} slices", spool_5_slices.len());
 
     // Get specific slice
-    let slice_data = store.get_slice(5, track_address)?.unwrap();
+    let slice_data = store.get_slice(SpoolIndex(5), track_address)?.unwrap();
     println!("Slice (5, track1) has {} bytes", slice_data.len());
 
     // Delete slice
-    store.delete_slice(9, track_address)?;
+    store.delete_slice(SpoolIndex(9), track_address)?;
     println!("Deleted slice (9, track1)");
 
     // SpoolOps - NOT epoch-namespaced
     for spool_id in [0u16, 5, 10] {
-        store.set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))?;
+        store.set_spool_state(
+            SpoolIndex(spool_id as u64),
+            SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
+        )?;
     }
     println!("Set 3 spools as Active");
 
@@ -69,10 +78,10 @@ fn main() -> Result<()> {
     println!("All spools: {:?}", spools);
 
     // Pending recovery operations
-    store.add_pending_recovery(5, track_address)?;
+    store.add_pending_recovery(SpoolIndex(5), track_address)?;
     println!("Added pending recovery for spool 5");
 
-    let has_pending = store.has_pending_recovery(5, track_address)?;
+    let has_pending = store.has_pending_recovery(SpoolIndex(5), track_address)?;
     println!("Has pending recovery: {}", has_pending);
 
     // MetaOps - node state

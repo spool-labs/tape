@@ -3,6 +3,7 @@ use tape_api::event::{TrackDeleted, TrackWritten};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
+use tape_crypto::hash::hashv;
 use tape_crypto::Hash;
 
 pub fn append_track(
@@ -24,6 +25,7 @@ pub fn append_track(
 
     let track_number = tape.tracks.next_number();
     let group = select_group(
+        tape_address,
         tape.id,
         track_number,
         slot_hash_seed(slot_hashes_info)?,
@@ -83,19 +85,23 @@ pub fn delete_track(
 }
 
 fn select_group(
+    tape_address: Address,
     tape_id: TapeNumber,
     track_number: TrackNumber,
     seed: Hash,
     spool_groups: u64,
 ) -> Result<GroupIndex, ProgramError> {
-    let tape_number: u64 = tape_id.into();
+    let mixed_hash = hashv(&[
+        seed.as_ref(),
+        tape_address.as_ref(),
+        &tape_id.pack(),
+        &track_number.pack(),
+    ]);
     let mixed = u64::from_le_bytes(
-        seed.0[..8]
+        mixed_hash.0[..8]
             .try_into()
             .map_err(|_| ProgramError::InvalidInstructionData)?,
-    )
-    .wrapping_add(tape_number)
-    .wrapping_add(track_number.0);
+    );
 
     Ok(GroupIndex(mixed % spool_groups))
 }

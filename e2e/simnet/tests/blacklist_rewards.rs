@@ -206,10 +206,6 @@ async fn write_data(harness: &SimnetHarness, with_blacklist: bool) -> WrittenObj
         let blacklist = blacklist_pda(node).0;
 
         scenario
-            .create_blacklist(BLACKLIST_NODE, 4, EpochNumber(10))
-            .await
-            .expect("create blacklist");
-        scenario
             .add_to_blacklist(BLACKLIST_NODE, BlacklistEntry::track(track_address))
             .await
             .expect("add track blacklist entry");

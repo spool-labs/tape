@@ -99,10 +99,8 @@ pub enum TapeInstruction {
     ClaimCommission,
 
     // Blacklist
-    CreateBlacklist,
     AddToBlacklist,
     RemoveFromBlacklist,
-    DestroyBlacklist,
 
     // Pool
     AdvancePool = 0x90,
@@ -186,10 +184,8 @@ tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
 tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
 tape_solana::instruction!(TapeInstruction, SetMinVersion);
 
-tape_solana::instruction!(TapeInstruction, CreateBlacklist);
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);
-tape_solana::instruction!(TapeInstruction, DestroyBlacklist);
 
 tape_solana::instruction!(TapeInstruction, ReserveTape);
 tape_solana::instruction!(TapeInstruction, DestroyTape);

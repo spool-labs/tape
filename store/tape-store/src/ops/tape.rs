@@ -46,7 +46,7 @@ impl<S: Store> TapeOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::types::{EpochNumber, TrackNumber};
+    use tape_core::types::{EpochNumber, TapeNumber, TrackNumber};
     use store_memory::MemoryStore;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -59,6 +59,8 @@ mod tests {
         let tape = Address::new_unique();
 
         let info = TapeInfo {
+            id: TapeNumber(1),
+            flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
         };
@@ -79,8 +81,8 @@ mod tests {
 
         let tape1 = Address::new_unique();
         let tape2 = Address::new_unique();
-        store.put_tape(tape1, TapeInfo { end_epoch: EpochNumber(100), next_track_number: TrackNumber(0) }).unwrap();
-        store.put_tape(tape2, TapeInfo { end_epoch: EpochNumber(200), next_track_number: TrackNumber(0) }).unwrap();
+        store.put_tape(tape1, TapeInfo { id: TapeNumber(1), flags: 0, end_epoch: EpochNumber(100), next_track_number: TrackNumber(0) }).unwrap();
+        store.put_tape(tape2, TapeInfo { id: TapeNumber(2), flags: 0, end_epoch: EpochNumber(200), next_track_number: TrackNumber(0) }).unwrap();
 
         let tapes = store.iter_all_tapes().unwrap();
         assert_eq!(tapes.len(), 2);
@@ -96,6 +98,8 @@ mod tests {
         let tape = Address::new_unique();
 
         let info = TapeInfo {
+            id: TapeNumber(1),
+            flags: 0,
             end_epoch: EpochNumber(150),
             next_track_number: TrackNumber(0),
         };

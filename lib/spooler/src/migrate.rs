@@ -363,8 +363,8 @@ fn eviction_order(
     let a_node = &nodes[a.node_index as usize];
     let b_node = &nodes[b.node_index as usize];
 
-    let a_was_critical = a_node.remaining.saturating_add(SpoolCount(1)).as_usize() == remaining_groups;
-    let b_was_critical = b_node.remaining.saturating_add(SpoolCount(1)).as_usize() == remaining_groups;
+    let a_was_critical = a_node.remaining.next().as_usize() == remaining_groups;
+    let b_was_critical = b_node.remaining.next().as_usize() == remaining_groups;
 
     b_was_critical
         .cmp(&a_was_critical)
@@ -397,7 +397,7 @@ impl MigrationContext {
 
         for &node_index in &self.retain_nodes_per_group[group] {
             let ni = node_index as usize;
-            self.planned_retentions[ni] = self.planned_retentions[ni].saturating_sub(SpoolCount(1));
+            self.planned_retentions[ni] = self.planned_retentions[ni].prev();
         }
 
         for offset in 0..GROUP_SIZE {
@@ -411,8 +411,11 @@ impl MigrationContext {
                 {
                     self.result[spool] = prev_node;
                     let old_remaining = self.nodes[ni].remaining;
-                    self.nodes[ni].remaining = self.nodes[ni].remaining - SpoolCount(1);
-                    self.buckets.move_node(prev_node, old_remaining, old_remaining - SpoolCount(1));
+                    let new_remaining = old_remaining
+                        .checked_prev()
+                        .expect("remaining spool count underflow");
+                    self.nodes[ni].remaining = new_remaining;
+                    self.buckets.move_node(prev_node, old_remaining, new_remaining);
                     used.set(ni);
                     self.retained.push(RetainedEntry {
                         offset,
@@ -457,8 +460,11 @@ impl MigrationContext {
                     let ni = node_index as usize;
                     self.result[spool] = node_index;
                     let old_remaining = self.nodes[ni].remaining;
-                    self.nodes[ni].remaining = self.nodes[ni].remaining - SpoolCount(1);
-                    self.buckets.move_node(node_index, old_remaining, old_remaining - SpoolCount(1));
+                    let new_remaining = old_remaining
+                        .checked_prev()
+                        .expect("remaining spool count underflow");
+                    self.nodes[ni].remaining = new_remaining;
+                    self.buckets.move_node(node_index, old_remaining, new_remaining);
                     used.set(ni);
                 }
                 return Ok(());
@@ -474,9 +480,12 @@ impl MigrationContext {
                 let entry = self.retained.pop().ok_or(SpoolerError::Infeasible)?;
                 let ni = entry.node_index as usize;
                 let old_remaining = self.nodes[ni].remaining;
-                self.nodes[ni].remaining = self.nodes[ni].remaining + SpoolCount(1);
+                let new_remaining = old_remaining
+                    .checked_next()
+                    .expect("remaining spool count overflow");
+                self.nodes[ni].remaining = new_remaining;
                 self.buckets
-                    .move_node(entry.node_index, old_remaining, old_remaining + SpoolCount(1));
+                    .move_node(entry.node_index, old_remaining, new_remaining);
                 used.clear(ni);
                 self.unassigned.push(entry.offset);
             }
@@ -547,9 +556,12 @@ impl MigrationContext {
             let spool = group_start + offset;
             self.result[spool] = entry.node_index;
             let old_remaining = self.nodes[ni].remaining;
-            self.nodes[ni].remaining = self.nodes[ni].remaining - SpoolCount(1);
+            let new_remaining = old_remaining
+                .checked_prev()
+                .expect("remaining spool count underflow");
+            self.nodes[ni].remaining = new_remaining;
             self.buckets
-                .move_node(entry.node_index, old_remaining, old_remaining - SpoolCount(1));
+                .move_node(entry.node_index, old_remaining, new_remaining);
             used.set(ni);
         }
 
@@ -725,7 +737,7 @@ mod tests {
         let mut c = vec![SpoolCount(0); addresses.len()];
         for a in result {
             let i = *lookup.get(a).expect("address not found");
-            c[i] = c[i] + SpoolCount(1);
+            c[i] = c[i].checked_next().expect("spool count overflow");
         }
         c
     }

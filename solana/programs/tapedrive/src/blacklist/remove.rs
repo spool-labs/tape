@@ -33,7 +33,7 @@ pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) 
         .has_address(&blacklist_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if tape.authority != node_address {
+    if !tape.is_blacklist_tape(node.id) {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -96,22 +96,16 @@ mod tests {
             .unwrap();
 
         let node = Node {
+            id: NodeId(9),
             authority: authority.into(),
             ..Node::zeroed()
         };
-        let tape = Tape {
-            id: TapeNumber(1),
-            authority: node_address.into(),
-            capacity: StorageUnits::from_bytes(entry_size * 2),
-            used: StorageUnits::from_bytes(entry_size),
-            active_epoch: EpochNumber(0),
-            expiry_epoch: EpochNumber(10),
-            tracks: TrackArchive {
-                num_tracks: 1,
-                next_number: TrackNumber(1),
-                tree: track_tree,
-            },
-            ..Tape::zeroed()
+        let mut tape = Tape::blacklist(node.id, EpochNumber(0));
+        tape.used = StorageUnits::from_bytes(entry_size);
+        tape.tracks = TrackArchive {
+            num_tracks: 1,
+            next_number: TrackNumber(1),
+            tree: track_tree,
         };
 
         let instruction = build_remove_from_blacklist_ix(

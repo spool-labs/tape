@@ -9,7 +9,7 @@ pub mod keys;
 mod values;
 
 // Re-export enum types
-pub use enums::ObjectInfo;
+pub use enums::{ObjectInfo, SystemObjectKind};
 
 // Re-export key types
 pub use keys::{

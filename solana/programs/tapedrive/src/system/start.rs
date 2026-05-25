@@ -198,11 +198,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     )?;
 
     let snapshot_tape = snapshot_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
-    snapshot_tape.id = TapeNumber(0);
-    snapshot_tape.authority = SYSTEM_ADDRESS;
-    snapshot_tape.capacity = StorageUnits(u64::MAX);
-    snapshot_tape.active_epoch = bootstrap_snapshot_epoch;
-    snapshot_tape.expiry_epoch = EpochNumber(u64::MAX);
+    *snapshot_tape = Tape::snapshot(bootstrap_snapshot_epoch);
 
     for (i, node_info) in genesis_node_infos.iter().enumerate() {
         let node = node_info.as_account::<Node>(&tapedrive::ID)?;
@@ -463,14 +459,7 @@ mod tests {
                     .data(expected_group.pack().as_ref())
                     .build(),
                 Check::account(&Pubkey::from(snapshot_tape_address))
-                    .data(Tape {
-                        id: TapeNumber(0),
-                        authority: SYSTEM_ADDRESS,
-                        capacity: StorageUnits(u64::MAX),
-                        active_epoch: EpochNumber(0),
-                        expiry_epoch: EpochNumber(u64::MAX),
-                        ..Tape::zeroed()
-                    }.pack().as_ref())
+                    .data(Tape::snapshot(EpochNumber(0)).pack().as_ref())
                     .build(),
                 Check::account(&Pubkey::from(committee_address))
                     .data(Committee {

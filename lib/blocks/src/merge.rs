@@ -287,14 +287,6 @@ pub fn merge(
                 }
             }
 
-            RawInstruction::CreateBlacklist { node } => {
-                let event = match events.pop_front() {
-                    Some(TapedriveEvent::TapeReserved(e)) => e,
-                    _ => return Err(ParseError::EventMismatch("expected TapeReserved event")),
-                };
-                ParsedInstruction::CreateBlacklist { node, event }
-            }
-
             RawInstruction::AddToBlacklist { node, entry } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::TrackWritten(e)) => e,
@@ -311,20 +303,28 @@ pub fn merge(
                 ParsedInstruction::RemoveFromBlacklist { node, track, event }
             }
 
-            RawInstruction::DestroyBlacklist { node } => {
-                let event = match events.pop_front() {
-                    Some(TapedriveEvent::TapeDestroyed(e)) => e,
-                    _ => return Err(ParseError::EventMismatch("expected TapeDestroyed event")),
-                };
-                ParsedInstruction::DestroyBlacklist { node, event }
-            }
-
             RawInstruction::AdvancePool { node } => {
+                let track_event = match events.pop_front() {
+                    Some(TapedriveEvent::TrackWritten(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected TrackWritten event")),
+                };
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::PoolAdvanced(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected PoolAdvanced event")),
                 };
-                ParsedInstruction::AdvancePool { node, event }
+                if event.node != node
+                    || event.span.node != node
+                    || event.epoch.checked_next() != Some(event.span.end_epoch)
+                {
+                    return Err(ParseError::EventMismatch("unexpected PoolAdvanced event"));
+                }
+                let span = event.span;
+                ParsedInstruction::AdvancePool {
+                    node,
+                    span,
+                    track_event,
+                    event,
+                }
             }
 
             RawInstruction::StakeWithPool {
@@ -438,7 +438,8 @@ mod tests {
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
-    use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
+    use tape_core::staking::RateSpan;
+    use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::TrackData;
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
@@ -852,6 +853,8 @@ mod tests {
                 },
                 TapedriveEvent::TapeReserved(TapeReserved {
                     tape: reserve_tape,
+                    id: TapeNumber(1),
+                    flags: 0,
                     authority: Address::new_unique(),
                     capacity: StorageUnits::mb(10_000),
                     active_epoch: EpochNumber(1),
@@ -954,21 +957,32 @@ mod tests {
     #[test]
     fn merge_advance_pool_with_event() {
         let node = Address::new_unique();
+        let span = RateSpan {
+            node,
+            start_epoch: EpochNumber(1),
+            end_epoch: EpochNumber(4),
+            rate: ExchangeRate::flat(),
+        };
         let event = PoolAdvanced {
             node,
-            epoch: EpochNumber(4),
+            epoch: EpochNumber(3),
+            span,
         };
+        let track_event = TrackWritten::zeroed();
         let merged = merge(
             vec![RawInstruction::AdvancePool { node }],
-            vec![TapedriveEvent::PoolAdvanced(event)],
+            vec![
+                TapedriveEvent::TrackWritten(track_event),
+                TapedriveEvent::PoolAdvanced(event),
+            ],
         )
         .unwrap();
 
         assert_eq!(merged.len(), 1);
         match &merged[0] {
-            ParsedInstruction::AdvancePool { node: n, event } => {
+            ParsedInstruction::AdvancePool { node: n, event, .. } => {
                 assert_eq!(*n, node);
-                assert_eq!(event.epoch, EpochNumber(4));
+                assert_eq!(event.epoch, EpochNumber(3));
             }
             _ => panic!("Expected AdvancePool"),
         }

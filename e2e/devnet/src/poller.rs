@@ -10,7 +10,6 @@ use store_memory::MemoryStore;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::EpochPhase;
-use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_node::context::NodeContext;
 use tape_node::runtime::NodeRuntimeStatus;
@@ -320,14 +319,14 @@ async fn poll_once(
         }
         if let Ok(members) = state
             .rpc
-            .get_committee(system.current_epoch.saturating_sub(EpochNumber(1)))
+            .get_committee(system.current_epoch.prev())
             .await
         {
             previous_committee_size = members.len();
         }
         if let Ok(members) = state
             .rpc
-            .get_committee(system.current_epoch + EpochNumber(1))
+            .get_committee(system.current_epoch.next())
             .await
         {
             next_committee_size = members.len();

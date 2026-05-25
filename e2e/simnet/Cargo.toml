@@ -37,4 +37,5 @@ tape-crypto.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+bytemuck.workspace = true
 tokio.workspace = true

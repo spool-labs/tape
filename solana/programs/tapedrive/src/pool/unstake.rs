@@ -2,8 +2,10 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::event::StakeWithdrawn;
 
+use crate::pool::helpers::resolve_rate;
+
 pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = UnstakeFromPool::try_from_bytes(data)?;
+    let args = UnstakeFromPool::try_from_bytes(data)?;
     let [
         fee_payer_info,
         authority_info,
@@ -57,16 +59,19 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .as_account::<System>(&tapedrive::ID)?;
 
     let current = system.current_epoch;
-    let prev = current.saturating_sub(EpochNumber(1));
+    let prev = current.prev();
 
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    let history = history_info
+    let history_tape = history_info
         .has_address(&history_address.into())?
-        .as_account::<History>(&tapedrive::ID)?
-        .assert(|h| h.node == (*node_info.key).into())?;
+        .as_account::<Tape>(&tapedrive::ID)?;
+
+    if !history_tape.is_history_tape(node.id) {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     if node.latest_advance_epoch < prev {
         return Err(TapeError::NodeStale.into());
@@ -104,26 +109,22 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(TapeError::EpochNotReached.into());
     }
 
-    // Compute owed rewards based on activation and withdraw exchange rates
-    // Note: If withdraw <= activation, owed = 0 (per StakingPool::unstake)
-
-    let activation_rate = history.inner
-        .rate_at(staked_tape.activation_epoch)
-        .ok_or(TapeError::RateMissing)?;
-
-    let withdraw_rate = history.inner
-        .rate_at(withdraw_epoch)
-        .ok_or(TapeError::RateMissing)?;
-
-    let shares = activation_rate
-        .convert_to_other_amount(staked_tape.amount.into());
-
-    if shares == 0 {
+    let shares = staked_tape.unlock_shares;
+    if withdraw_epoch > staked_tape.activation_epoch && shares.is_zero() {
         return Err(TapeError::ZeroShares.into());
     }
 
+    let withdraw_rate = resolve_rate(
+        node,
+        history_tape,
+        history_address,
+        (*node_info.key).into(),
+        withdraw_epoch,
+        args.rate,
+    )?;
+
     let tokens_at_withdraw = withdraw_rate
-        .convert_to_tape_amount(shares);
+        .convert_to_tape_amount(shares.into());
 
     let owed_rewards = tokens_at_withdraw
         .saturating_sub(staked_tape.amount.into());
@@ -209,6 +210,7 @@ mod tests {
             fee_payer.into(),
             authority.into(),
             pool_address,
+            PoolRate::current(),
         );
 
         let system = System {
@@ -217,18 +219,17 @@ mod tests {
         };
         let archive = Archive::zeroed();
         let mut node = Node::zeroed();
-        let mut history = History::zeroed();
 
         node.id = NodeId(7);
         node.latest_advance_epoch = e3;
+        node.rate_span_start = e0;
         node.authority = pool_owner.into();
 
         let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
         let withdraw_rate   = ExchangeRate { tape: 1200, other: 8800 };
 
-        history.node = pool_address.into();
-        history.inner.push(e0, activation_rate);
-        history.inner.push(e4, withdraw_rate);
+        node.pool.stake = TAPE(withdraw_rate.tape);
+        node.pool.shares = ShareAmount(withdraw_rate.other);
 
         let principal: u64 = 1_000;
         let shares = activation_rate
@@ -240,12 +241,15 @@ mod tests {
 
         node.pool.rewards = reward.into();
 
+        let history_tape = Tape::history(node.id, e0);
+
         let stake = Stake {
             authority: authority.into(),
             pool: pool_address.into(),
             inner: StakedTape {
                 amount: TAPE(principal),
                 activation_epoch: e0,
+                unlock_shares: ShareAmount(shares),
                 state: StakeState {
                     phase: StakePhase::Unlocking.into(),
                     unstake_epoch: e4,
@@ -266,7 +270,7 @@ mod tests {
 
             pda(system_address, system.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
-            pda(history_address, history.pack(), tapedrive::ID),
+            pda(history_address, history_tape.pack(), tapedrive::ID),
 
             token_program(),
             staking_program(),

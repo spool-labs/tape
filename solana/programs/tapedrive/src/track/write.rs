@@ -38,6 +38,10 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .has_address(&tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
+    if tape.is_system() {
+        return Err(TapeError::UnexpectedState.into());
+    }
+
     append_track(
         system,
         tape,

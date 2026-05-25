@@ -12,14 +12,13 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use store_memory::MemoryStore;
 use tape_core::bls::BlsPrivateKey;
-use tape_core::types::SlotNumber;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
-use tape_store::{TapeStore, ops::MetaOps};
+use tape_store::TapeStore;
 use tokio::time::Duration;
 use tracing::Instrument;
 
@@ -176,33 +175,9 @@ impl TestNode {
                 }
 
                 let context = self.context();
-                let start_slot = match context
-                    .store
-                    .get_sync_cursor()
-                    .context("read sync cursor")?
-                {
-                    Some(slot) => SlotNumber(slot.0.saturating_add(1)),
-                    None => {
-                        let current_epoch = context
-                            .rpc
-                            .get_system()
-                            .await
-                            .context("read system for current epoch")?
-                            .current_epoch;
-                        context
-                            .rpc
-                            .get_epoch(current_epoch)
-                            .await
-                            .context("read current epoch account")?
-                            .start_slot
-                    }
-                };
-                let mut config = self.app_config.clone();
-                config.solana.start_slot = Some(start_slot);
-
                 let node_id = context.node_id().0;
                 self.runtime = Some(
-                    start_with_context(context, config)
+                    start_with_context(context, self.app_config.clone())
                         .instrument(tracing::info_span!("node", node_id))
                         .await
                         .context("start supervised node runtime")?,
@@ -267,7 +242,7 @@ fn test_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
     config.node.node_keypair = PathBuf::from("/dev/null");
     config.node.bls_keypair = PathBuf::from("/dev/null");
     config.solana.rpc = "http://127.0.0.1:8899".into();
-    config.solana.start_slot = Some(SlotNumber(1));
+    config.solana.start_slot = None;
     config.https.listen = bind_addr;
     config.http.listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     config.store.path = PathBuf::from("/tmp");

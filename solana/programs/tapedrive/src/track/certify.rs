@@ -44,6 +44,10 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
+    if tape.is_system() {
+        return Err(TapeError::UnexpectedState.into());
+    }
+
     let (tape_address, _) = tape_pda(tape.authority);
     let track_address = track_pda(track.tape, track.track_number).0;
 

@@ -32,7 +32,7 @@ pub fn process_resize_peer_set(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
     let curr = system.current_epoch;
     let next = curr
-        .checked_add(EpochNumber(1))
+        .checked_next()
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     let curr_epoch = curr_epoch_info
@@ -112,7 +112,7 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
 
         let curr = EpochNumber(3);
-        let next = curr.saturating_add(EpochNumber(1));
+        let next = curr.next();
         let system = System {
             committee_size,
             current_epoch: curr,

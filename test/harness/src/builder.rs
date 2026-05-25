@@ -370,6 +370,10 @@ fn seed_fixture(fixture: &ChainFixture, seeded: &SeededWorld) -> Result<()> {
         fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
     }
 
+    for account in &seeded.blacklist_accounts {
+        fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
+    }
+
     Ok(())
 }
 

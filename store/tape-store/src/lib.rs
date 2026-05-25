@@ -133,7 +133,7 @@ mod tests {
     use crate::types::{ObjectInfo, TapeInfo};
     use store_memory::MemoryStore;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, TapeNumber, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;
@@ -166,6 +166,8 @@ mod tests {
         let address = Address::new_unique();
 
         let info = TapeInfo {
+            id: TapeNumber(1),
+            flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
         };

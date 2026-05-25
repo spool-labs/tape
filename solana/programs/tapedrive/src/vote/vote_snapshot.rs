@@ -25,7 +25,7 @@ pub fn process_vote_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .as_account::<System>(&tapedrive::ID)?;
 
     let voting_epoch_id = system.current_epoch;
-    let target_epoch_id = voting_epoch_id.saturating_sub(EpochNumber(1));
+    let target_epoch_id = voting_epoch_id.prev();
 
     let voting_epoch = voting_epoch_info
         .is_writable()?

@@ -141,7 +141,7 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::ObjectInfo;
+    use tape_store::types::{ObjectInfo, SystemObjectKind};
 
     use crate::harness::{NodeHarness, TestContext};
 
@@ -206,9 +206,13 @@ mod tests {
     }
 
     fn snapshot(track_address: Address) -> ObjectInfo {
-        ObjectInfo::Snapshot {
+        ObjectInfo::System {
+            kind: SystemObjectKind::Snapshot {
+                epoch: EpochNumber(2),
+            },
             track_address,
-            epoch: EpochNumber(2),
+            registered_epoch: EpochNumber(2),
+            certified_epoch: Some(EpochNumber(2)),
             slot: SlotNumber(10),
         }
     }

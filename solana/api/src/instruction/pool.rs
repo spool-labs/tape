@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_crypto::address::Address;
+use tape_core::staking::PoolRate;
 use tape_core::types::EpochNumber;
 use tape_core::types::coin::{Coin, TAPE};
 use crate::program::{staking, tapedrive};
@@ -18,11 +19,15 @@ pub struct StakeWithPool {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct RequestStakeUnlock {}
+pub struct RequestStakeUnlock {
+    pub rate: PoolRate,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct UnstakeFromPool {}
+pub struct UnstakeFromPool {
+    pub rate: PoolRate,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -39,8 +44,7 @@ pub fn build_advance_pool_ix(
     pool: Address,
     current_epoch: EpochNumber,
 ) -> Instruction {
-
-    let prev = current_epoch.saturating_sub(EpochNumber(1));
+    let prev = current_epoch.prev();
 
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
@@ -59,6 +63,7 @@ pub fn build_advance_pool_ix(
             AccountMeta::new_readonly(prev_committee_address.into(), false),
             AccountMeta::new(pool.into(), false),
             AccountMeta::new(history_address.into(), false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: AdvancePool {}.to_bytes(),
     }
@@ -104,8 +109,8 @@ pub fn build_request_stake_unlock_ix(
     fee_payer: Address,
     authority: Address,
     pool: Address,
+    pool_rate: PoolRate,
 ) -> Instruction {
-
     let (system_address, _) = system_pda();
     let (stake_address, _) = stake_pda(authority);
     let (history_address, _) = history_pda(pool);
@@ -121,7 +126,7 @@ pub fn build_request_stake_unlock_ix(
             AccountMeta::new(pool.into(), false),
             AccountMeta::new_readonly(history_address.into(), false),
         ],
-        data: RequestStakeUnlock {}.to_bytes(),
+        data: RequestStakeUnlock { rate: pool_rate }.to_bytes(),
     }
 }
 
@@ -130,8 +135,8 @@ pub fn build_unstake_from_pool_ix(
     fee_payer: Address,
     authority: Address,
     pool: Address,
+    pool_rate: PoolRate,
 ) -> Instruction {
-
     let authority_ata        = ata(&authority);
     let (archive_address, _) = archive_pda();
     let (archive_ata, _)     = archive_ata();
@@ -159,7 +164,7 @@ pub fn build_unstake_from_pool_ix(
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(staking::ID, false),
         ],
-        data: UnstakeFromPool {}.to_bytes(),
+        data: UnstakeFromPool { rate: pool_rate }.to_bytes(),
     }
 }
 

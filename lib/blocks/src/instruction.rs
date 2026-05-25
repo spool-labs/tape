@@ -12,6 +12,7 @@ use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
 use bs58::decode as bs58_decode;
 use tape_core::spooler::GroupIndex;
+use tape_core::staking::RateSpan;
 use tape_core::system::BlacklistEntry;
 use tape_core::track::data::{TrackData, TrackDataSlice};
 use tape_core::track::types::CompressedTrackProof;
@@ -116,9 +117,6 @@ pub enum RawInstruction {
     JoinCommittee {
         node: Address,
     },
-    CreateBlacklist {
-        node: Address,
-    },
     AddToBlacklist {
         node: Address,
         entry: BlacklistEntry,
@@ -126,9 +124,6 @@ pub enum RawInstruction {
     RemoveFromBlacklist {
         node: Address,
         track: CompressedTrackProof,
-    },
-    DestroyBlacklist {
-        node: Address,
     },
 }
 
@@ -193,6 +188,8 @@ pub enum ParsedInstruction {
     },
     AdvancePool {
         node: Address,
+        span: RateSpan,
+        track_event: TrackWritten,
         event: PoolAdvanced,
     },
     StakeWithPool {
@@ -263,10 +260,6 @@ pub enum ParsedInstruction {
         node: Address,
         event: NodeJoinedCommittee,
     },
-    CreateBlacklist {
-        node: Address,
-        event: TapeReserved,
-    },
     AddToBlacklist {
         node: Address,
         entry: BlacklistEntry,
@@ -276,10 +269,6 @@ pub enum ParsedInstruction {
         node: Address,
         track: CompressedTrackProof,
         event: TrackDeleted,
-    },
-    DestroyBlacklist {
-        node: Address,
-        event: TapeDestroyed,
     },
 }
 
@@ -484,11 +473,6 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::JoinCommittee { node }))
         }
 
-        TapeInstruction::CreateBlacklist => {
-            let node = get_account(3)?;
-            Ok(Some(RawInstruction::CreateBlacklist { node }))
-        }
-
         TapeInstruction::AddToBlacklist => {
             let args = ix::AddToBlacklist::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("add_to_blacklist: {e:?}")))?;
@@ -509,14 +493,14 @@ pub fn parse_raw_instruction(
             }))
         }
 
-        TapeInstruction::DestroyBlacklist => {
-            let node = get_account(2)?;
-            Ok(Some(RawInstruction::DestroyBlacklist { node }))
-        }
-
         TapeInstruction::AdvancePool => {
+            if !ix_data[1..].is_empty() {
+                return Err(ParseError::Deserialization(
+                    "advance_pool: unexpected instruction data".into(),
+                ));
+            }
             // Account layout from build_advance_pool_ix:
-            // [fee_payer, system, archive, prev_epoch, prev_committee, pool, history]
+            // [fee_payer, system, archive, prev_epoch, prev_committee, pool, history, slot_hashes]
             let node = get_account(5)?;
             Ok(Some(RawInstruction::AdvancePool { node }))
         }

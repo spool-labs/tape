@@ -49,26 +49,18 @@ impl<R: Rpc> RpcClient<R> {
 #[cfg(test)]
 mod tests {
     use crate::RpcClient;
-    use bytemuck::Zeroable;
     use rpc::RpcError;
     use rpc_litesvm::LiteSvmRpc;
-    use tape_api::program::tapedrive::{self, snapshot_tape_pda, SYSTEM_ADDRESS};
+    use tape_api::program::tapedrive::{self, snapshot_tape_pda};
     use tape_api::state::Tape;
-    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
+    use tape_core::types::EpochNumber;
 
     fn client() -> RpcClient<LiteSvmRpc> {
         RpcClient::from_rpc(LiteSvmRpc::new())
     }
 
     fn sample_snapshot_tape(epoch: EpochNumber) -> Tape {
-        Tape {
-            id: TapeNumber(0),
-            authority: SYSTEM_ADDRESS,
-            capacity: StorageUnits(u64::MAX),
-            active_epoch: epoch,
-            expiry_epoch: EpochNumber(u64::MAX),
-            ..Tape::zeroed()
-        }
+        Tape::snapshot(epoch)
     }
 
     #[tokio::test]

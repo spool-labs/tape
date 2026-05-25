@@ -9,22 +9,20 @@ use solana_sdk::signer::Signer;
 use tape_api::dynamic::DynamicState;
 use tape_api::program::{MIN_COMMITTEE_SIZE, MIN_STORAGE_CAPACITY, MIN_STORAGE_PRICE};
 use tape_api::program::tapedrive::{
-    archive_pda, committee_pda, epoch_pda, group_pda, history_pda, node_pda, peer_set_pda,
-    snapshot_tape_pda, system_pda, SYSTEM_ADDRESS,
+    archive_pda, blacklist_pda, committee_pda, epoch_pda, group_pda, history_pda, node_pda,
+    peer_set_pda, snapshot_tape_pda, system_pda,
 };
-use tape_api::state::{Archive, Committee, Epoch, Group, History, Node, PeerSet, System, Tape};
+use tape_api::state::{Archive, Committee, Epoch, Group, Node, PeerSet, System, Tape};
 use tape_core::bls::BlsPrivateKey;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
-use tape_core::staking::{PoolHistory, StakingPool};
+use tape_core::staking::StakingPool;
 use tape_core::system::{
     aggregate_node_preferences, EpochPhase, EpochSchedule, EpochState, Member, NodeMetadata,
     NodePreferences, Peer, Spool,
 };
 use tape_core::types::coin::TAPE;
-use tape_core::types::{
-    EpochNumber, NodeId, ShareAmount, StorageUnits, Tail, TapeNumber, VersionId,
-};
+use tape_core::types::{EpochNumber, NodeId, ShareAmount, StorageUnits, Tail, VersionId};
 use tape_crypto::{Address, Hash};
 use tape_protocol::{EpochBundle, ProtocolState};
 
@@ -50,6 +48,7 @@ pub(crate) struct SeededWorld {
     pub nodes: Vec<HarnessNode>,
     pub node_accounts: Vec<SeedAccount>,
     pub history_accounts: Vec<SeedAccount>,
+    pub blacklist_accounts: Vec<SeedAccount>,
 }
 
 pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
@@ -57,8 +56,8 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
 
     let committee_capacity = committee_capacity(spec);
     let prev_epoch = previous_epoch(spec.epoch);
-    let next_epoch = spec.epoch.saturating_add(EpochNumber(1));
-    let candidate_epoch = next_epoch.saturating_add(EpochNumber(1));
+    let next_epoch = spec.epoch.next();
+    let candidate_epoch = spec.epoch.saturating_add(EpochNumber(2));
 
     let prev = build_epoch_bundle(
         prev_epoch,
@@ -170,14 +169,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
 
     let prev_snapshot_tape = if spec.seed_prev_snapshot_tape && spec.epoch > EpochNumber(1) {
         let (snapshot_address, _) = snapshot_tape_pda(prev_epoch);
-        let tape = Tape {
-            id: TapeNumber(0),
-            authority: SYSTEM_ADDRESS,
-            capacity: StorageUnits(u64::MAX),
-            active_epoch: prev_epoch,
-            expiry_epoch: EpochNumber(u64::MAX),
-            ..Tape::zeroed()
-        };
+        let tape = Tape::snapshot(prev_epoch);
         Some(SeedAccount {
             address: snapshot_address.into(),
             data: tape.pack(),
@@ -189,6 +181,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
     let mut nodes = Vec::with_capacity(spec.nodes.len());
     let mut node_accounts = Vec::with_capacity(spec.nodes.len());
     let mut history_accounts = Vec::with_capacity(spec.nodes.len());
+    let mut blacklist_accounts = Vec::with_capacity(spec.nodes.len());
 
     let current_index = member_index_by_node(&spec.current_committee_nodes);
     let prev_index = member_index_by_node(&spec.prev_committee_nodes);
@@ -199,6 +192,8 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         let node_id = NodeId(index as u64);
         let bls_pubkey = identity.bls_keypair.public_key().expect("bls public key");
         let preferences = node_preferences(node_spec, committee_capacity, spec.current_group_count);
+
+        let rate_span_start = node_spec.latest_advance_epoch.next().min(spec.epoch);
 
         let node = Node {
             id: node_id,
@@ -217,16 +212,15 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             registered_epoch: node_spec.registered_epoch,
             latest_sync_epoch: node_spec.latest_sync_epoch,
             latest_advance_epoch: node_spec.latest_advance_epoch,
+            rate_span_start,
             ..Node::zeroed()
         };
 
         let (history_address, _) = history_pda(identity.node_address.into());
-        let history = History {
-            node: identity.node_address.into(),
-            registered_epoch: node_spec.registered_epoch,
-            latest_epoch: previous_epoch(spec.epoch),
-            inner: PoolHistory::new(),
-        };
+        let history_tape = Tape::history(node_id, node_spec.registered_epoch);
+
+        let (blacklist_address, _) = blacklist_pda(identity.node_address.into());
+        let blacklist_tape = Tape::blacklist(node_id, node_spec.registered_epoch);
 
         nodes.push(HarnessNode::new(
             index,
@@ -245,7 +239,11 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         });
         history_accounts.push(SeedAccount {
             address: history_address.into(),
-            data: history.pack(),
+            data: history_tape.pack(),
+        });
+        blacklist_accounts.push(SeedAccount {
+            address: blacklist_address.into(),
+            data: blacklist_tape.pack(),
         });
     }
 
@@ -308,6 +306,7 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         nodes,
         node_accounts,
         history_accounts,
+        blacklist_accounts,
     })
 }
 

@@ -12,6 +12,8 @@ mod query;
 mod read;
 pub mod write;
 
+pub(crate) use query::query_track_proof;
+
 pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     operation: Option<Operation>,

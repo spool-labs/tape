@@ -1,18 +1,24 @@
 use store::Store;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::{blacklist_pda, history_pda, track_pda};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::system::SpoolStatus;
-use tape_core::track::types::TrackState;
+use tape_core::tape::{
+    blacklist_tape_number, history_tape_number, tape_index, tape_namespace, TapeFlags,
+    TapeNamespace,
+};
 use tape_core::track::data::TrackData;
-use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
+use tape_core::track::types::TrackState;
+use tape_core::types::{EpochNumber, SlotNumber, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
-use tape_store::types::{ObjectInfo, TapeInfo};
+use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
-use crate::features::store::cleanup::{cleanup_track_slices, delete_tape_local, delete_track_local};
+use crate::features::store::cleanup::{
+    cleanup_track_slices, delete_tape_local, delete_track_local,
+};
 
 const DELETE_TAPE_BATCH_SIZE: usize = 100;
 
@@ -47,12 +53,18 @@ pub fn apply_event<Db: Store>(
             invalidate_track(store, *track, *epoch, slot)?;
         }
         ReplayableEvent::ReserveTape {
-            tape, expiry_epoch, ..
+            tape,
+            id,
+            flags,
+            expiry_epoch,
+            ..
         } => {
             store
                 .put_tape(
                     *tape,
                     TapeInfo {
+                        id: *id,
+                        flags: *flags,
                         end_epoch: *expiry_epoch,
                         next_track_number: TrackNumber(0),
                     },
@@ -62,9 +74,35 @@ pub fn apply_event<Db: Store>(
         ReplayableEvent::DestroyTape { tape, .. } => {
             let _ = delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
         }
+        ReplayableEvent::RegisterNode { node, id, .. } => {
+            let (history, _) = history_pda(*node);
+            store
+                .put_tape(
+                    history,
+                    TapeInfo {
+                        id: history_tape_number(*id),
+                        flags: TapeFlags::SYSTEM,
+                        end_epoch: EpochNumber(u64::MAX),
+                        next_track_number: TrackNumber(0),
+                    },
+                )
+                .map_err(store_error)?;
+
+            let (blacklist, _) = blacklist_pda(*node);
+            store
+                .put_tape(
+                    blacklist,
+                    TapeInfo {
+                        id: blacklist_tape_number(*id),
+                        flags: TapeFlags::SYSTEM,
+                        end_epoch: EpochNumber(u64::MAX),
+                        next_track_number: TrackNumber(0),
+                    },
+                )
+                .map_err(store_error)?;
+        }
         ReplayableEvent::AdvanceEpoch { .. }
         | ReplayableEvent::SyncSpool { .. }
-        | ReplayableEvent::RegisterNode { .. }
         | ReplayableEvent::JoinCommittee { .. } => {}
     }
 
@@ -102,17 +140,53 @@ fn put_track_object<Db: Store>(
         .is_certified()
         .then_some(replay.epoch);
 
+    let tape_info = store
+        .get_tape(replay.state.tape)
+        .map_err(store_error)?;
+
+    let object_info = if let Some(tape) = tape_info.filter(|tape| TapeFlags::is_system(tape.flags)) {
+        let kind = system_object_kind(tape.id)?;
+        let (registered_epoch, certified_epoch) = match &kind {
+            SystemObjectKind::Snapshot { epoch } => (*epoch, Some(*epoch)),
+            _ => (replay.epoch, certified_epoch),
+        };
+
+        ObjectInfo::System {
+            kind,
+            track_address: track,
+            registered_epoch,
+            certified_epoch,
+            slot,
+        }
+    } else {
+        ObjectInfo::Valid {
+            track_address: track,
+            registered_epoch: replay.epoch,
+            certified_epoch,
+            slot,
+        }
+    };
+
     store
         .put_object_info(
             track,
-            ObjectInfo::Valid {
-                track_address: track,
-                registered_epoch: replay.epoch,
-                certified_epoch,
-                slot,
-            },
+            object_info,
         )
         .map_err(store_error)
+}
+
+fn system_object_kind(tape_id: TapeNumber) -> Result<SystemObjectKind, NodeError> {
+    match tape_namespace(tape_id) {
+        Some(TapeNamespace::Snapshot) => Ok(SystemObjectKind::Snapshot {
+            epoch: EpochNumber(tape_index(tape_id)),
+        }),
+        Some(TapeNamespace::History) => Ok(SystemObjectKind::History),
+        Some(TapeNamespace::Blacklist) => Ok(SystemObjectKind::Blacklist),
+        _ => Err(NodeError::Store(format!(
+            "unknown system tape namespace for tape id {}",
+            tape_id.0
+        ))),
+    }
 }
 
 fn advance_track_cursor<Db: Store>(
@@ -177,8 +251,7 @@ fn set_certified<Db: Store>(
         registered_epoch,
         slot,
         ..
-    } = info
-    {
+    } = info {
         store
             .put_object_info(
                 track,
@@ -192,6 +265,25 @@ fn set_certified<Db: Store>(
             .map_err(store_error)?;
 
         enqueue_certified_repairs(store, track)?;
+    } else if let ObjectInfo::System {
+        kind,
+        track_address,
+        registered_epoch,
+        slot,
+        ..
+    } = info {
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::System {
+                    kind,
+                    track_address,
+                    registered_epoch,
+                    certified_epoch: Some(epoch),
+                    slot,
+                },
+            )
+            .map_err(store_error)?;
     }
 
     Ok(())
@@ -258,20 +350,22 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use tape_crypto::address::Address;
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
+    use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{
+        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+    };
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
-    use tape_core::system::{SpoolState, SpoolStatus};
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
 
@@ -348,6 +442,8 @@ mod tests {
         let events = vec![
             ReplayableEvent::ReserveTape {
                 tape,
+                id: TapeNumber(1),
+                flags: 0,
                 authority: Address::new_unique(),
                 active_epoch: EpochNumber(6),
                 expiry_epoch: EpochNumber(12),
@@ -364,6 +460,8 @@ mod tests {
         assert_eq!(
             store.get_tape(tape).unwrap(),
             Some(TapeInfo {
+                id: TapeNumber(1),
+                flags: 0,
                 end_epoch: EpochNumber(12),
                 next_track_number: TrackNumber(10),
             })
@@ -547,6 +645,8 @@ mod tests {
             .put_tape(
                 tape,
                 TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
                     end_epoch: EpochNumber(6),
                     next_track_number: TrackNumber(0),
                 },
@@ -556,6 +656,8 @@ mod tests {
             .put_tape(
                 other_tape,
                 TapeInfo {
+                    id: TapeNumber(2),
+                    flags: 0,
                     end_epoch: EpochNumber(7),
                     next_track_number: TrackNumber(0),
                 },

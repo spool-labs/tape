@@ -52,13 +52,13 @@ pub fn current_epoch(system: &System) -> EpochNumber {
 /// Helper: get the next epoch from the System account.
 #[inline(always)]
 pub fn next_epoch(system: &System) -> EpochNumber {
-    system.current_epoch.saturating_add(EpochNumber::one())
+    system.current_epoch.next()
 }
 
 /// Helper: get the previous epoch from the System account.
 #[inline(always)]
 pub fn prev_epoch(system: &System) -> EpochNumber {
-    system.current_epoch.saturating_sub(EpochNumber::one())
+    system.current_epoch.prev()
 }
 
 /// Helper: get the associated token account

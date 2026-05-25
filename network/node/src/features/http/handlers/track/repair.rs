@@ -108,6 +108,7 @@ mod tests {
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_core::snapshot::chunk::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
+    use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -119,7 +120,7 @@ mod tests {
     use tape_protocol::api::{RepairRequest, StripeSubChunkRequest};
     use tape_slicer::{ErasureCoder, Slicer};
     use tape_store::ops::{ObjectInfoOps, SliceOps, TapeOps, TrackDataOps, TrackOps};
-    use tape_store::types::{ObjectInfo, TapeInfo};
+    use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 
     use super::*;
     use crate::features::http::state::AppState;
@@ -181,6 +182,8 @@ mod tests {
             .put_tape(
                 snapshot_tape,
                 TapeInfo {
+                    id: snapshot_tape_number(epoch),
+                    flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
                 },
@@ -209,9 +212,13 @@ mod tests {
         ctx.store
             .put_object_info(
                 track_address,
-                ObjectInfo::Snapshot {
+                ObjectInfo::System {
+                    kind: SystemObjectKind::Snapshot {
+                        epoch,
+                    },
                     track_address,
-                    epoch,
+                    registered_epoch: epoch,
+                    certified_epoch: Some(epoch),
                     slot: SlotNumber(epoch.0),
                 },
             )

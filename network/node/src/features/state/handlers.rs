@@ -99,7 +99,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
 
         state.current.epoch.state.phase = EpochPhase::Closing as u64;
 
-        let next_epoch = epoch.saturating_add(EpochNumber(1));
+        let next_epoch = epoch.next();
         let Some(next) = state.next_epoch.as_mut() else {
             warn!(
                 epoch = epoch.0,
@@ -126,7 +126,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
 
         info!(
             epoch = epoch.0,
-            next_epoch = epoch.saturating_add(EpochNumber(1)).0,
+            next_epoch = epoch.next().0,
             "published committed epoch state"
         );
         Ok(())
@@ -134,8 +134,8 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
 
     pub async fn handle_create_epoch(&self, event: EpochCreated) -> Result<(), NodeError> {
         let mut state = (*self.context.state()).clone();
-        let expected_next = state.epoch().saturating_add(EpochNumber(1));
-        let expected_candidate = expected_next.saturating_add(EpochNumber(1));
+        let expected_next = state.epoch().next();
+        let expected_candidate = state.epoch().saturating_add(EpochNumber(2));
 
         if event.epoch == expected_next {
             if !state
@@ -206,8 +206,8 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         capacity: u64,
     ) -> Result<(), NodeError> {
         let mut state = (*self.context.state()).clone();
-        let expected_next = state.epoch().saturating_add(EpochNumber(1));
-        let expected_candidate = expected_next.saturating_add(EpochNumber(1));
+        let expected_next = state.epoch().next();
+        let expected_candidate = state.epoch().saturating_add(EpochNumber(2));
 
         if epoch == expected_next {
             if state.next_committee.is_none() {
@@ -280,7 +280,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         debug!(node = %event.node, "received join committee");
 
         let mut state = (*self.context.state()).clone();
-        let expected_activation_epoch = state.epoch() + EpochNumber(1);
+        let expected_activation_epoch = state.epoch().next();
 
         if event.activation_epoch != expected_activation_epoch {
             debug!(
@@ -416,12 +416,12 @@ mod tests {
             .expect("submit advance epoch");
 
         handlers
-            .handle_advance_epoch(EPOCH + EpochNumber(1))
+            .handle_advance_epoch(EPOCH.next())
             .await
             .expect("handle advance epoch");
 
         let state = ctx.state();
-        assert_eq!(state.epoch(), EPOCH + EpochNumber(1));
+        assert_eq!(state.epoch(), EPOCH.next());
         assert_eq!(state.phase(), EpochPhase::Sync);
     }
 
@@ -473,4 +473,5 @@ mod tests {
             .expect("handle advance pool");
         assert_eq!(ctx.state().phase(), EpochPhase::Snapshot);
     }
+
 }

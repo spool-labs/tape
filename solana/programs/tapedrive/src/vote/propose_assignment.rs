@@ -32,7 +32,7 @@ pub fn process_propose_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         .as_account::<System>(&tapedrive::ID)?;
 
     let voting_epoch_id = system.current_epoch;
-    let target_epoch_id = voting_epoch_id.saturating_add(EpochNumber(1));
+    let target_epoch_id = voting_epoch_id.next();
 
     let voting_epoch = voting_epoch_info
         .is_epoch(voting_epoch_id)?

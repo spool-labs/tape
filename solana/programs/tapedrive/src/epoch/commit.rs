@@ -30,8 +30,8 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account::<System>(&tapedrive::ID)?;
 
     let curr = system.current_epoch;
-    let next = curr.saturating_add(EpochNumber(1));
-    let prev = curr.saturating_sub(EpochNumber(1));
+    let next = curr.next();
+    let prev = curr.prev();
 
     let curr_epoch = curr_epoch_info
         .is_writable()?
@@ -234,7 +234,7 @@ mod tests {
         let (curr_committee_address, _) = committee_pda(curr);
         let (next_committee_address, _) = committee_pda(next);
         let (peer_set_address, _) = peer_set_pda();
-        let prev = curr.saturating_sub(EpochNumber(1));
+        let prev = curr.prev();
         let (snapshot_tape_address, _) = snapshot_tape_pda(prev);
 
         let env = test_env();
@@ -265,15 +265,7 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let snapshot_tape = Tape {
-            id: TapeNumber(0),
-            authority: SYSTEM_ADDRESS,
-            capacity: StorageUnits(u64::MAX),
-            used: StorageUnits::zero(),
-            active_epoch: prev,
-            expiry_epoch: EpochNumber(u64::MAX),
-            ..Tape::zeroed()
-        };
+        let snapshot_tape = Tape::snapshot(prev);
 
         let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
 
@@ -319,7 +311,7 @@ mod tests {
 
         let curr = EpochNumber(10);
         let next = EpochNumber(11);
-        let prev = curr.saturating_sub(EpochNumber(1));
+        let prev = curr.prev();
 
         let (system_address, _) = system_pda();
         let (curr_epoch_address, _) = epoch_pda(curr);
@@ -357,14 +349,7 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let snapshot_tape = Tape {
-            id: TapeNumber(1),
-            authority: SYSTEM_ADDRESS,
-            capacity: StorageUnits(u64::MAX),
-            active_epoch: prev,
-            expiry_epoch: EpochNumber(u64::MAX),
-            ..Tape::zeroed()
-        };
+        let snapshot_tape = Tape::snapshot(prev);
 
         let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
 

@@ -14,7 +14,8 @@ use tape_api::errors::{ProgramError, TapeError, is_account_state_pending_error};
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_advance_pool_ix, build_create_system_ix, build_expand_system_ix, build_create_archive_ix,
-    build_initialize_mint_ix, build_join_network_ix, build_stake_with_pool_ix,
+    build_initialize_mint_ix, build_join_network_ix,
+    build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;
@@ -261,10 +262,11 @@ impl ChainManager {
     pub async fn advance_pool(&self, authority: Pubkey) -> Result<()> {
         let authority_address = Address::from(authority);
         let (node_address, _) = node_pda(authority_address);
+        let current_epoch = self.rpc.get_system().await?.current_epoch;
         let ix = build_advance_pool_ix(
             self.admin.pubkey().into(),
-            authority_address,
             node_address,
+            current_epoch,
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
 

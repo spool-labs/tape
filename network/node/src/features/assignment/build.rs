@@ -318,7 +318,7 @@ mod tests {
     use tape_api::program::tapedrive::{blacklist_pda, track_pda};
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::TrackNumber;
+    use tape_core::types::{TapeNumber, TrackNumber};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
 
@@ -358,6 +358,8 @@ mod tests {
             .put_tape(
                 blacklist,
                 TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
                     end_epoch,
                     next_track_number: TrackNumber(0),
                 },

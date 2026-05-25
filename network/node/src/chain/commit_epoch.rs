@@ -44,7 +44,7 @@ mod tests {
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
-        let next_epoch = EPOCH.saturating_add(EpochNumber(1));
+        let next_epoch = EPOCH.next();
 
         submit_commit_epoch(&ctx).await.expect("submit commit epoch");
 

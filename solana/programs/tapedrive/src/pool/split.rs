@@ -106,6 +106,7 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     dest_stake.inner     = StakedTape {
         amount,
         activation_epoch: source_stake.inner.activation_epoch,
+        unlock_shares: source_stake.inner.unlock_shares,
         state: source_stake.inner.state,
     };
 
@@ -179,6 +180,7 @@ mod tests {
             inner: StakedTape {
                 amount: TAPE(initial_source_balance),
                 activation_epoch: e0,
+                unlock_shares: ShareAmount::zero(),
                 state: *StakeState::new().set_staked(),
             },
         };
@@ -220,6 +222,7 @@ mod tests {
                         inner: StakedTape {
                             amount: TAPE(initial_source_balance - amount),
                             activation_epoch: e0,
+                            unlock_shares: ShareAmount::zero(),
                             state: *StakeState::new().set_staked(),
                         },
                     }.pack().as_ref()
@@ -233,6 +236,7 @@ mod tests {
                         inner: StakedTape {
                             amount: TAPE(amount),
                             activation_epoch: e0,
+                            unlock_shares: ShareAmount::zero(),
                             state: *StakeState::new().set_staked(),
                         },
                     }.pack().as_ref()

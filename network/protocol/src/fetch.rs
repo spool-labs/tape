@@ -18,11 +18,9 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
         .get_system_with_commitment(commitment)
         .await?;
 
-    let next = system.current_epoch
-        .saturating_add(EpochNumber::one());
-    let candidate = next.saturating_add(EpochNumber::one());
-    let prev = system.current_epoch
-        .saturating_sub(EpochNumber::one());
+    let next = system.current_epoch.next();
+    let candidate = system.current_epoch.saturating_add(EpochNumber(2));
+    let prev = system.current_epoch.prev();
 
     let current_epoch = rpc
         .get_epoch_with_commitment(system.current_epoch, commitment)

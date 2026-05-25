@@ -50,7 +50,7 @@ mod tests {
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
+        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -127,6 +127,8 @@ mod tests {
                 events: vec![
                     ReplayableEvent::ReserveTape {
                         tape,
+                        id: TapeNumber(1),
+                        flags: 0,
                         authority: Address::new_unique(),
                         active_epoch: EpochNumber(6),
                         expiry_epoch: EpochNumber(12),
@@ -141,6 +143,8 @@ mod tests {
         assert_eq!(
             store.get_tape(tape).unwrap(),
             Some(TapeInfo {
+                id: TapeNumber(1),
+                flags: 0,
                 end_epoch: EpochNumber(12),
                 next_track_number: TrackNumber(4),
             })
@@ -174,6 +178,8 @@ mod tests {
                     events: vec![
                         ReplayableEvent::ReserveTape {
                             tape,
+                            id: TapeNumber(2),
+                            flags: 0,
                             authority: Address::new_unique(),
                             active_epoch: EpochNumber(7),
                             expiry_epoch: EpochNumber(13),
@@ -224,6 +230,8 @@ mod tests {
                 events: vec![
                     ReplayableEvent::ReserveTape {
                         tape,
+                        id: TapeNumber(3),
+                        flags: 0,
                         authority: Address::new_unique(),
                         active_epoch: EpochNumber(4),
                         expiry_epoch: EpochNumber(9),

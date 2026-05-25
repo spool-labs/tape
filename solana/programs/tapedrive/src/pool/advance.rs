@@ -1,6 +1,11 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::event::PoolAdvanced;
+use bytemuck::bytes_of;
+use tape_core::track::data::TrackMeta;
+use tape_core::track::types::{TrackKind, TrackState};
+
+use crate::track::helpers::append_track;
 
 pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = AdvancePool::try_from_bytes(data)?;
@@ -12,6 +17,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         prev_committee_info,
         pool_info,
         history_info,
+        slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -25,7 +31,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account::<System>(&tapedrive::ID)?;
 
     let curr = system.current_epoch;
-    let prev = curr.saturating_sub(EpochNumber(1));
+    let prev = curr.prev();
 
     let pool_address: Address = (*pool_info.key).into();
 
@@ -33,11 +39,16 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    // This check must happen before reading previous-epoch accounts so 
-    // the bootstrap epoch can cleanly report AlreadyAdvanced when epoch 0 
+    // This check must happen before reading previous-epoch accounts so
+    // the bootstrap epoch can cleanly report AlreadyAdvanced when epoch 0
     // accounts do not exist.
     if node.latest_advance_epoch >= prev {
         return Err(TapeError::AlreadyAdvanced.into());
+    }
+
+    let closing_span = node.rate_span(pool_address, curr);
+    if !closing_span.is_valid() {
+        return Err(ProgramError::InvalidInstructionData);
     }
 
     let archive = archive_info
@@ -50,7 +61,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account::<Epoch>(&tapedrive::ID)?;
 
     prev_committee_info.is_committee(prev)?;
-    let (prev_committee, prev_members) = 
+    let (prev_committee, prev_members) =
         Committee::read(prev_committee_info, &tapedrive::ID)?;
     if prev_committee.epoch != prev {
         return Err(TapeError::BadEpochId.into());
@@ -73,26 +84,45 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     archive.rewards_paid = next_paid;
 
-    node.pool.advance_epoch(curr, claim)
-        .map_err(|_| TapeError::PoolAccountingFailed)?;
-
-    let new_rate = node.pool.get_current_rate();
-
-    // Update the nodes history with the new exchange rate for this epoch.
     let (history_address, _) = history_pda(pool_address);
     history_info
         .is_writable()?
         .has_address(&history_address.into())?;
 
-    let history = history_info.as_account_mut::<History>(&tapedrive::ID)?;
-    history.inner.push(prev, new_rate);
-    history.latest_epoch = prev;
+    let history_tape = history_info
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
+
+    if !history_tape.is_history_tape(node.id) {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let span_bytes = bytes_of(&closing_span);
+    let meta = TrackMeta {
+        kind: TrackKind::Raw,
+        state: TrackState::Certified,
+        size: StorageUnits::from_bytes(span_bytes.len() as u64),
+        value_hash: closing_span.value_hash(),
+    };
+
+    append_track(
+        system,
+        history_tape,
+        slot_hashes_info,
+        history_address,
+        closing_span.key(),
+        meta,
+    )?;
+
+    node.pool.advance_epoch(curr, claim)
+        .map_err(|_| TapeError::PoolAccountingFailed)?;
 
     node.latest_advance_epoch = prev;
+    node.rate_span_start = curr;
 
     PoolAdvanced {
         node: pool_address,
         epoch: prev,
+        span: closing_span,
     }.log();
 
     Ok(())
@@ -128,6 +158,7 @@ fn compute_member_share(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::account::Account;
     use tape_api::state::Committee;
     use tape_core::staking::StakingPool;
     use tape_test::*;
@@ -140,6 +171,21 @@ mod tests {
         pool.stake = TAPE(stake);
         pool.shares = ShareAmount(stake);
         pool
+    }
+
+    fn slot_hashes_account() -> (Pubkey, Account) {
+        let mut data = vec![0u8; 48];
+        data[0] = 1;
+        (
+            sysvar::slot_hashes::ID,
+            Account {
+                lamports: 1,
+                data,
+                owner: sysvar::ID,
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
     }
 
     fn pack_committee(
@@ -177,6 +223,7 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
+            live_group_count: 1,
             ..System::zeroed()
         };
 
@@ -193,15 +240,14 @@ mod tests {
 
         let node = Node {
             authority: authority.into(),
-            latest_advance_epoch: prev.saturating_sub(EpochNumber(1)), // at-the-edge
+            latest_advance_epoch: prev.prev(), // at-the-edge
             pool: make_test_pool(1_000),
             ..Node::zeroed()
         };
 
-        let mut history = History::zeroed();
-        history.node = node_address;
-
+        let history_tape = Tape::history(node.id, system.current_epoch);
         let instruction = build_advance_pool_ix(fee_payer.into(), node_address, curr);
+        let slot_hashes = slot_hashes_account();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -219,12 +265,14 @@ mod tests {
                 tapedrive::ID,
             ),
             pda(node_address, node.pack(), tapedrive::ID),
-            pda(history_address, history.pack(), tapedrive::ID),
+            pda(history_address, history_tape.pack(), tapedrive::ID),
+            slot_hashes,
         ];
 
         // 300 / 1000 * 1000 = 300, with 10% commission.
         let mut expected_node = node;
         expected_node.latest_advance_epoch = prev;
+        expected_node.rate_span_start = curr;
         expected_node.pool.stake = TAPE(1_270);
         expected_node.pool.rewards = TAPE(270);
         expected_node.pool.commission = TAPE(30);
@@ -274,8 +322,8 @@ mod tests {
             pool: make_test_pool(1_000),
             ..Node::zeroed()
         };
-
         let instruction = build_advance_pool_ix(fee_payer.into(), node_address, curr);
+        let slot_hashes = slot_hashes_account();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -285,6 +333,7 @@ mod tests {
             empty(prev_committee_address),
             pda(node_address, node.pack(), tapedrive::ID),
             empty(history_address),
+            slot_hashes,
         ];
 
         let env = test_env();
@@ -313,6 +362,7 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
+            live_group_count: 1,
             ..System::zeroed()
         };
 
@@ -328,15 +378,14 @@ mod tests {
         };
         let node = Node {
             authority: authority.into(),
-            latest_advance_epoch: prev.saturating_sub(EpochNumber(1)),
+            latest_advance_epoch: prev.prev(),
             pool: make_test_pool(1_000),
             ..Node::zeroed()
         };
 
-        let mut history = History::zeroed();
-        history.node = node_address;
-
+        let history_tape = Tape::history(node.id, system.current_epoch);
         let instruction = build_advance_pool_ix(fee_payer.into(), node_address, curr);
+        let slot_hashes = slot_hashes_account();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -354,11 +403,13 @@ mod tests {
                 tapedrive::ID,
             ),
             pda(node_address, node.pack(), tapedrive::ID),
-            pda(history_address, history.pack(), tapedrive::ID),
+            pda(history_address, history_tape.pack(), tapedrive::ID),
+            slot_hashes,
         ];
 
         let mut expected_node = node;
         expected_node.latest_advance_epoch = prev;
+        expected_node.rate_span_start = curr;
         expected_node.pool.stake = TAPE(1_180);
         expected_node.pool.rewards = TAPE(180);
         expected_node.pool.commission = TAPE(20);
@@ -400,6 +451,7 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
+            live_group_count: 1,
             ..System::zeroed()
         };
 
@@ -420,10 +472,9 @@ mod tests {
             ..Node::zeroed()
         };
 
-        let mut history = History::zeroed();
-        history.node = node_address;
-
+        let history_tape = Tape::history(node.id, system.current_epoch);
         let instruction = build_advance_pool_ix(fee_payer.into(), node_address, curr);
+        let slot_hashes = slot_hashes_account();
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -441,11 +492,13 @@ mod tests {
                 tapedrive::ID,
             ),
             pda(node_address, node.pack(), tapedrive::ID),
-            pda(history_address, history.pack(), tapedrive::ID),
+            pda(history_address, history_tape.pack(), tapedrive::ID),
+            slot_hashes,
         ];
 
         let mut expected_node = node;
         expected_node.latest_advance_epoch = prev;
+        expected_node.rate_span_start = curr;
         expected_node.pool.stake = TAPE(1_270);
         expected_node.pool.rewards = TAPE(270);
         expected_node.pool.commission = TAPE(30);

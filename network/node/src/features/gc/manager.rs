@@ -157,7 +157,7 @@ fn next_pending_epoch<Db: Store>(
     let candidate = match (started, completed) {
         (Some(started), Some(completed)) if started.0 > completed.0 => started,
         (Some(started), None) => started,
-        (_, Some(completed)) => EpochNumber(completed.0.saturating_add(1)),
+        (_, Some(completed)) => completed.next(),
         (None, None) => current_epoch,
     };
 

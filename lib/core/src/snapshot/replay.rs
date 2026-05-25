@@ -19,7 +19,7 @@ use crate::snapshot::error::SnapshotError;
 use crate::track::blob::BlobInfo;
 use crate::spooler::GroupIndex;
 use crate::track::types::CompressedTrack;
-use crate::types::{EpochNumber, SlotNumber, SpoolIndex};
+use crate::types::{EpochNumber, SlotNumber, SpoolIndex, TapeNumber};
 use tape_crypto::address::Address;
 
 /// Wire-format version for the framed snapshot binary.
@@ -76,6 +76,8 @@ pub enum ReplayableEvent {
     /// Tape was reserved.
     ReserveTape {
         tape: Address,
+        id: TapeNumber,
+        flags: u64,
         authority: Address,
         active_epoch: EpochNumber,
         expiry_epoch: EpochNumber,
@@ -91,6 +93,7 @@ pub enum ReplayableEvent {
     RegisterNode {
         authority: Address,
         node: Address,
+        id: crate::types::NodeId,
     },
 
     /// Node joined the next-epoch committee.
@@ -305,6 +308,8 @@ mod tests {
             },
             ReplayableEvent::ReserveTape {
                 tape: Address::from([6u8; 32]),
+                id: TapeNumber(1),
+                flags: 0,
                 authority: Address::from([7u8; 32]),
                 active_epoch: EpochNumber(10),
                 expiry_epoch: EpochNumber(20),
@@ -316,6 +321,7 @@ mod tests {
             ReplayableEvent::RegisterNode {
                 authority: Address::from([9u8; 32]),
                 node: Address::from([10u8; 32]),
+                id: crate::types::NodeId(1),
             },
             ReplayableEvent::JoinCommittee {
                 node: Address::from([11u8; 32]),

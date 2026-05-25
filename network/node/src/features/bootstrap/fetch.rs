@@ -557,7 +557,7 @@ mod tests {
                 epoch,
                 SlotNumber(slot),
                 &ReplayableEvent::AdvanceEpoch {
-                    old_epoch: EpochNumber(epoch.0.saturating_sub(1)),
+                    old_epoch: epoch.prev(),
                     new_epoch: epoch,
                 },
             )

@@ -421,6 +421,8 @@ mod tests {
         let authority = Address::new_unique();
         let event = TapeReserved {
             tape,
+            id: TapeNumber(1),
+            flags: 0,
             authority,
             capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(1),

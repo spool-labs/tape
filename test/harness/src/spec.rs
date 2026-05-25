@@ -60,7 +60,7 @@ impl HarnessNodeSpec {
 }
 
 pub(crate) fn previous_epoch(epoch: EpochNumber) -> EpochNumber {
-    EpochNumber(epoch.0.saturating_sub(1))
+    epoch.prev()
 }
 
 pub(crate) fn phase_to_epoch_state(phase: EpochPhase) -> EpochState {

@@ -41,7 +41,7 @@ where
         .map_err(|error| NodeError::Store(format!("get_bootstrap_target_epoch: {error}")))?;
 
     let start = match cursor {
-        Some(c) => EpochNumber(c.0.saturating_add(1)),
+        Some(c) => c.next(),
         None => FIRST_SNAPSHOT_EPOCH,
     };
 
@@ -116,10 +116,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use bytemuck::Zeroable;
-    use tape_api::program::tapedrive::{self, snapshot_tape_pda, SYSTEM_ADDRESS};
+    use tape_api::program::tapedrive::{self, snapshot_tape_pda};
     use tape_api::state::Tape;
-    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
+    use tape_core::types::EpochNumber;
     use tape_store::ops::MetaOps;
 
     use super::discover_missing_epochs;
@@ -137,14 +136,7 @@ mod tests {
     }
 
     fn write_snapshot_tape(context: &TestContext, epoch: EpochNumber) {
-        let tape = Tape {
-            id: TapeNumber(0),
-            authority: SYSTEM_ADDRESS,
-            capacity: StorageUnits(u64::MAX),
-            active_epoch: epoch,
-            expiry_epoch: EpochNumber(u64::MAX),
-            ..Tape::zeroed()
-        };
+        let tape = Tape::snapshot(epoch);
         let (address, _) = snapshot_tape_pda(epoch);
         context
             .rpc

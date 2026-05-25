@@ -13,7 +13,6 @@ pub const MIN_STORAGE_CAPACITY:   usize = 1 << 30; // 1GiB
 pub const MIN_STORAGE_PRICE:      usize = 1;       // per GiB in TAPE per epoch
 
 pub const FUTURE_EPOCHS:          usize = 256;
-pub const EPOCH_HISTORY:          usize = 256;
 pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
 pub const EPOCH_DURATION:           i64 = 100;  // 100 seconds for local testing (60s testnet, 604800s mainnet)
 

@@ -118,6 +118,7 @@ pub fn build_register_node_ix(
     let (archive_address, _) = archive_pda();
     let (node_address, _) = node_pda(authority);
     let (history_address, _) = history_pda(node_address);
+    let (blacklist_address, _) = blacklist_pda(node_address);
 
     let commission_rate = commission_rate.pack();
 
@@ -131,6 +132,7 @@ pub fn build_register_node_ix(
             AccountMeta::new_readonly(archive_address.into(), false),
             AccountMeta::new(node_address.into(), false),
             AccountMeta::new(history_address.into(), false),
+            AccountMeta::new(blacklist_address.into(), false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
@@ -154,7 +156,7 @@ pub fn build_join_committee_ix(
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
-    let next_epoch = current_epoch.saturating_add(EpochNumber(1));
+    let next_epoch = current_epoch.next();
     let (curr_epoch_address, _) = epoch_pda(current_epoch);
     let (curr_committee_address, _) = committee_pda(current_epoch);
     let (next_committee_address, _) = committee_pda(next_epoch);

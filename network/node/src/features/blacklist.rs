@@ -10,7 +10,7 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Address;
 use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
-use tape_store::types::ObjectInfo;
+use tape_store::types::{ObjectInfo, SystemObjectKind};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -162,16 +162,25 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
         )));
     };
 
-    let ObjectInfo::Valid {
-        track_address,
-        registered_epoch,
-        certified_epoch,
-        ..
-    } = info
-    else {
-        return Err(NodeError::Store(format!(
-            "invalid blacklist object info for {track}"
-        )));
+    let (track_address, registered_epoch, certified_epoch) = match info {
+        ObjectInfo::Valid {
+            track_address,
+            registered_epoch,
+            certified_epoch,
+            ..
+        }
+        | ObjectInfo::System {
+            kind: SystemObjectKind::Blacklist,
+            track_address,
+            registered_epoch,
+            certified_epoch,
+            ..
+        } => (track_address, registered_epoch, certified_epoch),
+        _ => {
+            return Err(NodeError::Store(format!(
+                "invalid blacklist object info for {track}"
+            )))
+        }
     };
 
     if track_address != track {

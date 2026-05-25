@@ -314,18 +314,19 @@ impl From<CleanupStats> for GcSweepStats {
 mod tests {
     use std::collections::HashSet;
 
-    use tape_crypto::address::Address;
     use store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
-use tape_core::types::SpoolIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{
+        EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
+    };
+    use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::{
-        TapeStore,
         ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
-        types::{ObjectInfo, TapeInfo},
+        types::{ObjectInfo, SystemObjectKind, TapeInfo},
+        TapeStore,
     };
 
     use super::sweep_epoch;
@@ -387,6 +388,8 @@ use tape_core::types::SpoolIndex;
             .put_tape(
                 tape,
                 TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
                     end_epoch: EpochNumber(2),
                     next_track_number: TrackNumber(0),
                 },
@@ -449,6 +452,8 @@ use tape_core::types::SpoolIndex;
             .put_tape(
                 tape,
                 TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
                     end_epoch: EpochNumber(10),
                     next_track_number: TrackNumber(0),
                 },
@@ -493,6 +498,8 @@ use tape_core::types::SpoolIndex;
             .put_tape(
                 tape,
                 TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(0),
                 },
@@ -502,9 +509,13 @@ use tape_core::types::SpoolIndex;
         store
             .put_object_info(
                 track,
-                ObjectInfo::Snapshot {
+                ObjectInfo::System {
+                    kind: SystemObjectKind::Snapshot {
+                        epoch: EpochNumber(3),
+                    },
                     track_address: track,
-                    epoch: EpochNumber(3),
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: Some(EpochNumber(3)),
                     slot: SlotNumber(30),
                 },
             )
@@ -519,7 +530,10 @@ use tape_core::types::SpoolIndex;
         assert!(store.get_track(track).unwrap().is_some());
         assert!(matches!(
             store.get_object_info(track).unwrap(),
-            Some(ObjectInfo::Snapshot { .. })
+            Some(ObjectInfo::System {
+                kind: SystemObjectKind::Snapshot { .. },
+                ..
+            })
         ));
         assert!(store.get_slice(spool_id, track).unwrap().is_some());
         assert!(store.has_pending_recovery(spool_id, track).unwrap());
@@ -540,6 +554,8 @@ use tape_core::types::SpoolIndex;
             .put_tape(
                 tape,
                 TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
                     end_epoch: EpochNumber(10),
                     next_track_number: TrackNumber(0),
                 },
@@ -579,6 +595,8 @@ use tape_core::types::SpoolIndex;
             .put_tape(
                 tape,
                 TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
                     end_epoch: EpochNumber(1),
                     next_track_number: TrackNumber(0),
                 },
@@ -622,7 +640,7 @@ use tape_core::types::SpoolIndex;
             .set_spool_state(unowned_spool, SpoolState::new(SpoolStatus::Active, EpochNumber(5)))
             .unwrap();
         store
-            .put_tape(tape, TapeInfo { end_epoch: EpochNumber(20), next_track_number: TrackNumber(0) })
+            .put_tape(tape, TapeInfo { id: TapeNumber(1), flags: 0, end_epoch: EpochNumber(20), next_track_number: TrackNumber(0) })
             .unwrap();
 
         // Stale uncertified: registered epoch 2, current epoch 5 -> age 3 >= threshold 2

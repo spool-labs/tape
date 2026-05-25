@@ -34,10 +34,10 @@ pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     let curr = system.current_epoch;
     let next = curr
-        .checked_add(EpochNumber(1))
+        .checked_next()
         .ok_or(ProgramError::ArithmeticOverflow)?;
     let target = next
-        .checked_add(EpochNumber(1))
+        .checked_next()
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     let curr_epoch = curr_epoch_info

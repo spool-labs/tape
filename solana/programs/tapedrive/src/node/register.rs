@@ -12,6 +12,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         archive_info,
         node_info,
         history_info,
+        blacklist_info,
 
         system_program_info,
         rent_sysvar_info,
@@ -27,6 +28,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let (node_address, _) = node_pda((*authority_info.key).into());
     let (history_address, _) = history_pda(node_address);
+    let (blacklist_address, _) = blacklist_pda(node_address);
 
     node_info
         .is_empty()?
@@ -37,6 +39,11 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_empty()?
         .is_writable()?
         .has_address(&history_address.into())?;
+
+    blacklist_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&blacklist_address.into())?;
 
     let system = system_info
         .is_writable()?
@@ -83,6 +90,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     node.registered_epoch     = current;
     node.latest_sync_epoch    = current;
     node.latest_advance_epoch = current;
+    node.rate_span_start      = current;
 
     node.pool = StakingPool::new(commission_rate);
 
@@ -101,7 +109,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         min_version: system.min_version,
     };
 
-    create_program_account::<History>(
+    create_program_account::<Tape>(
         history_info,
         system_program_info,
         fee_payer_info,
@@ -109,16 +117,21 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &[HISTORY, node_address.as_ref()],
     )?;
 
-    let history = history_info.as_account_mut::<History>(&tapedrive::ID)?;
+    let history_tape = history_info
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
+    *history_tape = Tape::history(node.id, current);
 
-    history.node              = node_address;
-    history.registered_epoch  = node.registered_epoch;
-    history.latest_epoch      = node.latest_advance_epoch;
-    history.inner             = PoolHistory::new();
+    create_program_account::<Tape>(
+        blacklist_info,
+        system_program_info,
+        fee_payer_info,
+        &tapedrive::ID,
+        &[BLACKLIST, node_address.as_ref()],
+    )?;
 
-    // Initial flat rate so stakes that activate immediately have a valid
-    // rate_at(activation_epoch) lookup during unlock.
-    history.inner.push(node.registered_epoch, ExchangeRate::flat());
+    let blacklist_tape = blacklist_info
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
+    *blacklist_tape = Tape::blacklist(node.id, current);
 
     NodeRegistered {
         node: node_address,
@@ -164,6 +177,7 @@ mod tests {
         let (archive_address, _) = archive_pda();
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
+        let (blacklist_address, _) = blacklist_pda(node_address);
 
         let system = System {
             current_epoch: EpochNumber(42),
@@ -183,6 +197,7 @@ mod tests {
             pda(archive_address, archive.pack(), tapedrive::ID),
             empty(node_address),
             empty(history_address),
+            empty(blacklist_address),
 
             system_program(),
             rent_sysvar(),
@@ -221,19 +236,19 @@ mod tests {
                         registered_epoch: system.current_epoch,
                         latest_sync_epoch: system.current_epoch,
                         latest_advance_epoch: system.current_epoch,
+                        rate_span_start: system.current_epoch,
                         ..Node::zeroed()
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&Pubkey::from(history_address)).data({
-                    let mut expected_history = History {
-                        node: node_address,
-                        registered_epoch: system.current_epoch,
-                        latest_epoch: system.current_epoch,
-                        inner: PoolHistory::new(),
-                    };
-                    expected_history.inner.push(system.current_epoch, ExchangeRate::flat());
-                    expected_history
-                }.pack().as_ref()
+                Check::account(&Pubkey::from(history_address)).data(
+                    Tape::history(NodeId::new(0), system.current_epoch)
+                        .pack()
+                        .as_ref()
+                ).build(),
+                Check::account(&Pubkey::from(blacklist_address)).data(
+                    Tape::blacklist(NodeId::new(0), system.current_epoch)
+                        .pack()
+                        .as_ref()
                 ).build(),
             ]
         );
@@ -263,6 +278,7 @@ mod tests {
         let (archive_address, _) = archive_pda();
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
+        let (blacklist_address, _) = blacklist_pda(node_address);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -272,6 +288,7 @@ mod tests {
             pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
             empty(node_address),
             empty(history_address),
+            empty(blacklist_address),
 
             system_program(),
             rent_sysvar(),

@@ -123,6 +123,7 @@ impl<S: Store> EventLogOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::types::NodeId;
     use store_memory::MemoryStore;
     use tape_core::snapshot::replay::ReplayTrack;
     use tape_core::spooler::GroupIndex;
@@ -236,6 +237,7 @@ mod tests {
                 &ReplayableEvent::RegisterNode {
                     authority: [1u8; 32].into(),
                     node: [2u8; 32].into(),
+                    id: NodeId(0),
                 },
             )
             .unwrap();

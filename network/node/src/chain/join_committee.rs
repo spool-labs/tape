@@ -52,7 +52,7 @@ mod tests {
             .await
             .expect("submit join committee");
 
-        let next_epoch = EPOCH.saturating_add(EpochNumber(1));
+        let next_epoch = EPOCH.next();
         let committee = ctx
             .rpc
             .get_committee(next_epoch)

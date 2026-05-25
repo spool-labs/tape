@@ -40,8 +40,8 @@ pub fn build_commit_epoch_ix(
     fee_payer: Address,
     current_epoch: EpochNumber,
 ) -> Instruction {
-    let next_epoch = current_epoch.saturating_add(EpochNumber(1));
-    let prev_epoch = current_epoch.saturating_sub(EpochNumber(1));
+    let next_epoch = current_epoch.next();
+    let prev_epoch = current_epoch.prev();
 
     let (system_address, _) = system_pda();
     let (curr_epoch_address, _) = epoch_pda(current_epoch);
@@ -72,8 +72,8 @@ pub fn build_advance_epoch_ix(
     fee_payer: Address,
     current_epoch: EpochNumber,
 ) -> Instruction {
-    let next_epoch = current_epoch.saturating_add(EpochNumber(1));
-    let target_epoch = next_epoch.saturating_add(EpochNumber(1));
+    let next_epoch = current_epoch.next();
+    let target_epoch = current_epoch.saturating_add(EpochNumber(2));
 
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();

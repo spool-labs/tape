@@ -79,6 +79,7 @@ impl StakeState {
 pub struct StakedTape {
     pub amount: Coin<TAPE>,
     pub activation_epoch: EpochNumber,
+    pub unlock_shares: ShareAmount,
     pub state: StakeState,
 }
 
@@ -87,6 +88,7 @@ impl StakedTape {
         Self {
             amount,
             activation_epoch,
+            unlock_shares: ShareAmount::zero(),
             state: StakeState::new(),
         }
     }
@@ -107,7 +109,12 @@ impl StakedTape {
         self.state.set_withdrawing(epoch);
     }
 
+    pub fn set_unlock_shares(&mut self, shares: ShareAmount) {
+        self.unlock_shares = shares;
+    }
+
     pub fn set_withdrawn(&mut self) {
+        self.unlock_shares = ShareAmount::zero();
         self.state.set_withdrawn();
     }
 }

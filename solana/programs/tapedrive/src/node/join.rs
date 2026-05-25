@@ -30,7 +30,7 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .as_account::<System>(&tapedrive::ID)?;
 
     let curr = system.current_epoch;
-    let next = curr.saturating_add(EpochNumber(1));
+    let next = curr.next();
 
     let curr_epoch = curr_epoch_info
         .is_epoch(curr)?
@@ -93,7 +93,7 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     // epoch.
     let in_current_committee = curr_members.iter().any(|m| m.node == node_address);
     if in_current_committee
-        && node.latest_advance_epoch < curr.saturating_sub(EpochNumber(1))
+        && node.latest_advance_epoch < curr.prev()
     {
         return Err(TapeError::NodeStale.into());
     }
@@ -222,7 +222,7 @@ mod tests {
                 shares: ShareAmount(1_000),
                 ..StakingPool::zeroed()
             },
-            latest_advance_epoch: curr.saturating_sub(EpochNumber(1)),
+            latest_advance_epoch: curr.prev(),
             preferences,
             ..Node::zeroed()
         };

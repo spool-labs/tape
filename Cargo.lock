@@ -8978,6 +8978,7 @@ name = "tape-e2e-simnet"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "peer-http",
  "peer-manager",
  "peer-tls",

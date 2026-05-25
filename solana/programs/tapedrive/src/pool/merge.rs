@@ -156,6 +156,7 @@ mod tests {
             inner: StakedTape {
                 amount: TAPE(amount),
                 activation_epoch: e0,
+                unlock_shares: ShareAmount::zero(),
                 state: *StakeState::new().set_staked(),
             },
         };
@@ -166,6 +167,7 @@ mod tests {
             inner: StakedTape {
                 amount: TAPE(initial_dest_balance),
                 activation_epoch: e0,
+                unlock_shares: ShareAmount::zero(),
                 state: *StakeState::new().set_staked(),
             },
         };
@@ -217,6 +219,7 @@ mod tests {
                         inner: StakedTape {
                             amount: TAPE(initial_dest_balance + amount),
                             activation_epoch: e0,
+                            unlock_shares: ShareAmount::zero(),
                             state: *StakeState::new().set_staked(),
                         },
                     }.pack().as_ref()

@@ -150,7 +150,7 @@ fn preflight(
 
     if tracks_needed > available_tracks {
         let chunk_count = tracks_needed
-            .checked_sub(TrackNumber(1))
+            .checked_prev()
             .ok_or_else(|| stream_error(StreamError::InvalidInput("stream needs no data tracks".into())))?;
 
         return Err(stream_error(StreamError::InsufficientTrackSlots {
@@ -222,7 +222,7 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     let result = async {
         validate_stream_size(size).map_err(stream_error)?;
         let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
-        let tracks_needed = chunk_count.checked_add(TrackNumber(1)).ok_or_else(|| {
+        let tracks_needed = chunk_count.checked_next().ok_or_else(|| {
             stream_error(StreamError::InvalidInput("stream has too many chunks".into()))
         })?;
 

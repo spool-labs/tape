@@ -23,6 +23,10 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
+    if tape.is_system() {
+        return Err(TapeError::UnexpectedState.into());
+    }
+
     let (tape_address, _) = tape_pda(tape.authority);
 
     let proof = args.track;

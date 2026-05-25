@@ -1,6 +1,6 @@
 use tape_crypto::address::Address;
 use tape_solana::*;
-use tape_core::staking::StakingPool;
+use tape_core::staking::{RateSpan, StakingPool};
 use tape_core::system::{NodeMetadata, NodePreferences};
 use tape_core::types::EpochNumber;
 use tape_core::types::NodeId;
@@ -34,7 +34,20 @@ pub struct Node {
 
     /// The last epoch this node's pool was advanced via AdvancePool.
     pub latest_advance_epoch: EpochNumber,
+
+    /// First epoch covered by the current open pool rate span.
+    pub rate_span_start: EpochNumber,
 }
 
+impl Node {
+    pub fn rate_span(&self, address: Address, current_epoch: EpochNumber) -> RateSpan {
+        RateSpan {
+            node: address,
+            start_epoch: self.rate_span_start,
+            end_epoch: current_epoch,
+            rate: self.pool.get_current_rate(),
+        }
+    }
+}
 
 tape_solana::state!(AccountType, Node);

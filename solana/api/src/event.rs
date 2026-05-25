@@ -2,8 +2,9 @@ use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use tape_core::bls::BlsPubkey;
 use tape_core::spooler::GroupIndex;
+use tape_core::staking::RateSpan;
 use tape_core::system::NodePreferences;
-use tape_core::types::{EpochNumber, NodeId, StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, NodeId, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
@@ -140,6 +141,12 @@ pub struct TapeReserved {
     /// Tape account address
     pub tape: Address,
 
+    /// Unique tape identifier.
+    pub id: TapeNumber,
+
+    /// Tape behavior flags.
+    pub flags: u64,
+
     /// Owner who reserved
     pub authority: Address,
 
@@ -243,6 +250,9 @@ pub struct PoolAdvanced {
 
     /// Previous epoch absorbed by this advance
     pub epoch: EpochNumber,
+
+    /// Closed rate span written to the node history tape.
+    pub span: RateSpan,
 }
 
 tape_solana::event!(EventType, PoolAdvanced);

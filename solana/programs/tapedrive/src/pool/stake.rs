@@ -56,7 +56,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .assert(|t| t.owner() == *authority_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS.into())?;
 
-    let prev = system.current_epoch.saturating_sub(EpochNumber(1));
+    let prev = system.current_epoch.prev();
     if node.latest_advance_epoch < prev {
         return Err(TapeError::NodeStale.into());
     }
@@ -176,8 +176,8 @@ mod tests {
         };
 
         let e0: EpochNumber = current;
-        let e1: EpochNumber = e0 + EpochNumber(1);
-        let e2: EpochNumber = e1 + EpochNumber(1);
+        let e1: EpochNumber = e0.next();
+        let e2: EpochNumber = e0.saturating_add(EpochNumber(2));
 
         let mut node = Node::zeroed();
         node.id = NodeId(4);
@@ -222,6 +222,7 @@ mod tests {
                         inner: StakedTape {
                             amount: amount.into(),
                             activation_epoch: e2,
+                            unlock_shares: ShareAmount::zero(),
                             state: *StakeState::new().set_staked(),
                         },
                     }.pack().as_ref()
@@ -308,6 +309,7 @@ mod tests {
                         inner: StakedTape {
                             amount: amount.into(),
                             activation_epoch: current,
+                            unlock_shares: ShareAmount::zero(),
                             state: *StakeState::new().set_staked(),
                         },
                     }.pack().as_ref()

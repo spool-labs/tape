@@ -153,13 +153,13 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let pending_leaf_count = pending_tracks
         .iter()
-        .map(|(_, track)| track.track_number.0.saturating_add(1) as usize)
+        .map(|(_, track)| track.track_number.next().as_usize())
         .max()
         .unwrap_or(0);
 
     let leaf_count = (tape.next_track_number.0 as usize)
         .max(pending_leaf_count)
-        .max(track.track_number.0.saturating_add(1) as usize);
+        .max(track.track_number.next().as_usize());
 
     let track_index = track.track_number.0 as usize;
     if leaf_count == 0

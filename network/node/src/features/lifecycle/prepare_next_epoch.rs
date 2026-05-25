@@ -35,8 +35,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    let next_epoch = epoch.saturating_add(EpochNumber(1));
-    let candidate_epoch = next_epoch.saturating_add(EpochNumber(1));
+    let next_epoch = epoch.next();
+    let candidate_epoch = epoch.saturating_add(EpochNumber(2));
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {

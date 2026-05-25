@@ -132,9 +132,8 @@ fn active_track_footprint<Db: Store>(
     target_epoch: EpochNumber,
 ) -> Result<Option<ActiveTrackFootprint>, AssignmentSizeError> {
 
-    // Only ObjectInfo::Valid is accounted user data. System-owned snapshot
-    // tracks use ObjectInfo::Snapshot so repair/GC can treat them as live
-    // without entering assignment sizing.
+    // Only ObjectInfo::Valid is accounted user data. System-owned tracks are
+    // kept live for repair/GC without entering assignment sizing.
     let info = store
         .get_object_info(track)
         .map_err(store_error)?;
@@ -294,7 +293,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
@@ -307,6 +306,8 @@ mod tests {
 
     fn tape_info(end_epoch: EpochNumber) -> TapeInfo {
         TapeInfo {
+            id: TapeNumber(1),
+            flags: 0,
             end_epoch,
             next_track_number: TrackNumber(0),
         }

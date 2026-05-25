@@ -7,7 +7,7 @@ use rpc::{Rpc, RpcError};
 
 use tape_api::dynamic::DynamicState;
 use tape_api::state::{
-    AccountType, Archive, Committee, Epoch, Group, History, Node, PeerSet, Stake, System, Tape,
+    AccountType, Archive, Committee, Epoch, Group, Node, PeerSet, Stake, System, Tape,
 };
 use tape_api::program::tapedrive::{
     self, SYSTEM_ADDRESS, ARCHIVE_ADDRESS, PEER_SET_ADDRESS,
@@ -377,6 +377,14 @@ impl<R: Rpc> RpcClient<R> {
         result
     }
 
+    /// Fetch a Node account by its PDA address directly.
+    pub async fn get_node_by_address(&self, address: &Address) -> Result<Node, RpcError> {
+        let account = self.rpc().get_account(address).await?;
+        Node::unpack_with_discriminator(&account.data)
+            .map(|n| *n)
+            .map_err(|e| RpcError::Deserialization(e.to_string()))
+    }
+
     /// Fetch a Stake account
     ///
     /// # Arguments
@@ -436,19 +444,19 @@ impl<R: Rpc> RpcClient<R> {
         result
     }
 
-    /// Fetch a History account for a node
+    /// Fetch the history Tape account for a node.
     ///
     /// # Arguments
     /// * `node` - The node public key
-    pub async fn get_history(&self, node: &Address) -> Result<History, RpcError> {
+    pub async fn get_history(&self, node: &Address) -> Result<Tape, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
             let (address, _bump) = history_pda(*node);
             let account = self.rpc().get_account(&address).await?;
-            History::unpack_with_discriminator(&account.data)
-                .map(|h| *h)
+            Tape::unpack_with_discriminator(&account.data)
+                .map(|t| *t)
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;

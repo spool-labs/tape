@@ -197,6 +197,7 @@ impl<const N: usize> StakingPool<N> {
         Ok(StakedTape {
             activation_epoch,
             amount: stake_amount,
+            unlock_shares: ShareAmount::zero(),
             state,
         })
     }
@@ -261,8 +262,6 @@ impl<const N: usize> StakingPool<N> {
 
         let withdraw_epoch = current_epoch + EpochNumber(2);
 
-        stake.set_withdrawing(withdraw_epoch);
-
         // Calculate the shares corresponding to this stake at activation rate
         let shares : ShareAmount = stake_activation_rate
             .convert_to_other_amount(stake.amount.into())
@@ -275,6 +274,9 @@ impl<const N: usize> StakingPool<N> {
         self.schedule
             .unstake(withdraw_epoch, shares)
             .map_err(|_| PoolError::ScheduleFailed)?;
+
+        stake.set_withdrawing(withdraw_epoch);
+        stake.set_unlock_shares(shares);
 
         Ok(withdraw_epoch)
     }
@@ -456,6 +458,7 @@ mod tests {
         let mut s = StakedTape {
             amount: tape(0),
             activation_epoch: epoch(2),
+            unlock_shares: ShareAmount::zero(),
             state: StakeState::new(),
         };
 

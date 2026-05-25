@@ -137,6 +137,42 @@ macro_rules! define_u64_type {
                 $type_name(self.0.saturating_mul(rhs.0))
             }
 
+            /// Minimum of two values.
+            #[inline]
+            pub fn min(&self, rhs: Self) -> Self {
+                if *self <= rhs { *self } else { rhs }
+            }
+
+            /// Maximum of two values.
+            #[inline]
+            pub fn max(&self, rhs: Self) -> Self {
+                if *self >= rhs { *self } else { rhs }
+            }
+
+            /// Next value, returning None on overflow.
+            #[inline]
+            pub fn checked_next(&self) -> Option<Self> {
+                self.checked_add($type_name(1))
+            }
+
+            /// Previous value, returning None on underflow.
+            #[inline]
+            pub fn checked_prev(&self) -> Option<Self> {
+                self.checked_sub($type_name(1))
+            }
+
+            /// Next value, saturating at u64::MAX.
+            #[inline]
+            pub fn next(&self) -> Self {
+                self.saturating_add($type_name(1))
+            }
+
+            /// Previous value, saturating at 0.
+            #[inline]
+            pub fn prev(&self) -> Self {
+                self.saturating_sub($type_name(1))
+            }
+
             /// Increments the by 1, saturating at u64::MAX.
             #[inline]
             pub fn increment(&mut self) {
@@ -256,5 +292,22 @@ mod tests {
         assert_eq!(u64::from(v), 99_000);
         assert_eq!(format!("{}", v), "tape:99000");
         assert_eq!(TapeNumber::default(), TapeNumber(0));
+    }
+
+    #[test]
+    fn test_order_and_step_helpers() {
+        let low = TapeNumber::new(3);
+        let high = TapeNumber::new(9);
+
+        assert_eq!(low.min(high), low);
+        assert_eq!(low.max(high), high);
+        assert_eq!(low.checked_next(), Some(TapeNumber::new(4)));
+        assert_eq!(low.checked_prev(), Some(TapeNumber::new(2)));
+        assert_eq!(low.next(), TapeNumber::new(4));
+        assert_eq!(low.prev(), TapeNumber::new(2));
+        assert_eq!(TapeNumber::zero().checked_prev(), None);
+        assert_eq!(TapeNumber::zero().prev(), TapeNumber::zero());
+        assert_eq!(TapeNumber::new(u64::MAX).checked_next(), None);
+        assert_eq!(TapeNumber::new(u64::MAX).next(), TapeNumber::new(u64::MAX));
     }
 }

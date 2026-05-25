@@ -40,8 +40,8 @@ pub fn build_resize_committee_ix(
     current_epoch: EpochNumber,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let next_epoch = current_epoch.saturating_add(EpochNumber(1));
-    let target_epoch = next_epoch.saturating_add(EpochNumber(1));
+    let next_epoch = current_epoch.next();
+    let target_epoch = current_epoch.saturating_add(EpochNumber(2));
     let (current_epoch_address, _) = epoch_pda(current_epoch);
     let (next_epoch_address, _) = epoch_pda(next_epoch);
     let (target_epoch_address, _) = epoch_pda(target_epoch);

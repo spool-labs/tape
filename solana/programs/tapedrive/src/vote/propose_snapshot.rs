@@ -32,7 +32,7 @@ pub fn process_propose_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .as_account::<System>(&tapedrive::ID)?;
 
     let voting_epoch_id = system.current_epoch;
-    let target_epoch_id = voting_epoch_id.saturating_sub(EpochNumber(1));
+    let target_epoch_id = voting_epoch_id.prev();
 
     let voting_epoch = voting_epoch_info
         .is_epoch(voting_epoch_id)?
