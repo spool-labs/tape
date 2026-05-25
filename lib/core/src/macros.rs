@@ -83,6 +83,12 @@ macro_rules! define_u64_type {
                 self.0 as usize
             }
 
+            /// Fallibly converts the value to usize.
+            #[inline]
+            pub fn try_as_usize(&self) -> Result<usize, core::num::TryFromIntError> {
+                usize::try_from(self.0)
+            }
+
             /// Converts the value to u32.
             #[inline]
             pub fn as_u32(&self) -> u32 {

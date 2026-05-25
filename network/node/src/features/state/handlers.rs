@@ -20,6 +20,7 @@ use tracing::{debug, info, warn};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::state::events::apply_join_committee_event;
+use crate::features::vote::all_vote_groups_signed;
 
 pub struct ProtocolStateHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -302,9 +303,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     }
 
     pub async fn handle_snapshot_vote(&self, event: VoteRecorded) -> Result<(), NodeError> {
-        if event.kind != VoteKind::Snapshot as u64
-            || u64::from_le_bytes(event.signed_groups) != u64::from_le_bytes(event.total_groups)
-        {
+        if event.kind != VoteKind::Snapshot as u64 || !all_vote_groups_signed(&event) {
             return Ok(());
         }
 
@@ -329,9 +328,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     }
 
     pub async fn handle_assignment_vote(&self, event: VoteRecorded) -> Result<(), NodeError> {
-        if event.kind != VoteKind::Assignment as u64
-            || u64::from_le_bytes(event.signed_groups) != u64::from_le_bytes(event.total_groups)
-        {
+        if event.kind != VoteKind::Assignment as u64 || !all_vote_groups_signed(&event) {
             return Ok(());
         }
 

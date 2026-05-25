@@ -26,7 +26,7 @@ use tape_crypto::hash::hash as hash_bytes;
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 use tape_crypto::Address;
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 use tape_slicer::{
     num_stripes, snapshot_max_segment_bytes, snapshot_outer_k, ErasureCoder, OuterCoder, Slicer,
 };
@@ -71,6 +71,7 @@ pub struct SnapshotTrack {
 /// artifacts. Returns `None` if this node is not a current committee voter.
 pub async fn build_snapshot<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: Arc<ProtocolState>,
     epoch: EpochNumber,
     cancel: &CancellationToken,
 ) -> Result<Option<SnapshotCandidate>, NodeError>
@@ -80,7 +81,8 @@ where
     Blockchain: Rpc + 'static,
 {
     let owned_ctx = ctx.clone();
-    let task = tokio::task::spawn_blocking(move || build_snapshot_blocking(&owned_ctx, epoch));
+    let task =
+        tokio::task::spawn_blocking(move || build_snapshot_blocking(&owned_ctx, &state, epoch));
 
     tokio::select! {
         result = task => result
@@ -92,6 +94,7 @@ where
 
 fn build_snapshot_blocking<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     epoch: EpochNumber,
 ) -> Result<Option<SnapshotCandidate>, NodeError>
 where
@@ -99,7 +102,6 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let state = ctx.state();
     let me = ctx.node_address();
 
     if state.find_member(me).is_none() {
@@ -114,6 +116,7 @@ where
     let voting_epoch = state.epoch();
     let total_groups = usize::try_from(state.current.epoch.total_groups)
         .map_err(|_| NodeError::Store("snapshot total_groups overflow".into()))?;
+
     let outer_k = snapshot_outer_k(total_groups);
     if outer_k == 0 {
         return Err(NodeError::Store("snapshot total_groups must be non-zero".into()));
@@ -167,10 +170,11 @@ where
         let chunk = ChunkNumber(chunk_index as u64);
 
         for (group_index, symbol) in symbols.iter().enumerate() {
+
             let group = GroupIndex(group_index as u64);
             let built = encode_chunk(epoch, group, chunk, symbol)?;
-            let track_number =
-                TrackNumber((chunk_index as u64) * (total_groups as u64) + group.0);
+            let track_number = TrackNumber((chunk_index as u64) * (total_groups as u64) + group.0);
+
             let track = CompressedTrack {
                 tape: snapshot_tape,
                 track_number,
@@ -186,10 +190,13 @@ where
                 NodeError::Store(format!("snapshot tape write_track: {error:?}"))
             })?;
 
-            if let Some((spool_index, bitmap_index)) = our_spools.iter().find_map(|spool| {
-                (GroupIndex::containing(*spool) == group)
-                    .then(|| group.position_of(*spool).map(|position| (*spool, position)))
-                    .flatten()
+            if let Some((spool_index, bitmap_index)) = our_spools.iter().find_map(|&spool| {
+                if GroupIndex::containing(spool) != group {
+                    return None;
+                }
+
+                let bitmap_index = group.position_of(spool)?;
+                Some((spool, bitmap_index))
             }) {
                 let artifact = SnapshotArtifact {
                     spool_index,

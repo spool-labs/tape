@@ -11,7 +11,7 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::EpochNumber;
 use tape_crypto::{Address, Hash};
 use tape_protocol::api::GetTrackDataReq;
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 use tape_retry::RetryConfig;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -31,6 +31,7 @@ use crate::features::assignment::submit::{
 use crate::features::assignment::vote::create_assignment_votes;
 use crate::features::blacklist::decode_blacklist_entry;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::vote::all_vote_groups_signed;
 
 const ASSIGNMENT_HEARTBEAT: Duration = Duration::from_secs(30);
 const BLACKLIST_BATCH: usize = 256;
@@ -86,8 +87,31 @@ where
         for ix in &block.instructions {
             match ix {
                 ParsedInstruction::VoteAssignment { event, .. } => {
-                    if is_landed_assignment_vote(event) {
-                        self.on_assignment_canonical(event.target_epoch, event.hash).await?;
+
+                    if event.kind != VoteKind::Assignment as u64 {
+                        continue;
+                    }
+
+                    if all_vote_groups_signed(event) {
+
+                        let state = self.context.state();
+                        let state = if state.epoch() >= event.voting_epoch {
+                            state
+                        } else {
+                            self.context.state
+                                .wait_for_epoch(event.voting_epoch, &self.cancel).await?
+                        };
+
+                        if !validate_assignment_state(
+                            state.as_ref(),
+                            event.voting_epoch,
+                            event.target_epoch,
+                        ) {
+                            continue;
+                        }
+
+                        self.on_assignment_canonical(state, event.target_epoch, event.hash)
+                            .await?;
                     }
                 }
                 ParsedInstruction::FinalizeGroup { event, .. } => {
@@ -106,35 +130,30 @@ where
 
     async fn on_heartbeat(&self) -> Result<(), NodeError> {
         let state = self.context.state();
-        if state.phase() != EpochPhase::Closing {
-            return Ok(());
-        }
 
-        let Some(next_epoch) = state.next_epoch.as_ref() else {
+        let Some(target_epoch) = heartbeat_assignment_target(state.as_ref()) else {
             return Ok(());
         };
-        let target_epoch = next_epoch.id;
 
         if let Some(hash) = canonical_assignment_hash(&state, target_epoch) {
-            drop(state);
-            self.on_assignment_canonical(target_epoch, hash).await?;
+            self.on_assignment_canonical(state, target_epoch, hash).await?;
             return Ok(());
         }
 
-        drop(state);
-        let Some(candidate) = self.build_candidate().await? else {
+        let Some(candidate) = self.build_candidate(state.clone()).await? else {
             return Ok(());
         };
 
-        self.run_vote_round(&candidate).await
+        self.run_vote_round(state, &candidate).await
     }
 
     async fn on_assignment_canonical(
         &self,
+        state: Arc<ProtocolState>,
         epoch: EpochNumber,
         hash: Hash,
     ) -> Result<(), NodeError> {
-        let Some(candidate) = self.build_candidate().await? else {
+        let Some(candidate) = self.build_candidate(state).await? else {
             return Ok(());
         };
 
@@ -152,16 +171,18 @@ where
         submit_assignment_finalization(&self.context, &candidate, &self.cancel).await
     }
 
-    async fn build_candidate(&self) -> Result<Option<AssignmentCandidate>, NodeError> {
-        if !self.sync_blacklists().await? {
+    async fn build_candidate(
+        &self,
+        state: Arc<ProtocolState>,
+    ) -> Result<Option<AssignmentCandidate>, NodeError> {
+        if !self.sync_blacklists(state.as_ref()).await? {
             return Ok(None);
         }
 
-        build_assignment(&self.context, &self.cancel).await
+        build_assignment(&self.context, state, &self.cancel).await
     }
 
-    async fn sync_blacklists(&self) -> Result<bool, NodeError> {
-        let state = self.context.state();
+    async fn sync_blacklists(&self, state: &ProtocolState) -> Result<bool, NodeError> {
         let Some(next_epoch) = state.next_epoch.as_ref() else {
             return Ok(true);
         };
@@ -171,7 +192,6 @@ where
         let target_epoch = next_epoch.id;
         let voting_epoch = state.epoch();
         let members = next_committee.clone();
-        drop(state);
 
         let mut complete = true;
         for member in members {
@@ -216,7 +236,10 @@ where
                         continue;
                     }
 
-                    match self.fetch_entry(blacklist, track_address, track).await? {
+                    match self
+                        .fetch_entry(state, blacklist, track_address, track)
+                        .await?
+                    {
                         Some(data) => {
                             self.context
                                 .store
@@ -273,11 +296,12 @@ where
 
     async fn fetch_entry(
         &self,
+        state: &ProtocolState,
         blacklist: Address,
         track_address: Address,
         track: &CompressedTrack,
     ) -> Result<Option<TrackData>, NodeError> {
-        let peers = self.context.state().group_peers(track.group);
+        let peers = state.group_peers(track.group);
         if peers.is_empty() {
             return Ok(None);
         }
@@ -317,17 +341,19 @@ where
         Ok(None)
     }
 
-    async fn run_vote_round(&self, candidate: &AssignmentCandidate) -> Result<(), NodeError> {
+    async fn run_vote_round(
+        &self,
+        state: Arc<ProtocolState>,
+        candidate: &AssignmentCandidate,
+    ) -> Result<(), NodeError> {
+
         submit_assignment_proposal(&self.context, candidate, &self.cancel).await?;
-        create_assignment_votes(&self.context, candidate, &self.cancel).await?;
-        fanout_assignment_votes(&self.context, candidate, &self.cancel).await?;
-        submit_ready_assignment_votes(&self.context, candidate, &self.cancel).await?;
+        create_assignment_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
+        fanout_assignment_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
+        submit_ready_assignment_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
+
         Ok(())
     }
-}
-
-fn store_error(label: &'static str) -> impl FnOnce(tape_store::error::TapeStoreError) -> NodeError {
-    move |error| NodeError::Store(format!("{label}: {error}"))
 }
 
 fn canonical_assignment_hash(
@@ -338,10 +364,43 @@ fn canonical_assignment_hash(
     if next_epoch.id != target_epoch || !next_epoch.has_assignment_hash() {
         return None;
     }
+
     Some(next_epoch.assignment_hash)
 }
 
-fn is_landed_assignment_vote(event: &tape_api::event::VoteRecorded) -> bool {
-    event.kind == VoteKind::Assignment as u64
-        && u64::from_le_bytes(event.signed_groups) == u64::from_le_bytes(event.total_groups)
+fn heartbeat_assignment_target(state: &ProtocolState) -> Option<EpochNumber> {
+    let target_epoch = state.next_epoch.as_ref()?.id;
+    if !validate_assignment_state(state, state.epoch(), target_epoch) {
+        return None;
+    }
+
+    Some(target_epoch)
+}
+
+fn validate_assignment_state(
+    state: &ProtocolState,
+    voting_epoch: EpochNumber,
+    target_epoch: EpochNumber,
+) -> bool {
+    if state.epoch() != voting_epoch {
+        return false;
+    }
+
+    if state.phase() != EpochPhase::Closing {
+        return false;
+    }
+
+    let Some(next_epoch) = state.next_epoch.as_ref() else {
+        return false;
+    };
+
+    if next_epoch.id != target_epoch {
+        return false;
+    }
+
+    true
+}
+
+fn store_error(label: &'static str) -> impl FnOnce(tape_store::error::TapeStoreError) -> NodeError {
+    move |error| NodeError::Store(format!("{label}: {error}"))
 }

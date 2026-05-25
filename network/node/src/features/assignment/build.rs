@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_core::cert::{
     AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT, hash_assignment_group_payload,
 };
@@ -43,6 +44,7 @@ pub struct GroupCandidate {
 // Build on a blocking worker so assignment work does not pin the async runtime.
 pub async fn build_assignment<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: Arc<ProtocolState>,
     cancel: &CancellationToken,
 ) -> Result<Option<AssignmentCandidate>, NodeError>
 where
@@ -50,7 +52,6 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let state = ctx.state();
     let store = ctx.store.clone();
     let task =
         tokio::task::spawn_blocking(move || build_assignment_blocking(store.as_ref(), &state));
@@ -74,6 +75,9 @@ fn build_assignment_blocking<Db: Store>(
     let Some(next_committee) = state.next_committee.as_deref() else {
         return Ok(None);
     };
+    if next_committee.len() < MIN_COMMITTEE_SIZE {
+        return Ok(None);
+    }
 
     let target_groups = usize::try_from(state.system.target_group_count)
         .map_err(|_| NodeError::Store("assignment target_group_count overflow".into()))?;

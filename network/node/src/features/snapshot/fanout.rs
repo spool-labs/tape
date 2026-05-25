@@ -7,7 +7,7 @@ use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::erasure::GROUP_SIZE;
 use tape_protocol::api::VoteReq;
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::VoteOps;
 use tokio_util::sync::CancellationToken;
 use tracing::trace;
@@ -20,6 +20,7 @@ use crate::features::vote::{group_peers_without, member_groups};
 
 pub async fn fanout_snapshot_votes<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     candidate: &SnapshotCandidate,
     cancel: &CancellationToken,
 ) -> Result<(), NodeError>
@@ -29,7 +30,7 @@ where
     Blockchain: Rpc + 'static,
 {
     match cancel
-        .run_until_cancelled(fanout_snapshot_inner(ctx, candidate))
+        .run_until_cancelled(fanout_snapshot_inner(ctx, state, candidate))
         .await
     {
         Some(result) => result,
@@ -39,6 +40,7 @@ where
 
 async fn fanout_snapshot_inner<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     candidate: &SnapshotCandidate,
 ) -> Result<(), NodeError>
 where
@@ -46,7 +48,6 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let state = ctx.state();
     let me = ctx.node_address();
     if state.find_member(me).is_none() {
         return Ok(());

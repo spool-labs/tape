@@ -9059,6 +9059,7 @@ dependencies = [
  "serde_yaml",
  "tape-admin",
  "tape-cli-common",
+ "tape-core",
  "tape-protocol",
  "tempfile",
  "thiserror 2.0.18",

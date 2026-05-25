@@ -9,7 +9,7 @@ use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::SpoolBitmap;
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::VoteOps;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -36,7 +36,11 @@ where
         return Ok(());
     }
 
-    let outcome = submit_if_at_tip(&ctx.ingest, submit_propose_snapshot(ctx, candidate.hash)).await;
+    let outcome = submit_if_at_tip(
+        &ctx.ingest,
+        submit_propose_snapshot(ctx, candidate.voting_epoch, candidate.hash),
+    )
+    .await;
     match outcome {
         TxOutcome::Confirmed(txid) => {
             info!(
@@ -76,6 +80,7 @@ where
 
 pub async fn submit_ready_snapshot_votes<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     candidate: &SnapshotCandidate,
     cancel: &CancellationToken,
 ) -> Result<(), NodeError>
@@ -85,7 +90,7 @@ where
     Blockchain: Rpc + 'static,
 {
     match cancel
-        .run_until_cancelled(submit_ready_snapshot_votes_inner(ctx, candidate))
+        .run_until_cancelled(submit_ready_snapshot_votes_inner(ctx, state, candidate))
         .await
     {
         Some(result) => result,
@@ -95,6 +100,7 @@ where
 
 async fn submit_ready_snapshot_votes_inner<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     candidate: &SnapshotCandidate,
 ) -> Result<(), NodeError>
 where
@@ -102,7 +108,6 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let state = ctx.state();
     let me = ctx.node_address();
     if state.find_member(me).is_none() {
         return Ok(());
@@ -136,7 +141,14 @@ where
 
         let outcome = submit_if_at_tip(
             &ctx.ingest,
-            submit_vote_snapshot(ctx, candidate.hash, group, bitmap, aggregate),
+            submit_vote_snapshot(
+                ctx,
+                candidate.voting_epoch,
+                candidate.hash,
+                group,
+                bitmap,
+                aggregate,
+            ),
         )
         .await;
 

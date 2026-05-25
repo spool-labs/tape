@@ -7,7 +7,7 @@ use tape_blocks::ParsedInstruction;
 use tape_core::system::{EpochPhase, VoteKind};
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::{EventLogOps, SnapshotOps, VoteOps};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +25,7 @@ use crate::features::snapshot::submit::{
     submit_ready_snapshot_votes, submit_snapshot_finalization, submit_snapshot_proposal,
 };
 use crate::features::snapshot::vote::create_snapshot_votes;
+use crate::features::vote::all_vote_groups_signed;
 
 const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(30);
 
@@ -81,13 +82,62 @@ where
                 ParsedInstruction::AdvanceEpoch { event } => {
                     self.on_advance_epoch(event.old_epoch, event.new_epoch).await?;
                 }
+
                 ParsedInstruction::VoteSnapshot { event, .. } => {
-                    if is_landed_snapshot_vote(event) {
-                        self.on_snapshot_canonical(event.target_epoch, event.hash).await?;
+
+                    if event.kind != VoteKind::Snapshot as u64 {
+                        continue;
+                    }
+
+                    if all_vote_groups_signed(event) {
+
+                        let state = self.context.state();
+                        let state = if state.epoch() >= event.voting_epoch {
+                            state
+                        } else {
+                            self.context
+                                .state
+                                .wait_for_epoch(event.voting_epoch, &self.cancel)
+                                .await?
+                        };
+
+
+                        if !validate_block_state(
+                            state.as_ref(),
+                            event.voting_epoch,
+                            event.target_epoch,
+                        ) {
+                            continue;
+                        }
+
+                        self.on_snapshot_canonical(state, event.target_epoch, event.hash)
+                            .await?;
                     }
                 }
+
                 ParsedInstruction::FinalizeSnapshot { event, .. } => {
-                    self.on_snapshot_finalized(event.epoch, event.hash).await?;
+                    let voting_epoch = event.epoch.saturating_add(EpochNumber(1));
+
+                    let state = self.context.state();
+                    let state = if state.epoch() >= voting_epoch {
+                        state
+                    } else {
+                        self.context
+                            .state
+                            .wait_for_epoch(voting_epoch, &self.cancel)
+                            .await?
+                    };
+
+                    if !validate_block_state(
+                        state.as_ref(),
+                        voting_epoch,
+                        event.epoch
+                    ) {
+                        continue;
+                    }
+
+                    self.on_snapshot_finalized(state, event.epoch, event.hash)
+                        .await?;
                 }
                 _ => {}
             }
@@ -100,6 +150,7 @@ where
         old: EpochNumber,
         new: EpochNumber,
     ) -> Result<(), NodeError> {
+
         self.context
             .store
             .delete_snapshot_epochs_except(old)
@@ -108,15 +159,17 @@ where
             .store
             .delete_vote_epochs_except(new)
             .map_err(|e| NodeError::Store(format!("delete_vote_epochs_except: {e}")))?;
+
         Ok(())
     }
 
     async fn on_snapshot_canonical(
         &self,
+        state: Arc<ProtocolState>,
         epoch: EpochNumber,
         hash: Hash,
     ) -> Result<(), NodeError> {
-        let Some(candidate) = self.build_candidate(epoch).await? else {
+        let Some(candidate) = self.build_candidate(state, epoch).await? else {
             return Ok(());
         };
 
@@ -133,8 +186,13 @@ where
         submit_snapshot_finalization(&self.context, &candidate, &self.cancel).await
     }
 
-    async fn on_snapshot_finalized(&self, epoch: EpochNumber, hash: Hash) -> Result<(), NodeError> {
-        if let Some(candidate) = self.build_candidate(epoch).await? {
+    async fn on_snapshot_finalized(
+        &self,
+        state: Arc<ProtocolState>,
+        epoch: EpochNumber,
+        hash: Hash,
+    ) -> Result<(), NodeError> {
+        if let Some(candidate) = self.build_candidate(state, epoch).await? {
             if candidate.hash == hash {
                 persist_snapshot_candidate(self.context.as_ref(), &candidate)?;
             } else {
@@ -166,48 +224,65 @@ where
 
     async fn on_heartbeat(&self) -> Result<(), NodeError> {
         let state = self.context.state();
+
         if state.epoch().is_zero() {
             return Ok(());
         }
-
-        let snapshot_epoch = state.epoch().saturating_sub(EpochNumber(1));
 
         if state.phase() != EpochPhase::Snapshot {
             return Ok(());
         }
 
-        if let Some(hash) = canonical_snapshot_hash(&state, snapshot_epoch) {
-            drop(state);
-            self.on_snapshot_canonical(snapshot_epoch, hash).await?;
-            return Ok(());
-        }
+        let snapshot_epoch = state
+            .epoch()
+            .saturating_sub(EpochNumber(1));
 
-        drop(state);
-        let Some(candidate) = self.build_candidate(snapshot_epoch).await? else {
+        let Some(previous) = state.previous.as_ref() else {
             return Ok(());
         };
 
-        self.run_vote_round(&candidate).await
+        if previous.epoch.id != snapshot_epoch {
+            return Ok(());
+        }
+
+        if let Some(hash) = canonical_snapshot_hash(&state, snapshot_epoch) {
+            self.on_snapshot_canonical(state, snapshot_epoch, hash).await?;
+            return Ok(());
+        }
+
+        let build = self.build_candidate(state.clone(), snapshot_epoch).await?;
+        let Some(candidate) = build else {
+            return Ok(());
+        };
+
+        self.run_vote_round(state, &candidate).await
     }
 
     async fn build_candidate(
         &self,
+        state: Arc<ProtocolState>,
         epoch: EpochNumber,
     ) -> Result<Option<SnapshotCandidate>, NodeError> {
-        build_snapshot(&self.context, epoch, &self.cancel).await
+        build_snapshot(&self.context, state, epoch, &self.cancel).await
     }
 
-    async fn run_vote_round(&self, candidate: &SnapshotCandidate) -> Result<(), NodeError> {
+    async fn run_vote_round(
+        &self,
+        state: Arc<ProtocolState>,
+        candidate: &SnapshotCandidate,
+    ) -> Result<(), NodeError> {
+
         submit_snapshot_proposal(&self.context, candidate, &self.cancel).await?;
-        create_snapshot_votes(&self.context, candidate, &self.cancel).await?;
-        fanout_snapshot_votes(&self.context, candidate, &self.cancel).await?;
-        submit_ready_snapshot_votes(&self.context, candidate, &self.cancel).await?;
+        create_snapshot_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
+        fanout_snapshot_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
+        submit_ready_snapshot_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
+
         Ok(())
     }
 }
 
 fn canonical_snapshot_hash(
-    state: &tape_protocol::ProtocolState,
+    state: &ProtocolState,
     snapshot_epoch: EpochNumber,
 ) -> Option<Hash> {
     let previous = state.previous.as_ref()?;
@@ -217,7 +292,37 @@ fn canonical_snapshot_hash(
     Some(previous.epoch.snapshot_hash)
 }
 
-fn is_landed_snapshot_vote(event: &tape_api::event::VoteRecorded) -> bool {
-    event.kind == VoteKind::Snapshot as u64
-        && u64::from_le_bytes(event.signed_groups) == u64::from_le_bytes(event.total_groups)
+fn validate_block_state(
+    state: &ProtocolState,
+    voting_epoch: EpochNumber,
+    target_epoch: EpochNumber,
+) -> bool {
+    let phase = state.phase();
+
+    if phase != EpochPhase::Snapshot {
+        // Allow this node to try and create the snapshot even if the onchain state has already
+        // advanced to Active. This reduces the need for repair if we assume our snapshot log
+        // produces the same snapshot hash as the canonical one.
+        if phase != EpochPhase::Active {
+            return false;
+        }
+    }
+
+    if state.epoch() != voting_epoch {
+        return false;
+    }
+
+    if target_epoch.saturating_add(EpochNumber(1)) != voting_epoch {
+        return false;
+    }
+
+    let Some(previous) = state.previous.as_ref() else {
+        return false;
+    };
+
+    if previous.epoch.id != target_epoch {
+        return false;
+    }
+
+    true
 }

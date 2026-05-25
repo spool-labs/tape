@@ -6,7 +6,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::cert::SnapshotSignMessage;
 use tape_core::system::{VoteCandidate, VoteKind};
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::VoteOps;
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +22,7 @@ pub struct VoteSummary {
 
 pub async fn create_snapshot_votes<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     candidate: &SnapshotCandidate,
     cancel: &CancellationToken,
 ) -> Result<VoteSummary, NodeError>
@@ -34,7 +35,6 @@ where
         return Ok(VoteSummary::default());
     }
 
-    let state = ctx.state();
     let me = ctx.node_address();
     if state.find_member(me).is_none() {
         return Ok(VoteSummary::default());

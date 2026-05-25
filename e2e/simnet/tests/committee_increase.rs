@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
+use tape_core::system::NodeStatus;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
@@ -89,13 +90,37 @@ async fn committee_increase_inner() {
         .expect("advance to epoch 2");
     assert_eq!(epoch2, 2, "expected epoch 2");
     scenario
-        .wait_nodes_active(&all, active_timeout)
+        .wait_nodes_active(&genesis_committee, active_timeout)
         .await
-        .expect("all nodes active at epoch 2");
+        .expect("genesis committee active at epoch 2");
+    for &node in &late_nodes {
+        assert_eq!(
+            scenario.node_status(node),
+            Some(NodeStatus::Standby),
+            "late node {node} should not be active until epoch 3"
+        );
+    }
+    let system = scenario.read_system().await.expect("read system");
+    assert_eq!(
+        system.committee_size, node_count as u64,
+        "epoch 2 should carry the new committee-size preference"
+    );
     assert_eq!(
         scenario.committee_size().await.expect("committee size"),
-        node_count,
+        genesis_committee.len(),
         "unexpected epoch 2 committee size"
+    );
+    scenario
+        .wait_next_quorum(node_count, active_timeout)
+        .await
+        .expect("epoch 3 candidate committee reached expanded size");
+    assert_eq!(
+        scenario
+            .committee_next_size()
+            .await
+            .expect("next committee size"),
+        node_count,
+        "unexpected epoch 3 candidate committee size"
     );
     assert_group_owners(&scenario, TARGET_GROUPS, 1).await;
 
@@ -158,7 +183,7 @@ async fn assert_group_owners(
             "unexpected group epoch for group {index}"
         );
         assert_eq!(
-            group.id.0, index as u64,
+            group.id.as_u64(), index as u64,
             "unexpected group id for group {index}"
         );
 

@@ -6,19 +6,7 @@ use bytemuck::{Pod, Zeroable};
 
 #[repr(transparent)]
 #[cfg_attr(feature = "wincode", derive(wincode_derive::SchemaRead, wincode_derive::SchemaWrite))]
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Pod,
-    Zeroable,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
 pub struct GroupIndex(pub u64);
 
 impl GroupIndex {
@@ -47,7 +35,7 @@ impl GroupIndex {
         let spool = spool.as_usize();
 
         // Not in this group.
-        if spool / GROUP_SIZE != self.0 as usize {
+        if spool / GROUP_SIZE != self.as_usize() {
             return None;
         }
 
@@ -70,6 +58,24 @@ impl GroupIndex {
     #[inline]
     pub fn pack(&self) -> [u8; 8] {
         self.0.to_le_bytes()
+    }
+
+    /// Returns the inner u64 value.
+    #[inline]
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    /// Converts the value to usize.
+    #[inline]
+    pub fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+
+    /// Fallibly converts the value to usize.
+    #[inline]
+    pub fn try_as_usize(&self) -> Result<usize, core::num::TryFromIntError> {
+        usize::try_from(self.0)
     }
 }
 

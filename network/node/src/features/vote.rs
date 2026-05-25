@@ -1,3 +1,4 @@
+use tape_api::event::VoteRecorded;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_crypto::Address;
@@ -34,4 +35,11 @@ pub fn bitmap_index_in_group(
 ) -> Option<u16> {
     let (spool, _) = state.spool_for_node_in_group(group, node)?;
     group.position_of(spool).map(|position| position as u16)
+}
+
+pub fn all_vote_groups_signed(event: &VoteRecorded) -> bool {
+    let signed_groups = u64::from_le_bytes(event.signed_groups);
+    let total_groups = u64::from_le_bytes(event.total_groups);
+
+    signed_groups == total_groups
 }
