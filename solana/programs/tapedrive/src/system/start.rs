@@ -22,7 +22,6 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         token_program_info,
         system_program_info,
         rent_sysvar_info,
-        genesis_node_infos @ ..,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -64,10 +63,6 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let subsidy_decay_bps = BasisPoints::unpack(args.subsidy_decay_bps);
     if !burn_fee_bps.is_valid() || !subsidy_decay_bps.is_valid() {
         return Err(ProgramError::InvalidArgument);
-    }
-
-    if genesis_node_infos.len() != GROUP_SIZE {
-        return Err(ProgramError::NotEnoughAccountKeys);
     }
 
     archive_info
@@ -128,14 +123,6 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .is_committee(target)?;
 
-    ensure_committee_capacity(
-        committee_info,
-        system_program_info,
-        fee_payer_info,
-        target,
-        committee_size,
-    )?;
-
     let (committee_header, members) =
         Committee::read_full_mut(committee_info, &tapedrive::ID)?;
 
@@ -147,8 +134,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::InsufficientCommittee.into());
     }
 
-    if committee_header.members.count != 0 {
-        return Err(TapeError::UnexpectedState.into());
+    if committee_header.members.count != committee_size {
+        return Err(TapeError::InsufficientCommittee.into());
     }
 
     let candidate_epoch = candidate_epoch_info
@@ -190,18 +177,15 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let peer_capacity = committee_size;
     peer_set_info
-        .is_writable()?
         .is_peer_set()?;
 
-    let (peer_header, peers) = PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
+    let (peer_header, peers) = PeerSet::read(peer_set_info, &tapedrive::ID)?;
 
-    if peer_header.peers.capacity < peer_capacity {
+    if peer_header.peers.capacity < committee_size {
         return Err(TapeError::ListFull.into());
     }
-
-    if peer_header.peers.count != 0 {
+    if peer_header.peers.count as usize > peers.len() {
         return Err(TapeError::UnexpectedState.into());
     }
 
@@ -244,45 +228,22 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let snapshot_tape = snapshot_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
     *snapshot_tape = Tape::snapshot(bootstrap_snapshot_epoch);
 
-    for (i, node_info) in genesis_node_infos.iter().enumerate() {
-        let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
-        let node_address: Address = (*node_info.key).into();
-
-        if genesis_node_infos[..i]
-            .iter()
-            .any(|prior| prior.key == node_info.key)
-        {
-            return Err(TapeError::BadMember.into());
-        }
-
-        let bls_pubkey = node.metadata.bls_pubkey;
-        let stake = node.pool.stake;
-        if stake.is_zero() {
+    let active_peers = &peers[..peer_header.peers.count as usize];
+    for (i, member) in members[..committee_size as usize].iter_mut().enumerate() {
+        if member.stake.is_zero() {
             return Err(TapeError::NotStaked.into());
         }
+        let peer = active_peers
+            .iter()
+            .find(|peer| peer.node == member.node)
+            .ok_or(TapeError::BadMember)?;
 
-        node.preferences.burn_fee_bps = burn_fee_bps;
-        node.preferences.subsidy_decay_bps = subsidy_decay_bps;
-
-        members[i] = Member {
-            node: node_address,
-            stake,
-            assigned: StorageUnits::zero(),
-            blacklisted: StorageUnits::zero(),
-            spools: 1,
+        member.spools = 1;
+        group.spools[i] = Spool {
+            node: member.node,
+            bls_pubkey: peer.bls_pubkey,
         };
-        peers[i] = Peer {
-            node: node_address,
-            bls_pubkey,
-            network_address: node.metadata.network_address,
-            network_tls: node.metadata.network_tls,
-            preferences: node.preferences,
-        };
-        group.spools[i] = Spool { node: node_address, bls_pubkey };
     }
-
-    committee_header.members.count = GROUP_SIZE as u64;
-    peer_header.peers.count = GROUP_SIZE as u64;
 
     epoch.total_groups = 1;
     epoch.total_assigned = StorageUnits::zero();
@@ -313,7 +274,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     Ok(())
 }
 
-fn ensure_committee_capacity<'info>(
+pub(super) fn ensure_committee_capacity<'info>(
     committee_info: &AccountInfo<'info>,
     system_program_info: &AccountInfo<'info>,
     fee_payer_info: &AccountInfo<'info>,
@@ -346,13 +307,11 @@ fn ensure_committee_capacity<'info>(
 mod tests {
     use super::*;
     use tape_api::state::{Committee, PeerSet};
-    use tape_core::system::Peer;
+    use tape_core::system::{sort_members_for_committee, Peer};
     use tape_test::*;
 
-    fn genesis_nodes() -> (Vec<Address>, Vec<Node>, Vec<Member>, Vec<Peer>) {
-        let mut genesis_nodes: Vec<Address> = Vec::with_capacity(GROUP_SIZE);
-        let mut node_accounts: Vec<Node> = Vec::with_capacity(GROUP_SIZE);
-        let mut expected_members: Vec<Member> = Vec::with_capacity(GROUP_SIZE);
+    fn genesis_committee() -> (Vec<Member>, Vec<Member>, Vec<Peer>) {
+        let mut staged_members: Vec<Member> = Vec::with_capacity(GROUP_SIZE);
         let mut expected_peers: Vec<Peer> = Vec::with_capacity(GROUP_SIZE);
         for i in 0..GROUP_SIZE {
             let bls_sk = BlsPrivateKey::from_random();
@@ -360,29 +319,28 @@ mod tests {
             let mut bytes = [0u8; 32];
             bytes[0] = (i as u8) + 1;
             let addr = Address::new(bytes);
-            let mut node = Node::zeroed();
-            node.pool.stake = TAPE(i as u64 + 1);
-            node.metadata.bls_pubkey = bls_pk;
 
-            genesis_nodes.push(addr);
-            node_accounts.push(node);
-            expected_members.push(Member {
+            staged_members.push(Member {
                 node: addr,
-                stake: node.pool.stake,
+                stake: TAPE(i as u64 + 1),
                 assigned: StorageUnits::zero(),
                 blacklisted: StorageUnits::zero(),
-                spools: 1,
+                spools: 0,
             });
             expected_peers.push(Peer {
                 node: addr,
                 bls_pubkey: bls_pk,
-                network_address: node.metadata.network_address,
-                network_tls: node.metadata.network_tls,
-                preferences: node.preferences,
+                ..Peer::zeroed()
             });
         }
+        sort_members_for_committee(&mut staged_members);
 
-        (genesis_nodes, node_accounts, expected_members, expected_peers)
+        let expected_members = staged_members
+            .iter()
+            .map(|member| Member { spools: 1, ..*member })
+            .collect();
+
+        (staged_members, expected_members, expected_peers)
     }
 
     // happy-path
@@ -407,7 +365,7 @@ mod tests {
         let (group_address, _) = group_pda(target, group_id);
         let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
-        let (genesis_nodes, node_accounts, expected_members, mut expected_peers) = genesis_nodes();
+        let (staged_members, expected_members, expected_peers) = genesis_committee();
 
         let system = System {
             current_epoch: EpochNumber(0),
@@ -427,24 +385,23 @@ mod tests {
 
         let committee_size = GROUP_SIZE as u64;
         let peer_capacity = committee_size;
-        let committee_data =
-            Committee { epoch: target, members: Tail::empty(0) }
-                .pack_with(&[]);
+        let committee_data = Committee {
+            epoch: target,
+            members: Tail::new(committee_size, staged_members.len() as u64),
+        }
+        .pack_with(&staged_members);
         let candidate_committee_data =
             Committee { epoch: candidate, members: Tail::empty(0) }
                 .pack_with(&[]);
-        let peer_set_data =
-            PeerSet { peers: Tail::empty(peer_capacity) }
-                .pack_with(&[]);
+        let peer_set_data = PeerSet {
+            peers: Tail::new(peer_capacity, expected_peers.len() as u64),
+        }
+        .pack_with(&expected_peers);
 
         let spool_groups: u64 = 50;
         let subsidy_amount = TAPE(50);
         let burn_fee_bps = DEFAULT_BURN_FEE_BPS;
         let subsidy_decay_bps = DEFAULT_SUBSIDY_DECAY_BPS;
-        for peer in &mut expected_peers {
-            peer.preferences.burn_fee_bps = burn_fee_bps;
-            peer.preferences.subsidy_decay_bps = subsidy_decay_bps;
-        }
         let instruction = build_start_network_ix(
             fee_payer.into(),
             subsidy_authority.into(),
@@ -453,10 +410,9 @@ mod tests {
             subsidy_amount,
             burn_fee_bps,
             subsidy_decay_bps,
-            &genesis_nodes,
         );
 
-        let mut accounts = vec![
+        let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(subsidy_authority, 0),
             tape_test::ata(subsidy_authority, subsidy_amount.as_u64()),
@@ -475,12 +431,6 @@ mod tests {
             system_program(),
             rent_sysvar(),
         ];
-        accounts.extend(
-            genesis_nodes
-                .iter()
-                .zip(node_accounts.iter())
-                .map(|(address, node)| pda(*address, node.pack(), tapedrive::ID)),
-        );
 
         let mut expected_group = Group {
             id: group_id,
@@ -488,9 +438,13 @@ mod tests {
             ..Group::zeroed()
         };
         for i in 0..GROUP_SIZE {
+            let peer = expected_peers
+                .iter()
+                .find(|peer| peer.node == expected_members[i].node)
+                .expect("expected peer");
             expected_group.spools[i] = Spool {
                 node: expected_members[i].node,
-                bls_pubkey: expected_peers[i].bls_pubkey,
+                bls_pubkey: peer.bls_pubkey,
             };
         }
 
@@ -572,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_stake_genesis_node() {
+    fn rejects_zero_stake_staged_member() {
         let fee_payer = Pubkey::new_unique();
         let subsidy_authority = Pubkey::new_unique();
 
@@ -592,8 +546,8 @@ mod tests {
         let (group_address, _) = group_pda(target, group_id);
         let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
-        let (genesis_nodes, mut node_accounts, _, _) = genesis_nodes();
-        node_accounts[0].pool.stake = TAPE::zero();
+        let (mut staged_members, _, expected_peers) = genesis_committee();
+        staged_members[0].stake = TAPE::zero();
 
         let system = System {
             current_epoch: EpochNumber(0),
@@ -613,15 +567,18 @@ mod tests {
 
         let committee_size = GROUP_SIZE as u64;
         let peer_capacity = committee_size;
-        let committee_data =
-            Committee { epoch: target, members: Tail::empty(GROUP_SIZE as u64) }
-                .pack_with(&[]);
+        let committee_data = Committee {
+            epoch: target,
+            members: Tail::new(committee_size, staged_members.len() as u64),
+        }
+        .pack_with(&staged_members);
         let candidate_committee_data =
             Committee { epoch: candidate, members: Tail::empty(GROUP_SIZE as u64) }
                 .pack_with(&[]);
-        let peer_set_data =
-            PeerSet { peers: Tail::empty(peer_capacity) }
-                .pack_with(&[]);
+        let peer_set_data = PeerSet {
+            peers: Tail::new(peer_capacity, expected_peers.len() as u64),
+        }
+        .pack_with(&expected_peers);
 
         let instruction = build_start_network_ix(
             fee_payer.into(),
@@ -631,10 +588,9 @@ mod tests {
             TAPE::zero(),
             DEFAULT_BURN_FEE_BPS,
             DEFAULT_SUBSIDY_DECAY_BPS,
-            &genesis_nodes,
         );
 
-        let mut accounts = vec![
+        let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(subsidy_authority, 0),
             tape_test::ata(subsidy_authority, 0),
@@ -653,18 +609,194 @@ mod tests {
             system_program(),
             rent_sysvar(),
         ];
-        accounts.extend(
-            genesis_nodes
-                .iter()
-                .zip(node_accounts.iter())
-                .map(|(address, node)| pda(*address, node.pack(), tapedrive::ID)),
-        );
 
         let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
             &[Check::err(TapeError::NotStaked.into())],
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_genesis_committee() {
+        let fee_payer = Pubkey::new_unique();
+        let subsidy_authority = Pubkey::new_unique();
+
+        let target = EpochNumber(1);
+        let candidate = EpochNumber(2);
+        let group_id = GroupIndex(0);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (subsidy_address, _) = subsidy_pda();
+        let (subsidy_ata_address, _) = subsidy_ata();
+        let (epoch_address, _) = epoch_pda(target);
+        let (committee_address, _) = committee_pda(target);
+        let (candidate_epoch_address, _) = epoch_pda(candidate);
+        let (candidate_committee_address, _) = committee_pda(candidate);
+        let (peer_set_address, _) = peer_set_pda();
+        let (group_address, _) = group_pda(target, group_id);
+        let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
+
+        let (staged_members, _, expected_peers) = genesis_committee();
+        let staged_members = &staged_members[..GROUP_SIZE - 1];
+
+        let system = System {
+            current_epoch: EpochNumber(0),
+            ..System::zeroed()
+        };
+        let epoch = Epoch {
+            id: target,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+        let candidate_epoch = Epoch {
+            id: candidate,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+
+        let committee_size = GROUP_SIZE as u64;
+        let peer_capacity = committee_size;
+        let committee_data = Committee {
+            epoch: target,
+            members: Tail::new(committee_size, staged_members.len() as u64),
+        }
+        .pack_with(staged_members);
+        let candidate_committee_data =
+            Committee { epoch: candidate, members: Tail::empty(0) }.pack_with(&[]);
+        let peer_set_data = PeerSet {
+            peers: Tail::new(peer_capacity, expected_peers.len() as u64),
+        }
+        .pack_with(&expected_peers);
+
+        let instruction = build_start_network_ix(
+            fee_payer.into(),
+            subsidy_authority.into(),
+            committee_size,
+            50,
+            TAPE::zero(),
+            DEFAULT_BURN_FEE_BPS,
+            DEFAULT_SUBSIDY_DECAY_BPS,
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(subsidy_authority, 0),
+            tape_test::ata(subsidy_authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(committee_address, committee_data, tapedrive::ID),
+            pda(candidate_epoch_address, candidate_epoch.pack(), tapedrive::ID),
+            pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
+            pda(peer_set_address, peer_set_data, tapedrive::ID),
+            empty(group_address),
+            empty(snapshot_tape_address),
+            empty(subsidy_address),
+            token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
+            token_program(),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::InsufficientCommittee.into())],
+        );
+    }
+
+    #[test]
+    fn rejects_missing_genesis_peer() {
+        let fee_payer = Pubkey::new_unique();
+        let subsidy_authority = Pubkey::new_unique();
+
+        let target = EpochNumber(1);
+        let candidate = EpochNumber(2);
+        let group_id = GroupIndex(0);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (subsidy_address, _) = subsidy_pda();
+        let (subsidy_ata_address, _) = subsidy_ata();
+        let (epoch_address, _) = epoch_pda(target);
+        let (committee_address, _) = committee_pda(target);
+        let (candidate_epoch_address, _) = epoch_pda(candidate);
+        let (candidate_committee_address, _) = committee_pda(candidate);
+        let (peer_set_address, _) = peer_set_pda();
+        let (group_address, _) = group_pda(target, group_id);
+        let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
+
+        let (staged_members, _, expected_peers) = genesis_committee();
+        let expected_peers = &expected_peers[..GROUP_SIZE - 1];
+
+        let system = System {
+            current_epoch: EpochNumber(0),
+            ..System::zeroed()
+        };
+        let epoch = Epoch {
+            id: target,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+        let candidate_epoch = Epoch {
+            id: candidate,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+
+        let committee_size = GROUP_SIZE as u64;
+        let peer_capacity = committee_size;
+        let committee_data = Committee {
+            epoch: target,
+            members: Tail::new(committee_size, staged_members.len() as u64),
+        }
+        .pack_with(&staged_members);
+        let candidate_committee_data =
+            Committee { epoch: candidate, members: Tail::empty(0) }.pack_with(&[]);
+        let peer_set_data = PeerSet {
+            peers: Tail::new(peer_capacity, expected_peers.len() as u64),
+        }
+        .pack_with(expected_peers);
+
+        let instruction = build_start_network_ix(
+            fee_payer.into(),
+            subsidy_authority.into(),
+            committee_size,
+            50,
+            TAPE::zero(),
+            DEFAULT_BURN_FEE_BPS,
+            DEFAULT_SUBSIDY_DECAY_BPS,
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(subsidy_authority, 0),
+            tape_test::ata(subsidy_authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(committee_address, committee_data, tapedrive::ID),
+            pda(candidate_epoch_address, candidate_epoch.pack(), tapedrive::ID),
+            pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
+            pda(peer_set_address, peer_set_data, tapedrive::ID),
+            empty(group_address),
+            empty(snapshot_tape_address),
+            empty(subsidy_address),
+            token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
+            token_program(),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::BadMember.into())],
         );
     }
 }

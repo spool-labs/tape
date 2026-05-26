@@ -273,7 +273,7 @@ impl Orchestrator {
         let genesis_ids = running.into_iter().take(GROUP_SIZE).collect::<Vec<_>>();
         let genesis_authorities = genesis_ids
             .iter()
-            .map(|id| self.processes.node(*id).authority.pubkey())
+            .map(|id| clone_keypair(&self.processes.node(*id).authority))
             .collect::<Vec<_>>();
 
         self.chain

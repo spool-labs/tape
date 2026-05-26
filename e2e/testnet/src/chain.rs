@@ -17,7 +17,7 @@ use tape_api::instruction::{
     build_advance_pool_ix, build_create_archive_ix, build_create_committee_ix,
     build_create_epoch_ix, build_create_peer_set_ix, build_create_system_ix,
     build_initialize_mint_ix, build_join_committee_ix, build_stake_with_pool_ix,
-    build_start_network_ix,
+    build_stage_genesis_node_ix, build_start_network_ix,
 };
 use tape_api::program::tapedrive::{
     node_pda, DEFAULT_BURN_FEE_BPS, DEFAULT_SUBSIDY_DECAY_BPS,
@@ -271,7 +271,7 @@ impl ChainManager {
 
     pub async fn start_network(
         &self,
-        genesis_authorities: &[Pubkey],
+        genesis_authorities: &[Keypair],
         spool_groups: u64,
     ) -> Result<()> {
         if self.current_epoch().await? != EpochNumber(0) {
@@ -289,10 +289,11 @@ impl ChainManager {
             anyhow::bail!("spool_groups must be > 0");
         }
 
-        let genesis_nodes = genesis_authorities
-            .iter()
-            .map(|authority| node_pda(Address::from(*authority)).0)
-            .collect::<Vec<_>>();
+        for authority in genesis_authorities {
+            self.stage_genesis_node(authority)
+                .await
+                .context("stage genesis node")?;
+        }
 
         let ix = build_start_network_ix(
             self.admin.pubkey().into(),
@@ -302,7 +303,6 @@ impl ChainManager {
             TAPE(0),
             DEFAULT_BURN_FEE_BPS,
             DEFAULT_SUBSIDY_DECAY_BPS,
-            &genesis_nodes,
         );
 
         let result = self.rpc.send_instructions(&self.admin_signer, vec![ix]).await;
@@ -320,6 +320,25 @@ impl ChainManager {
                 }
             }
         }
+    }
+
+    async fn stage_genesis_node(&self, authority_keypair: &Keypair) -> Result<()> {
+        let authority = authority_keypair.pubkey();
+        let authority_address = Address::from(authority);
+        let (node_address, _) = node_pda(authority_address);
+        let ix = build_stage_genesis_node_ix(
+            self.admin.pubkey().into(),
+            authority_address,
+            node_address,
+        );
+        let authority_signer = CryptoKeypair::from_solana_keypair(authority_keypair)
+            .context("convert authority keypair")?;
+
+        self.rpc
+            .send_instructions_with_signers(&self.admin_signer, vec![ix], &[&authority_signer])
+            .await
+            .context("stage_genesis_node")?;
+        Ok(())
     }
 
     pub async fn join_committee(&self, authority_keypair: &Keypair) -> Result<()> {

@@ -20,6 +20,7 @@ use tape_solana::{AccountInfo, ProgramError, ProgramResult, Pubkey, TryFromPrimi
 use crate::archive::process_create_archive;
 use crate::system::{
     process_create_system,
+    process_stage_genesis_node,
     process_start_network,
 };
 use crate::blacklist::{process_add_to_blacklist, process_remove_from_blacklist};
@@ -111,6 +112,7 @@ pub fn process_instruction(
         TapeInstruction::CreatePeerSet => process_create_peer_set(accounts, data)?,
         TapeInstruction::ResizeCommittee => process_resize_committee(accounts, data)?,
         TapeInstruction::ResizePeerSet => process_resize_peer_set(accounts, data)?,
+        TapeInstruction::StageGenesisNode => process_stage_genesis_node(accounts, data)?,
         TapeInstruction::StartNetwork => process_start_network(accounts, data)?,
 
         // Epoch

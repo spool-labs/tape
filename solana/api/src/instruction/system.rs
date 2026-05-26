@@ -22,6 +22,10 @@ pub struct CreateArchive {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct StageGenesisNode {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StartNetwork {
     /// Genesis committee size.
     pub committee_size: [u8; 8],
@@ -38,6 +42,7 @@ pub struct StartNetwork {
     /// Initial subsidy decay rate in basis points.
     pub subsidy_decay_bps: [u8; 8],
 }
+
 
 pub fn build_create_system_ix(
     fee_payer: Address,
@@ -93,6 +98,33 @@ pub fn build_create_archive_ix(
     }
 }
 
+
+pub fn build_stage_genesis_node_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+) -> Instruction {
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda(EpochNumber(1));
+    let (committee_address, _) = committee_pda(EpochNumber(1));
+    let (peer_set_address, _) = peer_set_pda();
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new(committee_address.into(), false),
+            AccountMeta::new(peer_set_address.into(), false),
+            AccountMeta::new_readonly(node_address.into(), false),
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+        data: StageGenesisNode {}.to_bytes(),
+    }
+}
+
 pub fn build_start_network_ix(
     fee_payer: Address,
     subsidy_authority: Address,
@@ -101,7 +133,6 @@ pub fn build_start_network_ix(
     subsidy_amount: Coin<TAPE>,
     burn_fee_bps: BasisPoints,
     subsidy_decay_bps: BasisPoints,
-    genesis_nodes: &[Address],
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
@@ -116,7 +147,7 @@ pub fn build_start_network_ix(
     let (subsidy_ata, _) = subsidy_ata();
     let subsidy_authority_ata = ata(&subsidy_authority);
 
-    let mut accounts = vec![
+    let accounts = vec![
         AccountMeta::new(fee_payer.into(), true),
         AccountMeta::new_readonly(subsidy_authority.into(), true),
         AccountMeta::new(subsidy_authority_ata.into(), false),
@@ -127,7 +158,7 @@ pub fn build_start_network_ix(
         AccountMeta::new(committee_address.into(), false),
         AccountMeta::new(candidate_epoch_address.into(), false),
         AccountMeta::new(candidate_committee_address.into(), false),
-        AccountMeta::new(peer_set_address.into(), false),
+        AccountMeta::new_readonly(peer_set_address.into(), false),
         AccountMeta::new(group_address.into(), false),
         AccountMeta::new(snapshot_tape_address.into(), false),
         AccountMeta::new_readonly(subsidy_address.into(), false),
@@ -136,11 +167,6 @@ pub fn build_start_network_ix(
         AccountMeta::new_readonly(system_program::ID, false),
         AccountMeta::new_readonly(sysvar::rent::ID, false),
     ];
-    accounts.extend(
-        genesis_nodes
-            .iter()
-            .map(|node| AccountMeta::new((*node).into(), false)),
-    );
 
     Instruction {
         program_id: tapedrive::ID,

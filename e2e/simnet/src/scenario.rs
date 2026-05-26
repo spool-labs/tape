@@ -7,7 +7,7 @@ use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::{
     build_create_archive_ix, build_create_committee_ix, build_create_epoch_ix,
     build_create_peer_set_ix, build_create_system_ix, build_initialize_mint_ix,
-    build_register_node_ix, build_start_network_ix,
+    build_register_node_ix, build_stage_genesis_node_ix, build_start_network_ix,
 };
 use tape_api::program::tapedrive::{
     node_pda, DEFAULT_BURN_FEE_BPS, DEFAULT_SUBSIDY_DECAY_BPS,
@@ -121,16 +121,25 @@ impl<'a> SimnetScenario<'a> {
         let slot_bump = self.harness.config().slot_advance_per_tx;
         let admin = self.harness.admin();
         let admin_pub = admin.pubkey();
-        let genesis_nodes = self
-            .harness
-            .nodes()
-            .iter()
-            .take(GROUP_SIZE)
-            .map(|node| {
-                let (node_address, _) = node_pda(Address::from(node.authority()));
-                node_address
-            })
-            .collect::<Vec<_>>();
+        for (index, node) in self.harness.nodes().iter().take(GROUP_SIZE).enumerate() {
+            let authority = Address::from(node.authority());
+            let (node_address, _) = node_pda(authority);
+            let ix = build_stage_genesis_node_ix(
+                admin_pub.into(),
+                authority,
+                node_address,
+            );
+            self.harness
+                .chain()
+                .send_instructions_with_signers_and_advance(
+                    admin,
+                    vec![ix],
+                    &[node.keypair()],
+                    slot_bump,
+                )
+                .await
+                .with_context(|| format!("stage genesis node {index}"))?;
+        }
 
         let ix = build_start_network_ix(
             admin_pub.into(),
@@ -140,7 +149,6 @@ impl<'a> SimnetScenario<'a> {
             TAPE(0),
             burn_fee_bps,
             DEFAULT_SUBSIDY_DECAY_BPS,
-            &genesis_nodes,
         );
 
         self.harness

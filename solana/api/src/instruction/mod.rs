@@ -75,6 +75,7 @@ pub enum TapeInstruction {
     CreatePeerSet,
     ResizeCommittee,
     ResizePeerSet,
+    StageGenesisNode,
     StartNetwork,
 
     // Epoch
@@ -158,6 +159,7 @@ tape_solana::instruction!(TapeInstruction, CreateEpoch);
 tape_solana::instruction!(TapeInstruction, CreatePeerSet);
 tape_solana::instruction!(TapeInstruction, ResizeCommittee);
 tape_solana::instruction!(TapeInstruction, ResizePeerSet);
+tape_solana::instruction!(TapeInstruction, StageGenesisNode);
 tape_solana::instruction!(TapeInstruction, StartNetwork);
 
 tape_solana::instruction!(TapeInstruction, SyncSpool);

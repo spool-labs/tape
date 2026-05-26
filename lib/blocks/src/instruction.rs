@@ -468,7 +468,11 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::JoinCommittee => {
-            // Account layout: [fee_payer, authority, system, curr_epoch, next_committee, peer_set, node]
+            let node = get_account(7)?;
+            Ok(Some(RawInstruction::JoinCommittee { node }))
+        }
+
+        TapeInstruction::StageGenesisNode => {
             let node = get_account(6)?;
             Ok(Some(RawInstruction::JoinCommittee { node }))
         }
