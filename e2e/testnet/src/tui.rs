@@ -16,7 +16,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
-use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, GROUP_SIZE};
+use tape_core::erasure::GROUP_SIZE;
 
 use crate::view::{NodeView, TestnetView, UploadView};
 
@@ -115,7 +115,8 @@ fn render_frame(frame: &mut Frame<'_>, view: &TestnetView, disconnected: bool) {
 
     let spool_inner_w = area.width.saturating_sub(2) as usize;
     let groups_per_row = ((spool_inner_w + 1) / (GROUP_COLS + 1)).max(1);
-    let bands = SPOOL_GROUP_COUNT.div_ceil(groups_per_row);
+    let group_count = view.spools.len().div_ceil(GROUP_SIZE).max(1);
+    let bands = group_count.div_ceil(groups_per_row);
     let spool_grid_height = (bands * (GROUP_ROWS + 1)) as u16 + 2;
     let capped_spool_h = spool_grid_height.min(area.height.saturating_sub(10)).max(5);
 
@@ -163,10 +164,11 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
     };
 
     let left = format!(
-        " TESTNET  Nodes:{}  Healthy:{}  Metrics:{}  C[{}/{}/{}]  {}",
+        " TESTNET  Nodes:{}  Healthy:{}  Metrics:{}  Groups:{}  C[{}/{}/{}]  {}",
         view.nodes.len(),
         healthy_nodes,
         metrics_nodes,
+        view.cluster.live_group_count,
         view.cluster.committee_prev_size,
         view.cluster.committee_size,
         view.cluster.committee_next_size,
@@ -201,14 +203,26 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
     }
 
     let groups_per_row = ((inner.width as usize + 1) / (GROUP_COLS + 1)).max(1);
-    let bands = SPOOL_GROUP_COUNT.div_ceil(groups_per_row);
+    let group_count = view.spools.len().div_ceil(GROUP_SIZE);
+    let bands = group_count.div_ceil(groups_per_row);
     let mut lines = Vec::new();
+
+    if group_count == 0 {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "(no live groups)",
+                Style::default().fg(Color::DarkGray),
+            )),
+            pad_left(inner),
+        );
+        return;
+    }
 
     for band in 0..bands {
         let mut label_spans = Vec::new();
         for col in 0..groups_per_row {
             let group = band * groups_per_row + col;
-            if group >= SPOOL_GROUP_COUNT {
+            if group >= group_count {
                 break;
             }
             label_spans.push(Span::styled(
@@ -223,7 +237,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
             let mut spans = Vec::new();
             for col in 0..groups_per_row {
                 let group = band * groups_per_row + col;
-                if group >= SPOOL_GROUP_COUNT {
+                if group >= group_count {
                     break;
                 }
 
@@ -235,18 +249,17 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
                     }
 
                     let spool_idx = group * GROUP_SIZE + spool_in_group;
-                    if spool_idx >= SPOOL_COUNT {
+                    let Some(spool) = view.spools.get(spool_idx) else {
                         spans.push(Span::raw(" "));
                         continue;
-                    }
+                    };
 
-                    let spool = &view.spools[spool_idx];
                     let (glyph, style) = match spool.owner_local_id {
                         Some(local_id) => (
                             "▌",
                             Style::default().fg(node_color(local_id)),
                         ),
-                        None if spool.owner_node_id.is_some() => {
+                        None if spool.owner_node.is_some() => {
                             ("▌", Style::default().fg(Color::DarkGray))
                         }
                         None => ("·", Style::default().fg(Color::Red)),

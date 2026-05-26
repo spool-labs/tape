@@ -125,6 +125,14 @@ impl ProcessSupervisor {
         self.nodes.iter().filter(|handle| handle.child.is_some()).count()
     }
 
+    pub fn running_node_ids(&self) -> Vec<usize> {
+        self.nodes
+            .iter()
+            .filter(|handle| handle.child.is_some())
+            .map(|handle| handle.id)
+            .collect()
+    }
+
     pub fn first_stopped_node_id(&self) -> Option<usize> {
         self.nodes
             .iter()

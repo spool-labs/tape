@@ -1,17 +1,18 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::future::join_all;
+use rpc::RpcError;
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use solana_sdk::pubkey::Pubkey;
 use tape_api::program::tapedrive::node_pda;
-use tape_core::erasure::SPOOL_COUNT;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
-use tape_core::types::SlotNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_protocol::api::NodeStats;
-use tape_protocol::ProtocolState;
 
 use crate::view::{ClusterView, NodeView, SpoolView, TestnetView};
 
@@ -26,10 +27,16 @@ pub struct NodeRef {
 
 /// Internal chain state model, not exposed via API.
 struct ObservedChainState {
-    protocol: ProtocolState,
     slot: SlotNumber,
+    epoch: EpochNumber,
+    phase: EpochPhase,
     phase_weight: Option<u64>,
+    live_group_count: u64,
+    committee_prev_size: usize,
+    committee_size: usize,
+    committee_next_size: usize,
     total_nodes_registered: u64,
+    spool_owners: Vec<Option<Address>>,
 }
 
 /// Per-node scrape result.
@@ -60,36 +67,78 @@ impl Observer {
         Ok(Self { rpc, http })
     }
 
-    /// Single-pass chain state fetch. Builds ProtocolState inline from the
-    /// same epoch/system values used for phase_weight and total_nodes,
-    /// avoiding the double-fetch that `fetch_state()` would cause.
     async fn chain_state(&self) -> Result<ObservedChainState> {
         let slot_raw = self.rpc.get_slot().await.context("get_slot")?;
-        let epoch = self.rpc.get_epoch().await.context("get_epoch")?;
         let system = self.rpc.get_system().await.context("get_system")?;
+        let epoch = self
+            .rpc
+            .get_epoch(system.current_epoch)
+            .await
+            .context("get_epoch")?;
 
-        let phase = EpochPhase::try_from(epoch.state.phase).unwrap_or(EpochPhase::Unknown);
-        let phase_weight = epoch.state.weight();
-        let total_nodes_registered = system.total_nodes;
-
-        let protocol = ProtocolState {
-            epoch: epoch.id,
-            phase,
-            last_epoch: epoch.last_epoch,
-            nonce: epoch.nonce,
-            committee: system.committee.iter().cloned().collect(),
-            committee_prev: system.committee_prev.iter().cloned().collect(),
-            committee_next: system.committee_next.iter().cloned().collect(),
-            spools: system.spools,
-            spools_prev: system.spools_prev,
+        let phase = epoch.state.phase().unwrap_or(EpochPhase::Unknown);
+        let phase_weight = match phase {
+            EpochPhase::Sync => Some(epoch.state.synced_count),
+            _ => None,
         };
+        let total_nodes_registered = system.total_nodes;
+        let live_group_count = system.live_group_count;
+        let committee_prev_size = self
+            .committee_size(system.current_epoch.prev())
+            .await
+            .context("get previous committee")?;
+        let committee_size = self
+            .committee_size(system.current_epoch)
+            .await
+            .context("get current committee")?;
+        let committee_next_size = self
+            .committee_size(system.current_epoch.next())
+            .await
+            .context("get next committee")?;
+
+        let total_spools = usize::try_from(live_group_count)
+            .ok()
+            .and_then(|groups| groups.checked_mul(GROUP_SIZE))
+            .unwrap_or(0);
+        let mut spool_owners = vec![None; total_spools];
+        if live_group_count > 0 {
+            let groups = self
+                .rpc
+                .get_groups(system.current_epoch, live_group_count)
+                .await
+                .context("get_groups")?;
+            for group in groups {
+                for (position, spool) in group.spools.iter().enumerate() {
+                    let spool_index = group.id.spool_at(position).as_usize();
+                    if let Some(owner) = spool_owners.get_mut(spool_index) {
+                        if *spool.node.as_bytes() != [0u8; 32] {
+                            *owner = Some(spool.node);
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(ObservedChainState {
-            protocol,
             slot: SlotNumber(slot_raw),
+            epoch: epoch.id,
+            phase,
             phase_weight,
+            live_group_count,
+            committee_prev_size,
+            committee_size,
+            committee_next_size,
             total_nodes_registered,
+            spool_owners,
         })
+    }
+
+    async fn committee_size(&self, epoch: EpochNumber) -> Result<usize> {
+        match self.rpc.get_committee(epoch).await {
+            Ok(members) => Ok(members.len()),
+            Err(RpcError::AccountNotFound(_)) => Ok(0),
+            Err(error) => Err(error).with_context(|| format!("get_committee({})", epoch.0)),
+        }
     }
 
     /// Scrape a single node concurrently: health, stats, and metrics
@@ -181,20 +230,25 @@ impl Observer {
         let mut node_views = join_all(nodes.iter().map(|node| self.observe_node(node))).await;
         node_views.sort_by_key(|node| node.local_id);
 
-        let node_lookup = node_views
+        let node_lookup = nodes
             .iter()
-            .filter_map(|node| node.node_id.map(|node_id| (node_id, node.local_id)))
-            .collect::<std::collections::HashMap<_, _>>();
+            .map(|node| {
+                let authority = Address::from(node.authority);
+                let (node_address, _) = node_pda(authority);
+                (node_address, node.id)
+            })
+            .collect::<HashMap<_, _>>();
 
-        let spools = (0..SPOOL_COUNT)
-            .map(|spool| {
-                let owner_node_id = chain.protocol.spool_owner(spool as _).map(|node_id| node_id.0);
-                let owner_local_id =
-                    owner_node_id.and_then(|node_id| node_lookup.get(&node_id).copied());
+        let spools = chain
+            .spool_owners
+            .iter()
+            .enumerate()
+            .map(|(spool, owner)| {
+                let owner_local_id = owner.and_then(|node| node_lookup.get(&node).copied());
 
                 SpoolView {
-                    spool: spool as u16,
-                    owner_node_id,
+                    spool: spool as u64,
+                    owner_node: owner.map(|node| node.to_string()),
                     owner_local_id,
                 }
             })
@@ -202,8 +256,8 @@ impl Observer {
 
         Ok(TestnetView {
             cluster: ClusterView {
-                epoch: chain.protocol.epoch.0,
-                phase: match chain.protocol.phase {
+                epoch: chain.epoch.0,
+                phase: match chain.phase {
                     EpochPhase::Sync => "Sync",
                     EpochPhase::Snapshot => "Snapshot",
                     EpochPhase::Active => "Active",
@@ -214,9 +268,10 @@ impl Observer {
                 .to_string(),
                 phase_weight: chain.phase_weight,
                 slot: chain.slot.0,
-                committee_prev_size: chain.protocol.committee_prev.len(),
-                committee_size: chain.protocol.committee.len(),
-                committee_next_size: chain.protocol.committee_next.len(),
+                live_group_count: chain.live_group_count,
+                committee_prev_size: chain.committee_prev_size,
+                committee_size: chain.committee_size,
+                committee_next_size: chain.committee_next_size,
                 total_nodes_registered: chain.total_nodes_registered,
             },
             nodes: node_views,

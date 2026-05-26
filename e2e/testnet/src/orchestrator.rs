@@ -5,6 +5,8 @@ use futures::future::join_all;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::types::EpochNumber;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tracing::info;
 
@@ -91,6 +93,8 @@ impl Orchestrator {
             return Err(setup_err);
         }
 
+        self.maybe_start_genesis_network().await?;
+
         Ok(id)
     }
 
@@ -121,10 +125,12 @@ impl Orchestrator {
     }
 
     async fn complete_node_setup(&self, setup: NodeSetupContext) -> Result<()> {
+        let live = self.chain.current_epoch().await? != EpochNumber(0);
         Self::complete_node_setup_inner(
             &self.processes,
             &self.chain,
             self.config.stake_amount,
+            live,
             setup,
         )
         .await
@@ -134,6 +140,7 @@ impl Orchestrator {
         processes: &ProcessSupervisor,
         chain: &ChainManager,
         stake_amount: u64,
+        live: bool,
         setup: NodeSetupContext,
     ) -> Result<()> {
         let id = setup.id;
@@ -150,6 +157,11 @@ impl Orchestrator {
             .context("stake node")?;
         info!(id, "stake ensured");
 
+        if !live {
+            info!(id, "genesis node staged");
+            return Ok(());
+        }
+
         // Advance pool to activate stake
         chain
             .advance_pool(setup.authority_pubkey)
@@ -158,10 +170,10 @@ impl Orchestrator {
         info!(id, "pool advanced");
 
         chain
-            .join_network(&setup.authority_keypair)
+            .join_committee(&setup.authority_keypair)
             .await
-            .context("join network")?;
-        info!(id, "joined network");
+            .context("join committee")?;
+        info!(id, "joined committee");
 
         Ok(())
     }
@@ -169,6 +181,7 @@ impl Orchestrator {
     pub async fn add_nodes(&mut self, count: usize) -> Result<()> {
         let current = self.processes.running_node_count();
         if current >= count {
+            self.maybe_start_genesis_network().await?;
             return Ok(());
         }
 
@@ -208,9 +221,10 @@ impl Orchestrator {
         let chain = &self.chain;
         let processes = &self.processes;
         let stake_amount = self.config.stake_amount;
+        let live = chain.current_epoch().await? != EpochNumber(0);
         let setup_results = join_all(setups.into_iter().map(|setup| async move {
             let id = setup.id;
-            let result = Self::complete_node_setup_inner(processes, chain, stake_amount, setup)
+            let result = Self::complete_node_setup_inner(processes, chain, stake_amount, live, setup)
                 .await
                 .with_context(|| format!("complete node setup {id}"));
             (id, result)
@@ -234,6 +248,45 @@ impl Orchestrator {
 
         if let Some(error) = first_error {
             return Err(error);
+        }
+
+        self.maybe_start_genesis_network().await?;
+
+        Ok(())
+    }
+
+    async fn maybe_start_genesis_network(&self) -> Result<()> {
+        if self.chain.current_epoch().await? != EpochNumber(0) {
+            return Ok(());
+        }
+
+        let running = self.processes.running_node_ids();
+        if running.len() < GROUP_SIZE {
+            info!(
+                running = running.len(),
+                required = GROUP_SIZE,
+                "genesis network not ready to start"
+            );
+            return Ok(());
+        }
+
+        let genesis_ids = running.into_iter().take(GROUP_SIZE).collect::<Vec<_>>();
+        let genesis_authorities = genesis_ids
+            .iter()
+            .map(|id| self.processes.node(*id).authority.pubkey())
+            .collect::<Vec<_>>();
+
+        self.chain
+            .start_network(&genesis_authorities, self.config.spool_groups)
+            .await
+            .context("start genesis network")?;
+
+        for id in genesis_ids {
+            let keypair = clone_keypair(&self.processes.node(id).authority);
+            self.chain
+                .join_committee(&keypair)
+                .await
+                .with_context(|| format!("join genesis node {id} into next committee"))?;
         }
 
         Ok(())

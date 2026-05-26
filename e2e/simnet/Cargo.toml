@@ -38,4 +38,5 @@ rand.workspace = true
 
 [dev-dependencies]
 bytemuck.workspace = true
+spl-token.workspace = true
 tokio.workspace = true

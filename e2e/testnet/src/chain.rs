@@ -1,23 +1,27 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rpc_client::RpcClient;
 use rpc::RpcError;
+use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use solana_client::nonblocking::rpc_client::RpcClient as SolRpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use tape_api::errors::{ProgramError, TapeError, is_account_state_pending_error};
+use tape_api::errors::{ProgramError, TapeError};
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
-    build_advance_pool_ix, build_create_system_ix, build_expand_system_ix, build_create_archive_ix,
-    build_initialize_mint_ix, build_join_network_ix,
-    build_stake_with_pool_ix,
+    build_advance_pool_ix, build_create_archive_ix, build_create_committee_ix,
+    build_create_epoch_ix, build_create_peer_set_ix, build_create_system_ix,
+    build_initialize_mint_ix, build_join_committee_ix, build_stake_with_pool_ix,
+    build_start_network_ix,
 };
 use tape_api::program::tapedrive::node_pda;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::types::EpochNumber;
 use tape_core::types::coin::TAPE;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -25,6 +29,7 @@ use tracing::info;
 
 const CU_HIGH: u32 = 1_400_000;
 const CU_MED: u32 = 400_000;
+const BOOTSTRAP_EPOCHS: [EpochNumber; 3] = [EpochNumber(0), EpochNumber(1), EpochNumber(2)];
 
 pub struct ChainManager {
     rpc: RpcClient<SolanaRpc>,
@@ -64,6 +69,10 @@ impl ChainManager {
         self.admin.pubkey()
     }
 
+    pub async fn current_epoch(&self) -> Result<EpochNumber> {
+        Ok(self.rpc.get_system().await.context("get_system")?.current_epoch)
+    }
+
     pub async fn airdrop(&self, pubkey: &Pubkey, lamports: u64) -> Result<()> {
         let sig = self
             .sol_rpc
@@ -91,6 +100,7 @@ impl ChainManager {
     /// Programs must already be loaded via solana-test-validator --bpf-program flags.
     pub async fn ensure_chain_initialized(&self, admin_airdrop: u64) -> Result<()> {
         let admin_pub = self.admin.pubkey();
+        let admin_address = Address::from(admin_pub);
 
         info!("airdropping SOL to admin");
         self.airdrop(&admin_pub, admin_airdrop)
@@ -98,90 +108,60 @@ impl ChainManager {
             .context("airdrop admin")?;
 
         info!("ensuring mint exists");
-        let mint_result = self
-            .rpc
-            .send_instructions(
-                &self.admin_signer,
-                vec![build_initialize_mint_ix(admin_pub.into(), admin_pub.into())],
+        self.send_idempotent(
+            "initialize_mint",
+            vec![build_initialize_mint_ix(admin_address, admin_address)],
+        )
+        .await?;
+
+        self.send_idempotent(
+            "create_system",
+            vec![build_create_system_ix(admin_address, admin_address)],
+        )
+        .await?;
+
+        self.send_idempotent(
+            "create_peer_set",
+            vec![build_create_peer_set_ix(admin_address)],
+        )
+        .await?;
+
+        self.send_idempotent(
+            "create_archive",
+            vec![build_create_archive_ix(admin_address, admin_address)],
+        )
+        .await?;
+
+        for epoch in BOOTSTRAP_EPOCHS {
+            self.send_idempotent(
+                &format!("create_epoch({})", epoch.0),
+                vec![build_create_epoch_ix(admin_address, epoch)],
             )
-            .await;
-        match mint_result {
-            Ok(_) => info!("mint initialized"),
-            Err(e) if is_already_initialized(&e) => info!("mint already initialized"),
-            Err(e) => return Err(e).context("initialize_mint"),
-        }
+            .await?;
 
-        match self.rpc.get_system().await {
-            Ok(_) => info!("system account already exists"),
-            Err(RpcError::AccountNotFound(_)) => {
-                info!("creating system account");
-                let result = self
-                    .rpc
-                    .send_instructions(
-                        &self.admin_signer,
-                        vec![build_create_system_ix(admin_pub.into(), admin_pub.into())],
-                    )
-                    .await;
-                match result {
-                    Ok(_) => info!("system account created"),
-                    Err(e) if is_already_initialized(&e) => info!("system account already created"),
-                    Err(e) => return Err(e).context("create_system"),
-                }
-            }
-            Err(RpcError::Deserialization(_)) => {
-                info!("system account exists but is not fully expanded yet");
-            }
-            Err(e) => return Err(e).context("get_system"),
-        }
-
-        info!("expanding system account");
-        for i in 0..10 {
-            let result = self
-                .rpc
-                .send_instructions(
-                    &self.admin_signer,
-                    vec![build_expand_system_ix(admin_pub.into(), admin_pub.into())],
-                )
-                .await;
-
-            match result {
-                Ok(_) => {}
-                Err(e) => {
-                    let es = format!("{e:?}");
-                    if es.contains("AccountAlreadyInitialized")
-                        || es.contains("already initialized")
-                        || is_account_state_pending_error(&es)
-                    {
-                        info!(iterations = i + 1, "system expansion complete");
-                        break;
-                    }
-                    return Err(e).context("expand_system");
-                }
-            }
-        }
-
-        let epoch_exists = self.rpc.get_epoch().await.is_ok();
-        let archive_exists = self.rpc.get_archive().await.is_ok();
-        if epoch_exists && archive_exists {
-            info!("archive/epoch already initialized");
-        } else {
-            info!("initializing archive/epoch");
-            let result = self
-                .rpc
-                .send_instructions(
-                    &self.admin_signer,
-                    vec![build_create_archive_ix(admin_pub.into(), admin_pub.into())],
-                )
-                .await;
-            match result {
-                Ok(_) => info!("archive/epoch initialized"),
-                Err(e) if is_already_initialized(&e) => info!("archive/epoch already initialized"),
-                Err(e) => return Err(e).context("initialize archive/epoch"),
-            }
+            self.send_idempotent(
+                &format!("create_committee({})", epoch.0),
+                vec![build_create_committee_ix(admin_address, epoch)],
+            )
+            .await?;
         }
 
         info!("chain initialization complete");
         Ok(())
+    }
+
+    async fn send_idempotent(&self, label: &str, ixs: Vec<Instruction>) -> Result<()> {
+        match self.rpc.send_instructions(&self.admin_signer, ixs).await {
+            Ok(_) => {
+                info!(%label, "chain setup step complete");
+                Ok(())
+            }
+            Err(e) if is_already_initialized(&e) => {
+                info!(%label, "chain setup step already complete");
+                Ok(())
+            }
+            Err(e) => Err(e).with_context(|| label.to_string()),
+        }
     }
 
     pub async fn stake_node(&self, authority_keypair: &Keypair, amount_tape: u64) -> Result<()> {
@@ -287,14 +267,65 @@ impl ChainManager {
         }
     }
 
-    pub async fn join_network(&self, authority_keypair: &Keypair) -> Result<()> {
+    pub async fn start_network(
+        &self,
+        genesis_authorities: &[Pubkey],
+        spool_groups: u64,
+    ) -> Result<()> {
+        if self.current_epoch().await? != EpochNumber(0) {
+            info!("network already started");
+            return Ok(());
+        }
+
+        if genesis_authorities.len() != GROUP_SIZE {
+            anyhow::bail!(
+                "start_network requires exactly {GROUP_SIZE} genesis nodes, got {}",
+                genesis_authorities.len()
+            );
+        }
+        if spool_groups == 0 {
+            anyhow::bail!("spool_groups must be > 0");
+        }
+
+        let genesis_nodes = genesis_authorities
+            .iter()
+            .map(|authority| node_pda(Address::from(*authority)).0)
+            .collect::<Vec<_>>();
+
+        let ix = build_start_network_ix(
+            self.admin.pubkey().into(),
+            GROUP_SIZE as u64,
+            spool_groups,
+            &genesis_nodes,
+        );
+
+        let result = self.rpc.send_instructions(&self.admin_signer, vec![ix]).await;
+        match result {
+            Ok(_) => {
+                info!(spool_groups, "network started");
+                Ok(())
+            }
+            Err(e) => {
+                if is_bad_epoch_state(&e) {
+                    info!("start_network skipped (network already live)");
+                    Ok(())
+                } else {
+                    Err(e).context("start_network")
+                }
+            }
+        }
+    }
+
+    pub async fn join_committee(&self, authority_keypair: &Keypair) -> Result<()> {
         let authority = authority_keypair.pubkey();
         let authority_address = Address::from(authority);
         let (node_address, _) = node_pda(authority_address);
-        let ix = build_join_network_ix(
+        let current_epoch = self.current_epoch().await?;
+        let ix = build_join_committee_ix(
             self.admin.pubkey().into(),
             authority_address,
             node_address,
+            current_epoch,
         );
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
         let authority_signer = CryptoKeypair::from_solana_keypair(authority_keypair)
@@ -315,7 +346,7 @@ impl ChainManager {
                 if is_join_done(&e) {
                     Ok(())
                 } else {
-                    Err(e).context("join_network")
+                    Err(e).context("join_committee")
                 }
             }
         }
@@ -329,20 +360,39 @@ fn program_error(error: &rpc::RpcError) -> Option<ProgramError> {
 fn is_already_advanced(error: &rpc::RpcError) -> bool {
     matches!(
         program_error(error),
-        Some(ProgramError::Tape(TapeError::AlreadyAdvanced))
+        Some(ProgramError::Tape(
+            TapeError::AlreadyAdvanced | TapeError::BadEpochState
+        ))
     )
 }
 
 fn is_join_done(error: &rpc::RpcError) -> bool {
     matches!(
         program_error(error),
-        Some(ProgramError::Tape(TapeError::UnexpectedState))
+        Some(ProgramError::Tape(
+            TapeError::UnexpectedState | TapeError::NodeStale
+        ))
+    )
+}
+
+fn is_bad_epoch_state(error: &rpc::RpcError) -> bool {
+    matches!(
+        program_error(error),
+        Some(ProgramError::Tape(TapeError::BadEpochState))
     )
 }
 
 fn is_already_initialized(error: &rpc::RpcError) -> bool {
+    if matches!(
+        program_error(error),
+        Some(ProgramError::Tape(TapeError::UnexpectedState))
+    ) {
+        return true;
+    }
+
     let message = error.to_string().to_lowercase();
     message.contains("accountalreadyinitialized")
         || message.contains("already initialized")
         || message.contains("already in use")
+        || message.contains("requires an uninitialized account")
 }

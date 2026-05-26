@@ -7,6 +7,7 @@ pub struct TestnetConfig {
     pub base_port: u16,
     pub sol_airdrop: u64,
     pub stake_amount: u64,
+    pub spool_groups: u64,
 }
 
 impl Default for TestnetConfig {
@@ -18,6 +19,7 @@ impl Default for TestnetConfig {
             base_port: 4000,
             sol_airdrop: 50_000_000_000,
             stake_amount: 1_000_000,
+            spool_groups: 1,
         }
     }
 }

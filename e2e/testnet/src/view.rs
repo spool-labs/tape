@@ -1,5 +1,4 @@
 use serde::Serialize;
-use tape_core::erasure::SPOOL_COUNT;
 use tape_protocol::api::NodeStats;
 
 #[derive(Clone, Serialize, Default)]
@@ -8,6 +7,7 @@ pub struct ClusterView {
     pub phase: String,
     pub phase_weight: Option<u64>,
     pub slot: u64,
+    pub live_group_count: u64,
     pub committee_prev_size: usize,
     pub committee_size: usize,
     pub committee_next_size: usize,
@@ -29,8 +29,8 @@ pub struct NodeView {
 
 #[derive(Clone, Serialize, Default)]
 pub struct SpoolView {
-    pub spool: u16,
-    pub owner_node_id: Option<u64>,
+    pub spool: u64,
+    pub owner_node: Option<String>,
     pub owner_local_id: Option<usize>,
 }
 
@@ -56,13 +56,7 @@ impl Default for TestnetView {
         Self {
             cluster: ClusterView::default(),
             nodes: Vec::new(),
-            spools: (0..SPOOL_COUNT)
-                .map(|spool| SpoolView {
-                    spool: spool as u16,
-                    owner_node_id: None,
-                    owner_local_id: None,
-                })
-                .collect(),
+            spools: Vec::new(),
             uploads: Vec::new(),
         }
     }

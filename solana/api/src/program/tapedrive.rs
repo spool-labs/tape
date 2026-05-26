@@ -16,7 +16,7 @@ pub const FUTURE_EPOCHS:          usize = 256;
 pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
 pub const EPOCH_DURATION:           i64 = 100;  // 100 seconds for local testing (60s testnet, 604800s mainnet)
 
-tape_solana::declare_id!("FyT7KRYoqq7TsrdKokuuFpQSY5Krbx1Wz1JjxmXyBih8");
+tape_solana::declare_id!("EHRKuwkebwHV2XZaaKoQFi4JD9i5uGuLHheHPUFmmBMv");
 
 pub const PROGRAM_ID: [u8; 32] =
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };

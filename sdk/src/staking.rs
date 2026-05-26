@@ -16,7 +16,7 @@ use tape_core::staking::{PoolRate, RateSpan};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::address::Address;
-use tape_retry::{retry_if, RetryConfig};
+use tape_retry::{retry_if, RetryConfig, Retryable};
 
 use tape_protocol::Api;
 
@@ -220,6 +220,21 @@ fn should_retry_pool_rate(err: &TapedriveError) -> bool {
         TapedriveError::Rpc(err) => {
             matches!(parse_tape_error(err), Some(TapeError::RateMissing | TapeError::BadProof))
         }
+        TapedriveError::Peer(err) => err.is_retryable(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_protocol::api::ApiError;
+
+    use super::*;
+
+    #[test]
+    fn pool_rate_retries_stale_track_proof() {
+        assert!(should_retry_pool_rate(&TapedriveError::Peer(
+            ApiError::StaleTrackProof,
+        )));
     }
 }
