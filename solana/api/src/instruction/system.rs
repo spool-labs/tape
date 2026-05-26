@@ -158,7 +158,7 @@ pub fn build_start_network_ix(
         AccountMeta::new(committee_address.into(), false),
         AccountMeta::new(candidate_epoch_address.into(), false),
         AccountMeta::new(candidate_committee_address.into(), false),
-        AccountMeta::new_readonly(peer_set_address.into(), false),
+        AccountMeta::new(peer_set_address.into(), false),
         AccountMeta::new(group_address.into(), false),
         AccountMeta::new(snapshot_tape_address.into(), false),
         AccountMeta::new_readonly(subsidy_address.into(), false),

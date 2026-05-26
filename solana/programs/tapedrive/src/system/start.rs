@@ -76,6 +76,15 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     archive.schedule = EpochSchedule::new_at(target);
     archive.burn_fee_bps = burn_fee_bps;
     archive.subsidy_decay_bps = subsidy_decay_bps;
+    let genesis_preferences = NodePreferences {
+        storage_capacity: archive.storage_capacity,
+        storage_price: archive.storage_price,
+        committee_size,
+        spool_groups,
+        min_version: system.min_version,
+        burn_fee_bps,
+        subsidy_decay_bps,
+    };
 
     subsidy_info
         .is_subsidy()?;
@@ -178,9 +187,11 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     peer_set_info
+        .is_writable()?
         .is_peer_set()?;
 
-    let (peer_header, peers) = PeerSet::read(peer_set_info, &tapedrive::ID)?;
+    let (peer_header, peers) =
+        PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
 
     if peer_header.peers.capacity < committee_size {
         return Err(TapeError::ListFull.into());
@@ -228,7 +239,12 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let snapshot_tape = snapshot_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
     *snapshot_tape = Tape::snapshot(bootstrap_snapshot_epoch);
 
-    let active_peers = &peers[..peer_header.peers.count as usize];
+    let active_peers = &mut peers[..peer_header.peers.count as usize];
+
+    for peer in active_peers.iter_mut() {
+        peer.preferences = genesis_preferences;
+    }
+
     for (i, member) in members[..committee_size as usize].iter_mut().enumerate() {
         if member.stake.is_zero() {
             return Err(TapeError::NotStaked.into());
@@ -247,15 +263,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     epoch.total_groups = 1;
     epoch.total_assigned = StorageUnits::zero();
-    epoch.preferences = NodePreferences {
-        storage_capacity: archive.storage_capacity,
-        storage_price: archive.storage_price,
-        committee_size,
-        spool_groups,
-        min_version: system.min_version,
-        burn_fee_bps,
-        subsidy_decay_bps,
-    };
+    epoch.preferences = genesis_preferences;
 
     let clock = Clock::get()?;
     epoch.start_slot = SlotNumber(clock.slot);
@@ -402,6 +410,22 @@ mod tests {
         let subsidy_amount = TAPE(50);
         let burn_fee_bps = DEFAULT_BURN_FEE_BPS;
         let subsidy_decay_bps = DEFAULT_SUBSIDY_DECAY_BPS;
+        let genesis_preferences = NodePreferences {
+            storage_capacity: StorageUnits::zero(),
+            storage_price: TAPE::zero(),
+            committee_size,
+            spool_groups,
+            min_version: VersionId(0),
+            burn_fee_bps,
+            subsidy_decay_bps,
+        };
+        let expected_peers_after_start: Vec<Peer> = expected_peers
+            .iter()
+            .map(|peer| Peer {
+                preferences: genesis_preferences,
+                ..*peer
+            })
+            .collect();
         let instruction = build_start_network_ix(
             fee_payer.into(),
             subsidy_authority.into(),
@@ -469,15 +493,7 @@ mod tests {
                     Epoch {
                         total_groups: 1,
                         total_assigned: StorageUnits::zero(),
-                        preferences: NodePreferences {
-                            storage_capacity: StorageUnits::zero(),
-                            storage_price: TAPE::zero(),
-                            committee_size,
-                            spool_groups,
-                            min_version: VersionId(0),
-                            burn_fee_bps,
-                            subsidy_decay_bps,
-                        },
+                        preferences: genesis_preferences,
                         start_slot: SlotNumber(slot),
                         start_time: now,
                         state: EpochState {
@@ -518,8 +534,8 @@ mod tests {
                     .build(),
                 Check::account(&Pubkey::from(peer_set_address))
                     .data(PeerSet {
-                        peers: Tail::new(peer_capacity, expected_peers.len() as u64),
-                    }.pack_with(&expected_peers).as_ref())
+                        peers: Tail::new(peer_capacity, expected_peers_after_start.len() as u64),
+                    }.pack_with(&expected_peers_after_start).as_ref())
                     .build(),
             ],
         );
