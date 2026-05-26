@@ -1,33 +1,55 @@
-//! Bootstrap: runs before supervisor and replays missing finalized
-//! snapshots so the live ingestor can resume at the slot right
-//! after the last replayed snapshot's end.
+//! Bootstrap catch-up runs before supervisor startup. It may fetch current
+//! protocol state for peer discovery and planning, but historical blocks are
+//! applied only through the replay/store path. Live services start after the
+//! store has caught up to the checkpoint boundary.
 
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use rpc::{CommitmentLevel, Rpc};
 use store::Store;
 use tape_core::types::{EpochNumber, SlotNumber};
-use tape_protocol::Api;
+use tape_protocol::{fetch::fetch_state_with_commitment, Api, ProtocolState};
+use tape_retry::{retry_if, RetryConfig};
 use tape_store::ops::MetaOps;
 
 use crate::config::node::NodeConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::bootstrap::{discovery, fetch, replay};
+use crate::features::bootstrap::{block, discovery, fetch};
+use crate::features::replay::engine::ReplayEngine;
 
 const BOOTSTRAP_EPOCH: EpochNumber = EpochNumber(0);
 const FIRST_LIVE_EPOCH: EpochNumber = EpochNumber(1);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapReplayPhase {
+    BlockReplay {
+        start_slot: SlotNumber,
+        end_slot: SlotNumber,
+        start_epoch: EpochNumber,
+    },
+    SnapshotReplay {
+        epoch: EpochNumber,
+    },
+    LiveReplay {
+        start_slot: SlotNumber,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct ProtocolCheckpoint {
+    state: ProtocolState,
+    slot: SlotNumber,
+}
+
 /// Run the bootstrap phase and return the slot the live ingestor should
 /// start from.
 ///
-/// When replay runs, the returned slot is the one immediately after the
-/// last replayed snapshot. Otherwise the slot is resolved from (in
-/// order): the explicit `config.solana.start_slot` override, the
-/// persisted `sync_cursor` from prior runs, the genesis setup slot range,
-/// or the current epoch's on-chain `start_slot`.
+/// The returned slot is always the first slot that live services should see.
+/// Historical catch-up blocks are replayed directly into the store before the
+/// supervisor starts.
 pub async fn run<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &NodeConfig,
@@ -38,127 +60,383 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let epochs = discovery::discover_missing_epochs(context.as_ref()).await?;
+    let checkpoint = fetch_protocol_checkpoint(context, cancel).await?;
+    publish_protocol_checkpoint(context, &checkpoint).await?;
 
-    if epochs.is_empty() {
-        let start_slot = resolve_no_replay_start(context, config).await?;
-        debug!(
-            node_id = context.node_id().0,
-            start_slot = start_slot.0,
-            "bootstrap: nothing to replay"
-        );
-        return Ok(start_slot);
-    }
+    let start_slot = run_replay_phases(
+        context, 
+        config, 
+        &checkpoint, 
+        cancel
+    ).await?;
 
     info!(
         node_id = context.node_id().0,
-        count = epochs.len(),
-        first = epochs.first().map(|e| e.0),
-        last = epochs.last().map(|e| e.0),
-        "bootstrap: starting replay"
-    );
-
-    let mut last_end_slot: Option<SlotNumber> = None;
-    for epoch in epochs {
-        if cancel.is_cancelled() {
-            return Err(NodeError::Store("bootstrap: cancelled".into()));
-        }
-
-        let log = fetch::fetch_and_decode_epoch(context, epoch, cancel).await?;
-        replay::apply_snapshot_log(context.store.as_ref(), &log)?;
-        advance_cursors(context, epoch, log.end_slot)?;
-        last_end_slot = Some(log.end_slot);
-
-        info!(
-            epoch = epoch.0,
-            entries = log.entries.len(),
-            end_slot = log.end_slot.0,
-            "bootstrap: epoch replayed"
-        );
-    }
-
-    // Resume ingestion at the slot right after the last replayed snapshot's
-    // end, so there's no gap and no double-application at the live boundary.
-    let start_slot = match last_end_slot {
-        Some(end) => end.next(),
-        // Defensive: if the epochs list was non-empty we must have set
-        // last_end_slot at least once. Fall through to the same
-        // resolver the no-replay path uses rather than assuming.
-        None => resolve_no_replay_start(context, config).await?,
-    };
-
-    info!(
+        checkpoint_slot = checkpoint.slot.0,
         start_slot = start_slot.0,
         "bootstrap: complete, handing start slot to ingestor"
     );
+
     Ok(start_slot)
 }
 
-/// Pick a start slot when no snapshots need replaying. Order:
-/// 1. Explicit operator override (`config.solana.start_slot`).
-/// 2. Persisted `sync_cursor` from prior runs (resume where we left off).
-/// 3. Epoch 0's start slot when the network is in its first live epoch.
-/// 4. Current epoch's `start_slot` from chain (fresh first run).
-async fn resolve_no_replay_start<Db, Cluster, Blockchain>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
+async fn run_replay_phases<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &NodeConfig,
+    checkpoint: &ProtocolCheckpoint,
+    cancel: &CancellationToken,
 ) -> Result<SlotNumber, NodeError>
 where
-    Db: Store,
-    Cluster: Api,
-    Blockchain: Rpc,
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
 {
-    if let Some(override_slot) = config.solana.start_slot {
-        debug!(start_slot = override_slot.0, "bootstrap: using configured start_slot override");
-        return Ok(override_slot);
+    if let Some(start_slot) = config.solana.start_slot {
+        debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+        return Ok(start_slot);
     }
 
     let cursor = context
         .store
         .get_sync_cursor()
         .map_err(|error| NodeError::Store(format!("get_sync_cursor: {error}")))?;
-    if let Some(c) = cursor {
-        let resume = c.next();
-        debug!(
-            cursor = c.0,
-            start_slot = resume.0,
-            "bootstrap: resuming from persisted sync_cursor"
-        );
-        return Ok(resume);
+
+    let mut replay = ReplayEngine::new(
+        context.store.as_ref(), 
+        BOOTSTRAP_EPOCH
+    );
+
+    if let Some(cursor) = cursor {
+        let start_slot = if cursor < checkpoint.slot {
+            let start_slot = cursor.next();
+            let start_epoch = epoch_for_slot(context, checkpoint.state.epoch(), start_slot).await?;
+
+            execute_block_phase(
+                context,
+                &mut replay,
+                BootstrapReplayPhase::BlockReplay {
+                    start_slot,
+                    end_slot: checkpoint.slot,
+                    start_epoch,
+                },
+                cancel,
+            )
+            .await?;
+
+            checkpoint.slot.next()
+        } else {
+            cursor.next()
+        };
+
+        debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+        return Ok(start_slot);
     }
 
-    let system = context
-        .rpc
-        .get_system_with_commitment(CommitmentLevel::Finalized)
-        .await?;
+    let current_epoch = checkpoint.state.epoch();
+    if current_epoch <= FIRST_LIVE_EPOCH {
+        replay_base_epochs_to_checkpoint(
+            context, 
+            &mut replay, 
+            current_epoch, 
+            checkpoint.slot, 
+            cancel
+        ).await?;
 
-    if system.current_epoch <= FIRST_LIVE_EPOCH {
+        let start_slot = checkpoint.slot.next();
+        debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+
+        return Ok(start_slot);
+    }
+
+    replay_epoch_zero_base(context, &mut replay, cancel).await?;
+
+    let snapshot_epochs =
+        discovery::discover_missing_epochs(context.as_ref(), current_epoch).await?;
+
+    let mut last_snapshot: Option<(EpochNumber, SlotNumber)> = None;
+    for epoch in snapshot_epochs {
+        last_snapshot = Some(execute_snapshot_phase(
+            context,
+            &mut replay,
+            BootstrapReplayPhase::SnapshotReplay { epoch },
+            cancel,
+        )
+        .await?);
+    }
+
+    match last_snapshot {
+        Some((epoch, end_slot)) => {
+            execute_block_phase(
+                context,
+                &mut replay,
+                BootstrapReplayPhase::BlockReplay {
+                    start_slot: end_slot.next(),
+                    end_slot: checkpoint.slot,
+                    start_epoch: epoch,
+                },
+                cancel,
+            )
+            .await?;
+        }
+        None => {
+            let epoch = context
+                .rpc
+                .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized)
+                .await?;
+
+            execute_block_phase(
+                context,
+                &mut replay,
+                BootstrapReplayPhase::BlockReplay {
+                    start_slot: epoch.start_slot,
+                    end_slot: checkpoint.slot,
+                    start_epoch: FIRST_LIVE_EPOCH,
+                },
+                cancel,
+            ).await?;
+        }
+    }
+
+    let start_slot = checkpoint.slot.next();
+    debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+    Ok(start_slot)
+}
+
+async fn replay_base_epochs_to_checkpoint<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    replay: &mut ReplayEngine<'_, Db>,
+    current_epoch: EpochNumber,
+    checkpoint_slot: SlotNumber,
+    cancel: &CancellationToken,
+) -> Result<(), NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    if current_epoch.is_zero() {
         let epoch = context
             .rpc
             .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
             .await?;
 
-        debug!(
-            epoch = system.current_epoch.0,
-            start_slot = epoch.start_slot.0,
-            "bootstrap: fresh node in first live epoch, replaying from epoch 0"
-        );
+        execute_block_phase(
+            context,
+            replay,
+            BootstrapReplayPhase::BlockReplay {
+                start_slot: epoch.start_slot,
+                end_slot: checkpoint_slot,
+                start_epoch: BOOTSTRAP_EPOCH,
+            },
+            cancel,
+        ).await?;
 
-        return Ok(epoch.start_slot);
+        return Ok(());
     }
+
+    replay_epoch_zero_base(context, replay, cancel).await?;
 
     let epoch = context
         .rpc
-        .get_epoch_with_commitment(system.current_epoch, CommitmentLevel::Finalized)
+        .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized)
         .await?;
 
-    debug!(
-        epoch = epoch.id.0,
-        start_slot = epoch.start_slot.0,
-        "bootstrap: fresh node, using current epoch's start_slot"
+    execute_block_phase(
+        context,
+        replay,
+        BootstrapReplayPhase::BlockReplay {
+            start_slot: epoch.start_slot,
+            end_slot: checkpoint_slot,
+            start_epoch: FIRST_LIVE_EPOCH,
+        },
+        cancel,
+    ).await
+}
+
+async fn replay_epoch_zero_base<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    replay: &mut ReplayEngine<'_, Db>,
+    cancel: &CancellationToken,
+) -> Result<(), NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let epoch0 = context
+        .rpc
+        .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
+        .await?;
+
+    let epoch1 = context
+        .rpc
+        .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized)
+        .await?;
+
+    let Some(end_slot) = epoch1.start_slot.checked_prev() else {
+        return Ok(());
+    };
+
+    execute_block_phase(
+        context,
+        replay,
+        BootstrapReplayPhase::BlockReplay {
+            start_slot: epoch0.start_slot,
+            end_slot,
+            start_epoch: BOOTSTRAP_EPOCH,
+        },
+        cancel,
+    ).await
+}
+
+async fn execute_block_phase<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    replay: &mut ReplayEngine<'_, Db>,
+    phase: BootstrapReplayPhase,
+    cancel: &CancellationToken,
+) -> Result<(), NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let BootstrapReplayPhase::BlockReplay {
+        start_slot,
+        end_slot,
+        start_epoch,
+    } = phase else {
+        return Ok(());
+    };
+
+    if start_slot > end_slot {
+        return Ok(());
+    }
+
+    replay.set_current_epoch(start_epoch);
+    let events = block::replay_finalized_range(
+        context,
+        replay,
+        start_slot,
+        end_slot,
+        cancel,
+    )
+    .await?;
+
+    info!(
+        start_slot = start_slot.0,
+        end_slot = end_slot.0,
+        start_epoch = start_epoch.0,
+        events,
+        "bootstrap: base block replayed"
     );
 
-    Ok(epoch.start_slot)
+    Ok(())
+}
+
+async fn execute_snapshot_phase<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    replay: &mut ReplayEngine<'_, Db>,
+    phase: BootstrapReplayPhase,
+    cancel: &CancellationToken,
+) -> Result<(EpochNumber, SlotNumber), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let BootstrapReplayPhase::SnapshotReplay { epoch } = phase else {
+        return Err(NodeError::Store("bootstrap: expected snapshot phase".into()));
+    };
+
+    if cancel.is_cancelled() {
+        return Err(NodeError::Store("bootstrap: cancelled".into()));
+    }
+
+    let log = fetch::fetch_and_decode_epoch(context, epoch, cancel).await?;
+    replay.apply_snapshot_log(&log)?;
+    advance_cursors(context, epoch, log.end_slot)?;
+
+    info!(
+        epoch = epoch.0,
+        entries = log.entries.len(),
+        end_slot = log.end_slot.0,
+        "bootstrap: snapshot replayed"
+    );
+
+    Ok((epoch, log.end_slot))
+}
+
+async fn fetch_protocol_checkpoint<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    cancel: &CancellationToken,
+) -> Result<ProtocolCheckpoint, NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let state = retry_if(
+        RetryConfig::infinite(),
+        Some(cancel),
+        || fetch_state_with_commitment(&context.rpc, CommitmentLevel::Finalized),
+        |error| error.is_retriable() && !error.is_skipped_slot(),
+    )
+    .await
+    .map_err(NodeError::from)?;
+
+    let slot = SlotNumber(context.rpc.get_finalized_slot().await?);
+    Ok(ProtocolCheckpoint { state, slot })
+}
+
+async fn publish_protocol_checkpoint<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    checkpoint: &ProtocolCheckpoint,
+) -> Result<(), NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    context.set_state(checkpoint.state.clone())?;
+    if let Err(error) = context.refresh_peers().await {
+        warn!(error = %error, "peer resolution failed during bootstrap");
+    }
+
+    debug!(
+        epoch = checkpoint.state.epoch().0,
+        slot = checkpoint.slot.0,
+        phase = ?checkpoint.state.phase(),
+        "bootstrap: published protocol checkpoint"
+    );
+
+    Ok(())
+}
+
+async fn epoch_for_slot<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    current_epoch: EpochNumber,
+    slot: SlotNumber,
+) -> Result<EpochNumber, NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let mut selected = BOOTSTRAP_EPOCH;
+    for raw in 0..=current_epoch.0 {
+        let epoch_number = EpochNumber(raw);
+        let epoch = context
+            .rpc
+            .get_epoch_with_commitment(epoch_number, CommitmentLevel::Finalized)
+            .await?;
+        if epoch.start_slot <= slot {
+            selected = epoch_number;
+        } else {
+            break;
+        }
+    }
+
+    Ok(selected)
 }
 
 fn advance_cursors<Db, Cluster, Blockchain>(
@@ -188,7 +466,6 @@ where
 mod tests {
     use std::time::Duration;
 
-    use rpc::CommitmentLevel;
     use tape_core::types::{EpochNumber, SlotNumber};
     use tape_store::ops::MetaOps;
     use tokio::time::timeout;
@@ -197,7 +474,7 @@ mod tests {
     use crate::config::node::NodeConfig;
     use crate::harness::{NodeHarness, TestContext};
 
-    use super::{advance_cursors, run, BOOTSTRAP_EPOCH, FIRST_LIVE_EPOCH};
+    use super::{advance_cursors, run, FIRST_LIVE_EPOCH};
 
     async fn test_context_at(epoch: EpochNumber) -> TestContext {
         NodeHarness::builder()
@@ -246,22 +523,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_live_epoch_starts_at_epoch_zero() {
+    async fn first_live_epoch_replays_to_checkpoint() {
         let context = test_context_at(FIRST_LIVE_EPOCH).await;
         let config = NodeConfig::default();
         let cancel = CancellationToken::new();
-        let epoch = context
-            .rpc
-            .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
-            .await
-            .expect("epoch 0");
+        let checkpoint = SlotNumber(context.rpc.get_finalized_slot().await.expect("finalized"));
 
         let slot = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
             .await
             .expect("bootstrap completed in time")
             .expect("bootstrap returned ok");
 
-        assert_eq!(slot, epoch.start_slot);
+        assert_eq!(slot, checkpoint.next());
+        assert_eq!(context.store.get_sync_cursor().unwrap(), Some(checkpoint));
     }
 
     #[tokio::test]

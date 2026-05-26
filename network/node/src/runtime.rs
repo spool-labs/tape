@@ -332,8 +332,6 @@ where
     Blockchain: Rpc + 'static,
 {
     let cancel = CancellationToken::new();
-    initialize_context(&context, &cancel).await?;
-
     let start_slot = bootstrap::run(&context, &config, &cancel).await?;
     supervise_with_context(context, config, start_slot, cancel).await
 }
@@ -348,8 +346,6 @@ where
     Blockchain: Rpc + 'static,
 {
     let cancel = CancellationToken::new();
-    initialize_context(&context, &cancel).await?;
-
     let start_slot = bootstrap::run(&context, &config, &cancel).await?;
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();

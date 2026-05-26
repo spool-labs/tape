@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_store::ops::EventLogOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -14,7 +12,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::replay::capture::capture_block;
+use crate::features::replay::engine::ReplayEngine;
 use crate::features::replay::types::ReplayBatch;
 
 pub struct ReplayManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -45,7 +43,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
             "replay manager started"
         );
 
-        let mut current_epoch = self.context.state().epoch();
+        let mut replay = ReplayEngine::new(
+            self.context.store.as_ref(),
+            self.context.state().epoch(),
+        );
 
         loop {
             tokio::select! {
@@ -59,7 +60,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
                         };
                     };
 
-                    current_epoch = self.persist_block(current_epoch, block).await?;
+                    self.persist_block(&mut replay, block).await?;
                 }
             }
         }
@@ -67,21 +68,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
 
     async fn persist_block(
         &self,
-        current_epoch: EpochNumber,
+        replay: &mut ReplayEngine<'_, Db>,
         block: Arc<ParsedBlock>,
-    ) -> Result<EpochNumber, NodeError> {
-        let captured = capture_block(current_epoch, &block)?;
-
-        for entry in &captured.events {
-            self.context
-                .store
-                .append_event(entry.epoch, block.slot, &entry.event)
-                .map_err(store_error)?;
-        }
-
-        let next_epoch = captured.next_epoch;
-        let batch = captured.into_batch(block.slot);
-        let event_count = batch.events.len();
+    ) -> Result<(), NodeError> {
+        let (batch, event_count) = replay.capture_and_journal(&block)?;
 
         send_replay_batch(&self.store_tx, batch).await?;
         self.context.metrics.add_events(event_count as u64);
@@ -90,14 +80,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
             node_id = self.context.node_id().0,
             slot = block.slot.0,
             journaled = event_count,
-            next_epoch = next_epoch.0,
+            next_epoch = replay.current_epoch().0,
             "replay journal persisted"
         );
 
-        Ok(next_epoch)
+        Ok(())
     }
-}
-
-fn store_error(error: impl std::fmt::Display) -> NodeError {
-    NodeError::Store(error.to_string())
 }

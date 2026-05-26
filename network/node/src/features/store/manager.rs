@@ -59,7 +59,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluster, Blockch
     }
 }
 
-fn persist_batch<Db: Store>(store: &TapeStore<Db>, batch: &ReplayBatch) -> Result<(), NodeError> {
+pub(crate) fn persist_batch<Db: Store>(
+    store: &TapeStore<Db>,
+    batch: &ReplayBatch,
+) -> Result<(), NodeError> {
     apply_slot(store, batch.slot, &batch.events)?;
     persist_raw_tracks(store, &batch.raw_tracks)?;
 

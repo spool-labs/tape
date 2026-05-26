@@ -6,35 +6,20 @@
 //! spawning. Events within a slot apply in their recorded order; slots apply
 //! in the order the log was built (which mirrors block processing order).
 
-use store::Store;
 use tape_core::snapshot::replay::SnapshotLog;
+use store::Store;
 use tape_store::TapeStore;
-use tracing::debug;
 
 use crate::core::error::NodeError;
-use crate::features::store::apply::apply_event;
+use crate::features::replay::engine::ReplayEngine;
 
 /// Replay every event in the snapshot log in (slot-then-position) order.
 pub fn apply_snapshot_log<Db: Store>(
     store: &TapeStore<Db>,
     log: &SnapshotLog,
 ) -> Result<(), NodeError> {
-    let event_count: usize = log.entries.iter().map(|e| e.events.len()).sum();
-    debug!(
-        epoch = log.epoch.0,
-        entries = log.entries.len(),
-        events = event_count,
-        start_slot = log.start_slot.0,
-        end_slot = log.end_slot.0,
-        "bootstrap: applying snapshot log"
-    );
-
-    for entry in &log.entries {
-        for event in &entry.events {
-            apply_event(store, entry.slot, event)?;
-        }
-    }
-    Ok(())
+    ReplayEngine::new(store, log.epoch)
+        .apply_snapshot_log(log)
 }
 
 #[cfg(test)]

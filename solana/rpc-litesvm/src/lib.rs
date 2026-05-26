@@ -544,7 +544,7 @@ impl Rpc for LiteSvmRpc {
 
         match result {
             Ok(meta) => Ok(meta.signature.into()),
-            Err(failed) => Err(RpcError::Transaction(failed.err.to_string())),
+            Err(failed) => Err(RpcError::Transaction(transaction_error(&failed.err, &failed.meta.logs))),
         }
     }
 
@@ -586,4 +586,15 @@ impl Default for LiteSvmRpc {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn transaction_error(
+    error: &solana_sdk::transaction::TransactionError,
+    logs: &[String],
+) -> String {
+    if logs.is_empty() {
+        return error.to_string();
+    }
+
+    format!("{}\n{}", error, logs.join("\n"))
 }

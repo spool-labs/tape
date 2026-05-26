@@ -20,13 +20,13 @@ const FIRST_SNAPSHOT_EPOCH: EpochNumber = EpochNumber(1);
 /// replay, oldest -> newest.
 pub async fn discover_missing_epochs<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
+    current: EpochNumber,
 ) -> Result<Vec<EpochNumber>, NodeError>
 where
     Db: Store,
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let current = context.state().epoch();
     let Some(newest) = newest_finalized_epoch(context, current).await? else {
         debug!(
             current = current.0,
@@ -149,14 +149,18 @@ mod tests {
     async fn empty_when_no_finalized_snapshots() {
         let context = context_at(EpochNumber(3)).await;
         // No snapshot tape written for prev or prev-prev.
-        let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
+        let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
+            .await
+            .unwrap();
         assert!(epochs.is_empty());
     }
 
     #[tokio::test]
     async fn empty_at_epoch_zero() {
         let context = context_at(EpochNumber(0)).await;
-        let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
+        let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
+            .await
+            .unwrap();
         assert!(epochs.is_empty());
     }
 
@@ -166,7 +170,9 @@ mod tests {
         // prev (3) has a finalized snapshot tape, no cursor -> start = 1.
         write_snapshot_tape(&context, EpochNumber(3));
 
-        let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
+        let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
+            .await
+            .unwrap();
         assert_eq!(
             epochs,
             vec![
@@ -183,7 +189,9 @@ mod tests {
         // prev (4) has no snapshot tape, prev_prev (3) does.
         write_snapshot_tape(&context, EpochNumber(3));
 
-        let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
+        let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
+            .await
+            .unwrap();
         assert_eq!(epochs.last(), Some(&EpochNumber(3)));
         assert_eq!(epochs.len(), 3);
     }
@@ -197,7 +205,9 @@ mod tests {
             .set_bootstrap_target_epoch(EpochNumber(6))
             .unwrap();
 
-        let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
+        let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
+            .await
+            .unwrap();
         assert_eq!(
             epochs,
             vec![
@@ -218,7 +228,9 @@ mod tests {
             .set_bootstrap_target_epoch(EpochNumber(9))
             .unwrap();
 
-        let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
+        let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
+            .await
+            .unwrap();
         assert!(epochs.is_empty());
     }
 
@@ -227,7 +239,9 @@ mod tests {
         let context = context_at(EpochNumber(5)).await;
         // Neither prev (4) nor prev_prev (3) has a snapshot tape.
 
-        let epochs = discover_missing_epochs(context.as_ref()).await.unwrap();
+        let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
+            .await
+            .unwrap();
         assert!(epochs.is_empty());
     }
 }
