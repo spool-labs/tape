@@ -58,6 +58,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_archive_ata()?;
 
     mint_info
+        .is_writable()?
         .is_mint()?;
 
     let (tape_address, _) = tape_pda((*authority_info.key).into());

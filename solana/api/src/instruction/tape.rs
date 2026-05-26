@@ -66,7 +66,7 @@ pub fn build_reserve_tape_ix(
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(archive_address.into(), false),
             AccountMeta::new(archive_ata.into(), false),
-            AccountMeta::new_readonly(mint_address.into(), false),
+            AccountMeta::new(mint_address.into(), false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),

@@ -353,7 +353,7 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let snapshot_tape = Tape::snapshot(curr);
+        let snapshot_tape = Tape::snapshot(prev);
 
         let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
 
