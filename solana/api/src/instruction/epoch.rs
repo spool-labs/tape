@@ -3,6 +3,7 @@ use tape_solana::*;
 use tape_crypto::address::Address;
 use crate::program::tapedrive;
 use crate::program::tapedrive::*;
+use crate::program::token::mint_pda;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -77,12 +78,16 @@ pub fn build_advance_epoch_ix(
 
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
+    let (archive_ata, _) = archive_ata();
     let (current_epoch_address, _) = epoch_pda(current_epoch);
     let (next_epoch_address, _) = epoch_pda(next_epoch);
     let (next_committee_address, _) = committee_pda(next_epoch);
     let (target_epoch_address, _) = epoch_pda(target_epoch);
     let (target_committee_address, _) = committee_pda(target_epoch);
     let (peer_set_address, _) = peer_set_pda();
+    let (subsidy_address, _) = subsidy_pda();
+    let (subsidy_ata, _) = subsidy_ata();
+    let (mint_address, _) = mint_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -90,12 +95,17 @@ pub fn build_advance_epoch_ix(
             AccountMeta::new(fee_payer.into(), true),
             AccountMeta::new(system_address.into(), false),
             AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new(archive_ata.into(), false),
             AccountMeta::new(current_epoch_address.into(), false),
             AccountMeta::new(next_epoch_address.into(), false),
             AccountMeta::new(next_committee_address.into(), false),
             AccountMeta::new_readonly(target_epoch_address.into(), false),
             AccountMeta::new_readonly(target_committee_address.into(), false),
             AccountMeta::new_readonly(peer_set_address.into(), false),
+            AccountMeta::new_readonly(subsidy_address.into(), false),
+            AccountMeta::new(subsidy_ata.into(), false),
+            AccountMeta::new_readonly(mint_address.into(), false),
+            AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: AdvanceEpoch {}.to_bytes(),
     }

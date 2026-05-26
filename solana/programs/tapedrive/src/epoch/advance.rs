@@ -8,6 +8,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         fee_payer_info,
         system_info,
         archive_info,
+        archive_ata_info,
 
         curr_epoch_info,
 
@@ -18,6 +19,10 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         candidate_committee_info,
 
         peer_set_info,
+        subsidy_info,
+        subsidy_ata_info,
+        mint_info,
+        token_program_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -40,6 +45,29 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_archive()?;
 
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    archive_ata_info
+        .is_writable()?
+        .is_archive_ata()?
+        .as_token_account()?
+        .assert(|t| t.owner() == *archive_info.key)?
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
+
+    subsidy_info
+        .is_subsidy()?;
+
+    let subsidy_account = subsidy_ata_info
+        .is_writable()?
+        .is_subsidy_ata()?
+        .as_token_account()?;
+    subsidy_account
+        .assert(|t| t.owner() == *subsidy_info.key)?
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
+
+    mint_info
+        .is_mint()?;
+    token_program_info
+        .is_program(&spl_token::ID)?;
 
     let curr_epoch = curr_epoch_info
         .is_writable()?
@@ -138,12 +166,30 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // closing epoch carries into next epoch's pool.
     let epoch_usage = archive.schedule.advance_epoch();
     let leftover = archive.rewards_pool.saturating_sub(archive.rewards_paid);
+    let subsidy_release = subsidy_release(subsidy_account.amount(), archive.subsidy_decay_bps)?;
 
-    archive.rewards_pool = epoch_usage.paid().saturating_add(leftover);
+    if !subsidy_release.is_zero() {
+        transfer_signed_with_bump(
+            subsidy_info,
+            subsidy_ata_info,
+            archive_ata_info,
+            token_program_info,
+            subsidy_release.as_u64(),
+            &[SUBSIDY],
+            SUBSIDY_BUMP,
+        )?;
+    }
+
+    archive.rewards_pool = epoch_usage
+        .paid()
+        .saturating_add(subsidy_release)
+        .saturating_add(leftover);
     archive.rewards_paid = TAPE::zero();
     archive.recent_usage = epoch_usage.reserved();
     archive.storage_capacity = preferences.storage_capacity;
     archive.storage_price = preferences.storage_price;
+    archive.burn_fee_bps = preferences.burn_fee_bps;
+    archive.subsidy_decay_bps = preferences.subsidy_decay_bps;
 
     // Light up the next epoch.
     let clock = Clock::get()?;
@@ -169,6 +215,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         committee_count: committee_count.to_le_bytes(),
         preferences,
         nonce: next_epoch.nonce,
+        subsidy: subsidy_release.as_u64().to_le_bytes(),
     }.log();
 
     Ok(())
@@ -190,8 +237,24 @@ fn validate_preferences(system: &System, preferences: NodePreferences) -> Progra
     if preferences.min_version.0 < system.min_version.0 {
         return Err(TapeError::UnexpectedState.into());
     }
+    if !preferences.burn_fee_bps.is_valid() || !preferences.subsidy_decay_bps.is_valid() {
+        return Err(TapeError::UnexpectedState.into());
+    }
 
     Ok(())
+}
+
+fn subsidy_release(balance: u64, decay: BasisPoints) -> Result<Coin<TAPE>, ProgramError> {
+    let raw = (balance as u128)
+        .checked_mul(decay.as_u128())
+        .ok_or(ProgramError::ArithmeticOverflow)?
+        / BasisPoints::MAX as u128;
+
+    if raw > u64::MAX as u128 {
+        return Err(ProgramError::ArithmeticOverflow);
+    }
+
+    Ok(TAPE(raw as u64))
 }
 
 #[cfg(test)]
@@ -210,6 +273,8 @@ mod tests {
             committee_size: committee,
             spool_groups,
             min_version: VersionId(version),
+            burn_fee_bps: BasisPoints(1_000),
+            subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
         }
     }
 
@@ -223,12 +288,15 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
+        let (archive_ata_address, _) = archive_ata();
         let (curr_epoch_address, _) = epoch_pda(curr);
         let (next_epoch_address, _) = epoch_pda(next);
         let (next_committee_address, _) = committee_pda(next);
         let (target_epoch_address, _) = epoch_pda(target);
         let (target_committee_address, _) = committee_pda(target);
         let (peer_set_address, _) = peer_set_pda();
+        let (subsidy_address, _) = subsidy_pda();
+        let (subsidy_ata_address, _) = subsidy_ata();
 
         let env = test_env();
         let now = env.now();
@@ -309,12 +377,17 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
+            token(archive_ata_address, Pubkey::from(archive_address), 0),
             pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
             pda(next_epoch_address, next_epoch_data.pack(), tapedrive::ID),
             pda(next_committee_address, next_committee_data, tapedrive::ID),
             pda(target_epoch_address, target_epoch_data.pack(), tapedrive::ID),
             pda(target_committee_address, target_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
+            empty(subsidy_address),
+            token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
+            mint(0),
+            token_program(),
         ];
 
         let expected_system = System {
@@ -351,6 +424,8 @@ mod tests {
             recent_usage: StorageUnits::zero(),
             storage_capacity: StorageUnits::mb(2_048),
             storage_price: TAPE(950),
+            burn_fee_bps: prefs.burn_fee_bps,
+            subsidy_decay_bps: prefs.subsidy_decay_bps,
             schedule: {
                 let mut s = archive.schedule;
                 let _ = s.advance_epoch();
@@ -390,12 +465,15 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
+        let (archive_ata_address, _) = archive_ata();
         let (curr_epoch_address, _) = epoch_pda(curr);
         let (next_epoch_address, _) = epoch_pda(next);
         let (next_committee_address, _) = committee_pda(next);
         let (target_epoch_address, _) = epoch_pda(target);
         let (target_committee_address, _) = committee_pda(target);
         let (peer_set_address, _) = peer_set_pda();
+        let (subsidy_address, _) = subsidy_pda();
+        let (subsidy_ata_address, _) = subsidy_ata();
 
         let prefs = pref(2_048, 950, /*committee*/ 64, /*spool_groups*/ 75, /*min_version*/ 5);
         let next_members: Vec<Member> = (0..20)
@@ -475,12 +553,17 @@ mod tests {
             sol(fee_payer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
+            token(archive_ata_address, Pubkey::from(archive_address), 0),
             pda(curr_epoch_address, curr_epoch.pack(), tapedrive::ID),
             pda(next_epoch_address, next_epoch_data.pack(), tapedrive::ID),
             pda(next_committee_address, next_committee_data, tapedrive::ID),
             pda(target_epoch_address, target_epoch_data.pack(), tapedrive::ID),
             pda(target_committee_address, target_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
+            empty(subsidy_address),
+            token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
+            mint(0),
+            token_program(),
         ];
 
         let expected_system = System {

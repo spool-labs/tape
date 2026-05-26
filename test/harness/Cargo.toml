@@ -17,6 +17,7 @@ rpc.workspace = true
 rpc-client.workspace = true
 rpc-litesvm.workspace = true
 solana-sdk.workspace = true
+spl-token.workspace = true
 tape-api.workspace = true
 tape-core.workspace = true
 tape-crypto.workspace = true

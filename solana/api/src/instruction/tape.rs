@@ -4,6 +4,7 @@ use tape_core::prelude::*;
 use crate::utils::ata;
 use crate::program::tapedrive;
 use crate::program::tapedrive::*;
+use crate::program::token::mint_pda;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -46,6 +47,7 @@ pub fn build_reserve_tape_ix(
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
     let (archive_ata, _) = archive_ata();
+    let (mint_address, _) = mint_pda();
 
     let (tape_address, _) = tape_pda(authority);
 
@@ -64,6 +66,7 @@ pub fn build_reserve_tape_ix(
             AccountMeta::new_readonly(system_address.into(), false),
             AccountMeta::new(archive_address.into(), false),
             AccountMeta::new(archive_ata.into(), false),
+            AccountMeta::new_readonly(mint_address.into(), false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),

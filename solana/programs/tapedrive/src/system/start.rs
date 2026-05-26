@@ -6,6 +6,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let args = StartNetwork::try_from_bytes(data)?;
     let [
         fee_payer_info,
+        subsidy_authority_info,
+        subsidy_authority_ata_info,
         system_info,
         archive_info,
         epoch_info,
@@ -15,6 +17,9 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         peer_set_info,
         group_info,
         snapshot_tape_info,
+        subsidy_info,
+        subsidy_ata_info,
+        token_program_info,
         system_program_info,
         rent_sysvar_info,
         genesis_node_infos @ ..,
@@ -25,6 +30,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     fee_payer_info
         .is_signer()?
         .is_writable()?;
+    subsidy_authority_info
+        .is_signer()?;
 
     let system = system_info
         .is_writable()?
@@ -39,6 +46,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_program(&system_program::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
+    token_program_info
+        .is_program(&spl_token::ID)?;
 
     let committee_size = u64::from_le_bytes(args.committee_size);
     if committee_size != GROUP_SIZE as u64 {
@@ -48,6 +57,13 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let spool_groups = u64::from_le_bytes(args.spool_groups);
     if spool_groups == 0 {
         return Err(TapeError::UnexpectedState.into());
+    }
+
+    let subsidy_amount = TAPE::unpack(args.subsidy_amount);
+    let burn_fee_bps = BasisPoints::unpack(args.burn_fee_bps);
+    let subsidy_decay_bps = BasisPoints::unpack(args.subsidy_decay_bps);
+    if !burn_fee_bps.is_valid() || !subsidy_decay_bps.is_valid() {
+        return Err(ProgramError::InvalidArgument);
     }
 
     if genesis_node_infos.len() != GROUP_SIZE {
@@ -63,6 +79,34 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let group_id = GroupIndex(0);
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.schedule = EpochSchedule::new_at(target);
+    archive.burn_fee_bps = burn_fee_bps;
+    archive.subsidy_decay_bps = subsidy_decay_bps;
+
+    subsidy_info
+        .is_subsidy()?;
+
+    subsidy_authority_ata_info
+        .is_writable()?
+        .as_token_account()?
+        .assert(|t| t.owner() == *subsidy_authority_info.key)?
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
+
+    subsidy_ata_info
+        .is_writable()?
+        .is_subsidy_ata()?
+        .as_token_account()?
+        .assert(|t| t.owner() == *subsidy_info.key)?
+        .assert(|t| t.mint() == MINT_ADDRESS.into())?;
+
+    if !subsidy_amount.is_zero() {
+        transfer(
+            subsidy_authority_info,
+            subsidy_authority_ata_info,
+            subsidy_ata_info,
+            token_program_info,
+            subsidy_amount.as_u64(),
+        )?;
+    }
 
     let epoch = epoch_info
         .is_writable()?
@@ -201,7 +245,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     *snapshot_tape = Tape::snapshot(bootstrap_snapshot_epoch);
 
     for (i, node_info) in genesis_node_infos.iter().enumerate() {
-        let node = node_info.as_account::<Node>(&tapedrive::ID)?;
+        let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
         let node_address: Address = (*node_info.key).into();
 
         if genesis_node_infos[..i]
@@ -216,6 +260,9 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         if stake.is_zero() {
             return Err(TapeError::NotStaked.into());
         }
+
+        node.preferences.burn_fee_bps = burn_fee_bps;
+        node.preferences.subsidy_decay_bps = subsidy_decay_bps;
 
         members[i] = Member {
             node: node_address,
@@ -239,6 +286,15 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     epoch.total_groups = 1;
     epoch.total_assigned = StorageUnits::zero();
+    epoch.preferences = NodePreferences {
+        storage_capacity: archive.storage_capacity,
+        storage_price: archive.storage_price,
+        committee_size,
+        spool_groups,
+        min_version: system.min_version,
+        burn_fee_bps,
+        subsidy_decay_bps,
+    };
 
     let clock = Clock::get()?;
     epoch.start_slot = SlotNumber(clock.slot);
@@ -333,6 +389,7 @@ mod tests {
     #[test]
     fn start() {
         let fee_payer = Pubkey::new_unique();
+        let subsidy_authority = Pubkey::new_unique();
 
         let target = EpochNumber(1);
         let candidate = EpochNumber(2);
@@ -340,6 +397,8 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
+        let (subsidy_address, _) = subsidy_pda();
+        let (subsidy_ata_address, _) = subsidy_ata();
         let (epoch_address, _) = epoch_pda(target);
         let (committee_address, _) = committee_pda(target);
         let (candidate_epoch_address, _) = epoch_pda(candidate);
@@ -348,7 +407,7 @@ mod tests {
         let (group_address, _) = group_pda(target, group_id);
         let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
-        let (genesis_nodes, node_accounts, expected_members, expected_peers) = genesis_nodes();
+        let (genesis_nodes, node_accounts, expected_members, mut expected_peers) = genesis_nodes();
 
         let system = System {
             current_epoch: EpochNumber(0),
@@ -379,15 +438,28 @@ mod tests {
                 .pack_with(&[]);
 
         let spool_groups: u64 = 50;
+        let subsidy_amount = TAPE(50);
+        let burn_fee_bps = DEFAULT_BURN_FEE_BPS;
+        let subsidy_decay_bps = DEFAULT_SUBSIDY_DECAY_BPS;
+        for peer in &mut expected_peers {
+            peer.preferences.burn_fee_bps = burn_fee_bps;
+            peer.preferences.subsidy_decay_bps = subsidy_decay_bps;
+        }
         let instruction = build_start_network_ix(
             fee_payer.into(),
+            subsidy_authority.into(),
             committee_size,
             spool_groups,
+            subsidy_amount,
+            burn_fee_bps,
+            subsidy_decay_bps,
             &genesis_nodes,
         );
 
         let mut accounts = vec![
             sol(fee_payer, 1_000_000_000),
+            sol(subsidy_authority, 0),
+            tape_test::ata(subsidy_authority, subsidy_amount.as_u64()),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
@@ -397,6 +469,9 @@ mod tests {
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
             empty(snapshot_tape_address),
+            empty(subsidy_address),
+            token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
+            token_program(),
             system_program(),
             rent_sysvar(),
         ];
@@ -440,6 +515,15 @@ mod tests {
                     Epoch {
                         total_groups: 1,
                         total_assigned: StorageUnits::zero(),
+                        preferences: NodePreferences {
+                            storage_capacity: StorageUnits::zero(),
+                            storage_price: TAPE::zero(),
+                            committee_size,
+                            spool_groups,
+                            min_version: VersionId(0),
+                            burn_fee_bps,
+                            subsidy_decay_bps,
+                        },
                         start_slot: SlotNumber(slot),
                         start_time: now,
                         state: EpochState {
@@ -452,9 +536,14 @@ mod tests {
                 Check::account(&Pubkey::from(archive_address)).data(
                     Archive {
                         schedule: EpochSchedule::new_at(target),
+                        burn_fee_bps,
+                        subsidy_decay_bps,
                         ..Archive::zeroed()
                     }.pack().as_ref()
                 ).build(),
+                Check::account(&Pubkey::from(subsidy_ata_address))
+                    .data(token(subsidy_ata_address, Pubkey::from(subsidy_address), subsidy_amount.as_u64()).1.data.as_ref())
+                    .build(),
                 Check::account(&Pubkey::from(group_address))
                     .data(expected_group.pack().as_ref())
                     .build(),
@@ -485,6 +574,7 @@ mod tests {
     #[test]
     fn rejects_zero_stake_genesis_node() {
         let fee_payer = Pubkey::new_unique();
+        let subsidy_authority = Pubkey::new_unique();
 
         let target = EpochNumber(1);
         let candidate = EpochNumber(2);
@@ -492,6 +582,8 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
+        let (subsidy_address, _) = subsidy_pda();
+        let (subsidy_ata_address, _) = subsidy_ata();
         let (epoch_address, _) = epoch_pda(target);
         let (committee_address, _) = committee_pda(target);
         let (candidate_epoch_address, _) = epoch_pda(candidate);
@@ -533,13 +625,19 @@ mod tests {
 
         let instruction = build_start_network_ix(
             fee_payer.into(),
+            subsidy_authority.into(),
             committee_size,
             50,
+            TAPE::zero(),
+            DEFAULT_BURN_FEE_BPS,
+            DEFAULT_SUBSIDY_DECAY_BPS,
             &genesis_nodes,
         );
 
         let mut accounts = vec![
             sol(fee_payer, 1_000_000_000),
+            sol(subsidy_authority, 0),
+            tape_test::ata(subsidy_authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
@@ -549,6 +647,9 @@ mod tests {
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
             empty(snapshot_tape_address),
+            empty(subsidy_address),
+            token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
+            token_program(),
             system_program(),
             rent_sysvar(),
         ];

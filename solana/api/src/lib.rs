@@ -33,6 +33,8 @@ pub mod prelude {
         peer_set_pda,
         snapshot_tape_pda,
         stake_pda,
+        subsidy_ata,
+        subsidy_pda,
         system_pda,
         tape_pda,
         track_pda,

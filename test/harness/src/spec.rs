@@ -1,4 +1,5 @@
 use tape_api::program::EPOCH_DURATION;
+use tape_api::program::tapedrive::DEFAULT_SUBSIDY_DECAY_BPS;
 use tape_core::system::{EpochPhase, EpochState};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
@@ -43,6 +44,8 @@ pub struct HarnessNodeSpec {
     pub commission_rate: BasisPoints,
     pub storage_capacity: StorageUnits,
     pub storage_price: Coin<TAPE>,
+    pub burn_fee_bps: BasisPoints,
+    pub subsidy_decay_bps: BasisPoints,
 }
 
 impl HarnessNodeSpec {
@@ -55,6 +58,8 @@ impl HarnessNodeSpec {
             commission_rate: BasisPoints(0),
             storage_capacity: StorageUnits::mb(1_000_000),
             storage_price: TAPE(10),
+            burn_fee_bps: BasisPoints(1_000),
+            subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
         }
     }
 }

@@ -3,15 +3,22 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use bytemuck::Zeroable;
+use solana_sdk::program_option::COption;
+use solana_sdk::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
+use spl_token::state::{Account as TokenAccount, AccountState, Mint};
 use tape_api::dynamic::DynamicState;
-use tape_api::program::{MIN_COMMITTEE_SIZE, MIN_STORAGE_CAPACITY, MIN_STORAGE_PRICE};
+use tape_api::program::{
+    MAX_SUPPLY, MIN_COMMITTEE_SIZE, MIN_STORAGE_CAPACITY, MIN_STORAGE_PRICE, TOKEN_DECIMALS,
+};
 use tape_api::program::tapedrive::{
     archive_pda, blacklist_pda, committee_pda, epoch_pda, group_pda, history_pda, node_pda,
-    peer_set_pda, snapshot_tape_pda, system_pda,
+    peer_set_pda, snapshot_tape_pda, system_pda, ARCHIVE_ADDRESS, ARCHIVE_ATA,
+    SUBSIDY_ADDRESS, SUBSIDY_ATA,
 };
+use tape_api::program::token::{MINT_ADDRESS, TREASURY_ADDRESS};
 use tape_api::state::{Archive, Committee, Epoch, Group, Node, PeerSet, System, Tape};
 use tape_core::bls::BlsPrivateKey;
 use tape_core::erasure::GROUP_SIZE;
@@ -22,7 +29,7 @@ use tape_core::system::{
     NodePreferences, Peer, Spool,
 };
 use tape_core::types::coin::TAPE;
-use tape_core::types::{EpochNumber, NodeId, ShareAmount, StorageUnits, Tail, VersionId};
+use tape_core::types::{BasisPoints, EpochNumber, NodeId, ShareAmount, StorageUnits, Tail, VersionId};
 use tape_crypto::{Address, Hash};
 use tape_protocol::{EpochBundle, ProtocolState};
 
@@ -44,6 +51,9 @@ pub(crate) struct SeededWorld {
     pub peer_set: SeedAccount,
     pub groups: Vec<SeedAccount>,
     pub archive: SeedAccount,
+    pub mint: SeedAccount,
+    pub archive_ata: SeedAccount,
+    pub subsidy_ata: SeedAccount,
     pub prev_snapshot_tape: Option<SeedAccount>,
     pub nodes: Vec<HarnessNode>,
     pub node_accounts: Vec<SeedAccount>,
@@ -302,6 +312,9 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
             .chain(seed_groups(&next.groups))
             .collect(),
         archive: seed(archive_pda().0, archive.pack()),
+        mint: seed_mint(),
+        archive_ata: seed_token_account(ARCHIVE_ATA, ARCHIVE_ADDRESS, 0),
+        subsidy_ata: seed_token_account(SUBSIDY_ATA, SUBSIDY_ADDRESS, 0),
         prev_snapshot_tape,
         nodes,
         node_accounts,
@@ -447,6 +460,8 @@ fn committed_preferences(
         committee_size: MIN_COMMITTEE_SIZE as u64,
         spool_groups: spec.current_group_count,
         min_version: VersionId(1),
+        burn_fee_bps: BasisPoints(0),
+        subsidy_decay_bps: BasisPoints(0),
     };
 
     aggregate_node_preferences(members, peers, bounds)
@@ -464,6 +479,8 @@ fn node_preferences(
         committee_size,
         spool_groups,
         min_version: VersionId(1),
+        burn_fee_bps: spec.burn_fee_bps,
+        subsidy_decay_bps: spec.subsidy_decay_bps,
     }
 }
 
@@ -502,6 +519,35 @@ fn seed(address: Address, data: Vec<u8>) -> SeedAccount {
         address: address.into(),
         data,
     }
+}
+
+fn seed_mint() -> SeedAccount {
+    let state = Mint {
+        mint_authority: COption::Some(TREASURY_ADDRESS.into()),
+        supply: MAX_SUPPLY,
+        decimals: TOKEN_DECIMALS,
+        is_initialized: true,
+        freeze_authority: COption::None,
+    };
+    let mut data = vec![0u8; Mint::LEN];
+    Mint::pack(state, &mut data).expect("pack mint");
+    seed(MINT_ADDRESS, data)
+}
+
+fn seed_token_account(address: Address, owner: Address, amount: u64) -> SeedAccount {
+    let state = TokenAccount {
+        mint: MINT_ADDRESS.into(),
+        owner: owner.into(),
+        amount,
+        delegate: COption::None,
+        state: AccountState::Initialized,
+        is_native: COption::None,
+        delegated_amount: 0,
+        close_authority: COption::None,
+    };
+    let mut data = vec![0u8; TokenAccount::LEN];
+    TokenAccount::pack(state, &mut data).expect("pack token account");
+    seed(address, data)
 }
 
 fn seed_committee(epoch: EpochNumber, capacity: u64, members: &[Member]) -> SeedAccount {

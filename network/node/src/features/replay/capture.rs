@@ -456,6 +456,8 @@ mod tests {
                 active_epoch,
                 expiry_epoch,
                 cost: 11u64.to_le_bytes(),
+                burned: 1u64.to_le_bytes(),
+                scheduled: 10u64.to_le_bytes(),
             },
         }
     }
@@ -469,6 +471,7 @@ mod tests {
                 total_stake: 1_000u64.to_le_bytes(),
                 committee_count: 128u64.to_le_bytes(),
                 preferences: NodePreferences::zeroed(),
+                subsidy: 0u64.to_le_bytes(),
                 nonce: Hash::new_unique(),
             },
         }

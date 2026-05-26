@@ -21,10 +21,10 @@ define_u64_type!(TAPE);
 
 impl TAPE {
     /// Number of decimal places for TAPE (of units: "flux").
-    pub const DECIMALS: u32 = 6;
+    pub const DECIMALS: u32 = 9;
 
-    /// Scaling factor for converting to TAPE (10^6).
-    pub const SCALE: u64 = 1_000_000;
+    /// Scaling factor for converting to TAPE (10^9).
+    pub const SCALE: u64 = 1_000_000_000;
 
     /// Raw units accessor (flux).
     #[inline]
@@ -258,19 +258,19 @@ mod tests {
 
     #[test]
     fn test_tape() {
-        let amount = TAPE::new(1_000_000); // 1 TAPE
-        assert_eq!(amount.as_u64(), 1_000_000);
+        let amount = TAPE::new(1_000_000_000); // 1 TAPE
+        assert_eq!(amount.as_u64(), 1_000_000_000);
         assert_eq!(format!("{}", amount), "TAPE:1.0");
-        assert_eq!(TAPE::from("1.5"), TAPE::new(1_500_000));
+        assert_eq!(TAPE::from("1.5"), TAPE::new(1_500_000_000));
         assert_eq!(TAPE::from_fixed(2, 0).as_f64(), 2.0);
-        assert_eq!(TAPE::from_fixed(3, 250_000).as_string(), "3.25");
-        assert_eq!(TAPE::from_fixed(0, 999_999).flux(), 999_999);
-        assert_eq!(TAPE::from_fixed(1, 999_999).flux(), 1_999_999);
-        assert_eq!(TAPE::from("7.999999").flux(), 7_999_999);
+        assert_eq!(TAPE::from_fixed(3, 250_000_000).as_string(), "3.25");
+        assert_eq!(TAPE::from_fixed(0, 999_999_999).flux(), 999_999_999);
+        assert_eq!(TAPE::from_fixed(1, 999_999_999).flux(), 1_999_999_999);
+        assert_eq!(TAPE::from("7.999999999").flux(), 7_999_999_999);
 
         // parse (fallible)
-        assert_eq!(TAPE::parse("1.000000").unwrap().flux(), 1_000_000);
-        assert!(matches!(TAPE::parse("1.0000001"), Err(CoinError::InvalidFormat)));
+        assert_eq!(TAPE::parse("1.000000000").unwrap().flux(), 1_000_000_000);
+        assert!(matches!(TAPE::parse("1.0000000001"), Err(CoinError::InvalidFormat)));
     }
 
     #[test]
@@ -282,22 +282,22 @@ mod tests {
     #[test]
     fn test_padding_tape() {
         // whole numbers (no dot)
-        assert_eq!(TAPE::parse("2").unwrap().flux(), 2_000_000);
-        assert_eq!(TAPE::from("2").flux(), 2_000_000);
+        assert_eq!(TAPE::parse("2").unwrap().flux(), 2_000_000_000);
+        assert_eq!(TAPE::from("2").flux(), 2_000_000_000);
 
-        // single fractional digit -> pad to 6
-        assert_eq!(TAPE::parse("2.1").unwrap().flux(), 2_100_000);
-        assert_eq!(TAPE::from("2.1").flux(), 2_100_000);
+        // single fractional digit -> pad to 9
+        assert_eq!(TAPE::parse("2.1").unwrap().flux(), 2_100_000_000);
+        assert_eq!(TAPE::from("2.1").flux(), 2_100_000_000);
 
         // trailing dot means zero fractional part
-        assert_eq!(TAPE::parse("3.").unwrap().flux(), 3_000_000);
+        assert_eq!(TAPE::parse("3.").unwrap().flux(), 3_000_000_000);
 
-        // fewer than 6 fractional digits
-        assert_eq!(TAPE::parse("0.0001").unwrap().flux(), 100); // 0.000100
-        assert_eq!(TAPE::parse(".5").unwrap().flux(), 500_000);  // 0.500000
+        // fewer than 9 fractional digits
+        assert_eq!(TAPE::parse("0.0001").unwrap().flux(), 100_000); // 0.000100000
+        assert_eq!(TAPE::parse(".5").unwrap().flux(), 500_000_000);  // 0.500000000
 
         // underscores & spaces
-        assert_eq!(TAPE::parse(" 1_234.0567 ").unwrap().flux(), 1_234_056_700);
+        assert_eq!(TAPE::parse(" 1_234.0567 ").unwrap().flux(), 1_234_056_700_000);
     }
 
     #[test]

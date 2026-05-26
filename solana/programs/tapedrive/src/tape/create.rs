@@ -14,6 +14,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         system_info,
         archive_info,
         archive_ata_info,
+        mint_info,
 
         token_program_info,
         system_program_info,
@@ -56,6 +57,9 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .is_archive_ata()?;
 
+    mint_info
+        .is_mint()?;
+
     let (tape_address, _) = tape_pda((*authority_info.key).into());
 
     tape_info
@@ -75,13 +79,25 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let reservation = reserve_archive(system, archive, spec)?;
     let seeds = [CASSETTE, authority_info.key.as_ref()];
 
-    transfer(
-        authority_info,
-        authority_ata_info,
-        archive_ata_info,
-        token_program_info,
-        reservation.cost.as_u64(),
-    )?;
+    if !reservation.burned.is_zero() {
+        burn(
+            authority_ata_info,
+            mint_info,
+            authority_info,
+            token_program_info,
+            reservation.burned.as_u64(),
+        )?;
+    }
+
+    if !reservation.scheduled.is_zero() {
+        transfer(
+            authority_info,
+            authority_ata_info,
+            archive_ata_info,
+            token_program_info,
+            reservation.scheduled.as_u64(),
+        )?;
+    }
 
     create_tape_account(
         tape_info,
@@ -141,7 +157,7 @@ mod tests {
             .unwrap();
         expected_archive.tape_count = 1; // New tape created
 
-        let initial_token_balance: u64 = 1_000_000;
+        let initial_token_balance: u64 = 100_000_000;
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -152,6 +168,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             token(archive_ata, archive_address, 0),
+            mint(0),
 
             token_program(),
             system_program(),

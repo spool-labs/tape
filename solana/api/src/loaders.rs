@@ -4,7 +4,7 @@ use tape_core::types::EpochNumber;
 
 use crate::program::{
     tapedrive, ARCHIVE_ADDRESS, ARCHIVE_ATA, METADATA_ADDRESS, MINT_ADDRESS,
-    PEER_SET_ADDRESS, SYSTEM_ADDRESS, TREASURY_ADDRESS,
+    PEER_SET_ADDRESS, SUBSIDY_ADDRESS, SUBSIDY_ATA, SYSTEM_ADDRESS, TREASURY_ADDRESS,
 };
 use crate::errors::TapeError;
 use crate::program::tapedrive::{committee_pda, epoch_pda, group_pda, snapshot_tape_pda};
@@ -19,6 +19,8 @@ pub trait AccountInfoLoader {
     fn is_peer_set(&self) -> Result<&Self, ProgramError>;
     fn is_archive(&self) -> Result<&Self, ProgramError>;
     fn is_archive_ata(&self) -> Result<&Self, ProgramError>;
+    fn is_subsidy(&self) -> Result<&Self, ProgramError>;
+    fn is_subsidy_ata(&self) -> Result<&Self, ProgramError>;
     fn is_mint(&self) -> Result<&Self, ProgramError>;
     fn is_metadata(&self) -> Result<&Self, ProgramError>;
     fn is_treasury(&self) -> Result<&Self, ProgramError>;
@@ -90,6 +92,19 @@ impl AccountInfoLoader for AccountInfo<'_> {
         let archive_ata: Pubkey = ARCHIVE_ATA.into();
 
         self.has_address(&archive_ata)?
+            .has_owner(&spl_token::ID)
+    }
+
+    fn is_subsidy(&self) -> Result<&Self, ProgramError> {
+        let subsidy_address: Pubkey = SUBSIDY_ADDRESS.into();
+
+        self.has_address(&subsidy_address)
+    }
+
+    fn is_subsidy_ata(&self) -> Result<&Self, ProgramError> {
+        let subsidy_ata: Pubkey = SUBSIDY_ATA.into();
+
+        self.has_address(&subsidy_ata)?
             .has_owner(&spl_token::ID)
     }
 

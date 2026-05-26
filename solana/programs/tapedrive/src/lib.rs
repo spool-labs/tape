@@ -39,6 +39,7 @@ use crate::node::{
     process_register_node,
     process_set_authority,
     process_set_bls_pubkey,
+    process_set_burn_fee_bps,
     process_set_commission_rate,
     process_set_committee_size,
     process_set_min_version,
@@ -48,6 +49,7 @@ use crate::node::{
     process_set_spool_groups,
     process_set_storage_capacity,
     process_set_storage_price,
+    process_set_subsidy_decay_bps,
 };
 use crate::peer::{process_create_peer_set, process_resize_peer_set};
 use crate::pool::{
@@ -126,6 +128,8 @@ pub fn process_instruction(
         TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
         TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,
         TapeInstruction::SetStoragePrice => process_set_storage_price(accounts, data)?,
+        TapeInstruction::SetBurnFeeBps => process_set_burn_fee_bps(accounts, data)?,
+        TapeInstruction::SetSubsidyDecayBps => process_set_subsidy_decay_bps(accounts, data)?,
         TapeInstruction::SetStorageCapacity => process_set_storage_capacity(accounts, data)?,
         TapeInstruction::SetCommitteeSize => process_set_committee_size(accounts, data)?,
         TapeInstruction::SetSpoolGroups => process_set_spool_groups(accounts, data)?,

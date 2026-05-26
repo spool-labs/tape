@@ -19,10 +19,12 @@ use tape_api::instruction::{
     build_initialize_mint_ix, build_join_committee_ix, build_stake_with_pool_ix,
     build_start_network_ix,
 };
-use tape_api::program::tapedrive::node_pda;
+use tape_api::program::tapedrive::{
+    node_pda, DEFAULT_BURN_FEE_BPS, DEFAULT_SUBSIDY_DECAY_BPS,
+};
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::types::EpochNumber;
 use tape_core::types::coin::TAPE;
+use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tracing::info;
@@ -294,8 +296,12 @@ impl ChainManager {
 
         let ix = build_start_network_ix(
             self.admin.pubkey().into(),
+            self.admin.pubkey().into(),
             GROUP_SIZE as u64,
             spool_groups,
+            TAPE(0),
+            DEFAULT_BURN_FEE_BPS,
+            DEFAULT_SUBSIDY_DECAY_BPS,
             &genesis_nodes,
         );
 

@@ -453,6 +453,7 @@ mod tests {
             total_stake: [0; 8],
             committee_count: [0; 8],
             preferences: NodePreferences::zeroed(),
+            subsidy: [0; 8],
             nonce: Hash::default(),
         }
     }
@@ -860,6 +861,8 @@ mod tests {
                     active_epoch: EpochNumber(1),
                     expiry_epoch: EpochNumber(10),
                     cost: [0; 8],
+                    burned: [0; 8],
+                    scheduled: [0; 8],
                 }),
             ),
             (

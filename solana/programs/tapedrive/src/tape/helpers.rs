@@ -17,6 +17,8 @@ pub struct TapeReservation {
     pub spec: TapeSpec,
     pub id: TapeNumber,
     pub cost: Coin<TAPE>,
+    pub burned: Coin<TAPE>,
+    pub scheduled: Coin<TAPE>,
 }
 
 pub fn reserve_archive(
@@ -36,10 +38,24 @@ pub fn reserve_archive(
         .checked_sub(spec.active_epoch)
         .ok_or(ProgramError::InvalidArgument)?;
 
-    let fee_per_epoch = tape_reservation_cost(archive.storage_price, spec.capacity, 1)
-        .ok_or(ProgramError::InvalidArgument)?;
     let cost = tape_reservation_cost(archive.storage_price, spec.capacity, epoch_count.as_u64())
         .ok_or(ProgramError::InvalidArgument)?;
+    let policy_burn = bps_amount(cost, archive.burn_fee_bps)?;
+    let rewards = cost
+        .checked_sub(policy_burn)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let reward_per_epoch = rewards
+        .checked_div(TAPE(epoch_count.as_u64()))
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let scheduled = reward_per_epoch
+        .checked_mul(TAPE(epoch_count.as_u64()))
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let dust = rewards
+        .checked_sub(scheduled)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let burned = policy_burn
+        .checked_add(dust)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     let current_epoch = current_epoch(system);
     if archive.schedule.current_epoch() != current_epoch {
@@ -57,7 +73,7 @@ pub fn reserve_archive(
 
     archive
         .schedule
-        .reserve_capacity(spec.capacity, fee_per_epoch, spec.active_epoch, spec.expiry_epoch)
+        .reserve_capacity(spec.capacity, reward_per_epoch, spec.active_epoch, spec.expiry_epoch)
         .map_err(|_| TapeError::UnexpectedState)?;
 
     let next_count = archive
@@ -69,7 +85,25 @@ pub fn reserve_archive(
 
     archive.tape_count = next_count;
 
-    Ok(TapeReservation { spec, id, cost })
+    Ok(TapeReservation { spec, id, cost, burned, scheduled })
+}
+
+fn bps_amount(amount: Coin<TAPE>, bps: BasisPoints) -> Result<Coin<TAPE>, ProgramError> {
+    if !bps.is_valid() {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let raw = amount
+        .as_u128()
+        .checked_mul(bps.as_u128())
+        .ok_or(ProgramError::ArithmeticOverflow)?
+        / BasisPoints::MAX as u128;
+
+    if raw > u64::MAX as u128 {
+        return Err(ProgramError::ArithmeticOverflow);
+    }
+
+    Ok(TAPE(raw as u64))
 }
 
 pub fn create_tape_account<'account_info>(
@@ -105,6 +139,8 @@ pub fn create_tape_account<'account_info>(
         active_epoch: reservation.spec.active_epoch,
         expiry_epoch: reservation.spec.expiry_epoch,
         cost: reservation.cost.as_u64().to_le_bytes(),
+        burned: reservation.burned.as_u64().to_le_bytes(),
+        scheduled: reservation.scheduled.as_u64().to_le_bytes(),
     }
     .log();
 

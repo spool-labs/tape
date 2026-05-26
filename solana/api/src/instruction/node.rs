@@ -70,6 +70,18 @@ pub struct SetStoragePrice {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetBurnFeeBps {
+    pub burn_fee_bps: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetSubsidyDecayBps {
+    pub subsidy_decay_bps: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetStorageCapacity {
     pub size: [u8; 8],
 }
@@ -401,6 +413,44 @@ pub fn build_set_storage_price_ix(
         ],
         data: SetStoragePrice {
             price,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_burn_fee_bps_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    burn_fee_bps: BasisPoints,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetBurnFeeBps {
+            burn_fee_bps: burn_fee_bps.pack(),
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_subsidy_decay_bps_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    subsidy_decay_bps: BasisPoints,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetSubsidyDecayBps {
+            subsidy_decay_bps: subsidy_decay_bps.pack(),
         }.to_bytes(),
     }
 }

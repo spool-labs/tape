@@ -357,6 +357,17 @@ fn seed_fixture(fixture: &ChainFixture, seeded: &SeededWorld) -> Result<()> {
         fixture.seed_account(&account.address, &tapedrive::ID, &account.data)?;
     }
     fixture.seed_account(&seeded.archive.address, &tapedrive::ID, &seeded.archive.data)?;
+    fixture.seed_account(&seeded.mint.address, &spl_token::ID, &seeded.mint.data)?;
+    fixture.seed_account(
+        &seeded.archive_ata.address,
+        &spl_token::ID,
+        &seeded.archive_ata.data,
+    )?;
+    fixture.seed_account(
+        &seeded.subsidy_ata.address,
+        &spl_token::ID,
+        &seeded.subsidy_ata.data,
+    )?;
 
     if let Some(snapshot_tape) = &seeded.prev_snapshot_tape {
         fixture.seed_account(&snapshot_tape.address, &tapedrive::ID, &snapshot_tape.data)?;

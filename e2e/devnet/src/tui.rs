@@ -709,8 +709,8 @@ fn format_ms(ms: u64) -> String {
 }
 
 fn format_tape(flux: u64) -> String {
-    let tape = flux / 1_000_000;
-    let frac = (flux % 1_000_000) / 1_000;
+    let tape = flux / 1_000_000_000;
+    let frac = (flux % 1_000_000_000) / 1_000_000;
     if tape >= 1_000_000 {
         format!("{:.1}MT", tape as f64 / 1_000_000.0)
     } else if tape >= 1_000 {
@@ -723,8 +723,8 @@ fn format_tape(flux: u64) -> String {
 }
 
 fn format_tape_fixed_width(flux: u64, width: usize) -> String {
-    let tape = flux / 1_000_000;
-    let frac = (flux % 1_000_000) / 1000;
+    let tape = flux / 1_000_000_000;
+    let frac = (flux % 1_000_000_000) / 1_000_000;
 
     let mut raw = if frac == 0 || tape >= 100 {
         tape.to_string()

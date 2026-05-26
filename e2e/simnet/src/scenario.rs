@@ -9,10 +9,13 @@ use tape_api::instruction::{
     build_create_peer_set_ix, build_create_system_ix, build_initialize_mint_ix,
     build_register_node_ix, build_start_network_ix,
 };
-use tape_api::program::tapedrive::node_pda;
+use tape_api::program::tapedrive::{
+    node_pda, DEFAULT_BURN_FEE_BPS, DEFAULT_SUBSIDY_DECAY_BPS,
+};
 use tape_api::utils::to_name;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::address::Address;
 
@@ -107,6 +110,14 @@ impl<'a> SimnetScenario<'a> {
     }
 
     pub async fn start_network(&self) -> Result<Signature> {
+        self.start_network_with_burn_fee_bps(DEFAULT_BURN_FEE_BPS)
+            .await
+    }
+
+    pub async fn start_network_with_burn_fee_bps(
+        &self,
+        burn_fee_bps: BasisPoints,
+    ) -> Result<Signature> {
         let slot_bump = self.harness.config().slot_advance_per_tx;
         let admin = self.harness.admin();
         let admin_pub = admin.pubkey();
@@ -123,8 +134,12 @@ impl<'a> SimnetScenario<'a> {
 
         let ix = build_start_network_ix(
             admin_pub.into(),
+            admin_pub.into(),
             GROUP_SIZE as u64,
             1,
+            TAPE(0),
+            burn_fee_bps,
+            DEFAULT_SUBSIDY_DECAY_BPS,
             &genesis_nodes,
         );
 

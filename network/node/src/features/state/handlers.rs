@@ -404,7 +404,7 @@ mod tests {
             .epoch(EPOCH)
             .phase(EpochPhase::Closing)
             .next_committee_size(20)
-            .next_assignment_ready()
+            .advance_ready()
             .build()
             .await
             .expect("build harness");

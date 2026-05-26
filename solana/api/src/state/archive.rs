@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_core::system::EpochSchedule;
-use tape_core::types::StorageUnits;
+use tape_core::types::{BasisPoints, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
 use super::AccountType;
 use crate::program::FUTURE_EPOCHS;
@@ -13,6 +13,12 @@ pub struct Archive {
 
     /// The price per unit of storage in TAPE.
     pub storage_price: Coin<TAPE>,
+
+    /// The storage payment burn rate in basis points.
+    pub burn_fee_bps: BasisPoints,
+
+    /// The subsidy vault decay rate in basis points per epoch.
+    pub subsidy_decay_bps: BasisPoints,
 
     /// The archive schedule for future epochs.
     pub schedule: EpochSchedule<FUTURE_EPOCHS>,

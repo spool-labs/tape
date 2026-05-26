@@ -10,6 +10,8 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         system_info,
         archive_info,
         archive_ata_info,
+        subsidy_info,
+        subsidy_ata_info,
         peer_set_info,
 
         mint_info,
@@ -43,6 +45,7 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 
     let (archive_address, _) = archive_pda();
     let (archive_ata_address, _) = archive_ata();
+    let (subsidy_ata_address, _) = subsidy_ata();
 
     archive_info
         .is_empty()?
@@ -53,6 +56,14 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_empty()?
         .is_writable()?
         .has_address(&archive_ata_address.into())?;
+
+    subsidy_info
+        .is_subsidy()?;
+
+    subsidy_ata_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&subsidy_ata_address.into())?;
 
     peer_set_info
         .is_peer_set()?;
@@ -78,6 +89,16 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         associated_token_program_info,
     )?;
 
+    create_associated_token_account(
+        fee_payer_info,
+        subsidy_info,
+        subsidy_ata_info,
+        mint_info,
+        system_program_info,
+        token_program_info,
+        associated_token_program_info,
+    )?;
+
     let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
     system.total_nodes = 0;
     system.current_epoch = EpochNumber(0);
@@ -85,8 +106,10 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     // committee_size + spool_groups are seeded by start_network
 
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
-    archive.storage_capacity = StorageUnits::tb(100);
-    archive.storage_price = TAPE::from("0.0001");
+    archive.storage_capacity = DEFAULT_STORAGE_CAPACITY;
+    archive.storage_price = DEFAULT_STORAGE_PRICE;
+    archive.burn_fee_bps = DEFAULT_BURN_FEE_BPS;
+    archive.subsidy_decay_bps = DEFAULT_SUBSIDY_DECAY_BPS;
     archive.schedule = EpochSchedule::new_at(EpochNumber(0));
 
     Ok(())
@@ -106,6 +129,8 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
+        let (subsidy_address, _) = subsidy_pda();
+        let (subsidy_ata, _) = subsidy_ata();
         let (peer_set_address, _) = peer_set_pda();
 
         let system = System::zeroed();
@@ -124,6 +149,8 @@ mod tests {
 
             empty(archive_address),
             empty(archive_ata),
+            empty(subsidy_address),
+            empty(subsidy_ata),
             pda(peer_set_address, peer_set.pack(), tapedrive::ID),
 
             mint(MAX_SUPPLY),
@@ -151,8 +178,10 @@ mod tests {
 
                 Check::account(&Pubkey::from(archive_address)).data(
                     Archive {
-                        storage_capacity: StorageUnits::tb(100),
-                        storage_price: TAPE::from("0.0001"),
+                        storage_capacity: DEFAULT_STORAGE_CAPACITY,
+                        storage_price: DEFAULT_STORAGE_PRICE,
+                        burn_fee_bps: DEFAULT_BURN_FEE_BPS,
+                        subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
                         schedule: EpochSchedule::new_at(EpochNumber(0)),
                         ..Archive::zeroed()
                     }.pack().as_ref()
@@ -160,6 +189,9 @@ mod tests {
 
                 Check::account(&Pubkey::from(archive_ata)).data(
                     token(archive_ata, archive_address, 0).1.data.as_ref()
+                ).build(),
+                Check::account(&Pubkey::from(subsidy_ata)).data(
+                    token(subsidy_ata, subsidy_address, 0).1.data.as_ref()
                 ).build(),
             ],
         );

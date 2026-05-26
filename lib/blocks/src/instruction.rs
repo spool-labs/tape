@@ -545,6 +545,8 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetNetworkTls
         | TapeInstruction::SetCommissionRate
         | TapeInstruction::SetStoragePrice
+        | TapeInstruction::SetBurnFeeBps
+        | TapeInstruction::SetSubsidyDecayBps
         | TapeInstruction::SetStorageCapacity
         | TapeInstruction::SetCommitteeSize
         | TapeInstruction::SetSpoolGroups

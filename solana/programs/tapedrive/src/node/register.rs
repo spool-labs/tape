@@ -107,6 +107,8 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         committee_size: system.committee_size,
         spool_groups: system.target_group_count,
         min_version: system.min_version,
+        burn_fee_bps: archive.burn_fee_bps,
+        subsidy_decay_bps: archive.subsidy_decay_bps,
     };
 
     create_program_account::<Tape>(
@@ -232,6 +234,8 @@ mod tests {
                             committee_size: system.committee_size,
                             spool_groups: system.target_group_count,
                             min_version: system.min_version,
+                            burn_fee_bps: archive.burn_fee_bps,
+                            subsidy_decay_bps: archive.subsidy_decay_bps,
                         },
                         registered_epoch: system.current_epoch,
                         latest_sync_epoch: system.current_epoch,

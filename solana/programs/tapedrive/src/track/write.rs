@@ -63,6 +63,7 @@ mod tests {
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use solana_sdk::account::Account;
+    use tape_crypto::hash::hashv;
     use tape_crypto::merkle::{MerkleTree, root_from_leaf_hashes};
     use tape_test::*;
 
@@ -139,14 +140,22 @@ mod tests {
         ];
 
         let mut expected_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        let track_number = TrackNumber(0);
+        let mixed_hash = hashv(&[
+            Hash::default().as_ref(),
+            tape_address.as_ref(),
+            &tape.id.pack(),
+            &track_number.pack(),
+        ]);
+        let group = GroupIndex(u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % system.live_group_count);
         let track = CompressedTrack {
             tape: tape_address,
             key: bucket_hash,
-            track_number: TrackNumber(0),
+            track_number,
             kind: TrackKind::Blob as u64,
             state: TrackState::Registered as u64,
             size: storage_units,
-            group: GroupIndex(1),
+            group,
             value_hash: blob.get_hash(),
         };
         let track_hash = track.get_hash();

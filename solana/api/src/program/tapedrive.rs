@@ -2,7 +2,7 @@ use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_core::{
     spooler::GroupIndex,
-    types::{EpochNumber, TrackNumber},
+    types::{coin::TAPE, BasisPoints, EpochNumber, StorageUnits, TrackNumber},
 };
 use tape_crypto::{Address, Hash};
 
@@ -12,9 +12,14 @@ pub const MIN_COMMITTEE_SIZE:     usize = 20;
 pub const MIN_STORAGE_CAPACITY:   usize = 1 << 30; // 1GiB
 pub const MIN_STORAGE_PRICE:      usize = 1;       // per GiB in TAPE per epoch
 
-pub const FUTURE_EPOCHS:          usize = 256;
+pub const DEFAULT_STORAGE_CAPACITY:    StorageUnits = StorageUnits(100 * StorageUnits::TB);
+pub const DEFAULT_STORAGE_PRICE:               TAPE = TAPE(954); // ~1 TAPE / TiB-epoch
+pub const DEFAULT_BURN_FEE_BPS:         BasisPoints = BasisPoints(10_000);
+pub const DEFAULT_SUBSIDY_DECAY_BPS:    BasisPoints = BasisPoints(100);
+
+pub const EPOCH_DURATION:           i64 = 100;  // 100 seconds for local testing (100s devnet, 86_400s testnet, 604_800s mainnet)
 pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
-pub const EPOCH_DURATION:           i64 = 100;  // 100 seconds for local testing (60s testnet, 604800s mainnet)
+pub const FUTURE_EPOCHS:          usize = 256;  // ~5 years at 1 week epochs
 
 tape_solana::declare_id!("EHRKuwkebwHV2XZaaKoQFi4JD9i5uGuLHheHPUFmmBMv");
 
@@ -27,10 +32,11 @@ pub const ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID: [u8; 32] =
 
 pub const SYSTEM:             &[u8] = b"system";
 pub const ARCHIVE:            &[u8] = b"archive";
+pub const SUBSIDY:            &[u8] = b"subsidy";
 pub const EPOCH:              &[u8] = b"epoch";
 pub const COMMITTEE:          &[u8] = b"committee";
 pub const GROUP:              &[u8] = b"group";
-pub const PEER_SET:           &[u8] = b"peer-set";
+pub const PEER_SET:           &[u8] = b"peer_set";
 pub const NODE:               &[u8] = b"node";
 pub const BLACKLIST:          &[u8] = b"blacklist";
 pub const HISTORY:            &[u8] = b"history";
@@ -54,6 +60,12 @@ pub const ARCHIVE_ADDRESS: Address =
 pub const ARCHIVE_BUMP: u8 =
     ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).1;
 
+pub const SUBSIDY_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[SUBSIDY], &PROGRAM_ID).0);
+
+pub const SUBSIDY_BUMP: u8 =
+    ed25519::derive_program_address(&[SUBSIDY], &PROGRAM_ID).1;
+
 pub const PEER_SET_ADDRESS: Address =
     Address::new(ed25519::derive_program_address(&[PEER_SET], &PROGRAM_ID).0);
 
@@ -76,6 +88,29 @@ pub const ARCHIVE_ATA_BUMP: u8 =
     ed25519::derive_program_address(
         &[
             ARCHIVE_ADDRESS.as_bytes(),
+            &SPL_TOKEN_PROGRAM_ID,
+            MINT_ADDRESS.as_bytes(),
+        ],
+        &ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+    )
+    .1;
+
+pub const SUBSIDY_ATA: Address = Address::new(
+    ed25519::derive_program_address(
+        &[
+            SUBSIDY_ADDRESS.as_bytes(),
+            &SPL_TOKEN_PROGRAM_ID,
+            MINT_ADDRESS.as_bytes(),
+        ],
+        &ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+    )
+    .0,
+);
+
+pub const SUBSIDY_ATA_BUMP: u8 =
+    ed25519::derive_program_address(
+        &[
+            SUBSIDY_ADDRESS.as_bytes(),
             &SPL_TOKEN_PROGRAM_ID,
             MINT_ADDRESS.as_bytes(),
         ],
@@ -138,6 +173,18 @@ pub fn archive_pda() -> (Address, u8) {
 
 #[cfg(debug_assertions)]
 #[inline(always)]
+pub fn subsidy_pda() -> (Address, u8) {
+    Address::find_program_address(&[SUBSIDY], id())
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn subsidy_pda() -> (Address, u8) {
+    (SUBSIDY_ADDRESS, SUBSIDY_BUMP)
+}
+
+#[cfg(debug_assertions)]
+#[inline(always)]
 pub fn archive_ata() -> (Address, u8) {
     Address::find_program_address(
         &[
@@ -153,6 +200,25 @@ pub fn archive_ata() -> (Address, u8) {
 #[inline(always)]
 pub fn archive_ata() -> (Address, u8) {
     (ARCHIVE_ATA, ARCHIVE_ATA_BUMP)
+}
+
+#[cfg(debug_assertions)]
+#[inline(always)]
+pub fn subsidy_ata() -> (Address, u8) {
+    Address::find_program_address(
+        &[
+            SUBSIDY_ADDRESS.as_ref(),
+            spl_token::ID.as_ref(),
+            MINT_ADDRESS.as_ref(),
+        ],
+        spl_associated_token_account::ID,
+    )
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn subsidy_ata() -> (Address, u8) {
+    (SUBSIDY_ATA, SUBSIDY_ATA_BUMP)
 }
 
 #[inline(always)]

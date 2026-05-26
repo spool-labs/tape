@@ -161,6 +161,12 @@ pub struct TapeReserved {
 
     /// TAPE flux units paid
     pub cost: [u8; 8],
+
+    /// TAPE flux units burned immediately.
+    pub burned: [u8; 8],
+
+    /// TAPE flux units scheduled into epoch rewards.
+    pub scheduled: [u8; 8],
 }
 
 tape_solana::event!(EventType, TapeReserved);
@@ -349,6 +355,9 @@ pub struct EpochAdvanced {
 
     /// Randomness seed for the new epoch (captured at the previous commit)
     pub nonce: Hash,
+
+    /// TAPE flux units released from the subsidy vault.
+    pub subsidy: [u8; 8],
 }
 
 tape_solana::event!(EventType, EpochAdvanced);

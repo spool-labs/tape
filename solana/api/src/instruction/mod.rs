@@ -92,6 +92,8 @@ pub enum TapeInstruction {
     SetNetworkTls,
     SetCommissionRate,
     SetStoragePrice,
+    SetBurnFeeBps,
+    SetSubsidyDecayBps,
     SetStorageCapacity,
     SetCommitteeSize,
     SetSpoolGroups,
@@ -179,6 +181,8 @@ tape_solana::instruction!(TapeInstruction, SetNetworkAddress);
 tape_solana::instruction!(TapeInstruction, SetNetworkTls);
 tape_solana::instruction!(TapeInstruction, SetCommissionRate);
 tape_solana::instruction!(TapeInstruction, SetStoragePrice);
+tape_solana::instruction!(TapeInstruction, SetBurnFeeBps);
+tape_solana::instruction!(TapeInstruction, SetSubsidyDecayBps);
 tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
 tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
 tape_solana::instruction!(TapeInstruction, SetSpoolGroups);

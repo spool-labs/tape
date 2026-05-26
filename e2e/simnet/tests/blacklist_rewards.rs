@@ -152,7 +152,10 @@ async fn start(
             .set_spool_groups_many(all, TARGET_GROUPS)
             .await
             .expect("set spool group preferences");
-        scenario.start_network().await.expect("start network");
+        scenario
+            .start_network_with_burn_fee_bps(BasisPoints(1_000))
+            .await
+            .expect("start network");
     }
 
     harness

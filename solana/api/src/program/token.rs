@@ -14,9 +14,9 @@ pub const MINT_SEED: &[u8] = &[152, 68, 212, 200, 25, 113, 221, 71];
 pub const METADATA:  &[u8] = b"metadata";
 pub const TREASURY:  &[u8] = b"treasury";
 
-pub const TOKEN_DECIMALS: u8 = 6;
+pub const TOKEN_DECIMALS: u8 = 9;
 pub const ONE_TAPE: u64 = 10u64.pow(TOKEN_DECIMALS as u32);
-pub const MAX_SUPPLY: u64 = 7_000_000_000 * ONE_TAPE;
+pub const MAX_SUPPLY: u64 = 7_000_000 * ONE_TAPE;
 
 pub const METADATA_NAME:   &str = "TAPE";
 pub const METADATA_SYMBOL: &str = "TAPE";

@@ -127,6 +127,8 @@ fn aggregate_preferences(
         committee_size: MIN_COMMITTEE_SIZE as u64,
         spool_groups: system.target_group_count,
         min_version: system.min_version,
+        burn_fee_bps: BasisPoints(0),
+        subsidy_decay_bps: BasisPoints(0),
     };
 
     aggregate_node_preferences(members, peers, bounds).map_err(|error| match error {
@@ -181,6 +183,8 @@ mod tests {
             committee_size: 256,
             spool_groups: 75,
             min_version: VersionId(3),
+            burn_fee_bps: BasisPoints(1_000),
+            subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
         }
     }
 
@@ -349,7 +353,7 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let snapshot_tape = Tape::snapshot(prev);
+        let snapshot_tape = Tape::snapshot(curr);
 
         let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
 

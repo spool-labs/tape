@@ -351,6 +351,7 @@ mod tests {
                     total_stake: [0; 8],
                     committee_count: [0; 8],
                     preferences: NodePreferences::zeroed(),
+                    subsidy: [0; 8],
                     nonce: Hash::default(),
                 }),
                 TapedriveEvent::SpoolSynced(SpoolSynced {
@@ -371,6 +372,7 @@ mod tests {
                 total_stake: [0; 8],
                 committee_count: [0; 8],
                 preferences: NodePreferences::zeroed(),
+                subsidy: [0; 8],
                 nonce: Hash::default(),
             })],
         };

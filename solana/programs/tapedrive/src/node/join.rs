@@ -214,6 +214,8 @@ mod tests {
             committee_size: system.committee_size,
             spool_groups: system.target_group_count,
             min_version: system.min_version,
+            burn_fee_bps: BasisPoints(1_000),
+            subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
         };
         let node = Node {
             authority: authority.into(),

@@ -8874,6 +8874,7 @@ dependencies = [
  "rpc-client",
  "rpc-litesvm",
  "solana-sdk",
+ "spl-token 4.0.2",
  "tape-api",
  "tape-core",
  "tape-crypto",
