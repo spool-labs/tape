@@ -24,7 +24,7 @@ pub const UNSTAKE_FROM_POOL_CU: u32 = 150_000;
 
 // Mid-weight on-chain logic (merkle proofs, multi-account writes).
 pub const TRACK_WRITE_CU:      u32 = 100_000;
-pub const COMMIT_EPOCH_CU:     u32 =  50_000;
+pub const COMMIT_EPOCH_CU:     u32 = 100_000;
 pub const ADVANCE_POOL_CU:     u32 =  50_000;
 pub const SETTLE_SPOOL_CU:     u32 =  50_000;
 pub const SYNC_SPOOL_CU:       u32 =  30_000;
