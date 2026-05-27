@@ -114,12 +114,14 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(TapeError::ZeroShares.into());
     }
 
+    // Settlement rate is the rate captured by the closing span at withdraw_epoch.
+    // Look it up via withdraw_epoch.prev() so check_contains lands in [_, withdraw_epoch).
     let withdraw_rate = resolve_rate(
         node,
         history_tape,
         history_address,
         (*node_info.key).into(),
-        withdraw_epoch,
+        withdraw_epoch.prev(),
         args.rate,
     )?;
 
@@ -185,7 +187,50 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::staking::RateSpan;
+    use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_core::track::archive::TrackArchive;
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
+    use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
+    use tape_crypto::Hash;
     use tape_test::*;
+
+    /// Build a history tape whose only track is a Raw/Certified RateSpan,
+    /// and the corresponding closed-span PoolRate proof for that track.
+    fn make_closed_span(
+        node_id: NodeId,
+        history_address: Address,
+        span: RateSpan,
+    ) -> (Tape, PoolRate) {
+        let track = CompressedTrack {
+            tape: history_address,
+            key: span.key(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Raw as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(core::mem::size_of::<RateSpan>() as u64),
+            group: GroupIndex(0),
+            value_hash: span.value_hash(),
+        };
+        let leaf_hash = track.get_hash();
+
+        let mut tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        tree.add_leaf_hash(leaf_hash).unwrap();
+        let proof: [Hash; TRACK_TREE_HEIGHT] =
+            create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(&[leaf_hash], 0)
+                .expect("track proof")
+                .try_into()
+                .expect("proof length");
+
+        let mut tape = Tape::history(node_id, span.end_epoch);
+        tape.tracks = TrackArchive {
+            tree,
+            next_number: TrackNumber(1),
+            num_tracks: 1,
+        };
+        let pool_rate = PoolRate::new(span, CompressedTrackProof { state: track, proof });
+        (tape, pool_rate)
+    }
 
     #[test]
     fn unstake_from_pool() {
@@ -206,11 +251,24 @@ mod tests {
         let e3: EpochNumber = e0 + EpochNumber(3);
         let e4: EpochNumber = e0 + EpochNumber(4); // withdraw epoch (== current)
 
+        let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
+        let withdraw_rate   = ExchangeRate { tape: 1200, other: 8800 };
+
+        // Closed span covering [e0, e4) holds the withdraw settlement rate.
+        let span = RateSpan {
+            node: pool_address.into(),
+            start_epoch: e0,
+            end_epoch: e4,
+            rate: withdraw_rate,
+        };
+        let (history_tape, pool_rate) =
+            make_closed_span(NodeId(7), history_address.into(), span);
+
         let instruction = build_unstake_from_pool_ix(
             fee_payer.into(),
             authority.into(),
             pool_address,
-            PoolRate::current(),
+            pool_rate,
         );
 
         let system = System {
@@ -222,11 +280,8 @@ mod tests {
 
         node.id = NodeId(7);
         node.latest_advance_epoch = e3;
-        node.rate_span_start = e0;
+        node.rate_span_start = e4;
         node.authority = pool_owner.into();
-
-        let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
-        let withdraw_rate   = ExchangeRate { tape: 1200, other: 8800 };
 
         node.pool.stake = TAPE(withdraw_rate.tape);
         node.pool.shares = ShareAmount(withdraw_rate.other);
@@ -240,8 +295,6 @@ mod tests {
             .saturating_sub(principal);
 
         node.pool.rewards = reward.into();
-
-        let history_tape = Tape::history(node.id, e0);
 
         let stake = Stake {
             authority: authority.into(),

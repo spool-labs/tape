@@ -117,12 +117,15 @@ impl<const N: usize> StakingPool<N> {
         rewards_earned: Coin<TAPE>,
     ) -> Result<(), PoolError> {
 
-        // Apply scheduled commission changes
         if let Some(commission_rate) = self.schedule.take_commission_change(current_epoch) {
             self.commission_rate = commission_rate;
         }
 
-        // Split rewards into commission and net, then add to pool stake
+        let snapshot = self.get_current_rate();
+
+        self.process_scheduled_reductions(current_epoch, snapshot)?;
+        self.process_scheduled_additions(current_epoch, snapshot)?;
+
         if rewards_earned > TAPE::zero() {
             if self.stake.is_zero() {
                 return Err(PoolError::StakeInvalid);
@@ -138,14 +141,6 @@ impl<const N: usize> StakingPool<N> {
             self.rewards = self.rewards.saturating_add(rewards_net);
             self.stake = self.stake.saturating_add(rewards_net);
         }
-
-        let snapshot = self.get_current_rate();
-
-        // Handle stake increases (due to pending stake additions)
-        self.process_scheduled_additions(current_epoch, snapshot)?;
-
-        // Handle stake reductions (due to pending share withdrawals)
-        self.process_scheduled_reductions(current_epoch, snapshot)?;
 
         Ok(())
     }
@@ -180,6 +175,14 @@ impl<const N: usize> StakingPool<N> {
         // If activation is immediate, apply stake now and skip scheduling.
         // Otherwise, schedule for future activation via advance_pool.
         if activation_epoch == current_epoch {
+
+            // The only call site that uses this branch gates 
+            // on current_epoch == 0 (bootstrap, empty pool, rate = 1:1)
+            debug_assert!(
+                current_epoch == EpochNumber(0),
+                "immediate activation is only safe at the bootstrap epoch",
+            );
+
             let rate = self.get_current_rate();
             let shares: ShareAmount = rate.convert_to_other_amount(stake_amount.into()).into();
 
@@ -361,6 +364,14 @@ impl<const N: usize> StakingPool<N> {
     }
 
     /// Process pending share withdrawals for the current_epoch.
+    ///
+    /// Dust policy: we burn shares in a single aggregate step using floor of
+    /// the sum, but each user is later paid floor of their own share count.
+    /// The aggregate floor can exceed the sum of individual floors by up to
+    /// (n - 1) flux when n users exit at the same epoch. That difference is
+    /// retained in pool accounting (the rate stays exact) and the underlying
+    /// tokens sit in the archive. It is not claimable by anyone and never
+    /// causes an over-payment.
     fn process_scheduled_reductions(
         &mut self,
         current_epoch: EpochNumber,
@@ -638,33 +649,33 @@ mod tests {
         let r2 = p.get_current_rate();
         assert_eq!(r2, ExchangeRate { tape: 110, other: 100 });
 
-        // E3: rewards 10, user's 100 activates → shares mint at snapshot (120/100)
+        // E3: user's 100 activates at pre-rewards snapshot (110/100), then rewards 10 land
         p.advance_epoch(epoch(3), tape(10)).unwrap();
         let r3 = p.get_current_rate();
-        assert_eq!(r3, ExchangeRate { tape: 220, other: 183 });
+        assert_eq!(r3, ExchangeRate { tape: 220, other: 190 });
 
         // Request at E3 → withdraw epoch = E5 (E+2)
         let activation_rate = r3; // rate at activation E3
         p.request_withdraw(&mut s, epoch(3), activation_rate).unwrap();
 
-        // E4: rewards 30 (user accrues E4 rewards)
+        // E4: rewards 30
         p.advance_epoch(epoch(4), tape(30)).unwrap();
         let r4 = p.get_current_rate();
-        assert_eq!(r4, ExchangeRate { tape: 250, other: 183 });
+        assert_eq!(r4, ExchangeRate { tape: 250, other: 190 });
 
-        // E5: rewards 30, then process share withdrawal (burn)
+        // E5: process share withdrawal at the pre-rewards snapshot, then rewards 30 land
         p.advance_epoch(epoch(5), tape(30)).unwrap();
         let r5 = p.get_current_rate();
 
-        // After burning 83 shares at the E5 snapshot, stake and shares should be:
-        // stake: 154, shares: 100
-        assert_eq!(r5, ExchangeRate { tape: 154, other: 100 });
-        assert_eq!(p.stake, tape(154));
-        assert_eq!(p.shares, shares(100));
+        // After burning 86 shares at the E5 snapshot (250/190), stake and shares should be:
+        // burned stake = floor(86 * 250 / 190) = 113; stake=137+30=167, shares=104
+        assert_eq!(r5, ExchangeRate { tape: 167, other: 104 });
+        assert_eq!(p.stake, tape(167));
+        assert_eq!(p.shares, shares(104));
 
-        // Compute owed rewards for the user (only E4 rewards):
-        // shares_user = floor(100 * 183 / 220) = 83
-        // tape_at_r4 = floor(83 * 250 / 183) = 113
+        // Compute owed rewards for the user:
+        // shares_user = floor(100 * 190 / 220) = 86
+        // tape_at_r4 = floor(86 * 250 / 190) = 113
         // owed = 113 - 100 = 13
 
         let user_shares: ShareAmount = r3
@@ -814,16 +825,16 @@ mod tests {
         assert_eq!(r2, ExchangeRate { tape: 110, other: 100 });
         p.advance_epoch(epoch(3), tape(10)).unwrap();
         let r3 = p.get_current_rate();
-        assert_eq!(r3, ExchangeRate { tape: 220, other: 183 });
+        assert_eq!(r3, ExchangeRate { tape: 220, other: 190 });
 
         // Request at E3 → withdraw epoch = E5 (E+2)
         let activation_rate = r3; // rate at activation E3
         p.request_withdraw(&mut s, epoch(3), activation_rate).unwrap();
 
-        // Add rewards AFTER activation, s accrues rewards (E4 only).
+        // Add rewards AFTER activation.
         p.advance_epoch(epoch(4), tape(30)).unwrap();
         let r4 = p.get_current_rate();
-        assert_eq!(r4, ExchangeRate { tape: 250, other: 183 });
+        assert_eq!(r4, ExchangeRate { tape: 250, other: 190 });
         p.advance_epoch(epoch(5), tape(30)).unwrap();
 
         // Cap rewards pool to 10
@@ -1064,17 +1075,17 @@ mod tests {
     fn stake_immediate_activation() {
         let mut p = TestPool::new(BasisPoints(0));
 
-        // Stake at current epoch (E5) with activation also at E5 (immediate)
-        let s = p.stake_with_pool_at(epoch(5), epoch(5), tape(1000)).unwrap();
+        // Immediate activation is only valid at the bootstrap epoch.
+        let s = p.stake_with_pool_at(epoch(0), epoch(0), tape(1000)).unwrap();
 
-        assert_eq!(s.activation_epoch, epoch(5));
+        assert_eq!(s.activation_epoch, epoch(0));
 
         // Pool should have the stake and shares applied immediately
         assert_eq!(p.stake, tape(1000), "pool.stake should be updated immediately");
         assert!(!p.shares.is_zero(), "pool.shares should be updated immediately");
 
         // Immediate activation skips scheduling
-        assert_eq!(p.schedule.stake_sum(epoch(5)), tape(0));
+        assert_eq!(p.schedule.stake_sum(epoch(0)), tape(0));
     }
 
     #[test]
@@ -1092,5 +1103,138 @@ mod tests {
 
         // Schedule should have the stake for future activation
         assert_eq!(p.schedule.stake_sum(epoch(7)), tape(1000));
+    }
+
+    #[test]
+    fn boundary_dust_regression() {
+        // pre-rewards pool value 1502 mod 1500: a 500-share withdrawal
+        // settles to exactly 0 owed at the snapshot rate. Under the old
+        // post-mutation rate, the same shares would have been overpaid by 1.
+        let mut p = TestPool::new(BasisPoints(0));
+
+        p.schedule.stake(epoch(0), tape(1500)).unwrap();
+        p.advance_epoch(epoch(0), tape(0)).unwrap();
+
+        p.advance_epoch(epoch(1), tape(2)).unwrap();
+        assert_eq!(p.stake, tape(1502));
+        assert_eq!(p.shares, shares(1500));
+
+        p.schedule.unstake(epoch(2), shares(500)).unwrap();
+
+        let snapshot = p.get_current_rate();
+        assert_eq!(snapshot, ExchangeRate { tape: 1502, other: 1500 });
+
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+
+        // Reductions burned 500 shares at the snapshot rate
+        // -floor(500 * 1502 / 1500) = -500 stake
+        assert_eq!(p.stake, tape(1002));
+        assert_eq!(p.shares, shares(1000));
+
+        let tokens_at_snapshot: Coin<TAPE> =
+            snapshot.convert_to_tape_amount(500u64.into()).into();
+        let owed = tokens_at_snapshot.saturating_sub(tape(500));
+        assert_eq!(owed, tape(0), "withdrawer must settle at snapshot rate");
+
+        // The buggy path would have used the post-mutation rate (1002/1000),
+        // giving floor(500 * 1002 / 1000) - 500 = 1 flux of overpay.
+        let post_rate = p.get_current_rate();
+        let buggy: Coin<TAPE> = post_rate.convert_to_tape_amount(500u64.into()).into();
+        assert_eq!(buggy.saturating_sub(tape(500)), tape(1));
+    }
+
+    #[test]
+    fn gap_settles_at_single_span_rate() {
+        // Node misses several epochs, then advances once. All withdrawals
+        // scheduled in the gap settle at the same closing-span rate.
+        let mut p = TestPool::new(BasisPoints(0));
+
+        p.schedule.stake(epoch(0), tape(1000)).unwrap();
+        p.advance_epoch(epoch(0), tape(0)).unwrap();
+        p.advance_epoch(epoch(1), tape(50)).unwrap();
+        assert_eq!(p.stake, tape(1050));
+
+        // Two withdrawals scheduled in the gap
+        p.schedule.unstake(epoch(3), shares(100)).unwrap();
+        p.schedule.unstake(epoch(4), shares(200)).unwrap();
+
+        let span_rate = p.get_current_rate();
+        assert_eq!(span_rate, ExchangeRate { tape: 1050, other: 1000 });
+
+        // Skip epochs 2-4, advance only at epoch 5 with new rewards
+        p.advance_epoch(epoch(5), tape(7)).unwrap();
+
+        // Aggregate reduction: floor(300 * 1050/1000) = 315 stake.
+        // Then 7 rewards land on remaining 700 shares.
+        assert_eq!(p.stake, tape(1050 - 315 + 7));
+        assert_eq!(p.shares, shares(700));
+
+        // Each withdrawer's payout uses the same span rate
+        let tokens_100: Coin<TAPE> = span_rate.convert_to_tape_amount(100u64.into()).into();
+        let tokens_200: Coin<TAPE> = span_rate.convert_to_tape_amount(200u64.into()).into();
+        assert_eq!(tokens_100, tape(105));
+        assert_eq!(tokens_200, tape(210));
+    }
+
+    #[test]
+    fn aggregate_withdrawal_dust_stays_in_pool() {
+        // Two withdrawers exit at the same epoch with 1 share each at rate 3/2.
+        // Aggregate floor removes 3 stake; sum of individual floors at unstake
+        // time is 1 + 1 = 2. The 1-flux difference is retained in the pool's
+        // accounting (rate stays at 3/2) and the underlying token sits in the
+        // archive, unclaimable. Lock the direction so it can never flip to an
+        // over-payment.
+        let mut p = TestPool::new(BasisPoints(0));
+
+        p.schedule.stake(epoch(0), tape(200)).unwrap();
+        p.advance_epoch(epoch(0), tape(0)).unwrap();
+        p.advance_epoch(epoch(1), tape(100)).unwrap();
+        assert_eq!(p.get_current_rate(), ExchangeRate { tape: 300, other: 200 });
+
+        p.schedule.unstake(epoch(2), shares(1)).unwrap();
+        p.schedule.unstake(epoch(2), shares(1)).unwrap();
+
+        let snapshot = p.get_current_rate();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+
+        // Aggregate: floor(2 * 300 / 200) = 3 stake removed
+        assert_eq!(p.stake, tape(297));
+        assert_eq!(p.shares, shares(198));
+        // Rate is preserved: dust does not shift the price for remaining stakers
+        assert_eq!(p.get_current_rate(), ExchangeRate { tape: 297, other: 198 });
+
+        // Per-user payout at snapshot rate: floor(1 * 3/2) = 1 each
+        let per_user_tokens: Coin<TAPE> =
+            snapshot.convert_to_tape_amount(1u64.into()).into();
+        assert_eq!(per_user_tokens, tape(1));
+
+        // Sum of individuals (2) is strictly less than the aggregate (3),
+        // confirming dust direction is toward the pool, never the withdrawer.
+    }
+
+    #[test]
+    fn activator_at_boundary_earns_rewards() {
+        // E+ specific: an activator whose shares mint at the same epoch as a
+        // reward distribution shares in that epoch's rewards.
+        let mut p = TestPool::new(BasisPoints(0));
+
+        p.schedule.stake(epoch(0), tape(1000)).unwrap();
+        p.advance_epoch(epoch(0), tape(0)).unwrap();
+
+        // Bob activates at epoch 2 with 100 TAPE
+        p.schedule.stake(epoch(2), tape(100)).unwrap();
+
+        // Epoch 2 advance with 100 TAPE rewards
+        p.advance_epoch(epoch(2), tape(100)).unwrap();
+
+        // Additions mint at snapshot (1.0): +100 shares.
+        // Rewards distribute over post-mutation set (1100 shares total).
+        assert_eq!(p.stake, tape(1200));
+        assert_eq!(p.shares, shares(1100));
+
+        let bob_value: Coin<TAPE> = p.get_current_rate()
+            .convert_to_tape_amount(100u64.into())
+            .into();
+        assert_eq!(bob_value, tape(109));
     }
 }

@@ -77,12 +77,15 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
 
     // Otherwise, we schedule a normal withdrawal with the standard E+2 delay.
     } else {
+        // Activation rate is the snapshot used by process_scheduled_additions during
+        // AdvancePool(activation_epoch). It's captured by the closing span [_, activation_epoch).
+        // Look it up via activation_epoch.prev() so check_contains lands in that span.
         let activation_rate = resolve_rate(
             node,
             history_tape,
             history_address,
             (*node_info.key).into(),
-            staked_tape.activation_epoch,
+            staked_tape.activation_epoch.prev(),
             args.rate,
         )?;
 
@@ -107,7 +110,48 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::staking::RateSpan;
+    use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_core::track::archive::TrackArchive;
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
+    use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
+    use tape_crypto::Hash;
     use tape_test::*;
+
+    fn make_closed_span(
+        node_id: NodeId,
+        history_address: Address,
+        span: RateSpan,
+    ) -> (Tape, PoolRate) {
+        let track = CompressedTrack {
+            tape: history_address,
+            key: span.key(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Raw as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(core::mem::size_of::<RateSpan>() as u64),
+            group: GroupIndex(0),
+            value_hash: span.value_hash(),
+        };
+        let leaf_hash = track.get_hash();
+
+        let mut tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        tree.add_leaf_hash(leaf_hash).unwrap();
+        let proof: [Hash; TRACK_TREE_HEIGHT] =
+            create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(&[leaf_hash], 0)
+                .expect("track proof")
+                .try_into()
+                .expect("proof length");
+
+        let mut tape = Tape::history(node_id, span.end_epoch);
+        tape.tracks = TrackArchive {
+            tree,
+            next_number: TrackNumber(1),
+            num_tracks: 1,
+        };
+        let pool_rate = PoolRate::new(span, CompressedTrackProof { state: track, proof });
+        (tape, pool_rate)
+    }
 
     #[test]
     fn request_stake_unlock() {
@@ -119,31 +163,41 @@ mod tests {
         let e2: EpochNumber = e0.saturating_add(EpochNumber(2)); // current epoch
         let e4: EpochNumber = e2 + EpochNumber(2); // unstake epoch
 
+        let (system_address, _) = system_pda();
+        let (stake_address, _) = stake_pda(authority.into());
+        let (history_address, _) = history_pda(pool_address.into());
+
+        let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
+
+        // Closed span containing the activator's mint epoch (e0).
+        // Lookup at e0.prev() falls within [e0-1, e0+1).
+        let span = RateSpan {
+            node: pool_address.into(),
+            start_epoch: e0.prev(),
+            end_epoch: e0 + EpochNumber(1),
+            rate: activation_rate,
+        };
+        let (history_tape, pool_rate) =
+            make_closed_span(NodeId(5), history_address.into(), span);
+
         let instruction = build_request_stake_unlock_ix(
             fee_payer.into(),
             authority.into(),
             pool_address.into(),
-            PoolRate::current(),
+            pool_rate,
         );
-
-        let (system_address, _) = system_pda();
-        let (stake_address, _) = stake_pda(authority.into());
-        let (history_address, _) = history_pda(pool_address.into());
 
         let system = System {
             current_epoch: e2,
             ..System::zeroed()
         };
 
-        let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
         let mut node = Node::zeroed();
         node.id = NodeId(5);
         node.latest_advance_epoch = e2;
-        node.rate_span_start = e0;
+        node.rate_span_start = e0 + EpochNumber(1);
         node.pool.stake = TAPE(activation_rate.tape);
         node.pool.shares = ShareAmount(activation_rate.other);
-
-        let history_tape = Tape::history(node.id, e0);
 
         let mut stake = Stake::zeroed();
         stake.authority = authority.into();

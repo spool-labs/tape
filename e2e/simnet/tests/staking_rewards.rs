@@ -169,6 +169,7 @@ async fn run() {
     assert_eq!(epoch, FIRST_CLAIM_EPOCH.0, "unexpected claim epoch");
 
     let mut total_claim = PoolClaim::default();
+    let mut boundary_claim = PoolClaim::default();
     let claim = wait_pool_claimed(
         &harness,
         &scenario,
@@ -182,6 +183,9 @@ async fn run() {
         claim.gross > TAPE::zero(),
         "target pool should earn rewards from assigned storage"
     );
+    if EpochNumber(epoch) == WITHDRAW_EPOCH {
+        boundary_claim = claim;
+    }
     total_claim.add(claim);
     assert_pool_rewards(&harness, total_claim).await;
 
@@ -229,16 +233,24 @@ async fn run() {
             active_timeout,
         )
         .await;
+        if current == WITHDRAW_EPOCH {
+            boundary_claim = claim;
+        }
         total_claim.add(claim);
         assert_pool_rewards(&harness, total_claim).await;
     }
 
     assert_pool_rewards(&harness, total_claim).await;
 
+    // AdvancePool(N) adds epoch (N-1)'s storage rewards to the pool, and under
+    // E+ withdrawal share-reductions run before that addition lands. So the
+    // withdrawer misses the boundary advance's claim, which represents
+    // epoch (WITHDRAW_EPOCH - 1)'s earnings.
+    let pre_boundary_rewards = total_claim.rewards.saturating_sub(boundary_claim.rewards);
     let expected_user_rewards = expected_staker_rewards(
         user_stake,
         initial_pool_stake,
-        total_claim.rewards,
+        pre_boundary_rewards,
     );
     assert!(
         expected_user_rewards > TAPE::zero(),

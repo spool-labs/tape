@@ -1,5 +1,4 @@
 use bytemuck::{bytes_of, Pod, Zeroable};
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tape_crypto::address::Address;
 use tape_crypto::hash::{hash, hashv};
 use tape_crypto::Hash;
@@ -25,48 +24,16 @@ pub struct RateSpan {
     pub rate: ExchangeRate,
 }
 
-#[repr(u64)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub enum RateKind {
-    Current = 0,
-    ClosedSpan,
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct PoolRate {
-    pub kind: u64,
     pub span: RateSpan,
     pub track: CompressedTrackProof,
 }
 
 impl PoolRate {
-    pub fn current() -> Self {
-        Self {
-            kind: RateKind::Current.into(),
-            span: RateSpan::zeroed(),
-            track: CompressedTrackProof::zeroed(),
-        }
-    }
-
-    pub fn closed_span(span: RateSpan, track: CompressedTrackProof) -> Self {
-        Self {
-            kind: RateKind::ClosedSpan.into(),
-            span,
-            track,
-        }
-    }
-
-    pub fn kind(&self) -> Option<RateKind> {
-        RateKind::try_from(self.kind).ok()
-    }
-
-    pub fn is_current(&self) -> bool {
-        matches!(self.kind(), Some(RateKind::Current))
-    }
-
-    pub fn is_closed_span(&self) -> bool {
-        matches!(self.kind(), Some(RateKind::ClosedSpan))
+    pub fn new(span: RateSpan, track: CompressedTrackProof) -> Self {
+        Self { span, track }
     }
 }
 

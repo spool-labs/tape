@@ -97,7 +97,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             None,
             || async {
                 let pool_rate = self
-                    .resolve_pool_rate(pool, stake.inner.activation_epoch)
+                    .resolve_pool_rate(pool, stake.inner.activation_epoch.prev())
                     .await?;
 
                 let ix = build_request_stake_unlock_ix(
@@ -141,7 +141,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             RetryConfig::three(),
             None,
             || async {
-                let pool_rate = self.resolve_pool_rate(pool, withdraw_epoch).await?;
+                let pool_rate = self.resolve_pool_rate(pool, withdraw_epoch.prev()).await?;
 
                 let ix = build_unstake_from_pool_ix(
                     payer.pubkey().into(),
@@ -171,11 +171,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         pool: Address,
         target_epoch: EpochNumber,
     ) -> Result<PoolRate, TapedriveError> {
-        let node = self.rpc().get_node_by_address(&pool).await?;
-        if target_epoch >= node.rate_span_start {
-            return Ok(PoolRate::current());
-        }
-
         let (history_tape, _) = history_pda(pool);
         let mut cursor: Option<TrackNumber> = None;
 
@@ -203,7 +198,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 }
 
                 let proof = query_track_proof(self, &track_address).await?;
-                return Ok(PoolRate::closed_span(*span, proof));
+                return Ok(PoolRate::new(*span, proof));
             }
 
             match next_cursor {
