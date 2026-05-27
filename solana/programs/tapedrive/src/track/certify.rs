@@ -122,8 +122,8 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     TrackCertified {
         track: track_address,
         epoch: curr,
-        signer_count: signer_count.to_le_bytes(),
-        signer_weight: weight.to_le_bytes(),
+        signer_count,
+        signer_weight: weight,
     }.log();
 
     Ok(())

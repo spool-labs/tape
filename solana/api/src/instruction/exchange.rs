@@ -11,44 +11,44 @@ pub struct RegisterExchange {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetExchangeRate {
-    pub tape: [u8; 8],
-    pub sol: [u8; 8],
+    pub tape: u64,
+    pub sol: u64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct DepositTape {
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct DepositSol {
-    pub amount: [u8; 8],
+    pub amount: Coin<SOL>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct WithdrawTape {
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct WithdrawSol {
-    pub amount: [u8; 8],
+    pub amount: Coin<SOL>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SwapForTape {
-    pub amount_sol: [u8; 8],
+    pub amount_sol: Coin<SOL>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SwapForSol {
-    pub amount_tape: [u8; 8],
+    pub amount_tape: Coin<TAPE>,
 }
 
 
@@ -84,8 +84,6 @@ pub fn build_deposit_sol_ix(
     exchange: Address,
     amount: Coin<SOL>,
 ) -> Instruction {
-    let amount = amount.pack();
-
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
@@ -106,8 +104,6 @@ pub fn build_withdraw_sol_ix(
     exchange: Address,
     amount: Coin<SOL>,
 ) -> Instruction {
-    let amount = amount.pack();
-
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
@@ -130,8 +126,6 @@ pub fn build_deposit_tape_ix(
     amount: Coin<TAPE>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
-    let amount = amount.pack();
-
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
@@ -156,8 +150,6 @@ pub fn build_withdraw_tape_ix(
     amount: Coin<TAPE>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
-    let amount = amount.pack();
-
     Instruction {
         program_id: exchange::ID,
         accounts: vec![
@@ -188,11 +180,7 @@ pub fn build_set_exchange_rate_ix(
             AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new(exchange.into(), false),
         ],
-        data: SetExchangeRate {
-            tape: tape.to_le_bytes(),
-            sol: sol.to_le_bytes(),
-        }
-        .to_bytes(),
+        data: SetExchangeRate { tape, sol }.to_bytes(),
     }
 }
 
@@ -204,7 +192,6 @@ pub fn build_swap_for_tape_ix(
     amount_sol: Coin<SOL>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
-    let amount_sol = amount_sol.pack();
 
     Instruction {
         program_id: exchange::ID,
@@ -229,7 +216,6 @@ pub fn build_swap_for_sol_ix(
     amount_tape: Coin<TAPE>,
 ) -> Instruction {
     let (exchange_ata, _) = exchange_ata(exchange);
-    let amount_tape = amount_tape.pack();
 
     Instruction {
         program_id: exchange::ID,

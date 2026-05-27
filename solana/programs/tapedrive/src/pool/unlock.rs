@@ -100,7 +100,7 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         stake: stake_address,
         authority: (*authority_info.key).into(),
         pool: (*node_info.key).into(),
-        amount: staked_tape.amount.pack(),
+        amount: staked_tape.amount,
         withdraw_epoch,
     }.log();
 

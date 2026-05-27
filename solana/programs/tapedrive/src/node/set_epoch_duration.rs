@@ -29,7 +29,7 @@ pub fn process_set_epoch_duration(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let epoch_duration = EpochDuration::unpack(args.epoch_duration);
+    let epoch_duration = args.epoch_duration;
     if epoch_duration < system.min_epoch_duration
         || epoch_duration > system.max_epoch_duration
     {

@@ -48,7 +48,7 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_sysvar(&sysvar::rent::ID)?;
 
     // Amount in TAPE from user
-    let amount_in_tape = TAPE::unpack(args.amount_tape);
+    let amount_in_tape = args.amount_tape;
     if amount_in_tape.is_zero() {
         return Err(ExchangeError::UnexpectedState.into());
     }

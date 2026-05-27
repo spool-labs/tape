@@ -29,7 +29,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     rent_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let mut amount = SOL::unpack(args.amount);
+    let mut amount = args.amount;
 
     // Check if the exchange has enough balance
     // (without dipping into rent-exempt reserve)

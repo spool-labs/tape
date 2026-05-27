@@ -48,7 +48,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_program(&spl_token::ID)?;
 
     // Amount in SOL from user
-    let amount_in_sol = SOL::unpack(args.amount_sol);
+    let amount_in_sol = args.amount_sol;
     if amount_in_sol.is_zero() {
         return Err(ExchangeError::UnexpectedState.into());
     }

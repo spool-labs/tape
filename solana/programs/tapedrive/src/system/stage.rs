@@ -137,7 +137,7 @@ pub fn process_stage_genesis_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
 
     NodeJoinedCommittee {
         node: node_address,
-        stake: stake.as_u64().to_le_bytes(),
+        stake,
         key: node.metadata.bls_pubkey,
         preferences: node.preferences,
         activation_epoch: target,

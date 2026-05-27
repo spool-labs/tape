@@ -35,7 +35,7 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(TapeError::BadEpochState.into());
     }
 
-    let spool = SpoolIndex::unpack(args.spool);
+    let spool = args.spool;
     let group_id = GroupIndex::containing(spool);
 
     let group = group_info

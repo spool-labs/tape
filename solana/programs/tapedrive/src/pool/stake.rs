@@ -76,7 +76,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_writable()?
         .has_address(&vault_address.into())?;
 
-    let amount = TAPE::unpack(args.amount);
+    let amount = args.amount;
     if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
     }
@@ -134,7 +134,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         stake: stake_address,
         authority: (*authority_info.key).into(),
         pool: (*node_info.key).into(),
-        amount: amount.as_u64().to_le_bytes(),
+        amount,
         activation_epoch: staked_tape.activation_epoch,
     }.log();
 

@@ -58,9 +58,9 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let subsidy_amount = TAPE::unpack(args.subsidy_amount);
+    let subsidy_amount = args.subsidy_amount;
 
-    let epoch_duration = EpochDuration::unpack(args.epoch_duration);
+    let epoch_duration = args.epoch_duration;
     if epoch_duration < system.min_epoch_duration
         || epoch_duration > system.max_epoch_duration
     {

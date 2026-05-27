@@ -9,9 +9,9 @@ use crate::program::token::mint_pda;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ReserveTape {
-    pub storage_units: [u8; 8],
-    pub activation_epoch: [u8; 8],
-    pub expiry_epoch: [u8; 8],
+    pub storage_units: StorageUnits,
+    pub activation_epoch: EpochNumber,
+    pub expiry_epoch: EpochNumber,
 }
 
 #[repr(C)]
@@ -21,13 +21,13 @@ pub struct DestroyTape {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SplitTapeByEpoch {
-    pub epoch: [u8; 8],
+    pub epoch: EpochNumber,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SplitTapeBySize {
-    pub size: [u8; 8],
+    pub size: StorageUnits,
 }
 
 #[repr(C)]
@@ -50,10 +50,6 @@ pub fn build_reserve_tape_ix(
     let (mint_address, _) = mint_pda();
 
     let (tape_address, _) = tape_pda(authority);
-
-    let storage_units = storage_units.pack();
-    let activation_epoch = activation_epoch.pack();
-    let expiry_epoch = expiry_epoch.pack();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -90,8 +86,6 @@ pub fn build_split_tape_by_size_ix(
     let (dest_tape_address, _) = tape_pda(recipient);
     let (archive_address, _) = archive_pda();
 
-    let size = size.pack();
-
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
@@ -120,8 +114,6 @@ pub fn build_split_tape_by_epoch_ix(
     let (dest_tape_address, _) = tape_pda(recipient);
     let (archive_address, _) = archive_pda();
 
-    let epoch = split_epoch.pack();
-
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
@@ -136,7 +128,7 @@ pub fn build_split_tape_by_epoch_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: SplitTapeByEpoch { epoch }.to_bytes(),
+        data: SplitTapeByEpoch { epoch: split_epoch }.to_bytes(),
     }
 }
 

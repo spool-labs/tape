@@ -74,7 +74,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     let current = current_epoch(system);
-    let commission_rate = BasisPoints::unpack(args.commission_rate);
+    let commission_rate = args.commission_rate;
     if !commission_rate.is_valid() {
         return Err(ProgramError::InvalidArgument);
     }

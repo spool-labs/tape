@@ -29,8 +29,7 @@ pub fn process_set_spool_groups(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let spool_groups = u64::from_le_bytes(args.spool_groups);
-    node.preferences.spool_groups = spool_groups;
+    node.preferences.spool_groups = args.spool_groups;
 
     Ok(())
 }

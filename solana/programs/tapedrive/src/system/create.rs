@@ -31,11 +31,11 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .has_address(&system_address.into())?;
 
-    let committee_size = u64::from_le_bytes(args.committee_size);
-    let spool_groups = u64::from_le_bytes(args.spool_groups);
-    let min_version = VersionId(u64::from_le_bytes(args.min_version));
-    let min_epoch_duration = EpochDuration::unpack(args.min_epoch_duration);
-    let max_epoch_duration = EpochDuration::unpack(args.max_epoch_duration);
+    let committee_size = args.committee_size;
+    let spool_groups = args.spool_groups;
+    let min_version = args.min_version;
+    let min_epoch_duration = args.min_epoch_duration;
+    let max_epoch_duration = args.max_epoch_duration;
 
     if committee_size < MIN_COMMITTEE_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());

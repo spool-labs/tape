@@ -8,7 +8,7 @@ use crate::program::token::mint_pda;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CreateEpoch {
-    pub epoch: [u8; 8],
+    pub epoch: EpochNumber,
 }
 
 #[repr(C)]
@@ -33,7 +33,7 @@ pub fn build_create_epoch_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: CreateEpoch { epoch: epoch.pack() }.to_bytes(),
+        data: CreateEpoch { epoch }.to_bytes(),
     }
 }
 

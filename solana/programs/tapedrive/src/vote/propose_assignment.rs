@@ -98,7 +98,7 @@ pub fn process_propose_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         voting_epoch: voting_epoch_id,
         target_epoch: target_epoch_id,
         hash: args.hash,
-        total_groups: voting_epoch.total_groups.to_le_bytes(),
+        total_groups: voting_epoch.total_groups,
     }
     .log();
 

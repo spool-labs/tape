@@ -89,10 +89,7 @@ pub fn process_resize_peer_set(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         PeerSet::header(peer_set_info, &tapedrive::ID)?.peers.capacity
     };
 
-    PeerSetResized {
-        capacity: capacity.to_le_bytes(),
-    }
-    .log();
+    PeerSetResized { capacity }.log();
 
     Ok(())
 }

@@ -29,7 +29,7 @@ pub fn process_set_commission_rate(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let commission_rate = BasisPoints::unpack(args.commission_rate);
+    let commission_rate = args.commission_rate;
 
     const MAX_COMMISSION_RATE: u64 = 10_000;
     if commission_rate.as_u64() > MAX_COMMISSION_RATE {

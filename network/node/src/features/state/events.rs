@@ -11,7 +11,7 @@ pub fn apply_join_committee_event(
 ) -> Result<(), NodeError> {
     let member = Member {
         node: event.node,
-        stake: TAPE(u64::from_le_bytes(event.stake)),
+        stake: event.stake,
         assigned: Default::default(),
         blacklisted: Default::default(),
         spools: 0,

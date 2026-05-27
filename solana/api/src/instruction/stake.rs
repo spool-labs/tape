@@ -8,7 +8,7 @@ use crate::program::*;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StakeTokens {
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 }
 
 #[repr(C)]
@@ -18,7 +18,7 @@ pub struct UnstakeTokens {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SplitStake {
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 }
 
 #[repr(C)]
@@ -37,8 +37,6 @@ pub fn build_stake_ix(
     let (stake_address, _) = stake_pda(authority);
     let (vault_address, _) = vault_pda(stake_address);
     let authority_ata      = ata(&authority);
-
-    let amount = amount.pack();
 
     Instruction {
         program_id: staking::ID,
@@ -96,8 +94,6 @@ pub fn build_split_stake_ix(
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
 
     let (mint_address, _) = mint_pda();
-
-    let amount = amount.pack();
 
     Instruction {
         program_id: staking::ID,

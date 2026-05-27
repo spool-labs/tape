@@ -38,7 +38,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let amount = TAPE::unpack(args.amount);
+    let amount = args.amount;
     if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
     }

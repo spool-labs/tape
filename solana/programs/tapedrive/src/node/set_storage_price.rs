@@ -24,8 +24,7 @@ pub fn process_set_storage_price(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let storage_price = TAPE::unpack(args.price);
-    node.preferences.storage_price = storage_price;
+    node.preferences.storage_price = args.price;
 
     Ok(())
 }

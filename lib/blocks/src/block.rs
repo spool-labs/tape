@@ -250,7 +250,8 @@ mod tests {
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
-    use tape_core::types::{EpochNumber, StorageUnits, StripeCount};
+    use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
+    use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
@@ -347,18 +348,18 @@ mod tests {
                 TapedriveEvent::EpochAdvanced(EpochAdvanced {
                     old_epoch: 1u64.into(),
                     new_epoch: 2u64.into(),
-                    timestamp: [0; 8],
-                    total_stake: [0; 8],
-                    committee_count: [0; 8],
+                    timestamp: 0,
+                    total_stake: TAPE(0),
+                    committee_count: 0,
                     preferences: NodePreferences::zeroed(),
-                    subsidy: [0; 8],
+                    subsidy: TAPE(0),
                     nonce: Hash::default(),
                 }),
                 TapedriveEvent::SpoolSynced(SpoolSynced {
                     node: sync_node,
                     epoch: 1u64.into(),
                     group: GroupIndex(7),
-                    spool: 3u64.to_le_bytes(),
+                    spool: SpoolIndex(3),
                     phase: EpochPhase::Sync as u64,
                 }),
             ],
@@ -368,11 +369,11 @@ mod tests {
             events: vec![TapedriveEvent::EpochAdvanced(EpochAdvanced {
                 old_epoch: 2u64.into(),
                 new_epoch: 3u64.into(),
-                timestamp: [0; 8],
-                total_stake: [0; 8],
-                committee_count: [0; 8],
+                timestamp: 0,
+                total_stake: TAPE(0),
+                committee_count: 0,
                 preferences: NodePreferences::zeroed(),
-                subsidy: [0; 8],
+                subsidy: TAPE(0),
                 nonce: Hash::default(),
             })],
         };

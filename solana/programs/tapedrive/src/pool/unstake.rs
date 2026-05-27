@@ -172,8 +172,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         stake: stake_address,
         authority: (*authority_info.key).into(),
         pool: (*node_info.key).into(),
-        principal: staked_tape.amount.as_u64().to_le_bytes(),
-        rewards: total_rewards.as_u64().to_le_bytes(),
+        principal: staked_tape.amount,
+        rewards: total_rewards,
     }.log();
 
     close_account(

@@ -17,6 +17,7 @@ use tape_core::system::BlacklistEntry;
 use tape_core::track::data::{TrackData, TrackDataSlice};
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::EpochNumber;
+use tape_core::types::coin::{Coin, TAPE};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
@@ -71,7 +72,7 @@ pub enum RawInstruction {
         authority: Address,
         pool: Address,
         stake: Address,
-        amount: [u8; 8],
+        amount: Coin<TAPE>,
     },
     RequestStakeUnlock {
         authority: Address,
@@ -325,17 +326,13 @@ pub fn parse_raw_instruction(
         TapeInstruction::CreateEpoch => {
             let args = ix::CreateEpoch::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("create_epoch: {e:?}")))?;
-            Ok(Some(RawInstruction::CreateEpoch {
-                epoch: EpochNumber::unpack(args.epoch),
-            }))
+            Ok(Some(RawInstruction::CreateEpoch { epoch: args.epoch }))
         }
 
         TapeInstruction::CreateCommittee => {
             let args = ix::CreateCommittee::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("create_committee: {e:?}")))?;
-            Ok(Some(RawInstruction::CreateCommittee {
-                epoch: EpochNumber::unpack(args.epoch),
-            }))
+            Ok(Some(RawInstruction::CreateCommittee { epoch: args.epoch }))
         }
 
         TapeInstruction::ResizeCommittee => {
@@ -359,8 +356,7 @@ pub fn parse_raw_instruction(
                 .map_err(|e| ParseError::Deserialization(format!("sync_spool: {e:?}")))?;
             // Account layout from build_sync_spool_ix: [fee_payer, authority, system, epoch, group, node]
             let node = get_account(5)?;
-            let spool = u64::from_le_bytes(args.spool);
-            Ok(Some(RawInstruction::SyncSpool { node, spool }))
+            Ok(Some(RawInstruction::SyncSpool { node, spool: args.spool.0 }))
         }
 
         TapeInstruction::ProposeSnapshot => {
@@ -372,16 +368,13 @@ pub fn parse_raw_instruction(
         TapeInstruction::VoteSnapshot => {
             let args = ix::VoteSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_snapshot: {e:?}")))?;
-            let group = GroupIndex::unpack(args.group);
-            Ok(Some(RawInstruction::VoteSnapshot { hash: args.hash, group }))
+            Ok(Some(RawInstruction::VoteSnapshot { hash: args.hash, group: args.group }))
         }
 
         TapeInstruction::FinalizeSnapshot => {
             let args = ix::FinalizeSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("finalize_snapshot: {e:?}")))?;
-            Ok(Some(RawInstruction::FinalizeSnapshot {
-                epoch: EpochNumber::unpack(args.epoch),
-            }))
+            Ok(Some(RawInstruction::FinalizeSnapshot { epoch: args.epoch }))
         }
 
         TapeInstruction::ProposeAssignment => {
@@ -393,10 +386,9 @@ pub fn parse_raw_instruction(
         TapeInstruction::VoteAssignment => {
             let args = ix::VoteAssignment::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_assignment: {e:?}")))?;
-            let group = GroupIndex::unpack(args.group);
             Ok(Some(RawInstruction::VoteAssignment {
                 hash: args.hash,
-                group,
+                group: args.group,
             }))
         }
 
@@ -404,7 +396,7 @@ pub fn parse_raw_instruction(
             let args = ix::FinalizeGroup::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("finalize_group: {e:?}")))?;
             Ok(Some(RawInstruction::FinalizeGroup {
-                epoch: EpochNumber::unpack(args.epoch),
+                epoch: args.epoch,
                 group: args.payload.group(),
             }))
         }
@@ -679,9 +671,9 @@ mod tests {
             target_epoch: EpochNumber(7),
             hash: Hash::from([0x55; 32]),
             group: GroupIndex(4),
-            signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
-            signed_groups: 1u64.to_le_bytes(),
-            total_groups: 5u64.to_le_bytes(),
+            signer_count: 14,
+            signed_groups: 1,
+            total_groups: 5,
         };
 
         let instructions = vec![

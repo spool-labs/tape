@@ -24,7 +24,7 @@ pub fn process_set_burn_fee_bps(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let burn_fee_bps = BasisPoints::unpack(args.burn_fee_bps);
+    let burn_fee_bps = args.burn_fee_bps;
     if !burn_fee_bps.is_valid() {
         return Err(ProgramError::InvalidArgument);
     }

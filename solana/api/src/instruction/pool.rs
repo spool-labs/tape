@@ -14,7 +14,7 @@ pub struct AdvancePool {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StakeWithPool {
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 }
 
 #[repr(C)]
@@ -32,7 +32,7 @@ pub struct UnstakeFromPool {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SplitPoolStake {
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 }
 
 #[repr(C)]
@@ -80,8 +80,6 @@ pub fn build_stake_with_pool_ix(
     let (stake_address, _)  = stake_pda(authority);
     let (vault_address, _)  = vault_pda(stake_address);
     let authority_ata       = ata(&authority);
-
-    let amount = amount.pack();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -181,8 +179,6 @@ pub fn build_split_pool_stake_ix(
     let (source_vault, _) = vault_pda(source_stake);
     let (dest_vault, _)   = vault_pda(dest_stake);
     let (mint_address, _) = mint_pda();
-
-    let amount = amount.pack();
 
     Instruction {
         program_id: tapedrive::ID,

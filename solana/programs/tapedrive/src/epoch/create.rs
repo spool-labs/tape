@@ -22,7 +22,7 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let id = EpochNumber::unpack(args.epoch);
+    let id = args.epoch;
     let (epoch_address, _) = epoch_pda(id);
 
     epoch_info

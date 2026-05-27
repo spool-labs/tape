@@ -40,7 +40,7 @@ pub fn process_deposit_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     token_program_info
         .is_program(&spl_token::ID)?;
 
-    let amount = TAPE::unpack(args.amount);
+    let amount = args.amount;
 
     transfer(
         authority_info,

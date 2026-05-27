@@ -1,5 +1,6 @@
 use tape_core::spooler::GroupIndex;
-use tape_core::types::EpochNumber;
+use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits, VersionId};
+use tape_core::types::coin::{Coin, TAPE};
 use tape_solana::*;
 use tape_crypto::address::Address;
 
@@ -15,20 +16,20 @@ use crate::utils::ata;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CreateSystem {
-    pub committee_size: [u8; 8],
-    pub spool_groups: [u8; 8],
-    pub min_version: [u8; 8],
-    pub min_epoch_duration: [u8; 8],
-    pub max_epoch_duration: [u8; 8],
+    pub committee_size: u64,
+    pub spool_groups: u64,
+    pub min_version: VersionId,
+    pub min_epoch_duration: EpochDuration,
+    pub max_epoch_duration: EpochDuration,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CreateArchive {
-    pub storage_capacity: [u8; 8],
-    pub storage_price: [u8; 8],
-    pub burn_fee_bps: [u8; 8],
-    pub subsidy_decay_bps: [u8; 8],
+    pub storage_capacity: StorageUnits,
+    pub storage_price: Coin<TAPE>,
+    pub burn_fee_bps: BasisPoints,
+    pub subsidy_decay_bps: BasisPoints,
 }
 
 #[repr(C)]
@@ -40,10 +41,10 @@ pub struct StageGenesisNode {}
 pub struct StartNetwork {
     /// Initial epoch duration written to epoch.preferences. Must satisfy
     /// system.min_epoch_duration <= epoch_duration <= system.max_epoch_duration.
-    pub epoch_duration: [u8; 8],
+    pub epoch_duration: EpochDuration,
 
     /// TAPE flux units transferred into the subsidy vault.
-    pub subsidy_amount: [u8; 8],
+    pub subsidy_amount: Coin<TAPE>,
 }
 
 
@@ -64,11 +65,11 @@ pub fn build_create_system_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: CreateSystem {
-            committee_size: config.committee_size.to_le_bytes(),
-            spool_groups: config.spool_groups.to_le_bytes(),
-            min_version: config.min_version.0.to_le_bytes(),
-            min_epoch_duration: config.min_epoch_duration.pack(),
-            max_epoch_duration: config.max_epoch_duration.pack(),
+            committee_size: config.committee_size,
+            spool_groups: config.spool_groups,
+            min_version: config.min_version,
+            min_epoch_duration: config.min_epoch_duration,
+            max_epoch_duration: config.max_epoch_duration,
         }.to_bytes(),
     }
 }
@@ -106,10 +107,10 @@ pub fn build_create_archive_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: CreateArchive {
-            storage_capacity: config.storage_capacity.0.to_le_bytes(),
-            storage_price: config.storage_price.pack(),
-            burn_fee_bps: config.burn_fee_bps.pack(),
-            subsidy_decay_bps: config.subsidy_decay_bps.pack(),
+            storage_capacity: config.storage_capacity,
+            storage_price: config.storage_price,
+            burn_fee_bps: config.burn_fee_bps,
+            subsidy_decay_bps: config.subsidy_decay_bps,
         }.to_bytes(),
     }
 }
@@ -184,8 +185,8 @@ pub fn build_start_network_ix(
         program_id: tapedrive::ID,
         accounts,
         data: StartNetwork {
-            epoch_duration: config.epoch_duration.pack(),
-            subsidy_amount: config.subsidy_amount.pack(),
+            epoch_duration: config.epoch_duration,
+            subsidy_amount: config.subsidy_amount,
         }.to_bytes(),
     }
 }

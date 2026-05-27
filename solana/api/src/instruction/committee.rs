@@ -10,7 +10,7 @@ use crate::program::tapedrive::{committee_pda, epoch_pda, system_pda};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CreateCommittee {
-    pub epoch: [u8; 8],
+    pub epoch: EpochNumber,
 }
 
 #[repr(C)]
@@ -31,7 +31,7 @@ pub fn build_create_committee_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: CreateCommittee { epoch: epoch.pack() }.to_bytes(),
+        data: CreateCommittee { epoch }.to_bytes(),
     }
 }
 

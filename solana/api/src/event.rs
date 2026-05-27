@@ -4,7 +4,8 @@ use tape_core::bls::BlsPubkey;
 use tape_core::spooler::GroupIndex;
 use tape_core::staking::RateSpan;
 use tape_core::system::NodePreferences;
-use tape_core::types::{EpochNumber, NodeId, StorageUnits, TapeNumber, TrackNumber};
+use tape_core::types::{EpochNumber, NodeId, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
+use tape_core::types::coin::{Coin, TAPE};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
@@ -69,10 +70,10 @@ pub struct TrackCertified {
     pub epoch: EpochNumber,
 
     /// Committee members who signed
-    pub signer_count: [u8; 8],
+    pub signer_count: u64,
 
     /// Total spool weight of signers
-    pub signer_weight: [u8; 8],
+    pub signer_weight: u64,
 }
 
 tape_solana::event!(EventType, TrackCertified);
@@ -160,13 +161,13 @@ pub struct TapeReserved {
     pub expiry_epoch: EpochNumber,
 
     /// TAPE flux units paid
-    pub cost: [u8; 8],
+    pub cost: Coin<TAPE>,
 
     /// TAPE flux units burned immediately.
-    pub burned: [u8; 8],
+    pub burned: Coin<TAPE>,
 
     /// TAPE flux units scheduled into epoch rewards.
-    pub scheduled: [u8; 8],
+    pub scheduled: Coin<TAPE>,
 }
 
 tape_solana::event!(EventType, TapeReserved);
@@ -211,7 +212,7 @@ pub struct NodeJoinedCommittee {
     pub node: Address,
 
     /// Stake in TAPE flux units
-    pub stake: [u8; 8],
+    pub stake: Coin<TAPE>,
 
     /// Current BLS public key used once this node rotates into the active committee
     pub key: BlsPubkey,
@@ -239,7 +240,7 @@ pub struct SpoolSynced {
     pub group: GroupIndex,
 
     /// Index within the group (0 .. GROUP_SIZE)
-    pub spool: [u8; 8],
+    pub spool: SpoolIndex,
 
     /// Resulting current epoch phase after this sync.
     pub phase: u64,
@@ -297,7 +298,7 @@ pub struct CommitteeCreated {
     pub epoch: EpochNumber,
 
     /// Allocated member capacity.
-    pub capacity: [u8; 8],
+    pub capacity: u64,
 }
 
 tape_solana::event!(EventType, CommitteeCreated);
@@ -312,7 +313,7 @@ pub struct CommitteeResized {
     /// Allocated member capacity after this resize. Intermediate resize
     /// transactions may report the previous capacity until the target size is
     /// reached.
-    pub capacity: [u8; 8],
+    pub capacity: u64,
 }
 
 tape_solana::event!(EventType, CommitteeResized);
@@ -324,7 +325,7 @@ pub struct PeerSetResized {
     /// Allocated peer capacity after this resize. Intermediate resize
     /// transactions may report the previous capacity until the target size is
     /// reached.
-    pub capacity: [u8; 8],
+    pub capacity: u64,
 }
 
 tape_solana::event!(EventType, PeerSetResized);
@@ -340,15 +341,15 @@ pub struct EpochAdvanced {
     pub new_epoch: EpochNumber,
 
     /// Unix timestamp
-    pub timestamp: [u8; 8],
+    pub timestamp: i64,
 
     /// Total staked TAPE across the new epoch's active committee
-    pub total_stake: [u8; 8],
+    pub total_stake: Coin<TAPE>,
 
     /// Active committee size — count of members in `Committee(new_epoch)`.
     /// Distinct from `preferences.committee_size`, which is the cap voted in
     /// by node preferences and applied to future committees.
-    pub committee_count: [u8; 8],
+    pub committee_count: u64,
 
     /// Network-level preferences aggregated from this epoch's committee.
     pub preferences: NodePreferences,
@@ -357,7 +358,7 @@ pub struct EpochAdvanced {
     pub nonce: Hash,
 
     /// TAPE flux units released from the subsidy vault.
-    pub subsidy: [u8; 8],
+    pub subsidy: Coin<TAPE>,
 }
 
 tape_solana::event!(EventType, EpochAdvanced);
@@ -376,7 +377,7 @@ pub struct StakeDeposited {
     pub pool: Address,
 
     /// TAPE flux units
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 
     /// When stake activates
     pub activation_epoch: EpochNumber,
@@ -398,7 +399,7 @@ pub struct StakeUnlockRequested {
     pub pool: Address,
 
     /// Amount being unlocked
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 
     /// When withdrawal available
     pub withdraw_epoch: EpochNumber,
@@ -420,10 +421,10 @@ pub struct StakeWithdrawn {
     pub pool: Address,
 
     /// Principal returned
-    pub principal: [u8; 8],
+    pub principal: Coin<TAPE>,
 
     /// Rewards earned
-    pub rewards: [u8; 8],
+    pub rewards: Coin<TAPE>,
 }
 
 tape_solana::event!(EventType, StakeWithdrawn);
@@ -439,7 +440,7 @@ pub struct CommissionClaimed {
     pub authority: Address,
 
     /// TAPE flux units claimed
-    pub amount: [u8; 8],
+    pub amount: Coin<TAPE>,
 }
 
 tape_solana::event!(EventType, CommissionClaimed);
@@ -464,7 +465,7 @@ pub struct VoteProposed {
     pub hash: Hash,
 
     /// Number of groups required to land this candidate.
-    pub total_groups: [u8; 8],
+    pub total_groups: u64,
 }
 
 tape_solana::event!(EventType, VoteProposed);
@@ -492,13 +493,13 @@ pub struct VoteRecorded {
     pub group: GroupIndex,
 
     /// Number of signers in this cert.
-    pub signer_count: [u8; 8],
+    pub signer_count: u64,
 
     /// Number of groups recorded after this vote.
-    pub signed_groups: [u8; 8],
+    pub signed_groups: u64,
 
     /// Number of groups required to land this candidate.
-    pub total_groups: [u8; 8],
+    pub total_groups: u64,
 }
 
 tape_solana::event!(EventType, VoteRecorded);
@@ -539,7 +540,7 @@ pub struct AssignmentFinalized {
     pub size: StorageUnits,
 
     /// Number of groups finalized after this group lands.
-    pub total_groups: [u8; 8],
+    pub total_groups: u64,
 
     /// Total assigned storage after this group lands.
     pub total_assigned: StorageUnits,

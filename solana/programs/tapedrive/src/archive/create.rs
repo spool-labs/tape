@@ -42,10 +42,10 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     system_info
         .is_system()?;
 
-    let storage_capacity = StorageUnits(u64::from_le_bytes(args.storage_capacity));
-    let storage_price = TAPE::unpack(args.storage_price);
-    let burn_fee_bps = BasisPoints::unpack(args.burn_fee_bps);
-    let subsidy_decay_bps = BasisPoints::unpack(args.subsidy_decay_bps);
+    let storage_capacity = args.storage_capacity;
+    let storage_price = args.storage_price;
+    let burn_fee_bps = args.burn_fee_bps;
+    let subsidy_decay_bps = args.subsidy_decay_bps;
 
     if storage_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
         return Err(ProgramError::InvalidArgument);

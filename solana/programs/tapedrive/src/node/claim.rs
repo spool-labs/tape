@@ -66,7 +66,7 @@ pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     CommissionClaimed {
         node: (*node_info.key).into(),
         authority: (*authority_info.key).into(),
-        amount: commission.as_u64().to_le_bytes(),
+        amount: commission,
     }.log();
 
     Ok(())

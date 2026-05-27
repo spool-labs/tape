@@ -30,7 +30,7 @@ pub fn process_deposit_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let amount = SOL::unpack(args.amount);
+    let amount = args.amount;
 
     invoke(
         &system_instruction::transfer(

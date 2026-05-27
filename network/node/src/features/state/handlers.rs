@@ -176,7 +176,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     ) -> Result<(), NodeError> {
         self.publish_tracked_committee_capacity(
             event.epoch,
-            u64::from_le_bytes(event.capacity),
+            event.capacity,
         ).await
     }
 
@@ -186,7 +186,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     ) -> Result<(), NodeError> {
         self.publish_tracked_committee_capacity(
             event.epoch,
-            u64::from_le_bytes(event.capacity),
+            event.capacity,
         ).await
     }
 
@@ -195,7 +195,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         event: PeerSetResized,
     ) -> Result<(), NodeError> {
         let mut state = (*self.context.state()).clone();
-        state.peer_capacity = u64::from_le_bytes(event.capacity);
+        state.peer_capacity = event.capacity;
         self.context.set_state(state)?;
         Ok(())
     }
@@ -243,7 +243,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
             return Ok(());
         }
 
-        let spool = SpoolIndex::unpack(event.spool);
+        let spool = event.spool;
         let Some(position) = event.group.position_of(spool) else {
             return Ok(());
         };
@@ -363,7 +363,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
             .filter(|next| next.id == event.epoch)
         {
             next.assignment_hash = event.hash;
-            next.total_groups = u64::from_le_bytes(event.total_groups);
+            next.total_groups = event.total_groups;
             next.total_assigned = event.total_assigned;
         }
 
@@ -444,7 +444,7 @@ mod tests {
                 node: group.spools[0].node,
                 epoch: EPOCH,
                 group: group.id,
-                spool: spool.pack(),
+                spool,
                 phase: EpochPhase::Snapshot as u64,
             })
             .await

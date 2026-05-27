@@ -236,9 +236,9 @@ mod tests {
         let event = EpochAdvanced {
             old_epoch: EpochNumber(5),
             new_epoch: EpochNumber(6),
-            timestamp: [0; 8],
-            total_stake: [0; 8],
-            committee_count: [10, 0, 0, 0, 0, 0, 0, 0],
+            timestamp: 0,
+            total_stake: TAPE(0),
+            committee_count: 10,
             preferences: NodePreferences {
                 storage_capacity: StorageUnits::mb(1000),
                 storage_price: TAPE(0),
@@ -250,7 +250,7 @@ mod tests {
                 epoch_duration: EpochDuration(0),
             },
             nonce: Hash::default(),
-            subsidy: [0; 8],
+            subsidy: TAPE(0),
         };
 
         let log = encode_event(EventType::EpochAdvanced, &event);
@@ -271,8 +271,8 @@ mod tests {
         let event = TrackCertified {
             track,
             epoch: EpochNumber(10),
-            signer_count: [5, 0, 0, 0, 0, 0, 0, 0],
-            signer_weight: [100, 0, 0, 0, 0, 0, 0, 0],
+            signer_count: 5,
+            signer_weight: 100,
         };
 
         let log = encode_event(EventType::TrackCertified, &event);
@@ -324,7 +324,7 @@ mod tests {
             voting_epoch: EpochNumber(21),
             target_epoch: EpochNumber(20),
             hash: Hash::from([0x55; 32]),
-            total_groups: 5u64.to_le_bytes(),
+            total_groups: 5,
         };
 
         let log = encode_event(EventType::VoteProposed, &proposed);
@@ -350,9 +350,9 @@ mod tests {
             target_epoch: EpochNumber(21),
             hash: Hash::from([0x66; 32]),
             group: GroupIndex(3),
-            signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
-            signed_groups: 4u64.to_le_bytes(),
-            total_groups: 5u64.to_le_bytes(),
+            signer_count: 14,
+            signed_groups: 4,
+            total_groups: 5,
         };
 
         let log = encode_event(EventType::VoteRecorded, &recorded);
@@ -363,7 +363,7 @@ mod tests {
                 assert_eq!(decoded.vote, vote);
                 assert_eq!(decoded.group, recorded.group);
                 assert_eq!(decoded.signer_count, recorded.signer_count);
-                assert_eq!(decoded.signed_groups, 4u64.to_le_bytes());
+                assert_eq!(decoded.signed_groups, 4);
             }
             _ => panic!("Expected VoteRecorded event"),
         }
@@ -400,7 +400,7 @@ mod tests {
             group: GroupIndex(3),
             group_account,
             size: StorageUnits::mb(10),
-            total_groups: 4u64.to_le_bytes(),
+            total_groups: 4,
             total_assigned: StorageUnits::mb(800),
         };
 
@@ -413,7 +413,7 @@ mod tests {
                 assert_eq!(decoded.hash, finalized.hash);
                 assert_eq!(decoded.group, finalized.group);
                 assert_eq!(decoded.group_account, group_account);
-                assert_eq!(decoded.total_groups, 4u64.to_le_bytes());
+                assert_eq!(decoded.total_groups, 4);
             }
             _ => panic!("Expected AssignmentFinalized event"),
         }
@@ -431,9 +431,9 @@ mod tests {
             capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(1),
             expiry_epoch: EpochNumber(10),
-            cost: [100, 0, 0, 0, 0, 0, 0, 0],
-            burned: [10, 0, 0, 0, 0, 0, 0, 0],
-            scheduled: [90, 0, 0, 0, 0, 0, 0, 0],
+            cost: TAPE(100),
+            burned: TAPE(10),
+            scheduled: TAPE(90),
         };
 
         let log = encode_event(EventType::TapeReserved, &event);
@@ -460,14 +460,14 @@ mod tests {
             stake,
             authority,
             pool,
-            amount: 10u64.to_le_bytes(),
+            amount: TAPE(10),
             activation_epoch: EpochNumber(8),
         };
         let log = encode_event(EventType::StakeDeposited, &deposited);
         match parse_event_data(&log).unwrap().unwrap() {
             TapedriveEvent::StakeDeposited(event) => {
                 assert_eq!(event.stake, stake);
-                assert_eq!(event.amount, 10u64.to_le_bytes());
+                assert_eq!(event.amount, TAPE(10));
             }
             other => panic!("Expected StakeDeposited event, got {other:?}"),
         }
@@ -476,7 +476,7 @@ mod tests {
             stake,
             authority,
             pool,
-            amount: 9u64.to_le_bytes(),
+            amount: TAPE(9),
             withdraw_epoch: EpochNumber(10),
         };
         let log = encode_event(EventType::StakeUnlockRequested, &unlock);
@@ -492,14 +492,14 @@ mod tests {
             stake,
             authority,
             pool,
-            principal: 8u64.to_le_bytes(),
-            rewards: 7u64.to_le_bytes(),
+            principal: TAPE(8),
+            rewards: TAPE(7),
         };
         let log = encode_event(EventType::StakeWithdrawn, &withdrawn);
         match parse_event_data(&log).unwrap().unwrap() {
             TapedriveEvent::StakeWithdrawn(event) => {
                 assert_eq!(event.stake, stake);
-                assert_eq!(event.rewards, 7u64.to_le_bytes());
+                assert_eq!(event.rewards, TAPE(7));
             }
             other => panic!("Expected StakeWithdrawn event, got {other:?}"),
         }
@@ -507,13 +507,13 @@ mod tests {
         let commission = CommissionClaimed {
             node,
             authority,
-            amount: 6u64.to_le_bytes(),
+            amount: TAPE(6),
         };
         let log = encode_event(EventType::CommissionClaimed, &commission);
         match parse_event_data(&log).unwrap().unwrap() {
             TapedriveEvent::CommissionClaimed(event) => {
                 assert_eq!(event.node, node);
-                assert_eq!(event.amount, 6u64.to_le_bytes());
+                assert_eq!(event.amount, TAPE(6));
             }
             other => panic!("Expected CommissionClaimed event, got {other:?}"),
         }

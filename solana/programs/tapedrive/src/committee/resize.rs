@@ -113,7 +113,7 @@ pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     CommitteeResized {
         epoch: target,
-        capacity: capacity.to_le_bytes(),
+        capacity,
     }
     .log();
 

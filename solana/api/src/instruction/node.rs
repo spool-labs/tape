@@ -17,7 +17,7 @@ use tape_core::types::coin::{Coin, TAPE};
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RegisterNode {
     pub name: [u8; NAME_LENGTH],
-    pub commission_rate: [u8; 8],
+    pub commission_rate: BasisPoints,
     pub network_address: NetworkAddress,
     pub network_tls: NetworkTlsPubkey,
     pub bls_pubkey: BlsPubkey,
@@ -32,7 +32,7 @@ pub struct JoinCommittee {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SyncSpool {
-    pub spool: [u8; 8],
+    pub spool: SpoolIndex,
 }
 
 #[repr(C)]
@@ -67,55 +67,55 @@ pub struct SetName {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetStoragePrice {
-    pub price: [u8; 8],
+    pub price: Coin<TAPE>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetBurnFeeBps {
-    pub burn_fee_bps: [u8; 8],
+    pub burn_fee_bps: BasisPoints,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetSubsidyDecayBps {
-    pub subsidy_decay_bps: [u8; 8],
+    pub subsidy_decay_bps: BasisPoints,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetEpochDuration {
-    pub epoch_duration: [u8; 8],
+    pub epoch_duration: EpochDuration,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetStorageCapacity {
-    pub size: [u8; 8],
+    pub size: StorageUnits,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetCommissionRate {
-    pub commission_rate: [u8; 8],
+    pub commission_rate: BasisPoints,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetCommitteeSize {
-    pub committee_size: [u8; 8],
+    pub committee_size: u64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetSpoolGroups {
-    pub spool_groups: [u8; 8],
+    pub spool_groups: u64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetMinVersion {
-    pub min_version: [u8; 8],
+    pub min_version: VersionId,
 }
 
 #[repr(C)]
@@ -139,8 +139,6 @@ pub fn build_register_node_ix(
     let (node_address, _) = node_pda(authority);
     let (history_address, _) = history_pda(node_address);
     let (blacklist_address, _) = blacklist_pda(node_address);
-
-    let commission_rate = commission_rate.pack();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -222,7 +220,7 @@ pub fn build_sync_spool_ix(
             AccountMeta::new(node_address.into(), false),
         ],
         data: SyncSpool {
-            spool: spool.pack(),
+            spool,
         }.to_bytes(),
     }
 }
@@ -337,8 +335,6 @@ pub fn build_set_commission_ix(
     node_address: Address,
     commission_rate: BasisPoints,
 ) -> Instruction {
-    let commission_rate = commission_rate.pack();
-
     let (system_address, _) = system_pda();
 
     Instruction {
@@ -389,8 +385,6 @@ pub fn build_set_storage_capacity_ix(
     node_address: Address,
     size: StorageUnits,
 ) -> Instruction {
-    let size = size.pack();
-
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
@@ -410,8 +404,6 @@ pub fn build_set_storage_price_ix(
     node_address: Address,
     price: Coin<TAPE>,
 ) -> Instruction {
-    let price = price.pack();
-
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
@@ -439,7 +431,7 @@ pub fn build_set_burn_fee_bps_ix(
             AccountMeta::new(node_address.into(), false),
         ],
         data: SetBurnFeeBps {
-            burn_fee_bps: burn_fee_bps.pack(),
+            burn_fee_bps,
         }.to_bytes(),
     }
 }
@@ -458,7 +450,7 @@ pub fn build_set_subsidy_decay_bps_ix(
             AccountMeta::new(node_address.into(), false),
         ],
         data: SetSubsidyDecayBps {
-            subsidy_decay_bps: subsidy_decay_bps.pack(),
+            subsidy_decay_bps,
         }.to_bytes(),
     }
 }
@@ -480,7 +472,7 @@ pub fn build_set_epoch_duration_ix(
             AccountMeta::new_readonly(system_address.into(), false),
         ],
         data: SetEpochDuration {
-            epoch_duration: epoch_duration.pack(),
+            epoch_duration,
         }.to_bytes(),
     }
 }
@@ -499,7 +491,7 @@ pub fn build_set_committee_size_ix(
             AccountMeta::new(node_address.into(), false),
         ],
         data: SetCommitteeSize {
-            committee_size: committee_size.to_le_bytes(),
+            committee_size,
         }.to_bytes(),
     }
 }
@@ -518,7 +510,7 @@ pub fn build_set_spool_groups_ix(
             AccountMeta::new(node_address.into(), false),
         ],
         data: SetSpoolGroups {
-            spool_groups: spool_groups.to_le_bytes(),
+            spool_groups,
         }.to_bytes(),
     }
 }
@@ -537,7 +529,7 @@ pub fn build_set_min_version_ix(
             AccountMeta::new(node_address.into(), false),
         ],
         data: SetMinVersion {
-            min_version: min_version.pack(),
+            min_version,
         }.to_bytes(),
     }
 }

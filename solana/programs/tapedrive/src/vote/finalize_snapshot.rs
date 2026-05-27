@@ -21,7 +21,7 @@ pub fn process_finalize_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let target_epoch_id = EpochNumber::unpack(args.epoch);
+    let target_epoch_id = args.epoch;
     let target_epoch = target_epoch_info
         .is_epoch(target_epoch_id)?
         .as_account::<Epoch>(&tapedrive::ID)?;

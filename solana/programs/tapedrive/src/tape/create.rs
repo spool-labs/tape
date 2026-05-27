@@ -72,9 +72,9 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         address: tape_address,
         authority: (*authority_info.key).into(),
         flags: 0,
-        capacity: StorageUnits::unpack(args.storage_units),
-        active_epoch: EpochNumber::unpack(args.activation_epoch),
-        expiry_epoch: EpochNumber::unpack(args.expiry_epoch),
+        capacity: args.storage_units,
+        active_epoch: args.activation_epoch,
+        expiry_epoch: args.expiry_epoch,
     };
 
     let reservation = reserve_archive(system, archive, spec)?;

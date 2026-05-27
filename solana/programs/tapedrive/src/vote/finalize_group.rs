@@ -27,7 +27,7 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_system()?
         .as_account::<System>(&tapedrive::ID)?;
 
-    let target_epoch_id = EpochNumber::unpack(args.epoch);
+    let target_epoch_id = args.epoch;
     let expected_target = system
         .current_epoch
         .checked_next()
@@ -165,7 +165,7 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         group: group_id,
         group_account: group_address,
         size: args.payload.size,
-        total_groups: target_epoch.total_groups.to_le_bytes(),
+        total_groups: target_epoch.total_groups,
         total_assigned: target_epoch.total_assigned,
     }
     .log();

@@ -38,8 +38,5 @@ pub fn bitmap_index_in_group(
 }
 
 pub fn all_vote_groups_signed(event: &VoteRecorded) -> bool {
-    let signed_groups = u64::from_le_bytes(event.signed_groups);
-    let total_groups = u64::from_le_bytes(event.total_groups);
-
-    signed_groups == total_groups
+    event.signed_groups == event.total_groups
 }

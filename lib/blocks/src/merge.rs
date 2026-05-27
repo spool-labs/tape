@@ -441,7 +441,8 @@ mod tests {
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::TrackData;
-    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_core::types::{StorageUnits, SpoolIndex, TrackNumber};
+    use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
@@ -449,11 +450,11 @@ mod tests {
         EpochAdvanced {
             old_epoch: EpochNumber(5),
             new_epoch: EpochNumber(6),
-            timestamp: [0; 8],
-            total_stake: [0; 8],
-            committee_count: [0; 8],
+            timestamp: 0,
+            total_stake: TAPE(0),
+            committee_count: 0,
             preferences: NodePreferences::zeroed(),
-            subsidy: [0; 8],
+            subsidy: TAPE(0),
             nonce: Hash::default(),
         }
     }
@@ -509,9 +510,9 @@ mod tests {
             target_epoch: EpochNumber(7),
             hash: Hash::from([0x55; 32]),
             group: GroupIndex(3),
-            signer_count: [14, 0, 0, 0, 0, 0, 0, 0],
-            signed_groups: 1u64.to_le_bytes(),
-            total_groups: 5u64.to_le_bytes(),
+            signer_count: 14,
+            signed_groups: 1,
+            total_groups: 5,
         };
 
         let merged = merge(
@@ -545,7 +546,7 @@ mod tests {
             voting_epoch: EpochNumber(8),
             target_epoch: EpochNumber(7),
             hash: snapshot_hash,
-            total_groups: 5u64.to_le_bytes(),
+            total_groups: 5,
         };
         let snapshot_finalized = SnapshotFinalized {
             epoch: EpochNumber(7),
@@ -559,7 +560,7 @@ mod tests {
             voting_epoch: EpochNumber(8),
             target_epoch: EpochNumber(9),
             hash: assignment_hash,
-            total_groups: 5u64.to_le_bytes(),
+            total_groups: 5,
         };
         let group_finalized = AssignmentFinalized {
             epoch: EpochNumber(9),
@@ -567,7 +568,7 @@ mod tests {
             group: GroupIndex(2),
             group_account: Address::new_unique(),
             size: StorageUnits::mb(10),
-            total_groups: 1u64.to_le_bytes(),
+            total_groups: 1,
             total_assigned: StorageUnits::mb(200),
         };
 
@@ -625,8 +626,8 @@ mod tests {
         let event = TrackCertified {
             track,
             epoch: EpochNumber(10),
-            signer_count: [0; 8],
-            signer_weight: [0; 8],
+            signer_count: 0,
+            signer_weight: 0,
         };
 
         let merged = merge(
@@ -678,8 +679,8 @@ mod tests {
         let certify_event = TrackCertified {
             track: track2,
             epoch: EpochNumber(2),
-            signer_count: [0; 8],
-            signer_weight: [0; 8],
+            signer_count: 0,
+            signer_weight: 0,
         };
 
         let instructions = vec![
@@ -860,9 +861,9 @@ mod tests {
                     capacity: StorageUnits::mb(10_000),
                     active_epoch: EpochNumber(1),
                     expiry_epoch: EpochNumber(10),
-                    cost: [0; 8],
-                    burned: [0; 8],
-                    scheduled: [0; 8],
+                    cost: TAPE(0),
+                    burned: TAPE(0),
+                    scheduled: TAPE(0),
                 }),
             ),
             (
@@ -893,7 +894,7 @@ mod tests {
                 },
                 TapedriveEvent::NodeJoinedCommittee(NodeJoinedCommittee {
                     node: join_node,
-                    stake: [0; 8],
+                    stake: TAPE(0),
                     key: BlsPubkey::new_unique(),
                     preferences: NodePreferences::zeroed(),
                     activation_epoch: EpochNumber(1),
@@ -936,7 +937,7 @@ mod tests {
             node,
             epoch: EpochNumber(5),
             group: GroupIndex(7),
-            spool: 3u64.to_le_bytes(),
+            spool: SpoolIndex(3),
             phase: EpochPhase::Sync as u64,
         };
         let merged = merge(
@@ -998,8 +999,8 @@ mod tests {
             vec![TapedriveEvent::TrackCertified(TrackCertified {
                 track: Address::new_unique(),
                 epoch: EpochNumber(1),
-                signer_count: [0; 8],
-                signer_weight: [0; 8],
+                signer_count: 0,
+                signer_weight: 0,
             })],
         );
         assert!(result.is_err());

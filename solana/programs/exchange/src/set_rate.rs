@@ -24,8 +24,8 @@ pub fn process_set_exchange_rate(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .has_address(&exchange.authority.into())?;
 
     // Parse and validate new rate
-    let tape_per_unit = TAPE::unpack(args.tape).as_u64();
-    let sol_per_unit = SOL::unpack(args.sol).as_u64();
+    let tape_per_unit = args.tape;
+    let sol_per_unit = args.sol;
 
     if tape_per_unit == 0 || sol_per_unit == 0 {
         return Err(ExchangeError::UnexpectedState.into());

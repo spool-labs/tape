@@ -24,8 +24,7 @@ pub fn process_set_storage_capacity(accounts: &[AccountInfo<'_>], data: &[u8]) -
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let storage_capacity = StorageUnits::unpack(args.size);
-    node.preferences.storage_capacity = storage_capacity;
+    node.preferences.storage_capacity = args.size;
 
     Ok(())
 }

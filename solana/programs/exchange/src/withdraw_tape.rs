@@ -41,7 +41,7 @@ pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     token_program_info
         .is_program(&spl_token::ID)?;
 
-    let mut amount = TAPE::unpack(args.amount);
+    let mut amount = args.amount;
 
     // Check if the exchange has enough balance
     if amount > exchange.balance_tape {

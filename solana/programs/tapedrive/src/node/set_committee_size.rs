@@ -29,8 +29,7 @@ pub fn process_set_committee_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let committee_size = u64::from_le_bytes(args.committee_size);
-    node.preferences.committee_size = committee_size;
+    node.preferences.committee_size = args.committee_size;
 
     Ok(())
 }

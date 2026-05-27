@@ -40,7 +40,7 @@ pub fn process_vote_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_epoch(target_epoch_id)?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    let group_id = GroupIndex::unpack(args.group);
+    let group_id = args.group;
     if group_id.0 >= voting_epoch.total_groups {
         return Err(TapeError::BadMember.into());
     }
@@ -125,9 +125,9 @@ pub fn process_vote_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         target_epoch: target_epoch_id,
         hash: args.hash,
         group: group_id,
-        signer_count: weight.to_le_bytes(),
-        signed_groups: signed_groups.to_le_bytes(),
-        total_groups: voting_epoch.total_groups.to_le_bytes(),
+        signer_count: weight,
+        signed_groups,
+        total_groups: voting_epoch.total_groups,
     }
     .log();
 

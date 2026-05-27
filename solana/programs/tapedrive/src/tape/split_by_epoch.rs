@@ -66,7 +66,7 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .is_writable()?
         .is_empty()?;
 
-    let split_epoch = EpochNumber::unpack(args.epoch);
+    let split_epoch = args.epoch;
 
     // Require split strictly inside (active, expiry)
     if !(split_epoch > source_tape.active_epoch && split_epoch < source_tape.expiry_epoch) {

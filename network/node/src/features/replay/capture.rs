@@ -6,7 +6,7 @@ use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::Hash;
 
 use crate::core::error::NodeError;
@@ -90,7 +90,7 @@ fn capture_instruction(
                         node: event.node,
                         epoch: event.epoch,
                         group: event.group,
-                        spool: SpoolIndex::from(u64::from_le_bytes(event.spool)),
+                        spool: event.spool,
                 },
             },
             raw_track: None,
@@ -317,6 +317,7 @@ mod tests {
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
+    use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_crypto::Hash;
@@ -437,8 +438,8 @@ mod tests {
             event: TrackCertified {
                 track,
                 epoch,
-                signer_count: 7u64.to_le_bytes(),
-                signer_weight: 9u64.to_le_bytes(),
+                signer_count: 7,
+                signer_weight: 9,
             },
         }
     }
@@ -455,9 +456,9 @@ mod tests {
                 capacity: StorageUnits::mb(10),
                 active_epoch,
                 expiry_epoch,
-                cost: 11u64.to_le_bytes(),
-                burned: 1u64.to_le_bytes(),
-                scheduled: 10u64.to_le_bytes(),
+                cost: TAPE(11),
+                burned: TAPE(1),
+                scheduled: TAPE(10),
             },
         }
     }
@@ -467,11 +468,11 @@ mod tests {
             event: EpochAdvanced {
                 old_epoch,
                 new_epoch,
-                timestamp: 0u64.to_le_bytes(),
-                total_stake: 1_000u64.to_le_bytes(),
-                committee_count: 128u64.to_le_bytes(),
+                timestamp: 0,
+                total_stake: TAPE(1_000),
+                committee_count: 128,
                 preferences: NodePreferences::zeroed(),
-                subsidy: 0u64.to_le_bytes(),
+                subsidy: TAPE(0),
                 nonce: Hash::new_unique(),
             },
         }

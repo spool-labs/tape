@@ -66,7 +66,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
             .assert(|t| t.mint() == MINT_ADDRESS.into())?;
     }
 
-    let amount = TAPE::unpack(args.amount);
+    let amount = args.amount;
     if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
     }

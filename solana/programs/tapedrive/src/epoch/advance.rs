@@ -210,12 +210,12 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     EpochAdvanced {
         old_epoch: curr,
         new_epoch: next,
-        timestamp: (clock.unix_timestamp as u64).to_le_bytes(),
-        total_stake: total_stake.to_le_bytes(),
-        committee_count: committee_count.to_le_bytes(),
+        timestamp: clock.unix_timestamp,
+        total_stake: TAPE(total_stake),
+        committee_count,
         preferences,
         nonce: next_epoch.nonce,
-        subsidy: subsidy_release.as_u64().to_le_bytes(),
+        subsidy: subsidy_release,
     }.log();
 
     Ok(())

@@ -138,9 +138,9 @@ pub fn create_tape_account<'account_info>(
         capacity: reservation.spec.capacity,
         active_epoch: reservation.spec.active_epoch,
         expiry_epoch: reservation.spec.expiry_epoch,
-        cost: reservation.cost.as_u64().to_le_bytes(),
-        burned: reservation.burned.as_u64().to_le_bytes(),
-        scheduled: reservation.scheduled.as_u64().to_le_bytes(),
+        cost: reservation.cost,
+        burned: reservation.burned,
+        scheduled: reservation.scheduled,
     }
     .log();
 

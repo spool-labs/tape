@@ -25,7 +25,7 @@ pub struct ProposeSnapshot {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct VoteSnapshot {
     pub hash: Hash,
-    pub group: [u8; 8],
+    pub group: GroupIndex,
     pub bitmap: SpoolBitmap,
     pub signature: BlsSignature,
 }
@@ -33,7 +33,7 @@ pub struct VoteSnapshot {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FinalizeSnapshot {
-    pub epoch: [u8; 8],
+    pub epoch: EpochNumber,
     pub tape: Tape,
 }
 
@@ -47,7 +47,7 @@ pub struct ProposeAssignment {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct VoteAssignment {
     pub hash: Hash,
-    pub group: [u8; 8],
+    pub group: GroupIndex,
     pub bitmap: SpoolBitmap,
     pub signature: BlsSignature,
 }
@@ -55,7 +55,7 @@ pub struct VoteAssignment {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FinalizeGroup {
-    pub epoch: [u8; 8],
+    pub epoch: EpochNumber,
     pub payload: AssignmentGroupPayload,
     pub proof: [Hash; ASSIGNMENT_TREE_HEIGHT],
 }
@@ -112,7 +112,7 @@ pub fn build_vote_snapshot_ix(
         ],
         data: VoteSnapshot {
             hash,
-            group: group.pack(),
+            group,
             bitmap,
             signature,
         }
@@ -137,7 +137,7 @@ pub fn build_finalize_snapshot_ix(
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
         data: FinalizeSnapshot {
-            epoch: epoch.pack(),
+            epoch,
             tape,
         }
         .to_bytes(),
@@ -196,7 +196,7 @@ pub fn build_vote_assignment_ix(
         ],
         data: VoteAssignment {
             hash,
-            group: group.pack(),
+            group,
             bitmap,
             signature,
         }
@@ -229,7 +229,7 @@ pub fn build_finalize_group_ix(
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
         data: FinalizeGroup {
-            epoch: epoch.pack(),
+            epoch,
             payload,
             proof,
         }

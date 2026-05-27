@@ -29,8 +29,7 @@ pub fn process_set_min_version(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let min_version = VersionId::unpack(args.min_version);
-    node.preferences.min_version = min_version;
+    node.preferences.min_version = args.min_version;
 
     Ok(())
 }

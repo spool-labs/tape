@@ -67,7 +67,7 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         .is_writable()?
         .is_empty()?;
 
-    let split_size = StorageUnits::unpack(args.size);
+    let split_size = args.size;
     if split_size.is_zero() || split_size >= source_tape.capacity {
         return Err(ProgramError::InvalidArgument);
     }

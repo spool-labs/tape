@@ -23,7 +23,7 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let epoch = EpochNumber::unpack(args.epoch);
+    let epoch = args.epoch;
     let (committee_address, bump) = committee_pda(epoch);
 
     committee_info
@@ -47,7 +47,7 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     CommitteeCreated {
         epoch,
-        capacity: 0u64.to_le_bytes(),
+        capacity: 0,
     }
     .log();
 
