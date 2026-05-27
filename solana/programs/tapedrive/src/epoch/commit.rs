@@ -84,7 +84,7 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     if next_committee.epoch != next {
         return Err(TapeError::BadEpochId.into());
     }
-    if (next_committee.members.count as usize) < GROUP_SIZE {
+    if next_committee.members.count < next_committee.members.capacity {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -158,7 +158,7 @@ mod tests {
     use tape_api::state::{Committee, PeerSet};
     use tape_test::*;
 
-    const COMMITTEE_SIZE: u64 = 128;
+    const COMMITTEE_SIZE: u64 = GROUP_SIZE as u64;
     const SPOOL_GROUPS: u64 = 50;
 
     fn slot_hashes_account() -> (Pubkey, solana_sdk::account::Account) {

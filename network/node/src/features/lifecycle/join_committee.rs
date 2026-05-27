@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_join_committee;
-use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
@@ -48,16 +48,41 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, %sig, "join_committee: confirmed");
                 return TaskDone::Done(Action::JoinCommittee, epoch);
             }
-            TxOutcome::Program(
-                err @ (TapeError::NodeStale | TapeError::NotStaked),
-            ) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err @ (TapeError::NodeStale | TapeError::NotStaked)),
+                ..
+            } => {
                 warn!(epoch = epoch.0, ?err, "join_committee: rejected, node prerequisites not met");
                 return TaskDone::Rejected(Action::JoinCommittee, epoch);
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 warn!(epoch = epoch.0, ?err, "join_committee: program error");
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "join_committee: stale submission ignored");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "join_committee: concurrent submission already applied");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "join_committee: transaction rejected");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(epoch = epoch.0, %err, "join_committee: transport error");
             }
             TxOutcome::SkippedStale => {

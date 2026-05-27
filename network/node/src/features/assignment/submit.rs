@@ -16,7 +16,7 @@ use tracing::{debug, info};
 
 use crate::chain::{submit_finalize_group, submit_propose_assignment, submit_vote_assignment};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::core::error::NodeError;
 use crate::features::assignment::build::AssignmentCandidate;
 use crate::features::assignment::vote::vote_candidate;
@@ -50,7 +50,10 @@ where
                 "assignment: proposal submitted"
             );
         }
-        TxOutcome::Program(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Program(err),
+            ..
+        } => {
             debug!(
                 epoch = candidate.target_epoch.0,
                 hash = %candidate.hash,
@@ -58,7 +61,43 @@ where
                 "assignment: proposal program error"
             );
         }
-        TxOutcome::Transport(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownContention,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "assignment: proposal already submitted"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownStaleState,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "assignment: stale proposal ignored"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::UnknownExecution,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "assignment: proposal transaction rejected"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Transport,
+            err,
+        } => {
             debug!(
                 epoch = candidate.target_epoch.0,
                 hash = %candidate.hash,
@@ -161,14 +200,30 @@ where
                     "assignment: group vote submitted"
                 );
             }
-            TxOutcome::Program(TapeError::AlreadySigned) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::AlreadySigned),
+                ..
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
                     "assignment: group already voted"
                 );
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::BadEpochState),
+                ..
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    "assignment: vote phase already changed"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
@@ -176,7 +231,43 @@ where
                     "assignment: vote program error"
                 );
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    %err,
+                    "assignment: vote already applied"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    %err,
+                    "assignment: stale vote ignored"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    %err,
+                    "assignment: vote transaction rejected"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
@@ -227,7 +318,20 @@ where
                     "assignment: group finalized"
                 );
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::UnexpectedState),
+                ..
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    "assignment: group already finalized or state changed"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.group.0,
@@ -235,7 +339,43 @@ where
                     "assignment: finalize group program error"
                 );
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    %err,
+                    "assignment: group finalization already applied"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    %err,
+                    "assignment: stale group finalization ignored"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.group.0,
+                    %err,
+                    "assignment: finalize group transaction rejected"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.group.0,

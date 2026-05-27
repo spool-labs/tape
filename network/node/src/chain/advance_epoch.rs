@@ -29,7 +29,7 @@ mod tests {
     use tape_core::types::EpochNumber;
 
     use super::submit_advance_epoch;
-    use crate::core::chain_tx::{TxOutcome, classify_tx};
+    use crate::core::chain_tx::{TxOutcome, TxRejectionKind, classify_tx};
     use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
@@ -78,7 +78,10 @@ mod tests {
         let outcome = classify_tx(submit_advance_epoch(&ctx).await);
         assert!(matches!(
             outcome,
-            TxOutcome::Program(TapeError::AssignmentIncomplete)
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::AssignmentIncomplete),
+                ..
+            }
         ));
     }
 }

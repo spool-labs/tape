@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::errors::TapeError;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
@@ -11,7 +12,7 @@ use tracing::{debug, info, warn};
 
 use crate::chain::submit_commit_epoch;
 use crate::context::NodeContext;
-use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Submit a CommitEpoch transaction after the active epoch duration
@@ -51,10 +52,40 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, %sig, "commit_epoch: confirmed");
                 return TaskDone::Done(Action::CommitEpoch, epoch);
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::BadEpochState),
+                ..
+            } => {
+                debug!(epoch = epoch.0, "commit_epoch: phase already changed, waiting for state update");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 warn!(epoch = epoch.0, ?err, "commit_epoch: program error");
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "commit_epoch: stale submission ignored");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "commit_epoch: concurrent submission already applied");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "commit_epoch: transaction rejected");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(epoch = epoch.0, %err, "commit_epoch: transport error");
             }
             TxOutcome::SkippedStale => {

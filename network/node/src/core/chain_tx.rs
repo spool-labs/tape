@@ -2,20 +2,35 @@ use std::future::Future;
 
 use rpc::RpcError;
 use rpc_client::parse_tape_error;
-use tape_api::errors::TapeError;
+use tape_api::errors::{TapeError, is_account_state_pending_error};
 use tape_crypto::tx::Txid;
 
 use crate::core::ingest::IngestBus;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxRejectionKind {
+    /// A transaction raced with local state propagation and should be retried
+    /// after the node observes the newer on-chain state.
+    KnownStaleState,
+    /// Another node already created or finalized the same on-chain state.
+    KnownContention,
+    /// On-chain program returned a typed TapeError.
+    Program(TapeError),
+    /// Transaction execution failed, but the error was not recognized.
+    UnknownExecution,
+    /// RPC/transport failure before transaction execution completed.
+    Transport,
+}
 
 /// Outcome of a Solana transaction submission attempt.
 pub enum TxOutcome {
     /// Transaction confirmed on chain.
     Confirmed(Txid),
-    /// On-chain program returned a typed TapeError.
-    Program(TapeError),
-    /// Transport/RPC error (timeout, connection, blockhash expired, etc.)
-    /// These are always retriable.
-    Transport(RpcError),
+    /// Transaction was rejected or failed before confirmation.
+    Rejected {
+        kind: TxRejectionKind,
+        err: RpcError,
+    },
     /// Submit was refused because the local block ingestor is not caught up
     /// to the finalized dispatch edge. The submit future was never polled.
     SkippedStale,
@@ -23,16 +38,66 @@ pub enum TxOutcome {
 
 /// Classify the result of `rpc.send_instructions()`.
 ///
-/// Parses program errors from the RPC error string. If no program error
-/// is found, the error is treated as a transport-level issue.
+/// Parses program errors from the RPC error string, and separates expected
+/// contention/stale-state rejections from true transport failures.
 pub fn classify_tx(result: Result<Txid, RpcError>) -> TxOutcome {
     match result {
         Ok(sig) => TxOutcome::Confirmed(sig),
-        Err(err) => match parse_tape_error(&err) {
-            Some(tape_err) => TxOutcome::Program(tape_err),
-            None => TxOutcome::Transport(err),
+        Err(err) => TxOutcome::Rejected {
+            kind: classify_rejection(&err),
+            err,
         },
     }
+}
+
+pub fn classify_rejection(err: &RpcError) -> TxRejectionKind {
+    if let Some(tape_err) = parse_tape_error(err) {
+        return TxRejectionKind::Program(tape_err);
+    }
+
+    let Some(msg) = transaction_error_message(err) else {
+        return TxRejectionKind::Transport;
+    };
+
+    if is_known_contention_error(msg) {
+        return TxRejectionKind::KnownContention;
+    }
+
+    if is_known_stale_state_error(msg) || is_account_state_pending_error(msg) {
+        return TxRejectionKind::KnownStaleState;
+    }
+
+    TxRejectionKind::UnknownExecution
+}
+
+fn transaction_error_message(err: &RpcError) -> Option<&str> {
+    match err {
+        RpcError::Transaction(msg) => Some(msg),
+        RpcError::Request(msg) if looks_like_transaction_error(msg) => Some(msg),
+        _ => None,
+    }
+}
+
+fn looks_like_transaction_error(msg: &str) -> bool {
+    msg.contains("Error processing Instruction")
+        || msg.contains("InstructionError")
+        || msg.contains("custom program error")
+}
+
+fn is_known_contention_error(msg: &str) -> bool {
+    let msg = msg.to_ascii_lowercase();
+    msg.contains("accountalreadyinitialized")
+        || msg.contains("already initialized")
+        || msg.contains("requires an uninitialized account")
+}
+
+fn is_known_stale_state_error(msg: &str) -> bool {
+    let msg = msg.to_ascii_lowercase();
+    msg.contains("account has invalid address")
+        || msg.contains("invalid account data")
+        || msg.contains("invalid account owner")
+        || msg.contains("accountnotinitialized")
+        || msg.contains("could not find account")
 }
 
 /// Funnel every protocol-changing transaction through here. If the
@@ -68,28 +133,83 @@ mod tests {
     fn program_error() {
         let err = RpcError::Transaction("custom program error: 0x51".to_string());
         let outcome = classify_tx(Err(err));
-        assert!(matches!(outcome, TxOutcome::Program(TapeError::AlreadySynced)));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::AlreadySynced),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn pool_accounting_failed_program_error() {
         let err = RpcError::Transaction("custom program error: 0x67".to_string());
         let outcome = classify_tx(Err(err));
-        assert!(matches!(outcome, TxOutcome::Program(TapeError::PoolAccountingFailed)));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::PoolAccountingFailed),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn transport_error() {
         let err = RpcError::Timeout(Duration::from_secs(5));
         let outcome = classify_tx(Err(err));
-        assert!(matches!(outcome, TxOutcome::Transport(_)));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn unparseable_tx_error() {
         let err = RpcError::Transaction("unknown error 999".to_string());
         let outcome = classify_tx(Err(err));
-        assert!(matches!(outcome, TxOutcome::Transport(_)));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn account_already_initialized_is_contention() {
+        let err = RpcError::Transaction(
+            "Error processing Instruction 1: instruction requires an uninitialized account"
+                .to_string(),
+        );
+        let outcome = classify_tx(Err(err));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn invalid_account_data_is_stale_state() {
+        let err = RpcError::Transaction(
+            "Error processing Instruction 1: invalid account data for instruction".to_string(),
+        );
+        let outcome = classify_tx(Err(err));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -128,6 +248,12 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(outcome, TxOutcome::Program(TapeError::AlreadySynced)));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::AlreadySynced),
+                ..
+            }
+        ));
     }
 }

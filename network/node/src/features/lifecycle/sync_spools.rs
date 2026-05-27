@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_sync_spool;
-use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::wait_spool_ready::{Readiness, check_readiness};
@@ -76,23 +76,60 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, %spool, %sig, "sync_spools: confirmed");
                 completed.insert(spool);
             }
-            TxOutcome::Program(TapeError::AlreadySynced) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::AlreadySynced),
+                ..
+            } => {
                 info!(epoch = epoch.0, %spool, "sync_spools: already synced");
                 completed.insert(spool);
             }
-            TxOutcome::Program(
-                err @ (TapeError::BadEpochState
-                | TapeError::BadEpochId
-                | TapeError::NotInCommittee
-                | TapeError::BadSpoolHash),
-            ) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::BadEpochState),
+                ..
+            } => {
+                debug!(epoch = epoch.0, %spool, "sync_spools: phase already changed, waiting for state update");
+                return TaskDone::Rejected(Action::SyncSpools, epoch);
+            }
+            TxOutcome::Rejected {
+                kind:
+                    TxRejectionKind::Program(
+                        err @ (TapeError::BadEpochId
+                        | TapeError::NotInCommittee
+                        | TapeError::BadSpoolHash),
+                    ),
+                ..
+            } => {
                 warn!(epoch = epoch.0, %spool, ?err, "sync_spools: rejected");
                 return TaskDone::Rejected(Action::SyncSpools, epoch);
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 warn!(epoch = epoch.0, %spool, ?err, "sync_spools: program error");
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %spool, %err, "sync_spools: stale submission ignored");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %spool, %err, "sync_spools: concurrent submission already applied");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %spool, %err, "sync_spools: transaction rejected");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(epoch = epoch.0, %spool, %err, "sync_spools: transport error");
             }
             TxOutcome::SkippedStale => {

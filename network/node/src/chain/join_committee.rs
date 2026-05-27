@@ -31,7 +31,7 @@ mod tests {
     use tape_core::types::coin::TAPE;
 
     use super::submit_join_committee;
-    use crate::core::chain_tx::{TxOutcome, classify_tx};
+    use crate::core::chain_tx::{TxOutcome, TxRejectionKind, classify_tx};
     use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
@@ -78,6 +78,12 @@ mod tests {
         let ctx = harness.ctx_for(NODE);
 
         let outcome = classify_tx(submit_join_committee(&ctx).await);
-        assert!(matches!(outcome, TxOutcome::Program(TapeError::NotStaked)));
+        assert!(matches!(
+            outcome,
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::NotStaked),
+                ..
+            }
+        ));
     }
 }

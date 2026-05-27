@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_advance_pool;
-use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
@@ -40,23 +40,51 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, %sig, "advance_pool: confirmed");
                 return TaskDone::Done(Action::AdvancePool, epoch);
             }
-            TxOutcome::Program(TapeError::AlreadyAdvanced) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::AlreadyAdvanced),
+                ..
+            } => {
                 info!(epoch = epoch.0, "advance_pool: already advanced");
                 return TaskDone::Done(Action::AdvancePool, epoch);
             }
-            TxOutcome::Program(
-                err @ (
-                    TapeError::RewardsOverflow
-                    | TapeError::PoolAccountingFailed
-                )
-            ) => {
+            TxOutcome::Rejected {
+                kind:
+                    TxRejectionKind::Program(
+                        err @ (TapeError::RewardsOverflow | TapeError::PoolAccountingFailed),
+                    ),
+                ..
+            } => {
                 warn!(epoch = epoch.0, ?err, "advance_pool: terminal program error");
                 return TaskDone::Done(Action::AdvancePool, epoch);
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 warn!(epoch = epoch.0, ?err, "advance_pool: program error");
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "advance_pool: stale submission ignored");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "advance_pool: concurrent submission already applied");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "advance_pool: transaction rejected");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(epoch = epoch.0, %err, "advance_pool: transport error");
             }
             TxOutcome::SkippedStale => {

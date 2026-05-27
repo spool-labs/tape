@@ -14,7 +14,7 @@ use crate::chain::{
     submit_create_committee, submit_create_epoch, submit_resize_committee, submit_resize_peer_set,
 };
 use crate::context::NodeContext;
-use crate::core::chain_tx::{submit_if_at_tip, TxOutcome};
+use crate::core::chain_tx::{submit_if_at_tip, TxOutcome, TxRejectionKind};
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -280,11 +280,38 @@ fn log_setup_outcome(
             debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, %txid, "prepare_next_epoch: confirmed");
             false
         }
-        TxOutcome::Program(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Program(err),
+            ..
+        } => {
             warn!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, ?err, "prepare_next_epoch: program error");
             false
         }
-        TxOutcome::Transport(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownContention,
+            err,
+        } => {
+            debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, %err, "prepare_next_epoch: setup already applied, waiting for state update");
+            false
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownStaleState,
+            err,
+        } => {
+            debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, %err, "prepare_next_epoch: stale submission ignored");
+            false
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::UnknownExecution,
+            err,
+        } => {
+            debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, %err, "prepare_next_epoch: transaction rejected");
+            false
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Transport,
+            err,
+        } => {
             debug!(action, epoch = epoch.0, candidate_epoch = candidate_epoch.0, %err, "prepare_next_epoch: transport error");
             false
         }

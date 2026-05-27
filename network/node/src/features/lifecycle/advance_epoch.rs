@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_advance_epoch;
-use crate::core::chain_tx::{TxOutcome, submit_if_at_tip};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
@@ -38,10 +38,34 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, %sig, "advance_epoch: confirmed");
                 return TaskDone::Done(Action::AdvanceEpoch, epoch);
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 warn!(epoch = epoch.0, ?err, "advance_epoch: program error");
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "advance_epoch: stale submission ignored");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "advance_epoch: concurrent submission already applied");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(epoch = epoch.0, %err, "advance_epoch: transaction rejected");
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(epoch = epoch.0, %err, "advance_epoch: transport error");
             }
             TxOutcome::SkippedStale => {

@@ -16,7 +16,7 @@ use tracing::{debug, info};
 
 use crate::chain::{submit_finalize_snapshot, submit_propose_snapshot, submit_vote_snapshot};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{submit_if_at_tip, TxOutcome};
+use crate::core::chain_tx::{submit_if_at_tip, TxOutcome, TxRejectionKind};
 use crate::core::error::NodeError;
 use crate::features::snapshot::build::{persist_snapshot_candidate, SnapshotCandidate};
 use crate::features::snapshot::vote::vote_candidate;
@@ -50,7 +50,10 @@ where
                 "snapshot: proposal submitted"
             );
         }
-        TxOutcome::Program(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Program(err),
+            ..
+        } => {
             debug!(
                 epoch = candidate.target_epoch.0,
                 hash = %candidate.hash,
@@ -58,7 +61,43 @@ where
                 "snapshot: proposal program error"
             );
         }
-        TxOutcome::Transport(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownContention,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "snapshot: proposal already submitted"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownStaleState,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "snapshot: stale proposal ignored"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::UnknownExecution,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "snapshot: proposal transaction rejected"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Transport,
+            err,
+        } => {
             debug!(
                 epoch = candidate.target_epoch.0,
                 hash = %candidate.hash,
@@ -161,14 +200,30 @@ where
                     "snapshot: group vote submitted"
                 );
             }
-            TxOutcome::Program(TapeError::AlreadySigned) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::AlreadySigned),
+                ..
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
                     "snapshot: group already voted"
                 );
             }
-            TxOutcome::Program(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(TapeError::BadEpochState),
+                ..
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    "snapshot: vote phase already changed"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(err),
+                ..
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
@@ -176,7 +231,43 @@ where
                     "snapshot: vote program error"
                 );
             }
-            TxOutcome::Transport(err) => {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    %err,
+                    "snapshot: vote already applied"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownStaleState,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    %err,
+                    "snapshot: stale vote ignored"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::UnknownExecution,
+                err,
+            } => {
+                debug!(
+                    epoch = candidate.target_epoch.0,
+                    group = group.0,
+                    %err,
+                    "snapshot: vote transaction rejected"
+                );
+            }
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Transport,
+                err,
+            } => {
                 debug!(
                     epoch = candidate.target_epoch.0,
                     group = group.0,
@@ -228,7 +319,20 @@ where
                 "snapshot: finalized"
             );
         }
-        TxOutcome::Program(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Program(TapeError::BadEpochState),
+            ..
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                "snapshot: finalize phase already changed"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Program(err),
+            ..
+        } => {
             debug!(
                 epoch = candidate.target_epoch.0,
                 hash = %candidate.hash,
@@ -236,7 +340,43 @@ where
                 "snapshot: finalize program error"
             );
         }
-        TxOutcome::Transport(err) => {
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownContention,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "snapshot: finalization already applied"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::KnownStaleState,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "snapshot: stale finalization ignored"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::UnknownExecution,
+            err,
+        } => {
+            debug!(
+                epoch = candidate.target_epoch.0,
+                hash = %candidate.hash,
+                %err,
+                "snapshot: finalize transaction rejected"
+            );
+        }
+        TxOutcome::Rejected {
+            kind: TxRejectionKind::Transport,
+            err,
+        } => {
             debug!(
                 epoch = candidate.target_epoch.0,
                 hash = %candidate.hash,
