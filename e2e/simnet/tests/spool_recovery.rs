@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use tape_chain_harness::TEST_EPOCH_DURATION;
+use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::NodeStatus;
@@ -63,7 +63,7 @@ async fn spool_recovery_inner() {
         .expect("start runtimes");
 
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
     let recovery_timeout = Duration::from_secs(120);
     let scenario = harness.scenario();
 

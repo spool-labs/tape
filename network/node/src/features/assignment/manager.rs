@@ -77,7 +77,7 @@ where
                     self.on_block(block).await?;
                 }
                 _ = heartbeat.tick() => {
-                    self.on_heartbeat().await?;
+                    self.try_progress_assignment().await?;
                 }
             }
         }
@@ -114,13 +114,8 @@ where
                             .await?;
                     }
                 }
-                ParsedInstruction::FinalizeGroup { event, .. } => {
-                    debug!(
-                        epoch = event.epoch.0,
-                        group = event.group.0,
-                        total_groups = u64::from_le_bytes(event.total_groups),
-                        "assignment: observed finalized group"
-                    );
+                ParsedInstruction::CommitEpoch { .. } => {
+                    self.try_progress_assignment().await?;
                 }
                 _ => {}
             }
@@ -128,7 +123,7 @@ where
         Ok(())
     }
 
-    async fn on_heartbeat(&self) -> Result<(), NodeError> {
+    async fn try_progress_assignment(&self) -> Result<(), NodeError> {
         let state = self.context.state();
 
         let Some(target_epoch) = heartbeat_assignment_target(state.as_ref()) else {

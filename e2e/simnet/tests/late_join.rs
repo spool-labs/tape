@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tape_chain_harness::TEST_EPOCH_DURATION;
+use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_crypto::hash;
@@ -27,7 +27,7 @@ async fn late_join_inner() {
 
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
 
     {
         let scenario = harness.scenario();

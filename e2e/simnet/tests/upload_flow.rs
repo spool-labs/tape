@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
-use tape_chain_harness::TEST_EPOCH_DURATION;
+use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, StorageUnits};
@@ -51,7 +51,7 @@ async fn upload_flow_inner() {
         .expect("start runtimes");
 
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
     {
         let scenario = harness.scenario();
 

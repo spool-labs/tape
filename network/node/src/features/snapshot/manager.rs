@@ -70,7 +70,7 @@ where
                     self.on_block(block).await?;
                 }
                 _ = heartbeat.tick() => {
-                    self.on_heartbeat().await?;
+                    self.try_progress_snapshot().await?;
                 }
             }
         }
@@ -138,6 +138,9 @@ where
 
                     self.on_snapshot_finalized(state, event.epoch, event.hash)
                         .await?;
+                }
+                ParsedInstruction::FinalizeGroup { .. } => {
+                    self.try_progress_snapshot().await?;
                 }
                 _ => {}
             }
@@ -222,7 +225,7 @@ where
         Ok(())
     }
 
-    async fn on_heartbeat(&self) -> Result<(), NodeError> {
+    async fn try_progress_snapshot(&self) -> Result<(), NodeError> {
         let state = self.context.state();
 
         if state.epoch().is_zero() {

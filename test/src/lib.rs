@@ -49,7 +49,7 @@ pub const TEST_MIN_EPOCH_DURATION: EpochDuration = EpochDuration(10);
 
 /// Upper bound on aggregated epoch_duration written to System at StartNetwork
 /// in test flows. Production picks its own (e.g. 14 days).
-pub const TEST_MAX_EPOCH_DURATION: EpochDuration = EpochDuration(100);
+pub const TEST_MAX_EPOCH_DURATION: EpochDuration = EpochDuration(200);
 
 // Helpers for constructing test accounts.
 

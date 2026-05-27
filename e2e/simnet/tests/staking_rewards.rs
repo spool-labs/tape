@@ -6,7 +6,7 @@ use solana_sdk::program_pack::Pack;
 use solana_sdk::signer::Signer;
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::build_claim_commission_ix;
-use tape_chain_harness::TEST_EPOCH_DURATION;
+use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::track_pda;
 use tape_api::utils::ata;
 use tape_core::erasure::GROUP_SIZE;
@@ -67,7 +67,7 @@ async fn run() {
     let user_stake = tape("500");
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
 
     {
         let scenario = harness.scenario();

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
-use tape_chain_harness::TEST_EPOCH_DURATION;
+use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::{history_pda, track_pda};
 use tape_core::staking::RateSpan;
 use tape_core::types::coin::TAPE;
@@ -38,7 +38,7 @@ async fn run() {
     let stake_key = StakeKey::generate();
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
 
     {
         let scenario = harness.scenario();
