@@ -48,33 +48,22 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     token_program_info
         .is_program(&spl_token::ID)?;
 
-    let committee_size = u64::from_le_bytes(args.committee_size);
+    let committee_size = system.committee_size;
     if committee_size != GROUP_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
-    let spool_groups = u64::from_le_bytes(args.spool_groups);
+    let spool_groups = system.target_group_count;
     if spool_groups == 0 {
         return Err(TapeError::UnexpectedState.into());
     }
 
     let subsidy_amount = TAPE::unpack(args.subsidy_amount);
-    let burn_fee_bps = BasisPoints::unpack(args.burn_fee_bps);
-    let subsidy_decay_bps = BasisPoints::unpack(args.subsidy_decay_bps);
-    if !burn_fee_bps.is_valid() {
-        return Err(ProgramError::InvalidArgument);
-    }
-    if subsidy_decay_bps > MAX_SUBSIDY_DECAY_BPS {
-        return Err(ProgramError::InvalidArgument);
-    }
 
     let epoch_duration = EpochDuration::unpack(args.epoch_duration);
-    let min_epoch_duration = EpochDuration::unpack(args.min_epoch_duration);
-    let max_epoch_duration = EpochDuration::unpack(args.max_epoch_duration);
-    if min_epoch_duration.0 == 0 || min_epoch_duration > max_epoch_duration {
-        return Err(ProgramError::InvalidArgument);
-    }
-    if epoch_duration < min_epoch_duration || epoch_duration > max_epoch_duration {
+    if epoch_duration < system.min_epoch_duration
+        || epoch_duration > system.max_epoch_duration
+    {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -87,16 +76,14 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let group_id = GroupIndex(0);
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.schedule = EpochSchedule::new_at(target);
-    archive.burn_fee_bps = burn_fee_bps;
-    archive.subsidy_decay_bps = subsidy_decay_bps;
     let genesis_preferences = NodePreferences {
         storage_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
         committee_size,
         spool_groups,
         min_version: system.min_version,
-        burn_fee_bps,
-        subsidy_decay_bps,
+        burn_fee_bps: archive.burn_fee_bps,
+        subsidy_decay_bps: archive.subsidy_decay_bps,
         epoch_duration,
     };
 
@@ -288,12 +275,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // begins with Epoch 2 against Epoch 1's groups.
     epoch.state.phase = EpochPhase::Active as u64;
 
-    system.committee_size = committee_size;
-    system.target_group_count = spool_groups;
     system.live_group_count = 1;
     system.current_epoch = target;
-    system.min_epoch_duration = min_epoch_duration;
-    system.max_epoch_duration = max_epoch_duration;
 
     Ok(())
 }
@@ -391,9 +374,29 @@ mod tests {
 
         let (staged_members, expected_members, expected_peers) = genesis_committee();
 
+        let config = GenesisConfig {
+            spool_groups: 50,
+            subsidy_amount: TAPE(50),
+            ..GenesisConfig::local()
+        };
+        let committee_size = config.committee_size;
+        let peer_capacity = committee_size;
+
         let system = System {
             current_epoch: EpochNumber(0),
+            committee_size,
+            target_group_count: config.spool_groups,
+            min_epoch_duration: config.min_epoch_duration,
+            max_epoch_duration: config.max_epoch_duration,
             ..System::zeroed()
+        };
+
+        let archive = Archive {
+            storage_capacity: config.storage_capacity,
+            storage_price: config.storage_price,
+            burn_fee_bps: config.burn_fee_bps,
+            subsidy_decay_bps: config.subsidy_decay_bps,
+            ..Archive::zeroed()
         };
 
         let epoch = Epoch {
@@ -407,8 +410,6 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let committee_size = GROUP_SIZE as u64;
-        let peer_capacity = committee_size;
         let committee_data = Committee {
             epoch: target,
             members: Tail::new(committee_size, staged_members.len() as u64),
@@ -422,23 +423,7 @@ mod tests {
         }
         .pack_with(&expected_peers);
 
-        let spool_groups: u64 = 50;
-        let subsidy_amount = TAPE(50);
-        let burn_fee_bps = DEFAULT_BURN_FEE_BPS;
-        let subsidy_decay_bps = DEFAULT_SUBSIDY_DECAY_BPS;
-        let epoch_duration = TEST_EPOCH_DURATION;
-        let min_epoch_duration = TEST_MIN_EPOCH_DURATION;
-        let max_epoch_duration = TEST_MAX_EPOCH_DURATION;
-        let genesis_preferences = NodePreferences {
-            storage_capacity: StorageUnits::zero(),
-            storage_price: TAPE::zero(),
-            committee_size,
-            spool_groups,
-            min_version: VersionId(0),
-            burn_fee_bps,
-            subsidy_decay_bps,
-            epoch_duration,
-        };
+        let genesis_preferences = NodePreferences::from(&config);
         let expected_peers_after_start: Vec<Peer> = expected_peers
             .iter()
             .map(|peer| Peer {
@@ -449,22 +434,15 @@ mod tests {
         let instruction = build_start_network_ix(
             fee_payer.into(),
             subsidy_authority.into(),
-            committee_size,
-            spool_groups,
-            subsidy_amount,
-            burn_fee_bps,
-            subsidy_decay_bps,
-            epoch_duration,
-            min_epoch_duration,
-            max_epoch_duration,
+            &config,
         );
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(subsidy_authority, 0),
-            tape_test::ata(subsidy_authority, subsidy_amount.as_u64()),
+            tape_test::ata(subsidy_authority, config.subsidy_amount.as_u64()),
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(committee_address, committee_data, tapedrive::ID),
             pda(candidate_epoch_address, candidate_epoch.pack(), tapedrive::ID),
@@ -506,11 +484,7 @@ mod tests {
                 Check::account(&Pubkey::from(system_address)).data(
                     System {
                         current_epoch: target,
-                        committee_size,
-                        target_group_count: spool_groups,
                         live_group_count: 1,
-                        min_epoch_duration,
-                        max_epoch_duration,
                         ..system
                     }.pack().as_ref()
                 ).build(),
@@ -531,13 +505,11 @@ mod tests {
                 Check::account(&Pubkey::from(archive_address)).data(
                     Archive {
                         schedule: EpochSchedule::new_at(target),
-                        burn_fee_bps,
-                        subsidy_decay_bps,
-                        ..Archive::zeroed()
+                        ..archive
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&Pubkey::from(subsidy_ata_address))
-                    .data(token(subsidy_ata_address, Pubkey::from(subsidy_address), subsidy_amount.as_u64()).1.data.as_ref())
+                    .data(token(subsidy_ata_address, Pubkey::from(subsidy_address), config.subsidy_amount.as_u64()).1.data.as_ref())
                     .build(),
                 Check::account(&Pubkey::from(group_address))
                     .data(expected_group.pack().as_ref())
@@ -590,8 +562,16 @@ mod tests {
         let (mut staged_members, _, expected_peers) = genesis_committee();
         staged_members[0].stake = TAPE::zero();
 
+        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::local() };
+        let committee_size = config.committee_size;
+        let peer_capacity = committee_size;
+
         let system = System {
             current_epoch: EpochNumber(0),
+            committee_size,
+            target_group_count: config.spool_groups,
+            min_epoch_duration: config.min_epoch_duration,
+            max_epoch_duration: config.max_epoch_duration,
             ..System::zeroed()
         };
 
@@ -606,8 +586,6 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let committee_size = GROUP_SIZE as u64;
-        let peer_capacity = committee_size;
         let committee_data = Committee {
             epoch: target,
             members: Tail::new(committee_size, staged_members.len() as u64),
@@ -624,14 +602,7 @@ mod tests {
         let instruction = build_start_network_ix(
             fee_payer.into(),
             subsidy_authority.into(),
-            committee_size,
-            50,
-            TAPE::zero(),
-            DEFAULT_BURN_FEE_BPS,
-            DEFAULT_SUBSIDY_DECAY_BPS,
-            TEST_EPOCH_DURATION,
-            TEST_MIN_EPOCH_DURATION,
-            TEST_MAX_EPOCH_DURATION,
+            &config,
         );
 
         let accounts = vec![
@@ -686,8 +657,16 @@ mod tests {
         let (staged_members, _, expected_peers) = genesis_committee();
         let staged_members = &staged_members[..GROUP_SIZE - 1];
 
+        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::local() };
+        let committee_size = config.committee_size;
+        let peer_capacity = committee_size;
+
         let system = System {
             current_epoch: EpochNumber(0),
+            committee_size,
+            target_group_count: config.spool_groups,
+            min_epoch_duration: config.min_epoch_duration,
+            max_epoch_duration: config.max_epoch_duration,
             ..System::zeroed()
         };
         let epoch = Epoch {
@@ -701,8 +680,6 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let committee_size = GROUP_SIZE as u64;
-        let peer_capacity = committee_size;
         let committee_data = Committee {
             epoch: target,
             members: Tail::new(committee_size, staged_members.len() as u64),
@@ -718,14 +695,7 @@ mod tests {
         let instruction = build_start_network_ix(
             fee_payer.into(),
             subsidy_authority.into(),
-            committee_size,
-            50,
-            TAPE::zero(),
-            DEFAULT_BURN_FEE_BPS,
-            DEFAULT_SUBSIDY_DECAY_BPS,
-            TEST_EPOCH_DURATION,
-            TEST_MIN_EPOCH_DURATION,
-            TEST_MAX_EPOCH_DURATION,
+            &config,
         );
 
         let accounts = vec![
@@ -780,8 +750,16 @@ mod tests {
         let (staged_members, _, expected_peers) = genesis_committee();
         let expected_peers = &expected_peers[..GROUP_SIZE - 1];
 
+        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::local() };
+        let committee_size = config.committee_size;
+        let peer_capacity = committee_size;
+
         let system = System {
             current_epoch: EpochNumber(0),
+            committee_size,
+            target_group_count: config.spool_groups,
+            min_epoch_duration: config.min_epoch_duration,
+            max_epoch_duration: config.max_epoch_duration,
             ..System::zeroed()
         };
         let epoch = Epoch {
@@ -795,8 +773,6 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let committee_size = GROUP_SIZE as u64;
-        let peer_capacity = committee_size;
         let committee_data = Committee {
             epoch: target,
             members: Tail::new(committee_size, staged_members.len() as u64),
@@ -812,14 +788,7 @@ mod tests {
         let instruction = build_start_network_ix(
             fee_payer.into(),
             subsidy_authority.into(),
-            committee_size,
-            50,
-            TAPE::zero(),
-            DEFAULT_BURN_FEE_BPS,
-            DEFAULT_SUBSIDY_DECAY_BPS,
-            TEST_EPOCH_DURATION,
-            TEST_MIN_EPOCH_DURATION,
-            TEST_MAX_EPOCH_DURATION,
+            &config,
         );
 
         let accounts = vec![

@@ -5,6 +5,7 @@ pub mod consts;
 pub mod dynamic;
 pub mod errors;
 pub mod event;
+pub mod genesis;
 pub mod helpers;
 pub mod program;
 pub mod instruction;

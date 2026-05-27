@@ -2,7 +2,7 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 
 pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = CreateSystem::try_from_bytes(data)?;
+    let args = CreateSystem::try_from_bytes(data)?;
     let [
         fee_payer_info,
         authority_info,
@@ -31,6 +31,22 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .has_address(&system_address.into())?;
 
+    let committee_size = u64::from_le_bytes(args.committee_size);
+    let spool_groups = u64::from_le_bytes(args.spool_groups);
+    let min_version = VersionId(u64::from_le_bytes(args.min_version));
+    let min_epoch_duration = EpochDuration::unpack(args.min_epoch_duration);
+    let max_epoch_duration = EpochDuration::unpack(args.max_epoch_duration);
+
+    if committee_size < MIN_COMMITTEE_SIZE as u64 {
+        return Err(TapeError::InsufficientCommittee.into());
+    }
+    if spool_groups == 0 {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if min_epoch_duration.0 == 0 || min_epoch_duration > max_epoch_duration {
+        return Err(ProgramError::InvalidArgument);
+    }
+
     create_program_account::<System>(
         system_info,
         system_program_info,
@@ -38,6 +54,16 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &tapedrive::ID,
         &[SYSTEM],
     )?;
+
+    let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
+    system.current_epoch = EpochNumber(0);
+    system.min_version = min_version;
+    system.total_nodes = 0;
+    system.committee_size = committee_size;
+    system.target_group_count = spool_groups;
+    system.live_group_count = 0;
+    system.min_epoch_duration = min_epoch_duration;
+    system.max_epoch_duration = max_epoch_duration;
 
     Ok(())
 }
@@ -52,7 +78,12 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let instruction = build_create_system_ix(fee_payer.into(), authority.into());
+        let config = GenesisConfig::local();
+        let instruction = build_create_system_ix(
+            fee_payer.into(),
+            authority.into(),
+            &config,
+        );
         let (system_address, _) = system_pda();
 
         let accounts = vec![
@@ -73,7 +104,14 @@ mod tests {
                 Check::account(&Pubkey::from(system_address))
                     .space(System::get_size())
                     .owner(&tapedrive::ID)
-                    .data(System::zeroed().pack().as_ref())
+                    .data(System {
+                        committee_size: config.committee_size,
+                        target_group_count: config.spool_groups,
+                        min_version: config.min_version,
+                        min_epoch_duration: config.min_epoch_duration,
+                        max_epoch_duration: config.max_epoch_duration,
+                        ..System::zeroed()
+                    }.pack().as_ref())
                     .build(),
             ],
         );

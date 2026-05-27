@@ -3,6 +3,7 @@ use rpc_client::RpcClient;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::build_register_node_ix;
 use tape_core::bls::{BlsPubkey, BlsSignature};
+use tape_core::system::NodePreferences;
 use tape_core::types::BasisPoints;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -18,6 +19,7 @@ pub async fn submit_register_node<Blockchain: Rpc>(
     network_tls: NetworkTlsPubkey,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
+    preferences: NodePreferences,
 ) -> Result<Txid, RpcError> {
     let authority = keypair.address();
 
@@ -30,6 +32,7 @@ pub async fn submit_register_node<Blockchain: Rpc>(
         network_tls,
         bls_pubkey,
         bls_pop,
+        preferences,
     );
 
     rpc.send_instructions(keypair, vec![ix]).await
@@ -38,8 +41,10 @@ pub async fn submit_register_node<Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use rpc_client::RpcClient;
+    use tape_api::genesis::GenesisConfig;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;
+    use tape_core::system::NodePreferences;
     use tape_core::types::BasisPoints;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
@@ -76,8 +81,9 @@ mod tests {
         let network_tls = NetworkTlsPubkey::new(tls_keypair.pubkey().to_bytes());
 
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
+        let preferences = NodePreferences::from(&GenesisConfig::local());
         submit_register_node(
-            &rpc, &keypair, name, commission, address, network_tls, bls_pubkey, bls_pop,
+            &rpc, &keypair, name, commission, address, network_tls, bls_pubkey, bls_pop, preferences,
         )
         .await
         .expect("register node");

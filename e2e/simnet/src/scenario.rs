@@ -9,14 +9,12 @@ use tape_api::instruction::{
     build_create_peer_set_ix, build_create_system_ix, build_initialize_mint_ix,
     build_register_node_ix, build_stage_genesis_node_ix, build_start_network_ix,
 };
-use tape_api::program::tapedrive::{
-    node_pda, DEFAULT_BURN_FEE_BPS, DEFAULT_SUBSIDY_DECAY_BPS,
-};
-use tape_chain_harness::{TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION, TEST_MIN_EPOCH_DURATION};
+use tape_api::program::tapedrive::node_pda;
+use tape_api::genesis::GenesisConfig;
+use tape_core::system::NodePreferences;
 use tape_api::utils::to_name;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
-use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::address::Address;
 
@@ -69,7 +67,7 @@ impl<'a> SimnetScenario<'a> {
             .send_instructions_and_advance(
                 admin,
                 vec![
-                    build_create_system_ix(admin_pub.into(), admin_pub.into()),
+                    build_create_system_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::local()),
                     build_create_peer_set_ix(admin_pub.into()),
                 ],
                 slot_bump,
@@ -81,7 +79,7 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_create_archive_ix(admin_pub.into(), admin_pub.into())],
+                vec![build_create_archive_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::local())],
                 slot_bump,
             )
             .await
@@ -111,14 +109,6 @@ impl<'a> SimnetScenario<'a> {
     }
 
     pub async fn start_network(&self) -> Result<Signature> {
-        self.start_network_with_burn_fee_bps(DEFAULT_BURN_FEE_BPS)
-            .await
-    }
-
-    pub async fn start_network_with_burn_fee_bps(
-        &self,
-        burn_fee_bps: BasisPoints,
-    ) -> Result<Signature> {
         let slot_bump = self.harness.config().slot_advance_per_tx;
         let admin = self.harness.admin();
         let admin_pub = admin.pubkey();
@@ -145,14 +135,7 @@ impl<'a> SimnetScenario<'a> {
         let ix = build_start_network_ix(
             admin_pub.into(),
             admin_pub.into(),
-            GROUP_SIZE as u64,
-            1,
-            TAPE(0),
-            burn_fee_bps,
-            DEFAULT_SUBSIDY_DECAY_BPS,
-            TEST_EPOCH_DURATION,
-            TEST_MIN_EPOCH_DURATION,
-            TEST_MAX_EPOCH_DURATION,
+            &GenesisConfig::local(),
         );
 
         self.harness
@@ -200,6 +183,7 @@ impl<'a> SimnetScenario<'a> {
             network_tls,
             bls_pubkey,
             bls_pop,
+            NodePreferences::from(&GenesisConfig::local()),
         );
 
         self.harness

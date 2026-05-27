@@ -19,9 +19,8 @@ use tape_api::instruction::{
     build_initialize_mint_ix, build_join_committee_ix, build_stake_with_pool_ix,
     build_stage_genesis_node_ix, build_start_network_ix,
 };
-use tape_api::program::tapedrive::{
-    node_pda, DEFAULT_BURN_FEE_BPS, DEFAULT_SUBSIDY_DECAY_BPS,
-};
+use tape_api::genesis::GenesisConfig;
+use tape_api::program::tapedrive::node_pda;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::coin::TAPE;
 use tape_core::types::{EpochDuration, EpochNumber};
@@ -118,7 +117,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_system",
-            vec![build_create_system_ix(admin_address, admin_address)],
+            vec![build_create_system_ix(admin_address, admin_address, &GenesisConfig::default())],
         )
         .await?;
 
@@ -130,7 +129,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_archive",
-            vec![build_create_archive_ix(admin_address, admin_address)],
+            vec![build_create_archive_ix(admin_address, admin_address, &GenesisConfig::default())],
         )
         .await?;
 
@@ -298,17 +297,17 @@ impl ChainManager {
                 .context("stage genesis node")?;
         }
 
-        let ix = build_start_network_ix(
-            self.admin.pubkey().into(),
-            self.admin.pubkey().into(),
-            GROUP_SIZE as u64,
+        let config = GenesisConfig {
             spool_groups,
-            TAPE(0),
-            DEFAULT_BURN_FEE_BPS,
-            DEFAULT_SUBSIDY_DECAY_BPS,
             epoch_duration,
             min_epoch_duration,
             max_epoch_duration,
+            ..GenesisConfig::default()
+        };
+        let ix = build_start_network_ix(
+            self.admin.pubkey().into(),
+            self.admin.pubkey().into(),
+            &config,
         );
 
         let result = self.rpc.send_instructions(&self.admin_signer, vec![ix]).await;

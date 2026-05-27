@@ -2,6 +2,7 @@
 */**/target
 /grind
 /deploy
+.claude
 
 # tape-network operator state
 /settings.yaml

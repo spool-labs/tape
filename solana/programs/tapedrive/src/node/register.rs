@@ -9,7 +9,6 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         authority_info,
 
         system_info,
-        archive_info,
         node_info,
         history_info,
         blacklist_info,
@@ -49,9 +48,6 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .is_system()?
         .as_account_mut::<System>(&tapedrive::ID)?;
-
-    archive_info.is_archive()?;
-    let archive = archive_info.as_account::<Archive>(&tapedrive::ID)?;
 
     system_program_info
         .is_program(&system_program::ID)?;
@@ -101,16 +97,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         bls_pubkey: args.bls_pubkey,
     };
 
-    node.preferences = NodePreferences {
-        storage_price: archive.storage_price,
-        storage_capacity: archive.storage_capacity,
-        committee_size: system.committee_size,
-        spool_groups: system.target_group_count,
-        min_version: system.min_version,
-        burn_fee_bps: archive.burn_fee_bps,
-        subsidy_decay_bps: archive.subsidy_decay_bps,
-        epoch_duration: system.min_epoch_duration,
-    };
+    node.preferences = args.preferences;
 
     create_program_account::<Tape>(
         history_info,
@@ -165,6 +152,8 @@ mod tests {
         let bls_pubkey = secret.public_key().expect("pubkey");
         let bls_pop = secret.proof_of_possession().expect("pop");
 
+        let preferences = NodePreferences::from(&GenesisConfig::local());
+
         let instruction = build_register_node_ix(
             fee_payer.into(),
             authority.into(),
@@ -174,10 +163,10 @@ mod tests {
             network_tls,
             bls_pubkey,
             bls_pop,
+            preferences,
         );
 
         let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
         let (blacklist_address, _) = blacklist_pda(node_address);
@@ -186,18 +175,12 @@ mod tests {
             current_epoch: EpochNumber(42),
             ..System::zeroed()
         };
-        let archive = Archive {
-            storage_price: TAPE(100),
-            storage_capacity: StorageUnits::mb(1_000_000),
-            ..Archive::zeroed()
-        };
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
 
             pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
             empty(node_address),
             empty(history_address),
             empty(blacklist_address),
@@ -229,16 +212,7 @@ mod tests {
                             network_tls,
                             bls_pubkey,
                         },
-                        preferences: NodePreferences {
-                            storage_price: TAPE(100),
-                            storage_capacity: StorageUnits::mb(1_000_000),
-                            committee_size: system.committee_size,
-                            spool_groups: system.target_group_count,
-                            min_version: system.min_version,
-                            burn_fee_bps: archive.burn_fee_bps,
-                            subsidy_decay_bps: archive.subsidy_decay_bps,
-                            epoch_duration: system.min_epoch_duration,
-                        },
+                        preferences,
                         registered_epoch: system.current_epoch,
                         latest_sync_epoch: system.current_epoch,
                         latest_advance_epoch: system.current_epoch,
@@ -278,10 +252,10 @@ mod tests {
             NetworkTlsPubkey::new_unique(),
             bls_pubkey,
             bls_pop,
+            NodePreferences::from(&GenesisConfig::local()),
         );
 
         let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
         let (node_address, _) = node_pda(authority.into());
         let (history_address, _) = history_pda(node_address);
         let (blacklist_address, _) = blacklist_pda(node_address);
@@ -291,7 +265,6 @@ mod tests {
             sol(authority, 0),
 
             pda(system_address, System::zeroed().pack(), tapedrive::ID),
-            pda(archive_address, Archive::zeroed().pack(), tapedrive::ID),
             empty(node_address),
             empty(history_address),
             empty(blacklist_address),

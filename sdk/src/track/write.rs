@@ -459,7 +459,7 @@ fn should_retry_certification(err: &TapedriveError) -> bool {
         TapedriveError::Rpc(rpc) => {
             matches!(
                 parse_tape_error(rpc),
-                Some(TapeError::BadSignature | TapeError::BadProof)
+                Some(TapeError::BadSignature | TapeError::BadProof | TapeError::EpochChanged)
             )
                 || rpc.is_retriable()
         }
@@ -718,5 +718,15 @@ mod tests {
     #[test]
     fn certification_retries_missing_track_proof() {
         assert!(should_retry_certification(&TapedriveError::NotFound));
+    }
+
+    // EpochChanged means signatures were collected against a now-stale epoch;
+    // certify_with_retry must recollect from peers, not just resubmit.
+    #[test]
+    fn certification_retries_epoch_changed() {
+        let err = TapedriveError::Rpc(rpc::RpcError::Transaction(
+            "custom program error: 0x34".to_string(),
+        ));
+        assert!(should_retry_certification(&err));
     }
 }

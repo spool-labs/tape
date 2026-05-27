@@ -86,7 +86,7 @@ async fn run() {
             .await
             .expect("set spool group preferences");
         scenario
-            .start_network_with_burn_fee_bps(BURN_FEE_BPS)
+            .start_network()
             .await
             .expect("start network");
     }

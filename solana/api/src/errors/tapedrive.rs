@@ -39,6 +39,8 @@ pub enum TapeError {
     BadSchedule = 0x32,
     #[error("bad epoch id")]
     BadEpochId = 0x33,
+    #[error("epoch changed")]
+    EpochChanged = 0x34,
     // Committee
     #[error("no quorum")]
     NoQuorum = 0x40,
@@ -169,6 +171,7 @@ impl TapeError {
             Self::TooSoon => "Please wait - epoch duration has not elapsed",
             Self::BadSchedule => "Invalid schedule",
             Self::BadEpochId => "Invalid epoch ID",
+            Self::EpochChanged => "Epoch advanced during operation",
             Self::NoQuorum => "Quorum not reached",
             Self::NoSigners => "No signers provided",
             Self::BadMember => "Invalid committee member",

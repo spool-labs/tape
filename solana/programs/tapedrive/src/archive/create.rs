@@ -2,7 +2,7 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 
 pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = CreateArchive::try_from_bytes(data)?;
+    let args = CreateArchive::try_from_bytes(data)?;
     let [
         fee_payer_info,
         authority_info,
@@ -40,8 +40,25 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_sysvar(&sysvar::rent::ID)?;
 
     system_info
-        .is_writable()?
         .is_system()?;
+
+    let storage_capacity = StorageUnits(u64::from_le_bytes(args.storage_capacity));
+    let storage_price = TAPE::unpack(args.storage_price);
+    let burn_fee_bps = BasisPoints::unpack(args.burn_fee_bps);
+    let subsidy_decay_bps = BasisPoints::unpack(args.subsidy_decay_bps);
+
+    if storage_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if storage_price.0 < MIN_STORAGE_PRICE as u64 {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if !burn_fee_bps.is_valid() {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if subsidy_decay_bps > MAX_SUBSIDY_DECAY_BPS {
+        return Err(ProgramError::InvalidArgument);
+    }
 
     let (archive_address, _) = archive_pda();
     let (archive_ata_address, _) = archive_ata();
@@ -99,17 +116,11 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         associated_token_program_info,
     )?;
 
-    let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
-    system.total_nodes = 0;
-    system.current_epoch = EpochNumber(0);
-    system.min_version = VersionId(0);
-    // committee_size + spool_groups are seeded by start_network
-
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
-    archive.storage_capacity = DEFAULT_STORAGE_CAPACITY;
-    archive.storage_price = DEFAULT_STORAGE_PRICE;
-    archive.burn_fee_bps = DEFAULT_BURN_FEE_BPS;
-    archive.subsidy_decay_bps = DEFAULT_SUBSIDY_DECAY_BPS;
+    archive.storage_capacity = storage_capacity;
+    archive.storage_price = storage_price;
+    archive.burn_fee_bps = burn_fee_bps;
+    archive.subsidy_decay_bps = subsidy_decay_bps;
     archive.schedule = EpochSchedule::new_at(EpochNumber(0));
 
     Ok(())
@@ -136,9 +147,11 @@ mod tests {
         let system = System::zeroed();
         let peer_set = PeerSet::zeroed();
 
+        let config = GenesisConfig::local();
         let instruction = build_create_archive_ix(
             fee_payer.into(),
             authority.into(),
+            &config,
         );
 
         let accounts = vec![
@@ -167,21 +180,12 @@ mod tests {
             &[
                 Check::success(),
 
-                Check::account(&Pubkey::from(system_address)).data(
-                    System {
-                        total_nodes: 0,
-                        current_epoch: EpochNumber(0),
-                        min_version: VersionId(0),
-                        ..system
-                    }.pack().as_ref()
-                ).build(),
-
                 Check::account(&Pubkey::from(archive_address)).data(
                     Archive {
-                        storage_capacity: DEFAULT_STORAGE_CAPACITY,
-                        storage_price: DEFAULT_STORAGE_PRICE,
-                        burn_fee_bps: DEFAULT_BURN_FEE_BPS,
-                        subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
+                        storage_capacity: config.storage_capacity,
+                        storage_price: config.storage_price,
+                        burn_fee_bps: config.burn_fee_bps,
+                        subsidy_decay_bps: config.subsidy_decay_bps,
                         schedule: EpochSchedule::new_at(EpochNumber(0)),
                         ..Archive::zeroed()
                     }.pack().as_ref()

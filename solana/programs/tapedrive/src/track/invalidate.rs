@@ -31,6 +31,11 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let proof = args.track;
     let track = proof.state;
 
+    let (expected_group_address, _) = group_pda(curr, track.group);
+    if expected_group_address != (*group_info.key).into() {
+        return Err(TapeError::EpochChanged.into());
+    }
+
     let group = group_info
         .is_group(curr, track.group)?
         .as_account::<Group>(&tapedrive::ID)?;
@@ -357,6 +362,94 @@ mod tests {
             &instruction,
             &accounts,
             &[Check::err(TapeError::AlreadyInvalidated.into())],
+        );
+    }
+
+    // group PDA from a different epoch than system.current_epoch is rejected
+    #[test]
+    fn wrong_epoch_group() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let bucket_hash = Hash::new_unique();
+        let curr = EpochNumber(42);
+        let stale = EpochNumber(41);
+
+        let (tape_address, _) = tape_pda(authority.into());
+        let (system_address, _) = system_pda();
+        let group_id = GroupIndex(0);
+        let (stale_group_address, _) = group_pda(stale, group_id);
+
+        let (sks, group) = make_group(stale, group_id);
+
+        let system = System {
+            current_epoch: curr,
+            committee_size: 128,
+            ..System::zeroed()
+        };
+
+        let track_number = TrackNumber(0);
+        let track = CompressedTrack {
+            tape: tape_address,
+            key: bucket_hash,
+            track_number,
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::mb(250),
+            group: group_id,
+            value_hash: Hash::new_unique(),
+        };
+        let old_track_hash = track.get_hash();
+        let mut track_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        track_tree.add_leaf_hash(old_track_hash).unwrap();
+        let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
+                &[old_track_hash],
+                track_number.0 as usize,
+            )
+            .expect("track proof is valid")
+            .try_into()
+            .expect("proof has correct length");
+
+        let tape = Tape {
+            authority: authority.into(),
+            tracks: TrackArchive {
+                tree: track_tree,
+                next_number: TrackNumber(1),
+                num_tracks: 1,
+            },
+            ..Tape::zeroed()
+        };
+
+        let computed_root = Hash::new_unique();
+        let signed_indices: Vec<usize> = (0..14).collect();
+        let bitmap = SpoolBitmap::from_indices(&signed_indices);
+        let message = TrackInvalidateMessage::new(stale, old_track_hash, computed_root).to_bytes();
+        let partials: Vec<BlsSignature> = signed_indices
+            .iter()
+            .map(|&i| sks[i].sign(&message).unwrap())
+            .collect();
+        let agg_sig = BlsSignature::aggregate(&partials).unwrap();
+
+        let instruction = build_invalidate_track_ix(
+            fee_payer.into(),
+            CompressedTrackProof { state: track, proof },
+            stale,
+            bitmap,
+            agg_sig,
+            computed_root,
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(stale_group_address, group.pack(), tapedrive::ID),
+            pda(tape_address, tape.pack(), tapedrive::ID),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::EpochChanged.into())],
         );
     }
 }

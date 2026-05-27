@@ -1,9 +1,9 @@
 use tape_core::spooler::GroupIndex;
-use tape_core::types::{BasisPoints, EpochDuration, EpochNumber};
-use tape_core::types::coin::{Coin, TAPE};
+use tape_core::types::EpochNumber;
 use tape_solana::*;
 use tape_crypto::address::Address;
 
+use crate::genesis::GenesisConfig;
 use crate::program::tapedrive;
 use crate::program::tapedrive::{
     archive_ata, archive_pda, committee_pda, epoch_pda, group_pda, peer_set_pda,
@@ -14,11 +14,22 @@ use crate::utils::ata;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct CreateSystem {}
+pub struct CreateSystem {
+    pub committee_size: [u8; 8],
+    pub spool_groups: [u8; 8],
+    pub min_version: [u8; 8],
+    pub min_epoch_duration: [u8; 8],
+    pub max_epoch_duration: [u8; 8],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct CreateArchive {}
+pub struct CreateArchive {
+    pub storage_capacity: [u8; 8],
+    pub storage_price: [u8; 8],
+    pub burn_fee_bps: [u8; 8],
+    pub subsidy_decay_bps: [u8; 8],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -27,36 +38,19 @@ pub struct StageGenesisNode {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StartNetwork {
-    /// Genesis committee size.
-    pub committee_size: [u8; 8],
-
-    /// Genesis spool group count.
-    pub spool_groups: [u8; 8],
+    /// Initial epoch duration written to epoch.preferences. Must satisfy
+    /// system.min_epoch_duration <= epoch_duration <= system.max_epoch_duration.
+    pub epoch_duration: [u8; 8],
 
     /// TAPE flux units transferred into the subsidy vault.
     pub subsidy_amount: [u8; 8],
-
-    /// Initial storage payment burn rate in basis points.
-    pub burn_fee_bps: [u8; 8],
-
-    /// Initial subsidy decay rate in basis points.
-    pub subsidy_decay_bps: [u8; 8],
-
-    /// Initial epoch duration in seconds. Must satisfy
-    /// min_epoch_duration <= initial <= max_epoch_duration.
-    pub epoch_duration: [u8; 8],
-
-    /// Network-wide lower bound on aggregated epoch_duration.
-    pub min_epoch_duration: [u8; 8],
-
-    /// Network-wide upper bound on aggregated epoch_duration.
-    pub max_epoch_duration: [u8; 8],
 }
 
 
 pub fn build_create_system_ix(
     fee_payer: Address,
     authority: Address,
+    config: &GenesisConfig,
 ) -> Instruction {
     let (system_address, _) = system_pda();
 
@@ -69,13 +63,20 @@ pub fn build_create_system_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: CreateSystem {}.to_bytes(),
+        data: CreateSystem {
+            committee_size: config.committee_size.to_le_bytes(),
+            spool_groups: config.spool_groups.to_le_bytes(),
+            min_version: config.min_version.0.to_le_bytes(),
+            min_epoch_duration: config.min_epoch_duration.pack(),
+            max_epoch_duration: config.max_epoch_duration.pack(),
+        }.to_bytes(),
     }
 }
 
 pub fn build_create_archive_ix(
     fee_payer: Address,
     authority: Address,
+    config: &GenesisConfig,
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
@@ -104,7 +105,12 @@ pub fn build_create_archive_ix(
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: CreateArchive {}.to_bytes(),
+        data: CreateArchive {
+            storage_capacity: config.storage_capacity.0.to_le_bytes(),
+            storage_price: config.storage_price.pack(),
+            burn_fee_bps: config.burn_fee_bps.pack(),
+            subsidy_decay_bps: config.subsidy_decay_bps.pack(),
+        }.to_bytes(),
     }
 }
 
@@ -138,14 +144,7 @@ pub fn build_stage_genesis_node_ix(
 pub fn build_start_network_ix(
     fee_payer: Address,
     subsidy_authority: Address,
-    committee_size: u64,
-    spool_groups: u64,
-    subsidy_amount: Coin<TAPE>,
-    burn_fee_bps: BasisPoints,
-    subsidy_decay_bps: BasisPoints,
-    epoch_duration: EpochDuration,
-    min_epoch_duration: EpochDuration,
-    max_epoch_duration: EpochDuration,
+    config: &GenesisConfig,
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
@@ -185,14 +184,8 @@ pub fn build_start_network_ix(
         program_id: tapedrive::ID,
         accounts,
         data: StartNetwork {
-            committee_size: committee_size.to_le_bytes(),
-            spool_groups: spool_groups.to_le_bytes(),
-            subsidy_amount: subsidy_amount.pack(),
-            burn_fee_bps: burn_fee_bps.pack(),
-            subsidy_decay_bps: subsidy_decay_bps.pack(),
-            epoch_duration: epoch_duration.pack(),
-            min_epoch_duration: min_epoch_duration.pack(),
-            max_epoch_duration: max_epoch_duration.pack(),
+            epoch_duration: config.epoch_duration.pack(),
+            subsidy_amount: config.subsidy_amount.pack(),
         }.to_bytes(),
     }
 }

@@ -48,6 +48,7 @@ pub mod prelude {
     pub use crate::program::tapedrive::*;
     pub use crate::program::token::*;
     pub use crate::program::{exchange, staking, tapedrive, token};
+    pub use crate::genesis::GenesisConfig;
     pub use crate::state::*;
     pub use crate::utils::*;
 }

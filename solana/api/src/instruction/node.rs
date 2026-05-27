@@ -9,6 +9,7 @@ use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::types::{GroupIndex, SpoolIndex};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
+use tape_core::system::NodePreferences;
 use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits, VersionId};
 use tape_core::types::coin::{Coin, TAPE};
 
@@ -21,6 +22,7 @@ pub struct RegisterNode {
     pub network_tls: NetworkTlsPubkey,
     pub bls_pubkey: BlsPubkey,
     pub bls_pop: BlsSignature,
+    pub preferences: NodePreferences,
 }
 
 #[repr(C)]
@@ -130,10 +132,10 @@ pub fn build_register_node_ix(
     network_tls: NetworkTlsPubkey,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
+    preferences: NodePreferences,
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
-    let (archive_address, _) = archive_pda();
     let (node_address, _) = node_pda(authority);
     let (history_address, _) = history_pda(node_address);
     let (blacklist_address, _) = blacklist_pda(node_address);
@@ -147,7 +149,6 @@ pub fn build_register_node_ix(
             AccountMeta::new_readonly(authority.into(), true),
 
             AccountMeta::new(system_address.into(), false),
-            AccountMeta::new_readonly(archive_address.into(), false),
             AccountMeta::new(node_address.into(), false),
             AccountMeta::new(history_address.into(), false),
             AccountMeta::new(blacklist_address.into(), false),
@@ -162,6 +163,7 @@ pub fn build_register_node_ix(
             network_tls,
             bls_pubkey,
             bls_pop,
+            preferences,
         }.to_bytes(),
     }
 }

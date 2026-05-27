@@ -7,10 +7,12 @@ use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use store_rocks::RocksStore;
+use tape_api::genesis::GenesisConfig;
 use tape_api::program::tapedrive::node_pda;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
 use tape_core::bls::BlsPrivateKey;
+use tape_core::system::NodePreferences;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair;
@@ -263,6 +265,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
         local_tls_pubkey,
         bls_pubkey,
         bls_pop,
+        NodePreferences::from(&GenesisConfig::default()),
     )
     .await;
 
@@ -306,8 +309,10 @@ mod tests {
     use std::path::PathBuf;
 
     use rpc_client::RpcClient;
+    use tape_api::genesis::GenesisConfig;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;
+    use tape_core::system::NodePreferences;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::{BasisPoints, EpochNumber, SlotNumber};
@@ -417,6 +422,7 @@ mod tests {
             tls_pubkey,
             bls.public_key().expect("bls pubkey"),
             bls.proof_of_possession().expect("bls pop"),
+            NodePreferences::from(&GenesisConfig::local()),
         )
         .await
         .expect("register node");

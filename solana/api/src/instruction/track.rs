@@ -31,7 +31,6 @@ pub struct DeleteTrack {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CertifyTrack {
     pub track: CompressedTrackProof,
-    pub epoch: [u8; 8],
     pub bitmap: SpoolBitmap,
     pub signature: BlsSignature,
 }
@@ -139,7 +138,6 @@ pub fn build_certify_track_ix(
         ],
         data: CertifyTrack {
             track,
-            epoch: epoch.pack(),
             bitmap,
             signature,
         }.to_bytes(),

@@ -153,7 +153,7 @@ mod tests {
             fee_payer.into(),
             authority.into(),
             node_address,
-            EpochDuration(200),
+            EpochDuration(TEST_MAX_EPOCH_DURATION.0 + 1),
         );
 
         let system = System {
