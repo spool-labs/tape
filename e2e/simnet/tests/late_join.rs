@@ -8,7 +8,7 @@ use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet
 use tape_store::ops::{MetaOps, ObjectInfoOps, TrackOps};
 
 const INITIAL_NODES: usize = GROUP_SIZE;
-const LATE_COMMITTEE_SIZE: u64 = (INITIAL_NODES + 1) as u64;
+const COMMITTEE_SIZE: u64 = INITIAL_NODES as u64;
 const TARGET_GROUPS: u64 = 5;
 
 #[test]
@@ -42,7 +42,7 @@ async fn late_join_inner() {
             .await
             .expect("set initial spool group preferences");
         scenario
-            .set_committee_size_many(&initial_nodes, LATE_COMMITTEE_SIZE)
+            .set_committee_size_many(&initial_nodes, COMMITTEE_SIZE)
             .await
             .expect("set initial committee size preferences");
         scenario.start_network().await.expect("start network");
@@ -135,7 +135,7 @@ async fn late_join_inner() {
             .await
             .expect("set late node spool group preference");
         scenario
-            .set_committee_size(late_node, LATE_COMMITTEE_SIZE)
+            .set_committee_size(late_node, COMMITTEE_SIZE)
             .await
             .expect("set late node committee size preference");
     }
