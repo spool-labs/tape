@@ -24,7 +24,7 @@ use tape_api::program::tapedrive::{
 };
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::coin::TAPE;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochDuration, EpochNumber};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tracing::info;
@@ -273,6 +273,9 @@ impl ChainManager {
         &self,
         genesis_authorities: &[Keypair],
         spool_groups: u64,
+        epoch_duration: EpochDuration,
+        min_epoch_duration: EpochDuration,
+        max_epoch_duration: EpochDuration,
     ) -> Result<()> {
         if self.current_epoch().await? != EpochNumber(0) {
             info!("network already started");
@@ -303,6 +306,9 @@ impl ChainManager {
             TAPE(0),
             DEFAULT_BURN_FEE_BPS,
             DEFAULT_SUBSIDY_DECAY_BPS,
+            epoch_duration,
+            min_epoch_duration,
+            max_epoch_duration,
         );
 
         let result = self.rpc.send_instructions(&self.admin_signer, vec![ix]).await;

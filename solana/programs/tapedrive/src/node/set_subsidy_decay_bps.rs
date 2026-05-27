@@ -25,7 +25,7 @@ pub fn process_set_subsidy_decay_bps(accounts: &[AccountInfo<'_>], data: &[u8]) 
     }
 
     let subsidy_decay_bps = BasisPoints::unpack(args.subsidy_decay_bps);
-    if !subsidy_decay_bps.is_valid() {
+    if subsidy_decay_bps > MAX_SUBSIDY_DECAY_BPS {
         return Err(ProgramError::InvalidArgument);
     }
 

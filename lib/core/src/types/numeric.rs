@@ -16,6 +16,7 @@ define_numeric_type!(StorageUnits, "units");
 define_numeric_type!(StripeCount, "stripes");
 define_numeric_type!(SpoolIndex, "spool");
 define_numeric_type!(SpoolCount, "spools");
+define_numeric_type!(EpochDuration, "secs");
 
 impl BasisPoints {
     pub const MAX: u64 = 10_000;

@@ -50,18 +50,6 @@
 //   Readiness is determined by polling the store (iter_all_spools) 
 //   not via a cross-feature channel.
 //
-// ── JoinCommittee timing gate ──────────────────────────────────────
-//
-//   JoinCommittee should not be submitted until 90% of the epoch
-//   duration has elapsed. This prevents committing to the next epoch
-//   too early (which could be up to a week) and risking unavailability
-//   at the transition point.
-//
-//   Calculated as: now >= last_epoch + (EPOCH_DURATION * 90 / 100)
-//
-//   Requires `last_epoch` timestamp in ProtocolState (needs to be added
-//   to fetch_state from the on-chain Epoch account).
-//
 // ── No permanent failure ────────────────────────────────────────────
 //
 //   The lifecycle manager never gives up. If a task returns Rejected

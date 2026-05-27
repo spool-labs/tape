@@ -38,6 +38,19 @@ use spl_token::state::{
 // Re-export checks
 pub use mollusk_svm::result::Check;
 
+/// Seconds per epoch used by tests. Stored in `Epoch.preferences.epoch_duration`
+/// (via test fixtures) and used to drive the commit gate at
+/// `solana/programs/tapedrive/src/epoch/commit.rs:50`.
+pub const TEST_EPOCH_DURATION: EpochDuration = EpochDuration(20);
+
+/// Lower bound on aggregated epoch_duration written to System at StartNetwork
+/// in test flows. Production picks its own (e.g. 2 days).
+pub const TEST_MIN_EPOCH_DURATION: EpochDuration = EpochDuration(10);
+
+/// Upper bound on aggregated epoch_duration written to System at StartNetwork
+/// in test flows. Production picks its own (e.g. 14 days).
+pub const TEST_MAX_EPOCH_DURATION: EpochDuration = EpochDuration(100);
+
 // Helpers for constructing test accounts.
 
 pub fn sol(key: impl Into<Pubkey>, lamports: u64) -> (Pubkey, Account) {

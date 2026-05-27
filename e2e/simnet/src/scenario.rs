@@ -12,6 +12,7 @@ use tape_api::instruction::{
 use tape_api::program::tapedrive::{
     node_pda, DEFAULT_BURN_FEE_BPS, DEFAULT_SUBSIDY_DECAY_BPS,
 };
+use tape_chain_harness::{TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION, TEST_MIN_EPOCH_DURATION};
 use tape_api::utils::to_name;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
@@ -149,6 +150,9 @@ impl<'a> SimnetScenario<'a> {
             TAPE(0),
             burn_fee_bps,
             DEFAULT_SUBSIDY_DECAY_BPS,
+            TEST_EPOCH_DURATION,
+            TEST_MIN_EPOCH_DURATION,
+            TEST_MAX_EPOCH_DURATION,
         );
 
         self.harness

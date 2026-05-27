@@ -61,7 +61,20 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let subsidy_amount = TAPE::unpack(args.subsidy_amount);
     let burn_fee_bps = BasisPoints::unpack(args.burn_fee_bps);
     let subsidy_decay_bps = BasisPoints::unpack(args.subsidy_decay_bps);
-    if !burn_fee_bps.is_valid() || !subsidy_decay_bps.is_valid() {
+    if !burn_fee_bps.is_valid() {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if subsidy_decay_bps > MAX_SUBSIDY_DECAY_BPS {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let epoch_duration = EpochDuration::unpack(args.epoch_duration);
+    let min_epoch_duration = EpochDuration::unpack(args.min_epoch_duration);
+    let max_epoch_duration = EpochDuration::unpack(args.max_epoch_duration);
+    if min_epoch_duration.0 == 0 || min_epoch_duration > max_epoch_duration {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if epoch_duration < min_epoch_duration || epoch_duration > max_epoch_duration {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -84,6 +97,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         min_version: system.min_version,
         burn_fee_bps,
         subsidy_decay_bps,
+        epoch_duration,
     };
 
     subsidy_info
@@ -278,6 +292,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.target_group_count = spool_groups;
     system.live_group_count = 1;
     system.current_epoch = target;
+    system.min_epoch_duration = min_epoch_duration;
+    system.max_epoch_duration = max_epoch_duration;
 
     Ok(())
 }
@@ -410,6 +426,9 @@ mod tests {
         let subsidy_amount = TAPE(50);
         let burn_fee_bps = DEFAULT_BURN_FEE_BPS;
         let subsidy_decay_bps = DEFAULT_SUBSIDY_DECAY_BPS;
+        let epoch_duration = TEST_EPOCH_DURATION;
+        let min_epoch_duration = TEST_MIN_EPOCH_DURATION;
+        let max_epoch_duration = TEST_MAX_EPOCH_DURATION;
         let genesis_preferences = NodePreferences {
             storage_capacity: StorageUnits::zero(),
             storage_price: TAPE::zero(),
@@ -418,6 +437,7 @@ mod tests {
             min_version: VersionId(0),
             burn_fee_bps,
             subsidy_decay_bps,
+            epoch_duration,
         };
         let expected_peers_after_start: Vec<Peer> = expected_peers
             .iter()
@@ -434,6 +454,9 @@ mod tests {
             subsidy_amount,
             burn_fee_bps,
             subsidy_decay_bps,
+            epoch_duration,
+            min_epoch_duration,
+            max_epoch_duration,
         );
 
         let accounts = vec![
@@ -486,6 +509,8 @@ mod tests {
                         committee_size,
                         target_group_count: spool_groups,
                         live_group_count: 1,
+                        min_epoch_duration,
+                        max_epoch_duration,
                         ..system
                     }.pack().as_ref()
                 ).build(),
@@ -604,6 +629,9 @@ mod tests {
             TAPE::zero(),
             DEFAULT_BURN_FEE_BPS,
             DEFAULT_SUBSIDY_DECAY_BPS,
+            TEST_EPOCH_DURATION,
+            TEST_MIN_EPOCH_DURATION,
+            TEST_MAX_EPOCH_DURATION,
         );
 
         let accounts = vec![
@@ -695,6 +723,9 @@ mod tests {
             TAPE::zero(),
             DEFAULT_BURN_FEE_BPS,
             DEFAULT_SUBSIDY_DECAY_BPS,
+            TEST_EPOCH_DURATION,
+            TEST_MIN_EPOCH_DURATION,
+            TEST_MAX_EPOCH_DURATION,
         );
 
         let accounts = vec![
@@ -786,6 +817,9 @@ mod tests {
             TAPE::zero(),
             DEFAULT_BURN_FEE_BPS,
             DEFAULT_SUBSIDY_DECAY_BPS,
+            TEST_EPOCH_DURATION,
+            TEST_MIN_EPOCH_DURATION,
+            TEST_MAX_EPOCH_DURATION,
         );
 
         let accounts = vec![

@@ -16,8 +16,8 @@ pub const DEFAULT_STORAGE_CAPACITY:    StorageUnits = StorageUnits(100 * Storage
 pub const DEFAULT_STORAGE_PRICE:               TAPE = TAPE(954); // ~1 TAPE / TiB-epoch
 pub const DEFAULT_BURN_FEE_BPS:         BasisPoints = BasisPoints(1_000);
 pub const DEFAULT_SUBSIDY_DECAY_BPS:    BasisPoints = BasisPoints(100);
+pub const MAX_SUBSIDY_DECAY_BPS:        BasisPoints = BasisPoints(500);
 
-pub const EPOCH_DURATION:           i64 = 100;  // 100 seconds for local testing (100s devnet, 86_400s testnet, 604_800s mainnet)
 pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
 pub const FUTURE_EPOCHS:          usize = 256;  // ~5 years at 1 week epochs
 

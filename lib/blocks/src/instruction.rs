@@ -555,6 +555,7 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetCommitteeSize
         | TapeInstruction::SetSpoolGroups
         | TapeInstruction::SetMinVersion
+        | TapeInstruction::SetEpochDuration
         | TapeInstruction::SplitPoolStake
         | TapeInstruction::MergePoolStake
         | TapeInstruction::SplitTapeByEpoch

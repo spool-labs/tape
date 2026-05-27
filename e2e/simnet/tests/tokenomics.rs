@@ -6,7 +6,7 @@ use solana_sdk::program_pack::Pack;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use spl_token::instruction::transfer_checked;
-use tape_api::program::EPOCH_DURATION;
+use tape_chain_harness::TEST_EPOCH_DURATION;
 use tape_api::program::tapedrive::{
     ARCHIVE_ATA, DEFAULT_SUBSIDY_DECAY_BPS, SUBSIDY_ATA, track_pda,
 };
@@ -71,7 +71,7 @@ async fn run() {
     let all: Vec<usize> = (0..NODE_COUNT).collect();
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
 
     {
         let scenario = harness.scenario();
@@ -317,6 +317,7 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
         subsidy_decay_bps: SUBSIDY_DECAY_BPS,
         storage_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
+        epoch_duration: TEST_EPOCH_DURATION,
     };
 
     assert_eq!(

@@ -237,7 +237,15 @@ fn validate_preferences(system: &System, preferences: NodePreferences) -> Progra
     if preferences.min_version.0 < system.min_version.0 {
         return Err(TapeError::UnexpectedState.into());
     }
-    if !preferences.burn_fee_bps.is_valid() || !preferences.subsidy_decay_bps.is_valid() {
+    if !preferences.burn_fee_bps.is_valid() {
+        return Err(TapeError::UnexpectedState.into());
+    }
+    if preferences.subsidy_decay_bps > MAX_SUBSIDY_DECAY_BPS {
+        return Err(TapeError::UnexpectedState.into());
+    }
+    if preferences.epoch_duration < system.min_epoch_duration
+        || preferences.epoch_duration > system.max_epoch_duration
+    {
         return Err(TapeError::UnexpectedState.into());
     }
 
@@ -275,6 +283,7 @@ mod tests {
             min_version: VersionId(version),
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
+            epoch_duration: TEST_EPOCH_DURATION,
         }
     }
 
@@ -328,6 +337,8 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             target_group_count: 50,
             live_group_count: 50,
+            min_epoch_duration: TEST_MIN_EPOCH_DURATION,
+            max_epoch_duration: TEST_MAX_EPOCH_DURATION,
             ..System::zeroed()
         };
 
@@ -501,6 +512,8 @@ mod tests {
             target_group_count: 75,
             live_group_count: 75,
             min_version: VersionId(5),
+            min_epoch_duration: TEST_MIN_EPOCH_DURATION,
+            max_epoch_duration: TEST_MAX_EPOCH_DURATION,
             ..System::zeroed()
         };
 

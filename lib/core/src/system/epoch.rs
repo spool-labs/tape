@@ -17,8 +17,9 @@ pub enum EpochPhase {
     /// The long-running active phase: nodes serve their spool assignments.
     Active,
 
-    /// EPOCH_DURATION has elapsed; the next epoch's seed/nonce has been
-    /// captured and the next-epoch group accounts are being populated.
+    /// The epoch's preferred duration has elapsed; the next epoch's
+    /// seed/nonce has been captured and the next-epoch group accounts
+    /// are being populated.
     Closing,
 
     /// This epoch is completed, it is no longer live.

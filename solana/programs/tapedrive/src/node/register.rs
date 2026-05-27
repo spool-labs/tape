@@ -109,6 +109,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         min_version: system.min_version,
         burn_fee_bps: archive.burn_fee_bps,
         subsidy_decay_bps: archive.subsidy_decay_bps,
+        epoch_duration: system.min_epoch_duration,
     };
 
     create_program_account::<Tape>(
@@ -236,6 +237,7 @@ mod tests {
                             min_version: system.min_version,
                             burn_fee_bps: archive.burn_fee_bps,
                             subsidy_decay_bps: archive.subsidy_decay_bps,
+                            epoch_duration: system.min_epoch_duration,
                         },
                         registered_epoch: system.current_epoch,
                         latest_sync_epoch: system.current_epoch,

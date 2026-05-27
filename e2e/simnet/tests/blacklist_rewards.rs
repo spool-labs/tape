@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use tape_api::program::EPOCH_DURATION;
+use tape_chain_harness::TEST_EPOCH_DURATION;
 use tape_api::program::tapedrive::{blacklist_pda, track_pda};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
@@ -50,7 +50,7 @@ async fn run(with_blacklist: bool) {
     let all: Vec<usize> = (0..NODE_COUNT).collect();
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
 
     start(&mut harness, &all, health_timeout, active_timeout, epoch_timeout).await;
 

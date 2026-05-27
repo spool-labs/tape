@@ -216,6 +216,7 @@ mod tests {
             min_version: system.min_version,
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
+            epoch_duration: TEST_EPOCH_DURATION,
         };
         let node = Node {
             authority: authority.into(),

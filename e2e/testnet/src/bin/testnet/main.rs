@@ -91,6 +91,7 @@ async fn async_main() -> ExitCode {
         sol_airdrop: cli.sol_airdrop,
         stake_amount: cli.stake_amount,
         spool_groups: cli.spool_groups,
+        ..TestnetConfig::default()
     };
 
     let observer = match Observer::new(&cli.rpc_url) {

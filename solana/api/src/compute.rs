@@ -33,7 +33,7 @@ pub const CREATE_EPOCH_CU:     u32 =  30_000;
 pub const CREATE_COMMITTEE_CU: u32 =  30_000;
 pub const RESIZE_COMMITTEE_CU: u32 =  50_000;
 pub const RESIZE_PEER_SET_CU:  u32 =  30_000;
-pub const PROPOSE_SNAPSHOT_CU: u32 =  30_000;
+pub const PROPOSE_SNAPSHOT_CU: u32 = 100_000;
 pub const PROPOSE_ASSIGNMENT_CU: u32 =  30_000;
 pub const RESIZE_ARCHIVE_CU:   u32 =  30_000;
 

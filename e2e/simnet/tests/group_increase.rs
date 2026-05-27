@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tape_api::program::EPOCH_DURATION;
+use tape_chain_harness::TEST_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
@@ -46,7 +46,7 @@ async fn group_increase_inner() {
         .expect("start runtimes");
 
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
     let scenario = harness.scenario();
 
     scenario

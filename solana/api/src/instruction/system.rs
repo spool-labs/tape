@@ -1,5 +1,5 @@
 use tape_core::spooler::GroupIndex;
-use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::types::{BasisPoints, EpochDuration, EpochNumber};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_solana::*;
 use tape_crypto::address::Address;
@@ -41,6 +41,16 @@ pub struct StartNetwork {
 
     /// Initial subsidy decay rate in basis points.
     pub subsidy_decay_bps: [u8; 8],
+
+    /// Initial epoch duration in seconds. Must satisfy
+    /// min_epoch_duration <= initial <= max_epoch_duration.
+    pub epoch_duration: [u8; 8],
+
+    /// Network-wide lower bound on aggregated epoch_duration.
+    pub min_epoch_duration: [u8; 8],
+
+    /// Network-wide upper bound on aggregated epoch_duration.
+    pub max_epoch_duration: [u8; 8],
 }
 
 
@@ -133,6 +143,9 @@ pub fn build_start_network_ix(
     subsidy_amount: Coin<TAPE>,
     burn_fee_bps: BasisPoints,
     subsidy_decay_bps: BasisPoints,
+    epoch_duration: EpochDuration,
+    min_epoch_duration: EpochDuration,
+    max_epoch_duration: EpochDuration,
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
@@ -177,6 +190,9 @@ pub fn build_start_network_ix(
             subsidy_amount: subsidy_amount.pack(),
             burn_fee_bps: burn_fee_bps.pack(),
             subsidy_decay_bps: subsidy_decay_bps.pack(),
+            epoch_duration: epoch_duration.pack(),
+            min_epoch_duration: min_epoch_duration.pack(),
+            max_epoch_duration: max_epoch_duration.pack(),
         }.to_bytes(),
     }
 }

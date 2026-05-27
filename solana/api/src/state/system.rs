@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_core::types::{EpochNumber, VersionId};
+use tape_core::types::{EpochDuration, EpochNumber, VersionId};
 use super::AccountType;
 
 #[repr(C)]
@@ -22,6 +22,14 @@ pub struct System {
 
     /// Number of spool groups live in the current epoch.
     pub live_group_count: u64,
+
+    /// Lower bound on aggregated NodePreferences::epoch_duration. Set once at
+    /// StartNetwork; immutable thereafter.
+    pub min_epoch_duration: EpochDuration,
+
+    /// Upper bound on aggregated NodePreferences::epoch_duration. Set once at
+    /// StartNetwork; immutable thereafter.
+    pub max_epoch_duration: EpochDuration,
 }
 
 tape_solana::state!(AccountType, System);

@@ -1,5 +1,6 @@
-use tape_api::program::EPOCH_DURATION;
 use tape_api::program::tapedrive::DEFAULT_SUBSIDY_DECAY_BPS;
+
+use crate::TEST_EPOCH_DURATION;
 use tape_core::system::{EpochPhase, EpochState};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
@@ -80,7 +81,7 @@ pub(crate) fn default_last_epoch() -> i64 {
 }
 
 pub(crate) fn elapsed_last_epoch(now: i64) -> i64 {
-    now - EPOCH_DURATION - 1
+    now - TEST_EPOCH_DURATION.0 as i64 - 1
 }
 
 pub(crate) fn onchain_elapsed_last_epoch(value: i64) -> i64 {

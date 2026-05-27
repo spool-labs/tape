@@ -9,7 +9,7 @@ use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::types::{GroupIndex, SpoolIndex};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_core::types::{BasisPoints, EpochNumber, StorageUnits, VersionId};
+use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits, VersionId};
 use tape_core::types::coin::{Coin, TAPE};
 
 #[repr(C)]
@@ -78,6 +78,12 @@ pub struct SetBurnFeeBps {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetSubsidyDecayBps {
     pub subsidy_decay_bps: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetEpochDuration {
+    pub epoch_duration: [u8; 8],
 }
 
 #[repr(C)]
@@ -451,6 +457,28 @@ pub fn build_set_subsidy_decay_bps_ix(
         ],
         data: SetSubsidyDecayBps {
             subsidy_decay_bps: subsidy_decay_bps.pack(),
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_epoch_duration_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    epoch_duration: EpochDuration,
+) -> Instruction {
+    let (system_address, _) = system_pda();
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
+        ],
+        data: SetEpochDuration {
+            epoch_duration: epoch_duration.pack(),
         }.to_bytes(),
     }
 }

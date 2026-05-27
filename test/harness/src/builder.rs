@@ -2,7 +2,6 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
-use tape_api::program::EPOCH_DURATION;
 use tape_api::program::tapedrive;
 use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_core::erasure::GROUP_SIZE;
@@ -11,6 +10,7 @@ use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_protocol::ProtocolState;
 
+use crate::TEST_EPOCH_DURATION;
 use crate::fixture::ChainFixture;
 use crate::node::HarnessNode;
 use crate::seed::{SeededWorld, build_seeded_world};
@@ -165,7 +165,7 @@ impl ChainHarnessBuilder {
     }
 
     pub fn onchain_time_elapsed(mut self) -> Self {
-        self.last_epoch = Some(onchain_elapsed_last_epoch(EPOCH_DURATION));
+        self.last_epoch = Some(onchain_elapsed_last_epoch(TEST_EPOCH_DURATION.0 as i64));
         self
     }
 

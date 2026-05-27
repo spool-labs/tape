@@ -8879,6 +8879,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-protocol",
+ "tape-test",
  "tokio",
  "tracing",
 ]

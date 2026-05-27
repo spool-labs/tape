@@ -47,7 +47,8 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     let now = Clock::get()?.unix_timestamp;
-    if now.saturating_sub(curr_epoch.start_time) < EPOCH_DURATION {
+    let elapsed = now.saturating_sub(curr_epoch.start_time);
+    if elapsed < curr_epoch.preferences.epoch_duration.0 as i64 {
         return Err(TapeError::TooSoon.into());
     }
 
@@ -129,6 +130,7 @@ fn aggregate_preferences(
         min_version: system.min_version,
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
+        epoch_duration: system.min_epoch_duration,
     };
 
     aggregate_node_preferences(members, peers, bounds).map_err(|error| match error {
@@ -185,6 +187,7 @@ mod tests {
             min_version: VersionId(3),
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
+            epoch_duration: TEST_EPOCH_DURATION,
         }
     }
 
@@ -249,12 +252,15 @@ mod tests {
             target_group_count: SPOOL_GROUPS,
             live_group_count: SPOOL_GROUPS,
             committee_size: COMMITTEE_SIZE,
+            min_epoch_duration: TEST_MIN_EPOCH_DURATION,
+            max_epoch_duration: TEST_MAX_EPOCH_DURATION,
             ..System::zeroed()
         };
 
         let curr_epoch = Epoch {
             id: curr,
-            start_time: now - EPOCH_DURATION,
+            start_time: now - TEST_EPOCH_DURATION.0 as i64,
+            preferences: test_preferences(),
             state: EpochState {
                 phase: EpochPhase::Active as u64,
                 ..EpochState::zeroed()
@@ -311,6 +317,23 @@ mod tests {
 
     #[test]
     fn rejects_malformed_previous_snapshot_tape() {
+        let mutators: &[fn(&mut Tape, EpochNumber)] = &[
+            |t, prev| t.id = snapshot_tape_number(prev.next()),
+            |t, _| t.flags = 0,
+            |t, _| t.authority = Address::new([0xAA; 32]),
+            |t, _| t.capacity = StorageUnits(1),
+            |t, prev| t.active_epoch = prev.next(),
+            |t, _| t.expiry_epoch = EpochNumber(0),
+        ];
+
+        for mutate in mutators {
+            let mut snapshot_tape = Tape::snapshot(EpochNumber(9));
+            mutate(&mut snapshot_tape, EpochNumber(9));
+            assert_malformed_snapshot_rejected(snapshot_tape);
+        }
+    }
+
+    fn assert_malformed_snapshot_rejected(snapshot_tape: Tape) {
         let fee_payer = Pubkey::new_unique();
 
         let curr = EpochNumber(10);
@@ -333,12 +356,15 @@ mod tests {
             target_group_count: SPOOL_GROUPS,
             live_group_count: SPOOL_GROUPS,
             committee_size: COMMITTEE_SIZE,
+            min_epoch_duration: TEST_MIN_EPOCH_DURATION,
+            max_epoch_duration: TEST_MAX_EPOCH_DURATION,
             ..System::zeroed()
         };
 
         let curr_epoch = Epoch {
             id: curr,
-            start_time: now - EPOCH_DURATION,
+            start_time: now - TEST_EPOCH_DURATION.0 as i64,
+            preferences: test_preferences(),
             state: EpochState {
                 phase: EpochPhase::Active as u64,
                 ..EpochState::zeroed()
@@ -352,8 +378,6 @@ mod tests {
             state: EpochState::zeroed(),
             ..Epoch::zeroed()
         };
-
-        let snapshot_tape = Tape::snapshot(prev);
 
         let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
 

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tape_api::program::EPOCH_DURATION;
+use tape_chain_harness::TEST_EPOCH_DURATION;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 
@@ -38,7 +38,7 @@ async fn multi_epoch_inner() {
         .expect("start runtimes");
 
     let active_timeout = Duration::from_secs(60);
-    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 5);
+    let epoch_timeout = Duration::from_secs(TEST_EPOCH_DURATION.0 * 5);
     let scenario = harness.scenario();
 
     scenario

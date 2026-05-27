@@ -22,6 +22,7 @@ tape-api.workspace = true
 tape-core.workspace = true
 tape-crypto.workspace = true
 tape-protocol.workspace = true
+tape-test.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]

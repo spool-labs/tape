@@ -15,7 +15,6 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
-use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 
 use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
@@ -29,7 +28,8 @@ const NODE_ID_WIDTH: usize = 3;
 const NODE_SPOOL_WIDTH: usize = 2;
 const NODE_STAKE_WIDTH: usize = 5;
 const NODE_EVENT_SPARK_WIDTH: usize = NODE_EVENT_HISTORY_EPOCHS;
-const EPOCH_CHART_MAX_MS: u64 = (EPOCH_DURATION as u64) * 10 * 1000;
+const EPOCH_CHART_REFERENCE_SECS: u64 = 100;
+const EPOCH_CHART_MAX_MS: u64 = EPOCH_CHART_REFERENCE_SECS * 10 * 1000;
 
 pub fn run_tui(
     snapshot: Arc<ArcSwap<PollSnapshot>>,

@@ -35,6 +35,7 @@ use tape_protocol::{EpochBundle, ProtocolState};
 
 use crate::node::HarnessNode;
 use crate::spec::{previous_epoch, HarnessNodeSpec, HarnessSpec};
+use crate::{TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION, TEST_MIN_EPOCH_DURATION};
 
 const DEFAULT_GROUP_SIZE: StorageUnits = StorageUnits(StorageUnits::GB);
 
@@ -121,6 +122,8 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         committee_size: committee_capacity,
         target_group_count: spec.current_group_count,
         live_group_count: spec.current_group_count,
+        min_epoch_duration: TEST_MIN_EPOCH_DURATION,
+        max_epoch_duration: TEST_MAX_EPOCH_DURATION,
     };
 
     let current_epoch_account = Epoch {
@@ -462,6 +465,7 @@ fn committed_preferences(
         min_version: VersionId(1),
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
+        epoch_duration: TEST_MIN_EPOCH_DURATION,
     };
 
     aggregate_node_preferences(members, peers, bounds)
@@ -481,6 +485,7 @@ fn node_preferences(
         min_version: VersionId(1),
         burn_fee_bps: spec.burn_fee_bps,
         subsidy_decay_bps: spec.subsidy_decay_bps,
+        epoch_duration: TEST_EPOCH_DURATION,
     }
 }
 

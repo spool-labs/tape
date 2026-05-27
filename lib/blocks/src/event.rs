@@ -198,7 +198,7 @@ mod tests {
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{NodePreferences, VoteKind};
-    use tape_core::types::{BasisPoints, TrackNumber, VersionId};
+    use tape_core::types::{BasisPoints, EpochDuration, TrackNumber, VersionId};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -247,6 +247,7 @@ mod tests {
                 min_version: VersionId(0),
                 burn_fee_bps: BasisPoints(0),
                 subsidy_decay_bps: BasisPoints(0),
+                epoch_duration: EpochDuration(0),
             },
             nonce: Hash::default(),
             subsidy: [0; 8],
