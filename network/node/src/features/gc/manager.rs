@@ -54,8 +54,6 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
         let mut state_rx = self.context.subscribe_state();
         let mut observed_epoch = state_rx.borrow().epoch();
 
-        catch_up_epochs(&self.context, &self.config, observed_epoch).await?;
-
         let mut ticker = interval(Duration::from_secs(self.config.interval_secs));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         ticker.tick().await;
@@ -182,11 +180,14 @@ fn should_reclaim(config: &GcConfig, deleted_slices: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use store_memory::MemoryStore;
     use tape_core::types::EpochNumber;
     use tape_store::{TapeStore, ops::MetaOps};
+    use tokio_util::sync::CancellationToken;
 
-    use super::{next_pending_epoch, run_epoch_sweep};
+    use super::{GcManager, next_pending_epoch, run_epoch_sweep};
     use crate::config::store::GcConfig;
     use crate::harness::{NodeHarness, TestContext};
 
@@ -259,5 +260,24 @@ mod tests {
 
         assert_eq!(context.store.get_gc_started_epoch().unwrap(), Some(EpochNumber(3)));
         assert_eq!(context.store.get_gc_completed_epoch().unwrap(), Some(EpochNumber(3)));
+    }
+
+    #[tokio::test]
+    async fn startup_defers_catch_up_sweep_until_tick_or_epoch_change() {
+        let context = test_context().await;
+        let config = test_config();
+        let cancel = CancellationToken::new();
+
+        let task = tokio::spawn(
+            GcManager::new(context.clone(), config, cancel.clone()).run(),
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        task.await.unwrap().unwrap();
+
+        assert_eq!(context.store.get_gc_started_epoch().unwrap(), None);
+        assert_eq!(context.store.get_gc_completed_epoch().unwrap(), None);
     }
 }

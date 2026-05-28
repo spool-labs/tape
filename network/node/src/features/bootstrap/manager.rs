@@ -17,7 +17,7 @@ use tape_store::ops::MetaOps;
 use crate::config::node::NodeConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::bootstrap::{block, discovery, fetch};
+use crate::features::bootstrap::{block, discovery, fetch, validate};
 use crate::features::replay::engine::ReplayEngine;
 
 const BOOTSTRAP_EPOCH: EpochNumber = EpochNumber(0);
@@ -63,12 +63,8 @@ where
     let checkpoint = fetch_protocol_checkpoint(context, cancel).await?;
     publish_protocol_checkpoint(context, &checkpoint).await?;
 
-    let start_slot = run_replay_phases(
-        context, 
-        config, 
-        &checkpoint, 
-        cancel
-    ).await?;
+    let start_slot = run_replay_phases(context, config, &checkpoint, cancel).await?;
+    validate::validate_bootstrap_store(context.store.as_ref())?;
 
     info!(
         node_id = context.node_id().0,
