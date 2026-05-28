@@ -34,6 +34,11 @@ impl GenesisConfig {
     pub const fn local() -> Self {
         LOCAL
     }
+
+    #[inline(always)]
+    pub const fn testnet() -> Self {
+        TESTNET
+    }
 }
 
 const DEFAULT: GenesisConfig = GenesisConfig {
@@ -50,10 +55,17 @@ const DEFAULT: GenesisConfig = GenesisConfig {
     subsidy_amount: TAPE(0),
 };
 
+const TESTNET: GenesisConfig = GenesisConfig {
+    min_epoch_duration: EpochDuration(60),         // 60 seconds
+    max_epoch_duration: EpochDuration(1_209_600),  // 2 weeks
+    epoch_duration: EpochDuration(3_600),          // 1 hour
+    ..DEFAULT
+};
+
 const LOCAL: GenesisConfig = GenesisConfig {
-    min_epoch_duration: EpochDuration(10),
-    max_epoch_duration: EpochDuration(200),
-    epoch_duration: EpochDuration(20),
+    min_epoch_duration: EpochDuration(10),         // 10 seconds
+    max_epoch_duration: EpochDuration(200),        // 200 seconds
+    epoch_duration: EpochDuration(20),             // 20 seconds
     ..DEFAULT
 };
 

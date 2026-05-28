@@ -195,9 +195,8 @@ async fn handle(
     let caller = addr.ip().to_string();
 
     // Block path: separate confirmed slot-keyed store, populated by
-    // bootstrap + live tail. Falls through to upstream on non-confirmed
-    // commitments or misses without writing — live tail owns writes, so
-    // concurrent serve-path inserts would race with no upside.
+    // bootstrap + live tail. Confirmed misses fill the same store, so
+    // replay ranges outside the boot window are still shared fleet-wide.
     if method == "getBlock" {
         if is_confirmed_get_block(&params) {
             if let Some(slot) = parse_slot_param(&params) {
@@ -206,6 +205,7 @@ async fn handle(
                     return serve_cached_block(id, cached);
                 }
                 state.stats.slot_store_misses.fetch_add(1, Ordering::Relaxed);
+                return fill_and_serve_cached_block(&state, id, slot).await;
             }
         } else if parse_slot_param(&params).is_some() {
             state.stats.slot_store_misses.fetch_add(1, Ordering::Relaxed);
@@ -280,6 +280,24 @@ fn serve_cached_block(id: Value, cached: CachedBlock) -> Response {
     }
 }
 
+async fn fill_and_serve_cached_block(
+    state: &Arc<AppState>,
+    id: Value,
+    slot: u64,
+) -> Response {
+    let fetch_state = Arc::clone(state);
+    match state
+        .slot_store
+        .try_get_with(slot, async move {
+            crate::runtime::fetch_slot_block(fetch_state.as_ref(), slot).await
+        })
+        .await
+    {
+        Ok(cached) => serve_cached_block(id, cached),
+        Err(error) => slot_fill_err(id, error.as_str()).into_response(),
+    }
+}
+
 /// Build the JSON-RPC envelope around a pre-serialized `result` body
 /// without re-parsing it. Saves a round-trip through serde for the
 /// (large) block body on the hot serve path.
@@ -315,8 +333,8 @@ fn serve_skipped_envelope(id: Value) -> Response {
         .into_response()
 }
 
-/// Forward the request upstream without caching the response. Used
-/// for getBlock misses — live tail owns slot-store writes.
+/// Forward the request upstream without caching the response. Used for
+/// non-confirmed `getBlock` requests and general passthrough paths.
 async fn forward_passthrough(state: &AppState, req: &Value, id: Value) -> Response {
     state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
     match state.upstream.forward(req).await {
@@ -387,6 +405,21 @@ fn upstream_err(id: Value, err: &UpstreamError) -> (StatusCode, axum::Json<Value
             "error": {
                 "code": -32603,
                 "message": format!("upstream: {err}"),
+            },
+        })),
+    )
+}
+
+fn slot_fill_err(id: Value, err: &str) -> (StatusCode, axum::Json<Value>) {
+    info!(error = %err, "returning slot-fill-error envelope");
+    (
+        StatusCode::BAD_GATEWAY,
+        axum::Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32603,
+                "message": format!("upstream getBlock: {err}"),
             },
         })),
     )

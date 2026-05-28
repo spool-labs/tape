@@ -21,8 +21,9 @@ use serde_json::{Value, json};
 use solana_client::rpc_config::RpcBlockConfig;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_transaction_status::{TransactionDetails, UiConfirmedBlock, UiTransactionEncoding};
-use tape_api::program::tapedrive::EPOCH_ADDRESS;
-use tape_api::state::Epoch;
+use tape_api::program::tapedrive::{epoch_pda, SYSTEM_ADDRESS};
+use tape_api::state::{Epoch, System};
+use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -163,9 +164,12 @@ fn parse_program_ids(raw: &[String]) -> Result<Vec<Address>> {
 }
 
 async fn bootstrap(state: Arc<AppState>, cancel: CancellationToken) -> Result<()> {
-    let epoch = fetch_epoch_account(&state.upstream)
+    let system = fetch_system_account(&state.upstream)
         .await
-        .context("fetching epoch account during bootstrap")?;
+        .context("fetching system account during bootstrap")?;
+    let epoch = fetch_epoch_account(&state.upstream, system.current_epoch)
+        .await
+        .context("fetching current epoch account during bootstrap")?;
     let epoch_start = epoch.start_slot.0;
     state.stats.epoch_start_slot.store(epoch_start, Ordering::Relaxed);
 
@@ -181,6 +185,19 @@ async fn bootstrap(state: Arc<AppState>, cancel: CancellationToken) -> Result<()
         slots_to_fetch = live.saturating_sub(epoch_start) + 1,
         "rpc-cache bootstrap starting"
     );
+
+    if epoch_start == 0 {
+        warn!(
+            current_epoch = system.current_epoch.0,
+            epoch_start_slot = epoch_start,
+            live_slot = live,
+            "current epoch has zero start slot; refusing historical bootstrap"
+        );
+        return Err(anyhow!(
+            "current epoch {} has start_slot 0; rerun genesis init with epoch0 replay boundary support",
+            system.current_epoch.0
+        ));
+    }
 
     if epoch_start > live {
         warn!(
@@ -260,17 +277,30 @@ async fn fetch_range(
 }
 
 async fn fetch_and_store(state: &AppState, slot: u64) {
+    match fetch_slot_block(state, slot).await {
+        Ok(cached) => {
+            state.slot_store.insert(slot, cached).await;
+        }
+        Err(msg) => {
+            warn!(slot, error = %msg, "giving up on block; storing as skipped");
+            store_skipped(state, slot).await;
+        }
+    }
+}
+
+pub async fn fetch_slot_block(state: &AppState, slot: u64) -> Result<CachedBlock, String> {
     let mut attempt: u32 = 0;
     loop {
         state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
         match fetch_block(&state.upstream, slot).await {
             BlockOutcome::Present(block) => {
-                store_present(state, slot, block).await;
-                return;
+                let cached = build_present_block(state, slot, block)?;
+                state.stats.slots_fetched.fetch_add(1, Ordering::Relaxed);
+                return Ok(cached);
             }
             BlockOutcome::Skipped => {
-                store_skipped(state, slot).await;
-                return;
+                state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
+                return Ok(CachedBlock::Skipped);
             }
             BlockOutcome::Retriable(msg) if attempt < MAX_BLOCK_FETCH_ATTEMPTS => {
                 let delay = retry_delay(attempt);
@@ -279,29 +309,25 @@ async fn fetch_and_store(state: &AppState, slot: u64) {
                 attempt += 1;
             }
             BlockOutcome::Retriable(msg) => {
-                warn!(slot, attempt, error = %msg, "giving up on block; storing as skipped");
-                store_skipped(state, slot).await;
-                return;
+                return Err(msg);
             }
         }
     }
 }
 
-async fn store_present(state: &AppState, slot: u64, block: UiConfirmedBlock) {
+fn build_present_block(
+    state: &AppState,
+    slot: u64,
+    block: UiConfirmedBlock,
+) -> Result<CachedBlock, String> {
     let filtered = filter_block(block, &state.program_ids);
     let serialized = match serde_json::to_vec(&filtered) {
-        Ok(v) => Bytes::from(v),
+        Ok(v) => v,
         Err(e) => {
-            warn!(slot, error = %e, "failed to serialize filtered block; storing as skipped");
-            store_skipped(state, slot).await;
-            return;
+            return Err(format!("serialize filtered block at slot {slot}: {e}"));
         }
     };
-    state
-        .slot_store
-        .insert(slot, CachedBlock::Present(serialized))
-        .await;
-    state.stats.slots_fetched.fetch_add(1, Ordering::Relaxed);
+    Ok(CachedBlock::Present(Bytes::from(serialized)))
 }
 
 async fn store_skipped(state: &AppState, slot: u64) {
@@ -383,18 +409,47 @@ async fn fetch_live_slot(upstream: &Upstream) -> Result<u64> {
         .ok_or_else(|| anyhow!("getSlot result not a number: {result}"))
 }
 
-async fn fetch_epoch_account(upstream: &Upstream) -> Result<Epoch> {
+async fn fetch_system_account(upstream: &Upstream) -> Result<System> {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "getAccountInfo",
         "params": [
-            EPOCH_ADDRESS.to_string(),
+            SYSTEM_ADDRESS.to_string(),
             {"encoding": "base64", "commitment": "confirmed"},
         ],
     });
+    let data = fetch_account_data(upstream, &body, "system", &SYSTEM_ADDRESS.to_string()).await?;
+    let system = System::unpack_with_discriminator(&data)
+        .map_err(|e| anyhow!("system account unpack: {e}"))?;
+    Ok(*system)
+}
+
+async fn fetch_epoch_account(upstream: &Upstream, epoch: EpochNumber) -> Result<Epoch> {
+    let (epoch_address, _) = epoch_pda(epoch);
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getAccountInfo",
+        "params": [
+            epoch_address.to_string(),
+            {"encoding": "base64", "commitment": "confirmed"},
+        ],
+    });
+    let data = fetch_account_data(upstream, &body, "epoch", &epoch_address.to_string()).await?;
+    let epoch_account = Epoch::unpack_with_discriminator(&data)
+        .map_err(|e| anyhow!("epoch account unpack: {e}"))?;
+    Ok(*epoch_account)
+}
+
+async fn fetch_account_data(
+    upstream: &Upstream,
+    body: &Value,
+    label: &str,
+    address: &str,
+) -> Result<Vec<u8>> {
     let env = upstream
-        .forward(&body)
+        .forward(body)
         .await
         .map_err(|e| anyhow!("getAccountInfo upstream: {e}"))?;
     let result = env
@@ -404,19 +459,17 @@ async fn fetch_epoch_account(upstream: &Upstream) -> Result<Epoch> {
         .get("value")
         .ok_or_else(|| anyhow!("getAccountInfo result has no `value`"))?;
     if value.is_null() {
-        return Err(anyhow!("epoch account does not exist at {EPOCH_ADDRESS}"));
+        return Err(anyhow!("{label} account does not exist at {address}"));
     }
     let data = value
         .get("data")
         .and_then(Value::as_array)
         .and_then(|a| a.first())
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("epoch account data missing or not base64"))?;
+        .ok_or_else(|| anyhow!("{label} account data missing or not base64"))?;
     let decoded = base64::decode(data)
-        .map_err(|e| anyhow!("epoch account base64 decode: {e}"))?;
-    let epoch = Epoch::unpack_with_discriminator(&decoded)
-        .map_err(|e| anyhow!("epoch account unpack: {e}"))?;
-    Ok(*epoch)
+        .map_err(|e| anyhow!("{label} account base64 decode: {e}"))?;
+    Ok(decoded)
 }
 
 async fn wait_shutdown_signal() {
