@@ -176,7 +176,10 @@ fn active_track_footprint<Db: Store>(
 
     let tape = store.get_tape(metadata.tape).map_err(store_error)?;
     let Some(tape) = tape else {
-        return Err(invalid_track(track, "missing tape metadata"));
+        return Err(invalid_track(
+            track,
+            format!("missing tape metadata for tape {}", metadata.tape),
+        ));
     };
 
     if tape.end_epoch <= target_epoch {

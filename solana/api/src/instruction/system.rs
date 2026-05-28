@@ -8,7 +8,7 @@ use crate::genesis::GenesisConfig;
 use crate::program::tapedrive;
 use crate::program::tapedrive::{
     archive_ata, archive_pda, committee_pda, epoch_pda, group_pda, peer_set_pda,
-    snapshot_tape_pda, subsidy_ata, subsidy_pda, system_pda,
+    subsidy_ata, subsidy_pda, system_pda,
 };
 use crate::program::token::mint_pda;
 use crate::utils::ata;
@@ -155,7 +155,6 @@ pub fn build_start_network_ix(
     let (candidate_committee_address, _) = committee_pda(EpochNumber(2));
     let (peer_set_address, _) = peer_set_pda();
     let (group_address, _) = group_pda(EpochNumber(1), GroupIndex(0));
-    let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
     let (subsidy_address, _) = subsidy_pda();
     let (subsidy_ata, _) = subsidy_ata();
     let subsidy_authority_ata = ata(&subsidy_authority);
@@ -173,7 +172,6 @@ pub fn build_start_network_ix(
         AccountMeta::new(candidate_committee_address.into(), false),
         AccountMeta::new(peer_set_address.into(), false),
         AccountMeta::new(group_address.into(), false),
-        AccountMeta::new(snapshot_tape_address.into(), false),
         AccountMeta::new_readonly(subsidy_address.into(), false),
         AccountMeta::new(subsidy_ata.into(), false),
         AccountMeta::new_readonly(spl_token::ID, false),

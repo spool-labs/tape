@@ -16,13 +16,13 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         candidate_committee_info,
         peer_set_info,
         group_info,
-        snapshot_tape_info,
         subsidy_info,
         subsidy_ata_info,
         token_program_info,
         system_program_info,
         rent_sysvar_info,
-    ] = accounts else {
+    ] = accounts
+    else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
@@ -74,7 +74,10 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let target = EpochNumber(1);
     let candidate = EpochNumber(2);
     let group_id = GroupIndex(0);
-    let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    let archive = archive_info
+        .as_account_mut::<Archive>(&tapedrive::ID)?;
+
     archive.schedule = EpochSchedule::new_at(target);
     let genesis_preferences = NodePreferences {
         storage_capacity: archive.storage_capacity,
@@ -220,26 +223,6 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     group.id = group_id;
     group.epoch = target;
 
-    let bootstrap_snapshot_epoch = EpochNumber(0);
-    let (snapshot_tape_address, snapshot_tape_bump) =
-        snapshot_tape_pda(bootstrap_snapshot_epoch);
-    snapshot_tape_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&snapshot_tape_address.into())?;
-
-    create_program_account_with_bump::<Tape>(
-        snapshot_tape_info,
-        system_program_info,
-        fee_payer_info,
-        &tapedrive::ID,
-        &[SNAPSHOT_TAPE, &bootstrap_snapshot_epoch.pack()],
-        snapshot_tape_bump,
-    )?;
-
-    let snapshot_tape = snapshot_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
-    *snapshot_tape = Tape::snapshot(bootstrap_snapshot_epoch);
-
     let active_peers = &mut peers[..peer_header.peers.count as usize];
 
     for peer in active_peers.iter_mut() {
@@ -270,10 +253,10 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.start_slot = SlotNumber(clock.slot);
     epoch.start_time = clock.unix_timestamp;
 
-    // Epoch 1 has no prev-epoch groups to sync, settle, or snapshot. Skip
-    // straight to Active; the natural Sync->Settle->Snapshot->Active cycle
-    // begins with Epoch 2 against Epoch 1's groups.
-    epoch.state.phase = EpochPhase::Active as u64;
+    // Epoch 1 starts by finalizing the epoch-0 snapshot. Epoch 0 contains the
+    // bootstrap control-plane events that late joiners need after RPC history
+    // has been pruned.
+    epoch.state.phase = EpochPhase::Snapshot as u64;
 
     system.live_group_count = 1;
     system.current_epoch = target;
@@ -370,7 +353,6 @@ mod tests {
         let (candidate_committee_address, _) = committee_pda(candidate);
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
-        let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
         let (staged_members, expected_members, expected_peers) = genesis_committee();
 
@@ -449,7 +431,6 @@ mod tests {
             pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
-            empty(snapshot_tape_address),
             empty(subsidy_address),
             token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
             token_program(),
@@ -496,7 +477,7 @@ mod tests {
                         start_slot: SlotNumber(slot),
                         start_time: now,
                         state: EpochState {
-                            phase: EpochPhase::Active as u64,
+                            phase: EpochPhase::Snapshot as u64,
                             ..EpochState::zeroed()
                         },
                         ..epoch
@@ -513,9 +494,6 @@ mod tests {
                     .build(),
                 Check::account(&Pubkey::from(group_address))
                     .data(expected_group.pack().as_ref())
-                    .build(),
-                Check::account(&Pubkey::from(snapshot_tape_address))
-                    .data(Tape::snapshot(EpochNumber(0)).pack().as_ref())
                     .build(),
                 Check::account(&Pubkey::from(committee_address))
                     .data(Committee {
@@ -557,7 +535,6 @@ mod tests {
         let (candidate_committee_address, _) = committee_pda(candidate);
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
-        let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
         let (mut staged_members, _, expected_peers) = genesis_committee();
         staged_members[0].stake = TAPE::zero();
@@ -617,7 +594,6 @@ mod tests {
             pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
-            empty(snapshot_tape_address),
             empty(subsidy_address),
             token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
             token_program(),
@@ -652,7 +628,6 @@ mod tests {
         let (candidate_committee_address, _) = committee_pda(candidate);
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
-        let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
         let (staged_members, _, expected_peers) = genesis_committee();
         let staged_members = &staged_members[..GROUP_SIZE - 1];
@@ -710,7 +685,6 @@ mod tests {
             pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
-            empty(snapshot_tape_address),
             empty(subsidy_address),
             token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
             token_program(),
@@ -745,7 +719,6 @@ mod tests {
         let (candidate_committee_address, _) = committee_pda(candidate);
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
-        let (snapshot_tape_address, _) = snapshot_tape_pda(EpochNumber(0));
 
         let (staged_members, _, expected_peers) = genesis_committee();
         let expected_peers = &expected_peers[..GROUP_SIZE - 1];
@@ -803,7 +776,6 @@ mod tests {
             pda(candidate_committee_address, candidate_committee_data, tapedrive::ID),
             pda(peer_set_address, peer_set_data, tapedrive::ID),
             empty(group_address),
-            empty(snapshot_tape_address),
             empty(subsidy_address),
             token(subsidy_ata_address, Pubkey::from(subsidy_address), 0),
             token_program(),

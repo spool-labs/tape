@@ -4,7 +4,7 @@ use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_crypto::hash;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
+use tape_e2e_simnet::{log::append_log, NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 use tape_store::ops::{MetaOps, ObjectInfoOps, TrackOps};
 
 const INITIAL_NODES: usize = GROUP_SIZE;
@@ -145,10 +145,14 @@ async fn late_join_inner() {
         .current_slot()
         .await
         .expect("current slot before pruning blocks");
+    append_log(&format!("rpc history prune start through_slot={prune_slot}"));
     let dropped = harness
         .chain()
         .drop_blocks_through(prune_slot)
         .expect("drop rpc blocks before late bootstrap");
+    append_log(&format!(
+        "rpc history prune complete through_slot={prune_slot} dropped_blocks={dropped}"
+    ));
     assert!(
         dropped > 0,
         "late bootstrap test should remove historical rpc blocks"
@@ -159,13 +163,34 @@ async fn late_join_inner() {
         .await
         .expect("start late node");
 
-    {
+    let health = {
         let scenario = harness.scenario();
         scenario
             .wait_node_healthy(late_node, health_timeout)
             .await
-            .expect("late node healthy");
+    };
+    if let Err(error) = health {
+        let diagnostics = harness
+            .scenario()
+            .compare_replay_stores(&initial_nodes, late_node)
+            .map(|diff| diff.to_string())
+            .unwrap_or_else(|diagnostic_error| {
+                format!("failed to compare replay stores: {diagnostic_error:#}")
+            });
+        panic!("late node healthy: {error:#}\n{diagnostics}");
     }
+
+    let replay_store_diff = harness
+        .scenario()
+        .compare_replay_stores(&initial_nodes, late_node)
+        .expect("compare replay stores after late node health");
+    if replay_store_diff.has_missing_baseline_items() {
+        append_log(&replay_store_diff.to_string());
+    }
+    assert!(
+        replay_store_diff.is_clean(),
+        "late node replay store has invariant violations after healthy bootstrap\n{replay_store_diff}"
+    );
 
     let late = harness.node(late_node).expect("late node exists");
     let ctx = late.context();

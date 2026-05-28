@@ -148,10 +148,17 @@ where
         return Ok(start_slot);
     }
 
-    replay_epoch_zero_base(context, &mut replay, cancel).await?;
-
     let snapshot_epochs =
         discovery::discover_missing_epochs(context.as_ref(), current_epoch).await?;
+
+    let replay_epoch_zero_from_snapshot =
+        snapshot_epochs.first().copied() == Some(BOOTSTRAP_EPOCH);
+
+    if replay_epoch_zero_from_snapshot {
+        debug!("bootstrap: epoch-zero snapshot available; skipping base block replay");
+    } else {
+        replay_epoch_zero_base(context, &mut replay, cancel).await?;
+    }
 
     let mut last_snapshot: Option<(EpochNumber, SlotNumber)> = None;
     for epoch in snapshot_epochs {

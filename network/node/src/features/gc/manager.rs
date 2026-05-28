@@ -117,6 +117,14 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
 
     let owned_spools = context.my_spools();
     let sweep_stats = sweep_epoch(store, config, epoch, &owned_spools).await?;
+    debug!(
+        node_id = context.node_id().0,
+        epoch = epoch.0,
+        tapes_deleted = sweep_stats.tapes_deleted,
+        tracks_deleted = sweep_stats.tracks_deleted,
+        slices_deleted = sweep_stats.slices_deleted,
+        "gc sweep complete"
+    );
 
     if should_reclaim(config, sweep_stats.slices_deleted) {
         context.set_reclaim_pending(true);

@@ -12,6 +12,7 @@ use tape_store::{
     ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
     types::ObjectInfo,
 };
+use tracing::debug;
 
 use crate::config::store::GcConfig;
 use crate::core::error::NodeError;
@@ -165,6 +166,12 @@ async fn sweep_orphan_tracks<Db: Store>(
 
         for (track, info) in &tracks {
             if store.get_tape(info.tape.into()).map_err(store_error)?.is_none() {
+                debug!(
+                    track = %track,
+                    tape = %info.tape,
+                    track_number = info.track_number.0,
+                    "gc deleting orphan track with missing parent tape"
+                );
                 stats += delete_track_local(store, *track)?.into();
                 continue;
             }

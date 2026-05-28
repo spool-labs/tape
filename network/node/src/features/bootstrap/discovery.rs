@@ -13,8 +13,10 @@ use tracing::debug;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
-/// Epoch 0 is the bootstrap base and has no snapshot.
-const FIRST_SNAPSHOT_EPOCH: EpochNumber = EpochNumber(1);
+/// Epoch 0 carries the bootstrap control-plane events needed after RPC
+/// history has been pruned, so a finalized network snapshots it like every
+/// other epoch.
+const FIRST_SNAPSHOT_EPOCH: EpochNumber = EpochNumber(0);
 
 /// Compute the ordered range of snapshot epochs this node still needs to
 /// replay, oldest -> newest.
@@ -167,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn range_from_first_snapshot_when_no_cursor() {
         let context = context_at(EpochNumber(4)).await;
-        // prev (3) has a finalized snapshot tape, no cursor -> start = 1.
+        // prev (3) has a finalized snapshot tape, no cursor -> start = 0.
         write_snapshot_tape(&context, EpochNumber(3));
 
         let epochs = discover_missing_epochs(context.as_ref(), context.state().epoch())
@@ -176,6 +178,7 @@ mod tests {
         assert_eq!(
             epochs,
             vec![
+                EpochNumber(0),
                 EpochNumber(1),
                 EpochNumber(2),
                 EpochNumber(3),
@@ -193,7 +196,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(epochs.last(), Some(&EpochNumber(3)));
-        assert_eq!(epochs.len(), 3);
+        assert_eq!(epochs.len(), 4);
     }
 
     #[tokio::test]
