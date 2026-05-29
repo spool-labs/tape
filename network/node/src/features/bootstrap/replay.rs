@@ -29,7 +29,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::{
-        ReplayTrack, ReplayableEvent, SnapshotEntry, SnapshotLog,
+        ReplayRecord, ReplayTrack, ReplayableEvent, SnapshotEntry, SnapshotLog,
     };
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
@@ -38,6 +38,7 @@ mod tests {
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
+    use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
@@ -57,6 +58,14 @@ mod tests {
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(3),
             leaves: [Hash::default(); GROUP_SIZE],
+        }
+    }
+
+    fn record(event: ReplayableEvent) -> ReplayRecord {
+        ReplayRecord {
+            tx_id: Txid::default(),
+            actor: None,
+            event,
         }
     }
 
@@ -109,16 +118,18 @@ mod tests {
             SlotNumber(100),
             vec![SnapshotEntry {
                 slot: SlotNumber(100),
-                events: vec![
-                    ReplayableEvent::ReserveTape {
+                block_time: Some(1_700_000_000),
+                records: vec![
+                    record(ReplayableEvent::ReserveTape {
                         tape,
                         id: TapeNumber(1),
                         flags: 0,
                         authority: Address::new_unique(),
+                        capacity: StorageUnits::mb(10),
                         active_epoch: EpochNumber(6),
                         expiry_epoch: EpochNumber(12),
-                    },
-                    track_event(tape, track_number, EpochNumber(6)),
+                    }),
+                    record(track_event(tape, track_number, EpochNumber(6))),
                 ],
             }],
         );
@@ -160,26 +171,29 @@ mod tests {
             vec![
                 SnapshotEntry {
                     slot: SlotNumber(100),
-                    events: vec![
-                        ReplayableEvent::ReserveTape {
+                    block_time: Some(1_700_000_000),
+                    records: vec![
+                        record(ReplayableEvent::ReserveTape {
                             tape,
                             id: TapeNumber(2),
                             flags: 0,
                             authority: Address::new_unique(),
+                            capacity: StorageUnits::mb(10),
                             active_epoch: EpochNumber(7),
                             expiry_epoch: EpochNumber(13),
-                        },
-                        track_event(tape, TrackNumber(0), EpochNumber(7)),
+                        }),
+                        record(track_event(tape, TrackNumber(0), EpochNumber(7))),
                     ],
                 },
                 SnapshotEntry {
                     slot: SlotNumber(101),
-                    events: vec![
-                        track_event(tape, TrackNumber(1), EpochNumber(7)),
-                        ReplayableEvent::CertifyTrack {
+                    block_time: Some(1_700_000_050),
+                    records: vec![
+                        record(track_event(tape, TrackNumber(1), EpochNumber(7))),
+                        record(ReplayableEvent::CertifyTrack {
                             track: track_a,
                             epoch: EpochNumber(8),
-                        },
+                        }),
                     ],
                 },
             ],
@@ -212,20 +226,22 @@ mod tests {
             SlotNumber(50),
             vec![SnapshotEntry {
                 slot: SlotNumber(50),
-                events: vec![
-                    ReplayableEvent::ReserveTape {
+                block_time: Some(1_700_000_000),
+                records: vec![
+                    record(ReplayableEvent::ReserveTape {
                         tape,
                         id: TapeNumber(3),
                         flags: 0,
                         authority: Address::new_unique(),
+                        capacity: StorageUnits::mb(10),
                         active_epoch: EpochNumber(4),
                         expiry_epoch: EpochNumber(9),
-                    },
-                    track_event(tape, TrackNumber(5), EpochNumber(4)),
-                    ReplayableEvent::CertifyTrack {
+                    }),
+                    record(track_event(tape, TrackNumber(5), EpochNumber(4))),
+                    record(ReplayableEvent::CertifyTrack {
                         track,
                         epoch: EpochNumber(5),
-                    },
+                    }),
                 ],
             }],
         );

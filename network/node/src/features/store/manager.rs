@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_protocol::Api;
+use tape_core::snapshot::replay::ReplayRecord;
 use tape_core::track::data::TrackData;
+use tape_core::types::SlotNumber;
+use tape_protocol::Api;
 use tape_store::ops::{MetaOps, TrackDataOps};
 use tape_store::TapeStore;
 use tokio::sync::mpsc;
@@ -63,12 +65,21 @@ pub(crate) fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {
-    apply_slot(store, batch.slot, &batch.events)?;
+    apply_records(store, batch.slot, &batch.records)?;
     persist_raw_tracks(store, &batch.raw_tracks)?;
 
     store
         .set_sync_cursor(batch.slot)
         .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
+}
+
+fn apply_records<Db: Store>(
+    store: &TapeStore<Db>,
+    slot: SlotNumber,
+    records: &[ReplayRecord],
+) -> Result<(), NodeError> {
+    let events: Vec<_> = records.iter().map(|record| record.event.clone()).collect();
+    apply_slot(store, slot, &events)
 }
 
 fn persist_raw_tracks<Db: Store>(
@@ -91,13 +102,14 @@ fn persist_raw_tracks<Db: Store>(
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
-    use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
+    use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_crypto::address::Address;
+    use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
     use tape_store::ops::{MetaOps, SpoolOps, TrackDataOps};
     use tape_store::TapeStore;
@@ -109,12 +121,20 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
+    fn record(event: ReplayableEvent) -> ReplayRecord {
+        ReplayRecord {
+            tx_id: Txid::default(),
+            actor: None,
+            event,
+        }
+    }
+
     #[test]
     fn empty_slots() {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(99),
-            events: Vec::new(),
+            records: Vec::new(),
             raw_tracks: Vec::new(),
         };
 
@@ -128,7 +148,7 @@ mod tests {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(77),
-            events: vec![ReplayableEvent::Track(ReplayTrack {
+            records: vec![record(ReplayableEvent::Track(ReplayTrack {
                 state: CompressedTrack {
                     tape: Address::from([0x11; 32]),
                     key: Hash::default(),
@@ -141,7 +161,7 @@ mod tests {
                 },
                 epoch: EpochNumber(1),
                 blob: None,
-            })],
+            }))],
             raw_tracks: Vec::new(),
         };
 
@@ -165,7 +185,7 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(78),
-            events: Vec::new(),
+            records: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,
                 group,
@@ -186,7 +206,7 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(79),
-            events: Vec::new(),
+            records: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,
                 group,

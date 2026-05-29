@@ -41,13 +41,13 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
         for entry in &captured.events {
             self.store
-                .append_event(entry.epoch, block.slot, &entry.event)
+                .append_record(entry.epoch, block.slot, block.block_time, &entry.record)
                 .map_err(store_error)?;
         }
 
         self.current_epoch = captured.next_epoch;
         let batch = captured.into_batch(block.slot);
-        let event_count = batch.events.len();
+        let event_count = batch.records.len();
 
         Ok((batch, event_count))
     }
@@ -59,7 +59,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
     }
 
     pub fn apply_snapshot_log(&mut self, log: &SnapshotLog) -> Result<(), NodeError> {
-        let event_count: usize = log.entries.iter().map(|e| e.events.len()).sum();
+        let event_count: usize = log.entries.iter().map(|e| e.records.len()).sum();
         debug!(
             epoch = log.epoch.0,
             entries = log.entries.len(),
@@ -70,8 +70,8 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
         );
 
         for entry in &log.entries {
-            for event in &entry.events {
-                apply_event(self.store, entry.slot, event)?;
+            for record in &entry.records {
+                apply_event(self.store, entry.slot, &record.event)?;
             }
         }
 

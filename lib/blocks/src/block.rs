@@ -15,6 +15,7 @@ use crate::helpers::{
 };
 use crate::instruction::{parse_raw_instruction, ParsedInstruction, RawInstruction};
 use crate::merge::merge;
+use tape_crypto::tx::Txid;
 
 /// Result of parsing a single block.
 ///
@@ -22,10 +23,19 @@ use crate::merge::merge;
 /// Use `merge()` if you need merged output.
 #[derive(Debug, Default)]
 pub struct ParsedTransaction {
+    /// Canonical transaction id, when available.
+    pub tx_id: Option<Txid>,
     /// Raw instructions for this transaction.
     pub raw_instructions: Vec<RawInstruction>,
     /// Parsed events for this transaction.
     pub events: Vec<TapedriveEvent>,
+}
+
+/// Merged instruction with the transaction id that produced it.
+#[derive(Debug, Clone)]
+pub struct ParsedInstructionWithSource {
+    pub tx_id: Txid,
+    pub instruction: ParsedInstruction,
 }
 
 /// Result of parsing a single block.
@@ -80,8 +90,10 @@ pub fn parse(block: &UiConfirmedBlock) -> Result<ParsedBlock, ParseError> {
         result.tx_count += 1;
 
         // Parse instructions and events from this transaction
+        let tx_id = transaction_id(tx)?;
         let (instructions, events) = parse_transaction(tx)?;
         result.transactions.push(ParsedTransaction {
+            tx_id,
             raw_instructions: instructions.clone(),
             events: events.clone(),
         });
@@ -102,6 +114,15 @@ pub fn parse_and_merge(block: &UiConfirmedBlock) -> Result<Vec<ParsedInstruction
     merge_transactions(&parsed.transactions)
 }
 
+/// Parse a confirmed block and merge parsed instructions while retaining the
+/// source transaction id for each merged instruction.
+pub fn parse_and_merge_with_sources(
+    block: &UiConfirmedBlock,
+) -> Result<Vec<ParsedInstructionWithSource>, ParseError> {
+    let parsed = parse(block)?;
+    merge_transactions_with_sources(&parsed.transactions)
+}
+
 fn merge_transactions(
     transactions: &[ParsedTransaction],
 ) -> Result<Vec<ParsedInstruction>, ParseError> {
@@ -110,6 +131,45 @@ fn merge_transactions(
         instructions.extend(merge(tx.raw_instructions.clone(), tx.events.clone())?);
     }
     Ok(instructions)
+}
+
+fn merge_transactions_with_sources(
+    transactions: &[ParsedTransaction],
+) -> Result<Vec<ParsedInstructionWithSource>, ParseError> {
+    let mut instructions = Vec::new();
+    for tx in transactions {
+        let tx_id = tx.tx_id.ok_or(ParseError::InvalidTxId)?;
+        instructions.extend(
+            merge(tx.raw_instructions.clone(), tx.events.clone())?
+                .into_iter()
+                .map(|instruction| ParsedInstructionWithSource {
+                    tx_id,
+                    instruction,
+                }),
+        );
+    }
+    Ok(instructions)
+}
+
+fn transaction_id(
+    tx: &EncodedTransactionWithStatusMeta,
+) -> Result<Option<Txid>, ParseError> {
+    let EncodedTransaction::Json(ui_tx) = &tx.transaction else {
+        return Ok(None);
+    };
+
+    let Some(encoded) = ui_tx.signatures.first() else {
+        return Ok(None);
+    };
+
+    let bytes = bs58::decode(encoded)
+        .into_vec()
+        .map_err(|_| ParseError::InvalidTxId)?;
+    let bytes: [u8; 64] = bytes
+        .try_into()
+        .map_err(|_| ParseError::InvalidTxId)?;
+
+    Ok(Some(Txid::from(bytes)))
 }
 
 /// Parse a single transaction for tapedrive instructions and events.
@@ -234,6 +294,7 @@ mod tests {
     use solana_sdk::message::MessageHeader;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::hash::Hash as SolanaHash;
+    use solana_sdk::signature::{Keypair, Signer};
     use solana_sdk::sysvar;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{EpochPhase, NodePreferences};
@@ -253,6 +314,7 @@ mod tests {
     use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
+    use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
 
     #[test]
@@ -276,6 +338,51 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_preserves_transaction_id() {
+        let keypair = Keypair::new();
+        let signature = keypair.sign_message(b"tapedrive txid");
+        let tx = EncodedTransactionWithStatusMeta {
+            transaction: EncodedTransaction::Json(UiTransaction {
+                signatures: vec![signature.to_string()],
+                message: UiMessage::Raw(raw_message(&[], Vec::new())),
+            }),
+            meta: Some(UiTransactionStatusMeta {
+                err: None,
+                status: Ok(()),
+                fee: 0,
+                pre_balances: vec![],
+                post_balances: vec![],
+                inner_instructions: OptionSerializer::None,
+                log_messages: OptionSerializer::None,
+                pre_token_balances: OptionSerializer::None,
+                post_token_balances: OptionSerializer::None,
+                rewards: OptionSerializer::None,
+                loaded_addresses: OptionSerializer::None,
+                return_data: OptionSerializer::None,
+                compute_units_consumed: OptionSerializer::None,
+                cost_units: OptionSerializer::None,
+            }),
+            version: None,
+        };
+        let block = UiConfirmedBlock {
+            previous_blockhash: String::new(),
+            blockhash: String::new(),
+            parent_slot: 0,
+            transactions: Some(vec![tx]),
+            signatures: None,
+            rewards: None,
+            block_time: None,
+            block_height: None,
+            num_reward_partitions: None,
+        };
+
+        let parsed = parse(&block).unwrap();
+
+        assert_eq!(parsed.transactions.len(), 1);
+        assert_eq!(parsed.transactions[0].tx_id, Some(Txid::from(signature)));
+    }
+
+    #[test]
     fn test_merge_transactions_keeps_transaction_boundaries_for_optional_events() {
         use crate::event::TapedriveEvent;
         use tape_api::event::TrackWritten;
@@ -283,6 +390,7 @@ mod tests {
         let tx2_track = Address::new_unique();
 
         let tx1 = ParsedTransaction {
+            tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
@@ -308,6 +416,7 @@ mod tests {
         };
 
         let tx2 = ParsedTransaction {
+            tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
@@ -340,6 +449,7 @@ mod tests {
     fn test_merge_transactions_preserves_instruction_order() {
         let sync_node = Address::new_unique();
         let tx1 = ParsedTransaction {
+            tx_id: None,
             raw_instructions: vec![
                 RawInstruction::AdvanceEpoch,
                 RawInstruction::SyncSpool { node: sync_node, spool: 3 },
@@ -365,6 +475,7 @@ mod tests {
             ],
         };
         let tx2 = ParsedTransaction {
+            tx_id: None,
             raw_instructions: vec![RawInstruction::AdvanceEpoch],
             events: vec![TapedriveEvent::EpochAdvanced(EpochAdvanced {
                 old_epoch: 2u64.into(),

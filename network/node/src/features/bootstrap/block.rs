@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_blocks::parse_and_merge;
+use tape_blocks::parse_and_merge_with_sources;
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
 use tape_protocol::Api;
@@ -92,14 +92,22 @@ where
     let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
     let previous_blockhash =
         parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
-    let instructions = parse_and_merge(&block).map_err(NodeError::from)?;
+    let sourced = parse_and_merge_with_sources(&block).map_err(NodeError::from)?;
+    let mut instructions = Vec::with_capacity(sourced.len());
+    let mut instruction_tx_ids = Vec::with_capacity(sourced.len());
+    for sourced in sourced {
+        instruction_tx_ids.push(sourced.tx_id);
+        instructions.push(sourced.instruction);
+    }
 
     Ok(Some(ParsedBlock {
         slot,
         parent_slot: SlotNumber(block.parent_slot),
         blockhash,
         previous_blockhash,
+        block_time: block.block_time,
         instructions,
+        instruction_tx_ids,
     }))
 }
 

@@ -116,6 +116,7 @@ impl PendingBlocks {
 mod tests {
     use tape_core::types::SlotNumber;
     use tape_crypto::Hash;
+    use tape_crypto::tx::Txid;
 
     use super::*;
 
@@ -125,7 +126,9 @@ mod tests {
             parent_slot: SlotNumber(slot.saturating_sub(1)),
             blockhash,
             previous_blockhash,
+            block_time: None,
             instructions: Vec::new(),
+            instruction_tx_ids: Vec::<Txid>::new(),
         })
     }
 

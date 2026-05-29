@@ -7,8 +7,22 @@ use crate::error::{Result, TapeStoreError};
 use crate::types::keys::EventLogKey;
 use crate::TapeStore;
 use store::{Column, Store};
-use tape_core::snapshot::replay::{ReplayableEvent, SnapshotEntry};
+use serde::{Deserialize, Serialize};
+use tape_core::snapshot::replay::{ReplayRecord, SnapshotEntry};
 use tape_core::types::{EpochNumber, SlotNumber};
+use wincode_derive::{SchemaRead, SchemaWrite};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+struct EventLogValue {
+    block_time: Option<i64>,
+    record: ReplayRecord,
+}
+
+#[derive(Debug, Default)]
+struct SlotRecords {
+    block_time: Option<i64>,
+    records: Vec<ReplayRecord>,
+}
 
 /// Serialize an EventLogKey to raw bytes (bypassing TypedStore).
 fn serialize_key(key: &EventLogKey) -> Vec<u8> {
@@ -17,14 +31,20 @@ fn serialize_key(key: &EventLogKey) -> Vec<u8> {
 
 /// Operations for the event log column family.
 ///
-/// The event log stores replayable events per-epoch, ordered by (slot, sequence).
+/// The event log stores replay records per-epoch, ordered by (slot, sequence).
 /// After a snapshot is built and certified for an epoch, the event log for that
 /// epoch can be garbage collected.
 pub trait EventLogOps {
-    /// Append a replayable event to the epoch's event log.
-    fn append_event(&self, epoch: EpochNumber, slot: SlotNumber, event: &ReplayableEvent,) -> Result<()>;
+    /// Append a replay record to the epoch's event log.
+    fn append_record(
+        &self,
+        epoch: EpochNumber,
+        slot: SlotNumber,
+        block_time: Option<i64>,
+        record: &ReplayRecord,
+    ) -> Result<()>;
 
-    /// Read all events for an epoch, grouped by slot and ordered by (slot, seq).
+    /// Read all records for an epoch, grouped by slot and ordered by (slot, seq).
     fn get_epoch_events(&self, epoch: EpochNumber) -> Result<Vec<SnapshotEntry>>;
 
     /// Delete all events for an epoch (GC after snapshot built).
@@ -35,11 +55,12 @@ pub trait EventLogOps {
 }
 
 impl<S: Store> EventLogOps for TapeStore<S> {
-    fn append_event(
+    fn append_record(
         &self,
         epoch: EpochNumber,
         slot: SlotNumber,
-        event: &ReplayableEvent,
+        block_time: Option<i64>,
+        record: &ReplayRecord,
     ) -> Result<()> {
         let raw = self.inner().inner();
 
@@ -54,8 +75,11 @@ impl<S: Store> EventLogOps for TapeStore<S> {
         let seq = raw.iter_prefix(EventLogCol::CF_NAME, &prefix)?.count() as u32;
 
         let key = serialize_key(&EventLogKey::new(epoch.0, slot.0, seq));
-        let value = wincode::serialize(event)
-            .map_err(|e| TapeStoreError::Serialization(format!("event: {}", e)))?;
+        let value = wincode::serialize(&EventLogValue {
+            block_time,
+            record: record.clone(),
+        })
+        .map_err(|e| TapeStoreError::Serialization(format!("event: {}", e)))?;
 
         raw.put(EventLogCol::CF_NAME, &key, &value)?;
         Ok(())
@@ -69,23 +93,28 @@ impl<S: Store> EventLogOps for TapeStore<S> {
             .inner()
             .iter_prefix(EventLogCol::CF_NAME, &prefix)?;
 
-        // Group events by slot, maintaining order
-        let mut slots: BTreeMap<u64, Vec<ReplayableEvent>> = BTreeMap::new();
+        // Group records by slot, maintaining order
+        let mut slots: BTreeMap<u64, SlotRecords> = BTreeMap::new();
 
         for (key_bytes, value_bytes) in iter {
             let key: EventLogKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("event key: {}", e)))?;
-            let event: ReplayableEvent = wincode::deserialize(&value_bytes)
+            let value: EventLogValue = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("event value: {}", e)))?;
 
-            slots.entry(key.slot).or_default().push(event);
+            let slot = slots.entry(key.slot).or_default();
+            if slot.block_time.is_none() {
+                slot.block_time = value.block_time;
+            }
+            slot.records.push(value.record);
         }
 
         let entries = slots
             .into_iter()
-            .map(|(slot, events)| SnapshotEntry {
+            .map(|(slot, value)| SnapshotEntry {
                 slot: SlotNumber(slot),
-                events,
+                block_time: value.block_time,
+                records: value.records,
             })
             .collect();
 
@@ -125,15 +154,24 @@ mod tests {
     use super::*;
     use tape_core::types::NodeId;
     use store_memory::MemoryStore;
-    use tape_core::snapshot::replay::ReplayTrack;
+    use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::hash::Hash;
+    use tape_crypto::tx::Txid;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    fn record(event: ReplayableEvent) -> ReplayRecord {
+        ReplayRecord {
+            tx_id: Txid::default(),
+            actor: None,
+            event,
+        }
     }
 
     #[test]
@@ -143,21 +181,23 @@ mod tests {
 
         // Append events across multiple slots
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(100),
-                &ReplayableEvent::AdvanceEpoch {
+                Some(1_700_000_000),
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(0),
                     new_epoch: EpochNumber(1),
-                },
+                }),
             )
             .unwrap();
 
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(150),
-                &ReplayableEvent::Track(ReplayTrack {
+                Some(1_700_000_050),
+                &record(ReplayableEvent::Track(ReplayTrack {
                     state: CompressedTrack {
                         tape: Address::new([2u8; 32]),
                         key: Hash::default(),
@@ -170,18 +210,19 @@ mod tests {
                     },
                     epoch,
                     blob: None,
-                }),
+                })),
             )
             .unwrap();
 
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(150),
-                &ReplayableEvent::CertifyTrack {
+                Some(1_700_000_050),
+                &record(ReplayableEvent::CertifyTrack {
                     track: Address::new([1u8; 32]),
                     epoch: EpochNumber(1),
-                },
+                }),
             )
             .unwrap();
 
@@ -189,9 +230,11 @@ mod tests {
 
         assert_eq!(entries.len(), 2); // 2 distinct slots
         assert_eq!(entries[0].slot, SlotNumber(100));
-        assert_eq!(entries[0].events.len(), 1);
+        assert_eq!(entries[0].block_time, Some(1_700_000_000));
+        assert_eq!(entries[0].records.len(), 1);
         assert_eq!(entries[1].slot, SlotNumber(150));
-        assert_eq!(entries[1].events.len(), 2);
+        assert_eq!(entries[1].block_time, Some(1_700_000_050));
+        assert_eq!(entries[1].records.len(), 2);
     }
 
     #[test]
@@ -202,12 +245,13 @@ mod tests {
         assert!(!store.has_epoch_events(epoch).unwrap());
 
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(10),
-                &ReplayableEvent::JoinCommittee {
+                None,
+                &record(ReplayableEvent::JoinCommittee {
                     node: Address::new([1u8; 32]),
-                },
+                }),
             )
             .unwrap();
 
@@ -220,25 +264,27 @@ mod tests {
         let epoch = EpochNumber(3);
 
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(10),
-                &ReplayableEvent::AdvanceEpoch {
+                None,
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(2),
                     new_epoch: EpochNumber(3),
-                },
+                }),
             )
             .unwrap();
 
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(20),
-                &ReplayableEvent::RegisterNode {
+                None,
+                &record(ReplayableEvent::RegisterNode {
                     authority: [1u8; 32].into(),
                     node: [2u8; 32].into(),
                     id: NodeId(0),
-                },
+                }),
             )
             .unwrap();
 
@@ -256,25 +302,27 @@ mod tests {
 
         // Events in epoch 1
         store
-            .append_event(
+            .append_record(
                 EpochNumber(1),
                 SlotNumber(10),
-                &ReplayableEvent::AdvanceEpoch {
+                None,
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(0),
                     new_epoch: EpochNumber(1),
-                },
+                }),
             )
             .unwrap();
 
         // Events in epoch 2
         store
-            .append_event(
+            .append_record(
                 EpochNumber(2),
                 SlotNumber(100),
-                &ReplayableEvent::AdvanceEpoch {
+                None,
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(1),
                     new_epoch: EpochNumber(2),
-                },
+                }),
             )
             .unwrap();
 
@@ -301,26 +349,27 @@ mod tests {
         // Append 5 events in same slot
         for i in 0..5u8 {
             store
-                .append_event(
+                .append_record(
                     epoch,
                     slot,
-                    &ReplayableEvent::SyncSpool {
+                    None,
+                    &record(ReplayableEvent::SyncSpool {
                         node: [i; 32].into(),
                         epoch,
                         group: GroupIndex::containing(SpoolIndex(i as u64)),
                         spool: SpoolIndex(i as u64),
-                    },
+                    }),
                 )
                 .unwrap();
         }
 
         let entries = store.get_epoch_events(epoch).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].events.len(), 5);
+        assert_eq!(entries[0].records.len(), 5);
 
         // Verify order is preserved
-        for (i, event) in entries[0].events.iter().enumerate() {
-            match event {
+        for (i, record) in entries[0].records.iter().enumerate() {
+            match &record.event {
                 ReplayableEvent::SyncSpool { node, .. } => {
                     assert_eq!(node.to_bytes()[0], i as u8);
                 }

@@ -501,11 +501,12 @@ mod tests {
 
     use store_memory::MemoryStore;
     use tape_core::snapshot::chunk::pack_segment;
-    use tape_core::snapshot::replay::{ReplayableEvent, SnapshotLog};
+    use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent, SnapshotLog};
     use tape_core::types::SlotNumber;
     use tape_slicer::{snapshot_max_segment_bytes, OuterCoder};
     use tape_store::ops::EventLogOps;
     use tape_store::TapeStore;
+    use tape_crypto::tx::Txid;
 
     use super::*;
     use crate::features::snapshot::build::{encode_chunk, BuiltChunk};
@@ -514,6 +515,14 @@ mod tests {
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    fn record(event: ReplayableEvent) -> ReplayRecord {
+        ReplayRecord {
+            tx_id: Txid::default(),
+            actor: None,
+            event,
+        }
     }
 
     /// Build every snapshot chunk for `epoch` across all test groups.
@@ -553,13 +562,14 @@ mod tests {
 
     fn append_advance(store: &TapeStore<MemoryStore>, epoch: EpochNumber, slot: u64) {
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(slot),
-                &ReplayableEvent::AdvanceEpoch {
+                None,
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: epoch.prev(),
                     new_epoch: epoch,
-                },
+                }),
             )
             .unwrap();
     }
@@ -616,12 +626,13 @@ mod tests {
         let epoch = EpochNumber(11);
         append_advance(&store, epoch, 100);
         store
-            .append_event(
+            .append_record(
                 epoch,
                 SlotNumber(150),
-                &ReplayableEvent::JoinCommittee {
+                None,
+                &record(ReplayableEvent::JoinCommittee {
                     node: [9u8; 32].into(),
-                },
+                }),
             )
             .unwrap();
 
@@ -650,11 +661,11 @@ mod tests {
         assert_eq!(log.epoch, epoch);
         assert_eq!(log.entries.len(), 2);
         assert!(matches!(
-            &log.entries[0].events[0],
+            &log.entries[0].records[0].event,
             ReplayableEvent::AdvanceEpoch { .. }
         ));
         assert!(matches!(
-            &log.entries[1].events[0],
+            &log.entries[1].records[0].event,
             ReplayableEvent::JoinCommittee { .. }
         ));
     }

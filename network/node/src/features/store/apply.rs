@@ -445,6 +445,7 @@ mod tests {
                 id: TapeNumber(1),
                 flags: 0,
                 authority: Address::new_unique(),
+                capacity: StorageUnits::mb(10),
                 active_epoch: EpochNumber(6),
                 expiry_epoch: EpochNumber(12),
             },

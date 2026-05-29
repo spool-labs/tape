@@ -7,9 +7,10 @@ use tracing::{debug, error, info, warn};
 
 use rpc::Rpc;
 use store::Store;
-use tape_blocks::{ParsedInstruction, parse_and_merge};
+use tape_blocks::{parse_and_merge_with_sources, ParsedInstruction};
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
+use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 use tape_retry::{RetryConfig, retry_if};
 
@@ -27,7 +28,9 @@ pub struct ParsedBlock {
     pub parent_slot: SlotNumber,
     pub blockhash: Hash,
     pub previous_blockhash: Hash,
+    pub block_time: Option<i64>,
     pub instructions: Vec<ParsedInstruction>,
+    pub instruction_tx_ids: Vec<Txid>,
 }
 
 fn parse_chain_hash(slot: SlotNumber, label: &str, encoded: &str) -> Result<Hash, NodeError> {
@@ -205,25 +208,33 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         let previous_blockhash =
             parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
 
-        let instructions = match parse_and_merge(&block) {
+        let sourced = match parse_and_merge_with_sources(&block) {
             Ok(instructions) => instructions,
             Err(error) => {
                 error!(
                     slot = slot.0,
                     error = %error,
-                    "block_ingestor: parse_and_merge failed: {}",
+                    "block_ingestor: parse_and_merge_with_sources failed: {}",
                     error
                 );
                 return Err(NodeError::from(error));
             }
         };
+        let mut instructions = Vec::with_capacity(sourced.len());
+        let mut instruction_tx_ids = Vec::with_capacity(sourced.len());
+        for sourced in sourced {
+            instruction_tx_ids.push(sourced.tx_id);
+            instructions.push(sourced.instruction);
+        }
 
         let parsed = Arc::new(ParsedBlock {
             slot,
             parent_slot,
             blockhash,
             previous_blockhash,
+            block_time: block.block_time,
             instructions,
+            instruction_tx_ids,
         });
 
         debug!(
@@ -483,16 +494,16 @@ mod tests {
 
         assert_eq!(batch.slot, join_slot);
         assert!(matches!(
-            batch.events.as_slice(),
-            [ReplayableEvent::JoinCommittee { .. }]
+            batch.records.as_slice(),
+            [record] if matches!(&record.event, ReplayableEvent::JoinCommittee { .. })
         ));
 
         let entries = ctx.store.get_epoch_events(EPOCH).expect("get epoch events");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].slot, join_slot);
         assert!(matches!(
-            entries[0].events.as_slice(),
-            [ReplayableEvent::JoinCommittee { .. }]
+            entries[0].records.as_slice(),
+            [record] if matches!(&record.event, ReplayableEvent::JoinCommittee { .. })
         ));
     }
 

@@ -35,7 +35,10 @@ mod instruction;
 mod merge;
 
 // Re-export main types and functions
-pub use block::{parse, parse_and_merge, ParsedBlock, ParsedTransaction};
+pub use block::{
+    parse, parse_and_merge, parse_and_merge_with_sources, ParsedBlock,
+    ParsedInstructionWithSource, ParsedTransaction,
+};
 pub use error::ParseError;
 pub use event::{parse_event_data, TapedriveEvent};
 pub use instruction::{ParsedInstruction, RawInstruction};

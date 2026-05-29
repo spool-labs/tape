@@ -19,8 +19,9 @@ use crate::snapshot::error::SnapshotError;
 use crate::track::blob::BlobInfo;
 use crate::spooler::GroupIndex;
 use crate::track::types::CompressedTrack;
-use crate::types::{EpochNumber, SlotNumber, SpoolIndex, TapeNumber};
+use crate::types::{EpochNumber, NodeId, SlotNumber, SpoolIndex, StorageUnits, TapeNumber};
 use tape_crypto::address::Address;
+use tape_crypto::tx::Txid;
 
 /// Wire-format version for the framed snapshot binary.
 pub const SNAPSHOT_VERSION: u8 = 1;
@@ -79,6 +80,7 @@ pub enum ReplayableEvent {
         id: TapeNumber,
         flags: u64,
         authority: Address,
+        capacity: StorageUnits,
         active_epoch: EpochNumber,
         expiry_epoch: EpochNumber,
     },
@@ -93,7 +95,7 @@ pub enum ReplayableEvent {
     RegisterNode {
         authority: Address,
         node: Address,
-        id: crate::types::NodeId,
+        id: NodeId,
     },
 
     /// Node joined the next-epoch committee.
@@ -114,14 +116,29 @@ pub struct ReplayTrack {
     pub blob: Option<BlobInfo>,
 }
 
-/// A single slot's events within a snapshot.
+/// One canonical replay record with enough source metadata for explorers and
+/// protocol debugging, while keeping replay state transitions compact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
+pub struct ReplayRecord {
+    /// Transaction id that produced the replay event.
+    pub tx_id: Txid,
+    /// Authority/operator/owner when it is directly known from the instruction.
+    pub actor: Option<Address>,
+    /// Deterministic state transition.
+    pub event: ReplayableEvent,
+}
+
+/// A single slot's replay records within a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct SnapshotEntry {
     /// Slot in which these events occurred.
     pub slot: SlotNumber,
-    /// Events emitted during this slot, in processing order.
-    pub events: Vec<ReplayableEvent>,
+    /// Slot wall-clock timestamp when available from Solana RPC.
+    pub block_time: Option<i64>,
+    /// Records emitted during this slot, in processing order.
+    pub records: Vec<ReplayRecord>,
 }
 
 /// Complete event log for one epoch, suitable for serialization
@@ -255,6 +272,14 @@ mod tests {
         }
     }
 
+    fn record(event: ReplayableEvent) -> ReplayRecord {
+        ReplayRecord {
+            tx_id: Txid::default(),
+            actor: None,
+            event,
+        }
+    }
+
     #[cfg(feature = "wincode")]
     fn blob_replay_track() -> ReplayTrack {
         ReplayTrack {
@@ -311,6 +336,7 @@ mod tests {
                 id: TapeNumber(1),
                 flags: 0,
                 authority: Address::from([7u8; 32]),
+                capacity: StorageUnits::from_bytes(1024),
                 active_epoch: EpochNumber(10),
                 expiry_epoch: EpochNumber(20),
             },
@@ -321,7 +347,7 @@ mod tests {
             ReplayableEvent::RegisterNode {
                 authority: Address::from([9u8; 32]),
                 node: Address::from([10u8; 32]),
-                id: crate::types::NodeId(1),
+                id: NodeId(1),
             },
             ReplayableEvent::JoinCommittee {
                 node: Address::from([11u8; 32]),
@@ -339,22 +365,24 @@ mod tests {
             entries: vec![
                 SnapshotEntry {
                     slot: SlotNumber(100),
-                    events: vec![ReplayableEvent::AdvanceEpoch {
+                    block_time: Some(1_700_000_000),
+                    records: vec![record(ReplayableEvent::AdvanceEpoch {
                         old_epoch: EpochNumber(41),
                         new_epoch: EpochNumber(42),
-                    }],
+                    })],
                 },
                 SnapshotEntry {
                     slot: SlotNumber(150),
-                    events: vec![
-                        ReplayableEvent::Track(ReplayTrack {
+                    block_time: Some(1_700_000_050),
+                    records: vec![
+                        record(ReplayableEvent::Track(ReplayTrack {
                             epoch: EpochNumber(42),
                             ..raw_replay_track()
-                        }),
-                        ReplayableEvent::CertifyTrack {
+                        })),
+                        record(ReplayableEvent::CertifyTrack {
                             track: Address::from([1u8; 32]),
                             epoch: EpochNumber(42),
-                        },
+                        }),
                     ],
                 },
             ],
@@ -362,7 +390,7 @@ mod tests {
 
         assert_eq!(log.epoch, EpochNumber(42));
         assert_eq!(log.entries.len(), 2);
-        assert_eq!(log.entries[1].events.len(), 2);
+        assert_eq!(log.entries[1].records.len(), 2);
     }
 
     #[cfg(feature = "wincode")]
@@ -374,25 +402,26 @@ mod tests {
             end_slot: SlotNumber(200),
             entries: vec![SnapshotEntry {
                 slot: SlotNumber(150),
-                events: vec![
-                    ReplayableEvent::AdvanceEpoch {
+                block_time: Some(1_700_000_050),
+                records: vec![
+                    record(ReplayableEvent::AdvanceEpoch {
                         old_epoch: EpochNumber(41),
                         new_epoch: EpochNumber(42),
-                    },
-                    ReplayableEvent::Track(ReplayTrack {
+                    }),
+                    record(ReplayableEvent::Track(ReplayTrack {
                         state: CompressedTrack {
                             tape: Address::from([0xAB; 32]),
                             ..raw_replay_track().state
                         },
                         epoch: EpochNumber(42),
                         ..raw_replay_track()
-                    }),
-                    ReplayableEvent::SyncSpool {
+                    })),
+                    record(ReplayableEvent::SyncSpool {
                         node: Address::from([0xCD; 32]),
                         epoch: EpochNumber(42),
                         group: GroupIndex(0),
                         spool: SpoolIndex::from(7),
-                    },
+                    }),
                 ],
             }],
         };
@@ -444,25 +473,27 @@ mod tests {
             entries: vec![
                 SnapshotEntry {
                     slot: SlotNumber(100),
-                    events: vec![ReplayableEvent::AdvanceEpoch {
+                    block_time: Some(1_700_000_000),
+                    records: vec![record(ReplayableEvent::AdvanceEpoch {
                         old_epoch: EpochNumber(41),
                         new_epoch: EpochNumber(42),
-                    }],
+                    })],
                 },
                 SnapshotEntry {
                     slot: SlotNumber(150),
-                    events: vec![
-                        ReplayableEvent::Track(blob_replay_track()),
-                        ReplayableEvent::CertifyTrack {
+                    block_time: Some(1_700_000_050),
+                    records: vec![
+                        record(ReplayableEvent::Track(blob_replay_track())),
+                        record(ReplayableEvent::CertifyTrack {
                             track: Address::from([1u8; 32]),
                             epoch: EpochNumber(42),
-                        },
-                        ReplayableEvent::SyncSpool {
+                        }),
+                        record(ReplayableEvent::SyncSpool {
                             node: Address::from([0xCD; 32]),
                             epoch: EpochNumber(42),
                             group: GroupIndex(0),
                             spool: SpoolIndex::from(7),
-                        },
+                        }),
                     ],
                 },
             ],

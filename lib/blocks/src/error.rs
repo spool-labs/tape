@@ -9,6 +9,9 @@ pub enum ParseError {
     #[error("invalid public key")]
     InvalidPubkey,
 
+    #[error("invalid transaction id")]
+    InvalidTxId,
+
     #[error("missing account: {0}")]
     MissingAccount(&'static str),
 

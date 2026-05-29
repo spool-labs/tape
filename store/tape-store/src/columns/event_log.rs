@@ -6,7 +6,7 @@ use store::Column;
 /// Event log indexed by compound key (epoch, slot, seq)
 ///
 /// Key: EventLogKey (epoch BE 8B || slot BE 8B || seq BE 4B = 20 bytes)
-/// Value: Vec<u8> (wincode-serialized ReplayableEvent)
+/// Value: Vec<u8> (wincode-serialized replay record journal value)
 pub struct EventLogCol;
 
 impl Column for EventLogCol {

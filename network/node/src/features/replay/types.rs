@@ -1,5 +1,5 @@
 use tape_core::spooler::GroupIndex;
-use tape_core::snapshot::replay::ReplayableEvent;
+use tape_core::snapshot::replay::ReplayRecord;
 use tape_core::types::SlotNumber;
 use tape_crypto::address::Address;
 
@@ -13,6 +13,6 @@ pub struct RawTrack {
 #[derive(Debug, Clone)]
 pub struct ReplayBatch {
     pub slot: SlotNumber,
-    pub events: Vec<ReplayableEvent>,
+    pub records: Vec<ReplayRecord>,
     pub raw_tracks: Vec<RawTrack>,
 }
