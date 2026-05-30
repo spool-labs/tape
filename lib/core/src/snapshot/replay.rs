@@ -14,8 +14,8 @@ use wincode::len::BincodeLen;
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-#[cfg(feature = "wincode")]
 use crate::bls::BlsPubkey;
+#[cfg(feature = "wincode")]
 use crate::snapshot::error::SnapshotError;
 use crate::system::NodePreferences;
 use crate::track::blob::BlobInfo;
