@@ -7,9 +7,9 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-use tape_core::snapshot::chunk::{unpack_segment, SnapshotChunkPayload};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
+use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::types::SpoolIndex;
 use tape_core::track::blob::BlobInfo;
 use tape_core::track::data::TrackData;
@@ -18,7 +18,12 @@ use tape_core::types::{ChunkNumber, EpochNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_protocol::api::{GetSliceReq, GetTrackDataReq, ListTracksByTapeReq};
 use tape_protocol::Api;
-use tape_slicer::{snapshot_outer_k, ErasureCoder, OuterCoder, Slicer};
+use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
+use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
+use tape_snapshot::{
+    assemble_snapshot_log, decode_chunk_payload, snapshot_track_group_count,
+    validate_snapshot_track_list, verify_snapshot_track_set, K_INNER,
+};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn, Instrument};
@@ -26,8 +31,14 @@ use tracing::{debug, trace, warn, Instrument};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
-const K_INNER: usize = 7;
 const LIST_TRACKS_LIMIT: u32 = 256;
+
+/// A reconstructed epoch snapshot: the decoded log plus the verified chunk-track
+/// list it was decoded from (anchored to the on-chain committed root).
+pub struct DecodedSnapshot {
+    pub log: SnapshotLog,
+    pub tracks: Vec<CompressedTrack>,
+}
 
 /// Fetch every chunk for an epoch's snapshot tape from peers, decode, and
 /// return the reconstructed `SnapshotLog`.
@@ -35,19 +46,35 @@ pub async fn fetch_and_decode_epoch<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     cancel: &CancellationToken,
-) -> Result<SnapshotLog, NodeError>
+) -> Result<DecodedSnapshot, NodeError>
 where
     Db: Store + 'static,
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
     let tape = Address::from(snapshot_tape_pda(epoch).0);
+
+    // The committed track-merkle root the canonical snapshot was voted on. Every
+    // peer-supplied chunk-track list is verified against this before we trust its
+    // metadata or decode its slices.
+    let committed = context
+        .rpc
+        .get_snapshot_tape(epoch)
+        .await
+        .map_err(NodeError::Rpc)?;
+
     let candidates = list_snapshot_track_candidates(context, tape).await?;
 
     let mut last_error = None;
     for (peer, tracks) in candidates {
-        match decode_snapshot_tracks(context, epoch, tracks, cancel).await {
-            Ok(log) => return Ok(log),
+        if let Err(error) = verify_snapshot_track_set(&tracks, &committed.tracks) {
+            warn!(node = %peer, %error, "bootstrap: snapshot track list failed root verification");
+            last_error = Some(NodeError::Store(error.to_string()));
+            continue;
+        }
+
+        match decode_snapshot_tracks(context, epoch, tracks.clone(), cancel).await {
+            Ok(log) => return Ok(DecodedSnapshot { log, tracks }),
             Err(error) => {
                 warn!(node = %peer, ?error, "bootstrap: candidate snapshot track list failed");
                 last_error = Some(error);
@@ -62,6 +89,69 @@ where
     }))
 }
 
+fn snapshot_err(error: tape_snapshot::SnapshotError) -> NodeError {
+    NodeError::Store(error.to_string())
+}
+
+/// Materialize the snapshot tape and its chunk-track metadata after a bootstrap
+/// replay, so the node takes the same custody entry point a builder would have.
+///
+/// Mirrors `persist_snapshot_candidate` minus the blob/slice data: the chunk
+/// tracks are written as `ObjectInfo::System { Snapshot }` (always certified),
+/// and the generic spool sync/repair then fetches the slices for owned spools.
+/// `decoded.tracks` was verified against the committed merkle root before decode.
+pub fn persist_snapshot_metadata<Db, Cluster, Blockchain>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    epoch: EpochNumber,
+    decoded: &DecodedSnapshot,
+) -> Result<(), NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
+    context
+        .store
+        .put_tape(
+            snapshot_tape,
+            TapeInfo {
+                id: snapshot_tape_number(epoch),
+                flags: TapeFlags::SYSTEM,
+                end_epoch: EpochNumber(u64::MAX),
+                next_track_number: TrackNumber(decoded.tracks.len() as u64),
+            },
+        )
+        .map_err(store_err)?;
+
+    for track in &decoded.tracks {
+        let track_address = Address::from(track_pda(track.tape, track.track_number).0);
+        context
+            .store
+            .put_track(track_address, *track)
+            .map_err(store_err)?;
+        context
+            .store
+            .put_object_info(
+                track_address,
+                ObjectInfo::System {
+                    kind: SystemObjectKind::Snapshot { epoch },
+                    track_address,
+                    registered_epoch: epoch,
+                    certified_epoch: Some(epoch),
+                    slot: decoded.log.end_slot,
+                },
+            )
+            .map_err(store_err)?;
+    }
+
+    Ok(())
+}
+
+fn store_err(error: impl std::fmt::Display) -> NodeError {
+    NodeError::Store(error.to_string())
+}
+
 async fn decode_snapshot_tracks<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
@@ -74,8 +164,8 @@ where
     Blockchain: Rpc + 'static,
 {
     let tape = Address::from(snapshot_tape_pda(epoch).0);
-    validate_snapshot_track_list(epoch, tape, &tracks)?;
-    let total_groups = snapshot_track_group_count(epoch, &tracks)?;
+    validate_snapshot_track_list(epoch, tape, &tracks).map_err(snapshot_err)?;
+    let total_groups = snapshot_track_group_count(epoch, &tracks).map_err(snapshot_err)?;
 
     debug!(
         epoch = epoch.0,
@@ -117,55 +207,7 @@ where
         }
     }
 
-    let segments = outer_decode_segments(&symbols_by_segment, epoch, total_groups)?;
-    decode_snapshot_log(segments, epoch)
-}
-
-fn validate_snapshot_track_list(
-    epoch: EpochNumber,
-    tape: Address,
-    tracks: &[CompressedTrack],
-) -> Result<(), NodeError> {
-    if tracks.is_empty() {
-        return Err(NodeError::Store(format!(
-            "snapshot tape {tape} for epoch {epoch} has no tracks"
-        )));
-    }
-
-    for track in tracks {
-        if track.tape != tape {
-            return Err(NodeError::Store(format!(
-                "bootstrap: peer returned track from wrong tape for epoch {epoch}"
-            )));
-        }
-
-        if !track.is_blob() {
-            return Err(NodeError::Store(format!(
-                "bootstrap: peer returned non-blob snapshot track for epoch {epoch}"
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-fn snapshot_track_group_count(
-    epoch: EpochNumber,
-    tracks: &[CompressedTrack],
-) -> Result<usize, NodeError> {
-    let total_groups = tracks
-        .iter()
-        .map(|track| track.group.0 as usize + 1)
-        .max()
-        .unwrap_or(0);
-
-    if total_groups == 0 {
-        return Err(NodeError::Store(format!(
-            "bootstrap: snapshot for epoch {epoch} has no groups"
-        )));
-    }
-
-    Ok(total_groups)
+    assemble_snapshot_log(&symbols_by_segment, epoch, total_groups).map_err(snapshot_err)
 }
 
 struct Decoded {
@@ -215,24 +257,18 @@ where
     )
     .await?;
 
-    let plaintext = clay_decode(&slices).map_err(|e| {
+    let refs: Vec<(usize, &[u8])> = slices.iter().map(|(i, d)| (*i, d.as_slice())).collect();
+    let (chunk, symbol) = decode_chunk_payload(&refs).map_err(|e| {
         NodeError::Store(format!(
-            "bootstrap: clay decode epoch={} group={} track={}: {e}",
-            epoch.0, group.0, track_address
-        ))
-    })?;
-
-    let payload = SnapshotChunkPayload::unpack(&plaintext).map_err(|e| {
-        NodeError::Store(format!(
-            "bootstrap: snapshot chunk payload epoch={} group={} track={}: {e}",
+            "bootstrap: chunk decode epoch={} group={} track={}: {e}",
             epoch.0, group.0, track_address
         ))
     })?;
 
     Ok(Decoded {
         group,
-        chunk: payload.chunk,
-        symbol: payload.data,
+        chunk,
+        symbol,
     })
 }
 
@@ -394,107 +430,6 @@ async fn list_tracks_from_peer<Cluster: Api>(
     }
 }
 
-
-/// Clay-decode a chunk's K_INNER or more verified slices to its plaintext
-/// payload (which is a packed [`SnapshotChunkPayload`]).
-fn clay_decode(slices: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, tape_slicer::DecodeError> {
-    let mut slicer = Slicer::clay_default();
-    let refs: Vec<(usize, &[u8])> = slices.iter().map(|(i, d)| (*i, d.as_slice())).collect();
-    slicer.decode(&refs)
-}
-
-/// Outer RS decode each segment into packed (length-prefixed) compressed
-/// bytes, ordered by `chunk`.
-fn outer_decode_segments(
-    symbols_by_segment: &BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>>,
-    epoch: EpochNumber,
-    total_groups: usize,
-) -> Result<Vec<Vec<u8>>, NodeError> {
-    if symbols_by_segment.is_empty() {
-        return Err(NodeError::Store(format!(
-            "bootstrap: no decoded chunks for epoch {}",
-            epoch.0
-        )));
-    }
-
-    let outer_k = snapshot_outer_k(total_groups);
-    if outer_k == 0 {
-        return Err(NodeError::Store(format!(
-            "bootstrap: snapshot for epoch {} has no groups",
-            epoch.0
-        )));
-    }
-
-    // Chunks must be a contiguous 0..segment_count range — gaps mean not
-    // enough groups decoded for some segment, which is a hard failure.
-    let segment_count = symbols_by_segment
-        .keys()
-        .last()
-        .map(|c| c.0 as usize + 1)
-        .unwrap_or(0);
-    for i in 0..segment_count {
-        if !symbols_by_segment.contains_key(&ChunkNumber(i as u64)) {
-            return Err(NodeError::Store(format!(
-                "bootstrap: missing decoded symbols for epoch={} chunk={}",
-                epoch.0, i
-            )));
-        }
-    }
-
-    let mut segments = Vec::with_capacity(segment_count);
-    for (chunk, symbols) in symbols_by_segment {
-        if symbols.len() < outer_k {
-            return Err(NodeError::Store(format!(
-                "bootstrap: only {}/{} groups decoded for epoch={} chunk={}",
-                symbols.len(),
-                outer_k,
-                epoch.0,
-                chunk.0
-            )));
-        }
-        let mut coder = OuterCoder::new(outer_k, total_groups);
-        let refs: Vec<(usize, &[u8])> = symbols.iter().map(|(i, d)| (*i, d.as_slice())).collect();
-        let packed = coder.decode(&refs).map_err(|e| {
-            NodeError::Store(format!(
-                "outer rs decode epoch={} chunk={}: {e}",
-                epoch.0, chunk.0
-            ))
-        })?;
-        segments.push(packed);
-    }
-
-    Ok(segments)
-}
-
-/// Concatenate decoded segments (stripping each segment's length prefix),
-/// decompress via lz4, and deserialize.
-fn decode_snapshot_log(
-    segments: Vec<Vec<u8>>,
-    epoch: EpochNumber,
-) -> Result<SnapshotLog, NodeError> {
-    let mut compressed = Vec::new();
-    for packed in &segments {
-        let segment = unpack_segment(packed).map_err(|e| {
-            NodeError::Store(format!("bootstrap: unpack segment for epoch={}: {e}", epoch.0))
-        })?;
-        compressed.extend_from_slice(segment);
-    }
-
-    let decompressed = lz4_flex::decompress_size_prepended(&compressed)
-        .map_err(|e| NodeError::Store(format!("lz4 decompress: {e}")))?;
-
-    let log = SnapshotLog::from_bytes(&decompressed)
-        .map_err(|e| NodeError::Store(format!("snapshot log deserialize: {e}")))?;
-
-    if log.epoch != epoch {
-        return Err(NodeError::Store(format!(
-            "bootstrap: decoded snapshot epoch mismatch: expected {}, got {}",
-            epoch.0, log.epoch.0
-        )));
-    }
-    Ok(log)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -508,7 +443,7 @@ mod tests {
     use tape_core::types::coin::TAPE;
     use tape_core::types::SlotNumber;
     use tape_crypto::hash::Hash;
-    use tape_slicer::{snapshot_max_segment_bytes, OuterCoder};
+    use tape_slicer::{snapshot_max_segment_bytes, snapshot_outer_k, OuterCoder};
     use tape_store::ops::EventLogOps;
     use tape_store::TapeStore;
     use tape_crypto::tx::Txid;
@@ -594,13 +529,13 @@ mod tests {
             .collect()
     }
 
-    /// Clay-decode + unpack one BuiltChunk.
+    /// Clay-decode + unpack one BuiltChunk via the shared reader.
     fn decode_built_chunk(chunk: &BuiltChunk) -> (ChunkNumber, Vec<u8>) {
         let slices = take_k_inner(chunk, K_INNER);
-        let plaintext = clay_decode(&slices).expect("clay decode");
-        let payload = SnapshotChunkPayload::unpack(&plaintext).expect("unpack payload");
-        assert_eq!(payload.chunk, chunk.chunk);
-        (payload.chunk, payload.data)
+        let refs: Vec<(usize, &[u8])> = slices.iter().map(|(i, d)| (*i, d.as_slice())).collect();
+        let (chunk_number, data) = decode_chunk_payload(&refs).expect("decode chunk payload");
+        assert_eq!(chunk_number, chunk.chunk);
+        (chunk_number, data)
     }
 
     #[test]
@@ -627,7 +562,8 @@ mod tests {
         let chunks = build_all_chunks(&store, epoch);
         let chunk = &chunks[0];
         let slices = take_k_inner(chunk, K_INNER - 1);
-        assert!(clay_decode(&slices).is_err());
+        let refs: Vec<(usize, &[u8])> = slices.iter().map(|(i, d)| (*i, d.as_slice())).collect();
+        assert!(decode_chunk_payload(&refs).is_err());
     }
 
     #[test]
@@ -669,8 +605,7 @@ mod tests {
             symbols.truncate(outer_k);
         }
 
-        let segments = outer_decode_segments(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap();
-        let log = decode_snapshot_log(segments, epoch).unwrap();
+        let log = assemble_snapshot_log(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap();
 
         assert_eq!(log.epoch, epoch);
         assert_eq!(log.entries.len(), 2);
@@ -687,10 +622,9 @@ mod tests {
     #[test]
     fn single_segment_round_trip() {
         // Small epoch → exactly one outer RS segment. Confirms the normal
-        // path through outer_decode_segments + decode_snapshot_log. Multiple
-        // segments are covered structurally by `build.rs`'s split test;
-        // triggering the multi-segment case here would need tens of MiB of
-        // uncompressible input.
+        // path through `assemble_snapshot_log`. Multiple segments are covered
+        // structurally by `build.rs`'s split test; triggering the multi-segment
+        // case here would need tens of MiB of uncompressible input.
         let store = test_store();
         let epoch = EpochNumber(21);
         append_advance(&store, epoch, 100);
@@ -713,9 +647,7 @@ mod tests {
         }
         assert_eq!(symbols_by_segment.len(), segment_count);
 
-        let segments = outer_decode_segments(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap();
-        assert_eq!(segments.len(), segment_count);
-        let log = decode_snapshot_log(segments, epoch).unwrap();
+        let log = assemble_snapshot_log(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap();
         assert_eq!(log.epoch, epoch);
     }
 
@@ -737,8 +669,7 @@ mod tests {
                 .push((built.group.0 as usize, data));
         }
 
-        let segments = outer_decode_segments(&symbols_by_segment, epoch, 1).unwrap();
-        let log = decode_snapshot_log(segments, epoch).unwrap();
+        let log = assemble_snapshot_log(&symbols_by_segment, epoch, 1).unwrap();
         assert_eq!(log.epoch, epoch);
         assert_eq!(log.entries.len(), 1);
     }
@@ -761,7 +692,7 @@ mod tests {
                 .push((built.group.0 as usize, data));
         }
 
-        let err = outer_decode_segments(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap_err();
+        let err = assemble_snapshot_log(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap_err();
         assert!(format!("{err}").contains("groups decoded"));
     }
 }

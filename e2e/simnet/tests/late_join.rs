@@ -140,11 +140,26 @@ async fn late_join_inner() {
             .expect("set late node committee size preference");
     }
 
-    let prune_slot = harness
-        .chain()
-        .current_slot()
-        .await
-        .expect("current slot before pruning blocks");
+    // Prune only the block history the late node reconstructs from snapshots,
+    // keeping the un-snapshotted tail it must still block-replay. The
+    // epoch-advance gate guarantees the newest finalized snapshot is `current-1`
+    // or `current-2`, so blocks from epoch `current-2` onward must survive for
+    // the snapshot->checkpoint catch-up. Pruning through the live checkpoint
+    // would delete that tail and leave the late node permanently missing it.
+    let prune_slot = {
+        let scenario = harness.scenario();
+        let current = scenario
+            .current_epoch_number()
+            .await
+            .expect("current epoch before pruning blocks");
+        let frontier = EpochNumber(current.saturating_sub(2));
+        let frontier_start = scenario
+            .read_epoch_at(frontier)
+            .await
+            .expect("read snapshot frontier epoch")
+            .start_slot;
+        frontier_start.0.saturating_sub(1)
+    };
     append_log(&format!("rpc history prune start through_slot={prune_slot}"));
     let dropped = harness
         .chain()
@@ -184,12 +199,12 @@ async fn late_join_inner() {
         .scenario()
         .compare_replay_stores(&initial_nodes, late_node)
         .expect("compare replay stores after late node health");
-    if replay_store_diff.has_missing_baseline_items() {
+    if !replay_store_diff.is_clean() {
         append_log(&replay_store_diff.to_string());
     }
     assert!(
         replay_store_diff.is_clean(),
-        "late node replay store has invariant violations after healthy bootstrap\n{replay_store_diff}"
+        "late node replay store differs from baselines after healthy bootstrap\n{replay_store_diff}"
     );
 
     let late = harness.node(late_node).expect("late node exists");

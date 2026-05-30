@@ -106,6 +106,15 @@ pub fn apply_event<Db: Store>(
             snapshot_tape,
             ..
         } => {
+            // During bootstrap the snapshot reader may materialize this tape's
+            // chunk tracks before this finalize event replays; preserve the
+            // existing track cursor so we don't reset it back to zero.
+            let next_track_number = store
+                .get_tape(*snapshot_tape)
+                .map_err(store_error)?
+                .map(|tape| tape.next_track_number)
+                .unwrap_or(TrackNumber(0));
+
             store
                 .put_tape(
                     *snapshot_tape,
@@ -113,7 +122,7 @@ pub fn apply_event<Db: Store>(
                         id: snapshot_tape_number(*epoch),
                         flags: TapeFlags::SYSTEM,
                         end_epoch: EpochNumber(u64::MAX),
-                        next_track_number: TrackNumber(0),
+                        next_track_number,
                     },
                 )
                 .map_err(store_error)?;

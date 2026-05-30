@@ -57,7 +57,9 @@ pub struct ReplayStoreDiff {
 
 impl ReplayStoreDiff {
     pub fn is_clean(&self) -> bool {
-        self.late_orphan_tracks == 0 && self.late_system_tracks_marked_valid == 0
+        !self.has_missing_baseline_items()
+            && self.late_orphan_tracks == 0
+            && self.late_system_tracks_marked_valid == 0
     }
 
     pub fn has_missing_baseline_items(&self) -> bool {
@@ -640,5 +642,66 @@ fn describe_object_info(info: Option<&ObjectInfo>) -> String {
         ),
         Some(other) => format!("{other:?}"),
         None => "missing".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tape_core::spooler::GroupIndex;
+    use tape_core::track::types::{TrackKind, TrackState};
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
+    use tape_crypto::Hash;
+
+    fn tape_info() -> TapeInfo {
+        TapeInfo {
+            id: TapeNumber(1),
+            flags: 0,
+            end_epoch: EpochNumber(9),
+            next_track_number: TrackNumber(1),
+        }
+    }
+
+    fn track_snapshot(tape: Address) -> TrackSnapshot {
+        TrackSnapshot {
+            metadata: CompressedTrack {
+                tape,
+                key: Hash::new_unique(),
+                track_number: TrackNumber(0),
+                kind: TrackKind::Raw as u64,
+                state: TrackState::Certified as u64,
+                size: StorageUnits::from_bytes(64),
+                group: GroupIndex::from(0),
+                value_hash: Hash::new_unique(),
+            },
+            object_info: None,
+        }
+    }
+
+    #[test]
+    fn missing_baseline_items_make_diff_unclean() {
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+
+        let baseline = ReplayStoreSnapshot {
+            node_index: 0,
+            tapes: BTreeMap::from([(tape, tape_info())]),
+            tracks: BTreeMap::from([(track, track_snapshot(tape))]),
+        };
+        let late = ReplayStoreSnapshot {
+            node_index: 1,
+            tapes: BTreeMap::new(),
+            tracks: BTreeMap::new(),
+        };
+
+        let diff = build_replay_store_diff(&[baseline], &late);
+
+        assert!(diff.has_missing_baseline_items());
+        assert!(!diff.is_clean());
+        assert!(
+            diff.to_string()
+                .contains("missing on late but present on all baselines: tapes=1 tracks=1")
+        );
     }
 }

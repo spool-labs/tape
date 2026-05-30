@@ -9119,6 +9119,7 @@ dependencies = [
  "tape-retry",
  "tape-sdk",
  "tape-slicer",
+ "tape-snapshot",
  "tape-spooler",
  "tape-store",
  "tempfile",
@@ -9220,6 +9221,18 @@ dependencies = [
  "tape-crypto",
  "thiserror 1.0.69",
  "wincode 0.2.5",
+]
+
+[[package]]
+name = "tape-snapshot"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "lz4_flex",
+ "tape-core",
+ "tape-crypto",
+ "tape-slicer",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

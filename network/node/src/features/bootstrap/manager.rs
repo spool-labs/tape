@@ -355,18 +355,20 @@ where
         return Err(NodeError::Store("bootstrap: cancelled".into()));
     }
 
-    let log = fetch::fetch_and_decode_epoch(context, epoch, cancel).await?;
-    replay.apply_snapshot_log(&log)?;
-    advance_cursors(context, epoch, log.end_slot)?;
+    let decoded = fetch::fetch_and_decode_epoch(context, epoch, cancel).await?;
+    replay.apply_snapshot_log(&decoded.log)?;
+    fetch::persist_snapshot_metadata(context, epoch, &decoded)?;
+    advance_cursors(context, epoch, decoded.log.end_slot)?;
 
     info!(
         epoch = epoch.0,
-        entries = log.entries.len(),
-        end_slot = log.end_slot.0,
+        entries = decoded.log.entries.len(),
+        end_slot = decoded.log.end_slot.0,
+        tracks = decoded.tracks.len(),
         "bootstrap: snapshot replayed"
     );
 
-    Ok((epoch, log.end_slot))
+    Ok((epoch, decoded.log.end_slot))
 }
 
 async fn fetch_protocol_checkpoint<Db, Cluster, Blockchain>(

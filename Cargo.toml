@@ -13,6 +13,7 @@ members = [
   "solana/programs/token",
   "lib/slicer",
   "lib/spooler",
+  "lib/snapshot",
   "sdk",
   "store/store",
   "store/store-memory",
@@ -53,6 +54,7 @@ default-members = [
   "lib/blocks",
   "lib/slicer",
   "lib/spooler",
+  "lib/snapshot",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
@@ -96,6 +98,7 @@ rpc-litesvm = { version = "0.1.0", path = "./solana/rpc-litesvm" }
 tape-store = { version = "0.3.0", path = "./store/tape-store" }
 tape-slicer = { version = "0.3.0", path = "./lib/slicer" }
 tape-spooler = { version = "0.3.0", path = "./lib/spooler" }
+tape-snapshot = { version = "0.3.0", path = "./lib/snapshot" }
 store = { version = "0.3.0", path = "./store/store" }
 store-memory = { version = "0.3.0", path = "./store/store-memory" }
 store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
