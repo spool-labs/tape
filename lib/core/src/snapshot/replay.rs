@@ -15,12 +15,16 @@ use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[cfg(feature = "wincode")]
+use crate::bls::BlsPubkey;
 use crate::snapshot::error::SnapshotError;
+use crate::system::NodePreferences;
 use crate::track::blob::BlobInfo;
 use crate::spooler::GroupIndex;
 use crate::track::types::CompressedTrack;
+use crate::types::coin::{Coin, TAPE};
 use crate::types::{EpochNumber, NodeId, SlotNumber, SpoolIndex, StorageUnits, TapeNumber};
 use tape_crypto::address::Address;
+use tape_crypto::hash::Hash;
 use tape_crypto::tx::Txid;
 
 /// Wire-format version for the framed snapshot binary.
@@ -64,6 +68,11 @@ pub enum ReplayableEvent {
     AdvanceEpoch {
         old_epoch: EpochNumber,
         new_epoch: EpochNumber,
+        timestamp: i64,
+        total_stake: Coin<TAPE>,
+        committee_count: u64,
+        preferences: NodePreferences,
+        nonce: Hash,
     },
 
     /// Node synced one spool for an epoch.
@@ -83,6 +92,9 @@ pub enum ReplayableEvent {
         capacity: StorageUnits,
         active_epoch: EpochNumber,
         expiry_epoch: EpochNumber,
+        cost: Coin<TAPE>,
+        burned: Coin<TAPE>,
+        scheduled: Coin<TAPE>,
     },
 
     /// Tape was destroyed.
@@ -101,6 +113,78 @@ pub enum ReplayableEvent {
     /// Node joined the next-epoch committee.
     JoinCommittee {
         node: Address,
+        stake: Coin<TAPE>,
+        key: BlsPubkey,
+        preferences: NodePreferences,
+        activation_epoch: EpochNumber,
+    },
+
+    /// Canonical epoch snapshot tape was created.
+    SnapshotFinalized {
+        epoch: EpochNumber,
+        hash: Hash,
+        snapshot_tape: Address,
+    },
+
+    /// One spool group from the canonical assignment was finalized.
+    AssignmentFinalized {
+        epoch: EpochNumber,
+        hash: Hash,
+        group: GroupIndex,
+        group_account: Address,
+        size: StorageUnits,
+        total_groups: u64,
+        total_assigned: StorageUnits,
+    },
+
+    /// User staked TAPE.
+    StakeDeposited {
+        stake: Address,
+        authority: Address,
+        pool: Address,
+        amount: Coin<TAPE>,
+        activation_epoch: EpochNumber,
+    },
+
+    /// Unstake initiated (cooldown started).
+    StakeUnlockRequested {
+        stake: Address,
+        authority: Address,
+        pool: Address,
+        amount: Coin<TAPE>,
+        withdraw_epoch: EpochNumber,
+    },
+
+    /// Stake fully withdrawn.
+    StakeWithdrawn {
+        stake: Address,
+        authority: Address,
+        pool: Address,
+        principal: Coin<TAPE>,
+        rewards: Coin<TAPE>,
+    },
+
+    /// A snapshot/assignment candidate vote was proposed.
+    VoteProposed {
+        kind: u64,
+        vote: Address,
+        voting_epoch: EpochNumber,
+        target_epoch: EpochNumber,
+        hash: Hash,
+        total_groups: u64,
+    },
+
+    /// A group recorded a vote for a snapshot/assignment candidate.
+    VoteRecorded {
+        kind: u64,
+        vote: Address,
+        voting_epoch: EpochNumber,
+        target_epoch: EpochNumber,
+        hash: Hash,
+        group: GroupIndex,
+        signer_count: u64,
+        signed_groups: u64,
+        total_groups: u64,
     },
 }
 
@@ -244,6 +328,7 @@ impl SnapshotLog {
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::Zeroable;
     use crate::spooler::GroupIndex;
     use crate::track::types::{TrackKind, TrackState};
     use tape_crypto::hash::Hash;
@@ -324,6 +409,11 @@ mod tests {
             ReplayableEvent::AdvanceEpoch {
                 old_epoch: EpochNumber(9),
                 new_epoch: EpochNumber(10),
+                timestamp: 0,
+                total_stake: TAPE(0),
+                committee_count: 0,
+                preferences: NodePreferences::zeroed(),
+                nonce: Hash::default(),
             },
             ReplayableEvent::SyncSpool {
                 node: Address::from([5u8; 32]),
@@ -339,6 +429,9 @@ mod tests {
                 capacity: StorageUnits::from_bytes(1024),
                 active_epoch: EpochNumber(10),
                 expiry_epoch: EpochNumber(20),
+                cost: TAPE(0),
+                burned: TAPE(0),
+                scheduled: TAPE(0),
             },
             ReplayableEvent::DestroyTape {
                 tape: Address::from([8u8; 32]),
@@ -351,6 +444,10 @@ mod tests {
             },
             ReplayableEvent::JoinCommittee {
                 node: Address::from([11u8; 32]),
+                stake: TAPE(0),
+                key: BlsPubkey::zeroed(),
+                preferences: NodePreferences::zeroed(),
+                activation_epoch: EpochNumber(0),
             },
         ];
         assert_eq!(events.len(), 10);
@@ -369,6 +466,11 @@ mod tests {
                     records: vec![record(ReplayableEvent::AdvanceEpoch {
                         old_epoch: EpochNumber(41),
                         new_epoch: EpochNumber(42),
+                        timestamp: 0,
+                        total_stake: TAPE(0),
+                        committee_count: 0,
+                        preferences: NodePreferences::zeroed(),
+                        nonce: Hash::default(),
                     })],
                 },
                 SnapshotEntry {
@@ -407,6 +509,11 @@ mod tests {
                     record(ReplayableEvent::AdvanceEpoch {
                         old_epoch: EpochNumber(41),
                         new_epoch: EpochNumber(42),
+                        timestamp: 0,
+                        total_stake: TAPE(0),
+                        committee_count: 0,
+                        preferences: NodePreferences::zeroed(),
+                        nonce: Hash::default(),
                     }),
                     record(ReplayableEvent::Track(ReplayTrack {
                         state: CompressedTrack {
@@ -443,6 +550,10 @@ mod tests {
             },
             ReplayableEvent::JoinCommittee {
                 node: Address::from([3u8; 32]),
+                stake: TAPE(0),
+                key: BlsPubkey::zeroed(),
+                preferences: NodePreferences::zeroed(),
+                activation_epoch: EpochNumber(0),
             },
         ];
 
@@ -477,6 +588,11 @@ mod tests {
                     records: vec![record(ReplayableEvent::AdvanceEpoch {
                         old_epoch: EpochNumber(41),
                         new_epoch: EpochNumber(42),
+                        timestamp: 0,
+                        total_stake: TAPE(0),
+                        committee_count: 0,
+                        preferences: NodePreferences::zeroed(),
+                        nonce: Hash::default(),
                     })],
                 },
                 SnapshotEntry {

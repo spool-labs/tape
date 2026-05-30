@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct G2Point(pub [u8; 128]);
 

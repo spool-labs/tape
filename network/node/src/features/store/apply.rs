@@ -4,8 +4,8 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::system::SpoolStatus;
 use tape_core::tape::{
-    blacklist_tape_number, history_tape_number, tape_index, tape_namespace, TapeFlags,
-    TapeNamespace,
+    blacklist_tape_number, history_tape_number, snapshot_tape_number, tape_index, tape_namespace,
+    TapeFlags, TapeNamespace,
 };
 use tape_core::track::data::TrackData;
 use tape_core::track::types::TrackState;
@@ -101,9 +101,32 @@ pub fn apply_event<Db: Store>(
                 )
                 .map_err(store_error)?;
         }
+        ReplayableEvent::SnapshotFinalized {
+            epoch,
+            snapshot_tape,
+            ..
+        } => {
+            store
+                .put_tape(
+                    *snapshot_tape,
+                    TapeInfo {
+                        id: snapshot_tape_number(*epoch),
+                        flags: TapeFlags::SYSTEM,
+                        end_epoch: EpochNumber(u64::MAX),
+                        next_track_number: TrackNumber(0),
+                    },
+                )
+                .map_err(store_error)?;
+        }
         ReplayableEvent::AdvanceEpoch { .. }
         | ReplayableEvent::SyncSpool { .. }
-        | ReplayableEvent::JoinCommittee { .. } => {}
+        | ReplayableEvent::JoinCommittee { .. }
+        | ReplayableEvent::AssignmentFinalized { .. }
+        | ReplayableEvent::StakeDeposited { .. }
+        | ReplayableEvent::StakeUnlockRequested { .. }
+        | ReplayableEvent::StakeWithdrawn { .. }
+        | ReplayableEvent::VoteProposed { .. }
+        | ReplayableEvent::VoteRecorded { .. } => {}
     }
 
     Ok(())
@@ -360,6 +383,7 @@ mod tests {
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::coin::TAPE;
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
@@ -448,6 +472,9 @@ mod tests {
                 capacity: StorageUnits::mb(10),
                 active_epoch: EpochNumber(6),
                 expiry_epoch: EpochNumber(12),
+                cost: TAPE(0),
+                burned: TAPE(0),
+                scheduled: TAPE(0),
             },
             make_blob_track(tape, track_number, EpochNumber(6)),
             ReplayableEvent::CertifyTrack {

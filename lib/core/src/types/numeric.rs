@@ -30,6 +30,17 @@ impl BasisPoints {
     pub fn to_percent(&self) -> f64 {
         (self.0 as f64) / 100.0
     }
+
+    /// Human-readable basis points, e.g. `500 bps (5%)`. Percent is shown with
+    /// two decimals when fractional, no decimals when whole.
+    pub fn human(&self) -> String {
+        let pct = self.to_percent();
+        if pct.fract().abs() < f64::EPSILON {
+            format!("{} bps ({}%)", self.0, pct as i64)
+        } else {
+            format!("{} bps ({pct:.2}%)", self.0)
+        }
+    }
 }
 
 impl StorageUnits {
@@ -74,6 +85,23 @@ impl StorageUnits {
     #[inline]
     pub fn to_mb(&self) -> u64 {
         self.0.div_ceil(Self::MB)
+    }
+
+    /// Human-readable IEC byte size, e.g. `9.69 TiB`, `7.72 GiB`, `374 B`.
+    /// Project convention is binary units (KiB / MiB / GiB / TiB / PiB).
+    pub fn human(&self) -> String {
+        const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+        let mut value = self.0 as f64;
+        let mut unit = 0;
+        while value >= 1024.0 && unit + 1 < UNITS.len() {
+            value /= 1024.0;
+            unit += 1;
+        }
+        if unit == 0 {
+            format!("{} {}", self.0, UNITS[unit])
+        } else {
+            format!("{value:.2} {}", UNITS[unit])
+        }
     }
 }
 

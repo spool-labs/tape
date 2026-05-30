@@ -499,10 +499,15 @@ fn decode_snapshot_log(
 mod tests {
     use std::collections::BTreeMap;
 
+    use bytemuck::Zeroable;
     use store_memory::MemoryStore;
+    use tape_core::bls::BlsPubkey;
     use tape_core::snapshot::chunk::pack_segment;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent, SnapshotLog};
+    use tape_core::system::NodePreferences;
+    use tape_core::types::coin::TAPE;
     use tape_core::types::SlotNumber;
+    use tape_crypto::hash::Hash;
     use tape_slicer::{snapshot_max_segment_bytes, OuterCoder};
     use tape_store::ops::EventLogOps;
     use tape_store::TapeStore;
@@ -569,6 +574,11 @@ mod tests {
                 &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: epoch.prev(),
                     new_epoch: epoch,
+                    timestamp: 0,
+                    total_stake: TAPE(0),
+                    committee_count: 0,
+                    preferences: NodePreferences::zeroed(),
+                    nonce: Hash::default(),
                 }),
             )
             .unwrap();
@@ -632,6 +642,10 @@ mod tests {
                 None,
                 &record(ReplayableEvent::JoinCommittee {
                     node: [9u8; 32].into(),
+                    stake: TAPE(0),
+                    key: BlsPubkey::zeroed(),
+                    preferences: NodePreferences::zeroed(),
+                    activation_epoch: EpochNumber(0),
                 }),
             )
             .unwrap();

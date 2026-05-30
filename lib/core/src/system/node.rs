@@ -28,7 +28,7 @@ pub struct NodeMetadata {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Zeroable, Pod, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Zeroable, Pod, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct NodePreferences {
     /// The preferred minimum protocol version.

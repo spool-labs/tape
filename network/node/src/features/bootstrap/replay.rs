@@ -34,6 +34,7 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::coin::TAPE;
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
@@ -128,6 +129,9 @@ mod tests {
                         capacity: StorageUnits::mb(10),
                         active_epoch: EpochNumber(6),
                         expiry_epoch: EpochNumber(12),
+                        cost: TAPE(0),
+                        burned: TAPE(0),
+                        scheduled: TAPE(0),
                     }),
                     record(track_event(tape, track_number, EpochNumber(6))),
                 ],
@@ -181,6 +185,9 @@ mod tests {
                             capacity: StorageUnits::mb(10),
                             active_epoch: EpochNumber(7),
                             expiry_epoch: EpochNumber(13),
+                            cost: TAPE(0),
+                            burned: TAPE(0),
+                            scheduled: TAPE(0),
                         }),
                         record(track_event(tape, TrackNumber(0), EpochNumber(7))),
                     ],
@@ -236,6 +243,9 @@ mod tests {
                         capacity: StorageUnits::mb(10),
                         active_epoch: EpochNumber(4),
                         expiry_epoch: EpochNumber(9),
+                        cost: TAPE(0),
+                        burned: TAPE(0),
+                        scheduled: TAPE(0),
                     }),
                     record(track_event(tape, TrackNumber(5), EpochNumber(4))),
                     record(ReplayableEvent::CertifyTrack {

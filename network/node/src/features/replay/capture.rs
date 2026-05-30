@@ -1,12 +1,11 @@
 use bytemuck::bytes_of;
 use tape_api::event::{TapeDestroyed, TapeReserved, TrackDeleted, TrackWritten};
-use tape_api::program::tapedrive::{track_pda, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::track_pda;
 use tape_blocks::{ParseError, ParsedInstruction};
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
-use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_crypto::tx::Txid;
@@ -94,6 +93,11 @@ fn capture_instruction(
                     ReplayableEvent::AdvanceEpoch {
                         old_epoch: event.old_epoch,
                         new_epoch: event.new_epoch,
+                        timestamp: event.timestamp,
+                        total_stake: event.total_stake,
+                        committee_count: event.committee_count,
+                        preferences: event.preferences,
+                        nonce: event.nonce,
                     },
                 ),
                 raw_track: None,
@@ -113,25 +117,118 @@ fn capture_instruction(
             ),
             raw_track: None,
         },
-        ParsedInstruction::FinalizeSnapshot { event, .. } => {
-            Captured {
-                event: captured_event(
-                    *current_epoch,
-                    tx_id,
-                    actor,
-                    ReplayableEvent::ReserveTape {
-                        tape: event.snapshot_tape,
-                        id: snapshot_tape_number(event.epoch),
-                        flags: TapeFlags::SYSTEM,
-                        authority: SYSTEM_ADDRESS,
-                        capacity: StorageUnits(0),
-                        active_epoch: event.epoch,
-                        expiry_epoch: EpochNumber(u64::MAX),
-                    },
-                ),
-                raw_track: None,
-            }
-        }
+        ParsedInstruction::FinalizeSnapshot { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::SnapshotFinalized {
+                    epoch: event.epoch,
+                    hash: event.hash,
+                    snapshot_tape: event.snapshot_tape,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::FinalizeGroup { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::AssignmentFinalized {
+                    epoch: event.epoch,
+                    hash: event.hash,
+                    group: event.group,
+                    group_account: event.group_account,
+                    size: event.size,
+                    total_groups: event.total_groups,
+                    total_assigned: event.total_assigned,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::StakeWithPool { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::StakeDeposited {
+                    stake: event.stake,
+                    authority: event.authority,
+                    pool: event.pool,
+                    amount: event.amount,
+                    activation_epoch: event.activation_epoch,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::RequestStakeUnlock { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::StakeUnlockRequested {
+                    stake: event.stake,
+                    authority: event.authority,
+                    pool: event.pool,
+                    amount: event.amount,
+                    withdraw_epoch: event.withdraw_epoch,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::UnstakeFromPool { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::StakeWithdrawn {
+                    stake: event.stake,
+                    authority: event.authority,
+                    pool: event.pool,
+                    principal: event.principal,
+                    rewards: event.rewards,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::ProposeSnapshot { event, .. }
+        | ParsedInstruction::ProposeAssignment { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::VoteProposed {
+                    kind: event.kind,
+                    vote: event.vote,
+                    voting_epoch: event.voting_epoch,
+                    target_epoch: event.target_epoch,
+                    hash: event.hash,
+                    total_groups: event.total_groups,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::VoteSnapshot { event, .. }
+        | ParsedInstruction::VoteAssignment { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::VoteRecorded {
+                    kind: event.kind,
+                    vote: event.vote,
+                    voting_epoch: event.voting_epoch,
+                    target_epoch: event.target_epoch,
+                    hash: event.hash,
+                    group: event.group,
+                    signer_count: event.signer_count,
+                    signed_groups: event.signed_groups,
+                    total_groups: event.total_groups,
+                },
+            ),
+            raw_track: None,
+        },
         ParsedInstruction::TrackWrite {
             key,
             value,
@@ -184,13 +281,17 @@ fn capture_instruction(
             ),
             raw_track: None,
         },
-        ParsedInstruction::JoinCommittee { node, .. } => Captured {
+        ParsedInstruction::JoinCommittee { node, event, .. } => Captured {
             event: captured_event(
                 *current_epoch,
                 tx_id,
                 actor,
                 ReplayableEvent::JoinCommittee {
                     node: (*node).into(),
+                    stake: event.stake,
+                    key: event.key,
+                    preferences: event.preferences,
+                    activation_epoch: event.activation_epoch,
                 },
             ),
             raw_track: None,
@@ -223,17 +324,10 @@ fn capture_instruction(
             )?
         }
 
-        // Empty variants that don't produce replay events.
-        ParsedInstruction::StakeWithPool { .. }
-        | ParsedInstruction::RequestStakeUnlock { .. }
-        | ParsedInstruction::UnstakeFromPool { .. }
-        | ParsedInstruction::ClaimCommission { .. }
+        // No corresponding ReplayableEvent variant yet — silently drop.
+        // These can be added when a use case appears.
+        ParsedInstruction::ClaimCommission { .. }
         | ParsedInstruction::CommitEpoch { .. }
-        | ParsedInstruction::ProposeSnapshot { .. }
-        | ParsedInstruction::VoteSnapshot { .. }
-        | ParsedInstruction::ProposeAssignment { .. }
-        | ParsedInstruction::VoteAssignment { .. }
-        | ParsedInstruction::FinalizeGroup { .. }
         | ParsedInstruction::CreateEpoch { .. }
         | ParsedInstruction::CreateCommittee { .. }
         | ParsedInstruction::ResizeCommittee { .. }
@@ -370,6 +464,9 @@ fn capture_tape(
                 capacity: event.capacity,
                 active_epoch: event.active_epoch,
                 expiry_epoch: event.expiry_epoch,
+                cost: event.cost,
+                burned: event.burned,
+                scheduled: event.scheduled,
             },
         ),
         raw_track: None,
@@ -422,14 +519,13 @@ mod tests {
     use tape_api::event::{
         EpochAdvanced, SnapshotFinalized, TapeReserved, TrackCertified, TrackWritten,
     };
-    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{BlacklistEntry, NodePreferences};
-    use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -663,6 +759,7 @@ mod tests {
             ReplayableEvent::AdvanceEpoch {
                 old_epoch: EpochNumber(4),
                 new_epoch: EpochNumber(5),
+                ..
             }
         ));
     }
@@ -755,27 +852,18 @@ mod tests {
         assert!(captured.raw_tracks.is_empty());
         assert_eq!(captured.next_epoch, snapshot_epoch);
 
-        let snapshot_tape = Address::from(snapshot_tape_pda(snapshot_epoch).0);
+        let expected_tape = Address::from(snapshot_tape_pda(snapshot_epoch).0);
 
         match &captured.events[0].record.event {
-            ReplayableEvent::ReserveTape {
-                tape,
-                id,
-                flags,
-                authority,
-                capacity,
-                active_epoch,
-                expiry_epoch,
+            ReplayableEvent::SnapshotFinalized {
+                epoch,
+                snapshot_tape,
+                ..
             } => {
-                assert_eq!(*tape, snapshot_tape);
-                assert_eq!(*id, snapshot_tape_number(snapshot_epoch));
-                assert_eq!(*flags, TapeFlags::SYSTEM);
-                assert_eq!(*authority, SYSTEM_ADDRESS);
-                assert_eq!(*capacity, StorageUnits(0));
-                assert_eq!(*active_epoch, snapshot_epoch);
-                assert_eq!(*expiry_epoch, EpochNumber(u64::MAX));
+                assert_eq!(*epoch, snapshot_epoch);
+                assert_eq!(*snapshot_tape, expected_tape);
             }
-            other => panic!("expected ReserveTape for snapshot tape, got {other:?}"),
+            other => panic!("expected SnapshotFinalized, got {other:?}"),
         }
     }
 
@@ -807,10 +895,10 @@ mod tests {
         assert_eq!(captured.events[1].epoch, new_epoch);
 
         match &captured.events[1].record.event {
-            ReplayableEvent::ReserveTape { active_epoch, .. } => {
-                assert_eq!(*active_epoch, snapshot_epoch);
+            ReplayableEvent::SnapshotFinalized { epoch, .. } => {
+                assert_eq!(*epoch, snapshot_epoch);
             }
-            other => panic!("expected ReserveTape, got {other:?}"),
+            other => panic!("expected SnapshotFinalized, got {other:?}"),
         }
     }
 }

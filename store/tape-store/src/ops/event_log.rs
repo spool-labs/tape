@@ -152,6 +152,10 @@ impl<S: Store> EventLogOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytemuck::Zeroable;
+    use tape_core::bls::BlsPubkey;
+    use tape_core::system::NodePreferences;
+    use tape_core::types::coin::TAPE;
     use tape_core::types::NodeId;
     use store_memory::MemoryStore;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
@@ -188,6 +192,11 @@ mod tests {
                 &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(0),
                     new_epoch: EpochNumber(1),
+                    timestamp: 0,
+                    total_stake: TAPE(0),
+                    committee_count: 0,
+                    preferences: NodePreferences::zeroed(),
+                    nonce: Hash::default(),
                 }),
             )
             .unwrap();
@@ -251,6 +260,10 @@ mod tests {
                 None,
                 &record(ReplayableEvent::JoinCommittee {
                     node: Address::new([1u8; 32]),
+                    stake: TAPE(0),
+                    key: BlsPubkey::zeroed(),
+                    preferences: NodePreferences::zeroed(),
+                    activation_epoch: EpochNumber(0),
                 }),
             )
             .unwrap();
@@ -271,6 +284,11 @@ mod tests {
                 &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(2),
                     new_epoch: EpochNumber(3),
+                    timestamp: 0,
+                    total_stake: TAPE(0),
+                    committee_count: 0,
+                    preferences: NodePreferences::zeroed(),
+                    nonce: Hash::default(),
                 }),
             )
             .unwrap();
@@ -309,6 +327,11 @@ mod tests {
                 &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(0),
                     new_epoch: EpochNumber(1),
+                    timestamp: 0,
+                    total_stake: TAPE(0),
+                    committee_count: 0,
+                    preferences: NodePreferences::zeroed(),
+                    nonce: Hash::default(),
                 }),
             )
             .unwrap();
@@ -322,6 +345,11 @@ mod tests {
                 &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(1),
                     new_epoch: EpochNumber(2),
+                    timestamp: 0,
+                    total_stake: TAPE(0),
+                    committee_count: 0,
+                    preferences: NodePreferences::zeroed(),
+                    nonce: Hash::default(),
                 }),
             )
             .unwrap();

@@ -117,7 +117,7 @@ impl BlsSignature {
 
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Pod, Zeroable, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct BlsPubkey(pub G2Point); // using the uncompressed form to reduce CU
 
