@@ -106,7 +106,7 @@ mod tests {
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
     use tape_core::prelude::{SpoolState, SpoolStatus};
-    use tape_core::snapshot::chunk::snapshot_chunk_key;
+    use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobInfo;

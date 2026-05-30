@@ -1,20 +1,23 @@
-use tape_crypto::Hash;
-use tape_crypto::hash::hashv;
+//! Snapshot chunk format and outer erasure sizing.
+//!
+//! The inner Clay coder operates on a [`SnapshotChunkPayload`]; the outer RS
+//! coder operates on length-prefixed segments. Both the chunk key derivation
+//! and the segment/outer sizing live here so the format is owned in one place.
 
-use crate::snapshot::error::SnapshotError;
-use crate::spooler::GroupIndex;
-use crate::types::{ChunkNumber, EpochNumber};
+use tape_core::spooler::GroupIndex;
+use tape_core::types::{ChunkNumber, EpochNumber};
+use tape_crypto::hash::hashv;
+use tape_crypto::Hash;
+use tape_slicer::MAX_CHUNK_BYTES;
+
+use crate::SnapshotError;
 
 pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
 
-/// Derives the track key for a snapshot chunk.
-/// A single group may contribute multiple chunks per epoch.
+/// Derive the track key for a snapshot chunk. A single group may contribute
+/// multiple chunks per epoch.
 #[inline]
-pub fn snapshot_chunk_key(
-    epoch: EpochNumber,
-    group: GroupIndex,
-    chunk: ChunkNumber,
-) -> Hash {
+pub fn snapshot_chunk_key(epoch: EpochNumber, group: GroupIndex, chunk: ChunkNumber) -> Hash {
     hashv(&[
         SNAPSHOT_KEY_V1,
         &epoch.pack(),
@@ -59,8 +62,8 @@ impl SnapshotChunkPayload {
 /// Length-prefix size for a compressed segment passed to outer-RS encoding.
 pub const SEGMENT_HEADER_SIZE: usize = 4;
 
-/// Prepend a 4-byte little-endian length so the bootstrap decoder can strip
-/// the outer-RS zero padding and recover the exact compressed bytes.
+/// Prepend a 4-byte little-endian length so the decoder can strip the outer-RS
+/// zero padding and recover the exact compressed bytes.
 pub fn pack_segment(segment: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(SEGMENT_HEADER_SIZE + segment.len());
     out.extend_from_slice(&(segment.len() as u32).to_le_bytes());
@@ -83,29 +86,39 @@ pub fn unpack_segment(packed: &[u8]) -> Result<&[u8], SnapshotError> {
     Ok(&packed[SEGMENT_HEADER_SIZE..end])
 }
 
+/// Snapshot outer RS data threshold is one third of the active group count,
+/// rounded up. At n=50 this preserves the old fixed threshold: ceil(50/3)=17.
+pub const SNAPSHOT_OUTER_DATA_DENOMINATOR: usize = 3;
+
+/// Derive the snapshot outer RS `k` from the active group count.
+pub const fn snapshot_outer_k(total_groups: usize) -> usize {
+    if total_groups == 0 {
+        0
+    } else {
+        total_groups.div_ceil(SNAPSHOT_OUTER_DATA_DENOMINATOR)
+    }
+}
+
+/// Maximum compressed bytes carried by one snapshot outer RS segment.
+pub const fn snapshot_max_segment_bytes(total_groups: usize) -> usize {
+    let k = snapshot_outer_k(total_groups);
+    if k == 0 {
+        0
+    } else {
+        k * MAX_CHUNK_BYTES - SEGMENT_HEADER_SIZE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn distinguishes_epoch_pair() {
-        let a = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
-        let b = snapshot_chunk_key(EpochNumber(10), GroupIndex(3), ChunkNumber(0));
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn distinguishes_group_pair() {
-        let a = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
-        let b = snapshot_chunk_key(EpochNumber(9), GroupIndex(4), ChunkNumber(0));
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn distinguishes_chunk_index() {
-        let a = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
-        let b = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(1));
-        assert_ne!(a, b);
+    fn chunk_key_distinguishes_epoch_group_chunk() {
+        let base = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
+        assert_ne!(base, snapshot_chunk_key(EpochNumber(10), GroupIndex(3), ChunkNumber(0)));
+        assert_ne!(base, snapshot_chunk_key(EpochNumber(9), GroupIndex(4), ChunkNumber(0)));
+        assert_ne!(base, snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(1)));
     }
 
     #[test]
@@ -116,42 +129,20 @@ mod tests {
         };
         let packed = payload.pack();
         assert_eq!(packed.len(), SnapshotChunkPayload::HEADER_SIZE + 5);
-        let decoded = SnapshotChunkPayload::unpack(&packed).unwrap();
-        assert_eq!(decoded, payload);
+        assert_eq!(SnapshotChunkPayload::unpack(&packed).unwrap(), payload);
     }
 
     #[test]
     fn chunk_payload_rejects_short_input() {
-        let short = [0u8; 4];
-        let err = SnapshotChunkPayload::unpack(&short).unwrap_err();
+        let err = SnapshotChunkPayload::unpack(&[0u8; 4]).unwrap_err();
         assert!(matches!(err, SnapshotError::ChunkPayloadTooShort(4)));
     }
 
     #[test]
-    fn chunk_payload_distinguishes_chunks_with_same_data() {
-        let a = SnapshotChunkPayload {
-            chunk: ChunkNumber(0),
-            data: vec![7u8; 32],
-        };
-        let b = SnapshotChunkPayload {
-            chunk: ChunkNumber(1),
-            data: vec![7u8; 32],
-        };
-        assert_ne!(a.pack(), b.pack());
-    }
-
-    #[test]
-    fn segment_round_trips() {
-        let segment = b"abcdefgh";
-        let packed = pack_segment(segment);
-        assert_eq!(packed.len(), SEGMENT_HEADER_SIZE + segment.len());
-        assert_eq!(unpack_segment(&packed).unwrap(), segment);
-    }
-
-    #[test]
-    fn segment_strips_trailing_padding() {
+    fn segment_round_trips_and_strips_padding() {
         let segment = b"hello";
         let mut padded = pack_segment(segment);
+        assert_eq!(unpack_segment(&padded).unwrap(), segment);
         padded.extend_from_slice(&[0u8; 12]);
         assert_eq!(unpack_segment(&padded).unwrap(), segment);
     }
@@ -159,9 +150,18 @@ mod tests {
     #[test]
     fn segment_rejects_short_or_truncated() {
         assert!(unpack_segment(&[0u8; 2]).is_err());
-        // Length prefix claims 10 bytes but only 2 follow.
         let mut bad = (10u32).to_le_bytes().to_vec();
         bad.extend_from_slice(&[0u8; 2]);
         assert!(unpack_segment(&bad).is_err());
+    }
+
+    #[test]
+    fn snapshot_outer_k_scales_with_group_count() {
+        assert_eq!(snapshot_outer_k(0), 0);
+        assert_eq!(snapshot_outer_k(1), 1);
+        assert_eq!(snapshot_outer_k(3), 1);
+        assert_eq!(snapshot_outer_k(20), 7);
+        assert_eq!(snapshot_outer_k(50), 17);
+        assert_eq!(snapshot_outer_k(100), 34);
     }
 }

@@ -6,13 +6,19 @@
 //! consensus logic, so it is shared by the node (bootstrap) and external clients
 //! (epoch explorer, lite clients). Callers supply their own transport.
 
+mod chunk;
 mod decode;
+mod encode;
 mod verify;
 
+pub use chunk::{
+    snapshot_chunk_key, snapshot_max_segment_bytes, snapshot_outer_k, SnapshotChunkPayload,
+};
 pub use decode::{
     assemble_snapshot_log, decode_chunk_payload, snapshot_track_group_count,
     validate_snapshot_track_list, K_INNER,
 };
+pub use encode::{encode_chunk, encode_snapshot, BuiltChunk, SnapshotChunk};
 pub use verify::verify_snapshot_track_set;
 
 use thiserror::Error;
@@ -43,6 +49,18 @@ pub enum SnapshotError {
     #[error("snapshot track set does not match the committed merkle root")]
     RootMismatch,
 
+    #[error("snapshot log serialize failed: {0}")]
+    Serialize(String),
+
+    #[error("clay encode failed: {0}")]
+    ClayEncode(String),
+
+    #[error("clay encode produced {got} slices, expected {expected}")]
+    ClayEncodeArity { got: usize, expected: usize },
+
+    #[error("outer rs encode failed: {0}")]
+    OuterEncode(String),
+
     #[error("clay decode failed: {0}")]
     ClayDecode(String),
 
@@ -51,6 +69,9 @@ pub enum SnapshotError {
 
     #[error("snapshot chunk payload failed: {0}")]
     ChunkPayload(String),
+
+    #[error("snapshot chunk payload too short: {0} bytes")]
+    ChunkPayloadTooShort(usize),
 
     #[error("only {got}/{need} groups decoded for epoch {epoch} chunk {chunk}")]
     InsufficientGroups {

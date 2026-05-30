@@ -1,43 +1,17 @@
-//! Outer Reed-Solomon code for snapshot erasure across spool groups.
-//!
-//! The outer code distributes snapshot data across the active spool groups,
-//! providing high fault tolerance. This is a single-level RS code, no
-//! striping or rotation. `n` (the active group count) is supplied at
-//! construction by the caller.
+//! Single-level Reed-Solomon coder distributing data across `n` shards such
+//! that any `k` reconstruct it. No striping or rotation; `n` (e.g. the active
+//! spool group count) is supplied at construction. Snapshot-specific `k`/segment
+//! sizing lives in `tape-snapshot`.
 
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
-use tape_core::snapshot::chunk::SEGMENT_HEADER_SIZE;
 
 use crate::errors::{DecodeError, EncodeError};
-
-/// Snapshot outer RS data threshold is one third of the active group count,
-/// rounded up. At n=50 this preserves the old fixed threshold: ceil(50/3)=17.
-pub const SNAPSHOT_OUTER_DATA_DENOMINATOR: usize = 3;
 
 /// Maximum per-symbol size for the outer RS coder, set by the
 /// `reed_solomon_simd` shard-size constraint.
 pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
-/// Derive the snapshot outer RS `k` from the active group count.
-pub const fn snapshot_outer_k(total_groups: usize) -> usize {
-    if total_groups == 0 {
-        0
-    } else {
-        total_groups.div_ceil(SNAPSHOT_OUTER_DATA_DENOMINATOR)
-    }
-}
-
-/// Maximum compressed bytes carried by one snapshot outer RS segment.
-pub const fn snapshot_max_segment_bytes(total_groups: usize) -> usize {
-    let k = snapshot_outer_k(total_groups);
-    if k == 0 {
-        0
-    } else {
-        k * MAX_CHUNK_BYTES - SEGMENT_HEADER_SIZE
-    }
-}
-
-/// Outer Reed-Solomon coder for snapshot distribution across spool groups.
+/// Outer Reed-Solomon coder for distribution across `n` shards.
 ///
 /// Encodes data into `n` chunks (one per spool group) such that any `k`
 /// chunks suffice to reconstruct the original data. Unlike the inner
@@ -227,7 +201,7 @@ mod tests {
     use super::*;
 
     const SPOOL_GROUP_COUNT: usize = 50;
-    const TEST_K: usize = snapshot_outer_k(SPOOL_GROUP_COUNT);
+    const TEST_K: usize = 17; // ceil(50 / 3)
 
     fn make_data(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -250,19 +224,8 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_outer_k_scales_with_group_count() {
-        assert_eq!(snapshot_outer_k(0), 0);
-        assert_eq!(snapshot_outer_k(1), 1);
-        assert_eq!(snapshot_outer_k(2), 1);
-        assert_eq!(snapshot_outer_k(3), 1);
-        assert_eq!(snapshot_outer_k(20), 7);
-        assert_eq!(snapshot_outer_k(50), 17);
-        assert_eq!(snapshot_outer_k(100), 34);
-    }
-
-    #[test]
     fn single_group_roundtrip_has_no_parity() {
-        let mut coder = OuterCoder::new(snapshot_outer_k(1), 1);
+        let mut coder = OuterCoder::new(1, 1);
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 

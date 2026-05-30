@@ -162,7 +162,7 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
-    use tape_core::snapshot::chunk::snapshot_chunk_key;
+    use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobInfo;

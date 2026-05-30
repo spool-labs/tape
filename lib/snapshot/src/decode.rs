@@ -3,13 +3,13 @@
 
 use std::collections::BTreeMap;
 
-use tape_core::snapshot::chunk::{unpack_segment, SnapshotChunkPayload};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ChunkNumber, EpochNumber};
 use tape_crypto::address::Address;
-use tape_slicer::{snapshot_outer_k, ErasureCoder, OuterCoder, Slicer};
+use tape_slicer::{ErasureCoder, OuterCoder, Slicer};
 
+use crate::chunk::{snapshot_outer_k, unpack_segment, SnapshotChunkPayload};
 use crate::SnapshotError;
 
 /// Minimum verified inner slices needed to Clay-decode one chunk.
