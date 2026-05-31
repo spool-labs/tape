@@ -9149,8 +9149,11 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-retry",
+ "tape-snapshot",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
+ "tracing",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
 ]

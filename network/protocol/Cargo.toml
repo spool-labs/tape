@@ -7,6 +7,7 @@ edition.workspace = true
 tape-api = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
+tape-snapshot = { workspace = true }
 rpc.workspace = true
 rpc-client.workspace = true
 tape-retry.workspace = true
@@ -17,7 +18,9 @@ serde.workspace = true
 wincode.workspace = true
 wincode-derive.workspace = true
 bytemuck.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
 
 [dev-dependencies]
 bytemuck.workspace = true
-tokio.workspace = true
