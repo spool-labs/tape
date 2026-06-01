@@ -277,13 +277,7 @@ impl Orchestrator {
             .collect::<Vec<_>>();
 
         self.chain
-            .start_network(
-                &genesis_authorities,
-                self.config.spool_groups,
-                self.config.epoch_duration,
-                self.config.min_epoch_duration,
-                self.config.max_epoch_duration,
-            )
+            .start_network(&genesis_authorities, self.config.spool_groups)
             .await
             .context("start genesis network")?;
 

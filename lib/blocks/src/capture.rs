@@ -321,7 +321,8 @@ fn capture_instruction(
         | ParsedInstruction::CreateEpoch { .. }
         | ParsedInstruction::CreateCommittee { .. }
         | ParsedInstruction::ResizeCommittee { .. }
-        | ParsedInstruction::ResizePeerSet { .. } => return Ok(None),
+        | ParsedInstruction::ResizePeerSet { .. }
+        | ParsedInstruction::StartNetwork => return Ok(None),
     };
 
     Ok(Some(captured))
@@ -489,7 +490,8 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::VoteAssignment { .. }
         | ParsedInstruction::FinalizeGroup { .. }
         | ParsedInstruction::CertifyTrack { .. }
-        | ParsedInstruction::InvalidateTrack { .. } => None,
+        | ParsedInstruction::InvalidateTrack { .. }
+        | ParsedInstruction::StartNetwork => None,
     }
 }
 

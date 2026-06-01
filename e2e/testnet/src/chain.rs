@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rpc::RpcError;
+use rpc::{CommitmentLevel, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use solana_client::nonblocking::rpc_client::RpcClient as SolRpcClient;
@@ -23,7 +23,8 @@ use tape_api::genesis::GenesisConfig;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::coin::TAPE;
-use tape_core::types::{EpochDuration, EpochNumber};
+use tape_core::types::EpochNumber;
+use tape_protocol::fetch::fetch_state_with_commitment;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tracing::info;
@@ -117,7 +118,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_system",
-            vec![build_create_system_ix(admin_address, admin_address, &GenesisConfig::default())],
+            vec![build_create_system_ix(admin_address, admin_address, &GenesisConfig::testnet())],
         )
         .await?;
 
@@ -129,7 +130,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_archive",
-            vec![build_create_archive_ix(admin_address, admin_address, &GenesisConfig::default())],
+            vec![build_create_archive_ix(admin_address, admin_address, &GenesisConfig::testnet())],
         )
         .await?;
 
@@ -147,8 +148,35 @@ impl ChainManager {
             .await?;
         }
 
+        self.wait_for_finalized_genesis().await?;
+
         info!("chain initialization complete");
         Ok(())
+    }
+
+    /// Block until genesis state is readable at Finalized commitment.
+    ///
+    /// Genesis txs above are confirmed at Confirmed, but each node bootstraps by
+    /// reading protocol state at Finalized (see node `features/bootstrap`). On a
+    /// real validator finalization lags confirmation by ~32 slots, so spawning
+    /// nodes immediately races that window — they read a not-yet-finalized
+    /// genesis account, get a non-retriable AccountNotFound, and exit before
+    /// going healthy. (The in-process devnet finalizes instantly, so it never
+    /// hits this.) Gating on the node's own first read makes the race go away.
+    async fn wait_for_finalized_genesis(&self) -> Result<()> {
+        for attempt in 0..120 {
+            match fetch_state_with_commitment(&self.rpc, CommitmentLevel::Finalized).await {
+                Ok(_) => return Ok(()),
+                Err(RpcError::AccountNotFound(_)) => {
+                    if attempt == 0 {
+                        info!("waiting for genesis to finalize");
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(e) => return Err(e).context("waiting for genesis to finalize"),
+            }
+        }
+        anyhow::bail!("genesis did not finalize within 60s");
     }
 
     async fn send_idempotent(&self, label: &str, ixs: Vec<Instruction>) -> Result<()> {
@@ -272,9 +300,6 @@ impl ChainManager {
         &self,
         genesis_authorities: &[Keypair],
         spool_groups: u64,
-        epoch_duration: EpochDuration,
-        min_epoch_duration: EpochDuration,
-        max_epoch_duration: EpochDuration,
     ) -> Result<()> {
         if self.current_epoch().await? != EpochNumber(0) {
             info!("network already started");
@@ -299,10 +324,7 @@ impl ChainManager {
 
         let config = GenesisConfig {
             spool_groups,
-            epoch_duration,
-            min_epoch_duration,
-            max_epoch_duration,
-            ..GenesisConfig::default()
+            ..GenesisConfig::testnet()
         };
         let ix = build_start_network_ix(
             self.admin.pubkey().into(),

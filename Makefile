@@ -3,10 +3,12 @@
 # Usage:
 #   make programs     - Build all Solana programs via solana/programs/Makefile
 #   make node         - Build tape-node release binary with metrics enabled
+#   make explorer     - Build the tapedrive-explorer release binary
 #   make testnet      - Build the testnet orchestrator release binary
 #   make reset        - Remove local validator ledger + testnet state
 #   make run-solana   - Start the local solana-test-validator with programs loaded
 #   make run-testnet  - Run testnet against the local validator
+#   make run-explorer - Serve the explorer against the testnet validator (EXPLORER_RPC to override)
 #   make run-testnet-samply - Profile the release testnet orchestrator with samply
 #   make run-testnet-upload-file - Upload a large file against the running testnet
 #   make run-devnet   - Run the in-process devnet TUI (release build, no profiler)
@@ -28,6 +30,8 @@
 #   TESTNET_RPC_URL=http://127.0.0.1:8899
 #   TESTNET_API_PORT=9000
 #   TESTNET_NODES=3
+#   EXPLORER_BIND=127.0.0.1:8080
+#   EXPLORER_RPC=http://127.0.0.1:8899
 
 PROGRAMS_DIR := solana/programs
 TESTNET_DATA_DIR ?= target/testnet
@@ -39,15 +43,24 @@ TESTNET_ADMIN_KEYPAIR ?= $(TESTNET_DATA_DIR)/admin.json
 TESTNET_FILE_SIZE_BYTES ?= 1073741824
 TESTNET_UPLOAD_EPOCHS ?= 4
 
+# Explorer defaults to the same local validator the testnet uses.
+EXPLORER_BIND ?= 127.0.0.1:8080
+EXPLORER_DB ?= $(CURDIR)/target/explorer-local.sqlite3
+EXPLORER_RPC ?= $(TESTNET_RPC_URL)
+
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node testnet reset run-solana run-testnet run-testnet-samply run-testnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux deploy-tools install uninstall
+.PHONY: programs node explorer testnet reset run-solana run-testnet run-explorer run-testnet-samply run-testnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
 
 node:
 	cargo build --release -p tape-node --features metrics
+
+# Separate workspace (own Cargo.lock); build from within explorer/.
+explorer:
+	cd explorer && cargo build --release
 
 testnet:
 	cargo build --release -p tape-e2e-testnet --bin testnet
@@ -82,6 +95,15 @@ run-testnet-upload-file:
 		--admin-keypair $(TESTNET_ADMIN_KEYPAIR) \
 		--size-bytes $(TESTNET_FILE_SIZE_BYTES) \
 		--epochs $(TESTNET_UPLOAD_EPOCHS)
+
+# Serve the explorer against the local testnet validator. Separate workspace,
+# so cd in; override EXPLORER_RPC to point at a different chain.
+run-explorer:
+	cd explorer && cargo run --release -- \
+		serve \
+		--bind $(EXPLORER_BIND) \
+		--db $(EXPLORER_DB) \
+		--rpc $(EXPLORER_RPC)
 
 run-devnet:
 	cargo run --release -p tape-e2e-devnet --bin devnet

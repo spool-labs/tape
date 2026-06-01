@@ -38,6 +38,7 @@ pub enum RawInstruction {
     ResizePeerSet,
     CommitEpoch,
     AdvanceEpoch,
+    StartNetwork,
     SyncSpool {
         node: Address,
         spool: u64,
@@ -153,6 +154,9 @@ pub enum ParsedInstruction {
     AdvanceEpoch {
         event: EpochAdvanced,
     },
+    // Genesis epoch transition (epoch 0 -> 1). Emits no event; carries no data
+    // because consumers react by re-fetching protocol state.
+    StartNetwork,
     SyncSpool {
         node: Address,
         spool: u64,
@@ -349,6 +353,8 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
 
+        TapeInstruction::StartNetwork => Ok(Some(RawInstruction::StartNetwork)),
+
         TapeInstruction::SyncSpool => {
             let args = ix::SyncSpool::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("sync_spool: {e:?}")))?;
@@ -531,7 +537,6 @@ pub fn parse_raw_instruction(
         | TapeInstruction::CreateSystem
         | TapeInstruction::CreateArchive
         | TapeInstruction::CreatePeerSet
-        | TapeInstruction::StartNetwork
         | TapeInstruction::SetAuthority
         | TapeInstruction::SetName
         | TapeInstruction::SetBlsPubkey

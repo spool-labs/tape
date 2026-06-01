@@ -58,7 +58,7 @@ const DEFAULT: GenesisConfig = GenesisConfig {
 const TESTNET: GenesisConfig = GenesisConfig {
     min_epoch_duration: EpochDuration(60),         // 60 seconds
     max_epoch_duration: EpochDuration(1_209_600),  // 2 weeks
-    epoch_duration: EpochDuration(3_600),          // 1 hour
+    epoch_duration: EpochDuration(100),            // 100 seconds
     ..DEFAULT
 };
 

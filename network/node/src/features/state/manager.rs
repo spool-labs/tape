@@ -89,6 +89,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 ParsedInstruction::AdvanceEpoch { event } => {
                     handlers.handle_advance_epoch(event.new_epoch).await?;
                 }
+                ParsedInstruction::StartNetwork => {
+                    handlers.handle_start_network().await?;
+                }
                 ParsedInstruction::SyncSpool { event, .. } => {
                     handlers.handle_sync_spool(*event).await?;
                 }

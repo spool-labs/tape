@@ -73,6 +73,9 @@ pub fn merge(
                 ParsedInstruction::AdvanceEpoch { event }
             }
 
+            // Emits no event; consumers react by re-fetching protocol state.
+            RawInstruction::StartNetwork => ParsedInstruction::StartNetwork,
+
             RawInstruction::SyncSpool { node, spool } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::SpoolSynced(e)) => e,
@@ -499,6 +502,19 @@ mod tests {
             }
             _ => panic!("Expected AdvanceEpoch"),
         }
+    }
+
+    #[test]
+    fn merge_start_network_consumes_no_event() {
+        // StartNetwork emits no event; it must not steal a following event.
+        let instructions = vec![RawInstruction::StartNetwork, RawInstruction::AdvanceEpoch];
+        let events = vec![TapedriveEvent::EpochAdvanced(epoch_advanced_event())];
+
+        let merged = merge(instructions, events).unwrap();
+
+        assert_eq!(merged.len(), 2);
+        assert!(matches!(merged[0], ParsedInstruction::StartNetwork));
+        assert!(matches!(merged[1], ParsedInstruction::AdvanceEpoch { .. }));
     }
 
     #[test]

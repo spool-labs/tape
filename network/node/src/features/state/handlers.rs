@@ -81,6 +81,15 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         Ok(())
     }
 
+    /// Genesis epoch transition. `start_network` moves the chain from epoch 0 to
+    /// the genesis epoch, but a node that booted before it ran is still cached at
+    /// epoch 0 (and `StartNetwork` emits no event of its own). Treat it like an
+    /// epoch advance so the node re-fetches and catches up to the live committee.
+    pub async fn handle_start_network(&self) -> Result<(), NodeError> {
+        let target = self.context.state().epoch().next();
+        self.handle_advance_epoch(target).await
+    }
+
     pub async fn handle_commit_epoch(
         &self,
         epoch: EpochNumber,

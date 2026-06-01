@@ -406,7 +406,11 @@ network:
   port: {port}
 
 http:
-  listen: "127.0.0.1:{port}"
+  listen: "127.0.0.1:{plaintext_port}"
+
+https:
+  listen: "0.0.0.0:{port}"
+  identity_keypair: "{tls}"
 
 store:
   path: "{store}"
@@ -415,12 +419,8 @@ metrics:
   enabled: true
 
 logging:
-  filter: "info"
+  filter: "info,tape_node::features::lifecycle=debug"
   format: compact
-
-tls:
-  identity_keypair: "{tls}"
-  local_plaintext_listen: "127.0.0.1:{plaintext_port}"
 "#,
         keypair = keypair_path.display(),
         bls = bls_path.display(),
