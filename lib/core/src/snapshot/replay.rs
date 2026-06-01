@@ -1,10 +1,3 @@
-//! Epoch snapshot types for fast node bootstrap.
-//!
-//! At each epoch boundary, committee members build a deterministic event log
-//! (`SnapshotLog`) from the events processed during the epoch. This log can
-//! be replayed through block processor handlers to reconstruct state without
-//! replaying all Solana blocks from genesis.
-
 #[cfg(feature = "wincode")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
@@ -200,8 +193,7 @@ pub struct ReplayTrack {
     pub blob: Option<BlobInfo>,
 }
 
-/// One canonical replay record with enough source metadata for explorers and
-/// protocol debugging, while keeping replay state transitions compact.
+/// Single replay event emitted during block processing, with associated metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct ReplayRecord {

@@ -1,65 +1,61 @@
+//! Capture parsed Tapedrive instructions into replayable events.
+
 use bytemuck::bytes_of;
 use tape_api::event::{TapeDestroyed, TapeReserved, TrackDeleted, TrackWritten};
 use tape_api::program::tapedrive::track_pda;
-use tape_blocks::{ParseError, ParsedInstruction};
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
+use tape_core::spooler::GroupIndex;
 use tape_core::track::data::TrackDataSlice;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
-use tape_crypto::Hash;
 use tape_crypto::tx::Txid;
+use tape_crypto::Hash;
 
-use crate::core::error::NodeError;
-use crate::features::block::ingestor::ParsedBlock;
-use crate::features::replay::types::{RawTrack, ReplayBatch};
+use crate::{ParseError, ParsedInstruction};
 
+/// An event captured from a parsed instruction, ready for replay
 pub struct CapturedEvent {
     pub epoch: EpochNumber,
     pub record: ReplayRecord,
 }
 
-struct Captured {
-    event: CapturedEvent,
-    raw_track: Option<RawTrack>,
+/// A raw track payload captured from a TrackWrite instruction
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTrack {
+    pub track: Address,
+    pub group: GroupIndex,
+    pub data: Vec<u8>,
 }
 
+/// The output of capturing a block's instructions
 pub struct CaptureOutput {
     pub next_epoch: EpochNumber,
     pub events: Vec<CapturedEvent>,
     pub raw_tracks: Vec<RawTrack>,
 }
 
-impl CaptureOutput {
-    pub fn into_batch(self, slot: SlotNumber) -> ReplayBatch {
-        ReplayBatch {
-            slot,
-            records: self.events.into_iter().map(|entry| entry.record).collect(),
-            raw_tracks: self.raw_tracks,
-        }
-    }
-}
 
+/// Capture a block's instructions into replayable events.
 pub fn capture_block(
     initial_epoch: EpochNumber,
-    block: &ParsedBlock,
-) -> Result<CaptureOutput, NodeError> {
+    slot: SlotNumber,
+    instructions: &[ParsedInstruction],
+    tx_ids: &[Txid],
+) -> Result<CaptureOutput, ParseError> {
     let mut current_epoch = initial_epoch;
     let mut events = Vec::new();
     let mut raw_tracks = Vec::new();
 
-    for (index, instruction) in block.instructions.iter().enumerate() {
-        let tx_id =
-            *block
-                .instruction_tx_ids
-                .get(index)
-                .ok_or_else(|| NodeError::BlockMalformed {
-                    slot: block.slot.0,
-                    reason: format!("missing tx id for instruction {index}"),
-                })?;
+    for (index, instruction) in instructions.iter().enumerate() {
+        let tx_id = *tx_ids.get(index).ok_or_else(|| {
+            ParseError::Deserialization(format!(
+                "missing tx id for instruction {index} at slot {}",
+                slot.0
+            ))
+        })?;
 
-        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id)?
-        else {
+        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id)? else {
             continue;
         };
         if let Some(raw_track) = captured.raw_track {
@@ -75,11 +71,16 @@ pub fn capture_block(
     })
 }
 
+struct Captured {
+    event: CapturedEvent,
+    raw_track: Option<RawTrack>,
+}
+
 fn capture_instruction(
     current_epoch: &mut EpochNumber,
     instruction: &ParsedInstruction,
     tx_id: Txid,
-) -> Result<Option<Captured>, NodeError> {
+) -> Result<Option<Captured>, ParseError> {
     let actor = actor_for(instruction);
     let captured = match instruction {
         ParsedInstruction::AdvanceEpoch { event } => {
@@ -102,7 +103,7 @@ fn capture_instruction(
                 ),
                 raw_track: None,
             }
-        },
+        }
         ParsedInstruction::SyncSpool { event, .. } => Captured {
             event: captured_event(
                 *current_epoch,
@@ -229,12 +230,9 @@ fn capture_instruction(
             ),
             raw_track: None,
         },
-        ParsedInstruction::TrackWrite {
-            key,
-            value,
-            event,
-            ..
-        } => capture_track(*current_epoch, tx_id, actor, event, *key, value.as_slice())?,
+        ParsedInstruction::TrackWrite { key, value, event, .. } => {
+            capture_track(*current_epoch, tx_id, actor, event, *key, value.as_slice())?
+        }
         ParsedInstruction::DeleteTrack { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
         }
@@ -296,33 +294,25 @@ fn capture_instruction(
             ),
             raw_track: None,
         },
-        ParsedInstruction::AddToBlacklist { entry, event, .. } => {
-            capture_track(
-                *current_epoch,
-                tx_id,
-                actor,
-                event,
-                entry.key(),
-                TrackDataSlice::Raw(bytes_of(entry)),
-            )?
-        }
+        ParsedInstruction::AddToBlacklist { entry, event, .. } => capture_track(
+            *current_epoch,
+            tx_id,
+            actor,
+            event,
+            entry.key(),
+            TrackDataSlice::Raw(bytes_of(entry)),
+        )?,
         ParsedInstruction::RemoveFromBlacklist { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
         }
-        ParsedInstruction::AdvancePool {
-            span,
+        ParsedInstruction::AdvancePool { span, track_event, .. } => capture_track(
+            *current_epoch,
+            tx_id,
+            actor,
             track_event,
-            ..
-        } => {
-            capture_track(
-                *current_epoch,
-                tx_id,
-                actor,
-                track_event,
-                span.key(),
-                TrackDataSlice::Raw(bytes_of(span)),
-            )?
-        }
+            span.key(),
+            TrackDataSlice::Raw(bytes_of(span)),
+        )?,
 
         // No corresponding ReplayableEvent variant yet — silently drop.
         // These can be added when a use case appears.
@@ -345,47 +335,7 @@ fn captured_event(
 ) -> CapturedEvent {
     CapturedEvent {
         epoch,
-        record: ReplayRecord {
-            tx_id,
-            actor,
-            event,
-        },
-    }
-}
-
-fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
-    match instruction {
-        ParsedInstruction::SyncSpool { node, .. }
-        | ParsedInstruction::AdvancePool { node, .. }
-        | ParsedInstruction::JoinCommittee { node, .. }
-        | ParsedInstruction::AddToBlacklist { node, .. }
-        | ParsedInstruction::RemoveFromBlacklist { node, .. } => Some((*node).into()),
-
-        ParsedInstruction::TrackWrite { authority, .. }
-        | ParsedInstruction::RegisterNode { authority, .. }
-        | ParsedInstruction::StakeWithPool { authority, .. }
-        | ParsedInstruction::RequestStakeUnlock { authority, .. }
-        | ParsedInstruction::UnstakeFromPool { authority, .. }
-        | ParsedInstruction::ClaimCommission { authority, .. } => Some((*authority).into()),
-
-        ParsedInstruction::DeleteTrack { owner, .. }
-        | ParsedInstruction::ReserveTape { owner, .. }
-        | ParsedInstruction::DestroyTape { owner, .. } => Some((*owner).into()),
-
-        ParsedInstruction::CreateEpoch { .. }
-        | ParsedInstruction::CreateCommittee { .. }
-        | ParsedInstruction::ResizeCommittee { .. }
-        | ParsedInstruction::ResizePeerSet { .. }
-        | ParsedInstruction::CommitEpoch { .. }
-        | ParsedInstruction::AdvanceEpoch { .. }
-        | ParsedInstruction::ProposeSnapshot { .. }
-        | ParsedInstruction::VoteSnapshot { .. }
-        | ParsedInstruction::FinalizeSnapshot { .. }
-        | ParsedInstruction::ProposeAssignment { .. }
-        | ParsedInstruction::VoteAssignment { .. }
-        | ParsedInstruction::FinalizeGroup { .. }
-        | ParsedInstruction::CertifyTrack { .. }
-        | ParsedInstruction::InvalidateTrack { .. } => None,
+        record: ReplayRecord { tx_id, actor, event },
     }
 }
 
@@ -396,7 +346,7 @@ fn capture_track(
     event: &TrackWritten,
     key: Hash,
     data: TrackDataSlice<'_>,
-) -> Result<Captured, NodeError> {
+) -> Result<Captured, ParseError> {
     let meta = data
         .meta()
         .ok_or_else(|| ParseError::Deserialization("invalid track payload".into()))?;
@@ -413,11 +363,11 @@ fn capture_track(
     };
 
     if track_pda(event.tape, event.track_number).0 != event.track {
-        return Err(ParseError::EventMismatch("unexpected TrackWritten track address").into());
+        return Err(ParseError::EventMismatch("unexpected TrackWritten track address"));
     }
 
     if state.get_hash() != event.track_hash {
-        return Err(ParseError::EventMismatch("unexpected TrackWritten track hash").into());
+        return Err(ParseError::EventMismatch("unexpected TrackWritten track hash"));
     }
 
     Ok(Captured {
@@ -484,10 +434,7 @@ fn capture_delete(
             epoch,
             tx_id,
             actor,
-            ReplayableEvent::DeleteTrack {
-                track: event.track,
-                epoch,
-            },
+            ReplayableEvent::DeleteTrack { track: event.track, epoch },
         ),
         raw_track: None,
     }
@@ -504,12 +451,45 @@ fn capture_destroy(
             epoch,
             tx_id,
             actor,
-            ReplayableEvent::DestroyTape {
-                tape: event.tape,
-                epoch,
-            },
+            ReplayableEvent::DestroyTape { tape: event.tape, epoch },
         ),
         raw_track: None,
+    }
+}
+
+fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
+    match instruction {
+        ParsedInstruction::SyncSpool { node, .. }
+        | ParsedInstruction::AdvancePool { node, .. }
+        | ParsedInstruction::JoinCommittee { node, .. }
+        | ParsedInstruction::AddToBlacklist { node, .. }
+        | ParsedInstruction::RemoveFromBlacklist { node, .. } => Some((*node).into()),
+
+        ParsedInstruction::TrackWrite { authority, .. }
+        | ParsedInstruction::RegisterNode { authority, .. }
+        | ParsedInstruction::StakeWithPool { authority, .. }
+        | ParsedInstruction::RequestStakeUnlock { authority, .. }
+        | ParsedInstruction::UnstakeFromPool { authority, .. }
+        | ParsedInstruction::ClaimCommission { authority, .. } => Some((*authority).into()),
+
+        ParsedInstruction::DeleteTrack { owner, .. }
+        | ParsedInstruction::ReserveTape { owner, .. }
+        | ParsedInstruction::DestroyTape { owner, .. } => Some((*owner).into()),
+
+        ParsedInstruction::CreateEpoch { .. }
+        | ParsedInstruction::CreateCommittee { .. }
+        | ParsedInstruction::ResizeCommittee { .. }
+        | ParsedInstruction::ResizePeerSet { .. }
+        | ParsedInstruction::CommitEpoch { .. }
+        | ParsedInstruction::AdvanceEpoch { .. }
+        | ParsedInstruction::ProposeSnapshot { .. }
+        | ParsedInstruction::VoteSnapshot { .. }
+        | ParsedInstruction::FinalizeSnapshot { .. }
+        | ParsedInstruction::ProposeAssignment { .. }
+        | ParsedInstruction::VoteAssignment { .. }
+        | ParsedInstruction::FinalizeGroup { .. }
+        | ParsedInstruction::CertifyTrack { .. }
+        | ParsedInstruction::InvalidateTrack { .. } => None,
     }
 }
 
@@ -520,7 +500,6 @@ mod tests {
         EpochAdvanced, SnapshotFinalized, TapeReserved, TrackCertified, TrackWritten,
     };
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-    use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::snapshot::replay::ReplayableEvent;
@@ -529,17 +508,17 @@ mod tests {
     use tape_core::track::blob::BlobInfo;
     use tape_core::track::data::TrackData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::coin::TAPE;
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
-    use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
     use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
 
-    use super::capture_block;
-    use crate::features::block::ingestor::ParsedBlock;
+    use super::{capture_block, CaptureOutput};
+    use crate::ParsedInstruction;
 
     fn blob_info(slices: &[Vec<u8>]) -> BlobInfo {
         let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
@@ -641,11 +620,7 @@ mod tests {
         let value = TrackData::Raw(bytes_of(&entry).to_vec());
         let event = track_written_event(tape, entry.key(), &value, TrackNumber(9), GroupIndex(6), epoch);
 
-        ParsedInstruction::AddToBlacklist {
-            node,
-            entry,
-            event,
-        }
+        ParsedInstruction::AddToBlacklist { node, entry, event }
     }
 
     fn certify_track_instruction(track: Address, epoch: EpochNumber) -> ParsedInstruction {
@@ -694,22 +669,21 @@ mod tests {
         }
     }
 
-    fn test_block(slot: SlotNumber, instructions: Vec<ParsedInstruction>) -> ParsedBlock {
-        let instruction_tx_ids = vec![Txid::default(); instructions.len()];
-        ParsedBlock {
-            slot,
-            block_time: Some(1_700_000_000),
-            instructions,
-            instruction_tx_ids,
-            ..Default::default()
-        }
+    fn capture(
+        epoch: EpochNumber,
+        slot: SlotNumber,
+        instructions: Vec<ParsedInstruction>,
+    ) -> CaptureOutput {
+        let tx_ids = vec![Txid::default(); instructions.len()];
+        capture_block(epoch, slot, &instructions, &tx_ids).unwrap()
     }
 
     #[test]
     fn keeps_order() {
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let block = test_block(
+        let captured = capture(
+            EpochNumber(7),
             SlotNumber(42),
             vec![
                 blob_track_write_instruction(track, tape, EpochNumber(7)),
@@ -718,18 +692,15 @@ mod tests {
             ],
         );
 
-        let captured = capture_block(EpochNumber(7), &block).unwrap();
-        let batch = captured.into_batch(block.slot);
-
-        assert_eq!(batch.records.len(), 3);
-        assert!(batch.raw_tracks.is_empty());
-        assert!(matches!(batch.records[0].event, ReplayableEvent::Track(_)));
+        assert_eq!(captured.events.len(), 3);
+        assert!(captured.raw_tracks.is_empty());
+        assert!(matches!(captured.events[0].record.event, ReplayableEvent::Track(_)));
         assert!(matches!(
-            batch.records[1].event,
+            captured.events[1].record.event,
             ReplayableEvent::CertifyTrack { .. }
         ));
         assert!(matches!(
-            batch.records[2].event,
+            captured.events[2].record.event,
             ReplayableEvent::ReserveTape { .. }
         ));
     }
@@ -738,7 +709,8 @@ mod tests {
     fn rebuckets_events() {
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let block = test_block(
+        let captured = capture(
+            EpochNumber(4),
             SlotNumber(100),
             vec![
                 blob_track_write_instruction(track, tape, EpochNumber(4)),
@@ -746,8 +718,6 @@ mod tests {
                 reserve_tape_instruction(tape, EpochNumber(5), EpochNumber(10)),
             ],
         );
-
-        let captured = capture_block(EpochNumber(4), &block).unwrap();
 
         assert_eq!(captured.next_epoch, EpochNumber(5));
         assert_eq!(captured.events.len(), 3);
@@ -768,12 +738,11 @@ mod tests {
     fn captures_raw_track_write() {
         let tape = Address::new_unique();
         let track = track_pda(tape, TrackNumber(8)).0;
-        let block = test_block(
+        let captured = capture(
+            EpochNumber(9),
             SlotNumber(5),
             vec![raw_track_write_instruction(track, tape, EpochNumber(9))],
         );
-
-        let captured = capture_block(EpochNumber(9), &block).unwrap();
         assert_eq!(captured.events.len(), 1);
         assert_eq!(captured.raw_tracks.len(), 1);
 
@@ -800,18 +769,11 @@ mod tests {
         let tape = Address::new_unique();
         let track = track_pda(tape, TrackNumber(9)).0;
         let entry = BlacklistEntry::tape(Address::new_unique());
-        let block = test_block(
+        let captured = capture(
+            EpochNumber(9),
             SlotNumber(6),
-            vec![blacklist_add_instruction(
-                node,
-                track,
-                tape,
-                entry,
-                EpochNumber(9),
-            )],
+            vec![blacklist_add_instruction(node, track, tape, entry, EpochNumber(9))],
         );
-
-        let captured = capture_block(EpochNumber(9), &block).unwrap();
         assert_eq!(captured.events.len(), 1);
         assert_eq!(captured.raw_tracks.len(), 1);
 
@@ -841,12 +803,11 @@ mod tests {
     #[test]
     fn captures_snapshot_finalization() {
         let snapshot_epoch = EpochNumber(7);
-
-        let block = test_block(
+        let captured = capture(
+            snapshot_epoch,
             SlotNumber(7),
             vec![finalize_snapshot_instruction(snapshot_epoch)],
         );
-        let captured = capture_block(snapshot_epoch, &block).unwrap();
 
         assert_eq!(captured.events.len(), 1);
         assert!(captured.raw_tracks.is_empty());
@@ -855,11 +816,7 @@ mod tests {
         let expected_tape = Address::from(snapshot_tape_pda(snapshot_epoch).0);
 
         match &captured.events[0].record.event {
-            ReplayableEvent::SnapshotFinalized {
-                epoch,
-                snapshot_tape,
-                ..
-            } => {
+            ReplayableEvent::SnapshotFinalized { epoch, snapshot_tape, .. } => {
                 assert_eq!(*epoch, snapshot_epoch);
                 assert_eq!(*snapshot_tape, expected_tape);
             }
@@ -873,7 +830,8 @@ mod tests {
         let new_epoch = EpochNumber(8);
         let snapshot_epoch = old_epoch;
 
-        let block = test_block(
+        let captured = capture(
+            old_epoch,
             SlotNumber(42),
             vec![
                 advance_epoch_instruction(old_epoch, new_epoch),
@@ -881,17 +839,9 @@ mod tests {
             ],
         );
 
-        let captured = capture_block(old_epoch, &block).unwrap();
-
         assert_eq!(captured.next_epoch, new_epoch);
         assert_eq!(captured.events.len(), 2);
-
-        // AdvanceEpoch is tagged with the new epoch (established by the
-        // `rebuckets_events` test).
         assert_eq!(captured.events[0].epoch, new_epoch);
-
-        // FinalizeSnapshot references `snapshot_epoch`, but it lands in the
-        // current event bucket after AdvanceEpoch has moved the replay cursor.
         assert_eq!(captured.events[1].epoch, new_epoch);
 
         match &captured.events[1].record.event {

@@ -1,5 +1,3 @@
-//! Instruction parsing from Solana transactions.
-
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,

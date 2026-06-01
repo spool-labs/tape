@@ -1,4 +1,5 @@
 use store::Store;
+use tape_blocks::capture_block;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::types::EpochNumber;
 use tape_store::ops::{EventLogOps, MetaOps};
@@ -7,7 +8,6 @@ use tracing::debug;
 
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::replay::capture::capture_block;
 use crate::features::replay::types::ReplayBatch;
 use crate::features::store::apply::apply_event;
 use crate::features::store::manager::persist_batch;
@@ -37,7 +37,13 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
         &mut self,
         block: &ParsedBlock,
     ) -> Result<(ReplayBatch, usize), NodeError> {
-        let captured = capture_block(self.current_epoch, block)?;
+
+        let captured = capture_block(
+            self.current_epoch,
+            block.slot,
+            &block.instructions,
+            &block.instruction_tx_ids,
+        )?;
 
         for entry in &captured.events {
             self.store
@@ -46,7 +52,12 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
         }
 
         self.current_epoch = captured.next_epoch;
-        let batch = captured.into_batch(block.slot);
+
+        let batch = ReplayBatch {
+            slot: block.slot,
+            records: captured.events.into_iter().map(|entry| entry.record).collect(),
+            raw_tracks: captured.raw_tracks,
+        };
         let event_count = batch.records.len();
 
         Ok((batch, event_count))

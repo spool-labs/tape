@@ -28,6 +28,7 @@
 //! ```
 
 mod block;
+mod capture;
 mod error;
 mod event;
 mod helpers;
@@ -39,6 +40,7 @@ pub use block::{
     parse, parse_and_merge, parse_and_merge_with_sources, ParsedBlock,
     ParsedInstructionWithSource, ParsedTransaction,
 };
+pub use capture::{capture_block, CaptureOutput, CapturedEvent, RawTrack};
 pub use error::ParseError;
 pub use event::{parse_event_data, TapedriveEvent};
 pub use instruction::{ParsedInstruction, RawInstruction};

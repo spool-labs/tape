@@ -1,5 +1,3 @@
-//! Block-level parsing.
-
 use std::collections::BTreeMap;
 use solana_transaction_status::{
     option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
@@ -18,9 +16,6 @@ use crate::merge::merge;
 use tape_crypto::tx::Txid;
 
 /// Result of parsing a single block.
-///
-/// Contains BOTH raw instructions AND events, kept separate.
-/// Use `merge()` if you need merged output.
 #[derive(Debug, Default)]
 pub struct ParsedTransaction {
     /// Canonical transaction id, when available.
@@ -39,8 +34,6 @@ pub struct ParsedInstructionWithSource {
 }
 
 /// Result of parsing a single block.
-///
-/// Contains BOTH flattened and per-transaction instruction/event streams.
 #[derive(Debug, Default)]
 pub struct ParsedBlock {
     /// Raw instructions (before event matching).
