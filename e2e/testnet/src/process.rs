@@ -398,6 +398,8 @@ fn build_node_yaml(
   bls_keypair: "{bls}"
   commission: 0
 
+genesis_preset: testnet
+
 solana:
   rpc: "{rpc_url}"
 

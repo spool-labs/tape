@@ -1,16 +1,7 @@
-//! CU limits for tapedrive ix, used by ix builders to pre-set
-//! `ComputeBudgetInstruction::set_compute_unit_limit`. Solana's per-ix
-//! default is 200,000; the BLS-aggregate and iteration-heavy handlers
-//! must bump above that.
-//!
-//! Values include ~50%+ headroom over the worst case observed in SBF
-//! tests to absorb production-scale state.
-
 // BLS aggregate verify is the load. ~250k CU observed in SBF tests.
 pub const CERTIFY_TRACK_CU:    u32 = 400_000;
 pub const INVALIDATE_TRACK_CU: u32 = 400_000;
 pub const FINALIZE_SNAPSHOT_CU: u32 = 400_000;
-pub const FINALIZE_GROUP_CU:    u32 = 400_000;
 pub const VOTE_SNAPSHOT_CU:    u32    = 400_000;
 pub const VOTE_ASSIGNMENT_CU:  u32    = 400_000;
 
@@ -24,9 +15,7 @@ pub const UNSTAKE_FROM_POOL_CU: u32   = 150_000;
 
 // Mid-weight on-chain logic (merkle proofs, multi-account writes).
 pub const TRACK_WRITE_CU:         u32 = 100_000;
-// Reads both committees + the peer set, aggregates preferences over every
-// member/peer, and reads the SlotHashes sysvar — heavier than its old 100k cap.
-pub const COMMIT_EPOCH_CU:        u32 = 400_000;
+pub const COMMIT_EPOCH_CU:        u32 = 100_000;
 pub const ADVANCE_POOL_CU:        u32 =  50_000;
 pub const SETTLE_SPOOL_CU:        u32 =  50_000;
 pub const SYNC_SPOOL_CU:          u32 =  30_000;

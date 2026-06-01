@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tape_core::bls::BlsPrivateKey;
 use tape_api::consts::NAME_LENGTH;
+use tape_api::genesis::GenesisConfig;
 use tape_core::types::BasisPoints;
 use tape_crypto::ed25519::Keypair;
 use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
@@ -71,6 +72,32 @@ pub struct NodeConfig {
     /// Metrics configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
+
+    /// Genesis configuration.
+    #[serde(default)]
+    pub genesis_preset: GenesisPreset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum GenesisPreset {
+    /// Mainnet profile (1-week epochs). Safe default.
+    #[default]
+    Default,
+    /// Fast local profile (short epochs) for simnet/devnet.
+    Local,
+    /// Testnet profile (100s epochs).
+    Testnet,
+}
+
+impl GenesisPreset {
+    pub fn config(self) -> GenesisConfig {
+        match self {
+            GenesisPreset::Default => GenesisConfig::default(),
+            GenesisPreset::Local => GenesisConfig::local(),
+            GenesisPreset::Testnet => GenesisConfig::testnet(),
+        }
+    }
 }
 
 impl Default for NodeConfig {
@@ -85,6 +112,7 @@ impl Default for NodeConfig {
             recovery: RecoveryConfig::default(),
             logging: LoggingConfig::default(),
             metrics: MetricsConfig::default(),
+            genesis_preset: GenesisPreset::default(),
         }
     }
 }

@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
 use store::Store;
-use tape_api::compute::FINALIZE_GROUP_CU;
 use tape_api::instruction::build_finalize_group_ix;
 use tape_core::cert::{ASSIGNMENT_TREE_HEIGHT, AssignmentGroupPayload};
 use tape_core::types::EpochNumber;
@@ -20,7 +19,9 @@ pub async fn submit_finalize_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let fee_payer = ctx.pubkey().into();
     let ix = build_finalize_group_ix(fee_payer, epoch, payload, proof);
 
-    ctx.rpc
-        .send_instructions_with_compute_unit_limit(ctx.signer(), FINALIZE_GROUP_CU, vec![ix])
-        .await
+    // No explicit compute-unit limit: the FinalizeGroup payload + assignment
+    // merkle proof already push this tx near the 1232-byte transaction-size
+    // limit, and a ComputeBudget instruction would add ~40 bytes (its program
+    // key + the instruction) and push it over.
+    ctx.rpc.send_instructions(ctx.signer(), vec![ix]).await
 }

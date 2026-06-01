@@ -7,7 +7,6 @@ use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use store_rocks::RocksStore;
-use tape_api::genesis::GenesisConfig;
 use tape_api::program::tapedrive::node_pda;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
@@ -265,7 +264,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
         local_tls_pubkey,
         bls_pubkey,
         bls_pop,
-        NodePreferences::from(&GenesisConfig::default()),
+        NodePreferences::from(&config.genesis_preset.config()),
     )
     .await;
 
