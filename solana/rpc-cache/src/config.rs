@@ -57,6 +57,14 @@ pub struct Config {
     #[serde(default = "default_slot_store_max_bytes")]
     pub slot_store_max_bytes: u64,
 
+    /// How many whole epochs of history to fill below the current epoch at
+    /// bootstrap. 0 = current epoch only (from its start slot); 1 = also the
+    /// previous epoch, etc. Widening this lets a reader that bootstraps from
+    /// an older snapshot still find its blocks here instead of hitting the
+    /// validator's prune window. Default 1.
+    #[serde(default = "default_bootstrap_lookback_epochs")]
+    pub bootstrap_lookback_epochs: u64,
+
     /// Filter target. Any tx referencing one of these programs (via
     /// account_keys, loaded_addresses, or `Program <id> invoke` log
     /// lines) is kept. All other txs are dropped from the stored block.
@@ -79,6 +87,10 @@ fn default_capacity() -> u64 {
 
 fn default_slot_store_max_bytes() -> u64 {
     4 * 1024 * 1024 * 1024
+}
+
+fn default_bootstrap_lookback_epochs() -> u64 {
+    1
 }
 
 fn default_filter_program_ids() -> Vec<String> {

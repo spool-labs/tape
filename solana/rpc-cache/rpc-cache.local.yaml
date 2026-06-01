@@ -1,0 +1,27 @@
+# Local rpc-cache config, used by `make run-cache`.
+#
+# Sits between the local solana-test-validator and the explorer (and any other
+# reader). The validator prunes its ledger aggressively, so a reader that falls
+# behind the prune window can no longer fetch old blocks directly. The cache
+# tails the validator continuously and retains a wide window of blocks in its
+# slot store, so a lagging reader can always catch up.
+#
+# Values come from the environment (set by the Makefile recipe). To run the
+# binary by hand, export CACHE_BIND / CACHE_UPSTREAM / CACHE_API_KEY first.
+listen: "${CACHE_BIND}"
+upstream: "${CACHE_UPSTREAM}"
+api_key: "${CACHE_API_KEY}"
+
+min_429_delay: "10s"
+# Local fleet submits constantly; skip the per-submit log line.
+log_submits: false
+max_entries: 10000
+
+# Keep a wide block window (4 GiB) so a reader that bootstraps from an older
+# snapshot can still tail forward through the cache without hitting a gap.
+slot_store_max_bytes: 4294967296
+
+# Also fill the previous epoch at bootstrap (not just the current one), so a
+# reader bootstrapping from the previous epoch's snapshot lands inside the
+# cache's window instead of in the validator's prune gap.
+bootstrap_lookback_epochs: 1

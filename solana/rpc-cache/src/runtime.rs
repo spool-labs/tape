@@ -70,7 +70,7 @@ pub async fn run_application(config: Config) -> Result<()> {
     let state = build_state(&config)?;
     let cancel = CancellationToken::new();
 
-    bootstrap(state.clone(), cancel.clone()).await?;
+    bootstrap(state.clone(), config.bootstrap_lookback_epochs, cancel.clone()).await?;
     state.stats.bootstrap_done.store(true, Ordering::Relaxed);
 
     let listener = TcpListener::bind(&config.listen)
@@ -163,7 +163,11 @@ fn parse_program_ids(raw: &[String]) -> Result<Vec<Address>> {
         .collect()
 }
 
-async fn bootstrap(state: Arc<AppState>, cancel: CancellationToken) -> Result<()> {
+async fn bootstrap(
+    state: Arc<AppState>,
+    lookback_epochs: u64,
+    cancel: CancellationToken,
+) -> Result<()> {
     let system = fetch_system_account(&state.upstream)
         .await
         .context("fetching system account during bootstrap")?;
@@ -173,6 +177,12 @@ async fn bootstrap(state: Arc<AppState>, cancel: CancellationToken) -> Result<()
     let epoch_start = epoch.start_slot.0;
     state.stats.epoch_start_slot.store(epoch_start, Ordering::Relaxed);
 
+    // Fill from `lookback_epochs` before the current epoch so a reader that
+    // bootstraps from an older snapshot finds its blocks here. Falls back to
+    // the current epoch's start when the older epoch account is gone.
+    let fill_start = bootstrap_floor(&state, system.current_epoch, lookback_epochs, epoch_start)
+        .await;
+
     let live = fetch_live_slot(&state.upstream)
         .await
         .context("fetching live slot during bootstrap")?;
@@ -181,8 +191,9 @@ async fn bootstrap(state: Arc<AppState>, cancel: CancellationToken) -> Result<()
 
     info!(
         epoch_start_slot = epoch_start,
+        fill_start,
         target_slot = live,
-        slots_to_fetch = live.saturating_sub(epoch_start) + 1,
+        slots_to_fetch = live.saturating_sub(fill_start) + 1,
         "rpc-cache bootstrap starting"
     );
 
@@ -199,16 +210,16 @@ async fn bootstrap(state: Arc<AppState>, cancel: CancellationToken) -> Result<()
         ));
     }
 
-    if epoch_start > live {
+    if fill_start > live {
         warn!(
-            epoch_start_slot = epoch_start,
+            fill_start,
             live_slot = live,
-            "epoch start is ahead of live slot; skipping bootstrap fill"
+            "bootstrap floor is ahead of live slot; skipping bootstrap fill"
         );
         return Ok(());
     }
 
-    fetch_range(&state, epoch_start..=live, BOOTSTRAP_CONCURRENCY, &cancel).await;
+    fetch_range(&state, fill_start..=live, BOOTSTRAP_CONCURRENCY, &cancel).await;
     state.stats.newest_cached_slot.store(live, Ordering::Relaxed);
 
     info!(
@@ -218,6 +229,47 @@ async fn bootstrap(state: Arc<AppState>, cancel: CancellationToken) -> Result<()
         "rpc-cache bootstrap complete"
     );
     Ok(())
+}
+
+/// Choose the lowest slot to fill at bootstrap. Walk back `lookback_epochs`
+/// from the current epoch and use that epoch's start slot, so the cache retains
+/// older blocks a lagging reader may still ask for. Falls back to the current
+/// epoch's start (`current_start`) when the lookback is zero, would reach epoch
+/// 0, or the older epoch account can't be read.
+async fn bootstrap_floor(
+    state: &AppState,
+    current_epoch: EpochNumber,
+    lookback_epochs: u64,
+    current_start: u64,
+) -> u64 {
+    if lookback_epochs == 0 {
+        return current_start;
+    }
+
+    let target = EpochNumber(current_epoch.0.saturating_sub(lookback_epochs));
+    if target.0 == 0 {
+        return current_start;
+    }
+
+    match fetch_epoch_account(&state.upstream, target).await {
+        Ok(epoch) if epoch.start_slot.0 > 0 && epoch.start_slot.0 < current_start => {
+            info!(
+                lookback_epoch = target.0,
+                floor = epoch.start_slot.0,
+                "rpc-cache: widened bootstrap floor to retain older epochs"
+            );
+            epoch.start_slot.0
+        }
+        Ok(_) => current_start,
+        Err(error) => {
+            warn!(
+                lookback_epoch = target.0,
+                %error,
+                "rpc-cache: lookback epoch account unavailable; filling from current epoch start"
+            );
+            current_start
+        }
+    }
 }
 
 async fn live_tail(state: Arc<AppState>, cancel: CancellationToken) -> Result<()> {
@@ -378,7 +430,13 @@ fn classify_block_error(err: &Value) -> BlockOutcome {
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if msg.to_lowercase().contains("skipped") {
+    // A pruned block ("cleaned up, does not exist on node") is permanently
+    // gone, same as a skipped slot — tombstone it instead of burning retries.
+    let lower = msg.to_lowercase();
+    if lower.contains("skipped")
+        || lower.contains("cleaned up")
+        || lower.contains("does not exist")
+    {
         return BlockOutcome::Skipped;
     }
     BlockOutcome::Retriable(format!(
@@ -521,6 +579,15 @@ mod tests {
     #[test]
     fn classify_block_error_skipped_by_message_text() {
         let err = json!({"code": -1, "message": "Slot 42 was Skipped or missing"});
+        assert!(matches!(classify_block_error(&err), BlockOutcome::Skipped));
+    }
+
+    #[test]
+    fn classify_block_error_pruned_is_skipped() {
+        let err = json!({
+            "code": -32001,
+            "message": "Block 2170 cleaned up, does not exist on node. First available block: 4756",
+        });
         assert!(matches!(classify_block_error(&err), BlockOutcome::Skipped));
     }
 

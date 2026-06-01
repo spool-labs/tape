@@ -8,7 +8,8 @@
 #   make reset        - Remove local validator ledger + testnet state
 #   make run-solana   - Start the local solana-test-validator with programs loaded
 #   make run-testnet  - Run testnet against the local validator
-#   make run-explorer - Serve the explorer against the testnet validator (EXPLORER_RPC to override)
+#   make run-cache    - Run the rpc-cache in front of the local validator (block durability)
+#   make run-explorer - Serve the explorer through the rpc-cache (EXPLORER_RPC to override)
 #   make run-testnet-samply - Profile the release testnet orchestrator with samply
 #   make run-testnet-upload-file - Upload a large file against the running testnet
 #   make run-devnet   - Run the in-process devnet TUI (release build, no profiler)
@@ -31,7 +32,8 @@
 #   TESTNET_API_PORT=9000
 #   TESTNET_NODES=3
 #   EXPLORER_BIND=127.0.0.1:8080
-#   EXPLORER_RPC=http://127.0.0.1:8899
+#   EXPLORER_RPC=http://127.0.0.1:8890?api=local
+#   CACHE_BIND=127.0.0.1:8890
 
 PROGRAMS_DIR := solana/programs
 TESTNET_DATA_DIR ?= target/testnet
@@ -43,14 +45,24 @@ TESTNET_ADMIN_KEYPAIR ?= $(TESTNET_DATA_DIR)/admin.json
 TESTNET_FILE_SIZE_BYTES ?= 1073741824
 TESTNET_UPLOAD_EPOCHS ?= 4
 
-# Explorer defaults to the same local validator the testnet uses.
+# rpc-cache sits in front of the validator so readers that fall behind the
+# validator's prune window can still fetch old blocks. Listens on its own port
+# (the validator owns 8899) and forwards to the validator upstream.
+CACHE_BIND ?= 127.0.0.1:8890
+CACHE_UPSTREAM ?= $(TESTNET_RPC_URL)
+CACHE_API_KEY ?= local
+CACHE_CONFIG ?= $(CURDIR)/solana/rpc-cache/rpc-cache.local.yaml
+
+# Explorer reads through the rpc-cache, not the validator directly, so it can
+# tail blocks the validator has already pruned. Override EXPLORER_RPC with
+# $(TESTNET_RPC_URL) to bypass the cache and hit the validator directly.
 EXPLORER_BIND ?= 127.0.0.1:8080
 EXPLORER_DB ?= $(CURDIR)/target/explorer-local.sqlite3
-EXPLORER_RPC ?= $(TESTNET_RPC_URL)
+EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer testnet reset run-solana run-testnet run-explorer run-testnet-samply run-testnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux deploy-tools install uninstall
+.PHONY: programs node explorer cache testnet reset run-solana run-testnet run-cache run-explorer run-testnet-samply run-testnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -61,6 +73,9 @@ node:
 # Separate workspace (own Cargo.lock); build from within explorer/.
 explorer:
 	cd explorer && cargo build --release
+
+cache:
+	cargo build --release -p rpc-cache --bin rpc-cache
 
 testnet:
 	cargo build --release -p tape-e2e-testnet --bin testnet
@@ -96,8 +111,16 @@ run-testnet-upload-file:
 		--size-bytes $(TESTNET_FILE_SIZE_BYTES) \
 		--epochs $(TESTNET_UPLOAD_EPOCHS)
 
-# Serve the explorer against the local testnet validator. Separate workspace,
-# so cd in; override EXPLORER_RPC to point at a different chain.
+# Read-through cache in front of the local validator. Start it after the
+# validator (and before the explorer) so it tails and retains blocks the
+# validator will later prune. CACHE_* override the bind/upstream/api-key.
+run-cache:
+	cargo build --release -p rpc-cache --bin rpc-cache
+	CACHE_BIND="$(CACHE_BIND)" CACHE_UPSTREAM="$(CACHE_UPSTREAM)" CACHE_API_KEY="$(CACHE_API_KEY)" \
+		cargo run --release -p rpc-cache --bin rpc-cache -- --config $(CACHE_CONFIG)
+
+# Serve the explorer through the rpc-cache (see EXPLORER_RPC above). Separate
+# workspace, so cd in; override EXPLORER_RPC to point at a different chain.
 run-explorer:
 	cd explorer && cargo run --release -- \
 		serve \

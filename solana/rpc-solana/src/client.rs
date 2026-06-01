@@ -381,6 +381,50 @@ impl Rpc for SolanaRpc {
         }
     }
 
+    async fn get_first_available_block(&self) -> Result<u64, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_first_available_block(),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(slot)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getFirstAvailableBlock",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(slot);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getFirstAvailableBlock", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getFirstAvailableBlock", &mut backoff).await?;
+                }
+            }
+        }
+    }
+
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();

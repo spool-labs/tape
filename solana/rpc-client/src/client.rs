@@ -91,6 +91,11 @@ impl<R: Rpc> RpcClient<R> {
         self.rpc.get_block(slot).await
     }
 
+    /// Get the lowest slot the node still has a confirmed block for.
+    pub async fn get_first_available_block(&self) -> Result<u64, RpcError> {
+        self.rpc.get_first_available_block().await
+    }
+
     /// Get a confirmed transaction by signature.
     pub async fn get_transaction(
         &self,

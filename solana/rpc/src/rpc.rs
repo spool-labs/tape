@@ -55,6 +55,10 @@ pub trait Rpc: Send + Sync {
     /// Get a confirmed block by slot number
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError>;
 
+    /// Get the lowest slot the node still has a confirmed block for. Slots
+    /// below this have been pruned from the ledger and can never be fetched.
+    async fn get_first_available_block(&self) -> Result<u64, RpcError>;
+
     /// Get a confirmed transaction by signature.
     async fn get_transaction(
         &self,

@@ -360,6 +360,16 @@ impl Rpc for LiteSvmRpc {
             .unwrap_or_else(|| inner.confirmed_tip.saturating_sub(DEFAULT_FINALIZED_LAG_SLOTS)))
     }
 
+    async fn get_first_available_block(&self) -> Result<u64, RpcError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        // LiteSvm keeps every produced slot, so the oldest one it holds is the
+        // first available; genesis (0) when nothing has been produced yet.
+        Ok(inner.slots.keys().min().copied().unwrap_or(0))
+    }
+
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
         let inner = self
             .inner
