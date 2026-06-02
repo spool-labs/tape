@@ -4,7 +4,7 @@ use tape_core::bls::BlsPubkey;
 use tape_core::spooler::GroupIndex;
 use tape_core::staking::RateSpan;
 use tape_core::system::NodePreferences;
-use tape_core::types::{EpochNumber, NodeId, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
+use tape_core::types::{EpochNumber, NodeId, SpoolBitmap, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -500,6 +500,9 @@ pub struct VoteRecorded {
 
     /// Number of groups required to land this candidate.
     pub total_groups: u64,
+
+    /// Which of the group's members signed this cert.
+    pub bitmap: SpoolBitmap,
 }
 
 tape_solana::event!(EventType, VoteRecorded);

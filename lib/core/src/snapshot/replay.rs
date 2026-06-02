@@ -178,6 +178,7 @@ pub enum ReplayableEvent {
         signer_count: u64,
         signed_groups: u64,
         total_groups: u64,
+        signers: [u8; 8],
     },
 }
 

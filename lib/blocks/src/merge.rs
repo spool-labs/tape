@@ -84,7 +84,7 @@ pub fn merge(
                 ParsedInstruction::SyncSpool { node, spool, event }
             }
 
-            RawInstruction::ProposeSnapshot { hash } => {
+            RawInstruction::ProposeSnapshot { hash, proposer } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::VoteProposed(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected VoteProposed event")),
@@ -92,10 +92,10 @@ pub fn merge(
                 if event.kind != VoteKind::Snapshot as u64 || event.hash != hash {
                     return Err(ParseError::EventMismatch("unexpected VoteProposed event"));
                 }
-                ParsedInstruction::ProposeSnapshot { hash, event }
+                ParsedInstruction::ProposeSnapshot { hash, proposer, event }
             }
 
-            RawInstruction::VoteSnapshot { hash, group } => {
+            RawInstruction::VoteSnapshot { hash, group, submitter } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::VoteRecorded(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected VoteRecorded event")),
@@ -106,7 +106,7 @@ pub fn merge(
                 {
                     return Err(ParseError::EventMismatch("unexpected VoteRecorded event"));
                 }
-                ParsedInstruction::VoteSnapshot { hash, group, event }
+                ParsedInstruction::VoteSnapshot { hash, group, submitter, event }
             }
 
             RawInstruction::FinalizeSnapshot { epoch } => {
@@ -124,7 +124,7 @@ pub fn merge(
                 ParsedInstruction::FinalizeSnapshot { epoch, event }
             }
 
-            RawInstruction::ProposeAssignment { hash } => {
+            RawInstruction::ProposeAssignment { hash, proposer } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::VoteProposed(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected VoteProposed event")),
@@ -132,10 +132,10 @@ pub fn merge(
                 if event.kind != VoteKind::Assignment as u64 || event.hash != hash {
                     return Err(ParseError::EventMismatch("unexpected VoteProposed event"));
                 }
-                ParsedInstruction::ProposeAssignment { hash, event }
+                ParsedInstruction::ProposeAssignment { hash, proposer, event }
             }
 
-            RawInstruction::VoteAssignment { hash, group } => {
+            RawInstruction::VoteAssignment { hash, group, submitter } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::VoteRecorded(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected VoteRecorded event")),
@@ -146,7 +146,7 @@ pub fn merge(
                 {
                     return Err(ParseError::EventMismatch("unexpected VoteRecorded event"));
                 }
-                ParsedInstruction::VoteAssignment { hash, group, event }
+                ParsedInstruction::VoteAssignment { hash, group, submitter, event }
             }
 
             RawInstruction::FinalizeGroup { epoch, group } => {
@@ -444,7 +444,7 @@ mod tests {
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::TrackData;
-    use tape_core::types::{StorageUnits, SpoolIndex, TrackNumber};
+    use tape_core::types::{SpoolBitmap, StorageUnits, SpoolIndex, TrackNumber};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -529,6 +529,7 @@ mod tests {
             signer_count: 14,
             signed_groups: 1,
             total_groups: 5,
+            bitmap: SpoolBitmap::from_indices(&[0, 1, 2]),
         };
 
         let merged = merge(
@@ -536,6 +537,7 @@ mod tests {
                 RawInstruction::VoteSnapshot {
                     hash: Hash::from([0x55; 32]),
                     group: GroupIndex(3),
+                    submitter: Address::new_unique(),
                 },
             ],
             vec![TapedriveEvent::VoteRecorded(voted)],
@@ -592,12 +594,14 @@ mod tests {
             vec![
                 RawInstruction::ProposeSnapshot {
                     hash: snapshot_hash,
+                    proposer: Address::new_unique(),
                 },
                 RawInstruction::FinalizeSnapshot {
                     epoch: EpochNumber(7),
                 },
                 RawInstruction::ProposeAssignment {
                     hash: assignment_hash,
+                    proposer: Address::new_unique(),
                 },
                 RawInstruction::FinalizeGroup {
                     epoch: EpochNumber(9),

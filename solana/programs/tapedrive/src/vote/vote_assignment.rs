@@ -128,6 +128,7 @@ pub fn process_vote_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         signer_count: weight,
         signed_groups,
         total_groups: voting_epoch.total_groups,
+        bitmap: args.bitmap,
     }
     .log();
 

@@ -198,7 +198,7 @@ mod tests {
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{NodePreferences, VoteKind};
-    use tape_core::types::{BasisPoints, EpochDuration, TrackNumber, VersionId};
+    use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber, VersionId};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -353,6 +353,7 @@ mod tests {
             signer_count: 14,
             signed_groups: 4,
             total_groups: 5,
+            bitmap: SpoolBitmap::from_indices(&[0, 3, 7]),
         };
 
         let log = encode_event(EventType::VoteRecorded, &recorded);
@@ -364,6 +365,7 @@ mod tests {
                 assert_eq!(decoded.group, recorded.group);
                 assert_eq!(decoded.signer_count, recorded.signer_count);
                 assert_eq!(decoded.signed_groups, 4);
+                assert_eq!(decoded.bitmap, recorded.bitmap);
             }
             _ => panic!("Expected VoteRecorded event"),
         }

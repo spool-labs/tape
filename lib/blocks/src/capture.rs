@@ -232,6 +232,7 @@ fn capture_instruction(
                     signer_count: event.signer_count,
                     signed_groups: event.signed_groups,
                     total_groups: event.total_groups,
+                    signers: *event.bitmap.as_bytes(),
                 },
             ),
             raw_track: None,
@@ -482,17 +483,19 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::ReserveTape { owner, .. }
         | ParsedInstruction::DestroyTape { owner, .. } => Some((*owner).into()),
 
+        ParsedInstruction::ProposeSnapshot { proposer, .. }
+        | ParsedInstruction::ProposeAssignment { proposer, .. } => Some(*proposer),
+
+        ParsedInstruction::VoteSnapshot { submitter, .. }
+        | ParsedInstruction::VoteAssignment { submitter, .. } => Some(*submitter),
+
         ParsedInstruction::CreateEpoch { .. }
         | ParsedInstruction::CreateCommittee { .. }
         | ParsedInstruction::ResizeCommittee { .. }
         | ParsedInstruction::ResizePeerSet { .. }
         | ParsedInstruction::CommitEpoch { .. }
         | ParsedInstruction::AdvanceEpoch { .. }
-        | ParsedInstruction::ProposeSnapshot { .. }
-        | ParsedInstruction::VoteSnapshot { .. }
         | ParsedInstruction::FinalizeSnapshot { .. }
-        | ParsedInstruction::ProposeAssignment { .. }
-        | ParsedInstruction::VoteAssignment { .. }
         | ParsedInstruction::FinalizeGroup { .. }
         | ParsedInstruction::CertifyTrack { .. }
         | ParsedInstruction::InvalidateTrack { .. }

@@ -45,20 +45,24 @@ pub enum RawInstruction {
     },
     ProposeSnapshot {
         hash: Hash,
+        proposer: Address,
     },
     VoteSnapshot {
         hash: Hash,
         group: GroupIndex,
+        submitter: Address,
     },
     FinalizeSnapshot {
         epoch: EpochNumber,
     },
     ProposeAssignment {
         hash: Hash,
+        proposer: Address,
     },
     VoteAssignment {
         hash: Hash,
         group: GroupIndex,
+        submitter: Address,
     },
     FinalizeGroup {
         epoch: EpochNumber,
@@ -164,11 +168,13 @@ pub enum ParsedInstruction {
     },
     ProposeSnapshot {
         hash: Hash,
+        proposer: Address,
         event: VoteProposed,
     },
     VoteSnapshot {
         hash: Hash,
         group: GroupIndex,
+        submitter: Address,
         event: VoteRecorded,
     },
     FinalizeSnapshot {
@@ -177,11 +183,13 @@ pub enum ParsedInstruction {
     },
     ProposeAssignment {
         hash: Hash,
+        proposer: Address,
         event: VoteProposed,
     },
     VoteAssignment {
         hash: Hash,
         group: GroupIndex,
+        submitter: Address,
         event: VoteRecorded,
     },
     FinalizeGroup {
@@ -366,13 +374,21 @@ pub fn parse_raw_instruction(
         TapeInstruction::ProposeSnapshot => {
             let args = ix::ProposeSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("propose_snapshot: {e:?}")))?;
-            Ok(Some(RawInstruction::ProposeSnapshot { hash: args.hash }))
+            // Account layout from build_propose_snapshot_ix: [fee_payer, ...].
+            let proposer = get_account(0)?;
+            Ok(Some(RawInstruction::ProposeSnapshot { hash: args.hash, proposer }))
         }
 
         TapeInstruction::VoteSnapshot => {
             let args = ix::VoteSnapshot::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_snapshot: {e:?}")))?;
-            Ok(Some(RawInstruction::VoteSnapshot { hash: args.hash, group: args.group }))
+            // Account layout from build_vote_snapshot_ix: [fee_payer, ...].
+            let submitter = get_account(0)?;
+            Ok(Some(RawInstruction::VoteSnapshot {
+                hash: args.hash,
+                group: args.group,
+                submitter,
+            }))
         }
 
         TapeInstruction::FinalizeSnapshot => {
@@ -384,15 +400,20 @@ pub fn parse_raw_instruction(
         TapeInstruction::ProposeAssignment => {
             let args = ix::ProposeAssignment::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("propose_assignment: {e:?}")))?;
-            Ok(Some(RawInstruction::ProposeAssignment { hash: args.hash }))
+            // Account layout from build_propose_assignment_ix: [fee_payer, ...].
+            let proposer = get_account(0)?;
+            Ok(Some(RawInstruction::ProposeAssignment { hash: args.hash, proposer }))
         }
 
         TapeInstruction::VoteAssignment => {
             let args = ix::VoteAssignment::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("vote_assignment: {e:?}")))?;
+            // Account layout from build_vote_assignment_ix: [fee_payer, ...].
+            let submitter = get_account(0)?;
             Ok(Some(RawInstruction::VoteAssignment {
                 hash: args.hash,
                 group: args.group,
+                submitter,
             }))
         }
 
@@ -612,7 +633,7 @@ mod tests {
             BlsSignature::zeroed(),
         ));
         match parse_raw_instruction(&ix, &keys).unwrap() {
-            Some(RawInstruction::VoteSnapshot { hash, group }) => {
+            Some(RawInstruction::VoteSnapshot { hash, group, .. }) => {
                 assert_eq!(hash, Hash::from([0x55; 32]));
                 assert_eq!(group, GroupIndex(3));
             }
@@ -631,7 +652,7 @@ mod tests {
             BlsSignature::zeroed(),
         ));
         match parse_raw_instruction(&ix, &keys).unwrap() {
-            Some(RawInstruction::VoteAssignment { hash, group }) => {
+            Some(RawInstruction::VoteAssignment { hash, group, .. }) => {
                 assert_eq!(hash, Hash::from([0x66; 32]));
                 assert_eq!(group, GroupIndex(3));
             }
@@ -677,12 +698,14 @@ mod tests {
             signer_count: 14,
             signed_groups: 1,
             total_groups: 5,
+            bitmap: SpoolBitmap::from_indices(&[0, 1, 2]),
         };
 
         let instructions = vec![
             RawInstruction::VoteSnapshot {
                 hash: Hash::from([0x55; 32]),
                 group: GroupIndex(4),
+                submitter: Address::new_unique(),
             },
         ];
         let events = vec![TapedriveEvent::VoteRecorded(voted)];
