@@ -98,6 +98,7 @@ fn capture_instruction(
                         total_stake: event.total_stake,
                         committee_count: event.committee_count,
                         preferences: event.preferences,
+                        subsidy: event.subsidy,
                         nonce: event.nonce,
                     },
                 ),

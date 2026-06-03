@@ -3,6 +3,7 @@ use tape_core::system::NodePreferences;
 use tape_core::types::{BasisPoints, EpochDuration, StorageUnits, VersionId};
 use tape_core::types::coin::{Coin, TAPE};
 
+use crate::program::token::ONE_TAPE;
 use crate::program::tapedrive::{
     DEFAULT_BURN_FEE_BPS, DEFAULT_STORAGE_CAPACITY, DEFAULT_STORAGE_PRICE,
     DEFAULT_SUBSIDY_DECAY_BPS,
@@ -59,6 +60,8 @@ const TESTNET: GenesisConfig = GenesisConfig {
     min_epoch_duration: EpochDuration(60),         // 60 seconds
     max_epoch_duration: EpochDuration(1_209_600),  // 2 weeks
     epoch_duration: EpochDuration(100),            // 100 seconds
+    spool_groups: 10,
+    subsidy_amount: TAPE(50_000 * ONE_TAPE),       // 50000 TAPE
     ..DEFAULT
 };
 

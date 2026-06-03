@@ -396,7 +396,7 @@ fn build_node_yaml(
   name: "testnet-node-{id}"
   node_keypair: "{keypair}"
   bls_keypair: "{bls}"
-  commission: 0
+  commission: 4500
 
 genesis_preset: testnet
 

@@ -65,6 +65,7 @@ pub enum ReplayableEvent {
         total_stake: Coin<TAPE>,
         committee_count: u64,
         preferences: NodePreferences,
+        subsidy: Coin<TAPE>,
         nonce: Hash,
     },
 
@@ -406,6 +407,7 @@ mod tests {
                 total_stake: TAPE(0),
                 committee_count: 0,
                 preferences: NodePreferences::zeroed(),
+                subsidy: TAPE(0),
                 nonce: Hash::default(),
             },
             ReplayableEvent::SyncSpool {
@@ -463,6 +465,7 @@ mod tests {
                         total_stake: TAPE(0),
                         committee_count: 0,
                         preferences: NodePreferences::zeroed(),
+                        subsidy: TAPE(0),
                         nonce: Hash::default(),
                     })],
                 },
@@ -506,6 +509,7 @@ mod tests {
                         total_stake: TAPE(0),
                         committee_count: 0,
                         preferences: NodePreferences::zeroed(),
+                        subsidy: TAPE(0),
                         nonce: Hash::default(),
                     }),
                     record(ReplayableEvent::Track(ReplayTrack {
@@ -585,6 +589,7 @@ mod tests {
                         total_stake: TAPE(0),
                         committee_count: 0,
                         preferences: NodePreferences::zeroed(),
+                        subsidy: TAPE(0),
                         nonce: Hash::default(),
                     })],
                 },
