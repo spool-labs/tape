@@ -24,7 +24,7 @@ use tracing::{error, info, warn};
 use crate::view::UploadView;
 
 const MAX_UPLOAD_HISTORY: usize = 16;
-const DEFAULT_UPLOAD_EPOCHS: u64 = 4;
+const DEFAULT_UPLOAD_EPOCHS: u64 = 100;
 const MAX_RAW_UPLOAD_BYTES: usize = 825;
 const MIN_RAW_UPLOAD_BYTES: usize = 64;
 const MIN_BLOB_UPLOAD_BYTES: usize = 1024 * 1024;
@@ -148,6 +148,16 @@ fn format_error_chain(error: &anyhow::Error) -> String {
     format!("{error:#}")
 }
 
+/// Round a track size up to the next power-of-ten MiB (35 MiB -> 100 MiB).
+fn reserve_capacity_for(size: StorageUnits) -> StorageUnits {
+    let mib = size.to_mb();
+    let mut tens = 1u64;
+    while tens < mib {
+        tens = tens.saturating_mul(10);
+    }
+    StorageUnits::mb(tens)
+}
+
 async fn run_upload(
     rpc_url: &str,
     admin_keypair_path: &Path,
@@ -168,8 +178,7 @@ async fn run_upload(
     let admin = CryptoKeypair::from_solana_keypair(&admin)
         .context("convert uploader keypair")?;
     let sdk = Tapedrive::new(rpc, admin);
-    let capacity = StorageUnits::from_bytes(data.len() as u64);
-    let reserve_capacity = capacity + StorageUnits::mb(1);
+    let reserve_capacity = reserve_capacity_for(StorageUnits::from_bytes(data.len() as u64));
     let mut backoff = Backoff::new(RetryConfig {
         base_delay: Duration::from_secs(1),
         max_delay: Duration::from_secs(60),
