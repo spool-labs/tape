@@ -107,8 +107,10 @@ fn capture_instruction(
         }
         ParsedInstruction::StartNetwork => {
             // Genesis epoch transition (0 -> 1). Emits no replayable event, 
-            // but the replay epoch counter MUST advance here. 
-            *current_epoch = current_epoch.next();
+            // but the replay epoch counter MUST advance here.
+            if current_epoch.is_zero() {
+                *current_epoch = EpochNumber(1);
+            }
             return Ok(None);
         }
         ParsedInstruction::SyncSpool { event, .. } => Captured {
@@ -762,6 +764,23 @@ mod tests {
         assert_eq!(captured.events.len(), 2);
         assert_eq!(captured.events[0].epoch, EpochNumber(0));
         assert_eq!(captured.events[1].epoch, EpochNumber(1));
+        assert_eq!(captured.next_epoch, EpochNumber(1));
+    }
+
+    #[test]
+    fn start_network_is_noop_after_genesis() {
+        let tape = Address::new_unique();
+        let captured = capture(
+            EpochNumber(1),
+            SlotNumber(50),
+            vec![
+                ParsedInstruction::StartNetwork,
+                reserve_tape_instruction(tape, EpochNumber(99), EpochNumber(99)),
+            ],
+        );
+
+        assert_eq!(captured.events.len(), 1);
+        assert_eq!(captured.events[0].epoch, EpochNumber(1));
         assert_eq!(captured.next_epoch, EpochNumber(1));
     }
 

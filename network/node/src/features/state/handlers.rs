@@ -86,8 +86,11 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     /// epoch 0 (and `StartNetwork` emits no event of its own). Treat it like an
     /// epoch advance so the node re-fetches and catches up to the live committee.
     pub async fn handle_start_network(&self) -> Result<(), NodeError> {
-        let target = self.context.state().epoch().next();
-        self.handle_advance_epoch(target).await
+        if self.context.state().epoch().is_zero() {
+            self.handle_advance_epoch(EpochNumber(1)).await?;
+        }
+
+        Ok(())
     }
 
     pub async fn handle_commit_epoch(
@@ -481,6 +484,28 @@ mod tests {
             .await
             .expect("handle advance pool");
         assert_eq!(ctx.state().phase(), EpochPhase::Snapshot);
+    }
+
+    #[tokio::test]
+    async fn start_network_is_noop_after_genesis() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Snapshot)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
+
+        handlers
+            .handle_start_network()
+            .await
+            .expect("handle start network");
+
+        let state = ctx.state();
+        assert_eq!(state.epoch(), EPOCH);
+        assert_eq!(state.phase(), EpochPhase::Snapshot);
     }
 
 }
