@@ -55,22 +55,20 @@ pub struct AssignmentGroupWeights {
 ///   - include only user ObjectInfo::Valid tracks with registered_epoch < voting_epoch;
 ///   - require certified_epoch < voting_epoch;
 ///   - skip invalidated/deleted/uncertified/current-epoch tracks;
-///   - skip tapes with end_epoch <= target_epoch;
+///   - skip tapes that had already expired by the cutoff epoch (end_epoch <= voting_epoch - 1);
 ///   - return zero for empty/new groups;
 ///   - derive blob per-spool footprint from BlobInfo encoding metadata, not total logical track size.
 pub fn group_sizes<Db: Store>(
     store: &TapeStore<Db>,
     voting_epoch: EpochNumber,
-    target_epoch: EpochNumber,
     target_groups: usize,
 ) -> Result<Vec<StorageUnits>, AssignmentSizeError> {
-    Ok(group_weights(store, voting_epoch, target_epoch, target_groups)?.sizes)
+    Ok(group_weights(store, voting_epoch, target_groups)?.sizes)
 }
 
 pub fn group_weights<Db: Store>(
     store: &TapeStore<Db>,
     voting_epoch: EpochNumber,
-    target_epoch: EpochNumber,
     target_groups: usize,
 ) -> Result<AssignmentGroupWeights, AssignmentSizeError> {
     let mut sizes = vec![StorageUnits::zero(); target_groups];
@@ -88,7 +86,7 @@ pub fn group_weights<Db: Store>(
 
         for (track, metadata) in &tracks {
             let Some(active) =
-                active_track_footprint(store, *track, metadata, voting_epoch, target_epoch)?
+                active_track_footprint(store, *track, metadata, voting_epoch)?
             else {
                 continue;
             };
@@ -129,7 +127,6 @@ fn active_track_footprint<Db: Store>(
     track: Address,
     metadata: &CompressedTrack,
     voting_epoch: EpochNumber,
-    target_epoch: EpochNumber,
 ) -> Result<Option<ActiveTrackFootprint>, AssignmentSizeError> {
 
     // Only ObjectInfo::Valid is accounted user data. System-owned tracks are
@@ -182,7 +179,12 @@ fn active_track_footprint<Db: Store>(
         ));
     };
 
-    if tape.end_epoch <= target_epoch {
+    // Count tracks that were still alive during the cutoff epoch the sizing is
+    // drawn from — the last completed epoch, `voting_epoch - 1` — not the target
+    // epoch. The sizes come from data committed by `voting_epoch - 1` (the
+    // `certified_epoch < voting_epoch` gate above).
+    let cutoff_epoch = voting_epoch.prev();
+    if tape.end_epoch <= cutoff_epoch {
         return Ok(None);
     }
 
@@ -351,7 +353,7 @@ mod tests {
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
 
-        let sizes = group_sizes(&store, EpochNumber(10), EpochNumber(11), 4).unwrap();
+        let sizes = group_sizes(&store, EpochNumber(10), 4).unwrap();
 
         assert_eq!(sizes[0], StorageUnits::zero());
         assert_eq!(sizes[1], StorageUnits::zero());
@@ -394,10 +396,97 @@ mod tests {
             )
             .unwrap();
 
-        let sizes = group_sizes(&store, EpochNumber(10), EpochNumber(11), 3).unwrap();
+        let sizes = group_sizes(&store, EpochNumber(10), 3).unwrap();
 
         assert_eq!(sizes[0], StorageUnits::zero());
         assert_eq!(sizes[1], user_size);
         assert_eq!(sizes[2], StorageUnits::zero());
+    }
+
+    #[test]
+    fn short_lived_tape_still_counts() {
+        // Regression: a track certified at epoch 8 in a tape that lives only two
+        // epochs ([8, 10), end_epoch = 10) must still contribute to the assignment
+        // built one epoch later. Before the fix the survival test was
+        // `end_epoch > target_epoch (10)`, so `10 <= 10` excluded it — a <= 2-epoch
+        // tape produced zero assignment weight (and zero rewards) for its entire
+        // life despite being valid, stored, and paid for.
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let size = StorageUnits::from_bytes(4096);
+
+        store.put_tape(tape, tape_info(EpochNumber(10))).unwrap();
+        store
+            .put_track(track, raw_track(tape, GroupIndex(0), size))
+            .unwrap();
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .unwrap();
+
+        // Building the next-epoch assignment during epoch 9 (target 10).
+        let sizes = group_sizes(&store, EpochNumber(9), 1).unwrap();
+        assert_eq!(
+            sizes[0], size,
+            "two-epoch tape must contribute to assignment weight (was 0 pre-fix)"
+        );
+    }
+
+    #[test]
+    fn tape_expired_by_cutoff_excluded() {
+        // Lower bound of the window.
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let size = StorageUnits::from_bytes(4096);
+
+        store.put_tape(tape, tape_info(EpochNumber(7))).unwrap(); // alive [_, 7)
+        store
+            .put_track(track, raw_track(tape, GroupIndex(0), size))
+            .unwrap();
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(5), SlotNumber(1)))
+            .unwrap();
+
+        // voting 9 -> cutoff 8; tape ended at 7 (<= 8) -> excluded.
+        let sizes = group_sizes(&store, EpochNumber(9),  1).unwrap();
+        assert_eq!(
+            sizes[0],
+            StorageUnits::zero(),
+            "tape dead by the cutoff epoch must not contribute"
+        );
+    }
+
+    #[test]
+    fn counts_across_full_lifetime() {
+        // A track alive over [8, 12) (lifetime 4) earns weight for exactly its
+        // lifetime: every voting epoch where certified(8) < voting AND the tape was
+        // alive at the cutoff (end 12 > voting - 1) -> voting in 9..=12.
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let size = StorageUnits::from_bytes(4096);
+
+        store.put_tape(tape, tape_info(EpochNumber(12))).unwrap();
+        store
+            .put_track(track, raw_track(tape, GroupIndex(0), size))
+            .unwrap();
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .unwrap();
+
+        for voting in 9..=12u64 {
+            let sizes =
+                group_sizes(&store, EpochNumber(voting), 1).unwrap();
+            assert_eq!(sizes[0], size, "should count at voting epoch {voting}");
+        }
+
+        // Before certification clears the cutoff: voting 8 -> certified 8 not < 8.
+        let sizes = group_sizes(&store, EpochNumber(8), 1).unwrap();
+        assert_eq!(sizes[0], StorageUnits::zero(), "not yet eligible at voting 8");
+
+        // After the tape is dead by the cutoff: voting 13 -> cutoff 12, end 12 <= 12.
+        let sizes = group_sizes(&store, EpochNumber(13),  1).unwrap();
+        assert_eq!(sizes[0], StorageUnits::zero(), "expired by cutoff at voting 13");
     }
 }

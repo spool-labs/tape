@@ -9,7 +9,7 @@ use tape_api::event::{
 };
 use tape_api::state::Epoch;
 use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
-use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber, SpoolIndex};
+use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::{fetch::fetch_state, Api};

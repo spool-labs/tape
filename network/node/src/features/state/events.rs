@@ -1,6 +1,5 @@
 use tape_api::event::NodeJoinedCommittee;
 use tape_core::system::{apply_member_join, bubble_up_peer, Member, Peer};
-use tape_core::types::coin::TAPE;
 use tape_protocol::ProtocolState;
 
 use crate::core::error::NodeError;

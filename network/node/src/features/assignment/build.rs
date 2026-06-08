@@ -96,7 +96,7 @@ fn build_assignment_blocking<Db: Store>(
         )));
     }
 
-    let weights = group_weights(store, state.epoch(), next_epoch.id, target_groups)
+    let weights = group_weights(store, state.epoch(), target_groups)
         .map_err(|e| NodeError::Store(format!("assignment size calculation: {e}")))?;
 
     let owners = current_owners(state, target_groups)?;
