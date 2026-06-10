@@ -101,21 +101,31 @@ impl TapeStore<RocksStore> {
         Ok(Self::new(rocks))
     }
 
-    /// Open a read-only TapeStore replica
+    /// Open a read-only TapeStore replica.
+    ///
+    /// Passes the full column-family configs: opening by CF name alone uses
+    /// default table options, which cannot read CFs written under a
+    /// different table format.
     pub fn open_read_only<P: AsRef<std::path::Path>>(path: P) -> Result<Self, store::Error> {
-        let rocks = RocksStore::open_read_only(path, columns::ALL_COLUMN_FAMILIES)?;
+        let rocks = RocksStore::open_read_only_with_cf_config(
+            path,
+            store_rocks::Options::default(),
+            config::create_tape_store_configs(),
+        )?;
         Ok(Self::new(rocks))
     }
 
-    /// Open a secondary TapeStore instance for catch-up reads
+    /// Open a secondary TapeStore instance for catch-up reads, with the same
+    /// column-family configs as the primary.
     pub fn open_secondary<P: AsRef<std::path::Path>>(
         primary_path: P,
         secondary_path: P,
     ) -> Result<Self, store::Error> {
-        let rocks = RocksStore::open_secondary(
+        let rocks = RocksStore::open_secondary_with_cf_config(
             primary_path,
             secondary_path,
-            columns::ALL_COLUMN_FAMILIES,
+            config::create_db_options(),
+            config::create_tape_store_configs(),
         )?;
         Ok(Self::new(rocks))
     }
@@ -347,5 +357,153 @@ mod tests {
                 .unwrap();
             assert_eq!(tracks.len(), 1);
         }
+    }
+
+    fn certified_track(tape: Address, number: u64) -> CompressedTrack {
+        CompressedTrack {
+            tape,
+            key: Hash::new_unique(),
+            track_number: TrackNumber(number),
+            kind: TrackKind::Blob as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(1024),
+            group: GroupIndex(3),
+            value_hash: Hash::new_unique(),
+        }
+    }
+
+    /// Seek-based iteration must see data after it leaves the memtable, in
+    /// every open mode. Regression test for the PlainTable configuration
+    /// that silently dropped flushed rows from `iter_from`
+    /// (docs/store-structural-fix-2026-06-10.md).
+    #[test]
+    #[cfg(not(miri))]
+    fn flushed_iteration() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let primary_path = dir.path().join("primary");
+        let store = TapeStore::open_primary(&primary_path).unwrap();
+
+        let tape = Address::new_unique();
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
+                    end_epoch: EpochNumber(60),
+                    next_track_number: TrackNumber(5),
+                },
+            )
+            .unwrap();
+
+        let mut tracks = Vec::new();
+        for number in 0..5 {
+            let address = Address::new_unique();
+            store.put_track(address, certified_track(tape, number)).unwrap();
+            store
+                .put_object_info(
+                    address,
+                    ObjectInfo::Valid {
+                        track_address: address,
+                        registered_epoch: EpochNumber(1),
+                        certified_epoch: Some(EpochNumber(1)),
+                        slot: SlotNumber(10),
+                    },
+                )
+                .unwrap();
+            tracks.push(address);
+        }
+        store
+            .set_spool_state(SpoolIndex(7), SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
+            .unwrap();
+
+        store.inner().inner().flush().unwrap();
+
+        assert_eq!(store.count_tracks().unwrap(), 5);
+        assert_eq!(store.iter_tracks_from(None, 100).unwrap().len(), 5);
+
+        // Cursor pagination across the flushed CF.
+        let first = store.iter_tracks_from(None, 2).unwrap();
+        assert_eq!(first.len(), 2);
+        let cursor = first[1].0;
+        let rest = store.iter_tracks_from(Some(cursor), 100).unwrap();
+        assert_eq!(rest.len(), 3);
+        assert!(rest.iter().all(|(address, _)| *address != cursor));
+
+        assert_eq!(store.iter_all_tapes().unwrap().len(), 1);
+        assert_eq!(store.iter_all_spools().unwrap().len(), 1);
+        assert!(store.get_object_info(tracks[0]).unwrap().is_some());
+        drop(store);
+
+        let read_only = TapeStore::open_read_only(&primary_path).unwrap();
+        assert_eq!(read_only.count_tracks().unwrap(), 5);
+        assert_eq!(read_only.iter_tracks_from(None, 100).unwrap().len(), 5);
+        assert!(read_only.get_track(tracks[0]).unwrap().is_some());
+        assert!(read_only.get_tape(tape).unwrap().is_some());
+        drop(read_only);
+
+        let secondary_path = dir.path().join("secondary");
+        let secondary = TapeStore::open_secondary(&primary_path, &secondary_path).unwrap();
+        secondary.catch_up_with_primary().unwrap();
+        assert_eq!(secondary.count_tracks().unwrap(), 5);
+        assert!(secondary.get_tape(tape).unwrap().is_some());
+        assert!(secondary.get_object_info(tracks[0]).unwrap().is_some());
+    }
+
+    /// The RocksDB backend must observe the same results as MemoryStore,
+    /// the reference implementation of the `Store` iteration contract.
+    #[test]
+    #[cfg(not(miri))]
+    fn differential_memory_rocks() {
+        use std::collections::HashMap;
+        use tempfile::tempdir;
+
+        fn seed<S: store::Store>(
+            store: &TapeStore<S>,
+            tape: Address,
+            tracks: &[(Address, CompressedTrack)],
+        ) {
+            store
+                .put_tape(
+                    tape,
+                    TapeInfo {
+                        id: TapeNumber(9),
+                        flags: 0,
+                        end_epoch: EpochNumber(20),
+                        next_track_number: TrackNumber(4),
+                    },
+                )
+                .unwrap();
+            for (address, info) in tracks {
+                store.put_track(*address, info.clone()).unwrap();
+            }
+        }
+
+        fn observe<S: store::Store>(
+            store: &TapeStore<S>,
+        ) -> (usize, HashMap<Address, CompressedTrack>, HashMap<Address, TapeInfo>) {
+            (
+                store.count_tracks().unwrap(),
+                store.iter_tracks_from(None, 100).unwrap().into_iter().collect(),
+                store.iter_all_tapes().unwrap().into_iter().collect(),
+            )
+        }
+
+        let dir = tempdir().unwrap();
+        let rocks = TapeStore::open_primary(dir.path()).unwrap();
+        let memory = TapeStore::new(MemoryStore::new());
+
+        let tape = Address::new_unique();
+        let tracks: Vec<(Address, CompressedTrack)> = (0..4)
+            .map(|number| (Address::new_unique(), certified_track(tape, number)))
+            .collect();
+
+        seed(&rocks, tape, &tracks);
+        seed(&memory, tape, &tracks);
+        rocks.inner().inner().flush().unwrap();
+
+        assert_eq!(observe(&rocks), observe(&memory));
     }
 }

@@ -8,7 +8,7 @@
 //! - **RocksStore**: Production-ready RocksDB implementation
 //! - **ColumnFamilyConfig**: Builder API for configuring column families
 //! - **Multiple modes**: Read/write, read-only, and secondary instances
-//! - **Advanced configuration**: PlainTable, BlockBased, BlobDB support
+//! - **Advanced configuration**: BlockBased and BlobDB support
 //!
 //! # Example
 //!
@@ -34,7 +34,7 @@
 //! db_opts.create_missing_column_families(true);
 //!
 //! let cf_configs = vec![
-//!     ColumnFamilyConfig::new("fixed_keys").with_plain_table(8).build(),
+//!     ColumnFamilyConfig::new("fixed_keys").with_block_based().build(),
 //!     ColumnFamilyConfig::new("large_blobs").with_blob_db(1024 * 1024).build(),
 //! ];
 //!

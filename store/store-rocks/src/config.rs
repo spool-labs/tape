@@ -3,29 +3,26 @@
 //! This module provides a builder-pattern API for configuring RocksDB column families
 //! with different table types and options optimized for different workloads.
 
-use rocksdb::{
-    BlockBasedOptions, ColumnFamilyDescriptor, Options, PlainTableFactoryOptions, SliceTransform,
-};
+use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, Options, SliceTransform};
 
 /// Configuration builder for RocksDB column families
 ///
 /// Provides a fluent API to configure column families with different storage
 /// formats and options optimized for specific use cases:
 ///
-/// - **PlainTable**: For fixed-size keys with point lookups
 /// - **BlockBased**: For structured data with bloom filters
 /// - **BlobDB**: For very large values (moves data out of LSM tree)
 /// - **Prefix Extractors**: For efficient range queries
+///
+/// All column families use the BlockBased table format: it is the only
+/// format that honors the `Store` trait's ordered-iteration contract
+/// (`iter_from` from an arbitrary start key). Hash-based formats like
+/// PlainTable silently return empty seek iterators for flushed data.
 ///
 /// # Examples
 ///
 /// ```
 /// use store_rocks::ColumnFamilyConfig;
-///
-/// // Fixed-size keys (8 bytes)
-/// let config = ColumnFamilyConfig::new("users")
-///     .with_plain_table(8)
-///     .build();
 ///
 /// // Large values with BlobDB
 /// let config = ColumnFamilyConfig::new("blobs")
@@ -67,57 +64,6 @@ impl ColumnFamilyConfig {
         let mut opts = Options::default();
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts
-    }
-
-    /// Configure for fixed-size keys with PlainTable
-    ///
-    /// PlainTable is optimized for fixed-size keys and provides better performance
-    /// for point lookups compared to BlockBased tables. Uses less memory and has
-    /// faster reads, but only supports fixed-size keys.
-    ///
-    /// # Arguments
-    /// * `key_len` - Fixed length of keys in bytes (e.g., 8 for u64, 32 for SHA256)
-    ///
-    /// # Configuration
-    /// - `user_key_length`: Fixed key size
-    /// - `bloom_bits_per_key: 10`: Memory overhead for bloom filter
-    /// - `hash_table_ratio: 0.75`: Load factor for hash table
-    /// - `index_sparseness: 16`: Memory vs lookup speed tradeoff
-    ///
-    /// # Example
-    /// ```
-    /// use store_rocks::ColumnFamilyConfig;
-    ///
-    /// // For u64 keys (8 bytes)
-    /// let config = ColumnFamilyConfig::new("id_index")
-    ///     .with_plain_table(8)
-    ///     .build();
-    ///
-    /// // For SHA256 keys (32 bytes)
-    /// let config = ColumnFamilyConfig::new("hash_index")
-    ///     .with_plain_table(32)
-    ///     .build();
-    /// ```
-    pub fn with_plain_table(mut self, key_len: u32) -> Self {
-        let plain_opts = PlainTableFactoryOptions {
-            user_key_length: key_len,
-            bloom_bits_per_key: 10,
-            hash_table_ratio: 0.75,
-            index_sparseness: 16,
-            huge_page_tlb_size: 0,
-            encoding_type: rocksdb::KeyEncodingType::Plain,
-            full_scan_mode: false,
-            store_index_in_file: false,
-        };
-        self.options.set_plain_table_factory(&plain_opts);
-
-        // Set prefix extractor to match key length for better filtering
-        if key_len > 0 {
-            self.options
-                .set_prefix_extractor(SliceTransform::create_fixed_prefix(key_len as usize));
-        }
-
-        self
     }
 
     /// Configure for structured data with BlockBased table and bloom filters
@@ -275,15 +221,6 @@ mod tests {
 
         let descriptor = config.build();
         assert_eq!(descriptor.name(), "test");
-    }
-
-    #[test]
-    fn test_plain_table_config() {
-        let config = ColumnFamilyConfig::new("fixed_keys").with_plain_table(8);
-        assert_eq!(config.name(), "fixed_keys");
-
-        let descriptor = config.build();
-        assert_eq!(descriptor.name(), "fixed_keys");
     }
 
     #[test]

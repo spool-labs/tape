@@ -8811,6 +8811,7 @@ dependencies = [
 name = "tape-admin"
 version = "0.3.0"
 dependencies = [
+ "bytemuck",
  "clap",
  "hex",
  "rpc",
@@ -8820,11 +8821,15 @@ dependencies = [
  "serde_json",
  "solana-program",
  "solana-sdk",
+ "store",
+ "store-rocks",
  "tape-api",
  "tape-cli-common",
  "tape-core",
  "tape-crypto",
  "tape-sdk",
+ "tape-snapshot",
+ "tape-store",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

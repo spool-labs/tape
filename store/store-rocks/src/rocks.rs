@@ -259,11 +259,23 @@ impl RocksStore {
         &self.db
     }
 
-    /// Flush all memtables to disk
+    /// Flush all memtables to disk, across the default and every named
+    /// column family.
     pub fn flush(&self) -> Result<()> {
         self.db
             .flush()
-            .map_err(|e| Error::Database(e.to_string()))
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        for column_family in &self.column_families {
+            let Some(handle) = self.db.cf_handle(column_family) else {
+                continue;
+            };
+            self.db
+                .flush_cf(&handle)
+                .map_err(|e| Error::Database(e.to_string()))?;
+        }
+
+        Ok(())
     }
 
     fn compact_column_family(&self, column_family: &str) {
@@ -959,18 +971,18 @@ mod tests {
         db_opts.create_missing_column_families(true);
 
         let cf_configs = vec![
-            ColumnFamilyConfig::new("plain").with_plain_table(8).build(),
+            ColumnFamilyConfig::new("fixed").with_block_based().build(),
             ColumnFamilyConfig::new("block").with_block_based().build(),
         ];
 
         let store = RocksStore::open_with_cf_config(dir.path(), db_opts, cf_configs).unwrap();
 
         // Test operations on configured column families
-        store.put("plain", &1u64.to_be_bytes(), b"value1").unwrap();
+        store.put("fixed", &1u64.to_be_bytes(), b"value1").unwrap();
         store.put("block", b"key2", b"value2").unwrap();
 
         assert_eq!(
-            store.get("plain", &1u64.to_be_bytes()).unwrap(),
+            store.get("fixed", &1u64.to_be_bytes()).unwrap(),
             Some(b"value1".to_vec())
         );
         assert_eq!(
@@ -1197,11 +1209,11 @@ mod tests {
             db_opts.create_missing_column_families(true);
 
             let cf_configs = vec![
-                ColumnFamilyConfig::new("plain").with_plain_table(8).build(),
+                ColumnFamilyConfig::new("fixed").with_block_based().build(),
             ];
 
             let store = RocksStore::open_with_cf_config(&path, db_opts, cf_configs).unwrap();
-            store.put("plain", &1u64.to_be_bytes(), b"value1").unwrap();
+            store.put("fixed", &1u64.to_be_bytes(), b"value1").unwrap();
             store.flush().unwrap();
         }
 
@@ -1209,12 +1221,12 @@ mod tests {
         {
             let db_opts = Options::default();
             let cf_configs = vec![
-                ColumnFamilyConfig::new("plain").with_plain_table(8).build(),
+                ColumnFamilyConfig::new("fixed").with_block_based().build(),
             ];
 
             let ro_store = RocksStore::open_read_only_with_cf_config(&path, db_opts, cf_configs).unwrap();
             assert_eq!(
-                ro_store.get("plain", &1u64.to_be_bytes()).unwrap(),
+                ro_store.get("fixed", &1u64.to_be_bytes()).unwrap(),
                 Some(b"value1".to_vec())
             );
         }
@@ -1262,6 +1274,25 @@ mod tests {
 
             secondary.catch_up_with_primary().unwrap();
             assert_eq!(secondary.get("block", b"key").unwrap(), Some(b"value".to_vec()));
+        }
+    }
+
+    #[test]
+    fn flush_covers_all_cfs() {
+        let dir = tempdir().unwrap();
+        let store = RocksStore::open(dir.path(), &["a", "b"]).unwrap();
+        store.put("a", b"k", b"v").unwrap();
+        store.put("b", b"k", b"v").unwrap();
+        store.flush().unwrap();
+
+        for cf in ["a", "b"] {
+            let handle = store.inner().cf_handle(cf).unwrap();
+            let entries = store
+                .inner()
+                .property_int_value_cf(&handle, "rocksdb.num-entries-active-mem-table")
+                .unwrap()
+                .unwrap();
+            assert_eq!(entries, 0, "{cf} memtable not flushed");
         }
     }
 }

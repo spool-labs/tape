@@ -196,6 +196,7 @@ mod tests {
                     total_stake: TAPE(0),
                     committee_count: 0,
                     preferences: NodePreferences::zeroed(),
+                    subsidy: TAPE(0),
                     nonce: Hash::default(),
                 }),
             )
@@ -288,6 +289,7 @@ mod tests {
                     total_stake: TAPE(0),
                     committee_count: 0,
                     preferences: NodePreferences::zeroed(),
+                    subsidy: TAPE(0),
                     nonce: Hash::default(),
                 }),
             )
@@ -331,6 +333,7 @@ mod tests {
                     total_stake: TAPE(0),
                     committee_count: 0,
                     preferences: NodePreferences::zeroed(),
+                    subsidy: TAPE(0),
                     nonce: Hash::default(),
                 }),
             )
@@ -349,6 +352,7 @@ mod tests {
                     total_stake: TAPE(0),
                     committee_count: 0,
                     preferences: NodePreferences::zeroed(),
+                    subsidy: TAPE(0),
                     nonce: Hash::default(),
                 }),
             )

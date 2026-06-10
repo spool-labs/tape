@@ -1,12 +1,15 @@
 //! Column family and database configuration for TapeStore
 //!
 //! This module provides optimized RocksDB configurations for all column families
-//! in the tape-store, using different table types based on the access patterns:
+//! in the tape-store:
 //!
-//! - **PlainTable**: Fixed-size keys for fast point lookups
-//! - **BlockBased**: Structured data with bloom filters for range queries
+//! - **BlockBased**: Every column family. This is the only table format that
+//!   honors the `Store` trait's ordered-iteration contract (`iter_from` from
+//!   an arbitrary start key); hash-based formats silently return empty seek
+//!   iterators for flushed data.
 //! - **BlobDB**: Large values (slices up to 32 MiB) to reduce write amplification
-//! - **Prefix Extractors**: Enable efficient range scans by prefix
+//! - **Prefix Extractors**: Only on CFs whose access pattern is a prefix scan;
+//!   CFs that need total-order iteration get none
 
 use store_rocks::{ColumnFamilyConfig, ColumnFamilyDescriptor, Options};
 
@@ -21,22 +24,22 @@ use rocksdb;
 /// # Column Family Configurations
 ///
 /// ## Metadata Columns
-/// - `meta` - String keys, arbitrary values (BlockBased)
-/// - `tape` - 32-byte Address keys (PlainTable)
-/// - `track` - 32-byte Address keys, packed compressed-track values (PlainTable)
-/// - `track_lookup` - 72-byte ordered tape track index with 32-byte tape prefix (BlockBased)
-/// - `track_data` - 32-byte Address keys, local track payload values (PlainTable)
-/// - `object_info` - 32-byte Address keys (PlainTable)
+/// - `meta` - String keys, arbitrary values
+/// - `tape` - 32-byte Address keys
+/// - `track` - 32-byte Address keys, packed compressed-track values
+/// - `track_lookup` - 72-byte ordered tape track index with 32-byte tape prefix
+/// - `track_data` - 32-byte Address keys, local track payload values
+/// - `object_info` - 32-byte Address keys
 ///
 /// ## Sync Columns
-/// - `sync_cursor` - Singleton (0-byte key) (BlockBased)
-/// - `gc` - String keys (BlockBased)
+/// - `sync_cursor` - Singleton (0-byte key)
+/// - `gc` - String keys
 ///
 /// ## Spool Columns (NOT epoch-namespaced)
-/// - `spool_status` - 2-byte SpoolIndexKey (PlainTable)
-/// - `spool_pending_repair` - 34-byte SliceKey with 2-byte spool prefix (BlockBased)
-/// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix (BlockBased)
-/// - `spool_sync_cursor` - 2-byte SpoolIndexKey (PlainTable)
+/// - `spool_status` - 2-byte SpoolIndexKey
+/// - `spool_pending_repair` - 34-byte SliceKey with 2-byte spool prefix
+/// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix
+/// - `spool_sync_cursor` - 2-byte SpoolIndexKey
 ///
 /// ## Slice Data Column (BlobDB)
 /// - `slice` - 34-byte SliceKey, large (~1MB) values (BlobDB with 2-byte prefix)
@@ -58,12 +61,14 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
 
         // Tape - 32-byte Address keys, small TapeInfo values
         ColumnFamilyConfig::new("tape")
-            .with_plain_table(32)
+            .with_block_based()
             .build(),
 
-        // Track - 32-byte Address keys, PackedTrack values
+        // Track - 32-byte Address keys, PackedTrack values.
+        // Total-order iteration is load-bearing (sizing, GC, spool scans);
+        // no prefix extractor.
         ColumnFamilyConfig::new("track")
-            .with_plain_table(32)
+            .with_block_based()
             .build(),
 
         // Track lookup - ordered by (tape, track_number, key)
@@ -75,12 +80,12 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
 
         // Track data - 32-byte Address keys, local payload values
         ColumnFamilyConfig::new("track_data")
-            .with_plain_table(32)
+            .with_block_based()
             .build(),
 
         // Object info - 32-byte Address keys, ObjectInfo values
         ColumnFamilyConfig::new("object_info")
-            .with_plain_table(32)
+            .with_block_based()
             .build(),
 
         // Sync cursor - singleton (empty key)
@@ -93,9 +98,9 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Spool status - 2-byte SpoolIndexKey (PlainTable)
+        // Spool status - 2-byte SpoolIndexKey
         ColumnFamilyConfig::new("spool_status")
-            .with_plain_table(2)
+            .with_block_based()
             .build(),
 
         // Spool pending repair - 34-byte SliceKey
@@ -119,9 +124,9 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_prefix_extractor(2)
             .build(),
 
-        // Spool sync progress - 2-byte SpoolIndexKey (PlainTable)
+        // Spool sync progress - 2-byte SpoolIndexKey
         ColumnFamilyConfig::new("spool_sync_cursor")
-            .with_plain_table(2)
+            .with_block_based()
             .build(),
 
         // Event log - 20-byte EventLogKey (epoch 8B + slot 8B + seq 4B)
