@@ -2,7 +2,7 @@ use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_core::{
     spooler::GroupIndex,
-    types::{coin::TAPE, BasisPoints, EpochNumber, StorageUnits, TrackNumber},
+    types::{coin::TAPE, BasisPoints, EpochNumber, SlotNumber, StorageUnits, TrackNumber},
 };
 use tape_crypto::{Address, Hash};
 
@@ -47,6 +47,7 @@ pub const VOTE:               &[u8] = b"vote";
 pub const VOTE_SNAPSHOT:      &[u8] = b"snapshot";
 pub const VOTE_ASSIGNMENT:    &[u8] = b"assignment";
 pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
+pub const EVENT:              &[u8] = b"event";
 
 pub const SYSTEM_ADDRESS: Address =
     Address::new(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
@@ -254,6 +255,11 @@ pub fn blacklist_pda(node: Address) -> (Address, u8) {
 #[inline(always)]
 pub fn snapshot_tape_pda(epoch: EpochNumber) -> (Address, u8) {
     Address::find_program_address(&[SNAPSHOT_TAPE, &epoch.pack()], id())
+}
+
+#[inline(always)]
+pub fn event_pda(slot: SlotNumber, seq: u16) -> (Address, u8) {
+    Address::find_program_address(&[EVENT, &slot.pack(), &seq.to_le_bytes()], id())
 }
 
 #[inline(always)]
