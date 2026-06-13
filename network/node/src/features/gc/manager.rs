@@ -16,6 +16,7 @@ use tape_store::{TapeStore, ops::MetaOps};
 use crate::config::store::GcConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
+use crate::core::ingest::{AT_TIP_THRESHOLD_SLOTS, IngestState};
 use crate::core::types::ServiceName;
 use crate::features::gc::sweep::sweep_epoch;
 
@@ -114,7 +115,16 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| NodeError::Store(format!("set_gc_started_epoch: {error}")))?;
 
     let owned_spools = context.my_spools();
-    let sweep_stats = sweep_epoch(store, config, epoch, &owned_spools).await?;
+    let at_tip = at_durable_tip(context.as_ref())?;
+    let sweep_stats = sweep_epoch(
+        store,
+        config,
+        epoch,
+        &owned_spools,
+        context.pending.as_ref(),
+        at_tip,
+    )
+    .await?;
     debug!(
         node_id = context.node_id().0,
         epoch = epoch.0,
@@ -147,6 +157,29 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     store
         .set_gc_completed_epoch(epoch)
         .map_err(|error| NodeError::Store(format!("set_gc_completed_epoch: {error}")))
+}
+
+fn at_durable_tip<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> Result<bool, NodeError> {
+    if matches!(context.ingest_state(), IngestState::Stalled { .. }) {
+        return Ok(false);
+    }
+
+    let finalized_tip = context.ingest.progress().last_known_tip();
+    if finalized_tip == u64::MAX {
+        return Ok(false);
+    }
+
+    let Some(cursor) = context
+        .store
+        .get_sync_cursor()
+        .map_err(|error| NodeError::Store(format!("get_sync_cursor: {error}")))?
+    else {
+        return Ok(false);
+    };
+
+    Ok(finalized_tip.saturating_sub(cursor.0) <= AT_TIP_THRESHOLD_SLOTS)
 }
 
 fn next_pending_epoch<Db: Store>(

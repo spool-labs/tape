@@ -63,6 +63,7 @@ const BLOCK_FETCH_CONFIG: RpcBlockConfig = RpcBlockConfig {
 enum BlockOutcome {
     Present(UiConfirmedBlock),
     Skipped,
+    Unavailable(String),
     Retriable(String),
 }
 
@@ -334,8 +335,7 @@ async fn fetch_and_store(state: &AppState, slot: u64) {
             state.slot_store.insert(slot, cached).await;
         }
         Err(msg) => {
-            warn!(slot, error = %msg, "giving up on block; storing as skipped");
-            store_skipped(state, slot).await;
+            warn!(slot, error = %msg, "block fetch failed; leaving slot uncached");
         }
     }
 }
@@ -353,6 +353,11 @@ pub async fn fetch_slot_block(state: &AppState, slot: u64) -> Result<CachedBlock
             BlockOutcome::Skipped => {
                 state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
                 return Ok(CachedBlock::Skipped);
+            }
+            BlockOutcome::Unavailable(msg) => {
+                // Permanently gone from this upstream but not a skip. Retrying the
+                // same endpoint won't help.
+                return Err(msg);
             }
             BlockOutcome::Retriable(msg) if attempt < MAX_BLOCK_FETCH_ATTEMPTS => {
                 let delay = retry_delay(attempt);
@@ -380,14 +385,6 @@ fn build_present_block(
         }
     };
     Ok(CachedBlock::Present(Bytes::from(serialized)))
-}
-
-async fn store_skipped(state: &AppState, slot: u64) {
-    state
-        .slot_store
-        .insert(slot, CachedBlock::Skipped)
-        .await;
-    state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
 }
 
 fn retry_delay(attempt: u32) -> Duration {
@@ -430,13 +427,16 @@ fn classify_block_error(err: &Value) -> BlockOutcome {
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("");
-    // A pruned block ("cleaned up, does not exist on node") is permanently
-    // gone, same as a skipped slot — tombstone it instead of burning retries.
     let lower = msg.to_lowercase();
-    if lower.contains("skipped")
-        || lower.contains("cleaned up")
-        || lower.contains("does not exist")
-    {
+    if lower.contains("cleaned up") || lower.contains("does not exist") {
+        return BlockOutcome::Unavailable(format!(
+            "code={} message={}",
+            code.unwrap_or(0),
+            msg
+        ));
+    }
+    // A genuine skip reported only by message (non-standard or missing code).
+    if lower.contains("skipped") {
         return BlockOutcome::Skipped;
     }
     BlockOutcome::Retriable(format!(
@@ -583,12 +583,15 @@ mod tests {
     }
 
     #[test]
-    fn classify_block_error_pruned_is_skipped() {
+    fn classify_block_error_pruned_is_unavailable() {
         let err = json!({
             "code": -32001,
             "message": "Block 2170 cleaned up, does not exist on node. First available block: 4756",
         });
-        assert!(matches!(classify_block_error(&err), BlockOutcome::Skipped));
+        assert!(matches!(
+            classify_block_error(&err),
+            BlockOutcome::Unavailable(_)
+        ));
     }
 
     #[test]

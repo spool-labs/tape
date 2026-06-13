@@ -388,7 +388,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 (true, Some(_state)) => {
                     info!(spool = %spool, epoch = epoch.0, "spool: refreshing assigned spool for new epoch");
 
-                    reset_spool_state(self.context.as_ref(), spool)?;
+                    self.context
+                        .store
+                        .remove_spool_sync_cursor(spool)
+                        .map_err(|e| NodeError::Store(format!("remove_spool_sync_cursor({spool}): {e}")))?;
 
                     let state = make_sync_state(self.context.as_ref(), spool, epoch);
 
@@ -614,6 +617,36 @@ mod tests {
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Sync);
         assert_eq!(state.epoch, EPOCH);
+    }
+
+    #[tokio::test]
+    async fn advance_refresh_preserves_pending_queues() {
+        let ctx = test_context().await;
+        let track = Address::from([7; 32]);
+
+        // Assigned spool persisted under a stale epoch, with detected repair work
+        // queued and a per-epoch sync cursor set.
+        ctx.store
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
+            .unwrap();
+        ctx.store.add_pending_repair(SPOOL, track).unwrap();
+        ctx.store.set_spool_sync_cursor(SPOOL, track).unwrap();
+
+        let manager = SpoolManager::new(
+            ctx.clone(),
+            RecoveryConfig::default(),
+            CancellationToken::new(),
+        );
+
+        manager.advance(EPOCH).unwrap();
+
+        // Re-entered Sync for the new epoch, the per-epoch cursor cleared, but the
+        // repair queue survives the refresh.
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Sync);
+        assert_eq!(state.epoch, EPOCH);
+        assert_eq!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap(), None);
+        assert!(ctx.store.has_pending_repair(SPOOL, track).unwrap());
     }
 
     #[tokio::test]
