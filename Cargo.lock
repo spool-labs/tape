@@ -8814,6 +8814,7 @@ dependencies = [
  "bytemuck",
  "clap",
  "hex",
+ "rocksdb",
  "rpc",
  "rpc-client",
  "rpc-solana",
@@ -8834,6 +8835,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wincode 0.1.2",
 ]
 
 [[package]]
