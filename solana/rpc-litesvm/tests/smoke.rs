@@ -5,6 +5,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::system_instruction;
 use solana_sdk::transaction::Transaction;
+use tape_crypto::address::Address;
 
 #[tokio::test]
 async fn basic_slot_and_blockhash_are_available() {
@@ -59,6 +60,7 @@ async fn send_transfer_records_block_and_status() {
     let txs = block.transactions.expect("full tx details present");
     assert_eq!(txs.len(), 1, "one tx recorded in block");
 
-    let recipient_account = rpc.get_account(&recipient).await.expect("recipient account");
+    let recipient_addr: Address = recipient.into();
+    let recipient_account = rpc.get_account(&recipient_addr).await.expect("recipient account");
     assert_eq!(recipient_account.lamports, 1_000_000);
 }

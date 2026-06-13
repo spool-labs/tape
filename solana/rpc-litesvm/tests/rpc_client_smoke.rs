@@ -4,6 +4,8 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::system_instruction;
+use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair as TapeKeypair;
 
 #[tokio::test]
 async fn rpc_client_can_use_litesvm_backend_for_basic_transfer() {
@@ -16,9 +18,12 @@ async fn rpc_client_can_use_litesvm_backend_for_basic_transfer() {
     rpc.airdrop(&payer.pubkey(), 10_000_000)
         .expect("airdrop payer");
 
+    // RpcClient signs with tape's own Signer; derive it from the funded payer.
+    let signer = TapeKeypair::from_solana_keypair(&payer).expect("derive tape keypair");
+
     let transfer_ix = system_instruction::transfer(&payer.pubkey(), &recipient, 1_000_000);
     let sig = client
-        .send_instructions(&payer, vec![transfer_ix])
+        .send_instructions(&signer, vec![transfer_ix])
         .await
         .expect("transfer should succeed");
 
@@ -30,9 +35,10 @@ async fn rpc_client_can_use_litesvm_backend_for_basic_transfer() {
         .expect("status exists");
     assert!(status.is_ok(), "tx should be confirmed successfully");
 
+    let recipient_addr: Address = recipient.into();
     let recipient_account = client
         .rpc()
-        .get_account(&recipient)
+        .get_account(&recipient_addr)
         .await
         .expect("recipient account");
     assert_eq!(recipient_account.lamports, 1_000_000);

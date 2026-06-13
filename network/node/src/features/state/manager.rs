@@ -104,6 +104,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 ParsedInstruction::VoteSnapshot { event, .. } => {
                     handlers.handle_snapshot_vote(*event).await?;
                 }
+                ParsedInstruction::FinalizeSnapshot { event, .. } => {
+                    handlers.handle_snapshot_finalized(*event).await?;
+                }
                 ParsedInstruction::VoteAssignment { event, .. } => {
                     handlers.handle_assignment_vote(*event).await?;
                 }

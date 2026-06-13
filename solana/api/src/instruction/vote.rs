@@ -125,14 +125,19 @@ pub fn build_finalize_snapshot_ix(
     epoch: EpochNumber,
     tape: Tape,
 ) -> Instruction {
-    let (epoch_address, _) = epoch_pda(epoch);
+    let voting_epoch = epoch.next();
+    let (system_address, _) = system_pda();
+    let (voting_epoch_address, _) = epoch_pda(voting_epoch);
+    let (target_epoch_address, _) = epoch_pda(epoch);
     let (snapshot_tape_address, _) = snapshot_tape_pda(epoch);
 
     Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(epoch_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new(voting_epoch_address.into(), false),
+            AccountMeta::new_readonly(target_epoch_address.into(), false),
             AccountMeta::new(snapshot_tape_address.into(), false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],

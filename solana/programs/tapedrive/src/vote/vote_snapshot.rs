@@ -28,9 +28,8 @@ pub fn process_vote_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let target_epoch_id = voting_epoch_id.prev();
 
     let voting_epoch = voting_epoch_info
-        .is_writable()?
         .is_epoch(voting_epoch_id)?
-        .as_account_mut::<Epoch>(&tapedrive::ID)?;
+        .as_account::<Epoch>(&tapedrive::ID)?;
 
     if voting_epoch.state.phase != EpochPhase::Snapshot as u64 {
         return Err(TapeError::BadEpochState.into());
@@ -113,7 +112,6 @@ pub fn process_vote_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         if !target_epoch.has_snapshot_hash() {
             target_epoch.snapshot_hash = args.hash;
         }
-        voting_epoch.state.phase = EpochPhase::Active as u64;
     }
 
     VoteRecorded {
@@ -241,13 +239,7 @@ mod tests {
         ];
 
         let expected_vote = vote.pack_with(&[1u8]);
-        let expected_voting_epoch = Epoch {
-            state: EpochState {
-                phase: EpochPhase::Active as u64,
-                ..voting_epoch.state
-            },
-            ..voting_epoch
-        };
+        let expected_voting_epoch = voting_epoch;
         let expected_target_epoch = Epoch {
             snapshot_hash: hash,
             ..target_epoch

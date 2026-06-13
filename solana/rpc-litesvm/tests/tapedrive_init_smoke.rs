@@ -5,7 +5,14 @@ use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
-use tape_api;
+use tape_api::genesis::GenesisConfig;
+use tape_api::instruction::{
+    build_create_archive_ix, build_create_committee_ix, build_create_epoch_ix,
+    build_create_peer_set_ix, build_create_system_ix, build_initialize_mint_ix,
+};
+use tape_api::prelude::EpochNumber;
+use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair as TapeKeypair;
 
 fn workspace_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -51,49 +58,46 @@ async fn initialize_system_with_tapedrive_programs() {
     rpc.airdrop(&payer.pubkey(), 20_000_000_000)
         .expect("airdrop payer");
 
-    use tape_api::instruction::{
-        build_create_system_ix, build_expand_system_ix, build_create_archive_ix, build_initialize_mint_ix,
-    };
+    // RpcClient signs with tape's own Signer; derive it from the funded payer.
+    let signer = TapeKeypair::from_solana_keypair(&payer).expect("derive tape keypair");
+    let admin: Address = payer.pubkey().into();
+    let config = GenesisConfig::local();
 
-    let mint_ix = build_initialize_mint_ix(payer.pubkey(), payer.pubkey());
+    // Genesis singleton bringup, mirroring tape-admin `init_all`: mint, system,
+    // peer set, archive, then the bootstrap/genesis/candidate epoch + committee
+    // accounts. Node staging and StartNetwork are out of scope for this smoke test.
     client
-        .send_instructions(&payer, vec![mint_ix])
+        .send_instructions(&signer, vec![build_initialize_mint_ix(admin, admin)])
         .await
         .expect("initialize mint");
 
-    let create_system_ix = build_create_system_ix(payer.pubkey(), payer.pubkey());
     client
-        .send_instructions(&payer, vec![create_system_ix])
+        .send_instructions(&signer, vec![build_create_system_ix(admin, admin, &config)])
         .await
         .expect("create system");
 
-    // Expand System account to full size (~70KB).
-    for _ in 0..10 {
-        let expand_ix = build_expand_system_ix(payer.pubkey(), payer.pubkey());
-        let result = client.send_instructions(&payer, vec![expand_ix]).await;
+    client
+        .send_instructions(&signer, vec![build_create_peer_set_ix(admin)])
+        .await
+        .expect("create peer set");
 
-        match result {
-            Ok(_) => {}
-            Err(e) => {
-                let err_str = format!("{e:?}");
-                if err_str.contains("AccountAlreadyInitialized")
-                    || err_str.contains("already initialized")
-                    || err_str.contains("uninitialized account")
-                {
-                    break;
-                }
-                panic!("expand failed unexpectedly: {e}");
-            }
-        }
+    client
+        .send_instructions(&signer, vec![build_create_archive_ix(admin, admin, &config)])
+        .await
+        .expect("create archive");
+
+    for epoch in [EpochNumber(0), EpochNumber(1), EpochNumber(2)] {
+        client
+            .send_instructions(&signer, vec![build_create_epoch_ix(admin, epoch)])
+            .await
+            .expect("create epoch");
+        client
+            .send_instructions(&signer, vec![build_create_committee_ix(admin, epoch)])
+            .await
+            .expect("create committee");
     }
 
-    let init_ix = build_create_archive_ix(payer.pubkey(), payer.pubkey());
-    client
-        .send_instructions(&payer, vec![init_ix])
-        .await
-        .expect("initialize epoch/archive");
-
     client.get_system().await.expect("fetch system");
-    client.get_epoch().await.expect("fetch epoch");
+    client.get_epoch(EpochNumber(0)).await.expect("fetch epoch");
     client.get_archive().await.expect("fetch archive");
 }

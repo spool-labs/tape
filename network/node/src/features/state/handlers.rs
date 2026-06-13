@@ -5,7 +5,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
-    NodeJoinedCommittee, PeerSetResized, SpoolSynced, VoteRecorded,
+    NodeJoinedCommittee, PeerSetResized, SnapshotFinalized, SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
 use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
@@ -325,11 +325,35 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
             return Ok(());
         }
 
-        state.current.epoch.state.phase = EpochPhase::Active as u64;
+        // Record the canonical hash only; FinalizeSnapshot moves the epoch to Active.
         if let Some(previous) = state
             .previous
             .as_mut()
             .filter(|previous| previous.epoch.id == target_epoch)
+        {
+            previous.epoch.snapshot_hash = event.hash;
+        }
+
+        self.context.set_state(state)?;
+
+        Ok(())
+    }
+
+    pub async fn handle_snapshot_finalized(
+        &self,
+        event: SnapshotFinalized,
+    ) -> Result<(), NodeError> {
+        let voting_epoch = event.epoch.next();
+        let mut state = (*self.context.state()).clone();
+        if state.epoch() != voting_epoch {
+            return Ok(());
+        }
+
+        state.current.epoch.state.phase = EpochPhase::Active as u64;
+        if let Some(previous) = state
+            .previous
+            .as_mut()
+            .filter(|previous| previous.epoch.id == event.epoch)
         {
             previous.epoch.snapshot_hash = event.hash;
         }

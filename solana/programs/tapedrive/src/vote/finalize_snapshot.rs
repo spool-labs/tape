@@ -7,6 +7,8 @@ pub fn process_finalize_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let args = FinalizeSnapshot::try_from_bytes(data)?;
     let [
         fee_payer_info,
+        system_info,
+        voting_epoch_info,
         target_epoch_info,
         snapshot_tape_info,
         system_program_info,
@@ -21,7 +23,26 @@ pub fn process_finalize_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let target_epoch_id = args.epoch;
+    let system = system_info
+        .is_system()?
+        .as_account::<System>(&tapedrive::ID)?;
+
+    let voting_epoch_id = system.current_epoch;
+    let target_epoch_id = voting_epoch_id.prev();
+
+    if args.epoch != target_epoch_id {
+        return Err(TapeError::BadEpochId.into());
+    }
+
+    let voting_epoch = voting_epoch_info
+        .is_writable()?
+        .is_epoch(voting_epoch_id)?
+        .as_account_mut::<Epoch>(&tapedrive::ID)?;
+
+    if voting_epoch.state.phase != EpochPhase::Snapshot as u64 {
+        return Err(TapeError::BadEpochState.into());
+    }
+
     let target_epoch = target_epoch_info
         .is_epoch(target_epoch_id)?
         .as_account::<Epoch>(&tapedrive::ID)?;
@@ -30,8 +51,10 @@ pub fn process_finalize_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(TapeError::UnexpectedState.into());
     }
 
+    let snapshot_hash = target_epoch.snapshot_hash;
+
     let tape_hash = hash_bytes(bytes_of(&args.tape));
-    if tape_hash != target_epoch.snapshot_hash {
+    if tape_hash != snapshot_hash {
         return Err(TapeError::InvalidCommitment.into());
     }
 
@@ -57,9 +80,11 @@ pub fn process_finalize_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let tape = snapshot_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
     *tape = args.tape;
 
+    voting_epoch.state.phase = EpochPhase::Active as u64;
+
     SnapshotFinalized {
         epoch: target_epoch_id,
-        hash: target_epoch.snapshot_hash,
+        hash: snapshot_hash,
         snapshot_tape: snapshot_tape_address,
     }
     .log();
@@ -72,16 +97,53 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    fn finalize_accounts(
+        fee_payer: Pubkey,
+        target_epoch_id: EpochNumber,
+        voting_phase: EpochPhase,
+        target_epoch: Epoch,
+    ) -> Vec<(Pubkey, solana_sdk::account::Account)> {
+        let voting_epoch_id = target_epoch_id.next();
+
+        let (system_address, _) = system_pda();
+        let (voting_epoch_address, _) = epoch_pda(voting_epoch_id);
+        let (target_epoch_address, _) = epoch_pda(target_epoch_id);
+        let (snapshot_tape_address, _) = snapshot_tape_pda(target_epoch_id);
+
+        let system = System {
+            current_epoch: voting_epoch_id,
+            ..System::zeroed()
+        };
+
+        let voting_epoch = Epoch {
+            id: voting_epoch_id,
+            state: EpochState {
+                phase: voting_phase as u64,
+                ..EpochState::zeroed()
+            },
+            ..Epoch::zeroed()
+        };
+
+        vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(voting_epoch_address, voting_epoch.pack(), tapedrive::ID),
+            pda(target_epoch_address, target_epoch.pack(), tapedrive::ID),
+            empty(snapshot_tape_address),
+            system_program(),
+        ]
+    }
+
     #[test]
     fn finalize_snapshot() {
         let fee_payer = Pubkey::new_unique();
         let target_epoch_id = EpochNumber(11);
+        let voting_epoch_id = target_epoch_id.next();
 
         let tape = Tape::snapshot(target_epoch_id);
-
         let snapshot_hash = hash_bytes(bytes_of(&tape));
 
-        let (target_epoch_address, _) = epoch_pda(target_epoch_id);
+        let (voting_epoch_address, _) = epoch_pda(voting_epoch_id);
         let (snapshot_tape_address, _) = snapshot_tape_pda(target_epoch_id);
 
         let target_epoch = Epoch {
@@ -93,12 +155,17 @@ mod tests {
         let instruction =
             build_finalize_snapshot_ix(fee_payer.into(), target_epoch_id, tape);
 
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            pda(target_epoch_address, target_epoch.pack(), tapedrive::ID),
-            empty(snapshot_tape_address),
-            system_program(),
-        ];
+        let accounts =
+            finalize_accounts(fee_payer, target_epoch_id, EpochPhase::Snapshot, target_epoch);
+
+        let expected_voting_epoch = Epoch {
+            id: voting_epoch_id,
+            state: EpochState {
+                phase: EpochPhase::Active as u64,
+                ..EpochState::zeroed()
+            },
+            ..Epoch::zeroed()
+        };
 
         let env = test_env();
         env.process_instruction(
@@ -109,6 +176,9 @@ mod tests {
                 Check::account(&Pubkey::from(snapshot_tape_address))
                     .owner(&tapedrive::ID)
                     .data(tape.pack().as_ref())
+                    .build(),
+                Check::account(&Pubkey::from(voting_epoch_address))
+                    .data(expected_voting_epoch.pack().as_ref())
                     .build(),
             ],
         );
@@ -123,8 +193,33 @@ mod tests {
         tape.id = TapeNumber(7);
         let snapshot_hash = hash_bytes(bytes_of(&tape));
 
-        let (target_epoch_address, _) = epoch_pda(target_epoch_id);
-        let (snapshot_tape_address, _) = snapshot_tape_pda(target_epoch_id);
+        let target_epoch = Epoch {
+            id: target_epoch_id,
+            snapshot_hash,
+            ..Epoch::zeroed()
+        };
+
+        let instruction =
+            build_finalize_snapshot_ix(fee_payer.into(), target_epoch_id, tape);
+
+        let accounts =
+            finalize_accounts(fee_payer, target_epoch_id, EpochPhase::Snapshot, target_epoch);
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::UnexpectedState.into())],
+        );
+    }
+
+    #[test]
+    fn rejects_when_not_snapshot_phase() {
+        let fee_payer = Pubkey::new_unique();
+        let target_epoch_id = EpochNumber(11);
+
+        let tape = Tape::snapshot(target_epoch_id);
+        let snapshot_hash = hash_bytes(bytes_of(&tape));
 
         let target_epoch = Epoch {
             id: target_epoch_id,
@@ -135,18 +230,14 @@ mod tests {
         let instruction =
             build_finalize_snapshot_ix(fee_payer.into(), target_epoch_id, tape);
 
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            pda(target_epoch_address, target_epoch.pack(), tapedrive::ID),
-            empty(snapshot_tape_address),
-            system_program(),
-        ];
+        let accounts =
+            finalize_accounts(fee_payer, target_epoch_id, EpochPhase::Active, target_epoch);
 
         let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
-            &[Check::err(TapeError::UnexpectedState.into())],
+            &[Check::err(TapeError::BadEpochState.into())],
         );
     }
 }
