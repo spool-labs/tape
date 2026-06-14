@@ -375,7 +375,6 @@ mod tests {
     /// Seek-based iteration must see data after it leaves the memtable, in
     /// every open mode. Regression test for the PlainTable configuration
     /// that silently dropped flushed rows from `iter_from`
-    /// (docs/store-structural-fix-2026-06-10.md).
     #[test]
     #[cfg(not(miri))]
     fn flushed_iteration() {
