@@ -71,6 +71,7 @@ async fn object_layer_round_trip_inner() {
     sdk.reserve(&bucket, StorageUnits::mb(1), 4)
         .await
         .expect("reserve bucket tape");
+
     sdk.put_object(&bucket, name, data, Some("image/jpeg"))
         .await
         .expect("put object");

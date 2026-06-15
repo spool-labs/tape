@@ -106,12 +106,22 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .unwrap_or(ContentType::Unknown);
 
         if data.len() > CHUNK_SIZE {
-            let receipt = self.write_named_bytes(bucket, name, content_type, data).await?;
+            let receipt = self.write_named_bytes(
+                bucket,
+                name,
+                content_type,
+                data
+            ).await?;
+
             Ok(receipt.manifest)
         } else {
-            let track = self
-                .write_named_track(bucket, name, content_type, data)
-                .await?;
+            let track = self.write_named_track(
+                bucket, 
+                name, 
+                content_type, 
+                data
+            ).await?;
+
             Ok(track_pda(track.tape, track.track_number).0.into())
         }
     }
