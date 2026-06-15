@@ -14,6 +14,7 @@ use crate::tapedrive::Tapedrive;
 use crate::track::bootstrap_network_state;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
+
     /// Fetch a track's current compressed state from peers.
     pub async fn get_track(&self, track: &Address) -> Result<CompressedTrack, TapedriveError> {
         query_track(self, track).await
@@ -46,6 +47,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         limit: u32,
     ) -> Result<(Vec<CompressedTrack>, Option<TrackNumber>), TapedriveError> {
         query_tracks_by_tape(self, tape, cursor, limit).await
+    }
+
+    /// Fetch a verifiable proof for a track (used to delete it).
+    pub async fn get_track_proof(
+        &self,
+        track: &Address,
+    ) -> Result<CompressedTrackProof, TapedriveError> {
+        query_track_proof(self, track).await
     }
 }
 

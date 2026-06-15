@@ -8,9 +8,7 @@ use rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
-use tape_api::instruction::{ 
-    build_certify_track_ix, build_track_write_blob_ix, build_track_write_raw_ix 
-};
+use tape_api::instruction::{build_certify_track_ix, build_track_write_ix};
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
 use tape_core::erasure::GROUP_SIZE;
@@ -18,7 +16,8 @@ use tape_core::prelude::{
     BlobEncoding, CompressedTrack, EncodingProfile, EpochNumber, GroupIndex, StorageUnits,
     StripeCount, TrackNumber,
 };
-use tape_core::track::data::BlobDataSlice;
+use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo};
+use tape_core::types::ContentType;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
@@ -69,21 +68,24 @@ enum TrackCompletionError {
 }
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
+
     /// Write a track to an existing tape.
     pub async fn write_track(
         &self,
         tape_key: &TapeKey,
-        key: Hash,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
         data: &[u8],
     ) -> Result<CompressedTrack, TapedriveError> {
-        write_track(self, tape_key, key, data).await
+        write_track(self, tape_key, name.as_ref(), content_type, data).await
     }
 
     /// Write raw bytes to an existing tape.
     pub async fn write_raw(
         &self,
         tape_key: &TapeKey,
-        key: Hash,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
         raw: &[u8],
     ) -> Result<CompressedTrack, TapedriveError> {
         if raw.len() > SDK_INLINE_RAW_MAX_BYTES {
@@ -95,7 +97,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let timer = self
             .timer(Operation::WriteRaw, Phase::Total)
             .bytes(raw.len() as u64);
-        let result = submit_raw(self, tape_key, key, raw, Operation::WriteRaw).await;
+        let result = submit_raw(self, tape_key, name.as_ref(), content_type, raw, Operation::WriteRaw).await;
         timer.finish_result(&result);
         let written = result?;
         Ok(written.track)
@@ -105,13 +107,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     pub async fn write_blob(
         &self,
         tape_key: &TapeKey,
-        key: Hash,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
         data: &[u8],
     ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
         let timer = self
             .timer(Operation::WriteBlob, Phase::Total)
             .bytes(data.len() as u64);
-        let result = submit_blob(self, tape_key, key, data, Operation::WriteBlob).await;
+        let result = submit_blob(self, tape_key, name.as_ref(), content_type, data, Operation::WriteBlob).await;
         timer.finish_result(&result);
         result
     }
@@ -166,7 +169,8 @@ fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
 async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     raw: &[u8],
     operation: Operation,
 ) -> Result<WrittenTrack, TapedriveError> {
@@ -174,7 +178,7 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
         .timer(operation, Phase::Register)
         .bytes(raw.len() as u64)
         .chunks(1);
-    let result = send_raw(client, tape_key, key, raw).await;
+    let result = send_raw(client, tape_key, name, content_type, raw).await;
     timer.finish_result(&result);
     result
 }
@@ -182,16 +186,22 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
 async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     raw: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
-    let write_ix = build_track_write_raw_ix(
+    let data = BlobDataSlice::Inline(raw);
+    let key = track_key(name, &data);
+    let write_ix = build_track_write_ix(
         payer.pubkey().into(),
         tape_key.pubkey().into(),
-        key,
-        raw,
+        BlobInfo {
+            name: name.to_vec(),
+            content_type,
+            data: BlobData::Inline(raw.to_vec()),
+        },
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
@@ -207,7 +217,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 
     let written = fetch_track_written_event(client, &signature).await?;
     let track_address: Address = written.track.into();
-    let meta = BlobDataSlice::Inline(raw).meta().unwrap();
+    let meta = data.meta().unwrap();
     let track = CompressedTrack {
         tape: written.tape,
         track_number: written.track_number,
@@ -229,7 +239,8 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     data: &[u8],
     operation: Operation,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
@@ -244,7 +255,7 @@ pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
         .timer(operation, Phase::Register)
         .bytes(data.len() as u64)
         .chunks(1);
-    let result = send_blob(client, tape_key, key, data, plan).await;
+    let result = send_blob(client, tape_key, name, content_type, data, plan).await;
     register_timer.finish_result(&result);
     result
 }
@@ -252,7 +263,8 @@ pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
 async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     _data: &[u8],
     plan: UploadPlan,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
@@ -266,11 +278,15 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
         stripe_count: StripeCount(plan.stripe_count as u64),
         leaves: plan.leaves,
     };
-    let write_ix = build_track_write_blob_ix(
+    let key = track_key(name, &BlobDataSlice::Coded(blob));
+    let write_ix = build_track_write_ix(
         payer.pubkey().into(),
         tape_key.pubkey().into(),
-        key,
-        blob,
+        BlobInfo {
+            name: name.to_vec(),
+            content_type,
+            data: BlobData::Coded(blob),
+        },
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
@@ -569,7 +585,8 @@ async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
 pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     data: &[u8],
 ) -> Result<CompressedTrack, TapedriveError> {
     let timer = client
@@ -580,7 +597,8 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
             let written = submit_raw(
                 client,
                 tape_key,
-                key,
+                name,
+                content_type,
                 data,
                 Operation::WriteTrack,
             )
@@ -591,7 +609,8 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         let (written, plan) = submit_blob(
             client,
             tape_key,
-            key,
+            name,
+            content_type,
             data,
             Operation::WriteTrack,
         )

@@ -2,9 +2,9 @@ use core::mem::size_of;
 
 use tape_core::bls::BlsSignature;
 use tape_core::track::blob::BlobEncoding;
-use tape_core::track::data::{BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice, ContentHint};
+use tape_core::track::data::{BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice};
 use tape_core::track::types::{CompressedTrackProof, TrackKind};
-use tape_core::types::{EpochNumber, SpoolBitmap, StorageUnits, StripeCount};
+use tape_core::types::{ContentType, EpochNumber, SpoolBitmap, StorageUnits, StripeCount};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_solana::*;
@@ -19,7 +19,7 @@ pub const MAX_NAME_LEN: usize = 1024;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackWrite {
     pub kind: u8,
-    pub hint: [u8; 2],
+    pub content_type: [u8; 2],
     pub data_len: [u8; 2],
 }
 
@@ -178,10 +178,10 @@ pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, BlobInfoSlice<'_>),
         }
     };
 
-    let hint = ContentHint::try_from(u16::from_le_bytes(header.hint))
+    let content_type = ContentType::try_from(u16::from_le_bytes(header.content_type))
         .map_err(|_| ProgramError::InvalidInstructionData)?;
 
-    Ok((header, BlobInfoSlice { name, hint, data }))
+    Ok((header, BlobInfoSlice { name, content_type, data }))
 }
 
 #[inline(always)]
@@ -190,7 +190,7 @@ fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    let BlobInfo { name, hint, data } = blob;
+    let BlobInfo { name, content_type, data } = blob;
     let (kind, payload) = match data {
         BlobData::Inline(bytes) => {
             if bytes.len() > TRACK_WRITE_MAX_BYTES {
@@ -216,7 +216,7 @@ fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
 
     let mut out = TrackWrite {
         kind: kind as u8,
-        hint: u16::from(hint).to_le_bytes(),
+        content_type: u16::from(content_type).to_le_bytes(),
         data_len: data_len.to_le_bytes(),
     }
     .to_bytes();

@@ -8,7 +8,8 @@ use rpc_client::RpcClient;
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
 use tape_core::prelude::{CompressedTrack, StorageUnits};
-use tape_crypto::prelude::{Address, Hash, Keypair};
+use tape_core::types::ContentType;
+use tape_crypto::prelude::{Address, Keypair};
 use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -118,7 +119,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Returns the tape key (save it!) and the registered track.
     pub async fn write(
         &self,
-        key: Hash,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
         data: &[u8],
         epochs: u64,
     ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
@@ -138,7 +140,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             return Err(error);
         }
 
-        let result = self.write_track(&tape_key, key, data).await;
+        let result = self.write_track(&tape_key, name, content_type, data).await;
         total.finish_result(&result);
         let track = result?;
 
@@ -152,13 +154,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     pub async fn write_bytes(
         &self,
         tape_key: &TapeKey,
-        key: Hash,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
         data: &[u8],
     ) -> Result<StreamReceipt, TapedriveError> {
         let timer = self
             .timer(Operation::WriteStream, Phase::Total)
             .bytes(data.len() as u64);
-        let result = write_bytes(self, tape_key, key, data).await;
+        let result = write_bytes(self, tape_key, name.as_ref(), content_type, data).await;
         timer.finish_result(&result);
         result
     }
@@ -169,14 +172,15 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     pub async fn write_stream<Reader: AsyncRead + Unpin>(
         &self,
         tape_key: &TapeKey,
-        key: Hash,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
         size: StorageUnits,
         reader: Reader,
     ) -> Result<StreamReceipt, TapedriveError> {
         let timer = self
             .timer(Operation::WriteStream, Phase::Total)
             .bytes(size.to_bytes());
-        let result = write_stream(self, tape_key, key, size, reader).await;
+        let result = write_stream(self, tape_key, name.as_ref(), content_type, size, reader).await;
         timer.finish_result(&result);
         result
     }

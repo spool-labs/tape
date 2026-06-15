@@ -11,8 +11,9 @@ use rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Tape;
 use tape_core::track::TRACK_TREE_HEIGHT;
+use tape_core::types::ContentType;
 use tape_core::types::{StorageUnits, TrackNumber};
-use tape_crypto::hash::hashv;
+use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 use tape_protocol::Api;
 
@@ -34,14 +35,15 @@ const CHUNK_CONCURRENCY: usize = 1;
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(1 << TRACK_TREE_HEIGHT);
 
+/// Chunks are internal fragments addressed by track number, never by name, so
+/// they carry no name (content-addressed, excluded from listings) and no content
+/// type. The object's name and content type live on the manifest track.
+const INNER_CHUNK_NAME: &[u8] = b"";
+const INNER_CHUNK_TYPE: ContentType = ContentType::Unknown;
+
 struct PendingChunk {
     pub entry: ChunkEntry,
     pub written: WrittenTrack,
-}
-
-/// Derive a deterministic key for a chunk from the stream key and chunk index.
-fn chunk_key(stream_key: Hash, index: usize) -> Hash {
-    hashv(&[stream_key.as_ref(), &(index as u64).to_le_bytes()])
 }
 
 /// Validate stream-level input before any track writes begin.
@@ -167,37 +169,37 @@ fn preflight(
 pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     data: &[u8],
 ) -> Result<StreamReceipt, TapedriveError> {
     let size = StorageUnits::from_bytes(data.len() as u64);
-    let chunk_count = prepare_write(client, tape_key, key, size).await?;
+    let chunk_count = prepare_write(client, tape_key, name, size).await?;
     let pending_chunks = register_and_upload_bytes_chunks(
         client,
         tape_key,
-        key,
         data,
         size,
         chunk_count,
     )
     .await?;
 
-    finalize_write(client, tape_key, key, size, pending_chunks).await
+    finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
 }
 
 /// Write bytes from an async reader as a multi-track stream.
 pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     size: StorageUnits,
     mut reader: Reader,
 ) -> Result<StreamReceipt, TapedriveError> {
-    let chunk_count = prepare_write(client, tape_key, key, size).await?;
+    let chunk_count = prepare_write(client, tape_key, name, size).await?;
     let pending_chunks = register_and_upload_stream_chunks(
         client,
         tape_key,
-        key,
         size,
         chunk_count,
         &mut reader,
@@ -205,14 +207,14 @@ pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unp
     .await?;
 
     verify_stream_drained(&mut reader).await?;
-    finalize_write(client, tape_key, key, size, pending_chunks).await
+    finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
 }
 
 /// Validate the write upfront and return the chunk count.
 async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
     size: StorageUnits,
 ) -> Result<TrackNumber, TapedriveError> {
     let timer = client
@@ -227,7 +229,7 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
         })?;
 
         let entries = build_entries(TrackNumber(0), chunk_count, size).map_err(stream_error)?;
-        let manifest = build_manifest(key, size, entries).map_err(stream_error)?;
+        let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
         let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
         let total_size = size
             .checked_add(StorageUnits::from_bytes(manifest_bytes.len() as u64))
@@ -246,7 +248,6 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
 async fn register_and_upload_bytes_chunks<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
     data: &[u8],
     size: StorageUnits,
     chunk_count: TrackNumber,
@@ -258,7 +259,6 @@ async fn register_and_upload_bytes_chunks<Blockchain: Rpc, Cluster: Api>(
             process_chunk(
                 client,
                 tape_key,
-                key,
                 chunk_index,
                 chunk_count,
                 size,
@@ -279,7 +279,6 @@ async fn register_and_upload_bytes_chunks<Blockchain: Rpc, Cluster: Api>(
 async fn register_and_upload_stream_chunks<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
     size: StorageUnits,
     chunk_count: TrackNumber,
     reader: &mut Reader,
@@ -298,7 +297,6 @@ async fn register_and_upload_stream_chunks<Blockchain: Rpc, Cluster: Api, Reader
             in_flight.push(process_chunk(
                 client,
                 tape_key,
-                key,
                 next_chunk_index,
                 chunk_count,
                 size,
@@ -347,21 +345,21 @@ async fn verify_stream_drained<Reader: AsyncRead + Unpin>(
 async fn process_chunk<Blockchain: Rpc, Cluster: Api, Bytes: AsRef<[u8]>>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
     chunk_index: usize,
     chunk_count: TrackNumber,
     size: StorageUnits,
     chunk_data: Bytes,
 ) -> Result<(usize, PendingChunk), TapedriveError> {
-    let chunk_hash = chunk_key(key, chunk_index);
     let (written, plan) = submit_blob(
         client,
         tape_key,
-        chunk_hash,
+        INNER_CHUNK_NAME,
+        INNER_CHUNK_TYPE,
         chunk_data.as_ref(),
         Operation::WriteStream,
     )
     .await?;
+
     upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
 
     Ok((
@@ -428,13 +426,15 @@ async fn certify_chunks<Blockchain: Rpc, Cluster: Api>(
 async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     manifest_bytes: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
     let (written, plan) = submit_blob(
         client,
         tape_key,
-        key,
+        name,
+        content_type,
         manifest_bytes,
         Operation::WriteStream,
     )
@@ -451,7 +451,8 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
 async fn finalize_write<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
-    key: Hash,
+    name: &[u8],
+    content_type: ContentType,
     size: StorageUnits,
     pending_chunks: Vec<PendingChunk>,
 ) -> Result<StreamReceipt, TapedriveError> {
@@ -461,10 +462,10 @@ async fn finalize_write<Blockchain: Rpc, Cluster: Api>(
         .into_iter()
         .map(|pending_chunk| pending_chunk.entry)
         .collect();
-    let manifest = build_manifest(key, size, entries).map_err(stream_error)?;
+    let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
 
-    let manifest_track = write_manifest(client, tape_key, key, &manifest_bytes).await?;
+    let manifest_track = write_manifest(client, tape_key, name, content_type, &manifest_bytes).await?;
     let manifest_address = track_pda(manifest_track.track.tape, manifest_track.track.track_number).0;
 
     Ok(StreamReceipt {

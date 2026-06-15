@@ -64,9 +64,10 @@ mod tests {
     use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::data::{BlobData, BlobInfo, ContentHint};
+    use tape_core::track::data::{BlobData, BlobInfo};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_core::types::ContentType;
     use tape_crypto::hash::{hash, hashv};
     use tape_crypto::merkle::{root_from_leaf_hashes, MerkleTree};
     use tape_test::*;
@@ -111,7 +112,7 @@ mod tests {
             authority.into(),
             BlobInfo {
                 name,
-                hint: ContentHint::Jpeg,
+                content_type: ContentType::ImageJpeg,
                 data: BlobData::Coded(blob),
             },
         )

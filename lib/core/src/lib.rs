@@ -21,10 +21,10 @@ pub mod prelude {
         EpochPhase, EpochState, NodeStatus, SpoolState, SpoolStatus, VoteKind,
     };
     pub use crate::track::blob::BlobEncoding;
-    pub use crate::track::data::{BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice, ContentHint};
+    pub use crate::track::data::{BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice};
     pub use crate::track::types::{CompressedTrack, TrackKind, TrackState};
     pub use crate::types::{
-        ChunkNumber, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TapeNumber,
-        TrackNumber,
+        ChunkNumber, ContentType, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount,
+        TapeNumber, TrackNumber,
     };
 }

@@ -1,31 +1,16 @@
 //! Track payload containers and metadata derivation.
 
-use num_enum::{IntoPrimitive, TryFromPrimitive};
-use tape_crypto::Hash;
 use tape_crypto::hash::hash;
+use tape_crypto::Hash;
 
 use crate::track::blob::BlobEncoding;
 use crate::track::types::{TrackKind, TrackState};
-use crate::types::StorageUnits;
+use crate::types::{ContentType, StorageUnits};
 
 #[cfg(feature = "wincode")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
-
-#[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
-pub enum ContentHint {
-    Unknown = 0,
-    OctetStream,
-    Json,
-    Text,
-    Jpeg,
-    Png,
-    Pdf,
-    Mp4,
-}
 
 /// Owned track payload for node-side storage.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,7 +110,7 @@ pub struct TrackMeta {
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
 pub struct BlobInfo {
     pub name: Vec<u8>,
-    pub hint: ContentHint,
+    pub content_type: ContentType,
     pub data: BlobData,
 }
 
@@ -134,7 +119,7 @@ impl BlobInfo {
     pub fn as_slice(&self) -> BlobInfoSlice<'_> {
         BlobInfoSlice {
             name: &self.name,
-            hint: self.hint,
+            content_type: self.content_type,
             data: self.data.as_slice(),
         }
     }
@@ -144,7 +129,7 @@ impl BlobInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct BlobInfoSlice<'source> {
     pub name: &'source [u8],
-    pub hint: ContentHint,
+    pub content_type: ContentType,
     pub data: BlobDataSlice<'source>,
 }
 
@@ -153,7 +138,7 @@ impl<'source> BlobInfoSlice<'source> {
     pub fn to_owned(self) -> BlobInfo {
         BlobInfo {
             name: self.name.to_vec(),
-            hint: self.hint,
+            content_type: self.content_type,
             data: self.data.to_owned(),
         }
     }
@@ -202,7 +187,7 @@ mod tests {
     fn envelope_wincode() {
         let blob = BlobInfo {
             name: b"photos/cat.jpg".to_vec(),
-            hint: ContentHint::Jpeg,
+            content_type: ContentType::ImageJpeg,
             data: BlobData::Coded(sample_blob_encoding()),
         };
 
