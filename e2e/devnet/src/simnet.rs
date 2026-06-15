@@ -13,7 +13,6 @@ use tape_core::types::{BasisPoints, StorageUnits};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_crypto::hash::hash;
 use tape_protocol::api::NODE_HEALTH_PATH;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::tape_key::TapeKey;
@@ -633,13 +632,12 @@ async fn upload_random_blob(
     tape_key: TapeKey,
     tx: mpsc::UnboundedSender<UploadResult>,
 ) -> Result<u64> {
-    let (key, data) = {
+    let data = {
         let mut rng = rand::thread_rng();
         let size = (rng.next_u32() as usize % (1024 * 1024 - 1024)) + 1024; // 1KB..1MB
         let mut data = vec![0u8; size];
         rng.fill_bytes(&mut data);
-        let key = hash(&data[..32.min(data.len())]);
-        (key, data)
+        data
     };
 
     let payer = CryptoKeypair::from_solana_keypair(admin)
@@ -673,7 +671,7 @@ async fn upload_random_blob(
     };
 
     let _ = tx.send(UploadResult::AttemptStarted { upload_id });
-    sdk.write_track(&tape_key, key, &data)
+    sdk.write_track(&tape_key, &data)
         .await
         .map_err(anyhow::Error::from)
         .context("write track")?;

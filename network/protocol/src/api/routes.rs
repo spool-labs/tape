@@ -19,6 +19,7 @@ pub const SYNC_TRACKS_PATH: &str = "/v1/sync/tracks";
 pub const TAPE_TRACK_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}";
 pub const TAPE_TRACK_FIND_PATH: &str = "/v1/tapes/{tape_id}/tracks/find";
 pub const TAPE_TRACK_LIST_PATH: &str = "/v1/tapes/{tape_id}/tracks/list";
+pub const TAPE_OBJECT_LIST_PATH: &str = "/v1/tapes/{tape_id}/objects/list";
 
 pub const TRACK_PATH: &str = "/v1/tracks/{track_id}";
 pub const TRACK_DATA_PATH: &str = "/v1/tracks/{track_id}/data";
@@ -64,6 +65,10 @@ pub fn list_tracks_by_tape_url(tape_id: &str) -> String {
     format!("/v1/tapes/{tape_id}/tracks/list")
 }
 
+pub fn list_objects_url(tape_id: &str) -> String {
+    format!("/v1/tapes/{tape_id}/objects/list")
+}
+
 pub fn sign_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/sign")
 }
@@ -89,6 +94,7 @@ mod tests {
         assert_eq!(tape_track_url("def", TrackNumber(7)), "/v1/tapes/def/tracks/7");
         assert_eq!(find_track_url("def"), "/v1/tapes/def/tracks/find");
         assert_eq!(list_tracks_by_tape_url("def"), "/v1/tapes/def/tracks/list");
+        assert_eq!(list_objects_url("def"), "/v1/tapes/def/objects/list");
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");
         assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");

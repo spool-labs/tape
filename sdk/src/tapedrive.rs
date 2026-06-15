@@ -19,8 +19,9 @@ use crate::metrics::{Metrics, Noop, Operation, Outcome, Phase, Timer};
 use crate::stream::{
     read::{read_bytes, read_into},
     receipt::StreamReceipt,
-    write::{write_bytes, write_stream},
+    write::{write_bytes as write_stream_bytes, write_stream as write_reader_stream},
 };
+use crate::track::write::{UNNAMED_TRACK, UNTYPED_TRACK};
 
 /// High-level client for the Tapedrive storage network.
 ///
@@ -110,14 +111,32 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         Timer::start(self.metrics.as_ref(), operation, phase)
     }
 
-    /// Write data to the network in one call.
+    /// Write unnamed content-addressed data to the network in one call.
     ///
     /// Creates a tape sized to fit `data` exactly, registers a track,
     /// uploads erasure-coded slices to storage nodes, and certifies the
-    /// track with BLS signatures.
+    /// track with BLS signatures. Unnamed tracks are excluded from object
+    /// listings.
     ///
     /// Returns the tape key (save it!) and the registered track.
     pub async fn write(
+        &self,
+        data: &[u8],
+        epochs: u64,
+    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
+        self.write_named(
+            UNNAMED_TRACK,
+            UNTYPED_TRACK,
+            data,
+            epochs,
+        )
+        .await
+    }
+
+    /// Write named data to the network in one call.
+    ///
+    /// Named tracks on non-system tapes are materialized into object listings.
+    pub async fn write_named(
         &self,
         name: impl AsRef<[u8]>,
         content_type: ContentType,
@@ -140,18 +159,39 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             return Err(error);
         }
 
-        let result = self.write_track(&tape_key, name, content_type, data).await;
+        let result = self
+            .write_named_track(&tape_key, name, content_type, data)
+            .await;
         total.finish_result(&result);
         let track = result?;
 
         Ok((tape_key, track))
     }
 
-    /// Write in-memory bytes to an existing tape as a logical stream.
+    /// Write unnamed in-memory bytes to an existing tape as a logical stream.
     ///
     /// Always writes a manifest track as the last track. For streams that fit
     /// in a single chunk, one data track and one manifest track are written.
+    /// The manifest and chunks are excluded from object listings.
     pub async fn write_bytes(
+        &self,
+        tape_key: &TapeKey,
+        data: &[u8],
+    ) -> Result<StreamReceipt, TapedriveError> {
+        self.write_named_bytes(
+            tape_key,
+            UNNAMED_TRACK,
+            UNTYPED_TRACK,
+            data,
+        )
+        .await
+    }
+
+    /// Write named in-memory bytes to an existing tape as a logical stream.
+    ///
+    /// The manifest track carries the object's name and content type; internal
+    /// chunk tracks remain unnamed.
+    pub async fn write_named_bytes(
         &self,
         tape_key: &TapeKey,
         name: impl AsRef<[u8]>,
@@ -161,15 +201,36 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let timer = self
             .timer(Operation::WriteStream, Phase::Total)
             .bytes(data.len() as u64);
-        let result = write_bytes(self, tape_key, name.as_ref(), content_type, data).await;
+        let result = write_stream_bytes(self, tape_key, name.as_ref(), content_type, data).await;
         timer.finish_result(&result);
         result
     }
 
-    /// Write a byte stream from an async reader into an existing tape.
+    /// Write an unnamed byte stream from an async reader into an existing tape.
     ///
-    /// The reader must yield exactly `size` bytes.
+    /// The reader must yield exactly `size` bytes. The manifest and chunks are
+    /// excluded from object listings.
     pub async fn write_stream<Reader: AsyncRead + Unpin>(
+        &self,
+        tape_key: &TapeKey,
+        size: StorageUnits,
+        reader: Reader,
+    ) -> Result<StreamReceipt, TapedriveError> {
+        self.write_named_stream(
+            tape_key,
+            UNNAMED_TRACK,
+            UNTYPED_TRACK,
+            size,
+            reader,
+        )
+        .await
+    }
+
+    /// Write a named byte stream from an async reader into an existing tape.
+    ///
+    /// The manifest track carries the object's name and content type; internal
+    /// chunk tracks remain unnamed.
+    pub async fn write_named_stream<Reader: AsyncRead + Unpin>(
         &self,
         tape_key: &TapeKey,
         name: impl AsRef<[u8]>,
@@ -180,7 +241,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let timer = self
             .timer(Operation::WriteStream, Phase::Total)
             .bytes(size.to_bytes());
-        let result = write_stream(self, tape_key, name.as_ref(), content_type, size, reader).await;
+        let result =
+            write_reader_stream(self, tape_key, name.as_ref(), content_type, size, reader).await;
         timer.finish_result(&result);
         result
     }

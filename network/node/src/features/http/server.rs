@@ -131,6 +131,11 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     .layer(peer_body_limit.clone()),
             )
             .route(
+                api_routes::TAPE_OBJECT_LIST_PATH,
+                post(handlers::track::catalog::list_objects::<Db, Cluster, Blockchain>)
+                    .layer(peer_body_limit.clone()),
+            )
+            .route(
                 api_routes::TRACK_REPAIR_PATH,
                 post(handlers::track::repair::repair::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit.clone()),

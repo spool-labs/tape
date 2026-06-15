@@ -65,7 +65,7 @@ pub(crate) fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {
-    apply_records(store, batch.slot, &batch.records)?;
+    apply_records(store, batch.slot, batch.block_time, &batch.records)?;
     persist_raw_tracks(store, &batch.raw_tracks)?;
 
     store
@@ -76,10 +76,11 @@ pub(crate) fn persist_batch<Db: Store>(
 fn apply_records<Db: Store>(
     store: &TapeStore<Db>,
     slot: SlotNumber,
+    block_time: Option<i64>,
     records: &[ReplayRecord],
 ) -> Result<(), NodeError> {
     let events: Vec<_> = records.iter().map(|record| record.event.clone()).collect();
-    apply_slot(store, slot, &events)
+    apply_slot(store, slot, block_time, &events)
 }
 
 fn persist_raw_tracks<Db: Store>(
@@ -106,7 +107,7 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
@@ -134,6 +135,7 @@ mod tests {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(99),
+            block_time: None,
             records: Vec::new(),
             raw_tracks: Vec::new(),
         };
@@ -148,6 +150,7 @@ mod tests {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(77),
+            block_time: None,
             records: vec![record(ReplayableEvent::Track(ReplayTrack {
                 state: CompressedTrack {
                     tape: Address::from([0x11; 32]),
@@ -161,6 +164,8 @@ mod tests {
                 },
                 epoch: EpochNumber(1),
                 blob: None,
+                name: None,
+                content_type: ContentType::Unknown,
             }))],
             raw_tracks: Vec::new(),
         };
@@ -185,6 +190,7 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(78),
+            block_time: None,
             records: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,
@@ -206,6 +212,7 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(79),
+            block_time: None,
             records: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,

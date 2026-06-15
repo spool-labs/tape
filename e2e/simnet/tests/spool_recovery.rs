@@ -7,7 +7,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::NodeStatus;
 use tape_core::types::BasisPoints;
-use tape_crypto::{hash, Address};
+use tape_crypto::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 
 const TARGET_GROUPS: u64 = 5;
@@ -79,7 +79,7 @@ async fn spool_recovery_inner() {
 
     let data: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
     let (_tape_key, track_address, track) = scenario
-        .upload(harness.admin(), hash::hash(b"spool-recovery"), &data, 6)
+        .upload(harness.admin(), &data, 6)
         .await
         .expect("upload blob");
 

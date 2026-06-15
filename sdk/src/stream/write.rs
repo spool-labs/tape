@@ -22,7 +22,7 @@ use crate::keys::tape_key::TapeKey;
 use crate::tapedrive::Tapedrive;
 use crate::metrics::{Operation, Phase};
 use crate::track::write::{
-    certify_with_retry, submit_blob, upload_with_retry, WrittenTrack,
+    certify_with_retry, submit_blob, upload_with_retry, WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
 };
 
 use super::error::StreamError;
@@ -35,12 +35,8 @@ const CHUNK_CONCURRENCY: usize = 1;
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(1 << TRACK_TREE_HEIGHT);
 
-/// Chunks are internal fragments addressed by track number, never by name, so
-/// they carry no name (content-addressed, excluded from listings) and no content
-/// type. The object's name and content type live on the manifest track.
-const INNER_CHUNK_NAME: &[u8] = b"";
-const INNER_CHUNK_TYPE: ContentType = ContentType::Unknown;
-
+// Chunks are internal fragments addressed by track number, never by name. The
+// object's name and content type live on the manifest track.
 struct PendingChunk {
     pub entry: ChunkEntry,
     pub written: WrittenTrack,
@@ -353,8 +349,8 @@ async fn process_chunk<Blockchain: Rpc, Cluster: Api, Bytes: AsRef<[u8]>>(
     let (written, plan) = submit_blob(
         client,
         tape_key,
-        INNER_CHUNK_NAME,
-        INNER_CHUNK_TYPE,
+        UNNAMED_TRACK,
+        UNTYPED_TRACK,
         chunk_data.as_ref(),
         Operation::WriteStream,
     )

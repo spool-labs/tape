@@ -298,15 +298,18 @@ mod tests {
         UiTransactionStatusMeta,
     };
     use tape_api::event::{EpochAdvanced, EventType, SpoolSynced, TrackWritten};
-    use tape_api::instruction::build_track_write_raw_ix;
+    use tape_api::instruction::build_track_write_ix;
     use tape_api::program::tapedrive::{self, system_pda, tape_pda};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::data::BlobData;
-    use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
     use tape_core::types::coin::TAPE;
+    use tape_core::track::data::{BlobData, BlobInfo};
+    use tape_core::types::{
+        ContentType, EpochNumber, SpoolIndex, StorageUnits, StripeCount,
+    };
     use tape_crypto::address::Address;
+    use tape_crypto::hash::hash;
     use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
 
@@ -387,6 +390,8 @@ mod tests {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
+                name: None,
+                content_type: ContentType::Unknown,
                 value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
@@ -413,6 +418,8 @@ mod tests {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
+                name: None,
+                content_type: ContentType::Unknown,
                 value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
@@ -562,12 +569,30 @@ mod tests {
             tapedrive_program,
         ];
 
-        let inner_key = Hash::new_unique();
-        let outer_key = Hash::new_unique();
-        let inner_ix = build_track_write_raw_ix(fee_payer, authority, inner_key, b"inner raw")
-            .expect("valid inner track write instruction");
-        let outer_ix = build_track_write_raw_ix(fee_payer, authority, outer_key, b"outer raw")
-            .expect("valid outer track write instruction");
+        let inner_data = b"inner raw";
+        let outer_data = b"outer raw";
+        let inner_key = hash(inner_data);
+        let outer_key = hash(outer_data);
+        let inner_ix = build_track_write_ix(
+            fee_payer,
+            authority,
+            BlobInfo {
+                name: Vec::new(),
+                content_type: ContentType::Unknown,
+                data: BlobData::Inline(inner_data.to_vec()),
+            },
+        )
+        .expect("valid inner track write instruction");
+        let outer_ix = build_track_write_ix(
+            fee_payer,
+            authority,
+            BlobInfo {
+                name: Vec::new(),
+                content_type: ContentType::Unknown,
+                data: BlobData::Inline(outer_data.to_vec()),
+            },
+        )
+        .expect("valid outer track write instruction");
 
         let tx = EncodedTransactionWithStatusMeta {
             transaction: EncodedTransaction::Json(UiTransaction {
@@ -709,9 +734,18 @@ mod tests {
         combined_keys.extend(writable.iter().copied());
         combined_keys.extend(readonly.iter().copied());
 
-        let inner_key = Hash::new_unique();
-        let inner_ix = build_track_write_raw_ix(fee_payer, authority, inner_key, b"inner alt")
-            .expect("valid inner track write instruction");
+        let inner_data = b"inner alt";
+        let inner_key = hash(inner_data);
+        let inner_ix = build_track_write_ix(
+            fee_payer,
+            authority,
+            BlobInfo {
+                name: Vec::new(),
+                content_type: ContentType::Unknown,
+                data: BlobData::Inline(inner_data.to_vec()),
+            },
+        )
+        .expect("valid inner track write instruction");
 
         let tx = EncodedTransactionWithStatusMeta {
             transaction: EncodedTransaction::Json(UiTransaction {

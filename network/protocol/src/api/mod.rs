@@ -28,6 +28,7 @@ pub trait Api: Send + Sync {
     async fn get_track_by_number(&self, node: Address, req: &GetTrackByNumberReq) -> Result<GetTrackByNumberRes, ApiError>;
     async fn find_track(&self, node: Address, req: &FindTrackReq) -> Result<FindTrackRes, ApiError>;
     async fn list_tracks_by_tape(&self, node: Address, req: &ListTracksByTapeReq) -> Result<ListTracksByTapeRes, ApiError>;
+    async fn list_objects(&self, node: Address, req: &ListObjectsReq) -> Result<ListObjectsRes, ApiError>;
     async fn get_track_data(&self, node: Address, req: &GetTrackDataReq) -> Result<GetTrackDataRes, ApiError>;
     async fn get_track_proof(&self, node: Address, req: &GetTrackProofReq) -> Result<GetTrackProofRes, ApiError>;
     async fn sync_slices(&self, node: Address, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError>;

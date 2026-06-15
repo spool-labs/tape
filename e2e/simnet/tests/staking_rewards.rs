@@ -14,7 +14,7 @@ use tape_core::spooler::GroupIndex;
 use tape_core::system::Member;
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
-use tape_crypto::{Address, hash};
+use tape_crypto::Address;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, run_simnet_test,
 };
@@ -320,7 +320,7 @@ async fn write_data(harness: &SimnetHarness) -> Address {
         .expect("reserve data tape");
 
     let track = sdk
-        .write_raw(&tape_key, hash::hash(b"staking-rewards"), &data)
+        .write_raw(&tape_key, &data)
         .await
         .expect("write raw track");
     assert_eq!(track.group, GroupIndex(0), "unexpected raw track group");

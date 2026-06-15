@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
@@ -21,16 +21,18 @@ use tape_core::track::types::{
 use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
+use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
 use tape_crypto::{hash, Hash};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair;
 use tape_protocol::api::{
     ApiError, FindTrackVersion, FindTrackRes, GetTrackByNumberRes, GetTrackDataRes,
-    GetTrackProofRes, GetTrackRes, ListTracksByTapeRes, PeerReq, PeerRes,
+    GetTrackProofRes, GetTrackRes, ListObjectsRes, ListTracksByTapeRes, ObjectListItem, PeerReq,
+    PeerRes,
 };
 use tape_protocol::ProtocolState;
 
+use tape_sdk::object::ListObjectsQuery;
 use tape_sdk::tapedrive::Tapedrive;
 
 struct Fixture {
@@ -38,6 +40,7 @@ struct Fixture {
     client: Tapedrive<LiteSvmRpc, MemoryApi>,
     tracks: Arc<Mutex<HashMap<Address, CompressedTrack>>>,
     data: Arc<Mutex<HashMap<Address, BlobData>>>,
+    objects: Arc<Mutex<HashMap<Address, Vec<ObjectListItem>>>>,
 }
 
 fn unexpected_error() -> ApiError {
@@ -50,6 +53,7 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
         PeerReq::GetTrackByNumber(_) => PeerRes::GetTrackByNumber(Err(unexpected_error())),
         PeerReq::FindTrack(_) => PeerRes::FindTrack(Err(unexpected_error())),
         PeerReq::ListTracksByTape(_) => PeerRes::ListTracksByTape(Err(unexpected_error())),
+        PeerReq::ListObjects(_) => PeerRes::ListObjects(Err(unexpected_error())),
         PeerReq::GetTrackData(_) => PeerRes::GetTrackData(Err(unexpected_error())),
         PeerReq::GetTrackProof(_) => PeerRes::GetTrackProof(Err(unexpected_error())),
         PeerReq::SyncSlices(_) => PeerRes::SyncSlices(Err(unexpected_error())),
@@ -72,6 +76,15 @@ impl Fixture {
         self.data.lock().unwrap().insert(address, data);
         address
     }
+
+    fn insert_object(&self, bucket: Address, object: ObjectListItem) {
+        self.objects
+            .lock()
+            .unwrap()
+            .entry(bucket)
+            .or_default()
+            .push(object);
+    }
 }
 
 fn setup() -> Fixture {
@@ -82,11 +95,13 @@ fn setup() -> Fixture {
 
     let tracks = Arc::new(Mutex::new(HashMap::<Address, CompressedTrack>::new()));
     let data = Arc::new(Mutex::new(HashMap::<Address, BlobData>::new()));
+    let objects = Arc::new(Mutex::new(HashMap::<Address, Vec<ObjectListItem>>::new()));
     let proofs = Arc::new(Mutex::new(HashMap::<Address, CompressedTrackProof>::new()));
 
     let api = Arc::new(MemoryApi::new({
         let tracks = tracks.clone();
         let data = data.clone();
+        let objects = objects.clone();
         let proofs = proofs.clone();
         move |_node, req| match req {
             PeerReq::GetTrack(req) => match tracks.lock().unwrap().get(&req.track).copied() {
@@ -159,6 +174,57 @@ fn setup() -> Fixture {
                     next_cursor,
                 }))
             }
+            PeerReq::ListObjects(req) => {
+                let mut matches = objects
+                    .lock()
+                    .unwrap()
+                    .get(&req.bucket)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|object| object.name.starts_with(&req.prefix))
+                    .collect::<Vec<_>>();
+                matches.sort_by(|left, right| left.name.cmp(&right.name));
+
+                let mut objects = Vec::new();
+                let mut common_prefixes = BTreeSet::new();
+                for object in matches {
+                    if let Some(delimiter) = req.delimiter.as_ref() {
+                        let suffix = &object.name[req.prefix.len()..];
+                        if let Some(pos) = find_subslice(suffix, delimiter) {
+                            common_prefixes.insert(
+                                object.name[..req.prefix.len() + pos + delimiter.len()].to_vec(),
+                            );
+                            continue;
+                        }
+                    }
+                    objects.push(object);
+                }
+
+                let start = req.cursor.as_ref().and_then(|cursor| {
+                    objects
+                        .iter()
+                        .position(|object| object.name.as_slice() >= cursor.as_slice())
+                }).unwrap_or(0);
+                let limit = req.limit as usize;
+                let page = objects
+                    .iter()
+                    .skip(start)
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let next_cursor = objects
+                    .get(start + page.len())
+                    .map(|object| object.name.clone());
+                let is_truncated = next_cursor.is_some();
+
+                PeerRes::ListObjects(Ok(ListObjectsRes {
+                    objects: page,
+                    common_prefixes: common_prefixes.into_iter().collect(),
+                    next_cursor,
+                    is_truncated,
+                }))
+            }
             PeerReq::GetTrackData(req) => match data.lock().unwrap().get(&req.track).cloned() {
                 Some(data) => PeerRes::GetTrackData(Ok(GetTrackDataRes { data })),
                 None => PeerRes::GetTrackData(Err(ApiError::NotFound)),
@@ -214,7 +280,17 @@ fn setup() -> Fixture {
         client,
         tracks,
         data,
+        objects,
     }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn make_peer(node: Address, port: u16) -> PeerNode {
@@ -266,6 +342,20 @@ fn make_raw_track(
         value_hash: hash::hash(&bytes),
     };
     (track, BlobData::Inline(bytes))
+}
+
+fn object_item(name: &[u8], track_number: TrackNumber) -> ObjectListItem {
+    ObjectListItem {
+        name: name.to_vec(),
+        size: StorageUnits::from_bytes(10),
+        etag: hash::hash(name),
+        block_time: Some(1_700_000_000),
+        slot: SlotNumber(track_number.0),
+        data_tape: Address::new([0x44; 32]),
+        track_number,
+        kind: TrackKind::Inline as u64,
+        content_type: ContentType::TextPlain,
+    }
 }
 
 #[tokio::test]
@@ -337,6 +427,47 @@ async fn track_queries_use_memory_peer_catalog() {
     assert_eq!(tracks[1].track_number, TrackNumber(1));
     assert_eq!(tracks[2].track_number, TrackNumber(2));
     assert_eq!(next_cursor, None);
+}
+
+#[tokio::test]
+async fn object_list_uses_peer_index() {
+    let fixture = setup();
+    let bucket = Address::new_unique();
+
+    fixture.insert_object(bucket, object_item(b"photos/a.txt", TrackNumber(0)));
+    fixture.insert_object(bucket, object_item(b"photos/b.txt", TrackNumber(1)));
+    fixture.insert_object(bucket, object_item(b"photos/nested/c.txt", TrackNumber(2)));
+    fixture.insert_object(bucket, object_item(b"docs/c.txt", TrackNumber(2)));
+
+    let page = fixture
+        .client
+        .list_objects(
+            &bucket,
+            ListObjectsQuery::new("photos/").with_delimiter("/"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        page.objects
+            .iter()
+            .map(|object| object.name.as_slice())
+            .collect::<Vec<_>>(),
+        vec![b"photos/a.txt".as_slice(), b"photos/b.txt".as_slice()]
+    );
+    assert_eq!(page.common_prefixes, vec![b"photos/nested/".to_vec()]);
+    assert_eq!(page.objects[0].size, StorageUnits::from_bytes(10));
+    assert_eq!(page.objects[0].content_type, ContentType::TextPlain);
+    assert_eq!(page.objects[0].block_time, Some(1_700_000_000));
+
+    let head = fixture
+        .client
+        .head_object(&bucket, "photos/a.txt")
+        .await
+        .unwrap();
+    assert_eq!(head.size, 10);
+    assert_eq!(head.content_type, ContentType::TextPlain);
+    assert_eq!(head.block_time, Some(1_700_000_000));
 }
 
 #[tokio::test]

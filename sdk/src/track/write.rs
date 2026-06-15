@@ -40,6 +40,8 @@ use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 // inside a single Solana transaction packet. This can be adjusted in the future if 4k transactions
 // become widely supported.
 pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
+pub(crate) const UNNAMED_TRACK: &[u8] = b"";
+pub(crate) const UNTYPED_TRACK: ContentType = ContentType::Unknown;
 
 #[derive(Clone)]
 pub struct UploadPlan {
@@ -69,8 +71,27 @@ enum TrackCompletionError {
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
-    /// Write a track to an existing tape.
+    /// Write an unnamed content-addressed track to an existing tape.
+    ///
+    /// Unnamed tracks are excluded from object listings.
     pub async fn write_track(
+        &self,
+        tape_key: &TapeKey,
+        data: &[u8],
+    ) -> Result<CompressedTrack, TapedriveError> {
+        self.write_named_track(
+            tape_key,
+            UNNAMED_TRACK,
+            UNTYPED_TRACK,
+            data,
+        )
+        .await
+    }
+
+    /// Write a named track to an existing tape.
+    ///
+    /// Named tracks on non-system tapes are materialized into object listings.
+    pub async fn write_named_track(
         &self,
         tape_key: &TapeKey,
         name: impl AsRef<[u8]>,
@@ -80,8 +101,25 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         write_track(self, tape_key, name.as_ref(), content_type, data).await
     }
 
-    /// Write raw bytes to an existing tape.
+    /// Write unnamed raw bytes to an existing tape.
+    ///
+    /// Unnamed raw tracks are content-addressed and excluded from object listings.
     pub async fn write_raw(
+        &self,
+        tape_key: &TapeKey,
+        raw: &[u8],
+    ) -> Result<CompressedTrack, TapedriveError> {
+        self.write_named_raw(
+            tape_key,
+            UNNAMED_TRACK,
+            UNTYPED_TRACK,
+            raw,
+        )
+        .await
+    }
+
+    /// Write named raw bytes to an existing tape.
+    pub async fn write_named_raw(
         &self,
         tape_key: &TapeKey,
         name: impl AsRef<[u8]>,
@@ -103,8 +141,25 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         Ok(written.track)
     }
 
-    /// Register a blob track and return the upload plan needed to land its slices.
+    /// Register an unnamed blob track and return the upload plan needed to land its slices.
+    ///
+    /// Unnamed blob tracks are content-addressed and excluded from object listings.
     pub async fn write_blob(
+        &self,
+        tape_key: &TapeKey,
+        data: &[u8],
+    ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+        self.write_named_blob(
+            tape_key,
+            UNNAMED_TRACK,
+            UNTYPED_TRACK,
+            data,
+        )
+        .await
+    }
+
+    /// Register a named blob track and return the upload plan needed to land its slices.
+    pub async fn write_named_blob(
         &self,
         tape_key: &TapeKey,
         name: impl AsRef<[u8]>,

@@ -169,6 +169,8 @@ pub fn merge(
             RawInstruction::TrackWrite {
                 authority,
                 key,
+                name,
+                content_type,
                 value,
             } => {
                 let event = match events.pop_front() {
@@ -183,6 +185,8 @@ pub fn merge(
                     authority,
                     track: event.track,
                     key,
+                    name,
+                    content_type,
                     value,
                     event,
                 }
@@ -444,8 +448,10 @@ mod tests {
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::BlobData;
-    use tape_core::types::{SpoolBitmap, StorageUnits, SpoolIndex, TrackNumber};
     use tape_core::types::coin::TAPE;
+    use tape_core::types::{
+        ContentType, SpoolBitmap, SpoolIndex, StorageUnits, TrackNumber,
+    };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
@@ -708,6 +714,8 @@ mod tests {
             RawInstruction::TrackWrite {
                 authority: owner,
                 key: Hash::default(),
+                name: None,
+                content_type: ContentType::Unknown,
                 value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(100),
                     commitment: Hash::default(),
@@ -767,6 +775,8 @@ mod tests {
             RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
+                name: None,
+                content_type: ContentType::Unknown,
                 value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(1_024),
                     commitment: Hash::default(),
@@ -829,6 +839,8 @@ mod tests {
                 RawInstruction::TrackWrite {
                     authority: Address::new_unique(),
                     key: Hash::default(),
+                    name: None,
+                    content_type: ContentType::Unknown,
                     value: BlobData::Coded(BlobEncoding {
                         size: StorageUnits::mb(1_024),
                         commitment: Hash::default(),

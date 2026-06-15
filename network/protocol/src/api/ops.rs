@@ -1,14 +1,14 @@
 //! Request/response types for peer operations.
 
 use tape_core::bls::BlsSignature;
-use tape_core::prelude::{CompressedTrack, EpochNumber, SpoolIndex, BlobData, TrackNumber};
+use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
 use crate::api::types::{
     InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
-    SyncTrackEntry, VoteCandidate,
+    SyncTrackEntry, VoteCandidate, ObjectListItem,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -85,6 +85,23 @@ pub struct ListTracksByTapeReq {
 pub struct ListTracksByTapeRes {
     pub tracks: Vec<CompressedTrack>,
     pub next_cursor: Option<TrackNumber>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ListObjectsReq {
+    pub bucket: Address,
+    pub prefix: Vec<u8>,
+    pub delimiter: Option<Vec<u8>>,
+    pub cursor: Option<Vec<u8>>,
+    pub limit: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ListObjectsRes {
+    pub objects: Vec<ObjectListItem>,
+    pub common_prefixes: Vec<Vec<u8>>,
+    pub next_cursor: Option<Vec<u8>>,
+    pub is_truncated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +222,7 @@ pub enum PeerReq {
     GetTrackByNumber(GetTrackByNumberReq),
     FindTrack(FindTrackReq),
     ListTracksByTape(ListTracksByTapeReq),
+    ListObjects(ListObjectsReq),
     GetTrackData(GetTrackDataReq),
     GetTrackProof(GetTrackProofReq),
     SyncSlices(SyncSlicesReq),
@@ -224,6 +242,7 @@ pub enum PeerRes {
     GetTrackByNumber(Result<GetTrackByNumberRes, ApiError>),
     FindTrack(Result<FindTrackRes, ApiError>),
     ListTracksByTape(Result<ListTracksByTapeRes, ApiError>),
+    ListObjects(Result<ListObjectsRes, ApiError>),
     GetTrackData(Result<GetTrackDataRes, ApiError>),
     GetTrackProof(Result<GetTrackProofRes, ApiError>),
     SyncSlices(Result<SyncSlicesRes, ApiError>),

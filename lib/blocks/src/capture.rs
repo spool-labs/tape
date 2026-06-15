@@ -7,7 +7,7 @@ use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::BlobDataSlice;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, SlotNumber};
+use tape_core::types::{ContentType, EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
 use tape_crypto::Hash;
@@ -240,9 +240,23 @@ fn capture_instruction(
             ),
             raw_track: None,
         },
-        ParsedInstruction::TrackWrite { key, value, event, .. } => {
-            capture_track(*current_epoch, tx_id, actor, event, *key, value.as_slice())?
-        }
+        ParsedInstruction::TrackWrite {
+            key,
+            name,
+            content_type,
+            value,
+            event,
+            ..
+        } => capture_track(
+            *current_epoch,
+            tx_id,
+            actor,
+            event,
+            *key,
+            name.clone(),
+            *content_type,
+            value.as_slice(),
+        )?,
         ParsedInstruction::DeleteTrack { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
         }
@@ -310,6 +324,8 @@ fn capture_instruction(
             actor,
             event,
             entry.key(),
+            None,
+            ContentType::Unknown,
             BlobDataSlice::Inline(bytes_of(entry)),
         )?,
         ParsedInstruction::RemoveFromBlacklist { event, .. } => {
@@ -321,6 +337,8 @@ fn capture_instruction(
             actor,
             track_event,
             span.key(),
+            None,
+            ContentType::Unknown,
             BlobDataSlice::Inline(bytes_of(span)),
         )?,
 
@@ -355,6 +373,8 @@ fn capture_track(
     actor: Option<Address>,
     event: &TrackWritten,
     key: Hash,
+    name: Option<Vec<u8>>,
+    content_type: ContentType,
     data: BlobDataSlice<'_>,
 ) -> Result<Captured, ParseError> {
     let meta = data
@@ -392,6 +412,8 @@ fn capture_track(
                     BlobDataSlice::Inline(_) => None,
                     BlobDataSlice::Coded(blob) => Some(blob),
                 },
+                name,
+                content_type,
             }),
         ),
         raw_track: match data {
@@ -523,7 +545,7 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+        ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
@@ -592,6 +614,8 @@ mod tests {
             authority: Address::new_unique(),
             track: event.track,
             key,
+            name: None,
+            content_type: ContentType::Unknown,
             value,
             event,
         }
@@ -618,6 +642,8 @@ mod tests {
             authority: Address::new_unique(),
             track: event.track,
             key,
+            name: None,
+            content_type: ContentType::Unknown,
             value,
             event,
         }

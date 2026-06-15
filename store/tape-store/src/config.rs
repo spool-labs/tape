@@ -30,6 +30,7 @@ use rocksdb;
 /// - `track_lookup` - 72-byte ordered tape track index with 32-byte tape prefix
 /// - `track_data` - 32-byte Address keys, local track payload values
 /// - `object_info` - 32-byte Address keys
+/// - `object_metadata` - 32-byte Address keys, named object reverse lookup
 ///
 /// ## Sync Columns
 /// - `sync_cursor` - Singleton (0-byte key)
@@ -85,6 +86,11 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
 
         // Object info - 32-byte Address keys, ObjectInfo values
         ColumnFamilyConfig::new("object_info")
+            .with_block_based()
+            .build(),
+
+        // Object metadata - 32-byte Address keys, ObjectMetadata values
+        ColumnFamilyConfig::new("object_metadata")
             .with_block_based()
             .build(),
 
@@ -213,7 +219,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 17);
+        assert_eq!(configs.len(), 18);
     }
 
     #[test]
@@ -228,6 +234,7 @@ mod tests {
             "track_lookup",
             "track_data",
             "object_info",
+            "object_metadata",
             "object_list",
             "sync_cursor",
             "gc",

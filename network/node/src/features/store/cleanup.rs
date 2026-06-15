@@ -1,9 +1,13 @@
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::ops::{
+    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
+    TrackOps,
+};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -22,6 +26,7 @@ pub fn delete_track_local<Db: Store>(
     let mut stats = CleanupStats::default();
 
     if let Some(info) = store.get_track(track).map_err(store_error)? {
+        remove_object_listing_for_track(store, track, &info)?;
         stats.slices_deleted += cleanup_track_slices(store, track, info.group)?;
         stats.tracks_deleted += 1;
     }
@@ -29,6 +34,7 @@ pub fn delete_track_local<Db: Store>(
     store.delete_track(track).map_err(store_error)?;
     store.delete_track_data(track).map_err(store_error)?;
     store.delete_object_info(track).map_err(store_error)?;
+    store.delete_object_metadata(track).map_err(store_error)?;
 
     Ok(stats)
 }
@@ -55,10 +61,12 @@ pub fn delete_tape_local<Db: Store>(
 
         for (track, info) in &tracks {
             if info.tape == tape.into() {
+                remove_object_listing_for_track(store, *track, info)?;
                 stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
                 store.delete_track(*track).map_err(store_error)?;
                 store.delete_track_data(*track).map_err(store_error)?;
                 store.delete_object_info(*track).map_err(store_error)?;
+                store.delete_object_metadata(*track).map_err(store_error)?;
                 stats.tracks_deleted += 1;
             }
         }
@@ -121,6 +129,32 @@ pub fn purge_spool_local<Db: Store>(
         .map_err(store_error)?;
 
     store.remove_spool_state(spool_id).map_err(store_error)
+}
+
+pub fn remove_object_listing_for_track<Db: Store>(
+    store: &TapeStore<Db>,
+    track: Address,
+    info: &CompressedTrack,
+) -> Result<(), NodeError> {
+    let Some(metadata) = store.get_object_metadata(track).map_err(store_error)? else {
+        return Ok(());
+    };
+
+    let entry = store
+        .get_object_entry(info.tape, &metadata.name)
+        .map_err(store_error)?;
+
+    let Some(entry) = entry else {
+        return Ok(());
+    };
+
+    if entry.data_tape == info.tape && entry.track_number == info.track_number {
+        store
+            .delete_object_entry(info.tape, &metadata.name)
+            .map_err(store_error)?;
+    }
+
+    Ok(())
 }
 
 fn store_error(error: impl std::fmt::Display) -> NodeError {

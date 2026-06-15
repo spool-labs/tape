@@ -36,7 +36,7 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+        ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
@@ -89,6 +89,8 @@ mod tests {
             },
             epoch,
             blob: Some(blob),
+            name: None,
+            content_type: ContentType::Unknown,
         })
     }
 

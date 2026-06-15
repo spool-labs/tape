@@ -8,9 +8,9 @@ use tape_core::{
     spooler::GroupIndex,
 };
 pub use tape_core::system::VoteCandidate;
-use tape_core::prelude::{EpochNumber, SpoolIndex, BlobData, TrackNumber};
+use tape_core::prelude::{BlobData, EpochNumber, SpoolIndex, TrackNumber};
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
-use tape_core::types::SpoolBitmap;
+use tape_core::types::{ContentType, SlotNumber, SpoolBitmap, StorageUnits};
 use tape_crypto::prelude::{Address, Hash};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
@@ -195,6 +195,35 @@ pub struct ListTracksByTapeRequest {
 pub struct ListTracksByTapeResponse {
     pub tracks: Vec<PackedTrack>,
     pub next_cursor: Option<TrackNumber>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ListObjectsRequest {
+    pub prefix: Vec<u8>,
+    pub delimiter: Option<Vec<u8>>,
+    pub cursor: Option<Vec<u8>>,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ObjectListItem {
+    pub name: Vec<u8>,
+    pub size: StorageUnits,
+    pub etag: Hash,
+    pub block_time: Option<i64>,
+    pub slot: SlotNumber,
+    pub data_tape: Address,
+    pub track_number: TrackNumber,
+    pub kind: u64,
+    pub content_type: ContentType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ListObjectsResponse {
+    pub objects: Vec<ObjectListItem>,
+    pub common_prefixes: Vec<Vec<u8>>,
+    pub next_cursor: Option<Vec<u8>>,
+    pub is_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]

@@ -10,8 +10,6 @@ use rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_crypto::hash::hash;
-use tape_crypto::Hash;
 use tape_retry::{Backoff, RetryConfig};
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::helpers::load_solana_keypair;
@@ -64,7 +62,7 @@ impl UploadManager {
     pub fn start_random_upload(&self) -> Result<UploadView> {
         let upload_number = self.upload_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let force_raw = upload_number % 5 == 0;
-        let (key, data) = random_blob(force_raw);
+        let data = random_blob(force_raw);
         let tape_key = TapeKey::generate();
         let tape_address = tape_key.address().to_string();
 
@@ -100,7 +98,6 @@ impl UploadManager {
                 &rpc_url,
                 &admin_keypair_path,
                 &tape_key,
-                key,
                 &data,
                 &uploads,
             )
@@ -129,7 +126,7 @@ impl UploadManager {
     }
 }
 
-fn random_blob(force_raw: bool) -> (Hash, Vec<u8>) {
+fn random_blob(force_raw: bool) -> Vec<u8> {
     let mut rng = rand::thread_rng();
     let size = if force_raw {
         let span = MAX_RAW_UPLOAD_BYTES - MIN_RAW_UPLOAD_BYTES + 1;
@@ -140,8 +137,7 @@ fn random_blob(force_raw: bool) -> (Hash, Vec<u8>) {
     };
     let mut data = vec![0u8; size];
     rng.fill_bytes(&mut data);
-    let key = hash(&data[..32.min(data.len())]);
-    (key, data)
+    data
 }
 
 fn format_error_chain(error: &anyhow::Error) -> String {
@@ -162,7 +158,6 @@ async fn run_upload(
     rpc_url: &str,
     admin_keypair_path: &Path,
     tape_key: &TapeKey,
-    key: Hash,
     data: &[u8],
     uploads: &Arc<Mutex<VecDeque<UploadView>>>,
 ) -> Result<UploadResult> {
@@ -220,7 +215,8 @@ async fn run_upload(
 
     update_upload_status(uploads, &tape_address, "pending", None, None);
 
-    let track = sdk.write_track(tape_key, key, data)
+    let track = sdk
+        .write_track(tape_key, data)
         .await
         .context("write track")?;
     let track_address = track_pda(track.tape, track.track_number).0.to_string();

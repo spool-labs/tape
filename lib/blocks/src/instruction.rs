@@ -14,8 +14,8 @@ use tape_core::staking::RateSpan;
 use tape_core::system::BlacklistEntry;
 use tape_core::track::data::{track_key, BlobData};
 use tape_core::track::types::CompressedTrackProof;
-use tape_core::types::EpochNumber;
 use tape_core::types::coin::{Coin, TAPE};
+use tape_core::types::{ContentType, EpochNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
@@ -94,6 +94,8 @@ pub enum RawInstruction {
     TrackWrite {
         authority: Address,
         key: Hash,
+        name: Option<Vec<u8>>,
+        content_type: ContentType,
         value: BlobData,
     },
     DeleteTrack {
@@ -232,6 +234,8 @@ pub enum ParsedInstruction {
         authority: Address,
         track: Address,
         key: Hash,
+        name: Option<Vec<u8>>,
+        content_type: ContentType,
         value: BlobData,
         event: TrackWritten,
     },
@@ -431,6 +435,8 @@ pub fn parse_raw_instruction(
             let (_header, blob) = ix::parse_track_write(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             let key = track_key(blob.name, &blob.data);
+            let name = (!blob.name.is_empty()).then(|| blob.name.to_vec());
+            let content_type = blob.content_type;
             let value = blob.data.to_owned();
             value
                 .meta()
@@ -438,6 +444,8 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::TrackWrite {
                 authority,
                 key,
+                name,
+                content_type,
                 value,
             }))
         }

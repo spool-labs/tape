@@ -55,6 +55,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
         let batch = ReplayBatch {
             slot: block.slot,
+            block_time: block.block_time,
             records: captured.events.into_iter().map(|entry| entry.record).collect(),
             raw_tracks: captured.raw_tracks,
         };
@@ -82,7 +83,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
         for entry in &log.entries {
             for record in &entry.records {
-                apply_event(self.store, entry.slot, &record.event)?;
+                apply_event(self.store, entry.slot, entry.block_time, &record.event)?;
             }
         }
 

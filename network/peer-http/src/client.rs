@@ -306,6 +306,48 @@ impl Api for HttpApi {
         })
     }
 
+    async fn list_objects(
+        &self,
+        node: Address,
+        req: &ListObjectsReq,
+    ) -> Result<ListObjectsRes, ApiError> {
+        let (client, base) = self.resolve(node)?;
+        let tape_id = req.bucket.to_string();
+        let url = format!("{base}{}", list_objects_url(&tape_id));
+        let wire_req = ListObjectsRequest {
+            prefix: req.prefix.clone(),
+            delimiter: req.delimiter.clone(),
+            cursor: req.cursor.clone(),
+            limit: req.limit,
+        };
+        let body = wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        let bytes_sent = body.len() as u64;
+        let start = Instant::now();
+        let resp = client
+            .post(&url)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record("list_objects", &resp, start, bytes_sent);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx("list_objects", bytes.len() as u64);
+        let wire: ListObjectsResponse =
+            wincode::deserialize(&bytes).map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(ListObjectsRes {
+            objects: wire.objects,
+            common_prefixes: wire.common_prefixes,
+            next_cursor: wire.next_cursor,
+            is_truncated: wire.is_truncated,
+        })
+    }
+
     async fn get_track_data(
         &self,
         node: Address,

@@ -1,6 +1,7 @@
 use store::Store;
 use tape_api::program::tapedrive::{blacklist_pda, history_pda, track_pda};
 use tape_core::erasure::GROUP_SIZE;
+use tape_core::object::object_etag;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
 use tape_core::system::SpoolStatus;
 use tape_core::tape::{
@@ -11,13 +12,16 @@ use tape_core::track::data::BlobData;
 use tape_core::track::types::TrackState;
 use tape_core::types::{EpochNumber, SlotNumber, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
-use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
+use tape_store::ops::{
+    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
+    TrackOps,
+};
+use tape_store::types::{ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 use crate::features::store::cleanup::{
-    cleanup_track_slices, delete_tape_local, delete_track_local,
+    cleanup_track_slices, delete_tape_local, delete_track_local, remove_object_listing_for_track,
 };
 
 const DELETE_TAPE_BATCH_SIZE: usize = 100;
@@ -25,10 +29,11 @@ const DELETE_TAPE_BATCH_SIZE: usize = 100;
 pub fn apply_slot<Db: Store>(
     store: &TapeStore<Db>,
     slot: SlotNumber,
+    block_time: Option<i64>,
     events: &[ReplayableEvent],
 ) -> Result<(), NodeError> {
     for event in events {
-        apply_event(store, slot, event)?;
+        apply_event(store, slot, block_time, event)?;
     }
 
     Ok(())
@@ -37,17 +42,18 @@ pub fn apply_slot<Db: Store>(
 pub fn apply_event<Db: Store>(
     store: &TapeStore<Db>,
     slot: SlotNumber,
+    block_time: Option<i64>,
     event: &ReplayableEvent,
 ) -> Result<(), NodeError> {
     match event {
         ReplayableEvent::Track(replay) => {
-            put_track_object(store, replay, slot)?;
+            put_track_object(store, replay, slot, block_time)?;
         }
         ReplayableEvent::CertifyTrack { track, epoch } => {
             set_certified(store, *track, *epoch)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
-            let _ = delete_track_local(store, *track)?;
+            delete_track_local(store, *track)?;
         }
         ReplayableEvent::InvalidateTrack { track, epoch } => {
             invalidate_track(store, *track, *epoch, slot)?;
@@ -72,7 +78,7 @@ pub fn apply_event<Db: Store>(
                 .map_err(store_error)?;
         }
         ReplayableEvent::DestroyTape { tape, .. } => {
-            let _ = delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
+            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
         }
         ReplayableEvent::RegisterNode { node, id, .. } => {
             let (history, _) = history_pda(*node);
@@ -145,6 +151,7 @@ fn put_track_object<Db: Store>(
     store: &TapeStore<Db>,
     replay: &ReplayTrack,
     slot: SlotNumber,
+    block_time: Option<i64>,
 ) -> Result<(), NodeError> {
     validate_replay_track(replay)?;
 
@@ -176,6 +183,13 @@ fn put_track_object<Db: Store>(
         .get_tape(replay.state.tape)
         .map_err(store_error)?;
 
+    // Replay is ordered: user writes should arrive after ReserveTape, while a
+    // missing tape is treated as non-system so the normal validity path can
+    // still record the track and surface the inconsistency elsewhere.
+    let is_system = tape_info
+        .as_ref()
+        .is_some_and(|tape| TapeFlags::is_system(tape.flags));
+
     let object_info = if let Some(tape) = tape_info.filter(|tape| TapeFlags::is_system(tape.flags)) {
         let kind = system_object_kind(tape.id)?;
         let (registered_epoch, certified_epoch) = match &kind {
@@ -204,6 +218,49 @@ fn put_track_object<Db: Store>(
             track,
             object_info,
         )
+        .map_err(store_error)?;
+
+    if !is_system {
+        put_named_object_entry(store, replay, track, block_time, slot)?;
+    }
+
+    Ok(())
+}
+
+fn put_named_object_entry<Db: Store>(
+    store: &TapeStore<Db>,
+    replay: &ReplayTrack,
+    track: Address,
+    block_time: Option<i64>,
+    slot: SlotNumber,
+) -> Result<(), NodeError> {
+    let Some(name) = replay.name.as_ref() else {
+        return Ok(());
+    };
+
+    store
+        .put_object_metadata(
+            track,
+            ObjectMetadata {
+                name: name.clone(),
+                content_type: replay.content_type,
+            },
+        )
+        .map_err(store_error)?;
+
+    let entry = ObjectListEntry {
+        size: replay.state.size,
+        etag: object_etag(&replay.state, replay.blob.as_ref()),
+        block_time,
+        slot,
+        data_tape: replay.state.tape,
+        track_number: replay.state.track_number,
+        kind: replay.state.kind,
+        content_type: replay.content_type,
+    };
+
+    store
+        .put_object_entry(replay.state.tape, name, entry)
         .map_err(store_error)
 }
 
@@ -364,6 +421,9 @@ fn invalidate_track<Db: Store>(
     slot: SlotNumber,
 ) -> Result<(), NodeError> {
     if let Some(mut info) = store.get_track(track).map_err(store_error)? {
+        // Keep object_metadata across invalidation. Delete/GC still use it as
+        // the track -> name reverse lookup when the track is eventually removed.
+        remove_object_listing_for_track(store, track, &info)?;
         let _ = cleanup_track_slices(store, track, info.group)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
@@ -394,11 +454,15 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+        ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
+    use tape_crypto::hash::hash;
     use tape_crypto::Hash;
-    use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps};
+    use tape_store::ops::{
+        ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps,
+        TrackDataOps, TrackOps,
+    };
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
 
@@ -431,6 +495,8 @@ mod tests {
             },
             epoch,
             blob: Some(blob),
+            name: None,
+            content_type: ContentType::Unknown,
         })
     }
 
@@ -448,6 +514,8 @@ mod tests {
             },
             epoch,
             blob: None,
+            name: None,
+            content_type: ContentType::Unknown,
         })
     }
 
@@ -492,7 +560,7 @@ mod tests {
             },
         ];
 
-        apply_slot(&store, slot, &events).unwrap();
+        apply_slot(&store, slot, None, &events).unwrap();
 
         assert_eq!(
             store.get_tape(tape).unwrap(),
@@ -532,6 +600,79 @@ mod tests {
         );
     }
 
+    // named writes materialize into the object listing index
+    #[test]
+    fn materializes_listing() {
+        let store = test_store();
+        let slot = SlotNumber(57);
+        let block_time = Some(1_700_000_057);
+        let tape = Address::new_unique();
+        let track_number = TrackNumber(11);
+        let (track, _) = track_pda(tape, track_number);
+        let name = b"photos/cat.jpg".to_vec();
+
+        let mut track_event = make_blob_track(tape, track_number, EpochNumber(7));
+        let blob = match &mut track_event {
+            ReplayableEvent::Track(replay) => {
+                replay.state.key = hash(&name);
+                replay.name = Some(name.clone());
+                replay.content_type = ContentType::ImageJpeg;
+                replay.blob.expect("blob metadata")
+            }
+            _ => panic!("expected track event"),
+        };
+
+        let events = vec![
+            ReplayableEvent::ReserveTape {
+                tape,
+                id: TapeNumber(1),
+                flags: 0,
+                authority: Address::new_unique(),
+                capacity: StorageUnits::mb(10),
+                active_epoch: EpochNumber(7),
+                expiry_epoch: EpochNumber(12),
+                cost: TAPE(0),
+                burned: TAPE(0),
+                scheduled: TAPE(0),
+            },
+            track_event,
+        ];
+
+        apply_slot(&store, slot, block_time, &events).unwrap();
+
+        let page = store
+            .list_objects(tape, b"photos/", None, None, 100)
+            .unwrap();
+        assert_eq!(page.objects.len(), 1);
+        assert_eq!(page.objects[0].0, name);
+        assert_eq!(page.objects[0].1.size, blob.size);
+        assert_eq!(page.objects[0].1.etag, blob.commitment);
+        assert_eq!(page.objects[0].1.block_time, block_time);
+        assert_eq!(page.objects[0].1.slot, slot);
+        assert_eq!(page.objects[0].1.data_tape, tape);
+        assert_eq!(page.objects[0].1.track_number, track_number);
+        assert_eq!(page.objects[0].1.kind, TrackKind::Coded as u64);
+        assert_eq!(page.objects[0].1.content_type, ContentType::ImageJpeg);
+
+        let metadata = store.get_object_metadata(track).unwrap().unwrap();
+        assert_eq!(metadata.name, b"photos/cat.jpg".to_vec());
+        assert_eq!(metadata.content_type, ContentType::ImageJpeg);
+
+        apply_slot(
+            &store,
+            SlotNumber(58),
+            None,
+            &[ReplayableEvent::DeleteTrack {
+                track,
+                epoch: EpochNumber(8),
+            }],
+        )
+        .unwrap();
+
+        assert!(store.get_object_entry(tape, b"photos/cat.jpg").unwrap().is_none());
+        assert!(store.get_object_metadata(track).unwrap().is_none());
+    }
+
     #[test]
     fn writes_raw_state() {
         let store = test_store();
@@ -543,6 +684,7 @@ mod tests {
         apply_slot(
             &store,
             slot,
+            None,
             &[make_raw_track(tape, track_number, EpochNumber(7))],
         )
         .unwrap();
@@ -594,6 +736,7 @@ mod tests {
         apply_slot(
             &store,
             slot,
+            None,
             &[ReplayableEvent::DeleteTrack {
                 track,
                 epoch: EpochNumber(4),
@@ -642,6 +785,7 @@ mod tests {
         apply_slot(
             &store,
             SlotNumber(55),
+            None,
             &[ReplayableEvent::InvalidateTrack {
                 track,
                 epoch: EpochNumber(8),
@@ -739,6 +883,7 @@ mod tests {
         apply_slot(
             &store,
             SlotNumber(99),
+            None,
             &[ReplayableEvent::DestroyTape {
                 tape,
                 epoch: EpochNumber(9),
@@ -793,6 +938,7 @@ mod tests {
         apply_slot(
             &store,
             slot,
+            None,
             &[ReplayableEvent::CertifyTrack {
                 track,
                 epoch: EpochNumber(4),
@@ -834,6 +980,7 @@ mod tests {
         apply_slot(
             &store,
             slot,
+            None,
             &[ReplayableEvent::CertifyTrack {
                 track,
                 epoch: EpochNumber(4),
@@ -872,6 +1019,7 @@ mod tests {
         apply_slot(
             &store,
             slot,
+            None,
             &[ReplayableEvent::CertifyTrack {
                 track,
                 epoch: EpochNumber(4),

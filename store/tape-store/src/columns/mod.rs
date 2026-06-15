@@ -9,6 +9,7 @@
 //! - `track_lookup`: Tape-local ordered index ((tape, track_number, key) -> ())
 //! - `track_data`: Local track payload data (Address -> BlobData)
 //! - `object_info`: Object metadata (Address -> ObjectInfo)
+//! - `object_metadata`: Named-object reverse lookup (Address -> ObjectMetadata)
 //!
 //! ## Sync Columns
 //! - `sync_cursor`: Last processed slot (UnitKey -> SlotNumber)
@@ -37,6 +38,7 @@ pub mod gc;
 pub mod meta;
 pub mod object_info;
 pub mod object_list;
+pub mod object_metadata;
 pub mod snapshot;
 pub mod slice;
 pub mod spool;
@@ -53,6 +55,7 @@ pub use gc::GcCol;
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
 pub use object_list::ObjectListCol;
+pub use object_metadata::ObjectMetadataCol;
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
 pub use spool::{
@@ -73,6 +76,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "track_lookup",
     "track_data",
     "object_info",
+    "object_metadata",
     "object_list",
     "sync_cursor",
     "gc",

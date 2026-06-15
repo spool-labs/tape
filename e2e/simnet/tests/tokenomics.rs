@@ -18,7 +18,7 @@ use tape_core::system::{Member, NodePreferences};
 use tape_core::tape::tape_reservation_cost;
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
-use tape_crypto::{Address, hash};
+use tape_crypto::Address;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, run_simnet_test,
 };
@@ -342,7 +342,7 @@ async fn reserve_and_write(harness: &SimnetHarness) -> WrittenTrack {
         .expect("reserve tokenomics tape");
 
     let track = sdk
-        .write_raw(&tape_key, hash::hash(b"tokenomics"), &data)
+        .write_raw(&tape_key, &data)
         .await
         .expect("write tokenomics track");
     assert_eq!(track.group, GroupIndex(0), "unexpected raw track group");

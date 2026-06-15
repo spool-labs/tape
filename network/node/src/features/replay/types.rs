@@ -6,6 +6,7 @@ pub use tape_blocks::RawTrack;
 #[derive(Debug, Clone)]
 pub struct ReplayBatch {
     pub slot: SlotNumber,
+    pub block_time: Option<i64>,
     pub records: Vec<ReplayRecord>,
     pub raw_tracks: Vec<RawTrack>,
 }

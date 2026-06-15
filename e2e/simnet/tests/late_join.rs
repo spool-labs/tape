@@ -3,7 +3,6 @@ use std::time::Duration;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
-use tape_crypto::hash;
 use tape_e2e_simnet::{log::append_log, NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 use tape_store::ops::{MetaOps, ObjectInfoOps, TrackOps};
 
@@ -82,12 +81,7 @@ async fn late_join_inner() {
 
         let replay_data = vec![0xA5; 64 * 1024];
         let (_, track_address, track) = scenario
-            .upload(
-                harness.admin(),
-                hash::hash(b"late-join-replay-track"),
-                &replay_data,
-                6,
-            )
+            .upload(harness.admin(), &replay_data, 6)
             .await
             .expect("upload replay track");
         assert!(

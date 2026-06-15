@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
 use tape_core::track::blob::BlobEncoding;
-use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
+use tape_core::types::{
+    ContentType, EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
+};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::containers::{Pod, Vec as WincodeVec};
@@ -87,10 +89,19 @@ pub struct ObjectListEntry {
     pub data_tape: Address,
     /// Track number of the object-representing track on `data_tape`.
     pub track_number: TrackNumber,
-    /// Object kind discriminator (e.g. blob vs stream), interpreted by callers.
+    /// Storage kind discriminator (`TrackKind::Inline` / `TrackKind::Coded`).
     pub kind: u64,
-    /// Optional content-type; absent means a caller-chosen default.
-    pub content_type: Option<String>,
+    /// Hot content-type hint; precise custom strings are deferred to the data plane.
+    pub content_type: ContentType,
+}
+
+/// Name metadata keyed by object track address.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct ObjectMetadata {
+    /// Plaintext object name as provided on the write path.
+    pub name: Vec<u8>,
+    /// Hot content-type hint.
+    pub content_type: ContentType,
 }
 
 #[cfg(test)]
@@ -114,11 +125,23 @@ mod tests {
             data_tape: Address::new([9u8; 32]),
             track_number: TrackNumber(3),
             kind: 1,
-            content_type: Some("image/jpeg".to_string()),
+            content_type: ContentType::ImageJpeg,
         };
         let bytes = wincode::serialize(&entry).unwrap();
         let decoded: ObjectListEntry = wincode::deserialize(&bytes).unwrap();
         assert_eq!(entry, decoded);
+    }
+
+    #[test]
+    fn object_metadata_roundtrip() {
+        let metadata = ObjectMetadata {
+            name: b"photos/cat.jpg".to_vec(),
+            content_type: ContentType::ImageJpeg,
+        };
+
+        let bytes = wincode::serialize(&metadata).unwrap();
+        let decoded: ObjectMetadata = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(metadata, decoded);
     }
 
     #[test]

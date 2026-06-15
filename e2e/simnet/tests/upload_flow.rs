@@ -6,7 +6,6 @@ use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, StorageUnits};
-use tape_crypto::hash;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::CHUNK_SIZE;
@@ -100,7 +99,7 @@ async fn upload_flow_inner() {
         .expect("reserve tape");
 
     let raw_track = sdk
-        .write_raw(&tape_key, hash::hash(b"upload-flow-raw"), &raw_data)
+        .write_raw(&tape_key, &raw_data)
         .await
         .expect("write raw track");
     assert!(raw_track.is_inline(), "raw write should create a raw track");
@@ -112,7 +111,7 @@ async fn upload_flow_inner() {
     );
 
     let blob_track = sdk
-        .write_track(&tape_key, hash::hash(b"upload-flow-blob"), &blob_data)
+        .write_track(&tape_key, &blob_data)
         .await
         .expect("write blob track");
     assert!(blob_track.is_coded(), "blob write should create a blob track");
@@ -127,7 +126,7 @@ async fn upload_flow_inner() {
     );
 
     let receipt = sdk
-        .write_bytes(&tape_key, hash::hash(b"upload-flow-stream"), &stream_data)
+        .write_bytes(&tape_key, &stream_data)
         .await
         .expect("write stream");
     assert_eq!(receipt.tape, tape_address, "stream tape mismatch");

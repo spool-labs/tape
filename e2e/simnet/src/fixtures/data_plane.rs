@@ -3,12 +3,11 @@ use peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::signer::keypair::Keypair;
 use tape_api::program::tapedrive::track_pda;
-use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
+use tape_core::erasure::{spool_for_slice, GROUP_SIZE};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_crypto::Hash;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_store::ops::{SliceOps, SpoolOps};
@@ -24,17 +23,16 @@ impl SimnetScenario<'_> {
         Tapedrive::new(rpc, payer)
     }
 
-    /// Upload a blob: reserve tape, register track, upload slices, certify.
+    /// Upload a content-addressed blob: reserve tape, register track, upload slices, certify.
     pub async fn upload(
         &self,
         keypair: &Keypair,
-        key: Hash,
         data: &[u8],
         epochs: u64,
     ) -> Result<(TapeKey, Address, CompressedTrack)> {
         let sdk = self.sdk(keypair);
         let (tape_key, track) = sdk
-            .write(key, data, epochs)
+            .write(data, epochs)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let track_address = track_pda(track.tape, track.track_number).0;

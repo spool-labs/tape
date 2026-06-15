@@ -6,7 +6,6 @@ use clap::Parser;
 use rpc_solana::RpcConfig;
 use tape_core::types::StorageUnits;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_crypto::hash::hashv;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::CHUNK_SIZE;
@@ -63,12 +62,6 @@ async fn main() -> Result<()> {
     println!("  chunk_count: {}", chunk_count);
     println!("  tape_address: {}", tape_key.address());
 
-    let key = hashv(&[
-        b"testnet-upload-file",
-        &size.pack(),
-        &[cli.fill_byte],
-    ]);
-
     println!("reserving tape");
     let reserve_start = Instant::now();
     sdk.reserve(&tape_key, reserve_capacity, cli.epochs)
@@ -79,7 +72,8 @@ async fn main() -> Result<()> {
     println!("uploading file");
     let upload_start = Instant::now();
     let data = tokio::io::repeat(cli.fill_byte).take(size.to_bytes());
-    let receipt = sdk.write_stream(&tape_key, key, size, data)
+    let receipt = sdk
+        .write_stream(&tape_key, size, data)
         .await
         .context("write file")?;
     println!("upload completed in {:.2?}", upload_start.elapsed());

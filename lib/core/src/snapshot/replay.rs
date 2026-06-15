@@ -10,12 +10,14 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 use crate::bls::BlsPubkey;
 #[cfg(feature = "wincode")]
 use crate::snapshot::error::SnapshotError;
+use crate::spooler::GroupIndex;
 use crate::system::NodePreferences;
 use crate::track::blob::BlobEncoding;
-use crate::spooler::GroupIndex;
 use crate::track::types::CompressedTrack;
 use crate::types::coin::{Coin, TAPE};
-use crate::types::{EpochNumber, NodeId, SlotNumber, SpoolIndex, StorageUnits, TapeNumber};
+use crate::types::{
+    ContentType, EpochNumber, NodeId, SlotNumber, SpoolIndex, StorageUnits, TapeNumber,
+};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_crypto::tx::Txid;
@@ -193,6 +195,10 @@ pub struct ReplayTrack {
     pub epoch: EpochNumber,
     /// Blob commitment metadata, present only for blob-kind tracks.
     pub blob: Option<BlobEncoding>,
+    /// Plaintext object name, present only for named writes.
+    pub name: Option<Vec<u8>>,
+    /// Hot content-type hint carried by the write.
+    pub content_type: ContentType,
 }
 
 /// Single replay event emitted during block processing, with associated metadata.
@@ -348,6 +354,8 @@ mod tests {
             },
             epoch: EpochNumber(10),
             blob: None,
+            name: None,
+            content_type: ContentType::Unknown,
         }
     }
 
@@ -381,6 +389,8 @@ mod tests {
                 stripe_count: StripeCount(4),
                 leaves: [Hash::from([7u8; 32]); GROUP_SIZE],
             }),
+            name: None,
+            content_type: ContentType::Unknown,
         }
     }
 

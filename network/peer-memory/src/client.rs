@@ -6,8 +6,9 @@ use tape_protocol::api::{
     GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes, GetTrackByNumberReq,
     GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
     GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
-    ListTracksByTapeRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes,
-    SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes, VoteReq, VoteRes,
+    ListTracksByTapeRes, ListObjectsReq, ListObjectsRes, PeerReq, PeerRes, PutSliceReq,
+    PutSliceRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
+    VoteReq, VoteRes,
 };
 use tape_crypto::Address;
 
@@ -31,6 +32,7 @@ impl MemoryApi {
             PeerReq::GetTrackByNumber(_) => PeerRes::GetTrackByNumber(Err(not_impl())),
             PeerReq::FindTrack(_) => PeerRes::FindTrack(Err(not_impl())),
             PeerReq::ListTracksByTape(_) => PeerRes::ListTracksByTape(Err(not_impl())),
+            PeerReq::ListObjects(_) => PeerRes::ListObjects(Err(not_impl())),
             PeerReq::GetTrackData(_) => PeerRes::GetTrackData(Err(not_impl())),
             PeerReq::GetTrackProof(_) => PeerRes::GetTrackProof(Err(not_impl())),
             PeerReq::SyncSlices(_) => PeerRes::SyncSlices(Err(not_impl())),
@@ -83,6 +85,25 @@ impl Api for MemoryApi {
 
     async fn list_tracks_by_tape(&self, node: Address, req: &ListTracksByTapeReq) -> Result<ListTracksByTapeRes, ApiError> {
         dispatch!(self, node, ListTracksByTapeReq { tape: req.tape, cursor: req.cursor, limit: req.limit }, ListTracksByTape)
+    }
+
+    async fn list_objects(
+        &self,
+        node: Address,
+        req: &ListObjectsReq,
+    ) -> Result<ListObjectsRes, ApiError> {
+        dispatch!(
+            self,
+            node,
+            ListObjectsReq {
+                bucket: req.bucket,
+                prefix: req.prefix.clone(),
+                delimiter: req.delimiter.clone(),
+                cursor: req.cursor.clone(),
+                limit: req.limit,
+            },
+            ListObjects
+        )
     }
 
     async fn get_track_data(&self, node: Address, req: &GetTrackDataReq) -> Result<GetTrackDataRes, ApiError> {

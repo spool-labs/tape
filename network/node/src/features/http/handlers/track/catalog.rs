@@ -19,15 +19,17 @@ use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf};
 use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, FindTrackRequest, ListTracksByTapeRequest, ListTracksByTapeResponse,
-    TrackDataResponse, TrackProofResponse, TrackResponse, ops::FindTrackVersion,
+    ListObjectsRequest, ListObjectsResponse, ObjectListItem, TrackDataResponse,
+    TrackProofResponse, TrackResponse, ops::FindTrackVersion,
 };
-use tape_store::ops::{TapeOps, TrackDataOps, TrackOps};
+use tape_store::ops::{ObjectListOps, TapeOps, TrackDataOps, TrackOps};
 
 use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
+const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
 
 pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -326,6 +328,63 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let body = wincode::serialize(&ListTracksByTapeResponse { tracks, next_cursor })
         .map_err(|error| RouteError::Internal(format!("serialize list tracks response: {error}")))?;
+
+    Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], body))
+}
+
+pub async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    Path(tape_id): Path<String>,
+    body: Bytes,
+) -> Result<impl IntoResponse, RouteError> {
+    let bucket: Address = tape_id
+        .parse()
+        .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
+
+    let request: ListObjectsRequest = wincode::deserialize(&body)
+        .map_err(|error| RouteError::BadRequest(format!("list objects request: {error}")))?;
+
+    let limit = (request.limit as usize).clamp(1, MAX_OBJECT_LIST_LIMIT);
+    let delimiter = request
+        .delimiter
+        .as_deref()
+        .filter(|delimiter| !delimiter.is_empty());
+
+    let page = state
+        .context
+        .store
+        .list_objects(
+            bucket,
+            &request.prefix,
+            delimiter,
+            request.cursor.as_deref(),
+            limit,
+        )
+        .map_err(store_error)?;
+
+    let objects = page
+        .objects
+        .into_iter()
+        .map(|(name, entry)| ObjectListItem {
+            name,
+            size: entry.size,
+            etag: entry.etag,
+            block_time: entry.block_time,
+            slot: entry.slot,
+            data_tape: entry.data_tape,
+            track_number: entry.track_number,
+            kind: entry.kind,
+            content_type: entry.content_type,
+        })
+        .collect();
+
+    let body = wincode::serialize(&ListObjectsResponse {
+        objects,
+        common_prefixes: page.common_prefixes,
+        next_cursor: page.next,
+        is_truncated: page.is_truncated,
+    })
+    .map_err(|error| RouteError::Internal(format!("serialize list objects response: {error}")))?;
 
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], body))
 }

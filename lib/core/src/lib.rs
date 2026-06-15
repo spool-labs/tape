@@ -5,6 +5,7 @@ pub mod bls;
 pub mod cert;
 pub mod encoding;
 pub mod erasure;
+pub mod object;
 pub mod track;
 pub mod spooler;
 pub mod staking;
@@ -16,6 +17,7 @@ mod macros;
 
 pub mod prelude {
     pub use crate::encoding::EncodingProfile;
+    pub use crate::object::object_etag;
     pub use crate::types::{GroupIndex, SpoolIndex};
     pub use crate::system::{
         EpochPhase, EpochState, NodeStatus, SpoolState, SpoolStatus, VoteKind,

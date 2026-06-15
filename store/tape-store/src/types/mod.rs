@@ -18,4 +18,6 @@ pub use keys::{
 };
 
 // Re-export value types
-pub use values::{InvalidationProof, ObjectListEntry, SliceValue, SnapshotArtifact, TapeInfo};
+pub use values::{
+    InvalidationProof, ObjectListEntry, ObjectMetadata, SliceValue, SnapshotArtifact, TapeInfo,
+};
