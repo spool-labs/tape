@@ -88,6 +88,13 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
+        // Object list - per-bucket S3 listing index ([bucket 32B][name var])
+        // 32-byte bucket prefix for efficient per-bucket prefix scans
+        ColumnFamilyConfig::new("object_list")
+            .with_block_based()
+            .with_prefix_extractor(32)
+            .build(),
+
         // Sync cursor - singleton (empty key)
         ColumnFamilyConfig::new("sync_cursor")
             .with_block_based()
@@ -206,7 +213,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 16);
+        assert_eq!(configs.len(), 17);
     }
 
     #[test]
@@ -221,6 +228,7 @@ mod tests {
             "track_lookup",
             "track_data",
             "object_info",
+            "object_list",
             "sync_cursor",
             "gc",
             "spool_status",

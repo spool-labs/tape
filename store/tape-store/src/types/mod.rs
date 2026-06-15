@@ -13,9 +13,9 @@ pub use enums::{ObjectInfo, SystemObjectKind};
 
 // Re-export key types
 pub use keys::{
-    EpochKey, EventLogKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey, TrackLookupKey, UnitKey,
-    VoteSigKey,
+    EpochKey, EventLogKey, ObjectListKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey,
+    TrackLookupKey, UnitKey, VoteSigKey,
 };
 
 // Re-export value types
-pub use values::{InvalidationProof, SliceValue, SnapshotArtifact, TapeInfo};
+pub use values::{InvalidationProof, ObjectListEntry, SliceValue, SnapshotArtifact, TapeInfo};

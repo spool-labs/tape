@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
 use tape_core::track::blob::BlobInfo;
-use tape_core::types::{EpochNumber, SpoolIndex, TapeNumber, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
+use tape_crypto::address::Address;
+use tape_crypto::Hash;
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -67,6 +69,30 @@ pub struct InvalidationProof {
     pub computed_root: [u8; 32],
 }
 
+/// Listing-plane metadata for one object, keyed in `object_list` by
+/// `[bucket][name]`. Carries exactly what an S3 listing page returns per object
+/// (size, etag, last-modified) plus a pointer to the object track, so a listing
+/// is a single range scan with no per-object lookups.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct ObjectListEntry {
+    /// Object size in bytes.
+    pub size: StorageUnits,
+    /// ETag: the object track's commitment / content root.
+    pub etag: Hash,
+    /// Wall-clock last-modified time (unix seconds), when the block had one.
+    pub block_time: Option<i64>,
+    /// Slot the write was applied at — the precise monotonic order/tiebreak.
+    pub slot: SlotNumber,
+    /// Data tape holding the object-representing track.
+    pub data_tape: Address,
+    /// Track number of the object-representing track on `data_tape`.
+    pub track_number: TrackNumber,
+    /// Object kind discriminator (e.g. blob vs stream), interpreted by callers.
+    pub kind: u64,
+    /// Optional content-type; absent means a caller-chosen default.
+    pub content_type: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +103,23 @@ mod tests {
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
+
+    #[test]
+    fn object_list_entry_roundtrip() {
+        let entry = ObjectListEntry {
+            size: StorageUnits(4096),
+            etag: Hash::from([7u8; 32]),
+            block_time: Some(1_700_000_123),
+            slot: SlotNumber(42),
+            data_tape: Address::new([9u8; 32]),
+            track_number: TrackNumber(3),
+            kind: 1,
+            content_type: Some("image/jpeg".to_string()),
+        };
+        let bytes = wincode::serialize(&entry).unwrap();
+        let decoded: ObjectListEntry = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(entry, decoded);
+    }
 
     #[test]
     fn test_tape_info_roundtrip() {

@@ -484,6 +484,61 @@ impl<'de> SchemaRead<'de> for EventLogKey {
     }
 }
 
+/// Key for the per-bucket object listing index (variable length).
+///
+/// Format: `[bucket 32 bytes][name raw bytes]`. The bucket is a fixed 32-byte
+/// prefix so per-bucket prefix scans work; the name is written as raw trailing
+/// bytes (no length prefix) so keys sort in lexicographic name order — exactly
+/// S3 `ListObjects` ordering.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ObjectListKey {
+    pub bucket: Address,
+    pub name: Vec<u8>,
+}
+
+impl ObjectListKey {
+    pub fn new(bucket: Address, name: impl Into<Vec<u8>>) -> Self {
+        Self {
+            bucket,
+            name: name.into(),
+        }
+    }
+
+    /// Prefix bytes for per-bucket iteration (32 bytes).
+    pub fn bucket_prefix(bucket: Address) -> [u8; 32] {
+        bucket.to_bytes()
+    }
+}
+
+impl SchemaWrite for ObjectListKey {
+    type Src = Self;
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        Ok(32 + src.name.len())
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.bucket.as_ref())?;
+        writer.write_exact(&src.name)?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for ObjectListKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<ObjectListKey>) -> ReadResult<()> {
+        let bucket: [u8; 32] = unsafe { reader.get_t()? };
+        let remaining = reader.as_slice().len();
+        let name = reader.read_borrowed(remaining)?.to_vec();
+        dst.write(ObjectListKey {
+            bucket: Address::from(bucket),
+            name,
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,5 +664,29 @@ mod tests {
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: TrackLookupKey = wincode::deserialize(&bytes).unwrap();
         assert_eq!(key, decoded);
+    }
+
+    #[test]
+    fn object_list_key_roundtrip() {
+        let key = ObjectListKey::new(Address::new([0x11; 32]), b"photos/2026/cat.jpg".to_vec());
+        let bytes = wincode::serialize(&key).unwrap();
+        let decoded: ObjectListKey = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(key, decoded);
+        assert_eq!(bytes.len(), 32 + b"photos/2026/cat.jpg".len());
+    }
+
+    #[test]
+    fn object_list_key_orders_by_name() {
+        let bucket = Address::new([0x11; 32]);
+        let a = wincode::serialize(&ObjectListKey::new(bucket, b"a".to_vec())).unwrap();
+        let ab = wincode::serialize(&ObjectListKey::new(bucket, b"ab".to_vec())).unwrap();
+        let b = wincode::serialize(&ObjectListKey::new(bucket, b"b".to_vec())).unwrap();
+        assert!(a < ab && ab < b);
+
+        // A different bucket dominates the ordering.
+        let other =
+            wincode::serialize(&ObjectListKey::new(Address::new([0x12; 32]), b"a".to_vec()))
+                .unwrap();
+        assert!(b < other);
     }
 }

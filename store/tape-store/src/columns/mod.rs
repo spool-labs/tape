@@ -36,6 +36,7 @@ pub mod event_log;
 pub mod gc;
 pub mod meta;
 pub mod object_info;
+pub mod object_list;
 pub mod snapshot;
 pub mod slice;
 pub mod spool;
@@ -51,6 +52,7 @@ pub use event_log::EventLogCol;
 pub use gc::GcCol;
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
+pub use object_list::ObjectListCol;
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
 pub use spool::{
@@ -71,6 +73,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "track_lookup",
     "track_data",
     "object_info",
+    "object_list",
     "sync_cursor",
     "gc",
     "spool_status",
