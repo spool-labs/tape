@@ -3,7 +3,7 @@
 # Usage:
 #   make programs     - Build all Solana programs via solana/programs/Makefile
 #   make node         - Build tape-node release binary with metrics enabled
-#   make explorer     - Build the tapedrive-explorer release binary
+#   make explorer     - Build and test the separate explorer workspace
 #   make testnet      - Build the testnet orchestrator release binary
 #   make reset        - Remove local validator ledger + testnet state
 #   make run-solana   - Start the local solana-test-validator with programs loaded
@@ -70,9 +70,10 @@ programs:
 node:
 	cargo build --release -p tape-node --features metrics
 
-# Separate workspace (own Cargo.lock); build from within explorer/.
+# Separate workspace (own Cargo.lock); build and test from within explorer/.
 explorer:
-	cd explorer && cargo build --release
+	cd explorer && cargo build
+	cd explorer && cargo test
 
 cache:
 	cargo build --release -p rpc-cache --bin rpc-cache

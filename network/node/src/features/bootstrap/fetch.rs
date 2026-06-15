@@ -73,7 +73,8 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
+    let snapshot_tape = snapshot_tape_pda(epoch).0;
+
     context
         .store
         .put_tape(
@@ -87,12 +88,15 @@ where
         )
         .map_err(store_err)?;
 
-    for track in &decoded.tracks {
-        let track_address = Address::from(track_pda(track.tape, track.track_number).0);
+    for snapshot_track in &decoded.tracks {
+        let track = snapshot_track.state;
+        let track_address = track_pda(track.tape, track.track_number).0;
+
         context
             .store
-            .put_track(track_address, *track)
+            .put_track(track_address, track)
             .map_err(store_err)?;
+
         context
             .store
             .put_object_info(

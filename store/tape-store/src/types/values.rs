@@ -91,7 +91,7 @@ pub struct ObjectListEntry {
     pub track_number: TrackNumber,
     /// Storage kind discriminator (`TrackKind::Inline` / `TrackKind::Coded`).
     pub kind: u64,
-    /// Hot content-type hint; precise custom strings are deferred to the data plane.
+    /// Hot content type; precise custom strings are deferred to the data plane.
     pub content_type: ContentType,
 }
 
@@ -100,7 +100,7 @@ pub struct ObjectListEntry {
 pub struct ObjectMetadata {
     /// Plaintext object name as provided on the write path.
     pub name: Vec<u8>,
-    /// Hot content-type hint.
+    /// Hot content type.
     pub content_type: ContentType,
 }
 

@@ -197,7 +197,7 @@ pub struct ReplayTrack {
     pub blob: Option<BlobEncoding>,
     /// Plaintext object name, present only for named writes.
     pub name: Option<Vec<u8>>,
-    /// Hot content-type hint carried by the write.
+    /// Hot content type carried by the write.
     pub content_type: ContentType,
 }
 

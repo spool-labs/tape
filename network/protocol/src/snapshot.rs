@@ -33,11 +33,18 @@ use crate::{Api, ApiError, ProtocolState};
 
 const LIST_TRACKS_LIMIT: u32 = 256;
 
-/// A reconstructed epoch snapshot: the decoded log plus the verified chunk-track
-/// list it was decoded from (anchored to the on-chain committed root).
+/// A reconstructed epoch snapshot: the decoded log plus the verified chunk tracks
+/// that were fetched and decoded from the committed snapshot tape.
 pub struct DecodedSnapshot {
     pub log: SnapshotLog,
-    pub tracks: Vec<CompressedTrack>,
+    pub tracks: Vec<DecodedSnapshotTrack>,
+}
+
+/// A verified snapshot chunk track and the blob metadata used to decode it.
+#[derive(Debug, Clone, Copy)]
+pub struct DecodedSnapshotTrack {
+    pub state: CompressedTrack,
+    pub blob: BlobEncoding,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -79,9 +86,9 @@ pub enum SnapshotReaderError {
     Join(String),
 }
 
-/// Fetch every chunk for an epoch's snapshot tape from peers, verify the served
+/// Fetch chunk tracks for an epoch's snapshot tape from peers, verify the served
 /// track list against `committed`, decode, and return the reconstructed
-/// [`SnapshotLog`] alongside the verified track set.
+/// [`SnapshotLog`] alongside the verified chunk records used to decode it.
 ///
 /// `state` provides routing (committee peers + group ownership) for the *current*
 /// epoch, which holds custody of every historical snapshot's spool data.
@@ -104,7 +111,7 @@ pub async fn read_snapshot_epoch<A: Api + 'static>(
         }
 
         match decode_snapshot_tracks(api, state, tape, epoch, tracks.clone(), cancel).await {
-            Ok(log) => return Ok(DecodedSnapshot { log, tracks }),
+            Ok(decoded) => return Ok(decoded),
             Err(error) => {
                 warn!(node = %peer, ?error, "snapshot reader: candidate track list failed");
                 last_error = Some(error);
@@ -122,7 +129,7 @@ async fn decode_snapshot_tracks<A: Api + 'static>(
     epoch: EpochNumber,
     tracks: Vec<CompressedTrack>,
     cancel: &CancellationToken,
-) -> Result<SnapshotLog, SnapshotReaderError> {
+) -> Result<DecodedSnapshot, SnapshotReaderError> {
     validate_snapshot_track_list(epoch, tape, &tracks)?;
     let total_groups = snapshot_track_group_count(epoch, &tracks)?;
 
@@ -150,17 +157,19 @@ async fn decode_snapshot_tracks<A: Api + 'static>(
     }
 
     let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
+    let mut snapshot_tracks = Vec::new();
     while let Some(result) = join.join_next().await {
         if cancel.is_cancelled() {
             join.abort_all();
             return Err(SnapshotReaderError::Cancelled);
         }
         match result.map_err(|e| SnapshotReaderError::Join(e.to_string()))? {
-            Ok(Decoded { group, chunk, symbol }) => {
+            Ok(Decoded { group, chunk, symbol, track, blob }) => {
                 symbols_by_segment
                     .entry(chunk)
                     .or_default()
                     .push((group.0 as usize, symbol));
+                snapshot_tracks.push(DecodedSnapshotTrack { state: track, blob });
             }
             Err(error) => {
                 warn!(?error, "snapshot reader: track decode failed");
@@ -168,13 +177,19 @@ async fn decode_snapshot_tracks<A: Api + 'static>(
         }
     }
 
-    Ok(assemble_snapshot_log(&symbols_by_segment, epoch, total_groups)?)
+    snapshot_tracks.sort_by_key(|track| track.state.track_number.0);
+    Ok(DecodedSnapshot {
+        log: assemble_snapshot_log(&symbols_by_segment, epoch, total_groups)?,
+        tracks: snapshot_tracks,
+    })
 }
 
 struct Decoded {
     group: GroupIndex,
     chunk: ChunkNumber,
     symbol: Vec<u8>,
+    track: CompressedTrack,
+    blob: BlobEncoding,
 }
 
 /// Fetch verified slices for one chunk track and Clay-decode them.
@@ -210,7 +225,13 @@ async fn fetch_and_decode_track<A: Api>(
         "snapshot reader: chunk decoded"
     );
 
-    Ok(Decoded { group, chunk, symbol })
+    Ok(Decoded {
+        group,
+        chunk,
+        symbol,
+        track,
+        blob,
+    })
 }
 
 async fn fetch_verified_slices<A: Api>(

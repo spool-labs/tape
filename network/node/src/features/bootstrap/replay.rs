@@ -24,6 +24,8 @@ pub fn apply_snapshot_log<Db: Store>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
@@ -33,15 +35,20 @@ mod tests {
     };
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::data::{track_key, BlobDataSlice};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+        ChunkNumber, ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount,
+        TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
-    use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
+    use tape_snapshot::{assemble_snapshot_log, decode_chunk_payload, encode_snapshot, K_INNER};
+    use tape_store::ops::{
+        ObjectInfoOps, ObjectListOps, ObjectMetadataOps, TapeOps, TrackOps,
+    };
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
 
@@ -79,7 +86,7 @@ mod tests {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
-                key: Hash::new_unique(),
+                key: track_key(b"", &BlobDataSlice::Coded(blob)),
                 track_number,
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
@@ -91,6 +98,32 @@ mod tests {
             blob: Some(blob),
             name: None,
             content_type: ContentType::Unknown,
+        })
+    }
+
+    fn named_track_event(
+        tape: Address,
+        track_number: TrackNumber,
+        epoch: EpochNumber,
+        blob: BlobEncoding,
+        name: Vec<u8>,
+        content_type: ContentType,
+    ) -> ReplayableEvent {
+        ReplayableEvent::Track(ReplayTrack {
+            state: CompressedTrack {
+                tape,
+                key: track_key(&name, &BlobDataSlice::Coded(blob)),
+                track_number,
+                kind: TrackKind::Coded as u64,
+                state: TrackState::Registered as u64,
+                size: blob.size,
+                group: GroupIndex::from(4),
+                value_hash: blob.get_hash(),
+            },
+            epoch,
+            blob: Some(blob),
+            name: Some(name),
+            content_type,
         })
     }
 
@@ -106,6 +139,30 @@ mod tests {
             end_slot: end,
             entries,
         }
+    }
+
+    fn decode_encoded_log(snapshot_tape: Address, log: &SnapshotLog) -> SnapshotLog {
+        const TOTAL_GROUPS: usize = 3;
+
+        let chunks = encode_snapshot(snapshot_tape, log.epoch, log, TOTAL_GROUPS).unwrap();
+        let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> =
+            BTreeMap::new();
+        for chunk in &chunks {
+            let inner: Vec<(usize, &[u8])> = chunk
+                .slices
+                .iter()
+                .enumerate()
+                .take(K_INNER)
+                .map(|(index, slice)| (index, slice.as_slice()))
+                .collect();
+            let (chunk_number, symbol) = decode_chunk_payload(&inner).unwrap();
+            symbols_by_segment
+                .entry(chunk_number)
+                .or_default()
+                .push((chunk.group.0 as usize, symbol));
+        }
+
+        assemble_snapshot_log(&symbols_by_segment, log.epoch, TOTAL_GROUPS).unwrap()
     }
 
     #[test]
@@ -275,6 +332,77 @@ mod tests {
         );
 
         assert_eq!(snapshot_a, snapshot_b);
+    }
+
+    #[test]
+    fn named_object_roundtrip() {
+        let epoch = EpochNumber(9);
+        let slot = SlotNumber(120);
+        let block_time = Some(1_700_000_120);
+        let tape = Address::new_unique();
+        let track_number = TrackNumber(7);
+        let track = track_pda(tape, track_number).0;
+        let blob = blob();
+        let name = b"photos/cat.jpg".to_vec();
+        let content_type = ContentType::ImageJpeg;
+
+        let log = log_with_entries(
+            epoch,
+            slot,
+            slot,
+            vec![SnapshotEntry {
+                slot,
+                block_time,
+                records: vec![
+                    record(ReplayableEvent::ReserveTape {
+                        tape,
+                        id: TapeNumber(4),
+                        flags: 0,
+                        authority: Address::new_unique(),
+                        capacity: StorageUnits::mb(10),
+                        active_epoch: epoch,
+                        expiry_epoch: EpochNumber(20),
+                        cost: TAPE(0),
+                        burned: TAPE(0),
+                        scheduled: TAPE(0),
+                    }),
+                    record(named_track_event(
+                        tape,
+                        track_number,
+                        epoch,
+                        blob,
+                        name.clone(),
+                        content_type,
+                    )),
+                ],
+            }],
+        );
+
+        let live_store = test_store();
+        apply_snapshot_log(&live_store, &log).unwrap();
+
+        let decoded = decode_encoded_log(Address::new_unique(), &log);
+        let snapshot_store = test_store();
+        apply_snapshot_log(&snapshot_store, &decoded).unwrap();
+
+        assert_eq!(
+            snapshot_store.get_object_metadata(track).unwrap(),
+            live_store.get_object_metadata(track).unwrap()
+        );
+
+        let live_entry = live_store.get_object_entry(tape, &name).unwrap().unwrap();
+        let snapshot_entry = snapshot_store.get_object_entry(tape, &name).unwrap().unwrap();
+        assert_eq!(snapshot_entry, live_entry);
+        assert_eq!(snapshot_entry.etag, blob.commitment);
+        assert_eq!(snapshot_entry.content_type, content_type);
+        assert_eq!(snapshot_entry.block_time, block_time);
+        assert_eq!(snapshot_entry.slot, slot);
+
+        let page = snapshot_store
+            .list_objects(tape, b"photos/", None, None, 10)
+            .unwrap();
+        assert_eq!(page.objects.len(), 1);
+        assert_eq!(page.objects[0].0, name);
     }
 
     #[test]
