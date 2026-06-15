@@ -59,7 +59,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .verify(&proof)
         .map_err(|_| TapeError::BadProof)?;
 
-    if !track.is_blob() {
+    if !track.is_coded() {
         return Err(TapeError::UnexpectedState.into());
     }
 
@@ -180,7 +180,7 @@ mod tests {
             tape: tape_address,
             key: bucket_hash,
             track_number,
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::mb(250),
             group: group_id,
@@ -297,7 +297,7 @@ mod tests {
             tape: tape_address,
             key: bucket_hash,
             track_number,
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Invalidated as u64,
             size: StorageUnits::mb(250),
             group: group_id,
@@ -392,7 +392,7 @@ mod tests {
             tape: tape_address,
             key: bucket_hash,
             track_number,
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::mb(250),
             group: group_id,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::snapshot::replay::ReplayRecord;
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::types::SlotNumber;
 use tape_protocol::Api;
 use tape_store::ops::{MetaOps, TrackDataOps};
@@ -92,7 +92,7 @@ fn persist_raw_tracks<Db: Store>(
         }
 
         store
-            .put_track_data(raw_track.track, TrackData::Raw(raw_track.data.clone()))
+            .put_track_data(raw_track.track, BlobData::Inline(raw_track.data.clone()))
             .map_err(|error| NodeError::Store(format!("put_track_data: {error}")))?;
     }
 
@@ -104,7 +104,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::data::TrackData;
+    use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_core::system::{SpoolState, SpoolStatus};
@@ -153,7 +153,7 @@ mod tests {
                     tape: Address::from([0x11; 32]),
                     key: Hash::default(),
                     track_number: TrackNumber(0),
-                    kind: TrackKind::Raw as u64,
+                    kind: TrackKind::Inline as u64,
                     state: TrackState::Certified as u64,
                     size: StorageUnits(1),
                     group: GroupIndex::from(0),
@@ -194,7 +194,7 @@ mod tests {
         };
 
         persist_batch(&store, &batch).unwrap();
-        assert_eq!(store.get_track_data(track).unwrap(), Some(TrackData::Raw(raw)));
+        assert_eq!(store.get_track_data(track).unwrap(), Some(BlobData::Inline(raw)));
         assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(78)));
     }
 

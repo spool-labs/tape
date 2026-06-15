@@ -53,7 +53,7 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     let entry_bytes = bytes_of(&args.entry);
     let meta = TrackMeta {
-        kind: TrackKind::Raw,
+        kind: TrackKind::Inline,
         state: TrackState::Certified,
         size: StorageUnits::from_bytes(entry_bytes.len() as u64),
         value_hash: hash(entry_bytes),
@@ -160,7 +160,7 @@ mod tests {
             tape: blacklist_address,
             key: entry.key(),
             track_number,
-            kind: TrackKind::Raw as u64,
+            kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(entry_size),
             group,

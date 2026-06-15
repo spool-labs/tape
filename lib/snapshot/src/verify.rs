@@ -56,7 +56,7 @@ mod tests {
             tape: Address::from([7u8; 32]),
             key: Hash::default(),
             track_number: TrackNumber(n),
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(64),
             group: GroupIndex(n),

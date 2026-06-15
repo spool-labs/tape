@@ -1,8 +1,8 @@
 use tape_core::erasure::slice_for_spool;
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_e2e_simnet::TestNode;
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_core::track::blob::BlobInfo;
+use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{SpoolIndex, StorageUnits};
 
@@ -35,10 +35,10 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
                     }
                 };
 
-                let blob_info = match store.get_track_data(*track_addr).expect("read track data")
+                let blob_encoding = match store.get_track_data(*track_addr).expect("read track data")
                 {
-                    Some(TrackData::Blob(blob)) => blob,
-                    Some(TrackData::Raw(_)) => {
+                    Some(BlobData::Coded(blob)) => blob,
+                    Some(BlobData::Inline(_)) => {
                         tracing::error!(
                             node = i,
                             spool = %spool_id,
@@ -56,14 +56,14 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
                     }
                 };
 
-                if let Err(e) = validate_slice_entry(*spool_id, &track_info, &blob_info, slice_data) {
+                if let Err(e) = validate_slice_entry(*spool_id, &track_info, &blob_encoding, slice_data) {
                     tracing::error!(
                         node = i,
                         spool = %spool_id,
                         track = ?track_addr,
                         group = %track_info.group,
                         slice_len = slice_data.len(),
-                        original_size = blob_info.size.0,
+                        original_size = blob_encoding.size.0,
                         error = %e,
                         "spool integrity violation"
                     );
@@ -93,26 +93,26 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
 fn validate_slice_entry(
     spool: SpoolIndex,
     track_info: &CompressedTrack,
-    blob_info: &BlobInfo,
+    blob_encoding: &BlobEncoding,
     data: &[u8],
 ) -> Result<(), String> {
     let slice_index = slice_for_spool(track_info.group, spool)
         .ok_or_else(|| "track not mapped to this spool group".to_string())?;
 
-    if blob_info.size.0 > 0 && data.is_empty() {
+    if blob_encoding.size.0 > 0 && data.is_empty() {
         return Err("empty slice for non-empty track".to_string());
     }
 
-    let expected_max = blob_info
+    let expected_max = blob_encoding
         .stripe_size
-        .checked_mul(StorageUnits::from_bytes(blob_info.stripe_count.as_u64()))
+        .checked_mul(StorageUnits::from_bytes(blob_encoding.stripe_count.as_u64()))
         .ok_or_else(|| "invalid stripe dimensions".to_string())?;
 
     if expected_max.to_bytes() > 0 && StorageUnits::from_bytes(data.len() as u64) > expected_max {
         return Err("slice exceeds expected decoded size".to_string());
     }
 
-    if !blob_info.verify_slice(SpoolIndex::from(slice_index as u64), data) {
+    if !blob_encoding.verify_slice(SpoolIndex::from(slice_index as u64), data) {
         return Err("slice does not match commitment".to_string());
     }
 

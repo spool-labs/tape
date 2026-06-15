@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rpc::Rpc;
 use tape_core::erasure::group_start;
-use tape_core::prelude::{GroupIndex, SpoolIndex, TrackData};
+use tape_core::prelude::{GroupIndex, SpoolIndex, BlobData};
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::hash::hash;
 use tape_protocol::api::{ApiError, GetTrackDataReq};
@@ -66,13 +66,13 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         metadata.finish_result(&track_info);
         let track_info = track_info?;
 
-        let data = client.timer(operation, Phase::TrackData);
+        let data = client.timer(operation, Phase::BlobData);
         let track_data = fetch_track_data(client, *track, track_info.group, operation).await;
         data.finish_result(&track_data);
         let track_data = track_data?;
 
-        if track_info.is_raw() {
-            let TrackData::Raw(bytes) = track_data else {
+        if track_info.is_inline() {
+            let BlobData::Inline(bytes) = track_data else {
                 return Err(TapedriveError::InvalidArgument(
                     "expected raw track data".into(),
                 ));
@@ -83,7 +83,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
             return Ok(bytes);
         }
 
-        let TrackData::Blob(blob) = track_data else {
+        let BlobData::Coded(blob) = track_data else {
             return Err(TapedriveError::InvalidArgument(
                 "expected blob track data".into(),
             ));
@@ -154,15 +154,15 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     metadata.finish_result(&track_info);
     let track_info = track_info?;
 
-    if track_info.is_raw() {
+    if track_info.is_inline() {
         return Ok(hash(data) == track_info.value_hash);
     }
 
-    let data_timer = client.timer(Operation::Verify, Phase::TrackData);
+    let data_timer = client.timer(Operation::Verify, Phase::BlobData);
     let track_data =
         fetch_track_data(client, *track, track_info.group, Operation::Verify).await;
     data_timer.finish_result(&track_data);
-    let TrackData::Blob(blob) = track_data? else {
+    let BlobData::Coded(blob) = track_data? else {
         return Err(TapedriveError::InvalidArgument(
             "expected blob track data".into(),
         ));
@@ -190,7 +190,7 @@ async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     track: Address,
     group: GroupIndex,
     operation: Operation,
-) -> Result<TrackData, TapedriveError> {
+) -> Result<BlobData, TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;
 
     let mut peers = Vec::new();

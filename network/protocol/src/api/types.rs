@@ -8,7 +8,7 @@ use tape_core::{
     spooler::GroupIndex,
 };
 pub use tape_core::system::VoteCandidate;
-use tape_core::prelude::{EpochNumber, SpoolIndex, TrackData, TrackNumber};
+use tape_core::prelude::{EpochNumber, SpoolIndex, BlobData, TrackNumber};
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
 use tape_core::types::SpoolBitmap;
 use tape_crypto::prelude::{Address, Hash};
@@ -171,7 +171,7 @@ pub struct SyncTracksResponse {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncTrackEntry {
     pub track_address: [u8; 32],
-    pub data: TrackData,
+    pub data: BlobData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -199,7 +199,7 @@ pub struct ListTracksByTapeResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct TrackDataResponse {
-    pub data: TrackData,
+    pub data: BlobData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -213,7 +213,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::system::VoteKind;
-    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
@@ -409,7 +409,7 @@ mod tests {
         let resp = SyncTracksResponse {
             entries: vec![SyncTrackEntry {
                 track_address: [0x11; 32],
-                data: TrackData::Raw(vec![1, 2, 3]),
+                data: BlobData::Inline(vec![1, 2, 3]),
             }],
             next_cursor: Some([0x11; 32]),
         };
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn track_data_response_blob_roundtrip() {
         let resp = TrackDataResponse {
-            data: TrackData::Blob(BlobInfo {
+            data: BlobData::Coded(BlobEncoding {
                 size: StorageUnits::from_bytes(2048),
                 commitment: Hash::from([0x55; 32]),
                 profile: EncodingProfile::basic_default(),

@@ -316,7 +316,7 @@ mod tests {
     use bytemuck::{Zeroable, bytes_of};
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::{blacklist_pda, track_pda};
-    use tape_core::track::data::TrackData;
+    use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{TapeNumber, TrackNumber};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
@@ -382,7 +382,7 @@ mod tests {
             tape: blacklist,
             key: entry_hash,
             track_number,
-            kind: TrackKind::Raw as u64,
+            kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
             group: GroupIndex(0),
@@ -391,7 +391,7 @@ mod tests {
 
         store.put_track(track_address, state).unwrap();
         store
-            .put_track_data(track_address, TrackData::Raw(bytes_of(&entry).to_vec()))
+            .put_track_data(track_address, BlobData::Inline(bytes_of(&entry).to_vec()))
             .unwrap();
         store
             .put_object_info(
@@ -489,7 +489,7 @@ mod tests {
             tape: blacklist,
             key: entry.key(),
             track_number,
-            kind: TrackKind::Raw as u64,
+            kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
             group: GroupIndex(0),

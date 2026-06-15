@@ -402,7 +402,7 @@ mod tests {
             tape,
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
             group,
@@ -769,7 +769,7 @@ mod tests {
             SlotNumber(10),
             track,
             track_info(Address::new_unique(), group),
-            tape_core::track::data::TrackData::Raw(vec![]),
+            tape_core::track::data::BlobData::Inline(vec![]),
         );
         store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
 

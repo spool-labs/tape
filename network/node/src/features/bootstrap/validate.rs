@@ -197,7 +197,7 @@ mod tests {
                 tape,
                 track_number,
                 key: Hash::default(),
-                kind: TrackKind::Raw as u64,
+                kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
                 size: StorageUnits(1),
                 group: GroupIndex::from(0),

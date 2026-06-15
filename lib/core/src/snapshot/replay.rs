@@ -11,7 +11,7 @@ use crate::bls::BlsPubkey;
 #[cfg(feature = "wincode")]
 use crate::snapshot::error::SnapshotError;
 use crate::system::NodePreferences;
-use crate::track::blob::BlobInfo;
+use crate::track::blob::BlobEncoding;
 use crate::spooler::GroupIndex;
 use crate::track::types::CompressedTrack;
 use crate::types::coin::{Coin, TAPE};
@@ -192,7 +192,7 @@ pub struct ReplayTrack {
     /// Epoch in which the track was written.
     pub epoch: EpochNumber,
     /// Blob commitment metadata, present only for blob-kind tracks.
-    pub blob: Option<BlobInfo>,
+    pub blob: Option<BlobEncoding>,
 }
 
 /// Single replay event emitted during block processing, with associated metadata.
@@ -340,7 +340,7 @@ mod tests {
                 tape: Address::from([1u8; 32]),
                 key: Hash::default(),
                 track_number: 0u64.into(),
-                kind: TrackKind::Raw as u64,
+                kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
                 size: 1u64.into(),
                 group: GroupIndex::from(0),
@@ -366,14 +366,14 @@ mod tests {
                 tape: Address::from([2u8; 32]),
                 key: Hash::from([3u8; 32]),
                 track_number: 1u64.into(),
-                kind: TrackKind::Blob as u64,
+                kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
                 size: 1024u64.into(),
                 group: GroupIndex::from(1),
                 value_hash: Hash::from([4u8; 32]),
             },
             epoch: EpochNumber(11),
-            blob: Some(BlobInfo {
+            blob: Some(BlobEncoding {
                 size: StorageUnits::from_bytes(1024),
                 commitment: Hash::from([6u8; 32]),
                 profile: EncodingProfile::basic_default(),

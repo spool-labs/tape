@@ -5,7 +5,7 @@ use bytemuck::try_from_bytes;
 use store::Store;
 use tape_api::program::tapedrive::{blacklist_pda, track_pda};
 use tape_core::system::BlacklistEntry;
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Address;
@@ -116,9 +116,9 @@ pub fn decode_blacklist_entry(
     track_address: Address,
     blacklist: Address,
     track: &CompressedTrack,
-    data: &TrackData,
+    data: &BlobData,
 ) -> Result<BlacklistEntry, NodeError> {
-    if track.tape != blacklist || !track.is_raw() || !track.is_certified() {
+    if track.tape != blacklist || !track.is_inline() || !track.is_certified() {
         return Err(NodeError::Store(format!(
             "invalid blacklist track metadata for {track_address}"
         )));
@@ -132,7 +132,7 @@ pub fn decode_blacklist_entry(
         )));
     }
 
-    let TrackData::Raw(bytes) = data else {
+    let BlobData::Inline(bytes) = data else {
         return Err(NodeError::Store(format!("invalid blacklist track data for {track_address}")));
     };
 

@@ -7,7 +7,7 @@
 //! - `tape`: Tape metadata (Address -> TapeInfo)
 //! - `track`: Canonical compressed-track catalog (Address -> PackedTrack)
 //! - `track_lookup`: Tape-local ordered index ((tape, track_number, key) -> ())
-//! - `track_data`: Local track payload data (Address -> TrackData)
+//! - `track_data`: Local track payload data (Address -> BlobData)
 //! - `object_info`: Object metadata (Address -> ObjectInfo)
 //!
 //! ## Sync Columns

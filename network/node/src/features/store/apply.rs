@@ -7,7 +7,7 @@ use tape_core::tape::{
     blacklist_tape_number, history_tape_number, snapshot_tape_number, tape_index, tape_namespace,
     TapeFlags, TapeNamespace,
 };
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::TrackState;
 use tape_core::types::{EpochNumber, SlotNumber, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
@@ -164,7 +164,7 @@ fn put_track_object<Db: Store>(
 
     if let Some(blob) = replay.blob {
         store
-            .put_track_data(track, TrackData::Blob(blob))
+            .put_track_data(track, BlobData::Coded(blob))
             .map_err(store_error)?;
     }
 
@@ -249,7 +249,7 @@ fn advance_track_cursor<Db: Store>(
 }
 
 fn validate_replay_track(replay: &ReplayTrack) -> Result<(), NodeError> {
-    match (replay.state.is_blob(), replay.blob) {
+    match (replay.state.is_coded(), replay.blob) {
         (true, Some(blob)) if replay.state.value_hash == blob.get_hash() => Ok(()),
         (true, Some(_)) => Err(NodeError::Store(
             "replay blob track value_hash does not match blob metadata".into(),
@@ -389,8 +389,8 @@ mod tests {
     use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::track::data::TrackData;
+    use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
@@ -409,7 +409,7 @@ mod tests {
     }
 
     fn make_blob_track(tape: Address, track_number: TrackNumber, epoch: EpochNumber) -> ReplayableEvent {
-        let blob = BlobInfo {
+        let blob = BlobEncoding {
             size: StorageUnits::mb(2),
             commitment: Hash::new_unique(),
             profile: EncodingProfile::default(),
@@ -423,7 +423,7 @@ mod tests {
                 tape,
                 key: Hash::new_unique(),
                 track_number,
-                kind: TrackKind::Blob as u64,
+                kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
                 size: blob.size,
                 group: GroupIndex::from(4),
@@ -440,7 +440,7 @@ mod tests {
                 tape,
                 key: Hash::new_unique(),
                 track_number,
-                kind: TrackKind::Raw as u64,
+                kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
                 size: StorageUnits::from_bytes(4 * 1024),
                 group: GroupIndex::from(5),
@@ -456,7 +456,7 @@ mod tests {
             tape,
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
             group,
@@ -507,7 +507,7 @@ mod tests {
         let track_info = store.get_track(track).unwrap().unwrap();
         assert_eq!(track_info.tape, tape);
         assert_eq!(track_info.track_number, track_number);
-        assert_eq!(track_info.kind, TrackKind::Blob as u64);
+        assert_eq!(track_info.kind, TrackKind::Coded as u64);
         assert_eq!(track_info.state, TrackState::Certified as u64);
         assert_eq!(track_info.size, StorageUnits::mb(2));
         assert_eq!(track_info.group, GroupIndex::from(4));
@@ -515,7 +515,7 @@ mod tests {
             ReplayableEvent::Track(replay) => {
                 assert_eq!(
                     store.get_track_data(track).unwrap(),
-                    Some(TrackData::Blob(replay.blob.unwrap())),
+                    Some(BlobData::Coded(replay.blob.unwrap())),
                 );
             }
             _ => panic!("expected track event"),
@@ -550,7 +550,7 @@ mod tests {
         let track_info = store.get_track(track).unwrap().unwrap();
         assert_eq!(track_info.tape, tape);
         assert_eq!(track_info.track_number, track_number);
-        assert_eq!(track_info.kind, TrackKind::Raw as u64);
+        assert_eq!(track_info.kind, TrackKind::Inline as u64);
         assert_eq!(track_info.state, TrackState::Certified as u64);
         assert_eq!(track_info.size, StorageUnits::from_bytes(4 * 1024));
 

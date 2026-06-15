@@ -13,7 +13,7 @@ use tape_core::bls::BlsPubkey;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences, Spool};
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
     CompressedTrack, CompressedTrackProof, TrackKind, TrackState,
@@ -37,7 +37,7 @@ struct Fixture {
     rpc: LiteSvmRpc,
     client: Tapedrive<LiteSvmRpc, MemoryApi>,
     tracks: Arc<Mutex<HashMap<Address, CompressedTrack>>>,
-    data: Arc<Mutex<HashMap<Address, TrackData>>>,
+    data: Arc<Mutex<HashMap<Address, BlobData>>>,
 }
 
 fn unexpected_error() -> ApiError {
@@ -66,7 +66,7 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
 }
 
 impl Fixture {
-    fn insert_track(&self, track: CompressedTrack, data: TrackData) -> Address {
+    fn insert_track(&self, track: CompressedTrack, data: BlobData) -> Address {
         let address = track_pda(track.tape, track.track_number).0;
         self.tracks.lock().unwrap().insert(address, track);
         self.data.lock().unwrap().insert(address, data);
@@ -81,7 +81,7 @@ fn setup() -> Fixture {
     let rpc_client = Arc::new(RpcClient::from_rpc(rpc.clone()));
 
     let tracks = Arc::new(Mutex::new(HashMap::<Address, CompressedTrack>::new()));
-    let data = Arc::new(Mutex::new(HashMap::<Address, TrackData>::new()));
+    let data = Arc::new(Mutex::new(HashMap::<Address, BlobData>::new()));
     let proofs = Arc::new(Mutex::new(HashMap::<Address, CompressedTrackProof>::new()));
 
     let api = Arc::new(MemoryApi::new({
@@ -253,19 +253,19 @@ fn make_raw_track(
     key: Hash,
     track_number: u64,
     raw: &[u8],
-) -> (CompressedTrack, TrackData) {
+) -> (CompressedTrack, BlobData) {
     let bytes = raw.to_vec();
     let track = CompressedTrack {
         tape: tape.into(),
         key,
         track_number: TrackNumber(track_number),
-        kind: TrackKind::Raw as u64,
+        kind: TrackKind::Inline as u64,
         state: TrackState::Certified as u64,
         size: StorageUnits::from_bytes(bytes.len() as u64),
         group: GroupIndex(0),
         value_hash: hash::hash(&bytes),
     };
-    (track, TrackData::Raw(bytes))
+    (track, BlobData::Inline(bytes))
 }
 
 #[tokio::test]

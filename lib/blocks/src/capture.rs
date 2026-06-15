@@ -5,7 +5,7 @@ use tape_api::event::{TapeDestroyed, TapeReserved, TrackDeleted, TrackWritten};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
-use tape_core::track::data::TrackDataSlice;
+use tape_core::track::data::BlobDataSlice;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
@@ -310,7 +310,7 @@ fn capture_instruction(
             actor,
             event,
             entry.key(),
-            TrackDataSlice::Raw(bytes_of(entry)),
+            BlobDataSlice::Inline(bytes_of(entry)),
         )?,
         ParsedInstruction::RemoveFromBlacklist { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
@@ -321,7 +321,7 @@ fn capture_instruction(
             actor,
             track_event,
             span.key(),
-            TrackDataSlice::Raw(bytes_of(span)),
+            BlobDataSlice::Inline(bytes_of(span)),
         )?,
 
         // No corresponding ReplayableEvent variant yet — silently drop.
@@ -355,7 +355,7 @@ fn capture_track(
     actor: Option<Address>,
     event: &TrackWritten,
     key: Hash,
-    data: TrackDataSlice<'_>,
+    data: BlobDataSlice<'_>,
 ) -> Result<Captured, ParseError> {
     let meta = data
         .meta()
@@ -389,18 +389,18 @@ fn capture_track(
                 state,
                 epoch: event.epoch,
                 blob: match data {
-                    TrackDataSlice::Raw(_) => None,
-                    TrackDataSlice::Blob(blob) => Some(blob),
+                    BlobDataSlice::Inline(_) => None,
+                    BlobDataSlice::Coded(blob) => Some(blob),
                 },
             }),
         ),
         raw_track: match data {
-            TrackDataSlice::Raw(bytes) => Some(RawTrack {
+            BlobDataSlice::Inline(bytes) => Some(RawTrack {
                 track: event.track,
                 group: event.group,
                 data: bytes.to_vec(),
             }),
-            TrackDataSlice::Blob(_) => None,
+            BlobDataSlice::Coded(_) => None,
         },
     })
 }
@@ -518,8 +518,8 @@ mod tests {
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{BlacklistEntry, NodePreferences};
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::track::data::TrackData;
+    use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
@@ -533,11 +533,11 @@ mod tests {
     use super::{capture_block, CaptureOutput};
     use crate::ParsedInstruction;
 
-    fn blob_info(slices: &[Vec<u8>]) -> BlobInfo {
+    fn blob_encoding(slices: &[Vec<u8>]) -> BlobEncoding {
         let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
-        BlobInfo {
+        BlobEncoding {
             size: StorageUnits::from_bytes(64 * slices.len() as u64),
             commitment,
             profile: EncodingProfile::default(),
@@ -547,15 +547,15 @@ mod tests {
         }
     }
 
-    fn default_blob() -> BlobInfo {
+    fn default_blob() -> BlobEncoding {
         let payload = vec![vec![0xAA; 64]; GROUP_SIZE];
-        blob_info(&payload)
+        blob_encoding(&payload)
     }
 
     fn track_written_event(
         tape: Address,
         key: Hash,
-        value: &TrackData,
+        value: &BlobData,
         track_number: TrackNumber,
         group: GroupIndex,
         epoch: EpochNumber,
@@ -584,7 +584,7 @@ mod tests {
     }
 
     fn blob_track_write_instruction(_track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
-        let value = TrackData::Blob(default_blob());
+        let value = BlobData::Coded(default_blob());
         let key = Hash::new_unique();
         let event = track_written_event(tape, key, &value, TrackNumber(7), GroupIndex(3), epoch);
 
@@ -610,7 +610,7 @@ mod tests {
     }
 
     fn raw_track_write_instruction(_track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
-        let value = TrackData::Raw(vec![0xAB; 4 * 1024]);
+        let value = BlobData::Inline(vec![0xAB; 4 * 1024]);
         let key = Hash::new_unique();
         let event = track_written_event(tape, key, &value, TrackNumber(8), GroupIndex(4), epoch);
 
@@ -630,7 +630,7 @@ mod tests {
         entry: BlacklistEntry,
         epoch: EpochNumber,
     ) -> ParsedInstruction {
-        let value = TrackData::Raw(bytes_of(&entry).to_vec());
+        let value = BlobData::Inline(bytes_of(&entry).to_vec());
         let event = track_written_event(tape, entry.key(), &value, TrackNumber(9), GroupIndex(6), epoch);
 
         ParsedInstruction::AddToBlacklist { node, entry, event }
@@ -801,7 +801,7 @@ mod tests {
                 assert_eq!(track.state.tape, tape);
                 assert_eq!(track.state.track_number, TrackNumber(8));
                 assert_eq!(u64::from(track.state.group), 4);
-                assert_eq!(track.state.kind, TrackKind::Raw as u64);
+                assert_eq!(track.state.kind, TrackKind::Inline as u64);
                 assert_eq!(track.state.state, TrackState::Certified as u64);
                 assert!(track.blob.is_none());
             }
@@ -833,7 +833,7 @@ mod tests {
                 assert_eq!(track.state.track_number, TrackNumber(9));
                 assert_eq!(track.state.key, entry.key());
                 assert_eq!(u64::from(track.state.group), 6);
-                assert_eq!(track.state.kind, TrackKind::Raw as u64);
+                assert_eq!(track.state.kind, TrackKind::Inline as u64);
                 assert_eq!(track.state.state, TrackState::Certified as u64);
                 assert_eq!(
                     track.state.size,

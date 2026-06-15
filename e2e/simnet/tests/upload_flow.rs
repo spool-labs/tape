@@ -103,7 +103,7 @@ async fn upload_flow_inner() {
         .write_raw(&tape_key, hash::hash(b"upload-flow-raw"), &raw_data)
         .await
         .expect("write raw track");
-    assert!(raw_track.is_raw(), "raw write should create a raw track");
+    assert!(raw_track.is_inline(), "raw write should create a raw track");
     assert!(raw_track.is_certified(), "raw track should be certified");
     assert_eq!(raw_track.tape, tape_address, "raw track tape mismatch");
     assert!(
@@ -115,7 +115,7 @@ async fn upload_flow_inner() {
         .write_track(&tape_key, hash::hash(b"upload-flow-blob"), &blob_data)
         .await
         .expect("write blob track");
-    assert!(blob_track.is_blob(), "blob write should create a blob track");
+    assert!(blob_track.is_coded(), "blob write should create a blob track");
     assert!(
         blob_track.is_certified(),
         "blob track should be certified"
@@ -165,17 +165,17 @@ async fn upload_flow_inner() {
         "same tape should contain raw, blob, two stream chunks, and manifest"
     );
     assert_eq!(
-        tracks.iter().filter(|track| track.is_raw()).count(),
+        tracks.iter().filter(|track| track.is_inline()).count(),
         1,
         "expected one raw track on tape"
     );
     assert_eq!(
-        tracks.iter().filter(|track| track.is_blob()).count(),
+        tracks.iter().filter(|track| track.is_coded()).count(),
         4,
         "expected single blob, two stream chunks, and stream manifest"
     );
 
-    for track in tracks.iter().filter(|track| track.is_blob()) {
+    for track in tracks.iter().filter(|track| track.is_coded()) {
         assert!(track.is_certified(), "blob track should be certified");
         assert!(
             track.group.0 < TARGET_GROUPS,

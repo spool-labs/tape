@@ -5,7 +5,7 @@
 use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
-use tape_core::track::blob::BlobInfo;
+use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
 use tape_crypto::address::Address;
@@ -24,7 +24,7 @@ use crate::SnapshotError;
 pub struct BuiltChunk {
     pub group: GroupIndex,
     pub chunk: ChunkNumber,
-    pub blob: BlobInfo,
+    pub blob: BlobEncoding,
     pub slices: [Vec<u8>; GROUP_SIZE],
 }
 
@@ -36,7 +36,7 @@ pub struct SnapshotChunk {
     pub group: GroupIndex,
     pub chunk: ChunkNumber,
     pub track: CompressedTrack,
-    pub blob: BlobInfo,
+    pub blob: BlobEncoding,
     pub slices: [Vec<u8>; GROUP_SIZE],
 }
 
@@ -86,7 +86,7 @@ pub fn encode_snapshot(
                 tape: snapshot_tape,
                 track_number,
                 key: snapshot_chunk_key(epoch, group, chunk),
-                kind: TrackKind::Blob as u64,
+                kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
                 size: built.blob.size,
                 group,
@@ -136,7 +136,7 @@ pub fn encode_chunk(
     let stripe_size = slicer.stripe_size();
     let stripe_count = num_stripes(symbol.len(), stripe_size);
 
-    let blob = BlobInfo {
+    let blob = BlobEncoding {
         size: StorageUnits::from_bytes(symbol.len() as u64),
         commitment,
         profile: slicer.profile(),

@@ -6,7 +6,7 @@ use store::Store;
 use tape_api::program::tapedrive::{blacklist_pda, track_pda};
 use tape_blocks::ParsedInstruction;
 use tape_core::system::{EpochPhase, VoteKind};
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::EpochNumber;
 use tape_crypto::{Address, Hash};
@@ -295,7 +295,7 @@ where
         blacklist: Address,
         track_address: Address,
         track: &CompressedTrack,
-    ) -> Result<Option<TrackData>, NodeError> {
+    ) -> Result<Option<BlobData>, NodeError> {
         let peers = state.group_peers(track.group);
         if peers.is_empty() {
             return Ok(None);

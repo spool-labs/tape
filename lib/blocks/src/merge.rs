@@ -443,7 +443,7 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
-    use tape_core::track::data::TrackData;
+    use tape_core::track::data::BlobData;
     use tape_core::types::{SpoolBitmap, StorageUnits, SpoolIndex, TrackNumber};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
@@ -708,7 +708,7 @@ mod tests {
             RawInstruction::TrackWrite {
                 authority: owner,
                 key: Hash::default(),
-                value: TrackData::Blob(BlobInfo {
+                value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(100),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
@@ -767,7 +767,7 @@ mod tests {
             RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
-                value: TrackData::Blob(BlobInfo {
+                value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(1_024),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
@@ -829,7 +829,7 @@ mod tests {
                 RawInstruction::TrackWrite {
                     authority: Address::new_unique(),
                     key: Hash::default(),
-                    value: TrackData::Blob(BlobInfo {
+                    value: BlobData::Coded(BlobEncoding {
                         size: StorageUnits::mb(1_024),
                         commitment: Hash::default(),
                         profile: EncodingProfile::default(),

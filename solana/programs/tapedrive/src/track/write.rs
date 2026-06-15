@@ -1,15 +1,11 @@
-use tape_solana::*;
 use tape_api::program::prelude::*;
+use tape_core::track::data::track_key;
 
 use crate::error::TapeError;
 use crate::track::helpers::append_track;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let (args, data) = parse_track_write(data)?;
-    let meta = data
-        .meta()
-        .ok_or(TapeError::InvalidCommitment)?;
-
+    let (_, blob) = parse_track_write(data)?;
     let [
         fee_payer_info,
         authority_info,
@@ -19,6 +15,11 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+
+    let meta = blob
+        .data
+        .meta()
+        .ok_or(TapeError::InvalidCommitment)?;
 
     fee_payer_info
         .is_signer()?
@@ -30,6 +31,8 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     let system = system_info
         .is_system()?
         .as_account::<System>(&tapedrive::ID)?;
+
+    let key = track_key(blob.name, &blob.data);
 
     let (tape_address, _) = tape_pda((*authority_info.key).into());
 
@@ -47,7 +50,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         tape,
         slot_hashes_info,
         tape_address,
-        args.key,
+        key,
         meta
     )?;
 
@@ -57,14 +60,15 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
-    use tape_core::track::TRACK_TREE_HEIGHT;
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use solana_sdk::account::Account;
-    use tape_crypto::hash::hashv;
-    use tape_crypto::merkle::{MerkleTree, root_from_leaf_hashes};
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::track::archive::TrackArchive;
+    use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::data::{BlobData, BlobInfo, ContentHint};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::track::TRACK_TREE_HEIGHT;
+    use tape_crypto::hash::{hash, hashv};
+    use tape_crypto::merkle::{root_from_leaf_hashes, MerkleTree};
     use tape_test::*;
 
     fn slot_hashes_account() -> (Pubkey, Account) {
@@ -80,20 +84,20 @@ mod tests {
     }
 
     #[test]
-    fn test_register_track() {
+    fn register_track() {
         use tape_core::encoding::EncodingProfile;
 
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let storage_units = StorageUnits::mb(100);
 
-        let bucket_hash = Hash::new_unique();
+        let name = b"photos/cat.jpg".to_vec();
+        let key = hash(&name);
         let profile = EncodingProfile::clay_default();
 
         let leaves = [Hash::default(); GROUP_SIZE];
-        // Compute valid commitment from leaves
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
-        let blob = BlobInfo {
+        let blob = BlobEncoding {
             size: storage_units,
             commitment,
             profile,
@@ -102,9 +106,14 @@ mod tests {
             leaves,
         };
 
-        let instruction = build_track_write_blob_ix(fee_payer.into(), authority.into(),
-            bucket_hash,
-            blob,
+        let instruction = build_track_write_ix(
+            fee_payer.into(),
+            authority.into(),
+            BlobInfo {
+                name,
+                hint: ContentHint::Jpeg,
+                data: BlobData::Coded(blob),
+            },
         )
         .expect("valid blob write instruction");
 
@@ -147,12 +156,16 @@ mod tests {
             &tape.id.pack(),
             &track_number.pack(),
         ]);
-        let group = GroupIndex(u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % system.live_group_count);
+
+        let group = GroupIndex(
+            u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % system.live_group_count,
+        );
+
         let track = CompressedTrack {
             tape: tape_address,
-            key: bucket_hash,
+            key,
             track_number,
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
             size: storage_units,
             group,
@@ -181,9 +194,12 @@ mod tests {
                             num_tracks: 1,
                         },
                         ..Tape::zeroed()
-                    }.pack().as_ref()
-                ).build(),
-            ]
+                    }
+                    .pack()
+                    .as_ref(),
+                )
+                .build(),
+            ],
         );
     }
 }

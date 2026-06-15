@@ -38,7 +38,7 @@ pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) 
     }
 
     let proof = args.track;
-    if proof.state.tape != blacklist_address || !proof.state.is_raw() {
+    if proof.state.tape != blacklist_address || !proof.state.is_inline() {
         return Err(ProgramError::InvalidInstructionData);
     }
 
@@ -73,7 +73,7 @@ mod tests {
             tape: blacklist_address,
             key: entry.key(),
             track_number,
-            kind: TrackKind::Raw as u64,
+            kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(entry_size),
             group: GroupIndex(7),

@@ -32,7 +32,7 @@ mod tests {
         ReplayRecord, ReplayTrack, ReplayableEvent, SnapshotEntry, SnapshotLog,
     };
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
@@ -51,8 +51,8 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    fn blob() -> BlobInfo {
-        BlobInfo {
+    fn blob() -> BlobEncoding {
+        BlobEncoding {
             size: StorageUnits::mb(1),
             commitment: Hash::new_unique(),
             profile: EncodingProfile::default(),
@@ -81,7 +81,7 @@ mod tests {
                 tape,
                 key: Hash::new_unique(),
                 track_number,
-                kind: TrackKind::Blob as u64,
+                kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
                 size: blob.size,
                 group: GroupIndex::from(4),

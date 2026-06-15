@@ -24,7 +24,7 @@ pub fn resolve_rate(
         || track.state.key != span.key()
         || track.state.size != StorageUnits::from_bytes(core::mem::size_of::<RateSpan>() as u64)
         || track.state.value_hash != span.value_hash()
-        || !track.state.is_raw()
+        || !track.state.is_inline()
         || !track.state.is_certified()
     {
         return Err(ProgramError::InvalidInstructionData);

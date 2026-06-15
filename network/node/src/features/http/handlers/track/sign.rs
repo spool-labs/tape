@@ -39,7 +39,7 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .apply_to_track(track_key, in_store)
         .ok_or(RouteError::NotFound)?;
 
-    if !track.is_blob() {
+    if !track.is_coded() {
         return Err(RouteError::BadRequest(
             "raw tracks do not require certification".into(),
         ));

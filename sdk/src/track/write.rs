@@ -15,10 +15,10 @@ use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{
-    BlobInfo, CompressedTrack, EncodingProfile, EpochNumber, GroupIndex, StorageUnits,
+    BlobEncoding, CompressedTrack, EncodingProfile, EpochNumber, GroupIndex, StorageUnits,
     StripeCount, TrackNumber,
 };
-use tape_core::track::data::TrackDataSlice;
+use tape_core::track::data::BlobDataSlice;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
@@ -207,7 +207,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 
     let written = fetch_track_written_event(client, &signature).await?;
     let track_address: Address = written.track.into();
-    let meta = TrackDataSlice::Raw(raw).meta().unwrap();
+    let meta = BlobDataSlice::Inline(raw).meta().unwrap();
     let track = CompressedTrack {
         tape: written.tape,
         track_number: written.track_number,
@@ -258,7 +258,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
-    let blob = BlobInfo {
+    let blob = BlobEncoding {
         size: plan.storage_units,
         commitment: plan.commitment_hash,
         profile: plan.profile,
@@ -286,7 +286,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
 
     let written = fetch_track_written_event(client, &signature).await?;
     let track_address: Address = written.track.into();
-    let meta = TrackDataSlice::Blob(blob).meta()
+    let meta = BlobDataSlice::Coded(blob).meta()
         .ok_or(TapedriveError::InvalidArgument("invalid blob commitment".into()))?;
     let track = CompressedTrack {
         tape: written.tape,

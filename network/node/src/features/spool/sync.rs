@@ -4,12 +4,12 @@ use tracing::warn;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_core::types::StorageUnits;
-use tape_core::track::blob::BlobInfo;
+use tape_core::track::blob::BlobEncoding;
 use tape_crypto::address::Address;
 use tape_protocol::{Api, ApiError};
 use tape_protocol::api::ops::{GetTrackDataReq, SyncSlicesReq};
@@ -218,13 +218,13 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         };
 
-        if !track_info.is_blob() {
+        if !track_info.is_coded() {
             warn!(spool = %spool, track = %track_addr, "received synced slice for raw track, skipping");
             continue;
         }
 
         let track_data = match ctx.store.get_track_data(track_addr) {
-            Ok(Some(TrackData::Blob(data))) => data,
+            Ok(Some(BlobData::Coded(data))) => data,
             Ok(Some(_)) => {
                 warn!(spool = %spool, track = %track_addr, "track data is not a blob, skipping");
                 continue;
@@ -266,7 +266,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn verify_slice(
     spool: SpoolIndex,
     track_info: &CompressedTrack,
-    track_data: &BlobInfo,
+    track_data: &BlobEncoding,
     data: &[u8],
 ) -> bool {
     let Some(position) = track_info.group.position_of(spool) else {
@@ -376,7 +376,7 @@ async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockcha
     track: Address,
     peers: &[Address],
     token: &CancellationToken,
-) -> Result<TrackData, ()> {
+) -> Result<BlobData, ()> {
     for &node_id in peers {
         let req = GetTrackDataReq { track: track.into() };
 
@@ -465,13 +465,13 @@ mod tests {
         slicer.encode(&vec![fill; size]).unwrap()
     }
 
-    fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobInfo {
+    fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobEncoding {
         let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
         let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
-        BlobInfo {
+        BlobEncoding {
             size: StorageUnits::from_bytes(size),
             commitment,
             profile: EncodingProfile::clay_default(),
@@ -492,7 +492,7 @@ mod tests {
             tape: Address::from([0; 32]),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size),
             group: GroupIndex::containing(SPOOL),
@@ -500,7 +500,7 @@ mod tests {
         }
     }
 
-    fn local_slice(fill: u8, size: usize) -> (CompressedTrack, BlobInfo, Vec<u8>) {
+    fn local_slice(fill: u8, size: usize) -> (CompressedTrack, BlobEncoding, Vec<u8>) {
         let slices = clay_slices(fill, size);
         let track_info = clay_track(size as u64, &slices);
         let blob = clay_blob(size as u64, &slices);
@@ -538,7 +538,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
-        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -575,7 +575,7 @@ mod tests {
             .unwrap();
 
         ctx.store.put_track(a, track_info).unwrap();
-        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_slice(SPOOL, a, stale_data).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -626,7 +626,7 @@ mod tests {
         ctx.store
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
-        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -661,7 +661,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
-        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -709,8 +709,8 @@ mod tests {
             .unwrap();
         ctx.store.put_track(a1, track_info1).unwrap();
         ctx.store.put_track(a2, track_info2).unwrap();
-        ctx.store.put_track_data(a1, TrackData::Blob(blob1)).unwrap();
-        ctx.store.put_track_data(a2, TrackData::Blob(blob2)).unwrap();
+        ctx.store.put_track_data(a1, BlobData::Coded(blob1)).unwrap();
+        ctx.store.put_track_data(a2, BlobData::Coded(blob2)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert!(matches!(result, SyncResult::Done { .. }));

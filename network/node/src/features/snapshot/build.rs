@@ -15,8 +15,8 @@ use tape_api::state::Tape;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::spooler::GroupIndex;
-use tape_core::track::blob::BlobInfo;
-use tape_core::track::data::TrackData;
+use tape_core::track::blob::BlobEncoding;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber};
 use tape_crypto::hash::hash as hash_bytes;
@@ -49,7 +49,7 @@ pub struct SnapshotTrack {
     pub group: GroupIndex,
     pub chunk: ChunkNumber,
     pub track: CompressedTrack,
-    pub blob: BlobInfo,
+    pub blob: BlobEncoding,
 }
 
 /// Build the snapshot for one epoch and persist this node's local slice
@@ -204,7 +204,7 @@ where
             .put_track(track_address, track.track)
             .map_err(store_err("put_track"))?;
         ctx.store
-            .put_track_data(track_address, TrackData::Blob(track.blob))
+            .put_track_data(track_address, BlobData::Coded(track.blob))
             .map_err(store_err("put_track_data"))?;
         ctx.store
             .put_object_info(

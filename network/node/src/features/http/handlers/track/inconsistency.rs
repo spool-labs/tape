@@ -10,7 +10,7 @@ use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::cert::track::TrackInvalidateMessage;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BitmapRead, EpochNumber};
 use tape_crypto::address::Address;
@@ -47,7 +47,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
-    if !track_info.is_blob() {
+    if !track_info.is_coded() {
         return Err(RouteError::BadRequest("raw tracks cannot be invalidated".into()));
     }
 
@@ -57,7 +57,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_track_data(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
-    let TrackData::Blob(blob) = track_data else {
+    let BlobData::Coded(blob) = track_data else {
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
@@ -165,7 +165,7 @@ mod tests {
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
-    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
@@ -196,7 +196,7 @@ mod tests {
 
         let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
-        let blob = BlobInfo {
+        let blob = BlobEncoding {
             size: StorageUnits::from_bytes(1_537),
             commitment,
             profile: EncodingProfile::basic_default(),
@@ -227,7 +227,7 @@ mod tests {
             tape: snapshot_tape,
             key: snapshot_chunk_key(epoch, group, ChunkNumber(0)),
             track_number,
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
             group: group,
@@ -239,7 +239,7 @@ mod tests {
             .expect("seed track");
 
         ctx.store
-            .put_track_data(track_address, TrackData::Blob(blob))
+            .put_track_data(track_address, BlobData::Coded(blob))
             .expect("seed track data");
 
         ctx.store

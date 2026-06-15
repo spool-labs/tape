@@ -31,7 +31,7 @@ pub fn validate_snapshot_track_list(
         if track.tape != tape {
             return Err(SnapshotError::WrongTape { epoch: epoch.0 });
         }
-        if !track.is_blob() {
+        if !track.is_coded() {
             return Err(SnapshotError::NonBlobTrack { epoch: epoch.0 });
         }
     }

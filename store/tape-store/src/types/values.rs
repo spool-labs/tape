@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
-use tape_core::track::blob::BlobInfo;
+use tape_core::track::blob::BlobEncoding;
 use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -28,7 +28,7 @@ pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
 /// verify against `blob.leaves[position]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct SnapshotArtifact {
-    pub blob: BlobInfo,
+    pub blob: BlobEncoding,
     pub spool_index: SpoolIndex,
     #[wincode(with = "SliceBytes")]
     pub slice: Vec<u8>,
@@ -98,7 +98,7 @@ mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
-    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::Hash;
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_track_blob_data_roundtrip() {
-        let info = BlobInfo {
+        let info = BlobEncoding {
             size: StorageUnits(512),
             commitment: Hash::from([3u8; 32]),
             profile: EncodingProfile::basic_default(),
@@ -156,14 +156,14 @@ mod tests {
         };
 
         let bytes = wincode::serialize(&info).unwrap();
-        let decoded: BlobInfo = wincode::deserialize(&bytes).unwrap();
+        let decoded: BlobEncoding = wincode::deserialize(&bytes).unwrap();
         assert_eq!(info, decoded);
     }
 
     #[test]
     fn test_track_blob_commitment_root() {
         let leaves = [Hash::default(); GROUP_SIZE];
-        let info = BlobInfo {
+        let info = BlobEncoding {
             size: StorageUnits(1024),
             commitment: root_from_leaf_hashes::<{ SLICE_TREE_HEIGHT }>(&leaves),
             profile: EncodingProfile::clay_default(),

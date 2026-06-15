@@ -1,7 +1,7 @@
 //! Request/response types for peer operations.
 
 use tape_core::bls::BlsSignature;
-use tape_core::prelude::{CompressedTrack, EpochNumber, SpoolIndex, TrackData, TrackNumber};
+use tape_core::prelude::{CompressedTrack, EpochNumber, SpoolIndex, BlobData, TrackNumber};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
@@ -94,7 +94,7 @@ pub struct GetTrackDataReq {
 
 #[derive(Clone, Debug)]
 pub struct GetTrackDataRes {
-    pub data: TrackData,
+    pub data: BlobData,
 }
 
 #[derive(Clone, Debug)]

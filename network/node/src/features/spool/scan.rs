@@ -77,7 +77,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
 
             // Raw tracks have no slice semantics and should never enter repair.
-            if !track_info.is_blob() {
+            if !track_info.is_coded() {
                 continue;
             }
 
@@ -167,7 +167,7 @@ mod tests {
             tape: Address::from([0; 32]),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
             group: group,

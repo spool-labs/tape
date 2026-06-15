@@ -83,7 +83,7 @@ async fn spool_recovery_inner() {
         .await
         .expect("upload blob");
 
-    assert!(track.is_blob(), "uploaded track should be a blob track");
+    assert!(track.is_coded(), "uploaded track should be a blob track");
     assert!(
         track.is_certified(),
         "uploaded blob track should be certified"

@@ -9,8 +9,8 @@ use thiserror::Error;
 use store::Store;
 use tape_core::encoding::EncodingType;
 use tape_core::spooler::GroupIndex;
-use tape_core::track::blob::BlobInfo;
-use tape_core::track::data::TrackData;
+use tape_core::track::blob::BlobEncoding;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Address;
@@ -57,7 +57,7 @@ pub struct AssignmentGroupWeights {
 ///   - skip invalidated/deleted/uncertified/current-epoch tracks;
 ///   - skip tapes with end_epoch <= target_epoch;
 ///   - return zero for empty/new groups;
-///   - derive blob per-spool footprint from BlobInfo encoding metadata, not total logical track size.
+///   - derive blob per-spool footprint from BlobEncoding encoding metadata, not total logical track size.
 pub fn group_sizes<Db: Store>(
     store: &TapeStore<Db>,
     voting_epoch: EpochNumber,
@@ -200,16 +200,16 @@ fn track_footprint<Db: Store>(
     track: Address,
     metadata: &CompressedTrack,
 ) -> Result<StorageUnits, AssignmentSizeError> {
-    if metadata.is_raw() {
+    if metadata.is_inline() {
         return Ok(metadata.size);
     }
 
-    if !metadata.is_blob() {
+    if !metadata.is_coded() {
         return Err(invalid_track(track, "unknown track kind"));
     }
 
     let data = store.get_track_data(track).map_err(store_error)?;
-    let Some(TrackData::Blob(blob)) = data else {
+    let Some(BlobData::Coded(blob)) = data else {
         return Err(invalid_track(track, "missing blob metadata"));
     };
 
@@ -226,7 +226,7 @@ fn track_footprint<Db: Store>(
     blob_footprint(track, blob)
 }
 
-fn blob_footprint(track: Address, blob: BlobInfo) -> Result<StorageUnits, AssignmentSizeError> {
+fn blob_footprint(track: Address, blob: BlobEncoding) -> Result<StorageUnits, AssignmentSizeError> {
     let stripe_size = usize::try_from(blob.stripe_size.as_u64())
         .map_err(|_| invalid_track(track, "stripe size overflows usize"))?;
 
@@ -321,7 +321,7 @@ mod tests {
             tape,
             track_number: TrackNumber(0),
             key: Hash::new_unique(),
-            kind: TrackKind::Raw as u64,
+            kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
             size,
             group,

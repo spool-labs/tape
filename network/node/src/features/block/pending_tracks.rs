@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
 
 use tape_blocks::ParsedInstruction;
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::{CompressedTrack, TrackState};
 use tape_core::types::SlotNumber;
 use tape_crypto::address::Address;
@@ -29,11 +29,11 @@ use crate::features::block::ingestor::ParsedBlock;
 enum EventKind {
     Register {
         state: CompressedTrack,
-        /// Track payload — `TrackData::Blob(blob_info)` for blob tracks
+        /// Track payload — `BlobData::Coded(blob_encoding)` for blob tracks
         /// (matches what `store.get_track_data` returns) or
-        /// `TrackData::Raw(bytes)` for inline raw tracks. Read paths consult
+        /// `BlobData::Inline(bytes)` for inline raw tracks. Read paths consult
         /// this via [`PendingTracks::track_data`].
-        data: TrackData,
+        data: BlobData,
     },
     Certify,
 }
@@ -72,7 +72,7 @@ impl PendingTracks {
         slot: SlotNumber,
         track: Address,
         state: CompressedTrack,
-        data: TrackData,
+        data: BlobData,
     ) {
         self.append(
             track,
@@ -174,7 +174,7 @@ impl PendingTracks {
     /// event for `track` is currently held. Disk state is not consulted —
     /// callers fall back to `store.get_track_data` themselves when this
     /// returns `None`.
-    pub fn track_data(&self, track: Address) -> Option<TrackData> {
+    pub fn track_data(&self, track: Address) -> Option<BlobData> {
         let inner = self.inner.read().expect("pending-tracks lock poisoned");
         let events = inner.events_by_track.get(&track)?;
         for event in events.iter().rev() {
@@ -247,7 +247,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::blob::BlobInfo;
+    use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::TrackKind;
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
@@ -259,7 +259,7 @@ mod tests {
             tape,
             track_number: TrackNumber(0),
             key: Hash::new_unique(),
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
             size: StorageUnits::from_bytes(1024),
             group: GroupIndex::from(0),
@@ -267,8 +267,8 @@ mod tests {
         }
     }
 
-    fn sample_blob() -> BlobInfo {
-        BlobInfo {
+    fn sample_blob() -> BlobEncoding {
+        BlobEncoding {
             size: StorageUnits::from_bytes(1024),
             commitment: Hash::default(),
             profile: EncodingProfile::default(),
@@ -289,7 +289,7 @@ mod tests {
             SlotNumber(10),
             track,
             state,
-            TrackData::Blob(sample_blob()),
+            BlobData::Coded(sample_blob()),
         );
 
         let pending_view = pending.apply_to_track(track, None);
@@ -303,7 +303,7 @@ mod tests {
         let track = Address::new_unique();
         let state = registered_blob(tape);
 
-        pending.apply_register(SlotNumber(10), track, state, TrackData::Blob(sample_blob()));
+        pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
         pending.apply_certify(SlotNumber(11), track);
 
         let pending_view = pending
@@ -347,7 +347,7 @@ mod tests {
         let track = Address::new_unique();
         let state = registered_blob(tape);
 
-        pending.apply_register(SlotNumber(10), track, state, TrackData::Blob(sample_blob()));
+        pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
         pending.drop_slot(SlotNumber(10));
 
         assert!(pending.apply_to_track(track, None).is_none());
@@ -361,7 +361,7 @@ mod tests {
         let track = Address::new_unique();
         let state = registered_blob(tape);
 
-        pending.apply_register(SlotNumber(10), track, state, TrackData::Blob(sample_blob()));
+        pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
         pending.apply_certify(SlotNumber(11), track);
         pending.drop_slot(SlotNumber(10));
 
@@ -380,7 +380,7 @@ mod tests {
         let track = Address::new_unique();
         let state = registered_blob(tape);
 
-        pending.apply_register(SlotNumber(10), track, state, TrackData::Blob(sample_blob()));
+        pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
         pending.drop_slot(SlotNumber(99));
 
         assert_eq!(pending.apply_to_track(track, None), Some(state));
@@ -394,11 +394,11 @@ mod tests {
         let state = registered_blob(tape);
         let blob = sample_blob();
 
-        pending.apply_register(SlotNumber(10), track, state, TrackData::Blob(blob));
+        pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(blob));
 
         assert_eq!(
             pending.track_data(track),
-            Some(TrackData::Blob(blob))
+            Some(BlobData::Coded(blob))
         );
     }
 
@@ -408,7 +408,7 @@ mod tests {
         let tape = Address::new_unique();
         let track = Address::new_unique();
         let mut state = registered_blob(tape);
-        state.kind = TrackKind::Raw as u64;
+        state.kind = TrackKind::Inline as u64;
         state.state = TrackState::Certified as u64;
         let bytes = vec![0xAB; 16];
 
@@ -416,12 +416,12 @@ mod tests {
             SlotNumber(10),
             track,
             state,
-            TrackData::Raw(bytes.clone()),
+            BlobData::Inline(bytes.clone()),
         );
 
         assert_eq!(
             pending.track_data(track),
-            Some(TrackData::Raw(bytes))
+            Some(BlobData::Inline(bytes))
         );
     }
 
@@ -436,7 +436,7 @@ mod tests {
             SlotNumber(10),
             track,
             state,
-            TrackData::Blob(sample_blob()),
+            BlobData::Coded(sample_blob()),
         );
         pending.drop_slot(SlotNumber(10));
 
@@ -454,12 +454,12 @@ mod tests {
         let mut other = registered_blob(other_tape);
         other.track_number = TrackNumber(2);
 
-        pending.apply_register(SlotNumber(10), track, state, TrackData::Blob(sample_blob()));
+        pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
         pending.apply_register(
             SlotNumber(11),
             other_track,
             other,
-            TrackData::Blob(sample_blob()),
+            BlobData::Coded(sample_blob()),
         );
         pending.apply_certify(SlotNumber(12), track);
 

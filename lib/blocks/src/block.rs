@@ -302,8 +302,8 @@ mod tests {
     use tape_api::program::tapedrive::{self, system_pda, tape_pda};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::track::data::TrackData;
+    use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::data::BlobData;
     use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
@@ -387,7 +387,7 @@ mod tests {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
-                value: TrackData::Blob(BlobInfo {
+                value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
@@ -413,7 +413,7 @@ mod tests {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
-                value: TrackData::Blob(BlobInfo {
+                value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
                     profile: EncodingProfile::default(),
@@ -645,14 +645,14 @@ mod tests {
         match &instructions[0] {
             RawInstruction::TrackWrite { key, value, .. } => {
                 assert_eq!(*key, inner_key);
-                assert!(matches!(value, TrackData::Raw(bytes) if bytes == b"inner raw"));
+                assert!(matches!(value, BlobData::Inline(bytes) if bytes == b"inner raw"));
             }
             _ => panic!("expected CPI TrackWrite first"),
         }
         match &instructions[1] {
             RawInstruction::TrackWrite { key, value, .. } => {
                 assert_eq!(*key, outer_key);
-                assert!(matches!(value, TrackData::Raw(bytes) if bytes == b"outer raw"));
+                assert!(matches!(value, BlobData::Inline(bytes) if bytes == b"outer raw"));
             }
             _ => panic!("expected top-level TrackWrite second"),
         }
@@ -773,7 +773,7 @@ mod tests {
         match &instructions[0] {
             RawInstruction::TrackWrite { key, value, .. } => {
                 assert_eq!(*key, inner_key);
-                assert!(matches!(value, TrackData::Raw(bytes) if bytes == b"inner alt"));
+                assert!(matches!(value, BlobData::Inline(bytes) if bytes == b"inner alt"));
             }
             other => panic!("expected inner TrackWrite, got {other:?}"),
         }

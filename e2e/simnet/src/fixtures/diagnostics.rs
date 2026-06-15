@@ -669,7 +669,7 @@ mod tests {
                 tape,
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
-                kind: TrackKind::Raw as u64,
+                kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
                 size: StorageUnits::from_bytes(64),
                 group: GroupIndex::from(0),

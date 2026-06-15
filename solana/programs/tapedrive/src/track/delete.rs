@@ -71,7 +71,7 @@ mod tests {
             tape: tape_address,
             key: bucket_hash,
             track_number,
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size,
             group: GroupIndex(7),

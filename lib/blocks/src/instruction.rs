@@ -12,7 +12,7 @@ use bs58::decode as bs58_decode;
 use tape_core::spooler::GroupIndex;
 use tape_core::staking::RateSpan;
 use tape_core::system::BlacklistEntry;
-use tape_core::track::data::{TrackData, TrackDataSlice};
+use tape_core::track::data::{track_key, BlobData};
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::EpochNumber;
 use tape_core::types::coin::{Coin, TAPE};
@@ -94,7 +94,7 @@ pub enum RawInstruction {
     TrackWrite {
         authority: Address,
         key: Hash,
-        value: TrackData,
+        value: BlobData,
     },
     DeleteTrack {
         owner: Address,
@@ -232,7 +232,7 @@ pub enum ParsedInstruction {
         authority: Address,
         track: Address,
         key: Hash,
-        value: TrackData,
+        value: BlobData,
         event: TrackWritten,
     },
     DeleteTrack {
@@ -428,18 +428,16 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::TrackWrite => {
             let authority = get_account(1)?;
-            let (header, payload) = ix::parse_track_write(&ix_data[1..])
+            let (_header, blob) = ix::parse_track_write(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
-            let value = match payload {
-                TrackDataSlice::Raw(bytes) => TrackData::Raw(bytes.to_vec()),
-                TrackDataSlice::Blob(blob) => TrackData::Blob(blob),
-            };
+            let key = track_key(blob.name, &blob.data);
+            let value = blob.data.to_owned();
             value
                 .meta()
                 .ok_or(ParseError::Deserialization("invalid track commitment".to_string()))?;
             Ok(Some(RawInstruction::TrackWrite {
                 authority,
-                key: header.key,
+                key,
                 value,
             }))
         }

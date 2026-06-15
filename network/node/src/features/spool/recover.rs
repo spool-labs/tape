@@ -6,7 +6,7 @@ use store::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
-use tape_core::track::data::TrackData;
+use tape_core::track::data::BlobData;
 use tape_core::types::StorageUnits;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
@@ -148,14 +148,14 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             };
 
-            if !track_info.is_blob() {
+            if !track_info.is_coded() {
                 warn!(spool = %spool, track = %track_addr, "non-blob track in recovery queue");
                 continue;
             }
 
             let track_data = match ctx.store.get_track_data(track_addr) {
-                Ok(Some(TrackData::Blob(info))) => info,
-                Ok(Some(TrackData::Raw(_))) => {
+                Ok(Some(BlobData::Coded(info))) => info,
+                Ok(Some(BlobData::Inline(_))) => {
                     warn!(spool = %spool, track = %track_addr, "blob track has raw track_data, keeping queued");
                     continue;
                 }
@@ -449,8 +449,8 @@ mod tests {
     use tape_core::erasure::SLICE_TREE_HEIGHT;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::track::blob::BlobInfo;
-    use tape_core::track::data::TrackData;
+    use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
@@ -485,13 +485,13 @@ mod tests {
             .ctx_for(SPOOL.as_usize())
     }
 
-    fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobInfo {
+    fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobEncoding {
         let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
         let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
-        BlobInfo {
+        BlobEncoding {
             size: StorageUnits::from_bytes(size),
             commitment,
             profile: EncodingProfile::clay_default(),
@@ -507,7 +507,7 @@ mod tests {
             tape: Address::from([0; 32]),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
-            kind: TrackKind::Blob as u64,
+            kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(size),
             group: GroupIndex::containing(SPOOL),
@@ -593,7 +593,7 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
-        ctx.store.put_track_data(track, TrackData::Blob(track_blob.clone())).unwrap();
+        ctx.store.put_track_data(track, BlobData::Coded(track_blob.clone())).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
@@ -621,7 +621,7 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
-        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
@@ -648,7 +648,7 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
-        ctx.store.put_track_data(a, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
         ctx.store
             .put_object_info(
                 a,
@@ -708,7 +708,7 @@ mod tests {
 
         ctx.store.set_spool_state(SPOOL, state).unwrap();
         ctx.store.put_track(track, track_info).unwrap();
-        ctx.store.put_track_data(track, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
@@ -808,7 +808,7 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
-        ctx.store.put_track_data(track, TrackData::Blob(track_blob)).unwrap();
+        ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 

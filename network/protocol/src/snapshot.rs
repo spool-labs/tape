@@ -15,8 +15,8 @@ use tape_api::program::tapedrive::track_pda;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::archive::TrackArchive;
-use tape_core::track::blob::BlobInfo;
-use tape_core::track::data::TrackData;
+use tape_core::track::blob::BlobEncoding;
+use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ChunkNumber, EpochNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
@@ -218,7 +218,7 @@ async fn fetch_verified_slices<A: Api>(
     peers: &[(SpoolIndex, Address)],
     group: GroupIndex,
     track: Address,
-    blob: &BlobInfo,
+    blob: &BlobEncoding,
     cancel: &CancellationToken,
 ) -> Result<Vec<(usize, Vec<u8>)>, SnapshotReaderError> {
     let mut out: Vec<(usize, Vec<u8>)> = Vec::with_capacity(K_INNER);
@@ -256,12 +256,12 @@ async fn fetch_blob<A: Api>(
     api: &A,
     peers: &[(SpoolIndex, Address)],
     track: Address,
-) -> Result<BlobInfo, SnapshotReaderError> {
+) -> Result<BlobEncoding, SnapshotReaderError> {
     let mut last_error: Option<SnapshotReaderError> = None;
     for (_, peer) in peers {
         match api.get_track_data(*peer, &GetTrackDataReq { track }).await {
             Ok(res) => match res.data {
-                TrackData::Blob(blob) => return Ok(blob),
+                BlobData::Coded(blob) => return Ok(blob),
                 _ => return Err(SnapshotReaderError::NonBlobTrackData(track)),
             },
             Err(error) => last_error = Some(SnapshotReaderError::Transport(error)),

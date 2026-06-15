@@ -26,7 +26,7 @@ use wincode::{
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize))]
-pub struct BlobInfo {
+pub struct BlobEncoding {
     /// Original unencoded data size in bytes.
     pub size: StorageUnits,
 
@@ -46,18 +46,18 @@ pub struct BlobInfo {
     pub leaves: [Hash; GROUP_SIZE],
 }
 
-pub type PackedBlobInfo = [u8; size_of::<BlobInfo>()];
+pub type PackedBlobEncoding = [u8; size_of::<BlobEncoding>()];
 
-impl BlobInfo {
+impl BlobEncoding {
     #[inline(always)]
-    pub fn pack(&self) -> PackedBlobInfo {
+    pub fn pack(&self) -> PackedBlobEncoding {
         let mut out = [0u8; size_of::<Self>()];
         out.copy_from_slice(bytemuck::bytes_of(self));
         out
     }
 
     #[inline(always)]
-    pub fn unpack(data: PackedBlobInfo) -> Self {
+    pub fn unpack(data: PackedBlobEncoding) -> Self {
         let mut value = Self::zeroed();
         bytemuck::bytes_of_mut(&mut value).copy_from_slice(&data);
         value
@@ -85,7 +85,7 @@ impl BlobInfo {
 }
 
 #[cfg(feature = "wincode")]
-impl SchemaWrite for BlobInfo {
+impl SchemaWrite for BlobEncoding {
     type Src = Self;
 
     fn size_of(_src: &Self::Src) -> WriteResult<usize> {
@@ -99,13 +99,13 @@ impl SchemaWrite for BlobInfo {
 }
 
 #[cfg(feature = "wincode")]
-impl<'de> SchemaRead<'de> for BlobInfo {
+impl<'de> SchemaRead<'de> for BlobEncoding {
     type Dst = Self;
 
     fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
-        // SAFETY: The serialized representation is exactly `PackedBlobInfo` bytes for this
+        // SAFETY: The serialized representation is exactly `PackedBlobEncoding` bytes for this
         // pod-compatible type.
-        let packed: PackedBlobInfo = unsafe { reader.get_t()? };
+        let packed: PackedBlobEncoding = unsafe { reader.get_t()? };
         dst.write(Self::unpack(packed));
         Ok(())
     }
@@ -116,8 +116,8 @@ mod tests {
     use super::*;
     use crate::encoding::EncodingProfile;
 
-    fn sample_blob_info() -> BlobInfo {
-        BlobInfo {
+    fn sample_blob_encoding() -> BlobEncoding {
+        BlobEncoding {
             size: StorageUnits::from_bytes(512),
             commitment: Hash::from([0x22; 32]),
             profile: EncodingProfile::basic_default(),
@@ -129,18 +129,18 @@ mod tests {
 
     #[cfg(feature = "wincode")]
     #[test]
-    fn blob_info_wincode_roundtrip() {
-        let blob = sample_blob_info();
+    fn encoding_wincode() {
+        let blob = sample_blob_encoding();
         let bytes = wincode::serialize(&blob).expect("serialize");
-        let recovered: BlobInfo = wincode::deserialize(&bytes).expect("deserialize");
+        let recovered: BlobEncoding = wincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(recovered, blob);
     }
 
     #[test]
-    fn blob_info_pack_roundtrip_uses_domain_types() {
-        let blob = sample_blob_info();
+    fn encoding_pack() {
+        let blob = sample_blob_encoding();
         let packed = blob.pack();
-        let recovered = BlobInfo::unpack(packed);
+        let recovered = BlobEncoding::unpack(packed);
 
         assert_eq!(recovered.stripe_size, StorageUnits::from_bytes(64));
         assert_eq!(recovered.stripe_count, StripeCount(2));

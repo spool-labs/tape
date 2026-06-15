@@ -206,7 +206,7 @@ mod tests {
             tape: history_address,
             key: span.key(),
             track_number: TrackNumber(0),
-            kind: TrackKind::Raw as u64,
+            kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(core::mem::size_of::<RateSpan>() as u64),
             group: GroupIndex(0),

@@ -98,7 +98,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let span_bytes = bytes_of(&closing_span);
     let meta = TrackMeta {
-        kind: TrackKind::Raw,
+        kind: TrackKind::Inline,
         state: TrackState::Certified,
         size: StorageUnits::from_bytes(span_bytes.len() as u64),
         value_hash: closing_span.value_hash(),

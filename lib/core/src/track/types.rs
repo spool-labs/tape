@@ -27,8 +27,8 @@ pub const TRACK_LEAF_V1: &[u8; 8] = b"TRACK_V1";
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum TrackKind {
-    Raw = 0,
-    Blob,
+    Inline = 0,
+    Coded,
 }
 
 #[repr(u64)]
@@ -65,13 +65,13 @@ impl CompressedTrack {
     }
 
     #[inline(always)]
-    pub fn is_raw(&self) -> bool {
-        matches!(self.kind_enum(), Some(TrackKind::Raw))
+    pub fn is_inline(&self) -> bool {
+        matches!(self.kind_enum(), Some(TrackKind::Inline))
     }
 
     #[inline(always)]
-    pub fn is_blob(&self) -> bool {
-        matches!(self.kind_enum(), Some(TrackKind::Blob))
+    pub fn is_coded(&self) -> bool {
+        matches!(self.kind_enum(), Some(TrackKind::Coded))
     }
 
     #[inline(always)]
