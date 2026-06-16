@@ -27,6 +27,7 @@ use tape_store::ops::{ObjectListOps, TapeOps, TrackDataOps, TrackOps};
 use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
+use crate::features::store::object_size::hydrate_object_list_entry_size;
 
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
 const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
@@ -362,10 +363,14 @@ pub async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
         )
         .map_err(store_error)?;
 
-    let objects = page
-        .objects
-        .into_iter()
-        .map(|(name, entry)| ObjectListItem {
+    let mut objects = Vec::with_capacity(page.objects.len());
+    for (name, entry) in page.objects {
+        let entry =
+            hydrate_object_list_entry_size(state.context.as_ref(), bucket, &name, entry)
+                .await
+                .map_err(store_error)?;
+
+        objects.push(ObjectListItem {
             name,
             size: entry.size,
             etag: entry.etag,
@@ -375,8 +380,8 @@ pub async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
             track_number: entry.track_number,
             kind: entry.kind,
             content_type: entry.content_type,
-        })
-        .collect();
+        });
+    }
 
     let body = wincode::serialize(&ListObjectsResponse {
         objects,
