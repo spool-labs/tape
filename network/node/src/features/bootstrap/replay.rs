@@ -31,7 +31,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::{
-        ReplayRecord, ReplayTrack, ReplayableEvent, SnapshotEntry, SnapshotLog,
+        ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent, SnapshotEntry, SnapshotLog,
     };
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
@@ -96,8 +96,7 @@ mod tests {
             },
             epoch,
             blob: Some(blob),
-            name: None,
-            content_type: ContentType::Unknown,
+            object: None,
         })
     }
 
@@ -122,8 +121,11 @@ mod tests {
             },
             epoch,
             blob: Some(blob),
-            name: Some(name),
-            content_type,
+            object: Some(ReplayTrackObject {
+                name,
+                content_type,
+                logical_size: blob.size,
+            }),
         })
     }
 

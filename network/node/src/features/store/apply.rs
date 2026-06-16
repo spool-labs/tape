@@ -234,7 +234,7 @@ fn put_named_object_entry<Db: Store>(
     block_time: Option<i64>,
     slot: SlotNumber,
 ) -> Result<(), NodeError> {
-    let Some(name) = replay.name.as_ref() else {
+    let Some(object) = replay.object.as_ref() else {
         return Ok(());
     };
 
@@ -242,25 +242,25 @@ fn put_named_object_entry<Db: Store>(
         .put_object_metadata(
             track,
             ObjectMetadata {
-                name: name.clone(),
-                content_type: replay.content_type,
+                name: object.name.clone(),
+                content_type: object.content_type,
             },
         )
         .map_err(store_error)?;
 
     let entry = ObjectListEntry {
-        size: replay.state.size,
+        size: object.logical_size,
         etag: object_etag(&replay.state, replay.blob.as_ref()),
         block_time,
         slot,
         data_tape: replay.state.tape,
         track_number: replay.state.track_number,
         kind: replay.state.kind,
-        content_type: replay.content_type,
+        content_type: object.content_type,
     };
 
     store
-        .put_object_entry(replay.state.tape, name, entry)
+        .put_object_entry(replay.state.tape, &object.name, entry)
         .map_err(store_error)
 }
 
@@ -446,7 +446,7 @@ mod tests {
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
-    use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
+    use tape_core::snapshot::replay::{ReplayTrack, ReplayTrackObject, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::blob::BlobEncoding;
@@ -495,8 +495,7 @@ mod tests {
             },
             epoch,
             blob: Some(blob),
-            name: None,
-            content_type: ContentType::Unknown,
+            object: None,
         })
     }
 
@@ -514,8 +513,7 @@ mod tests {
             },
             epoch,
             blob: None,
-            name: None,
-            content_type: ContentType::Unknown,
+            object: None,
         })
     }
 
@@ -615,8 +613,11 @@ mod tests {
         let blob = match &mut track_event {
             ReplayableEvent::Track(replay) => {
                 replay.state.key = hash(&name);
-                replay.name = Some(name.clone());
-                replay.content_type = ContentType::ImageJpeg;
+                replay.object = Some(ReplayTrackObject {
+                    name: name.clone(),
+                    content_type: ContentType::ImageJpeg,
+                    logical_size: StorageUnits::mb(2),
+                });
                 replay.blob.expect("blob metadata")
             }
             _ => panic!("expected track event"),

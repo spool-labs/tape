@@ -195,10 +195,20 @@ pub struct ReplayTrack {
     pub epoch: EpochNumber,
     /// Blob commitment metadata, present only for blob-kind tracks.
     pub blob: Option<BlobEncoding>,
-    /// Plaintext object name, present only for named writes.
-    pub name: Option<Vec<u8>>,
+    /// Object-list metadata, present only for named object-representing tracks.
+    pub object: Option<ReplayTrackObject>,
+}
+
+/// Object metadata carried by the track that represents a named object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
+pub struct ReplayTrackObject {
+    /// Plaintext object name as supplied by the writer.
+    pub name: Vec<u8>,
     /// Hot content type carried by the write.
     pub content_type: ContentType,
+    /// Logical user-facing object size, distinct from manifest-track size.
+    pub logical_size: StorageUnits,
 }
 
 /// Single replay event emitted during block processing, with associated metadata.
@@ -354,8 +364,7 @@ mod tests {
             },
             epoch: EpochNumber(10),
             blob: None,
-            name: None,
-            content_type: ContentType::Unknown,
+            object: None,
         }
     }
 
@@ -389,8 +398,7 @@ mod tests {
                 stripe_count: StripeCount(4),
                 leaves: [Hash::from([7u8; 32]); GROUP_SIZE],
             }),
-            name: None,
-            content_type: ContentType::Unknown,
+            object: None,
         }
     }
 

@@ -2,7 +2,9 @@ use core::mem::size_of;
 
 use tape_core::bls::BlsSignature;
 use tape_core::track::blob::BlobEncoding;
-use tape_core::track::data::{BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice};
+use tape_core::track::data::{
+    BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice, TrackObjectInfoSlice,
+};
 use tape_core::track::types::{CompressedTrackProof, TrackKind};
 use tape_core::types::{ContentType, EpochNumber, SpoolBitmap, StorageUnits, StripeCount};
 use tape_crypto::address::Address;
@@ -19,8 +21,15 @@ pub const MAX_NAME_LEN: usize = 1024;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackWrite {
     pub kind: u8,
-    pub content_type: [u8; 2],
     pub data_len: [u8; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TrackWriteObject {
+    pub name_len: [u8; 2],
+    pub content_type: [u8; 2],
+    pub logical_size: [u8; 8],
 }
 
 #[repr(C)]
@@ -143,6 +152,14 @@ pub fn build_invalidate_track_ix(
 }
 
 pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, BlobInfoSlice<'_>), ProgramError> {
+    let (header, payload, trailer) = split_write(data)?;
+    let data = parse_payload(header.kind, payload)?;
+    let object = parse_object(trailer)?;
+
+    Ok((header, BlobInfoSlice { object, data }))
+}
+
+fn split_write(data: &[u8]) -> Result<(TrackWrite, &[u8], &[u8]), ProgramError> {
     if data.len() < size_of::<TrackWrite>() {
         return Err(ProgramError::InvalidInstructionData);
     }
@@ -155,42 +172,79 @@ pub fn parse_track_write(data: &[u8]) -> Result<(TrackWrite, BlobInfoSlice<'_>),
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    let (payload, name) = rest.split_at(data_len);
-    if name.len() > MAX_NAME_LEN {
+    let (payload, trailer) = rest.split_at(data_len);
+
+    Ok((header, payload, trailer))
+}
+
+fn parse_payload(kind: u8, payload: &[u8]) -> Result<BlobDataSlice<'_>, ProgramError> {
+    let kind =
+        TrackKind::try_from(kind as u64).map_err(|_| ProgramError::InvalidInstructionData)?;
+
+    match kind {
+        TrackKind::Inline => parse_inline(payload),
+        TrackKind::Coded => parse_coded(payload),
+    }
+}
+
+fn parse_inline(payload: &[u8]) -> Result<BlobDataSlice<'_>, ProgramError> {
+    if payload.len() > TRACK_WRITE_MAX_BYTES {
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    let kind = TrackKind::try_from(header.kind as u64)
+    Ok(BlobDataSlice::Inline(payload))
+}
+
+fn parse_coded(payload: &[u8]) -> Result<BlobDataSlice<'_>, ProgramError> {
+    let blob = read_instruction_pod::<BlobEncoding>(payload)?;
+
+    Ok(BlobDataSlice::Coded(blob))
+}
+
+fn parse_object(trailer: &[u8]) -> Result<Option<TrackObjectInfoSlice<'_>>, ProgramError> {
+    if trailer.is_empty() {
+        return Ok(None);
+    }
+
+    if trailer.len() < size_of::<TrackWriteObject>() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let (object_header, object_name) = trailer.split_at(size_of::<TrackWriteObject>());
+    let object_header = read_instruction_pod::<TrackWriteObject>(object_header)?;
+    let object_name_len = u16::from_le_bytes(object_header.name_len) as usize;
+    check_name(object_name, object_name_len)?;
+
+    let content_type = ContentType::try_from(u16::from_le_bytes(object_header.content_type))
         .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let logical_size = StorageUnits::from_bytes(u64::from_le_bytes(object_header.logical_size));
 
-    let data = match kind {
-        TrackKind::Inline => {
-            if payload.len() > TRACK_WRITE_MAX_BYTES {
-                return Err(ProgramError::InvalidInstructionData);
-            }
+    Ok(Some(TrackObjectInfoSlice {
+        name: object_name,
+        content_type,
+        logical_size,
+    }))
+}
 
-            BlobDataSlice::Inline(payload)
-        }
-        TrackKind::Coded => {
-            let blob = read_instruction_pod::<BlobEncoding>(payload)?;
+fn check_name(name: &[u8], expected_len: usize) -> Result<(), ProgramError> {
+    if name.len() != expected_len || expected_len == 0 || expected_len > MAX_NAME_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
 
-            BlobDataSlice::Coded(blob)
-        }
-    };
-
-    let content_type = ContentType::try_from(u16::from_le_bytes(header.content_type))
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
-
-    Ok((header, BlobInfoSlice { name, content_type, data }))
+    Ok(())
 }
 
 #[inline(always)]
 fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
-    if blob.name.len() > MAX_NAME_LEN {
+    if blob
+        .object
+        .as_ref()
+        .is_some_and(|object| object.name.is_empty() || object.name.len() > MAX_NAME_LEN)
+    {
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    let BlobInfo { name, content_type, data } = blob;
+    let BlobInfo { object, data } = blob;
     let (kind, payload) = match data {
         BlobData::Inline(bytes) => {
             if bytes.len() > TRACK_WRITE_MAX_BYTES {
@@ -213,15 +267,115 @@ fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
     };
     let data_len = u16::try_from(payload.len())
         .map_err(|_| ProgramError::InvalidInstructionData)?;
-
     let mut out = TrackWrite {
         kind: kind as u8,
-        content_type: u16::from(content_type).to_le_bytes(),
         data_len: data_len.to_le_bytes(),
     }
     .to_bytes();
 
     out.extend_from_slice(&payload);
-    out.extend_from_slice(&name);
+    if let Some(object) = object {
+        let object_name_len = u16::try_from(object.name.len())
+            .map_err(|_| ProgramError::InvalidInstructionData)?;
+        out.extend_from_slice(bytemuck::bytes_of(&TrackWriteObject {
+            name_len: object_name_len.to_le_bytes(),
+            content_type: u16::from(object.content_type).to_le_bytes(),
+            logical_size: object.logical_size.to_bytes().to_le_bytes(),
+        }));
+        out.extend_from_slice(&object.name);
+    }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::track::data::TrackObjectInfo;
+    use tape_crypto::merkle::root_from_leaf_hashes;
+
+    fn valid_blob(size: StorageUnits) -> BlobEncoding {
+        let leaves = [Hash::from([0x11; 32]); GROUP_SIZE];
+        BlobEncoding {
+            size,
+            commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::default(),
+            stripe_size: StorageUnits::from_bytes(128),
+            stripe_count: StripeCount(1),
+            leaves,
+        }
+    }
+
+    #[test]
+    fn track_write_roundtrips_object_logical_size() {
+        let manifest_size = StorageUnits::from_bytes(113);
+        let logical_size = StorageUnits::from_bytes(100 * 1024 * 1024);
+        let name = b"roms/100_omg.bin".to_vec();
+        let blob = valid_blob(manifest_size);
+
+        let ix = build_track_write_ix(
+            Address::new_unique(),
+            Address::new_unique(),
+            BlobInfo {
+                object: Some(TrackObjectInfo {
+                    name: name.clone(),
+                    content_type: ContentType::ImageJpeg,
+                    logical_size,
+                }),
+                data: BlobData::Coded(blob),
+            },
+        )
+        .expect("track write instruction");
+
+        let (_header, parsed) = parse_track_write(&ix.data[1..]).expect("parse track write");
+        let object = parsed.object.expect("object metadata");
+        assert_eq!(object.name, name.as_slice());
+        assert_eq!(object.content_type, ContentType::ImageJpeg);
+        assert_eq!(object.logical_size, logical_size);
+
+        let BlobDataSlice::Coded(parsed_blob) = parsed.data else {
+            panic!("expected coded blob metadata");
+        };
+        assert_eq!(parsed_blob.size, manifest_size);
+    }
+
+    #[test]
+    fn track_write_without_trailer_has_no_object() {
+        let payload = b"chunk-data".to_vec();
+        let ix = build_track_write_ix(
+            Address::new_unique(),
+            Address::new_unique(),
+            BlobInfo {
+                object: None,
+                data: BlobData::Inline(payload.clone()),
+            },
+        )
+        .expect("track write instruction");
+
+        let (_header, parsed) = parse_track_write(&ix.data[1..]).expect("parse track write");
+        assert!(parsed.object.is_none());
+
+        let BlobDataSlice::Inline(parsed_payload) = parsed.data else {
+            panic!("expected inline payload");
+        };
+        assert_eq!(parsed_payload, payload.as_slice());
+    }
+
+    #[test]
+    fn track_write_rejects_partial_object_trailer() {
+        let mut ix = build_track_write_ix(
+            Address::new_unique(),
+            Address::new_unique(),
+            BlobInfo {
+                object: None,
+                data: BlobData::Inline(b"chunk-data".to_vec()),
+            },
+        )
+        .expect("track write instruction");
+        ix.data.push(0xff);
+
+        let err = parse_track_write(&ix.data[1..]).expect_err("partial object trailer");
+        assert_eq!(err, ProgramError::InvalidInstructionData);
+    }
 }

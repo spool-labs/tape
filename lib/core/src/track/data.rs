@@ -108,9 +108,36 @@ pub struct TrackMeta {
 /// Owned object write envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
-pub struct BlobInfo {
+pub struct TrackObjectInfo {
     pub name: Vec<u8>,
     pub content_type: ContentType,
+    pub logical_size: StorageUnits,
+}
+
+impl TrackObjectInfo {
+    #[inline(always)]
+    pub fn as_slice(&self) -> TrackObjectInfoSlice<'_> {
+        TrackObjectInfoSlice {
+            name: &self.name,
+            content_type: self.content_type,
+            logical_size: self.logical_size,
+        }
+    }
+}
+
+/// Borrowed object metadata attached to a named track write.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackObjectInfoSlice<'source> {
+    pub name: &'source [u8],
+    pub content_type: ContentType,
+    pub logical_size: StorageUnits,
+}
+
+/// Owned track write envelope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
+pub struct BlobInfo {
+    pub object: Option<TrackObjectInfo>,
     pub data: BlobData,
 }
 
@@ -118,18 +145,16 @@ impl BlobInfo {
     #[inline(always)]
     pub fn as_slice(&self) -> BlobInfoSlice<'_> {
         BlobInfoSlice {
-            name: &self.name,
-            content_type: self.content_type,
+            object: self.object.as_ref().map(TrackObjectInfo::as_slice),
             data: self.data.as_slice(),
         }
     }
 }
 
-/// Borrowed object write envelope.
+/// Borrowed track write envelope.
 #[derive(Clone, Copy, Debug)]
 pub struct BlobInfoSlice<'source> {
-    pub name: &'source [u8],
-    pub content_type: ContentType,
+    pub object: Option<TrackObjectInfoSlice<'source>>,
     pub data: BlobDataSlice<'source>,
 }
 
@@ -137,10 +162,18 @@ impl<'source> BlobInfoSlice<'source> {
     #[inline(always)]
     pub fn to_owned(self) -> BlobInfo {
         BlobInfo {
-            name: self.name.to_vec(),
-            content_type: self.content_type,
+            object: self.object.map(|object| TrackObjectInfo {
+                name: object.name.to_vec(),
+                content_type: object.content_type,
+                logical_size: object.logical_size,
+            }),
             data: self.data.to_owned(),
         }
+    }
+
+    #[inline(always)]
+    pub fn name(self) -> &'source [u8] {
+        self.object.map(|object| object.name).unwrap_or_default()
     }
 }
 
@@ -186,8 +219,11 @@ mod tests {
     #[test]
     fn envelope_wincode() {
         let blob = BlobInfo {
-            name: b"photos/cat.jpg".to_vec(),
-            content_type: ContentType::ImageJpeg,
+            object: Some(TrackObjectInfo {
+                name: b"photos/cat.jpg".to_vec(),
+                content_type: ContentType::ImageJpeg,
+                logical_size: StorageUnits::from_bytes(1024),
+            }),
             data: BlobData::Coded(sample_blob_encoding()),
         };
 

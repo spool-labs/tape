@@ -107,7 +107,7 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
@@ -164,8 +164,7 @@ mod tests {
                 },
                 epoch: EpochNumber(1),
                 blob: None,
-                name: None,
-                content_type: ContentType::Unknown,
+                object: None,
             }))],
             raw_tracks: Vec::new(),
         };

@@ -305,9 +305,7 @@ mod tests {
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::coin::TAPE;
     use tape_core::track::data::{BlobData, BlobInfo};
-    use tape_core::types::{
-        ContentType, EpochNumber, SpoolIndex, StorageUnits, StripeCount,
-    };
+    use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
     use tape_crypto::tx::Txid;
@@ -390,8 +388,7 @@ mod tests {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
-                name: None,
-                content_type: ContentType::Unknown,
+                object: None,
                 value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
@@ -418,8 +415,7 @@ mod tests {
             raw_instructions: vec![RawInstruction::TrackWrite {
                 authority: Address::new_unique(),
                 key: Hash::default(),
-                name: None,
-                content_type: ContentType::Unknown,
+                object: None,
                 value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
@@ -577,8 +573,7 @@ mod tests {
             fee_payer,
             authority,
             BlobInfo {
-                name: Vec::new(),
-                content_type: ContentType::Unknown,
+                object: None,
                 data: BlobData::Inline(inner_data.to_vec()),
             },
         )
@@ -587,8 +582,7 @@ mod tests {
             fee_payer,
             authority,
             BlobInfo {
-                name: Vec::new(),
-                content_type: ContentType::Unknown,
+                object: None,
                 data: BlobData::Inline(outer_data.to_vec()),
             },
         )
@@ -740,8 +734,7 @@ mod tests {
             fee_payer,
             authority,
             BlobInfo {
-                name: Vec::new(),
-                content_type: ContentType::Unknown,
+                object: None,
                 data: BlobData::Inline(inner_data.to_vec()),
             },
         )

@@ -22,7 +22,8 @@ use crate::keys::tape_key::TapeKey;
 use crate::tapedrive::Tapedrive;
 use crate::metrics::{Operation, Phase};
 use crate::track::write::{
-    certify_with_retry, submit_blob, upload_with_retry, WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
+    certify_with_retry, submit_blob, submit_blob_with_logical_size, upload_with_retry,
+    WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
 };
 
 use super::error::StreamError;
@@ -424,13 +425,15 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
+    logical_size: StorageUnits,
     manifest_bytes: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
-    let (written, plan) = submit_blob(
+    let (written, plan) = submit_blob_with_logical_size(
         client,
         tape_key,
         name,
         content_type,
+        logical_size,
         manifest_bytes,
         Operation::WriteStream,
     )
@@ -461,7 +464,7 @@ async fn finalize_write<Blockchain: Rpc, Cluster: Api>(
     let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
 
-    let manifest_track = write_manifest(client, tape_key, name, content_type, &manifest_bytes).await?;
+    let manifest_track = write_manifest(client, tape_key, name, content_type, size, &manifest_bytes).await?;
     let manifest_address = track_pda(manifest_track.track.tape, manifest_track.track.track_number).0;
 
     Ok(StreamReceipt {

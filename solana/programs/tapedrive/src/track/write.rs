@@ -32,7 +32,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .is_system()?
         .as_account::<System>(&tapedrive::ID)?;
 
-    let key = track_key(blob.name, &blob.data);
+    let key = track_key(blob.name(), &blob.data);
 
     let (tape_address, _) = tape_pda((*authority_info.key).into());
 
@@ -111,8 +111,11 @@ mod tests {
             fee_payer.into(),
             authority.into(),
             BlobInfo {
-                name,
-                content_type: ContentType::ImageJpeg,
+                object: Some(tape_core::track::data::TrackObjectInfo {
+                    name,
+                    content_type: ContentType::ImageJpeg,
+                    logical_size: storage_units,
+                }),
                 data: BlobData::Coded(blob),
             },
         )
