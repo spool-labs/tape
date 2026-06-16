@@ -2,6 +2,9 @@ use tape_api::program::prelude::*;
 
 pub fn process_set_network_address(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetNetworkAddress::try_from_bytes(data)?;
+    args.network_address
+        .validate()
+        .map_err(|_| ProgramError::InvalidArgument)?;
     let [
         fee_payer_info,
         authority_info,
@@ -35,7 +38,7 @@ mod tests {
     use tape_test::*;
 
     #[test]
-    fn test_set_network_address() {
+    fn set_network_address() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let old_address = NetworkAddress::new_ipv4([1, 2, 3, 4], 1234);

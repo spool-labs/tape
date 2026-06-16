@@ -25,6 +25,7 @@ impl Peer {
     pub fn new(node: Address) -> Self {
         Peer {
             node,
+            network_address: NetworkAddress::default(),
             ..Peer::zeroed()
         }
     }

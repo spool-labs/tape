@@ -533,3 +533,55 @@ pub fn build_set_min_version_ix(
         }.to_bytes(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bytemuck::Zeroable;
+
+    use super::*;
+
+    #[test]
+    fn register_node_decodes_domain_address() {
+        let network_address = NetworkAddress::new_domain("node07.devnet.tape.network", 3430)
+            .expect("domain");
+        let ix = build_register_node_ix(
+            Address::new_unique(),
+            Address::new_unique(),
+            to_name("node07"),
+            BasisPoints(100),
+            network_address,
+            NetworkTlsPubkey::new_unique(),
+            BlsPubkey::zeroed(),
+            BlsSignature::zeroed(),
+            NodePreferences::zeroed(),
+        );
+
+        let decoded = RegisterNode::try_from_bytes(&ix.data[1..]).expect("decode");
+
+        assert_eq!(decoded.network_address, network_address);
+        assert_eq!(
+            decoded.network_address.domain(),
+            Some("node07.devnet.tape.network")
+        );
+    }
+
+    #[test]
+    fn set_network_address_decodes_domain_address() {
+        let network_address = NetworkAddress::new_domain("node07.devnet.tape.network", 3430)
+            .expect("domain");
+        let ix = build_set_network_address_ix(
+            Address::new_unique(),
+            Address::new_unique(),
+            Address::new_unique(),
+            network_address,
+        );
+
+        let decoded = SetNetworkAddress::try_from_bytes(&ix.data[1..]).expect("decode");
+
+        assert_eq!(decoded.network_address, network_address);
+        assert_eq!(
+            decoded.network_address.domain(),
+            Some("node07.devnet.tape.network")
+        );
+    }
+}

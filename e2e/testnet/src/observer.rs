@@ -193,9 +193,8 @@ impl Observer {
                 let address = onchain_node
                     .metadata
                     .network_address
-                    .to_socket_addr()
-                    .ok()
-                    .map(|addr| addr.to_string());
+                    .authority()
+                    .ok();
 
                 return NodeView {
                     local_id: node.id,

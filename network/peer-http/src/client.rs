@@ -120,10 +120,10 @@ impl HttpApi {
 }
 
 fn https_base_url(addr: NetworkAddress) -> Result<String, ApiError> {
-    let sa = addr
-        .to_socket_addr()
+    let authority = addr
+        .authority()
         .map_err(|e| ApiError::ConnectionFailed(e.to_string()))?;
-    Ok(format!("https://{sa}"))
+    Ok(format!("https://{authority}"))
 }
 
 #[async_trait]
@@ -823,6 +823,22 @@ mod tests {
         let peer_manager = Arc::new(PeerManager::new());
         let api = HttpApi::with_default_timeouts(peer_manager.clone());
         assert!(Arc::ptr_eq(&api.peer_manager, &peer_manager));
+    }
+
+    #[test]
+    fn https_base_url_uses_address_authority() {
+        let ipv4 = NetworkAddress::new_ipv4([127, 0, 0, 1], 3430);
+        let domain = NetworkAddress::new_domain("node07.devnet.tape.network", 3430)
+            .expect("domain");
+
+        assert_eq!(
+            https_base_url(ipv4).expect("url"),
+            "https://127.0.0.1:3430"
+        );
+        assert_eq!(
+            https_base_url(domain).expect("url"),
+            "https://node07.devnet.tape.network:3430"
+        );
     }
 
     #[tokio::test]

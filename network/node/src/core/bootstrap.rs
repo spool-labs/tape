@@ -127,13 +127,13 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
 
 pub fn resolve_network_address(config: &NodeConfig) -> Result<NetworkAddress, NodeError> {
     if let Some(host) = &config.network.host {
-        let ip: IpAddr = host.parse().map_err(|_| {
-            NodeError::Config(
-                "network.host must be an IP address, not a hostname".into(),
-            )
-        })?;
-        let addr = SocketAddr::new(ip, config.network.port);
-        return Ok(NetworkAddress::from_socket_addr(addr));
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            let addr = SocketAddr::new(ip, config.network.port);
+            return Ok(NetworkAddress::from_socket_addr(addr));
+        }
+
+        return NetworkAddress::new_domain(host, config.network.port)
+            .map_err(|error| NodeError::Config(format!("invalid network.host: {error}")));
     }
 
     if !config.http.listen.ip().is_unspecified() {
@@ -141,7 +141,7 @@ pub fn resolve_network_address(config: &NodeConfig) -> Result<NetworkAddress, No
     }
 
     Err(NodeError::Config(
-        "cannot determine advertised address: set network.host to an IP address \
+        "cannot determine advertised address: set network.host to an IP address or hostname \
          or use a concrete http.listen address"
             .into(),
     ))
@@ -356,17 +356,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_hostname_host() {
+    fn resolves_hostname_host() {
         let mut config = NodeConfig::default();
         config.node.name = "test".into();
         config.network.host = Some("example.com".into());
         config.network.port = 443;
 
-        let err = resolve_network_address(&config).unwrap_err();
-        match err {
-            NodeError::Config(msg) => assert!(msg.contains("IP address")),
-            other => panic!("expected Config error, got: {other}"),
-        }
+        let addr = resolve_network_address(&config).expect("resolve");
+        let expected = NetworkAddress::new_domain("example.com", 443).expect("domain");
+        assert_eq!(addr, expected);
     }
 
     #[test]

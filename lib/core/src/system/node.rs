@@ -17,7 +17,7 @@ pub struct NodeMetadata {
     /// The name of this node storage node.
     pub name: [u8; 32],
 
-    /// The SocketAddr of the node.
+    /// The advertised network address of the node.
     pub network_address: NetworkAddress,
 
     /// The TLS public key of this node.

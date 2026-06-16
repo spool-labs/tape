@@ -4,6 +4,9 @@ use tape_api::event::NodeRegistered;
 
 pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RegisterNode::try_from_bytes(data)?;
+    args.network_address
+        .validate()
+        .map_err(|_| ProgramError::InvalidArgument)?;
     let [
         fee_payer_info,
         authority_info,
