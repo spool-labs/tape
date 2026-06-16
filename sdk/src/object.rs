@@ -9,6 +9,7 @@ use tape_crypto::prelude::Address;
 use tape_crypto::Hash;
 use tape_protocol::api::{ApiError, FindTrackVersion, ListObjectsReq, ListObjectsRes};
 use tape_protocol::Api;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
@@ -122,7 +123,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 data
             ).await?;
 
-            Ok(track_pda(track.tape, track.track_number).0.into())
+            Ok(track_pda(track.tape, track.track_number).0)
         }
     }
 
@@ -138,6 +139,29 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         }
 
         Ok(bytes)
+    }
+
+    /// Read a named object from a bucket into an async sink.
+    ///
+    /// Stream objects are reconstructed directly into `writer`. Direct-track
+    /// objects still pass through the single-track read path.
+    pub async fn get_object_into<Writer: AsyncWrite + Unpin>(
+        &self,
+        bucket: &Address,
+        name: &str,
+        mut writer: Writer,
+    ) -> Result<u64, TapedriveError> {
+        let address = self.resolve_object(bucket, name).await?;
+        let bytes = self.read(&address).await?;
+
+        if let Ok(manifest) = ChunkManifest::from_bytes(&bytes) {
+            self.read_into(&address, &mut writer).await?;
+            return Ok(manifest.total_size.to_bytes());
+        }
+
+        writer.write_all(&bytes).await?;
+        writer.flush().await?;
+        Ok(bytes.len() as u64)
     }
 
     /// Fetch metadata for a named object without downloading its data.
@@ -204,7 +228,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Resolve a name to its representing track's address (latest version).
     async fn resolve_object(&self, bucket: &Address, name: &str) -> Result<Address, TapedriveError> {
         let track = self.lookup_object(bucket, name).await?;
-        Ok(track_pda(track.tape, track.track_number).0.into())
+        Ok(track_pda(track.tape, track.track_number).0)
     }
 
     /// Resolve a name to its representing track (latest version) via `hash(name)`.
