@@ -69,12 +69,13 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     )?;
 
     // Initialize mint.
-    allocate_account_with_bump(
+    allocate_account_with_bump_signed_by(
         mint_info,
         system_program_info,
         fee_payer_info,
         Mint::LEN,
         &spl_token::ID,
+        &tape_api::program::token::ID,
         &[MINT, MINT_SEED],
         MINT_BUMP,
     )?;

@@ -69,6 +69,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
             dest_vault_info,
             mint_info,
             system_program_info,
+            &staking::ID,
             &[VAULT, dest_stake_address.as_ref()],
             dest_bump,
         )?;

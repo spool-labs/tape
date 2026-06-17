@@ -2,11 +2,11 @@
 
 use bytemuck::Pod;
 use solana_program::{
-    account_info::AccountInfo, entrypoint::ProgramResult, instruction::Instruction, pubkey::Pubkey,
-    rent::Rent, sysvar::Sysvar,
+    account_info::AccountInfo, entrypoint::ProgramResult, instruction::Instruction,
+    program_error::ProgramError, pubkey::Pubkey, rent::Rent, sysvar::Sysvar,
 };
 
-use crate::{CloseAccount, Discriminator};
+use crate::{trace, CloseAccount, Discriminator};
 
 /// Invokes a CPI with provided signer seeds and program id.
 #[inline(always)]
@@ -139,6 +139,64 @@ pub fn allocate_account<'a, 'info>(
 /// Allocates space for a new program account with user-provided bump.
 #[inline(always)]
 pub fn allocate_account_with_bump<'a, 'info>(
+    target_account: &'a AccountInfo<'info>,
+    system_program: &'a AccountInfo<'info>,
+    payer: &'a AccountInfo<'info>,
+    space: usize,
+    owner: &Pubkey,
+    seeds: &[&[u8]],
+    bump: u8,
+) -> ProgramResult {
+    allocate_account_with_bump_signed_by(
+        target_account,
+        system_program,
+        payer,
+        space,
+        owner,
+        owner,
+        seeds,
+        bump,
+    )
+}
+
+/// Allocates space for a new account whose PDA signer program differs from its owner.
+#[inline(always)]
+pub fn allocate_account_with_bump_signed_by<'a, 'info>(
+    target_account: &'a AccountInfo<'info>,
+    system_program: &'a AccountInfo<'info>,
+    payer: &'a AccountInfo<'info>,
+    space: usize,
+    owner: &Pubkey,
+    signer_program_id: &Pubkey,
+    seeds: &[&[u8]],
+    bump: u8,
+) -> ProgramResult {
+    // Validate seeds.
+    let pda = Pubkey::find_program_address(seeds, signer_program_id);
+    if target_account.key.ne(&pda.0) {
+        return Err(trace(
+            format!(
+                "Account has invalid seeds {} != {}",
+                target_account.key, pda.0
+            )
+            .as_str(),
+            ProgramError::InvalidSeeds,
+        ));
+    }
+
+    allocate_account_with_bump_unchecked(
+        target_account,
+        system_program,
+        payer,
+        space,
+        owner,
+        seeds,
+        bump,
+    )
+}
+
+#[inline(always)]
+pub(crate) fn allocate_account_with_bump_unchecked<'a, 'info>(
     target_account: &'a AccountInfo<'info>,
     system_program: &'a AccountInfo<'info>,
     payer: &'a AccountInfo<'info>,

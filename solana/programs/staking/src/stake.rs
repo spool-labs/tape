@@ -56,6 +56,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
             vault_info,
             mint_info,
             system_program_info,
+            &staking::ID,
             &[VAULT, stake_address.as_ref()],
             bump,
         )?;

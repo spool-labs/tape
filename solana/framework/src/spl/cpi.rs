@@ -4,7 +4,7 @@
 
 use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, program_pack::Pack, pubkey::Pubkey};
 
-use crate::account::{allocate_account_with_bump, invoke_signed_with_bump};
+use crate::account::{allocate_account_with_bump_signed_by, invoke_signed_with_bump};
 
 /// Creates an associated token account.
 #[inline(always)]
@@ -43,15 +43,17 @@ pub fn create_token_account<'info>(
     target_info: &AccountInfo<'info>,
     mint_info: &AccountInfo<'info>,
     system_program: &AccountInfo<'info>,
+    signer_program_id: &Pubkey,
     seeds: &[&[u8]],
     bump: u8,
 ) -> ProgramResult {
-    allocate_account_with_bump(
+    allocate_account_with_bump_signed_by(
         target_info,
         system_program,
         funder_info,
         spl_token::state::Account::LEN,
         &spl_token::id(),
+        signer_program_id,
         seeds,
         bump,
     )?;
