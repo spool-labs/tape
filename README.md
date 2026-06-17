@@ -70,15 +70,3 @@
 
   [Sign up](https://tape.network/#sign-up) for early access. Tapedrive is
   currently invite-only.
-
-  ## Brand Colors
-
-  | Name | Hex | Swatch |
-  |----------|-----------|--------|
-  | Signal | `#01A2F2` | ![](https://placehold.co/15x15/01A2F2/01A2F2.png) |
-  | Electric | `#5600F5` | ![](https://placehold.co/15x15/5600F5/5600F5.png) |
-  | Carbon | `#13171C` | ![](https://placehold.co/15x15/13171C/13171C.png) |
-  | Circuit | `#121F30` | ![](https://placehold.co/15x15/121F30/121F30.png) |
-  | Pulse | `#F40099` | ![](https://placehold.co/15x15/F40099/F40099.png) |
-  | Oxide | `#FE7D28` | ![](https://placehold.co/15x15/FE7D28/FE7D28.png) |
-  | Static | `#FFFDFB` | ![](https://placehold.co/15x15/FFFDFB/FFFDFB.png) |

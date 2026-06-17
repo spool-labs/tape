@@ -8,7 +8,7 @@ use rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
-use tape_api::instruction::{build_certify_track_ix, build_track_write_ix};
+use tape_api::instruction::{build_certify_track_ix, build_track_write_ix, track_write_ix_len};
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
 use tape_core::erasure::GROUP_SIZE;
@@ -134,9 +134,10 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         raw: &[u8],
     ) -> Result<CompressedTrack, TapedriveError> {
-        if raw.len() > SDK_INLINE_RAW_MAX_BYTES {
+        let name = name.as_ref();
+        if !inline_write_fits(name, raw.len()) {
             return Err(TapedriveError::InvalidArgument(format!(
-                "raw inline write exceeds SDK limit of {SDK_INLINE_RAW_MAX_BYTES} bytes; use write_track() or write_blob()"
+                "raw inline write exceeds SDK transaction limit; use write_track() or write_blob()"
             )));
         }
 
@@ -147,7 +148,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let result = submit_raw(
             self,
             tape_key,
-            name.as_ref(),
+            name,
             content_type,
             raw,
             Operation::WriteRaw
@@ -278,6 +279,18 @@ fn track_object(
     }
 }
 
+fn inline_write_data_limit() -> usize {
+    track_write_ix_len(SDK_INLINE_RAW_MAX_BYTES, None)
+        .expect("unnamed inline track write size should fit usize")
+}
+
+pub(crate) fn inline_write_fits(name: &[u8], payload_len: usize) -> bool {
+    let object_name_len = (!name.is_empty()).then_some(name.len());
+
+    track_write_ix_len(payload_len, object_name_len)
+        .is_some_and(|len| len <= inline_write_data_limit())
+}
+
 async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
@@ -286,19 +299,33 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     raw: &[u8],
     operation: Operation,
 ) -> Result<WrittenTrack, TapedriveError> {
-    let timer = client
-        .timer(operation, Phase::Register)
-        .bytes(raw.len() as u64)
-        .chunks(1);
-
-    let result = send_raw(
+    submit_raw_with_logical_size(
         client,
         tape_key,
         name,
         content_type,
         StorageUnits::from_bytes(raw.len() as u64),
-        raw
-    ).await;
+        raw,
+        operation,
+    )
+    .await
+}
+
+pub(crate) async fn submit_raw_with_logical_size<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &TapeKey,
+    name: &[u8],
+    content_type: ContentType,
+    logical_size: StorageUnits,
+    raw: &[u8],
+    operation: Operation,
+) -> Result<WrittenTrack, TapedriveError> {
+    let timer = client
+        .timer(operation, Phase::Register)
+        .bytes(raw.len() as u64)
+        .chunks(1);
+
+    let result = send_raw(client, tape_key, name, content_type, logical_size, raw).await;
 
     timer.finish_result(&result);
     result
@@ -879,8 +906,8 @@ mod tests {
 
     use crate::error::TapedriveError;
 
-    use super::SDK_INLINE_RAW_MAX_BYTES;
     use super::should_retry_certification;
+    use super::{inline_write_fits, SDK_INLINE_RAW_MAX_BYTES};
     use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
 
     // The SDK inline write limit must always remain below the program limit.
@@ -888,6 +915,21 @@ mod tests {
     fn sdk_inline_raw_limit_is_below_program_limit() {
         assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 825);
         assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
+    }
+
+    #[test]
+    fn inline_write_budget_accounts_for_object_trailer() {
+        let name = b"object/name";
+        let max_named_payload = (0..=SDK_INLINE_RAW_MAX_BYTES)
+            .rev()
+            .find(|payload_len| inline_write_fits(name, *payload_len))
+            .expect("named inline payload should have some capacity");
+
+        assert!(inline_write_fits(b"", SDK_INLINE_RAW_MAX_BYTES));
+        assert!(!inline_write_fits(name, SDK_INLINE_RAW_MAX_BYTES));
+        assert!(max_named_payload < SDK_INLINE_RAW_MAX_BYTES);
+        assert!(inline_write_fits(name, max_named_payload));
+        assert!(!inline_write_fits(name, max_named_payload + 1));
     }
 
     // Certification should retry when proof visibility lags behind peer state.

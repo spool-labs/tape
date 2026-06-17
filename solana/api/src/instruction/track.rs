@@ -201,6 +201,23 @@ struct TrackWriteObject {
     pub logical_size: [u8; 8],
 }
 
+pub fn track_write_ix_len(
+    payload_len: usize,
+    object_name_len: Option<usize>,
+) -> Option<usize> {
+    let mut len = 1usize
+        .checked_add(size_of::<TrackWrite>())?
+        .checked_add(payload_len)?;
+
+    if let Some(object_name_len) = object_name_len {
+        len = len
+            .checked_add(size_of::<TrackWriteObject>())?
+            .checked_add(object_name_len)?;
+    }
+
+    Some(len)
+}
+
 fn parse_object(trailer: &[u8]) -> Result<Option<TrackObjectInfoSlice<'_>>, ProgramError> {
     if trailer.is_empty() {
         return Ok(None);
@@ -333,6 +350,10 @@ mod tests {
             },
         )
         .expect("track write instruction");
+        assert_eq!(
+            track_write_ix_len(bytemuck::bytes_of(&blob).len(), Some(name.len())),
+            Some(ix.data.len())
+        );
 
         let (_header, parsed) = parse_track_write(&ix.data[1..]).expect("parse track write");
         let object = parsed.object.expect("object metadata");
@@ -358,6 +379,10 @@ mod tests {
             },
         )
         .expect("track write instruction");
+        assert_eq!(
+            track_write_ix_len(payload.len(), None),
+            Some(ix.data.len())
+        );
 
         let (_header, parsed) = parse_track_write(&ix.data[1..]).expect("parse track write");
         assert!(parsed.object.is_none());

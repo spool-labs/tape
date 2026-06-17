@@ -22,8 +22,8 @@ use crate::keys::tape_key::TapeKey;
 use crate::tapedrive::Tapedrive;
 use crate::metrics::{Operation, Phase};
 use crate::track::write::{
-    certify_with_retry, submit_blob, submit_blob_with_logical_size, upload_with_retry,
-    WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
+    certify_with_retry, inline_write_fits, submit_blob, submit_blob_with_logical_size,
+    submit_raw_with_logical_size, upload_with_retry, WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
 };
 
 use super::error::StreamError;
@@ -419,7 +419,21 @@ async fn certify_chunks<Blockchain: Rpc, Cluster: Api>(
     Ok(())
 }
 
-/// Write the manifest as a blob track, upload it, then certify it last.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ManifestWriteMode {
+    Inline,
+    Coded,
+}
+
+fn manifest_write_mode(name: &[u8], manifest_bytes: &[u8]) -> ManifestWriteMode {
+    if inline_write_fits(name, manifest_bytes.len()) {
+        ManifestWriteMode::Inline
+    } else {
+        ManifestWriteMode::Coded
+    }
+}
+
+/// Write the manifest inline when the transaction stays small; otherwise write it as a blob.
 async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &TapeKey,
@@ -428,6 +442,19 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     logical_size: StorageUnits,
     manifest_bytes: &[u8],
 ) -> Result<WrittenTrack, TapedriveError> {
+    if manifest_write_mode(name, manifest_bytes) == ManifestWriteMode::Inline {
+        return submit_raw_with_logical_size(
+            client,
+            tape_key,
+            name,
+            content_type,
+            logical_size,
+            manifest_bytes,
+            Operation::WriteStream,
+        )
+        .await;
+    }
+
     let (written, plan) = submit_blob_with_logical_size(
         client,
         tape_key,
@@ -497,6 +524,37 @@ mod tests {
         tape.expiry_epoch = EpochNumber(2);
         tape.tracks.next_number = TrackNumber(next_track_number);
         tape
+    }
+
+    fn sample_manifest_bytes(chunk_count: u64) -> Vec<u8> {
+        let key = Hash::from([0x11; 32]);
+        let total_size = StorageUnits::from_bytes(CHUNK_SIZE as u64 * chunk_count);
+        let entries = build_entries(TrackNumber(0), TrackNumber(chunk_count), total_size)
+            .expect("build entries");
+        build_manifest(key, total_size, entries)
+            .expect("build manifest")
+            .to_bytes()
+            .expect("serialize manifest")
+    }
+
+    #[test]
+    fn small_manifest_uses_inline_write() {
+        let manifest_bytes = sample_manifest_bytes(1);
+
+        assert_eq!(
+            manifest_write_mode(b"roms/small.bin", &manifest_bytes),
+            ManifestWriteMode::Inline
+        );
+    }
+
+    #[test]
+    fn large_manifest_uses_coded_write() {
+        let manifest_bytes = sample_manifest_bytes(64);
+
+        assert_eq!(
+            manifest_write_mode(b"roms/large.bin", &manifest_bytes),
+            ManifestWriteMode::Coded
+        );
     }
 
     // capacity checks include the serialized manifest bytes.
