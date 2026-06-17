@@ -26,14 +26,6 @@ pub struct TrackWrite {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct TrackWriteObject {
-    pub name_len: [u8; 2],
-    pub content_type: [u8; 2],
-    pub logical_size: [u8; 8],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct DeleteTrack {
     pub track: CompressedTrackProof,
 }
@@ -201,6 +193,14 @@ fn parse_coded(payload: &[u8]) -> Result<BlobDataSlice<'_>, ProgramError> {
     Ok(BlobDataSlice::Coded(blob))
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct TrackWriteObject {
+    pub name_len: [u8; 2],
+    pub content_type: [u8; 2],
+    pub logical_size: [u8; 8],
+}
+
 fn parse_object(trailer: &[u8]) -> Result<Option<TrackObjectInfoSlice<'_>>, ProgramError> {
     if trailer.is_empty() {
         return Ok(None);
@@ -213,6 +213,7 @@ fn parse_object(trailer: &[u8]) -> Result<Option<TrackObjectInfoSlice<'_>>, Prog
     let (object_header, object_name) = trailer.split_at(size_of::<TrackWriteObject>());
     let object_header = read_instruction_pod::<TrackWriteObject>(object_header)?;
     let object_name_len = u16::from_le_bytes(object_header.name_len) as usize;
+
     check_name(object_name, object_name_len)?;
 
     let content_type = ContentType::try_from(u16::from_le_bytes(object_header.content_type))
@@ -265,8 +266,10 @@ fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
             (TrackKind::Coded, bytemuck::bytes_of(&blob).to_vec())
         }
     };
+
     let data_len = u16::try_from(payload.len())
         .map_err(|_| ProgramError::InvalidInstructionData)?;
+
     let mut out = TrackWrite {
         kind: kind as u8,
         data_len: data_len.to_le_bytes(),
@@ -274,14 +277,17 @@ fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
     .to_bytes();
 
     out.extend_from_slice(&payload);
+
     if let Some(object) = object {
         let object_name_len = u16::try_from(object.name.len())
             .map_err(|_| ProgramError::InvalidInstructionData)?;
+
         out.extend_from_slice(bytemuck::bytes_of(&TrackWriteObject {
             name_len: object_name_len.to_le_bytes(),
             content_type: u16::from(object.content_type).to_le_bytes(),
             logical_size: object.logical_size.to_bytes().to_le_bytes(),
         }));
+
         out.extend_from_slice(&object.name);
     }
     Ok(out)
