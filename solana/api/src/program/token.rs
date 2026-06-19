@@ -2,7 +2,7 @@ use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_crypto::address::Address;
 
-tape_solana::declare_id!("ADM3v1nicBYbnCCVd1C859CtVwdgHGh71cR1xqzwr9yk");
+tape_solana::declare_id!("B3eCyAk8oLTuQcBGNW8JZt5VrqKcAdcWCZTQVWUgirnX");
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };

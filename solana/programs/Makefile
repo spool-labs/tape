@@ -23,11 +23,12 @@ all: build
 
 # Build target: run cargo build-sbf in each program directory.
 # Clear RUSTC_WRAPPER so host-side wrappers do not intercept Solana's SBF rustc.
+# Pin --arch v3: devnet (Agave 4.1) requires SBPFv3 deploys (SIMD-0500 disables v0/v1/v2).
 .PHONY: build
 build: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
 		echo "Running cargo build-sbf in $$dir..."; \
-		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf) || exit $$?; \
+		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf --arch v3) || exit $$?; \
 	done
 
 # Test target: run cargo test-sbf in each program directory.
@@ -43,10 +44,10 @@ test: $(PROGRAMS)
 .PHONY: local
 local:
 	solana-test-validator \
-		--bpf-program EixMu6TVMWfwQWUFbvQGfEZe95p9B7CyvugnmQDqXPNY $(ROOT_TARGET_DEPLOY)/tapedrive.so \
-		--bpf-program ADM3v1nicBYbnCCVd1C859CtVwdgHGh71cR1xqzwr9yk $(ROOT_TARGET_DEPLOY)/token.so \
-		--bpf-program 141zppyr4F6jrPcUFQ9zJVZTHJmqzXb5c1LF14ngfpv8 $(ROOT_TARGET_DEPLOY)/exchange.so \
-		--bpf-program 6LW7B9jpLV2XRhG75AwY3GHC4MXtxmpAcbawAE5EodF9 $(ROOT_TARGET_DEPLOY)/staking.so \
+		--bpf-program ALQBNBvQvyhjRDZ6LLVMU6Bni1CPmc27t85wRsMiayyg $(ROOT_TARGET_DEPLOY)/tapedrive.so \
+		--bpf-program B3eCyAk8oLTuQcBGNW8JZt5VrqKcAdcWCZTQVWUgirnX $(ROOT_TARGET_DEPLOY)/token.so \
+		--bpf-program EpqvkNfuxDeNMRwkHqgsQ1jP18g3zQKUNim4JrxRqFFu $(ROOT_TARGET_DEPLOY)/exchange.so \
+		--bpf-program DhX8CihDPGPKYj4oKJvdKdjNEn9tRTkqeUfAgMbW9DtL $(ROOT_TARGET_DEPLOY)/staking.so \
 		--bpf-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s $(ROOT_TEST_ELFS)/mpl_token_metadata.so
 
 .PHONY: reset-ledger
