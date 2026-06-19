@@ -583,7 +583,9 @@ pub fn parse_raw_instruction(
         | TapeInstruction::MergePoolStake
         | TapeInstruction::SplitTapeByEpoch
         | TapeInstruction::SplitTapeBySize
-        | TapeInstruction::MergeTape => Ok(None),
+        | TapeInstruction::MergeTape
+        | TapeInstruction::SetTapeDelegate
+        | TapeInstruction::RevokeTapeDelegate => Ok(None),
     }
 }
 

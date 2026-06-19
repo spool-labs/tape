@@ -12,7 +12,7 @@ use tape_crypto::Hash;
 use tape_solana::*;
 
 use crate::helpers::read_instruction_pod;
-use crate::program::tapedrive::{self, group_pda, system_pda, tape_pda};
+use crate::program::tapedrive::{self, group_pda, system_pda};
 
 pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
 pub const MAX_NAME_LEN: usize = 1024;
@@ -49,20 +49,20 @@ pub struct InvalidateTrack {
 
 pub fn build_track_write_ix(
     fee_payer: Address,
-    authority: Address,
+    signer: Address,
+    tape: Address,
     blob: BlobInfo,
 ) -> Result<Instruction, ProgramError> {
     let (system_address, _) = system_pda();
-    let (tape_address, _) = tape_pda(authority);
 
     Ok(Instruction {
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new_readonly(signer.into(), true),
 
             AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new(tape_address.into(), false),
+            AccountMeta::new(tape.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: make_track_write(blob)?,
@@ -340,6 +340,7 @@ mod tests {
         let ix = build_track_write_ix(
             Address::new_unique(),
             Address::new_unique(),
+            Address::new_unique(),
             BlobInfo {
                 object: Some(TrackObjectInfo {
                     name: name.clone(),
@@ -373,6 +374,7 @@ mod tests {
         let ix = build_track_write_ix(
             Address::new_unique(),
             Address::new_unique(),
+            Address::new_unique(),
             BlobInfo {
                 object: None,
                 data: BlobData::Inline(payload.clone()),
@@ -396,6 +398,7 @@ mod tests {
     #[test]
     fn track_write_rejects_partial_object_trailer() {
         let mut ix = build_track_write_ix(
+            Address::new_unique(),
             Address::new_unique(),
             Address::new_unique(),
             BlobInfo {

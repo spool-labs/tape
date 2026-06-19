@@ -2,6 +2,7 @@ use tape_api::program::prelude::*;
 use tape_core::track::data::track_key;
 
 use crate::error::TapeError;
+use crate::tape::helpers::{authorize_tape_operator, verified_tape_address};
 use crate::track::helpers::append_track;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -34,16 +35,16 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
     let key = track_key(blob.name(), &blob.data);
 
-    let (tape_address, _) = tape_pda((*authority_info.key).into());
-
     let tape = tape_info
         .is_writable()?
-        .has_address(&tape_address.into())?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     if tape.is_system() {
         return Err(TapeError::UnexpectedState.into());
     }
+
+    let tape_address = verified_tape_address(tape_info, tape)?;
+    authorize_tape_operator(tape, (*authority_info.key).into())?;
 
     append_track(
         system,
@@ -90,6 +91,7 @@ mod tests {
 
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
+        let delegate = Pubkey::new_unique();
         let storage_units = StorageUnits::mb(100);
 
         let name = b"photos/cat.jpg".to_vec();
@@ -107,9 +109,13 @@ mod tests {
             leaves,
         };
 
+        let (system_address, _) = system_pda();
+        let (tape_address, _) = tape_pda(authority.into());
+
         let instruction = build_track_write_ix(
             fee_payer.into(),
-            authority.into(),
+            delegate.into(),
+            tape_address,
             BlobInfo {
                 object: Some(tape_core::track::data::TrackObjectInfo {
                     name,
@@ -121,9 +127,6 @@ mod tests {
         )
         .expect("valid blob write instruction");
 
-        let (system_address, _) = system_pda();
-        let (tape_address, _) = tape_pda(authority.into());
-
         let system = System {
             current_epoch: EpochNumber(0),
             live_group_count: 50,
@@ -132,6 +135,7 @@ mod tests {
         let tape = Tape {
             id: TapeNumber(1),
             authority: authority.into(),
+            delegate: delegate.into(),
             capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
@@ -145,7 +149,7 @@ mod tests {
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
+            sol(delegate, 0),
 
             pda(system_address, system.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
@@ -186,18 +190,13 @@ mod tests {
                 Check::success(),
                 Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
-                        id: tape.id,
-                        authority: authority.into(),
-                        capacity: tape.capacity,
                         used: storage_units,
-                        active_epoch: tape.active_epoch,
-                        expiry_epoch: tape.expiry_epoch,
                         tracks: TrackArchive {
                             tree: expected_tree,
                             next_number: TrackNumber(1),
                             num_tracks: 1,
                         },
-                        ..Tape::zeroed()
+                        ..tape
                     }
                     .pack()
                     .as_ref(),

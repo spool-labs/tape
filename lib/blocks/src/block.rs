@@ -572,6 +572,7 @@ mod tests {
         let inner_ix = build_track_write_ix(
             fee_payer,
             authority,
+            tape,
             BlobInfo {
                 object: None,
                 data: BlobData::Inline(inner_data.to_vec()),
@@ -581,6 +582,7 @@ mod tests {
         let outer_ix = build_track_write_ix(
             fee_payer,
             authority,
+            tape,
             BlobInfo {
                 object: None,
                 data: BlobData::Inline(outer_data.to_vec()),
@@ -733,6 +735,7 @@ mod tests {
         let inner_ix = build_track_write_ix(
             fee_payer,
             authority,
+            tape,
             BlobInfo {
                 object: None,
                 data: BlobData::Inline(inner_data.to_vec()),

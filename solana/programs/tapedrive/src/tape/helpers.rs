@@ -147,6 +147,34 @@ pub fn create_tape_account<'account_info>(
     Ok(())
 }
 
+pub fn verified_tape_address(
+    tape_info: &AccountInfo<'_>,
+    tape: &Tape,
+) -> Result<Address, ProgramError> {
+    let (tape_address, _) = tape_pda(tape.authority);
+    if tape_address != (*tape_info.key).into() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    Ok(tape_address)
+}
+
+pub fn authorize_tape_authority(tape: &Tape, signer: Address) -> ProgramResult {
+    if tape.authority != signer {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    Ok(())
+}
+
+pub fn authorize_tape_operator(tape: &Tape, signer: Address) -> ProgramResult {
+    if !tape.is_operator(signer) {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    Ok(())
+}
+
 pub fn destroy_expired<'account_info>(
     tape_info: &AccountInfo<'account_info>,
     fee_payer_info: &AccountInfo<'account_info>,

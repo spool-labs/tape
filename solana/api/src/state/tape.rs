@@ -23,6 +23,9 @@ pub struct Tape {
     /// The authority that owns this tape.
     pub authority: Address,
 
+    /// Optional delegate allowed to operate on tracks for this tape.
+    pub delegate: Address,
+
     /// The amount of storage reserved.
     pub capacity: StorageUnits,
 
@@ -104,6 +107,12 @@ impl Tape {
     #[inline(always)]
     pub fn is_system(&self) -> bool {
         TapeFlags::is_system(self.flags)
+    }
+
+    #[inline(always)]
+    pub fn is_operator(&self, signer: Address) -> bool {
+        signer == self.authority
+            || (self.delegate != Address::default() && signer == self.delegate)
     }
 
     pub fn write_track(&mut self, track: &CompressedTrack) -> ProgramResult {

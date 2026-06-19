@@ -34,6 +34,15 @@ pub struct SplitTapeBySize {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct MergeTape {}
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetTapeDelegate {
+    pub delegate: Address,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct RevokeTapeDelegate {}
 
 pub fn build_reserve_tape_ix(
     fee_payer: Address,
@@ -175,5 +184,38 @@ pub fn build_destroy_tape_ix(
             AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: DestroyTape {}.to_bytes(),
+    }
+}
+
+pub fn build_set_tape_delegate_ix(
+    fee_payer: Address,
+    authority: Address,
+    tape: Address,
+    delegate: Address,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(tape.into(), false),
+        ],
+        data: SetTapeDelegate { delegate }.to_bytes(),
+    }
+}
+
+pub fn build_revoke_tape_delegate_ix(
+    fee_payer: Address,
+    authority: Address,
+    tape: Address,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(tape.into(), false),
+        ],
+        data: RevokeTapeDelegate {}.to_bytes(),
     }
 }

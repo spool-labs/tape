@@ -120,6 +120,8 @@ pub enum TapeInstruction {
     SplitTapeByEpoch,
     SplitTapeBySize,
     MergeTape,
+    SetTapeDelegate,
+    RevokeTapeDelegate,
 
     // Track
     TrackWrite = 0xB0,
@@ -200,6 +202,8 @@ tape_solana::instruction!(TapeInstruction, DestroyTape);
 tape_solana::instruction!(TapeInstruction, SplitTapeByEpoch);
 tape_solana::instruction!(TapeInstruction, SplitTapeBySize);
 tape_solana::instruction!(TapeInstruction, MergeTape);
+tape_solana::instruction!(TapeInstruction, SetTapeDelegate);
+tape_solana::instruction!(TapeInstruction, RevokeTapeDelegate);
 
 tape_solana::instruction!(TapeInstruction, TrackWrite);
 tape_solana::instruction!(TapeInstruction, DeleteTrack);

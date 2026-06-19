@@ -348,6 +348,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     let write_ix = build_track_write_ix(
         payer.pubkey().into(),
         tape_key.pubkey().into(),
+        tape_key.address(),
         BlobInfo {
             object,
             data: BlobData::Inline(raw.to_vec()),
@@ -468,6 +469,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     let write_ix = build_track_write_ix(
         payer.pubkey().into(),
         tape_key.pubkey().into(),
+        tape_key.address(),
         BlobInfo {
             object,
             data: BlobData::Coded(blob),

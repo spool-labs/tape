@@ -6,6 +6,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::TrackState;
 use tape_crypto::bls12254::min_sig::*;
 
+use crate::tape::helpers::{authorize_tape_operator, verified_tape_address};
 
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = CertifyTrack::try_from_bytes(data)?;
@@ -53,14 +54,12 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let (tape_address, _) = tape_pda(tape.authority);
+    verified_tape_address(tape_info, tape)?;
     let track_address = track_pda(track.tape, track.track_number).0;
 
-    if tape.authority != (*authority_info.key).into() {
-        return Err(ProgramError::InvalidAccountData);
-    }
+    authorize_tape_operator(tape, (*authority_info.key).into())?;
 
-    if tape_address != (*tape_info.key).into() || track.tape != (*tape_info.key).into() {
+    if track.tape != (*tape_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -170,6 +169,7 @@ mod tests {
     fn certify() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
+        let delegate = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
         let curr = EpochNumber(42);
 
@@ -221,6 +221,7 @@ mod tests {
 
         let tape = Tape {
             authority: authority.into(),
+            delegate: delegate.into(),
             tracks: TrackArchive {
                 tree: track_tree,
                 next_number: TrackNumber(1),
@@ -243,7 +244,7 @@ mod tests {
 
         let instruction = build_certify_track_ix(
             fee_payer.into(),
-            authority.into(),
+            delegate.into(),
             CompressedTrackProof { state: track, proof },
             curr,
             bitmap,
@@ -252,7 +253,7 @@ mod tests {
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
+            sol(delegate, 0),
 
             pda(system_address, system.pack(), tapedrive::ID),
             pda(group_address, group.pack(), tapedrive::ID),

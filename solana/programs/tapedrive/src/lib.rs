@@ -65,7 +65,9 @@ use crate::pool::{
 use crate::tape::{
     process_destroy_tape,
     process_merge_tape,
+    process_revoke_tape_delegate,
     process_reserve_tape,
+    process_set_tape_delegate,
     process_split_tape_by_epoch,
     process_split_tape_by_size,
 };
@@ -156,6 +158,8 @@ pub fn process_instruction(
         TapeInstruction::SplitTapeByEpoch => process_split_tape_by_epoch(accounts, data)?,
         TapeInstruction::SplitTapeBySize => process_split_tape_by_size(accounts, data)?,
         TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
+        TapeInstruction::SetTapeDelegate => process_set_tape_delegate(accounts, data)?,
+        TapeInstruction::RevokeTapeDelegate => process_revoke_tape_delegate(accounts, data)?,
 
         // Track
         TapeInstruction::TrackWrite => process_track_write(accounts, data)?,

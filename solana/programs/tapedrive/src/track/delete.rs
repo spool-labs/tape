@@ -1,5 +1,6 @@
 use tape_api::program::prelude::*;
 
+use crate::tape::helpers::{authorize_tape_operator, verified_tape_address};
 use crate::track::helpers::delete_track;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -27,15 +28,13 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let (tape_address, _) = tape_pda(tape.authority);
+    let tape_address = verified_tape_address(tape_info, tape)?;
 
     let proof = args.track;
 
-    if tape.authority != (*authority_info.key).into() {
-        return Err(ProgramError::InvalidAccountData);
-    }
+    authorize_tape_operator(tape, (*authority_info.key).into())?;
 
-    if tape_address != (*tape_info.key).into() || proof.state.tape != (*tape_info.key).into() {
+    if proof.state.tape != (*tape_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -62,6 +61,7 @@ mod tests {
     fn test_delete_track() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
+        let delegate = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
 
         let (tape_address, _) = tape_pda(authority.into());
@@ -92,6 +92,7 @@ mod tests {
 
         let tape = Tape {
             authority: authority.into(),
+            delegate: delegate.into(),
             capacity: StorageUnits::mb(1000),
             used: size,
             active_epoch: EpochNumber(15),
@@ -104,13 +105,15 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let instruction = build_delete_track_ix(fee_payer.into(), authority.into(),
+        let instruction = build_delete_track_ix(
+            fee_payer.into(),
+            delegate.into(),
             CompressedTrackProof { state: track, proof },
         );
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
+            sol(delegate, 0),
 
             pda(tape_address, tape.pack(), tapedrive::ID),
         ];

@@ -6,6 +6,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::TrackState;
 use tape_crypto::bls12254::min_sig::*;
 
+use crate::tape::helpers::verified_tape_address;
 
 pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = InvalidateTrack::try_from_bytes(data)?;
@@ -48,10 +49,10 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let (tape_address, _) = tape_pda(tape.authority);
+    verified_tape_address(tape_info, tape)?;
     let track_address = track_pda(track.tape, track.track_number).0;
 
-    if tape_address != (*tape_info.key).into() || track.tape != (*tape_info.key).into() {
+    if track.tape != (*tape_info.key).into() {
         return Err(ProgramError::InvalidAccountData);
     }
 
