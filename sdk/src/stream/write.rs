@@ -9,7 +9,6 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Tape;
-use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::types::ContentType;
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::hash::hash;
@@ -26,11 +25,13 @@ use crate::track::write::{
 };
 
 use super::error::StreamError;
-use super::manifest::{ChunkEntry, ChunkManifest, CHUNK_SIZE, MANIFEST_VERSION};
+use super::manifest::{
+    ChunkEntry, ChunkManifest, MAX_TRACK_SIZE, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
+};
 use super::receipt::StreamReceipt;
 
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
-const MAX_TRACKS: TrackNumber = TrackNumber(1 << TRACK_TREE_HEIGHT);
+const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 
 // Chunks are internal fragments addressed by track number, never by name. The
 // object's name and content type live on the manifest track.
@@ -52,7 +53,7 @@ fn validate_stream_size(size: StorageUnits) -> Result<(), StreamError> {
 
 /// Compute the number of chunks required for a stream.
 fn chunk_count_for_size(size: StorageUnits) -> Result<TrackNumber, StreamError> {
-    let chunk_count = size.to_bytes().div_ceil(CHUNK_SIZE as u64);
+    let chunk_count = size.to_bytes().div_ceil(MAX_TRACK_SIZE as u64);
     Ok(TrackNumber(chunk_count))
 }
 
@@ -61,7 +62,7 @@ fn chunk_offset(chunk_index: usize) -> Result<StorageUnits, StreamError> {
     let chunk_index = u64::try_from(chunk_index)
         .map_err(|_| StreamError::InvalidInput("stream has too many chunks".into()))?;
     let offset = chunk_index
-        .checked_mul(CHUNK_SIZE as u64)
+        .checked_mul(MAX_TRACK_SIZE as u64)
         .ok_or_else(|| StreamError::InvalidInput("stream size overflow".into()))?;
     Ok(StorageUnits::from_bytes(offset))
 }
@@ -78,7 +79,7 @@ fn chunk_size(
             .checked_sub(offset)
             .ok_or_else(|| StreamError::InvalidInput("stream size underflow".into()))
     } else {
-        Ok(StorageUnits::from_bytes(CHUNK_SIZE as u64))
+        Ok(StorageUnits::from_bytes(MAX_TRACK_SIZE as u64))
     }
 }
 
@@ -120,7 +121,7 @@ fn build_manifest(
         version: MANIFEST_VERSION,
         total_size,
         chunk_count,
-        chunk_size: StorageUnits::from_bytes(CHUNK_SIZE as u64),
+        chunk_size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
         key,
         chunks: entries,
     })
@@ -247,7 +248,7 @@ async fn register_and_upload_bytes_chunks<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<Vec<PendingChunk>, TapedriveError> {
     let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
 
-    for (chunk_index, chunk_data) in data.chunks(CHUNK_SIZE).enumerate() {
+    for (chunk_index, chunk_data) in data.chunks(MAX_TRACK_SIZE).enumerate() {
         pending_chunks
             .push(process_chunk(client, tape_key, chunk_index, chunk_count, size, chunk_data).await?);
     }
@@ -469,7 +470,7 @@ mod tests {
 
     fn sample_manifest_bytes(chunk_count: u64) -> Vec<u8> {
         let key = Hash::from([0x11; 32]);
-        let total_size = StorageUnits::from_bytes(CHUNK_SIZE as u64 * chunk_count);
+        let total_size = StorageUnits::from_bytes(MAX_TRACK_SIZE as u64 * chunk_count);
         let entries = build_entries(TrackNumber(0), TrackNumber(chunk_count), total_size)
             .expect("build entries");
         build_manifest(key, total_size, entries)
@@ -502,7 +503,7 @@ mod tests {
     #[test]
     fn manifest_size() {
         let key = Hash::from([0x11; 32]);
-        let total_size = StorageUnits::from_bytes(CHUNK_SIZE as u64);
+        let total_size = StorageUnits::from_bytes(MAX_TRACK_SIZE as u64);
         let entries = build_entries(TrackNumber(0), TrackNumber(1), total_size).expect("build entries");
         let manifest = build_manifest(key, total_size, entries).expect("build manifest");
         let manifest_bytes = manifest.to_bytes().expect("serialize manifest");
@@ -539,7 +540,7 @@ mod tests {
         let error = build_entries(
             TrackNumber(u64::MAX),
             TrackNumber(2),
-            StorageUnits::from_bytes(CHUNK_SIZE as u64 * 2),
+            StorageUnits::from_bytes(MAX_TRACK_SIZE as u64 * 2),
         )
             .expect_err("entries should fail");
 

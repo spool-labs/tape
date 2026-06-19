@@ -8,13 +8,6 @@ pub const GROUP_SIZE: usize = 20;
 /// Derived from GROUP_SIZE: 2^5 = 32 >= 20 leaves.
 pub const SLICE_TREE_HEIGHT: usize = 5;
 
-/// Maximum blob size (1 GiB).
-pub const MAX_BLOB_SIZE: usize = 1 << 30;
-
-/// Maximum slice size (~143 MiB).
-/// With k=7 data slices, each shard is approximately blob_size / 7.
-pub const MAX_SLICE_SIZE: usize = MAX_BLOB_SIZE / 7;
-
 use crate::types::{GroupIndex, SpoolIndex};
 
 /// Get the group index for a given spool.
@@ -54,17 +47,6 @@ mod tests {
     #[test]
     fn test_spool_group_size() {
         assert_eq!(GROUP_SIZE, 20);
-    }
-
-    #[test]
-    fn test_max_blob_size() {
-        assert_eq!(MAX_BLOB_SIZE, 1 << 30);
-    }
-
-    #[test]
-    fn test_max_slice_size() {
-        // With default k=7, max slice is ~143 MiB
-        assert_eq!(MAX_SLICE_SIZE, MAX_BLOB_SIZE / 7);
     }
 
     #[test]

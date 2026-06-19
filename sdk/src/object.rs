@@ -13,7 +13,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
-use crate::stream::manifest::{ChunkManifest, CHUNK_SIZE};
+use crate::stream::manifest::{ChunkManifest, MAX_TRACK_SIZE};
 use crate::tapedrive::Tapedrive;
 use crate::track::queryable_peers;
 
@@ -106,7 +106,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .map(ContentType::from_str)
             .unwrap_or(ContentType::Unknown);
 
-        if data.len() > CHUNK_SIZE {
+        if data.len() > MAX_TRACK_SIZE {
             let receipt = self.write_named_bytes(
                 bucket,
                 name,

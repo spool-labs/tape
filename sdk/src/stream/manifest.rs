@@ -5,6 +5,7 @@
 //! so the original stream can be reconstructed during reads.
 
 use serde::{Deserialize, Serialize};
+use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -14,11 +15,22 @@ use super::error::StreamError;
 /// Manifest format version.
 pub const MANIFEST_VERSION: u8 = 1;
 
-/// Maximum bytes per chunk track.
+/// Maximum bytes per direct coded track / stream chunk track.
 ///
 /// Clay(20,7) with 10 MiB slices gives a theoretical 70 MiB per track. The SDK
 /// uses 64 MiB to leave headroom for stripe padding and metadata suffixes.
-pub const CHUNK_SIZE: usize = 64 * 1024 * 1024;
+pub const MAX_TRACK_SIZE: usize = 64 * 1024 * 1024;
+
+/// Maximum track slots in one tape.
+pub const MAX_TRACKS_PER_TAPE: u64 = 1_u64 << TRACK_TREE_HEIGHT;
+
+/// Maximum data chunks in a single-tape stream.
+///
+/// One track is reserved for the manifest.
+pub const MAX_SINGLE_TAPE_STREAM_CHUNKS: u64 = MAX_TRACKS_PER_TAPE - 1;
+
+/// Maximum payload bytes for one stream stored on an otherwise empty tape.
+pub const MAX_SINGLE_TAPE_STREAM_SIZE: u64 = MAX_TRACK_SIZE as u64 * MAX_SINGLE_TAPE_STREAM_CHUNKS;
 
 /// Describes a byte stream stored across one or more tracks on a tape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
@@ -122,16 +134,16 @@ mod tests {
         let chunks: Vec<ChunkEntry> = (0..chunk_count)
             .map(|chunk_index| ChunkEntry {
                 track_number: TrackNumber(chunk_index as u64),
-                offset: StorageUnits::from_bytes(chunk_index as u64 * CHUNK_SIZE as u64),
-                size: StorageUnits::from_bytes(CHUNK_SIZE as u64),
+                offset: StorageUnits::from_bytes(chunk_index as u64 * MAX_TRACK_SIZE as u64),
+                size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
             })
             .collect();
 
         ChunkManifest {
             version: MANIFEST_VERSION,
-            total_size: StorageUnits::from_bytes(chunk_count as u64 * CHUNK_SIZE as u64),
+            total_size: StorageUnits::from_bytes(chunk_count as u64 * MAX_TRACK_SIZE as u64),
             chunk_count: TrackNumber(chunk_count as u64),
-            chunk_size: StorageUnits::from_bytes(CHUNK_SIZE as u64),
+            chunk_size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
             key: Hash::from([0xAB; 32]),
             chunks,
         }
@@ -169,32 +181,32 @@ mod tests {
     // a short final chunk survives manifest validation.
     #[test]
     fn smaller() {
-        let total_size = StorageUnits::from_bytes(CHUNK_SIZE as u64 * 3 + 1000);
+        let total_size = StorageUnits::from_bytes(MAX_TRACK_SIZE as u64 * 3 + 1000);
         let manifest = ChunkManifest {
             version: MANIFEST_VERSION,
             total_size,
             chunk_count: TrackNumber(4),
-            chunk_size: StorageUnits::from_bytes(CHUNK_SIZE as u64),
+            chunk_size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
             key: Hash::from([0xCD; 32]),
             chunks: vec![
                 ChunkEntry {
                     track_number: TrackNumber(0),
                     offset: StorageUnits::zero(),
-                    size: StorageUnits::from_bytes(CHUNK_SIZE as u64),
+                    size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
                     track_number: TrackNumber(1),
-                    offset: StorageUnits::from_bytes(CHUNK_SIZE as u64),
-                    size: StorageUnits::from_bytes(CHUNK_SIZE as u64),
+                    offset: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
+                    size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
                     track_number: TrackNumber(2),
-                    offset: StorageUnits::from_bytes(2 * CHUNK_SIZE as u64),
-                    size: StorageUnits::from_bytes(CHUNK_SIZE as u64),
+                    offset: StorageUnits::from_bytes(2 * MAX_TRACK_SIZE as u64),
+                    size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
                     track_number: TrackNumber(3),
-                    offset: StorageUnits::from_bytes(3 * CHUNK_SIZE as u64),
+                    offset: StorageUnits::from_bytes(3 * MAX_TRACK_SIZE as u64),
                     size: StorageUnits::from_bytes(1000),
                 },
             ],
