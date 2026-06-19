@@ -1,13 +1,11 @@
 //! Stream read implementation.
 //!
-//! Reads a manifest track, fetches chunk tracks concurrently with bounded
-//! memory, and reassembles the original byte stream.
+//! Reads a manifest track, fetches chunk tracks sequentially, and reassembles
+//! the original byte stream.
 
-use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use rpc::Rpc;
@@ -23,9 +21,6 @@ use crate::tapedrive::Tapedrive;
 
 use super::error::StreamError;
 use super::manifest::ChunkManifest;
-
-/// Maximum concurrent chunk downloads.
-const CHUNK_CONCURRENCY: usize = 1;
 
 /// Read a manifest track and return the full stream contents in memory.
 pub async fn read_bytes<Blockchain: Rpc, Cluster: Api>(
@@ -65,7 +60,7 @@ async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
     Ok((manifest, manifest_track))
 }
 
-/// Stream manifest chunks into an async writer with bounded buffering.
+/// Stream manifest chunks into an async writer, one chunk at a time.
 async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + Unpin>(
     client: &Tapedrive<Blockchain, Cluster>,
     manifest: &ChunkManifest,
@@ -73,54 +68,31 @@ async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + 
     writer: &mut Writer,
 ) -> Result<(), TapedriveError> {
     let tape_address = manifest_track.tape;
-    let mut in_flight = FuturesUnordered::new();
-    let mut ready_chunks = BTreeMap::<usize, Vec<u8>>::new();
-    let mut next_chunk_to_schedule = 0usize;
-    let mut next_chunk_to_write = 0usize;
     let mut total_written = StorageUnits::zero();
 
-    while next_chunk_to_schedule < manifest.chunks.len() || !in_flight.is_empty() {
-        while next_chunk_to_schedule < manifest.chunks.len() && in_flight.len() < CHUNK_CONCURRENCY {
-            let entry = manifest.chunks[next_chunk_to_schedule].clone();
-            let track_address = track_pda(tape_address, entry.track_number).0;
-            let chunk_index = next_chunk_to_schedule;
+    for (chunk_index, entry) in manifest.chunks.iter().enumerate() {
+        let track_address = track_pda(tape_address, entry.track_number).0;
+        let chunk_data = client.read_as(&track_address, Operation::ReadStream).await?;
 
-            in_flight.push(async move {
-                let data = client
-                    .read_as(&track_address, Operation::ReadStream)
-                    .await?;
-                let data_size = StorageUnits::from_bytes(data.len() as u64);
-                if data_size != entry.size {
-                    return Err(stream_error(StreamError::Chunk(format!(
-                        "chunk {chunk_index} size mismatch: expected {}, got {}",
-                        entry.size,
-                        data.len()
-                    ))));
-                }
-
-                Ok::<_, TapedriveError>((chunk_index, data))
-            });
-
-            next_chunk_to_schedule += 1;
+        let data_size = StorageUnits::from_bytes(chunk_data.len() as u64);
+        if data_size != entry.size {
+            return Err(stream_error(StreamError::Chunk(format!(
+                "chunk {chunk_index} size mismatch: expected {}, got {}",
+                entry.size,
+                chunk_data.len()
+            ))));
         }
 
-        if let Some(result) = in_flight.next().await {
-            let (chunk_index, data) = result?;
-            ready_chunks.insert(chunk_index, data);
-        }
+        let write_sink = client
+            .timer(Operation::ReadStream, Phase::WriteSink)
+            .bytes(chunk_data.len() as u64);
+        let result = writer.write_all(&chunk_data).await;
+        write_sink.finish_result(&result);
+        result?;
 
-        while let Some(chunk_data) = ready_chunks.remove(&next_chunk_to_write) {
-            let write_sink = client
-                .timer(Operation::ReadStream, Phase::WriteSink)
-                .bytes(chunk_data.len() as u64);
-            let result = writer.write_all(&chunk_data).await;
-            write_sink.finish_result(&result);
-            result?;
-            total_written = total_written
-                .checked_add(StorageUnits::from_bytes(chunk_data.len() as u64))
-                .ok_or_else(|| stream_error(StreamError::Integrity("stream size overflow".into())))?;
-            next_chunk_to_write += 1;
-        }
+        total_written = total_written
+            .checked_add(data_size)
+            .ok_or_else(|| stream_error(StreamError::Integrity("stream size overflow".into())))?;
     }
 
     let write_sink = client.timer(Operation::ReadStream, Phase::WriteSink);
