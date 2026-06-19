@@ -9096,6 +9096,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-gateway"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "rpc",
+ "store",
+ "store-memory",
+ "tape-core",
+ "tape-crypto",
+ "tape-node",
+ "tape-protocol",
+ "tape-store",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "tape-grind"
 version = "0.3.0"
 dependencies = [

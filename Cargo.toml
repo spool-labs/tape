@@ -25,6 +25,7 @@ members = [
   "solana/rpc-litesvm",
   "solana/rpc-cache",
   "lib/metrics",
+  "network/gateway",
   "network/node",
   "network/peer-manager",
   "network/peer-memory",
@@ -62,6 +63,7 @@ default-members = [
   "store/store-rocks",
   "store/tape-store",
   "lib/metrics",
+  "network/gateway",
   "network/node",
   "network/peer-manager",
   "network/peer-memory",
@@ -110,6 +112,7 @@ tape-sdk = { version = "0.3.0", path = "./sdk" }
 tape-test = { version = "0.3.0", path = "./test" }
 tape-chain-harness = { version = "0.3.0", path = "./test/harness" }
 tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
+tape-gateway = { version = "0.3.0", path = "./network/gateway" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 peer-manager = { version = "0.3.0", path = "./network/peer-manager" }
 peer-memory = { version = "0.3.0", path = "./network/peer-memory" }

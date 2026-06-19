@@ -19,7 +19,8 @@ use tracing::{debug, error};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::replay::engine::ReplayEngine;
+use crate::features::replay::engine::{ReplayEngine, ReplayPersistFn};
+use crate::features::store::manager::persist_batch;
 
 pub async fn replay_finalized_range<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -27,6 +28,30 @@ pub async fn replay_finalized_range<Db, Cluster, Blockchain>(
     start_slot: SlotNumber,
     end_slot: SlotNumber,
     cancel: &CancellationToken,
+) -> Result<usize, NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    replay_finalized_range_with_persist(
+        context,
+        replay,
+        start_slot,
+        end_slot,
+        cancel,
+        persist_batch::<Db>,
+    )
+    .await
+}
+
+pub async fn replay_finalized_range_with_persist<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    replay: &mut ReplayEngine<'_, Db>,
+    start_slot: SlotNumber,
+    end_slot: SlotNumber,
+    cancel: &CancellationToken,
+    persist: ReplayPersistFn<Db>,
 ) -> Result<usize, NodeError>
 where
     Db: Store,
@@ -46,7 +71,7 @@ where
 
         match fetch_parsed_block(context, slot).await? {
             Some(block) => {
-                event_count = event_count.saturating_add(replay.apply_block(&block)?);
+                event_count = event_count.saturating_add(replay.apply_block_with(&block, persist)?);
             }
             None => {
                 debug!(slot = slot.0, "bootstrap: skipped slot during block replay");

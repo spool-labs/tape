@@ -12,6 +12,8 @@ use crate::features::replay::types::ReplayBatch;
 use crate::features::store::apply::apply_event;
 use crate::features::store::manager::persist_batch;
 
+pub type ReplayPersistFn<Db> = fn(&TapeStore<Db>, &ReplayBatch) -> Result<(), NodeError>;
+
 pub struct ReplayEngine<'a, Db: Store> {
     store: &'a TapeStore<Db>,
     current_epoch: EpochNumber,
@@ -65,8 +67,16 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
     }
 
     pub fn apply_block(&mut self, block: &ParsedBlock) -> Result<usize, NodeError> {
+        self.apply_block_with(block, persist_batch::<Db>)
+    }
+
+    pub fn apply_block_with(
+        &mut self,
+        block: &ParsedBlock,
+        persist: ReplayPersistFn<Db>,
+    ) -> Result<usize, NodeError> {
         let (batch, event_count) = self.capture_and_journal(block)?;
-        persist_batch(self.store, &batch)?;
+        persist(self.store, &batch)?;
         Ok(event_count)
     }
 

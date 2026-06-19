@@ -18,7 +18,8 @@ use crate::config::node::NodeConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::bootstrap::{block, discovery, fetch, validate};
-use crate::features::replay::engine::ReplayEngine;
+use crate::features::replay::engine::{ReplayEngine, ReplayPersistFn};
+use crate::features::store::manager::persist_batch;
 
 const BOOTSTRAP_EPOCH: EpochNumber = EpochNumber(0);
 const FIRST_LIVE_EPOCH: EpochNumber = EpochNumber(1);
@@ -60,10 +61,24 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
+    run_with_persist(context, config, cancel, persist_batch::<Db>).await
+}
+
+pub async fn run_with_persist<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &NodeConfig,
+    cancel: &CancellationToken,
+    persist: ReplayPersistFn<Db>,
+) -> Result<SlotNumber, NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
     let checkpoint = fetch_protocol_checkpoint(context, cancel).await?;
     publish_protocol_checkpoint(context, &checkpoint).await?;
 
-    let start_slot = run_replay_phases(context, config, &checkpoint, cancel).await?;
+    let start_slot = run_replay_phases(context, config, &checkpoint, cancel, persist).await?;
     validate::validate_bootstrap_store(context.store.as_ref())?;
 
     info!(
@@ -81,6 +96,7 @@ async fn run_replay_phases<Db, Cluster, Blockchain>(
     config: &NodeConfig,
     checkpoint: &ProtocolCheckpoint,
     cancel: &CancellationToken,
+    persist: ReplayPersistFn<Db>,
 ) -> Result<SlotNumber, NodeError>
 where
     Db: Store + 'static,
@@ -116,6 +132,7 @@ where
                     start_epoch,
                 },
                 cancel,
+                persist,
             )
             .await?;
 
@@ -135,7 +152,8 @@ where
             &mut replay, 
             current_epoch, 
             checkpoint.slot, 
-            cancel
+            cancel,
+            persist,
         ).await?;
 
         let start_slot = checkpoint.slot.next();
@@ -153,7 +171,7 @@ where
     if replay_epoch_zero_from_snapshot {
         debug!("bootstrap: epoch-zero snapshot available; skipping base block replay");
     } else {
-        replay_epoch_zero_base(context, &mut replay, cancel).await?;
+        replay_epoch_zero_base(context, &mut replay, cancel, persist).await?;
     }
 
     let mut last_snapshot: Option<(EpochNumber, SlotNumber)> = None;
@@ -178,6 +196,7 @@ where
                     start_epoch: epoch,
                 },
                 cancel,
+                persist,
             )
             .await?;
         }
@@ -196,6 +215,7 @@ where
                     start_epoch: FIRST_LIVE_EPOCH,
                 },
                 cancel,
+                persist,
             ).await?;
         }
     }
@@ -211,6 +231,7 @@ async fn replay_base_epochs_to_checkpoint<Db, Cluster, Blockchain>(
     current_epoch: EpochNumber,
     checkpoint_slot: SlotNumber,
     cancel: &CancellationToken,
+    persist: ReplayPersistFn<Db>,
 ) -> Result<(), NodeError>
 where
     Db: Store,
@@ -232,12 +253,13 @@ where
                 start_epoch: BOOTSTRAP_EPOCH,
             },
             cancel,
+            persist,
         ).await?;
 
         return Ok(());
     }
 
-    replay_epoch_zero_base(context, replay, cancel).await?;
+    replay_epoch_zero_base(context, replay, cancel, persist).await?;
 
     let epoch = context
         .rpc
@@ -253,6 +275,7 @@ where
             start_epoch: FIRST_LIVE_EPOCH,
         },
         cancel,
+        persist,
     ).await
 }
 
@@ -260,6 +283,7 @@ async fn replay_epoch_zero_base<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     replay: &mut ReplayEngine<'_, Db>,
     cancel: &CancellationToken,
+    persist: ReplayPersistFn<Db>,
 ) -> Result<(), NodeError>
 where
     Db: Store,
@@ -289,6 +313,7 @@ where
             start_epoch: BOOTSTRAP_EPOCH,
         },
         cancel,
+        persist,
     ).await
 }
 
@@ -297,6 +322,7 @@ async fn execute_block_phase<Db, Cluster, Blockchain>(
     replay: &mut ReplayEngine<'_, Db>,
     phase: BootstrapReplayPhase,
     cancel: &CancellationToken,
+    persist: ReplayPersistFn<Db>,
 ) -> Result<(), NodeError>
 where
     Db: Store,
@@ -316,12 +342,13 @@ where
     }
 
     replay.set_current_epoch(start_epoch);
-    let events = block::replay_finalized_range(
+    let events = block::replay_finalized_range_with_persist(
         context,
         replay,
         start_slot,
         end_slot,
         cancel,
+        persist,
     )
     .await?;
 

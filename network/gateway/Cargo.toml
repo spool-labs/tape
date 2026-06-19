@@ -1,0 +1,30 @@
+[package]
+name = "tape-gateway"
+version.workspace = true
+edition.workspace = true
+description = "Tapedrive read gateway runtime"
+
+[[bin]]
+name = "tape-gateway"
+path = "src/bin/gateway/main.rs"
+
+[dependencies]
+tape-core = { workspace = true, features = ["wincode"] }
+tape-node = { workspace = true }
+tape-protocol = { workspace = true }
+tape-store = { workspace = true }
+rpc = { workspace = true }
+store = { workspace = true }
+
+clap = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+
+[dev-dependencies]
+store-memory = { workspace = true }
+tape-crypto = { workspace = true }
+
+[features]
+default = []
+metrics = ["tape-node/metrics"]
