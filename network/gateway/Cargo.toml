@@ -10,20 +10,25 @@ path = "src/bin/gateway/main.rs"
 
 [dependencies]
 tape-core = { workspace = true, features = ["wincode"] }
+tape-api = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true }
 tape-node = { workspace = true }
 tape-protocol = { workspace = true }
 tape-store = { workspace = true }
 rpc = { workspace = true }
 store = { workspace = true }
 
+axum = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
+tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
+tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
+wincode = { workspace = true }
 
 [dev-dependencies]
 store-memory = { workspace = true }
-tape-crypto = { workspace = true }
 
 [features]
 default = []

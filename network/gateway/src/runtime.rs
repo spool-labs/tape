@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+use crate::http::GatewayHttpServer;
 use crate::store::GatewayStoreManager;
 
 async fn drain_block_channel(
@@ -51,7 +52,7 @@ async fn drain_block_channel(
 
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    _config: NodeConfig,
+    config: NodeConfig,
     start_slot: SlotNumber,
     cancel: CancellationToken,
 ) -> Result<(), NodeError>
@@ -63,6 +64,11 @@ where
     let (senders, receivers) = downstream_channels();
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
+
+    supervisor.spawn(
+        ServiceName::HttpServer,
+        GatewayHttpServer::new(context.clone(), config.http.clone(), cancel.clone()).run(),
+    );
 
     supervisor.spawn(
         ServiceName::BlockIngestor,

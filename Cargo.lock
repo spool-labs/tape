@@ -9099,10 +9099,12 @@ dependencies = [
 name = "tape-gateway"
 version = "0.3.0"
 dependencies = [
+ "axum",
  "clap",
  "rpc",
  "store",
  "store-memory",
+ "tape-api",
  "tape-core",
  "tape-crypto",
  "tape-node",
@@ -9110,7 +9112,10 @@ dependencies = [
  "tape-store",
  "tokio",
  "tokio-util",
+ "tower",
+ "tower-http",
  "tracing",
+ "wincode 0.1.2",
 ]
 
 [[package]]
