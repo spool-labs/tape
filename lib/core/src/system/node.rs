@@ -52,6 +52,9 @@ pub struct NodePreferences {
     /// The preferred price per storage unit.
     pub storage_price: Coin<TAPE>,
 
+    /// Minimum Node stake required for a gateway/read peer to read from this node.
+    pub min_read_stake: Coin<TAPE>,
+
     /// The preferred epoch duration in seconds.
     /// Reference targets: ~100s devnet, ~86_400s testnet, ~604_800s mainnet.
     pub epoch_duration: EpochDuration,
@@ -76,6 +79,7 @@ pub fn aggregate_node_preferences(
     let mut subsidy_decay_bps: Vec<(u64, u64)> = Vec::new();
     let mut storage_capacities: Vec<(u64, u64)> = Vec::new();
     let mut storage_prices: Vec<(u64, u64)> = Vec::new();
+    let mut min_read_stakes: Vec<(u64, u64)> = Vec::new();
     let mut epoch_durations: Vec<(u64, u64)> = Vec::new();
 
     for member in members.iter() {
@@ -92,6 +96,7 @@ pub fn aggregate_node_preferences(
         subsidy_decay_bps.push((peer.preferences.subsidy_decay_bps.0, weight));
         storage_capacities.push((peer.preferences.storage_capacity.0, weight));
         storage_prices.push((peer.preferences.storage_price.0, weight));
+        min_read_stakes.push((peer.preferences.min_read_stake.0, weight));
         epoch_durations.push((peer.preferences.epoch_duration.0, weight));
 
         total_weight = total_weight.saturating_add(weight);
@@ -127,6 +132,10 @@ pub fn aggregate_node_preferences(
         storage_price: TAPE(
             quorum_below(&storage_prices, total_weight)
                 .max(bounds.storage_price.0),
+        ),
+        min_read_stake: TAPE(
+            quorum_above(&min_read_stakes, total_weight)
+                .max(bounds.min_read_stake.0),
         ),
         epoch_duration: EpochDuration(
             quorum_above(&epoch_durations, total_weight)

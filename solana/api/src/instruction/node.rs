@@ -72,6 +72,12 @@ pub struct SetStoragePrice {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetMinReadStake {
+    pub min_read_stake: Coin<TAPE>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetBurnFeeBps {
     pub burn_fee_bps: BasisPoints,
 }
@@ -414,6 +420,26 @@ pub fn build_set_storage_price_ix(
         data: SetStoragePrice {
             price,
         }.to_bytes(),
+    }
+}
+
+pub fn build_set_min_read_stake_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    min_read_stake: Coin<TAPE>,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetMinReadStake {
+            min_read_stake,
+        }
+        .to_bytes(),
     }
 }
 

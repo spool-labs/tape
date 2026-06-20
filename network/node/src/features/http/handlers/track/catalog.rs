@@ -24,6 +24,7 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{ObjectListOps, TapeOps, TrackDataOps, TrackOps};
 
+use crate::features::http::auth::StakedPeer;
 use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -33,6 +34,7 @@ const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
 
 pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -60,6 +62,7 @@ pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -122,6 +125,7 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -208,6 +212,7 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -239,6 +244,7 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -283,6 +289,7 @@ pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -334,6 +341,7 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {

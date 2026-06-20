@@ -753,6 +753,7 @@ mod tests {
             burn_fee_bps: BasisPoints(0),
             subsidy_decay_bps: BasisPoints(0),
             epoch_duration: EpochDuration(0),
+            min_read_stake: TAPE(0),
         }
     }
 
@@ -763,6 +764,7 @@ mod tests {
             tls_pubkey,
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
             preferences: test_preferences(),
+            stake: TAPE(0),
         }
     }
 

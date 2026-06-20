@@ -14,12 +14,14 @@ use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 
 use crate::features::blacklist::refuses_object;
+use crate::features::http::auth::StakedPeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 use crate::features::spool::repair::extract_repair_data;
 
 pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -112,6 +114,7 @@ mod tests {
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
@@ -249,6 +252,11 @@ mod tests {
             State(AppState {
                 context: ctx.clone(),
             }),
+            StakedPeer {
+                node: ctx.node_address(),
+                tls_pubkey: ctx.tls_pubkey(),
+                stake: TAPE(1),
+            },
             Path(track_address.to_string()),
             Bytes::from(body),
         )

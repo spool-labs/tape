@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use super::helpers::deserialize_pathbuf;
 use super::http::default_https_listen;
 
-/// HTTPS listener settings. Always bound. Serves both anonymous and peer-only
-/// routes; peer-only routes are gated by the `PeerAuth` extractor which looks
-/// up the client cert's SPKI in the authorized peer set.
+/// HTTPS listener settings. Always bound. Serves anonymous, active-peer, and
+/// staked-peer routes; gated routes use extractors backed by the client cert's
+/// SPKI.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct HttpsConfig {
     /// Address the HTTPS listener binds to.

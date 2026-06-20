@@ -16,7 +16,7 @@ use tape_protocol::api::{
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 
 use crate::features::blacklist::refuses_object;
-use crate::features::http::auth::PeerAuth;
+use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
@@ -25,7 +25,7 @@ const MIN_SCAN_BATCH: usize = 64;
 
 pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _peer: PeerAuth,
+    _active_peer: ActivePeer,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     let request: SyncSlicesRequest = wincode::deserialize(&body)
@@ -98,7 +98,7 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _peer: PeerAuth,
+    _active_peer: ActivePeer,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     let request: SyncTracksRequest = wincode::deserialize(&body)

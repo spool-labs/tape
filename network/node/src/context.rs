@@ -121,7 +121,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub async fn refresh_peers(&self) -> Result<(), PeerManagerError> {
         let state = self.state();
-        self.peer_manager.resolve_peers(state.as_ref())
+        self.peer_manager.resolve_peers(state.as_ref())?;
+        self.peer_manager.refresh_registered_nodes(&self.rpc).await
     }
 
     pub fn node_status(&self) -> NodeStatus {

@@ -16,19 +16,19 @@ use tape_protocol::Api;
 use tape_protocol::api::VoteRequest;
 use tape_store::ops::VoteOps;
 
-use crate::features::http::auth::PeerAuth;
+use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
 pub async fn vote<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    peer: PeerAuth,
+    active_peer: ActivePeer,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     let request: VoteRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("vote request: {error}")))?;
 
-    if peer.node != request.signer {
+    if active_peer.node != request.signer {
         return Err(RouteError::Forbidden("vote signer does not match peer identity".into()));
     }
 

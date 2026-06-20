@@ -20,13 +20,13 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{TrackDataOps, TrackOps};
 
-use crate::features::http::auth::PeerAuth;
+use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _peer: PeerAuth,
+    _active_peer: ActivePeer,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -267,7 +267,7 @@ mod tests {
 
         let body = wincode::serialize(&request).expect("serialize request");
 
-        let peer = PeerAuth {
+        let active_peer = ActivePeer {
             node: ctx.node_address(),
             tls_pubkey: tape_core::types::tls::NetworkTlsPubkey::new_unique(),
         };
@@ -275,7 +275,7 @@ mod tests {
             State(AppState {
                 context: ctx.clone(),
             }),
-            peer,
+            active_peer,
             Path(track_address.to_string()),
             Bytes::from(body),
         )

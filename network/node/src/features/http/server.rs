@@ -65,14 +65,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     }
 
     /// Build the shared router that backs both listeners. Authorization lives
-    /// at the handler level via the [`PeerAuth`] extractor
-    /// (declared in a handler's signature), not at the Router-composition
-    /// level. The HTTPS listener separately layers the
-    /// [`authorize_peer`] middleware so that mTLS-authenticated
-    /// callers can satisfy the extractor; the HTTP listener does not, so
-    /// peer-only handlers on plaintext fall through to 403.
+    /// at the handler level via the [`ActivePeer`] and [`StakedPeer`]
+    /// extractors, not at the Router-composition level. The HTTPS listener
+    /// separately layers the [`authorize_peer`] middleware so that
+    /// mTLS-authenticated callers can satisfy those extractors; the HTTP
+    /// listener does not, so gated handlers on plaintext fall through to 403.
     ///
-    /// [`PeerAuth`]: crate::features::http::auth::PeerAuth
+    /// [`ActivePeer`]: crate::features::http::auth::ActivePeer
+    /// [`StakedPeer`]: crate::features::http::auth::StakedPeer
     fn build_router(&self) -> Router {
         let state = AppState {
             context: self.context.clone(),
@@ -83,7 +83,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         #[allow(unused_mut)]
         let mut router = Router::new()
-            // Anonymous GET
+            // Anonymous monitoring.
             .route(
                 api_routes::NODE_HEALTH_PATH,
                 get(handlers::health::health::<Db, Cluster, Blockchain>),
@@ -92,6 +92,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 api_routes::NODE_STATS_PATH,
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
+            // Staked-peer gated GET.
             .route(
                 api_routes::TRACK_PATH,
                 get(handlers::track::catalog::get_track::<Db, Cluster, Blockchain>),
@@ -108,18 +109,19 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 api_routes::TAPE_TRACK_PATH,
                 get(handlers::track::catalog::get_track_by_number::<Db, Cluster, Blockchain>),
             )
+            // Open direct-write support.
             .route(
                 api_routes::TRACK_SIGN_PATH,
                 get(handlers::track::sign::certify::<Db, Cluster, Blockchain>),
             )
-            // Anonymous slice GET + payment-gated PUT
+            // Staked-peer gated slice GET + self-authorizing PUT.
             .route(
                 api_routes::TRACK_SLICE_PATH,
                 get(handlers::track::slice::get_slice::<Db, Cluster, Blockchain>)
                     .put(handlers::track::slice::put_slice::<Db, Cluster, Blockchain>)
                     .layer(slice_body_limit),
             )
-            // Anonymous POST
+            // Staked-peer gated POST.
             .route(
                 api_routes::TAPE_TRACK_FIND_PATH,
                 post(handlers::track::catalog::find_track::<Db, Cluster, Blockchain>)
@@ -140,7 +142,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 post(handlers::track::repair::repair::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit.clone()),
             )
-            // Peer-only: handler signatures carry `_peer: PeerAuth`,
+            // Active-peer only: handler signatures carry `_active_peer: ActivePeer`,
             // which 403s when the extension isn't present (plaintext listener,
             // anonymous HTTPS, unknown/non-committee pubkey).
             .route(

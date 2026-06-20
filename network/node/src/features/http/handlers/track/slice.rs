@@ -18,11 +18,13 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tracing::{debug, trace};
 
 use crate::features::blacklist::refuses_object;
+use crate::features::http::auth::StakedPeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
 pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    _staked_peer: StakedPeer,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
 ) -> Result<impl IntoResponse, RouteError> {
     trace!(track_id = %track_id, spool_id = %spool_id, "http get_slice start");
@@ -196,6 +198,7 @@ mod tests {
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
@@ -307,6 +310,11 @@ mod tests {
             State(AppState {
                 context: ctx.clone(),
             }),
+            StakedPeer {
+                node: ctx.node_address(),
+                tls_pubkey: ctx.tls_pubkey(),
+                stake: TAPE(1),
+            },
             Path((track_address.to_string(), owned_spool)),
         )
         .await;

@@ -285,7 +285,25 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         epoch: EpochNumber,
     ) -> Result<(), NodeError> {
         debug!(node = %node, epoch = epoch.0, "received advance pool");
+        self.refresh_registered_nodes("pool advance").await;
         Ok(())
+    }
+
+    pub async fn handle_register_node(&self, node: Address) -> Result<(), NodeError> {
+        debug!(node = %node, "received node registration");
+        self.refresh_registered_nodes("node registration").await;
+        Ok(())
+    }
+
+    async fn refresh_registered_nodes(&self, reason: &'static str) {
+        if let Err(error) = self
+            .context
+            .peer_manager
+            .refresh_registered_nodes(&self.context.rpc)
+            .await
+        {
+            warn!(error = %error, reason, "registered peer refresh failed");
+        }
     }
 
     pub async fn handle_join_committee(&self, event: NodeJoinedCommittee) -> Result<(), NodeError> {

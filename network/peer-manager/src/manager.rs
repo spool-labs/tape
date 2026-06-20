@@ -8,6 +8,7 @@ use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
+use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::Address;
@@ -60,7 +61,7 @@ impl PeerManager {
     /// fanout, but should not block serving the current epoch.
     pub fn resolve_peers(&self, state: &ProtocolState) -> Result<(), PeerManagerError> {
         let peers = self.resolve_peer_map(state)?;
-        self.peers.store(Arc::new(peers));
+        self.merge_peers(peers);
         Ok(())
     }
 
@@ -103,11 +104,16 @@ impl PeerManager {
     /// matches the given Ed25519 pubkey. Used by peer-auth middleware to map an
     /// mTLS client cert's SPKI back to a known committee member.
     pub fn node_for_tls_pubkey(&self, tls_pubkey: NetworkTlsPubkey) -> Option<Address> {
+        self.peer_for_tls_pubkey(tls_pubkey).map(|peer| peer.node)
+    }
+
+    /// Reverse lookup: return the full cached peer for an mTLS client cert.
+    pub fn peer_for_tls_pubkey(&self, tls_pubkey: NetworkTlsPubkey) -> Option<PeerNode> {
         self.peers
             .load()
             .values()
             .find(|peer| peer.tls_pubkey == tls_pubkey)
-            .map(|peer| peer.node)
+            .cloned()
     }
 
     /// Check if a node is in the trusted set.
@@ -122,9 +128,44 @@ impl PeerManager {
 
     /// Insert or update a peer.
     pub fn add_peer(&self, peer: PeerNode) {
+        self.merge_peers(std::iter::once((peer.node, peer)).collect());
+    }
+
+    /// Fetch all registered Node accounts and merge them into the peer cache.
+    ///
+    /// This keeps non-committee gateway/read peers discoverable without a
+    /// dedicated on-chain GatewaySet. Committee resolution remains responsible
+    /// for validating the active storage peer set.
+    pub async fn refresh_registered_nodes<R: Rpc>(
+        &self,
+        rpc: &RpcClient<R>,
+    ) -> Result<(), PeerManagerError> {
+        let nodes = rpc.get_all_nodes().await?;
+        let peers = nodes
+            .into_iter()
+            .filter(|(address, _)| *address != Address::default())
+            .map(|(address, node)| {
+                (
+                    address,
+                    PeerNode {
+                        node: address,
+                        bls_pubkey: node.metadata.bls_pubkey,
+                        tls_pubkey: node.metadata.network_tls,
+                        network_address: node.metadata.network_address,
+                        preferences: node.preferences,
+                        stake: node.pool.stake,
+                    },
+                )
+            })
+            .collect();
+        self.merge_peers(peers);
+        Ok(())
+    }
+
+    fn merge_peers(&self, peers: HashMap<Address, PeerNode>) {
         let guard = self.peers.load();
         let mut map = (**guard).clone();
-        map.insert(peer.node, peer);
+        map.extend(peers);
         self.peers.store(Arc::new(map));
     }
 
@@ -237,6 +278,27 @@ impl PeerManager {
             .collect()
     }
 
+    fn committee_stake(state: &ProtocolState, node: Address) -> Coin<TAPE> {
+        let current = state.current.committee.iter();
+        let previous = state
+            .previous
+            .as_ref()
+            .into_iter()
+            .flat_map(|bundle| bundle.committee.iter());
+        let next = state
+            .next_committee
+            .as_ref()
+            .into_iter()
+            .flat_map(|committee| committee.iter());
+
+        current
+            .chain(previous)
+            .chain(next)
+            .find(|member| member.node == node)
+            .map(|member| member.stake)
+            .unwrap_or(TAPE(0))
+    }
+
     fn required_nodes(state: &ProtocolState) -> HashSet<Address> {
         state
             .current
@@ -268,7 +330,7 @@ impl PeerManager {
         for node in Self::committee_nodes(state) {
             match directory.get(&node) {
                 Some(peer) => {
-                    peers.insert(node, peer.clone());
+                    peers.insert(node, peer.clone().with_stake(Self::committee_stake(state, node)));
                 }
                 None if required.contains(&node) => {
                     unresolved_required.push(node);
@@ -318,6 +380,7 @@ mod tests {
             tls_pubkey: NetworkTlsPubkey::new_unique(),
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
             preferences: Zeroable::zeroed(),
+            stake: TAPE(0),
         }
     }
 
@@ -333,6 +396,10 @@ mod tests {
 
     fn member(node: Address) -> Member {
         Member::new(node, TAPE(1))
+    }
+
+    fn member_with_stake(node: Address, stake: u64) -> Member {
+        Member::new(node, TAPE(stake))
     }
 
     fn group(epoch: EpochNumber, owner: Address) -> Group {
@@ -408,6 +475,21 @@ mod tests {
         pm.add_peer(peer);
 
         assert_eq!(pm.node_for_tls_pubkey(tls), Some(node));
+    }
+
+    #[test]
+    fn resolve_peers_sets_committee_stake() {
+        let pm = PeerManager::new();
+        let node = address(1);
+        let peer = peer_entry(node, 8001);
+        let tls = peer.network_tls;
+        let state = state_with_peer_set(vec![peer], vec![member_with_stake(node, 42)]);
+
+        pm.resolve_peers(&state).unwrap();
+
+        let cached = pm.get(node).unwrap();
+        assert_eq!(cached.stake, TAPE(42));
+        assert_eq!(pm.peer_for_tls_pubkey(tls).unwrap().stake, TAPE(42));
     }
 
     #[test]

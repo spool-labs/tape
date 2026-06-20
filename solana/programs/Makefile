@@ -23,12 +23,11 @@ all: build
 
 # Build target: run cargo build-sbf in each program directory.
 # Clear RUSTC_WRAPPER so host-side wrappers do not intercept Solana's SBF rustc.
-# Pin --arch v3: devnet (Agave 4.1) requires SBPFv3 deploys (SIMD-0500 disables v0/v1/v2).
 .PHONY: build
 build: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
 		echo "Running cargo build-sbf in $$dir..."; \
-		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf --arch v3) || exit $$?; \
+		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf) || exit $$?; \
 	done
 
 # Test target: run cargo test-sbf in each program directory.

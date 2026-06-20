@@ -1,5 +1,6 @@
 use tape_core::bls::BlsPubkey;
 use tape_core::system::{NodePreferences, Peer};
+use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::address::Address;
@@ -11,6 +12,7 @@ pub struct PeerNode {
     pub tls_pubkey: NetworkTlsPubkey,
     pub network_address: NetworkAddress,
     pub preferences: NodePreferences,
+    pub stake: Coin<TAPE>,
 }
 
 impl PeerNode {
@@ -21,6 +23,12 @@ impl PeerNode {
             tls_pubkey: peer.network_tls,
             network_address: peer.network_address,
             preferences: peer.preferences,
+            stake: TAPE(0),
         })
+    }
+
+    pub fn with_stake(mut self, stake: Coin<TAPE>) -> Self {
+        self.stake = stake;
+        self
     }
 }

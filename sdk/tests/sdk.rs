@@ -300,6 +300,7 @@ fn make_peer(node: Address, port: u16) -> PeerNode {
         tls_pubkey: NetworkTlsPubkey::new_unique(),
         network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
         preferences: NodePreferences::zeroed(),
+        stake: TAPE(0),
     }
 }
 

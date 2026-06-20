@@ -83,6 +83,7 @@ impl From<&GenesisConfig> for NodePreferences {
             burn_fee_bps: config.burn_fee_bps,
             subsidy_decay_bps: config.subsidy_decay_bps,
             epoch_duration: config.epoch_duration,
+            min_read_stake: TAPE(0),
         }
     }
 }

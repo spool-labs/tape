@@ -317,6 +317,7 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
         subsidy_decay_bps: SUBSIDY_DECAY_BPS,
         storage_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
+        min_read_stake: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
     };
 
