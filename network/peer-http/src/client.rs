@@ -753,7 +753,7 @@ mod tests {
             burn_fee_bps: BasisPoints(0),
             subsidy_decay_bps: BasisPoints(0),
             epoch_duration: EpochDuration(0),
-            min_read_stake: TAPE(0),
+            access_threshold: TAPE(0),
         }
     }
 

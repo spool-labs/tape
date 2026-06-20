@@ -575,7 +575,7 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetBurnFeeBps
         | TapeInstruction::SetSubsidyDecayBps
         | TapeInstruction::SetStorageCapacity
-        | TapeInstruction::SetMinReadStake
+        | TapeInstruction::SetAccessThreshold
         | TapeInstruction::SetCommitteeSize
         | TapeInstruction::SetSpoolGroups
         | TapeInstruction::SetMinVersion

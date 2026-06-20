@@ -87,7 +87,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         min_version: system.min_version,
         burn_fee_bps: archive.burn_fee_bps,
         subsidy_decay_bps: archive.subsidy_decay_bps,
-        min_read_stake: TAPE(0),
+        access_threshold: TAPE(0),
         epoch_duration,
     };
 

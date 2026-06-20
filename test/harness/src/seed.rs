@@ -465,7 +465,7 @@ fn committed_preferences(
         min_version: VersionId(1),
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
-        min_read_stake: TAPE(0),
+        access_threshold: TAPE(0),
         epoch_duration: TEST_MIN_EPOCH_DURATION,
     };
 
@@ -486,7 +486,7 @@ fn node_preferences(
         min_version: VersionId(1),
         burn_fee_bps: spec.burn_fee_bps,
         subsidy_decay_bps: spec.subsidy_decay_bps,
-        min_read_stake: TAPE(0),
+        access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
     }
 }

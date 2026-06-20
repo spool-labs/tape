@@ -96,7 +96,7 @@ pub enum TapeInstruction {
     SetBurnFeeBps,
     SetSubsidyDecayBps,
     SetStorageCapacity,
-    SetMinReadStake,
+    SetAccessThreshold,
     SetCommitteeSize,
     SetSpoolGroups,
     SetMinVersion,
@@ -190,7 +190,7 @@ tape_solana::instruction!(TapeInstruction, SetStoragePrice);
 tape_solana::instruction!(TapeInstruction, SetBurnFeeBps);
 tape_solana::instruction!(TapeInstruction, SetSubsidyDecayBps);
 tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
-tape_solana::instruction!(TapeInstruction, SetMinReadStake);
+tape_solana::instruction!(TapeInstruction, SetAccessThreshold);
 tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
 tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
 tape_solana::instruction!(TapeInstruction, SetMinVersion);

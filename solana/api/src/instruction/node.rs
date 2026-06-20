@@ -72,8 +72,8 @@ pub struct SetStoragePrice {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SetMinReadStake {
-    pub min_read_stake: Coin<TAPE>,
+pub struct SetAccessThreshold {
+    pub access_threshold: Coin<TAPE>,
 }
 
 #[repr(C)]
@@ -423,11 +423,11 @@ pub fn build_set_storage_price_ix(
     }
 }
 
-pub fn build_set_min_read_stake_ix(
+pub fn build_set_access_threshold_ix(
     fee_payer: Address,
     authority: Address,
     node_address: Address,
-    min_read_stake: Coin<TAPE>,
+    access_threshold: Coin<TAPE>,
 ) -> Instruction {
     Instruction {
         program_id: tapedrive::ID,
@@ -436,8 +436,8 @@ pub fn build_set_min_read_stake_ix(
             AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new(node_address.into(), false),
         ],
-        data: SetMinReadStake {
-            min_read_stake,
+        data: SetAccessThreshold {
+            access_threshold,
         }
         .to_bytes(),
     }

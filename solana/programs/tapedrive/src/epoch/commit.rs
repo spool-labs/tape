@@ -130,7 +130,7 @@ fn aggregate_preferences(
         min_version: system.min_version,
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
-        min_read_stake: TAPE(0),
+        access_threshold: TAPE(0),
         epoch_duration: system.min_epoch_duration,
     };
 
@@ -188,7 +188,7 @@ mod tests {
             min_version: VersionId(3),
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
-            min_read_stake: TAPE(0),
+            access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
         }
     }

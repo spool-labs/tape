@@ -6,7 +6,7 @@
 //! peer capabilities:
 //! - [`ActivePeer`]: the cert maps to a node in the current committee.
 //! - [`StakedPeer`]: the cert maps to a registered node whose stake satisfies
-//!   the local node's read threshold.
+//!   the local node's access threshold.
 //!
 //! Committee-only handlers declare `_active_peer: ActivePeer`; gated read
 //! handlers declare `_staked_peer: StakedPeer`. Axum's extractor machinery
@@ -15,7 +15,7 @@
 //! - the request came in on the HTTP listener (no client cert, no mTLS),
 //! - the client dialled HTTPS without presenting a cert,
 //! - the client cert's SPKI doesn't map to any known node, or
-//! - the mapped node lacks the required committee membership or read stake.
+//! - the mapped node lacks the required committee membership or access stake.
 //!
 //! The HTTPS listener installs [`authorize_peer`] as a middleware layer so the
 //! check runs on every request. The HTTP listener omits it, so these extractors
@@ -116,7 +116,7 @@ where
             if state.context.state().is_committee_peer(node) {
                 req.extensions_mut().insert(ActivePeer { node, tls_pubkey });
             }
-            if peer.stake >= local_min_read_stake(&state) {
+            if peer.stake >= local_access_threshold(&state) {
                 req.extensions_mut().insert(StakedPeer {
                     node,
                     tls_pubkey,
@@ -129,7 +129,7 @@ where
     next.run(req).await
 }
 
-fn local_min_read_stake<Db, Cluster, Blockchain>(
+fn local_access_threshold<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
 ) -> Coin<TAPE>
 where
@@ -141,6 +141,6 @@ where
         .context
         .peer_manager
         .get(state.context.node_address())
-        .map(|peer| peer.preferences.min_read_stake)
+        .map(|peer| peer.preferences.access_threshold)
         .unwrap_or(TAPE(0))
 }
