@@ -20,11 +20,11 @@ const STORAGE_NODE_STAKE: u64 = 1_000;
 const ACCESS_THRESHOLD: u64 = 1;
 
 #[test]
-fn staked_gateway_reads_gated_nodes() {
-    run_simnet_test(staked_gateway_reads_gated_nodes_inner);
+fn staked_gateway() {
+    run_simnet_test(staked_gateway_inner);
 }
 
-async fn staked_gateway_reads_gated_nodes_inner() {
+async fn staked_gateway_inner() {
     peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()

@@ -129,6 +129,7 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    MaybeStakedPeer(staked_peer): MaybeStakedPeer,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -154,6 +155,13 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_tape(track.tape.into())
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
+
+    if local_access_threshold(&state).0 > 0
+        && staked_peer.is_none()
+        && !TapeFlags::is_system(tape.flags)
+    {
+        return Err(RouteError::Forbidden("staked peer required".into()));
+    }
 
     let pending_tracks = state
         .context
@@ -455,4 +463,126 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 fn store_error(error: impl core::fmt::Display) -> RouteError {
     RouteError::Internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use bytemuck::Zeroable;
+    use peer_manager::PeerNode;
+    use tape_core::spooler::GroupIndex;
+    use tape_core::track::types::{TrackKind, TrackState};
+    use tape_core::types::coin::TAPE;
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
+    use tape_store::ops::{TapeOps, TrackOps};
+    use tape_store::types::TapeInfo;
+
+    use super::*;
+    use crate::features::http::auth::StakedPeer;
+    use crate::harness::{NodeHarness, TestContext};
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
+
+    fn set_access_threshold(ctx: &TestContext) {
+        let mut preferences = tape_core::system::NodePreferences::zeroed();
+        preferences.access_threshold = TAPE(1);
+        ctx.peer_manager.add_peer(PeerNode {
+            node: ctx.node_address(),
+            bls_pubkey: Zeroable::zeroed(),
+            tls_pubkey: Zeroable::zeroed(),
+            network_address: Zeroable::zeroed(),
+            preferences,
+            stake: TAPE(0),
+        });
+    }
+
+    fn seed_track(ctx: &TestContext, system: bool) -> Address {
+        let tape = Address::new_unique();
+        let flags = if system { TapeFlags::SYSTEM } else { 0 };
+        ctx.store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags,
+                    end_epoch: EpochNumber(100),
+                    next_track_number: TrackNumber(1),
+                },
+            )
+            .expect("put tape");
+
+        let track_addr = track_pda(tape, TrackNumber(0)).0.into();
+        let track = CompressedTrack {
+            tape,
+            track_number: TrackNumber(0),
+            key: Hash::from([1u8; 32]),
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(64),
+            group: GroupIndex(0),
+            value_hash: Hash::from([2u8; 32]),
+        };
+        ctx.store.put_track(track_addr, track).expect("put track");
+        track_addr
+    }
+
+    async fn call_get_track_proof(
+        ctx: &TestContext,
+        track: Address,
+        staked_peer: Option<StakedPeer>,
+    ) -> Result<impl IntoResponse, RouteError> {
+        get_track_proof::<_, _, _>(
+            State(AppState {
+                context: ctx.clone(),
+            }),
+            MaybeStakedPeer(staked_peer),
+            Path(track.to_string()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn anonymous_user_tape_proof_requires_stake_when_threshold_positive() {
+        let ctx = test_context().await;
+        set_access_threshold(&ctx);
+        let track = seed_track(&ctx, false);
+
+        let result = call_get_track_proof(&ctx, track, None).await;
+
+        assert!(matches!(result, Err(RouteError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn anonymous_system_tape_proof_allowed_when_threshold_positive() {
+        let ctx = test_context().await;
+        set_access_threshold(&ctx);
+        let track = seed_track(&ctx, true);
+
+        let result = call_get_track_proof(&ctx, track, None).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn staked_peer_can_fetch_user_tape_proof_when_threshold_positive() {
+        let ctx = test_context().await;
+        set_access_threshold(&ctx);
+        let track = seed_track(&ctx, false);
+        let staked_peer = StakedPeer {
+            node: Address::new_unique(),
+            tls_pubkey: Zeroable::zeroed(),
+            stake: TAPE(1),
+        };
+
+        let result = call_get_track_proof(&ctx, track, Some(staked_peer)).await;
+
+        assert!(result.is_ok());
+    }
 }
