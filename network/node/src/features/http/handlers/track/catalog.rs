@@ -10,6 +10,7 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
+use tape_core::tape::TapeFlags;
 use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::TrackNumber;
@@ -24,7 +25,7 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{ObjectListOps, TapeOps, TrackDataOps, TrackOps};
 
-use crate::features::http::auth::StakedPeer;
+use crate::features::http::auth::{local_access_threshold, MaybeStakedPeer};
 use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -34,7 +35,6 @@ const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
 
 pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -62,7 +62,7 @@ pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
+    MaybeStakedPeer(staked_peer): MaybeStakedPeer,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -81,6 +81,10 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .pending
         .apply_to_track(track_addr, in_store)
         .ok_or(RouteError::NotFound)?;
+
+    if track.is_inline() && local_access_threshold(&state).0 > 0 && staked_peer.is_none() {
+        return Err(RouteError::Forbidden("staked peer required".into()));
+    }
 
     let protocol = state.context.state();
     let is_owner = protocol
@@ -125,7 +129,6 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -212,7 +215,6 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -244,7 +246,7 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
+    MaybeStakedPeer(staked_peer): MaybeStakedPeer,
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -252,6 +254,10 @@ pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let tape: Address = tape_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
+
+    if local_access_threshold(&state).0 > 0 && staked_peer.is_none() {
+        return Err(RouteError::Forbidden("staked peer required".into()));
+    }
 
     let request: FindTrackRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("find track request: {error}")))?;
@@ -289,7 +295,7 @@ pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
+    MaybeStakedPeer(staked_peer): MaybeStakedPeer,
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -297,6 +303,13 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let tape: Address = tape_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
+
+    if local_access_threshold(&state).0 > 0
+        && staked_peer.is_none()
+        && !is_system_tape(&state, tape)?
+    {
+        return Err(RouteError::Forbidden("staked peer required".into()));
+    }
 
     let request: ListTracksByTapeRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("list tracks request: {error}")))?;
@@ -339,15 +352,31 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], body))
 }
 
+fn is_system_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    tape: Address,
+) -> Result<bool, RouteError> {
+    Ok(state
+        .context
+        .store
+        .get_tape(tape)
+        .map_err(store_error)?
+        .is_some_and(|info| TapeFlags::is_system(info.flags)))
+}
+
 pub async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
+    MaybeStakedPeer(staked_peer): MaybeStakedPeer,
     Path(tape_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     let bucket: Address = tape_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
+
+    if local_access_threshold(&state).0 > 0 && staked_peer.is_none() {
+        return Err(RouteError::Forbidden("staked peer required".into()));
+    }
 
     let request: ListObjectsRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("list objects request: {error}")))?;

@@ -19,6 +19,7 @@ use tape_core::types::network::NetworkAddress;
 use tape_crypto::address::Address;
 
 use crate::chain::ChainFixture;
+use crate::gateway::TestGateway;
 use crate::simnet::SimnetHarness;
 
 pub struct SimnetScenario<'a> {
@@ -193,6 +194,47 @@ impl<'a> SimnetScenario<'a> {
             .with_context(|| format!("register_node {}", node.id()))
     }
 
+    pub async fn register_gateway(
+        &self,
+        gateway: &TestGateway,
+        commission: BasisPoints,
+    ) -> Result<Signature> {
+        let slot_bump = self.harness.config().slot_advance_per_tx;
+
+        self.harness
+            .chain()
+            .airdrop(&gateway.authority(), 10_000_000_000)
+            .with_context(|| format!("airdrop gateway {}", gateway.id()))?;
+
+        let name = gateway_name(gateway.id());
+        let bls_pubkey = gateway
+            .bls_keypair()
+            .public_key()
+            .map_err(|e| anyhow::anyhow!("gateway bls public_key: {e:?}"))?;
+        let bls_pop = gateway
+            .bls_keypair()
+            .proof_of_possession()
+            .map_err(|e| anyhow::anyhow!("gateway bls pop: {e:?}"))?;
+
+        let ix = build_register_node_ix(
+            gateway.authority().into(),
+            gateway.authority().into(),
+            name,
+            commission,
+            gateway.network_address(),
+            gateway.tls_pubkey(),
+            bls_pubkey,
+            bls_pop,
+            NodePreferences::from(&GenesisConfig::local()),
+        );
+
+        self.harness
+            .chain()
+            .send_instructions_and_advance(gateway.keypair(), vec![ix], slot_bump)
+            .await
+            .with_context(|| format!("register_gateway {}", gateway.id()))
+    }
+
     pub async fn register_many(
         &self,
         node_indices: &[usize],
@@ -217,5 +259,10 @@ impl<'a> SimnetScenario<'a> {
 
 fn node_name(id: usize) -> [u8; NAME_LENGTH] {
     let name = format!("sim-node-{id}");
+    to_name(name)
+}
+
+fn gateway_name(id: usize) -> [u8; NAME_LENGTH] {
+    let name = format!("sim-gateway-{id}");
     to_name(name)
 }

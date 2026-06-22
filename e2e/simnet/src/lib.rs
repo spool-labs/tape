@@ -11,6 +11,7 @@ use std::future::Future;
 pub mod chain;
 pub mod config;
 pub mod fixtures;
+pub mod gateway;
 pub mod log;
 pub mod node;
 pub mod scenario;
@@ -19,6 +20,7 @@ pub mod tls;
 
 pub use chain::ChainFixture;
 pub use config::{NodeRuntimeMode, SeededAccount, SimnetConfig};
+pub use gateway::TestGateway;
 pub use node::TestNode;
 pub use scenario::SimnetScenario;
 pub use simnet::{SimnetBuilder, SimnetHarness};

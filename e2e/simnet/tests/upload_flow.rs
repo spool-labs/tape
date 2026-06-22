@@ -1,14 +1,15 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::GROUP_SIZE;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
-use tape_sdk::stream::manifest::CHUNK_SIZE;
+use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 
 const TARGET_GROUPS: u64 = 5;
 
@@ -86,7 +87,7 @@ async fn upload_flow_inner() {
     let mut rng = StdRng::seed_from_u64(0xDA7A_51CE);
     let raw_data = random_bytes(&mut rng, 512);
     let blob_data = random_bytes(&mut rng, 128 * 1024);
-    let stream_data = random_bytes(&mut rng, CHUNK_SIZE + 1024);
+    let stream_data = random_bytes(&mut rng, MAX_TRACK_SIZE + 1024);
     let reserve_capacity = StorageUnits::from_bytes(
         (raw_data.len() + blob_data.len() + stream_data.len()) as u64,
     ) + StorageUnits::mb(2);
@@ -138,6 +139,29 @@ async fn upload_flow_inner() {
     let raw_address = track_pda(raw_track.tape, raw_track.track_number).0;
     let blob_address = track_pda(blob_track.tape, blob_track.track_number).0;
 
+    let start = Instant::now();
+    let (tracks, next_cursor) = loop {
+        match sdk.list_tracks_by_tape(&tape_address, None, 10).await {
+            Ok((tracks, next_cursor)) if tracks.len() == 5 && next_cursor.is_none() => {
+                break (tracks, next_cursor);
+            }
+            Ok((tracks, next_cursor)) if start.elapsed() >= active_timeout => {
+                panic!(
+                    "timed out waiting for tape track list, observed {} tracks and cursor {:?}",
+                    tracks.len(),
+                    next_cursor
+                );
+            }
+            Err(error) if start.elapsed() >= active_timeout => {
+                panic!("timed out waiting for tape track list: {error}");
+            }
+            _ => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    };
+    wait_coded_track_slices(&scenario, &tracks, active_timeout)
+        .await
+        .expect("coded track slices stored by current owners");
+
     let raw_read = sdk.read(&raw_address).await.expect("read raw track");
     assert_eq!(raw_read, raw_data, "raw read should match original data");
 
@@ -153,10 +177,6 @@ async fn upload_flow_inner() {
         "stream read should match original data"
     );
 
-    let (tracks, next_cursor) = sdk
-        .list_tracks_by_tape(&tape_address, None, 10)
-        .await
-        .expect("list tracks by tape");
     assert_eq!(next_cursor, None, "unexpected track pagination cursor");
     assert_eq!(
         tracks.len(),
@@ -165,13 +185,13 @@ async fn upload_flow_inner() {
     );
     assert_eq!(
         tracks.iter().filter(|track| track.is_inline()).count(),
-        1,
-        "expected one raw track on tape"
+        2,
+        "expected raw track plus inline stream manifest on tape"
     );
     assert_eq!(
         tracks.iter().filter(|track| track.is_coded()).count(),
-        4,
-        "expected single blob, two stream chunks, and stream manifest"
+        3,
+        "expected single blob plus two stream chunk tracks"
     );
 
     for track in tracks.iter().filter(|track| track.is_coded()) {
@@ -198,6 +218,43 @@ fn random_bytes(rng: &mut StdRng, len: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; len];
     rng.fill_bytes(&mut bytes);
     bytes
+}
+
+async fn wait_coded_track_slices(
+    scenario: &SimnetScenario<'_>,
+    tracks: &[CompressedTrack],
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+
+    loop {
+        let mut pending = Vec::new();
+        for track in tracks.iter().filter(|track| track.is_coded()) {
+            let track_address = track_pda(track.tape, track.track_number).0;
+            let observed = scenario
+                .count_current_owner_slices(&track_address, track.group)
+                .await?;
+            if observed != GROUP_SIZE {
+                pending.push(format!(
+                    "track {} group {}: {observed}/{GROUP_SIZE}",
+                    track.track_number.0, track.group.0
+                ));
+            }
+        }
+
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        if start.elapsed() >= timeout {
+            anyhow::bail!(
+                "timed out waiting for current owners to store coded slices: {}",
+                pending.join(", ")
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 async fn assert_group_counts(

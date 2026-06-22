@@ -9051,6 +9051,7 @@ dependencies = [
  "tape-chain-harness",
  "tape-core",
  "tape-crypto",
+ "tape-gateway",
  "tape-node",
  "tape-protocol",
  "tape-sdk",

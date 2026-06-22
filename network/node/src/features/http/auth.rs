@@ -8,10 +8,11 @@
 //! - [`StakedPeer`]: the cert maps to a registered node whose stake satisfies
 //!   the local node's access threshold.
 //!
-//! Committee-only handlers declare `_active_peer: ActivePeer`; gated read
-//! handlers declare `_staked_peer: StakedPeer`. Axum's extractor machinery
-//! returns `403 FORBIDDEN` if the relevant extension is absent, which happens
-//! when:
+//! Committee-only handlers declare `_active_peer: ActivePeer`; hard-gated read
+//! handlers declare `_staked_peer: StakedPeer`; threshold-conditioned routes
+//! declare `MaybeStakedPeer` and apply the local threshold explicitly. Axum's
+//! extractor machinery returns `403 FORBIDDEN` if the relevant hard-gate
+//! extension is absent, which happens when:
 //! - the request came in on the HTTP listener (no client cert, no mTLS),
 //! - the client dialled HTTPS without presenting a cert,
 //! - the client cert's SPKI doesn't map to any known node, or
@@ -32,6 +33,7 @@ use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::Address;
 use tape_protocol::Api;
+use tracing::trace;
 
 use super::peer_identity::PeerIdentity;
 use super::state::AppState;
@@ -53,6 +55,10 @@ pub struct StakedPeer {
     pub tls_pubkey: NetworkTlsPubkey,
     pub stake: Coin<TAPE>,
 }
+
+/// Optional stake-qualified peer capability.
+#[derive(Clone, Copy, Debug)]
+pub struct MaybeStakedPeer(pub Option<StakedPeer>);
 
 impl<S> axum::extract::FromRequestParts<S> for ActivePeer
 where
@@ -90,6 +96,20 @@ where
     }
 }
 
+impl<S> axum::extract::FromRequestParts<S> for MaybeStakedPeer
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.extensions.get::<StakedPeer>().copied()))
+    }
+}
+
 /// Middleware: read the connection's `PeerIdentity`, map it to known node
 /// accounts, and inject [`ActivePeer`] and/or [`StakedPeer`] capabilities when
 /// the node satisfies those classes. Always calls `next` — gated handlers 403
@@ -113,23 +133,37 @@ where
     if let Some(tls_pubkey) = identity.pubkey() {
         if let Some(peer) = state.context.peer_manager.peer_for_tls_pubkey(tls_pubkey) {
             let node = peer.node;
+            let threshold = local_access_threshold(&state);
             if state.context.state().is_committee_peer(node) {
                 req.extensions_mut().insert(ActivePeer { node, tls_pubkey });
             }
-            if peer.stake >= local_access_threshold(&state) {
+            if peer.stake >= threshold {
                 req.extensions_mut().insert(StakedPeer {
                     node,
                     tls_pubkey,
                     stake: peer.stake,
                 });
             }
+            trace!(
+                node = %node,
+                tls_pubkey = %tls_pubkey,
+                stake = peer.stake.0,
+                access_threshold = threshold.0,
+                active = state.context.state().is_committee_peer(node),
+                staked = peer.stake >= threshold,
+                "peer auth resolved"
+            );
+        } else {
+            trace!(tls_pubkey = %tls_pubkey, "peer auth rejected unknown tls pubkey");
         }
+    } else {
+        trace!("peer auth anonymous request");
     }
 
     next.run(req).await
 }
 
-fn local_access_threshold<Db, Cluster, Blockchain>(
+pub(crate) fn local_access_threshold<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
 ) -> Coin<TAPE>
 where

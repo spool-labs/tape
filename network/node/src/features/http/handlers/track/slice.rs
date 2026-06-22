@@ -18,16 +18,20 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tracing::{debug, trace};
 
 use crate::features::blacklist::refuses_object;
-use crate::features::http::auth::StakedPeer;
+use crate::features::http::auth::{MaybeStakedPeer, local_access_threshold};
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
 pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _staked_peer: StakedPeer,
+    MaybeStakedPeer(staked_peer): MaybeStakedPeer,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
 ) -> Result<impl IntoResponse, RouteError> {
     trace!(track_id = %track_id, spool_id = %spool_id, "http get_slice start");
+
+    if local_access_threshold(&state).0 > 0 && staked_peer.is_none() {
+        return Err(RouteError::Forbidden("staked peer required".into()));
+    }
 
     let track: Address = track_id
         .parse()
@@ -159,7 +163,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_spool_state(spool_id)
         .map_err(store_error)?
         .ok_or(RouteError::NotResponsible)?;
-    
+
     if spool_state.is_locked() {
         return Err(RouteError::NotResponsible);
     }
@@ -310,11 +314,11 @@ mod tests {
             State(AppState {
                 context: ctx.clone(),
             }),
-            StakedPeer {
+            MaybeStakedPeer(Some(crate::features::http::auth::StakedPeer {
                 node: ctx.node_address(),
                 tls_pubkey: ctx.tls_pubkey(),
                 stake: TAPE(1),
-            },
+            })),
             Path((track_address.to_string(), owned_spool)),
         )
         .await;

@@ -5,7 +5,7 @@ use solana_sdk::signer::Signer;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_add_to_blacklist_ix, build_advance_pool_ix, build_set_committee_size_ix,
-    build_set_spool_groups_ix, build_stake_with_pool_ix,
+    build_set_access_threshold_ix, build_set_spool_groups_ix, build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
 use tape_core::system::{BlacklistEntry, NodeStatus};
@@ -13,6 +13,7 @@ use tape_core::types::coin::TAPE;
 use tracing::trace;
 
 use crate::fixtures::err::adv_done;
+use crate::gateway::TestGateway;
 use crate::log::append_log;
 use crate::scenario::SimnetScenario;
 
@@ -84,6 +85,52 @@ impl SimnetScenario<'_> {
         Ok(self.stake_address(node_index))
     }
 
+    pub async fn stake_gateway(
+        &self,
+        gateway: &TestGateway,
+        amount_tape: u64,
+    ) -> Result<Pubkey> {
+        trace!(
+            gateway = gateway.id(),
+            amount_tape,
+            "submitting stake_gateway instruction"
+        );
+        let payer = self.harness.admin();
+        let authority = gateway.authority();
+        let (node_address, _) = node_pda(authority.into());
+        let (stake_address, _) = stake_pda(authority.into());
+        let amount = TAPE::parse(&amount_tape.to_string())
+            .map_err(|_| anyhow::anyhow!("invalid stake amount"))?;
+
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_HIGH)];
+        ixs.extend(build_authority_with_tokens_ix(
+            payer.pubkey().into(),
+            authority.into(),
+            amount,
+        )?);
+        ixs.push(build_stake_with_pool_ix(
+            payer.pubkey().into(),
+            authority.into(),
+            node_address,
+            amount,
+        ));
+        ixs.push(build_close_ata_ix(authority.into(), payer.pubkey().into())?);
+
+        self.harness
+            .chain()
+            .send_instructions_with_signers_and_advance(
+                payer,
+                ixs,
+                &[gateway.keypair()],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("stake gateway {}", gateway.id()))?;
+
+        trace!(gateway = gateway.id(), "stake_gateway completed");
+        Ok(stake_address.into())
+    }
+
     pub async fn advance_pool(&self, node_index: usize) -> Result<()> {
         trace!(node_index, "submitting advance_pool instruction");
         let payer = self.harness.admin();
@@ -118,6 +165,49 @@ impl SimnetScenario<'_> {
             trace!(node_index, "advance_pool idempotent completion");
         }
         trace!(node_index, "advance_pool_ok complete");
+        Ok(())
+    }
+
+    pub async fn advance_gateway_pool(&self, gateway: &TestGateway) -> Result<()> {
+        trace!(
+            gateway = gateway.id(),
+            "submitting advance_gateway_pool instruction"
+        );
+        let payer = self.harness.admin();
+        let current_epoch = self.read_system().await?.current_epoch;
+        let (node_address, _) = node_pda(gateway.authority().into());
+        let ix = build_advance_pool_ix(
+            payer.pubkey().into(),
+            node_address,
+            current_epoch,
+        );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
+
+        self.harness
+            .chain()
+            .send_instructions_and_advance(
+                payer,
+                vec![cu_ix, ix],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("advance pool for gateway {}", gateway.id()))?;
+
+        trace!(gateway = gateway.id(), "advance_gateway_pool completed");
+        Ok(())
+    }
+
+    pub async fn advance_gateway_pool_ok(&self, gateway: &TestGateway) -> Result<()> {
+        if let Err(error) = self.advance_gateway_pool(gateway).await {
+            if !adv_done(&error) {
+                return Err(error);
+            }
+            trace!(
+                gateway = gateway.id(),
+                "advance_gateway_pool idempotent completion"
+            );
+        }
+        trace!(gateway = gateway.id(), "advance_gateway_pool_ok complete");
         Ok(())
     }
 
@@ -220,6 +310,56 @@ impl SimnetScenario<'_> {
             committee_size,
             "set_committee_size completed"
         );
+        Ok(())
+    }
+
+    pub async fn set_access_threshold(
+        &self,
+        node_index: usize,
+        amount_tape: u64,
+    ) -> Result<()> {
+        let payer = self.harness.admin();
+        let node = &self.harness.nodes()[node_index];
+        let threshold = TAPE::parse(&amount_tape.to_string())
+            .map_err(|_| anyhow::anyhow!("invalid access threshold"))?;
+
+        let ix = build_set_access_threshold_ix(
+            payer.pubkey().into(),
+            node.authority().into(),
+            self.node_address(node_index).into(),
+            threshold,
+        );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
+
+        self.harness
+            .chain()
+            .send_instructions_with_signers_and_advance(
+                payer,
+                vec![cu_ix, ix],
+                &[node.keypair()],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("set access threshold for node {node_index}"))?;
+
+        trace!(
+            node_index,
+            amount_tape,
+            "set_access_threshold completed"
+        );
+        Ok(())
+    }
+
+    pub async fn set_access_threshold_many(
+        &self,
+        node_indices: &[usize],
+        amount_tape: u64,
+    ) -> Result<()> {
+        for &i in node_indices {
+            self.set_access_threshold(i, amount_tape)
+                .await
+                .with_context(|| format!("set access threshold for node {i}"))?;
+        }
         Ok(())
     }
 

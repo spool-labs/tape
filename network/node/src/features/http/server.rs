@@ -92,7 +92,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 api_routes::NODE_STATS_PATH,
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
-            // Staked-peer gated GET.
+            // Open metadata GETs used by SDK write flows. Payload-bearing
+            // inline data and slice reads remain gated.
             .route(
                 api_routes::TRACK_PATH,
                 get(handlers::track::catalog::get_track::<Db, Cluster, Blockchain>),
@@ -121,7 +122,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     .put(handlers::track::slice::put_slice::<Db, Cluster, Blockchain>)
                     .layer(slice_body_limit),
             )
-            // Staked-peer gated POST.
+            // Staked-peer gated POSTs. Snapshot/system tape catalogs are also
+            // listable for bootstrap catch-up.
             .route(
                 api_routes::TAPE_TRACK_FIND_PATH,
                 post(handlers::track::catalog::find_track::<Db, Cluster, Blockchain>)
