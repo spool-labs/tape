@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -9,129 +7,21 @@ use store::{Column, Direction, Store};
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_node::config::gateway::GatewayCacheConfig;
+use tape_store::TapeStore;
 use tape_store::columns::SliceCol;
 use tape_store::ops::SliceOps;
 use tape_store::types::{SliceKey, SliceValue};
-use tape_store::TapeStore;
-use tokio::sync::Notify;
 use tracing::{debug, warn};
 
-#[derive(Debug)]
-pub enum GatewayCacheError {
-    Store(String),
-    Codec(String),
-    State(String),
-}
-
-impl Display for GatewayCacheError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Store(message) => write!(f, "store error: {message}"),
-            Self::Codec(message) => write!(f, "codec error: {message}"),
-            Self::State(message) => write!(f, "cache state error: {message}"),
-        }
-    }
-}
-
-impl Error for GatewayCacheError {}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct SliceCacheKey {
-    pub spool_id: SpoolIndex,
-    pub track_address: Address,
-}
-
-impl SliceCacheKey {
-    pub fn new(spool_id: SpoolIndex, track_address: Address) -> Self {
-        Self {
-            spool_id,
-            track_address,
-        }
-    }
-}
-
-impl From<SliceKey> for SliceCacheKey {
-    fn from(key: SliceKey) -> Self {
-        Self::new(key.spool_id, key.track_address)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CacheSource {
-    Hit,
-    Miss,
-}
-
-#[derive(Debug)]
-pub struct CacheRead {
-    pub data: Vec<u8>,
-    pub source: CacheSource,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct CacheStats {
-    pub entries: usize,
-    pub bytes: u64,
-    pub inflight: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CacheEntry {
-    size: u64,
-    last_access: u64,
-}
-
-#[derive(Debug, Default)]
-struct CacheState {
-    entries: HashMap<SliceCacheKey, CacheEntry>,
-    total_bytes: u64,
-    clock: u64,
-}
-
-impl CacheState {
-    fn next_access(&mut self) -> u64 {
-        self.clock = self.clock.saturating_add(1);
-        self.clock
-    }
-
-    fn upsert(&mut self, key: SliceCacheKey, size: u64) {
-        let last_access = self.next_access();
-        if let Some(previous) = self.entries.insert(key, CacheEntry { size, last_access }) {
-            self.total_bytes = self.total_bytes.saturating_sub(previous.size);
-        }
-        self.total_bytes = self.total_bytes.saturating_add(size);
-    }
-
-    fn touch(&mut self, key: SliceCacheKey, size: u64) {
-        let last_access = self.next_access();
-        match self.entries.get_mut(&key) {
-            Some(entry) => {
-                if entry.size != size {
-                    self.total_bytes = self.total_bytes.saturating_sub(entry.size);
-                    self.total_bytes = self.total_bytes.saturating_add(size);
-                    entry.size = size;
-                }
-                entry.last_access = last_access;
-            }
-            None => {
-                self.entries.insert(key, CacheEntry { size, last_access });
-                self.total_bytes = self.total_bytes.saturating_add(size);
-            }
-        }
-    }
-
-    fn remove(&mut self, key: SliceCacheKey) -> Option<CacheEntry> {
-        let removed = self.entries.remove(&key)?;
-        self.total_bytes = self.total_bytes.saturating_sub(removed.size);
-        Some(removed)
-    }
-}
+use super::error::GatewayCacheError;
+use super::inflight::InflightFetches;
+use super::state::{CacheRead, CacheSource, CacheState, CacheStats, SliceCacheKey};
 
 pub struct GatewaySliceCache<Db: Store> {
     store: Arc<TapeStore<Db>>,
     config: GatewayCacheConfig,
     state: Mutex<CacheState>,
-    inflight: Mutex<HashMap<SliceCacheKey, Arc<Notify>>>,
+    inflight: InflightFetches,
     deleted_since_reclaim: AtomicUsize,
 }
 
@@ -145,7 +35,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
             store,
             config,
             state: Mutex::new(state),
-            inflight: Mutex::new(HashMap::new()),
+            inflight: InflightFetches::default(),
             deleted_since_reclaim: AtomicUsize::new(0),
         };
         let evicted = cache.evict_to_budget()?;
@@ -157,7 +47,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
 
     pub fn stats(&self) -> Result<CacheStats, GatewayCacheError> {
         let state = self.lock_state()?;
-        let inflight = self.lock_inflight()?.len();
+        let inflight = self.inflight.len()?;
         Ok(CacheStats {
             entries: state.entries.len(),
             bytes: state.total_bytes,
@@ -187,7 +77,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
                 });
             }
 
-            if let Some(wait) = self.join_or_start_fetch(key).map_err(E::from)? {
+            if let Some(wait) = self.inflight.join_or_start_fetch(key).map_err(E::from)? {
                 wait.notified().await;
                 continue;
             }
@@ -209,7 +99,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
                 None => Err(GatewayCacheError::State("missing cache fetcher".into()).into()),
             };
 
-            self.finish_fetch(key);
+            self.inflight.finish_fetch(key);
             return result;
         }
     }
@@ -291,30 +181,6 @@ impl<Db: Store> GatewaySliceCache<Db> {
         Ok(())
     }
 
-    fn join_or_start_fetch(
-        &self,
-        key: SliceCacheKey,
-    ) -> Result<Option<Arc<Notify>>, GatewayCacheError> {
-        let mut inflight = self.lock_inflight()?;
-        if let Some(wait) = inflight.get(&key) {
-            return Ok(Some(wait.clone()));
-        }
-
-        inflight.insert(key, Arc::new(Notify::new()));
-        Ok(None)
-    }
-
-    fn finish_fetch(&self, key: SliceCacheKey) {
-        let notify = self
-            .lock_inflight()
-            .ok()
-            .and_then(|mut inflight| inflight.remove(&key));
-
-        if let Some(notify) = notify {
-            notify.notify_waiters();
-        }
-    }
-
     fn evict_to_budget(&self) -> Result<usize, GatewayCacheError> {
         let max_bytes = self.config.max_bytes;
         let eviction_batch = self.config.eviction_batch.max(1);
@@ -382,14 +248,6 @@ impl<Db: Store> GatewaySliceCache<Db> {
         self.state
             .lock()
             .map_err(|_| GatewayCacheError::State("cache state lock poisoned".into()))
-    }
-
-    fn lock_inflight(
-        &self,
-    ) -> Result<MutexGuard<'_, HashMap<SliceCacheKey, Arc<Notify>>>, GatewayCacheError> {
-        self.inflight
-            .lock()
-            .map_err(|_| GatewayCacheError::State("in-flight cache lock poisoned".into()))
     }
 }
 

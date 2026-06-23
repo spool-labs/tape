@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::http::GatewayHttpServer;
+use crate::http::server::GatewayHttpServer;
 use crate::store::GatewayStoreManager;
 
 async fn drain_block_channel(

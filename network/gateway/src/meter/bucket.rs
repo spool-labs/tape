@@ -1,20 +1,11 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{StatusCode, header};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use rpc::Rpc;
-use store::Store;
 use tape_node::config::gateway::GatewayMeteringConfig;
-use tape_protocol::Api;
-use tracing::{debug, warn};
-
-use crate::http::AppState;
+use tracing::warn;
 
 const PRUNE_INTERVAL: usize = 1024;
 
@@ -31,7 +22,7 @@ struct MeterKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GatewayMeterDecision {
+pub(crate) enum GatewayMeterDecision {
     Allowed,
     RateLimited { retry_after: Duration },
 }
@@ -44,14 +35,14 @@ struct BucketState {
     last_seen: Instant,
 }
 
-pub struct GatewayMeter {
+pub(crate) struct GatewayMeter {
     config: GatewayMeteringConfig,
     buckets: Mutex<HashMap<MeterKey, BucketState>>,
     checks: AtomicUsize,
 }
 
 impl GatewayMeter {
-    pub fn new(config: GatewayMeteringConfig) -> Self {
+    pub(crate) fn new(config: GatewayMeteringConfig) -> Self {
         Self {
             config,
             buckets: Mutex::new(HashMap::new()),
@@ -59,7 +50,7 @@ impl GatewayMeter {
         }
     }
 
-    pub fn check_object_request(&self, ip: IpAddr) -> GatewayMeterDecision {
+    pub(crate) fn check_object_request(&self, ip: IpAddr) -> GatewayMeterDecision {
         self.check_bucket(
             MeterClass::ObjectRequest,
             ip,
@@ -69,7 +60,7 @@ impl GatewayMeter {
         )
     }
 
-    pub fn check_object_bytes(&self, ip: IpAddr, bytes: u64) -> GatewayMeterDecision {
+    pub(crate) fn check_object_bytes(&self, ip: IpAddr, bytes: u64) -> GatewayMeterDecision {
         let cost = (bytes as f64).max(1.0);
         self.check_bucket(
             MeterClass::ObjectBytes,
@@ -153,43 +144,6 @@ impl GatewayMeter {
     }
 }
 
-pub(crate) async fn object_read_metering<Db, Cluster, Blockchain>(
-    State(state): State<AppState<Db, Cluster, Blockchain>>,
-    req: Request,
-    next: Next,
-) -> Response
-where
-    Db: Store,
-    Cluster: Api,
-    Blockchain: Rpc,
-{
-    let ip = caller_ip(&req);
-    match state.meter.check_object_request(ip) {
-        GatewayMeterDecision::Allowed => next.run(req).await,
-        GatewayMeterDecision::RateLimited { retry_after } => {
-            debug!(%ip, retry_after_secs = retry_after.as_secs(), "gateway meter rejected object request");
-            rate_limited_response(retry_after)
-        }
-    }
-}
-
-pub(crate) fn caller_ip(req: &Request) -> IpAddr {
-    req.extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-}
-
-pub(crate) fn rate_limited_response(retry_after: Duration) -> Response {
-    let retry_after_secs = retry_after.as_secs().max(1).to_string();
-    (
-        StatusCode::TOO_MANY_REQUESTS,
-        [(header::RETRY_AFTER, retry_after_secs)],
-        "rate limited",
-    )
-        .into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -213,12 +167,18 @@ mod tests {
         let first = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let second = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
 
-        assert_eq!(meter.check_object_request(first), GatewayMeterDecision::Allowed);
+        assert_eq!(
+            meter.check_object_request(first),
+            GatewayMeterDecision::Allowed
+        );
         assert!(matches!(
             meter.check_object_request(first),
             GatewayMeterDecision::RateLimited { .. }
         ));
-        assert_eq!(meter.check_object_request(second), GatewayMeterDecision::Allowed);
+        assert_eq!(
+            meter.check_object_request(second),
+            GatewayMeterDecision::Allowed
+        );
     }
 
     #[test]
