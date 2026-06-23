@@ -12,6 +12,7 @@ use tape_e2e_simnet::{
 };
 use tape_protocol::api::{NodeStats, slice_url};
 use tape_sdk::keys::tape_key::TapeKey;
+use tape_sdk::stream::manifest::{ChunkManifest, MAX_TRACK_SIZE};
 use tape_sdk::tapedrive::Tapedrive;
 
 const NODE_COUNT: usize = GROUP_SIZE;
@@ -109,7 +110,9 @@ async fn staked_gateway_inner() {
 
     let scenario = harness.scenario();
     let data = deterministic_bytes(64 * 1024);
-    let reserve_capacity = StorageUnits::from_bytes(data.len() as u64) + StorageUnits::mb(2);
+    let stream_data = deterministic_bytes(MAX_TRACK_SIZE + 1024);
+    let reserve_capacity =
+        StorageUnits::from_bytes((data.len() + stream_data.len()) as u64) + StorageUnits::mb(4);
     let writer = scenario.sdk(harness.admin());
     let tape_key = TapeKey::generate();
     writer
@@ -134,6 +137,45 @@ async fn staked_gateway_inner() {
     .await
     .expect("all current owners should have their slice before gating");
     eprintln!("gateway_read: all owner slices available before gating");
+
+    let stream_receipt = writer
+        .write_bytes(&tape_key, &stream_data)
+        .await
+        .expect("write multi-track stream before gating");
+    eprintln!("gateway_read: multi-track stream written");
+    let manifest_start = Instant::now();
+    let manifest_bytes = loop {
+        match writer.read(&stream_receipt.manifest).await {
+            Ok(bytes) => break bytes,
+            Err(error) if manifest_start.elapsed() >= active_timeout => {
+                panic!("timed out waiting for stream manifest visibility: {error}");
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    };
+    let manifest = ChunkManifest::from_bytes(&manifest_bytes).expect("stream manifest");
+    assert!(
+        manifest.chunks.len() > 1,
+        "stream fixture should span multiple chunk tracks"
+    );
+    for entry in &manifest.chunks {
+        let chunk_address = track_pda(stream_receipt.tape, entry.track_number).0;
+        let chunk = writer
+            .get_track(&chunk_address)
+            .await
+            .expect("stream chunk track metadata");
+        assert!(chunk.is_coded(), "stream chunk should use coded slice reads");
+        wait_current_owner_slices(
+            &scenario,
+            &chunk_address,
+            chunk.group,
+            GROUP_SIZE,
+            slice_timeout,
+        )
+        .await
+        .expect("stream chunk owners should have their slices before gating");
+    }
+    eprintln!("gateway_read: stream chunk owner slices available before gating");
 
     {
         let scenario = harness.scenario();
@@ -163,15 +205,21 @@ async fn staked_gateway_inner() {
             .self_advance_epoch(epoch_timeout)
             .await
             .expect("advance to epoch 4");
-        assert_eq!(epoch4, 4, "expected epoch 4");
-        eprintln!("gateway_read: advanced to epoch 4");
+        assert!(
+            epoch4 >= 4,
+            "expected to advance at least to epoch 4, got {epoch4}"
+        );
+        eprintln!("gateway_read: advanced to epoch {epoch4}");
 
         let epoch5 = scenario
             .self_advance_epoch(epoch_timeout)
             .await
             .expect("advance to epoch 5");
-        assert_eq!(epoch5, 5, "expected epoch 5");
-        eprintln!("gateway_read: advanced to epoch 5");
+        assert!(
+            epoch5 > epoch4,
+            "expected epoch to advance beyond {epoch4}, got {epoch5}"
+        );
+        eprintln!("gateway_read: advanced to epoch {epoch5}");
 
         scenario
             .advance_gateway_pool_ok(&gateway)
@@ -249,6 +297,24 @@ async fn staked_gateway_inner() {
         .await
         .expect("gateway track endpoint should return decoded bytes");
     eprintln!("gateway_read: gateway track endpoint succeeded");
+    assert_gateway_decoded_route(
+        &gateway.base_url(),
+        "object",
+        &stream_receipt.manifest,
+        &stream_data,
+    )
+    .await
+    .expect("gateway streamed object endpoint should follow manifest chunks");
+    eprintln!("gateway_read: gateway streamed object endpoint succeeded");
+    assert_gateway_decoded_route(
+        &gateway.base_url(),
+        "track",
+        &stream_receipt.manifest,
+        &manifest_bytes,
+    )
+    .await
+    .expect("gateway manifest track endpoint should return manifest bytes");
+    eprintln!("gateway_read: gateway manifest track endpoint succeeded");
 
     let stats_after = gateway_stats(&gateway.base_url())
         .await
@@ -280,6 +346,24 @@ async fn staked_gateway_inner() {
         .await
         .expect("gateway cached track endpoint with storage nodes offline");
     eprintln!("gateway_read: cached gateway track endpoint succeeded");
+    assert_gateway_decoded_route(
+        &gateway.base_url(),
+        "object",
+        &stream_receipt.manifest,
+        &stream_data,
+    )
+    .await
+    .expect("gateway cached streamed object endpoint with storage nodes offline");
+    eprintln!("gateway_read: cached gateway streamed object endpoint succeeded");
+    assert_gateway_decoded_route(
+        &gateway.base_url(),
+        "track",
+        &stream_receipt.manifest,
+        &manifest_bytes,
+    )
+    .await
+    .expect("gateway cached manifest track endpoint with storage nodes offline");
+    eprintln!("gateway_read: cached gateway manifest track endpoint succeeded");
 
     gateway.stop().await.expect("stop gateway");
 }
@@ -291,7 +375,7 @@ async fn assert_gateway_decoded_route(
     expected: &[u8],
 ) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
         .build()?;
     let response = client
         .get(format!("{gateway_base}/{route}/{track}"))

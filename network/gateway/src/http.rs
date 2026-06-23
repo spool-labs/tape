@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::{FuturesUnordered, StreamExt};
+use futures::Stream;
 use rpc::Rpc;
 use store::{Column, Direction, Store};
 use tape_api::program::tapedrive::track_pda;
@@ -89,7 +90,6 @@ enum RouteError {
     NotFound,
     BadRequest(String),
     BadGateway(String),
-    RateLimited(Duration),
     Internal(String),
 }
 
@@ -102,7 +102,6 @@ impl IntoResponse for RouteError {
                 tracing::warn!("gateway upstream error: {message}");
                 (StatusCode::BAD_GATEWAY, "bad gateway").into_response()
             }
-            Self::RateLimited(retry_after) => rate_limited_response(retry_after),
             Self::Internal(message) => {
                 tracing::error!("gateway internal error: {message}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -110,6 +109,19 @@ impl IntoResponse for RouteError {
         }
     }
 }
+
+impl Display for RouteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("not found"),
+            Self::BadRequest(message) => write!(f, "bad request: {message}"),
+            Self::BadGateway(message) => write!(f, "bad gateway: {message}"),
+            Self::Internal(message) => write!(f, "internal error: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for RouteError {}
 
 impl From<GatewayCacheError> for RouteError {
     fn from(error: GatewayCacheError) -> Self {
@@ -518,7 +530,7 @@ async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
     })
 }
 
-async fn get_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
+async fn get_object<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Path(track_id): Path<String>,
@@ -540,13 +552,33 @@ async fn get_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let content_type = object_content_type(&state, track_addr)?;
-    let decoded = decode_logical_object(&state, remote, track_addr, track).await?;
-    state
-        .context
-        .metrics
-        .add_downloaded(decoded.bytes.len() as u64);
+    let decoded = decode_track_bytes(&state, track_addr, track).await?;
+    let Ok(manifest) = ChunkManifest::from_bytes(&decoded.bytes) else {
+        state
+            .context
+            .metrics
+            .add_downloaded(decoded.bytes.len() as u64);
+        return object_response(decoded.bytes, content_type, decoded.etag);
+    };
 
-    object_response(decoded.bytes, content_type, decoded.etag)
+    match state
+        .meter
+        .check_object_bytes(remote.ip(), manifest.total_size.to_bytes())
+    {
+        GatewayMeterDecision::Allowed => {}
+        GatewayMeterDecision::RateLimited { retry_after } => {
+            return Ok(rate_limited_response(retry_after));
+        }
+    }
+
+    let chunks = manifest_chunks(&state, track.tape, &manifest)?;
+    object_stream_response(
+        state,
+        chunks,
+        content_type,
+        decoded.etag,
+        manifest.total_size.to_bytes(),
+    )
 }
 
 async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -585,32 +617,22 @@ struct DecodedObject {
     etag: Hash,
 }
 
-async fn decode_logical_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    remote: SocketAddr,
+#[derive(Clone, Copy)]
+struct ManifestChunk {
+    index: usize,
     track_addr: Address,
     track: CompressedTrack,
-) -> Result<DecodedObject, RouteError> {
-    let decoded = decode_track_bytes(state, track_addr, track).await?;
-    let Ok(manifest) = ChunkManifest::from_bytes(&decoded.bytes) else {
-        return Ok(decoded);
-    };
+    expected_size: u64,
+}
 
-    match state
-        .meter
-        .check_object_bytes(remote.ip(), manifest.total_size.to_bytes())
-    {
-        GatewayMeterDecision::Allowed => {}
-        GatewayMeterDecision::RateLimited { retry_after } => {
-            return Err(RouteError::RateLimited(retry_after));
-        }
-    }
-
-    let total_size = usize::try_from(manifest.total_size.to_bytes())
-        .map_err(|_| RouteError::Internal("object is too large for this platform".into()))?;
-    let mut bytes = Vec::with_capacity(total_size);
+fn manifest_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    tape: Address,
+    manifest: &ChunkManifest,
+) -> Result<Vec<ManifestChunk>, RouteError> {
+    let mut chunks = Vec::with_capacity(manifest.chunks.len());
     for (chunk_index, entry) in manifest.chunks.iter().enumerate() {
-        let chunk_addr = track_pda(track.tape, entry.track_number).0.into();
+        let chunk_addr = track_pda(tape, entry.track_number).0.into();
         let chunk = track_with_pending(state, chunk_addr)?.ok_or(RouteError::NotFound)?;
         if !chunk.is_certified() {
             return Err(RouteError::BadGateway(format!(
@@ -618,25 +640,15 @@ async fn decode_logical_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
             )));
         }
 
-        let chunk_decoded = decode_track_bytes(state, chunk_addr, chunk).await?;
-        if chunk_decoded.bytes.len() as u64 != entry.size.to_bytes() {
-            return Err(RouteError::BadGateway(format!(
-                "manifest chunk {chunk_index} size mismatch"
-            )));
-        }
-        bytes.extend_from_slice(&chunk_decoded.bytes);
+        chunks.push(ManifestChunk {
+            index: chunk_index,
+            track_addr: chunk_addr,
+            track: chunk,
+            expected_size: entry.size.to_bytes(),
+        });
     }
 
-    if bytes.len() != total_size {
-        return Err(RouteError::BadGateway(
-            "manifest object size mismatch".into(),
-        ));
-    }
-
-    Ok(DecodedObject {
-        bytes,
-        etag: decoded.etag,
-    })
+    Ok(chunks)
 }
 
 async fn decode_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -761,6 +773,32 @@ fn object_response(
     content_type: ContentType,
     etag: Hash,
 ) -> Result<Response, RouteError> {
+    let headers = object_headers(bytes.len() as u64, content_type, etag)?;
+    Ok((StatusCode::OK, headers, bytes).into_response())
+}
+
+fn object_stream_response<Db, Cluster, Blockchain>(
+    state: AppState<Db, Cluster, Blockchain>,
+    chunks: Vec<ManifestChunk>,
+    content_type: ContentType,
+    etag: Hash,
+    content_length: u64,
+) -> Result<Response, RouteError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let headers = object_headers(content_length, content_type, etag)?;
+    let body = Body::from_stream(manifest_chunk_stream(state, chunks));
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
+fn object_headers(
+    content_length: u64,
+    content_type: ContentType,
+    etag: Hash,
+) -> Result<HeaderMap, RouteError> {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
@@ -768,7 +806,7 @@ fn object_response(
     );
     headers.insert(
         header::CONTENT_LENGTH,
-        HeaderValue::from_str(&bytes.len().to_string())
+        HeaderValue::from_str(&content_length.to_string())
             .map_err(|error| RouteError::Internal(format!("content length header: {error}")))?,
     );
     headers.insert(
@@ -781,7 +819,54 @@ fn object_response(
         HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
 
-    Ok((StatusCode::OK, headers, bytes).into_response())
+    Ok(headers)
+}
+
+fn manifest_chunk_stream<Db, Cluster, Blockchain>(
+    state: AppState<Db, Cluster, Blockchain>,
+    chunks: Vec<ManifestChunk>,
+) -> impl Stream<Item = Result<Bytes, RouteError>> + Send + 'static
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    futures::stream::try_unfold(
+        ObjectStreamState {
+            state,
+            chunks,
+            next: 0,
+        },
+        |mut stream| async move {
+            let Some(chunk) = stream.chunks.get(stream.next).copied() else {
+                return Ok(None);
+            };
+            stream.next += 1;
+
+            let decoded =
+                decode_track_bytes(&stream.state, chunk.track_addr, chunk.track).await?;
+            if decoded.bytes.len() as u64 != chunk.expected_size {
+                return Err(RouteError::BadGateway(format!(
+                    "manifest chunk {} size mismatch",
+                    chunk.index
+                )));
+            }
+
+            stream
+                .state
+                .context
+                .metrics
+                .add_downloaded(decoded.bytes.len() as u64);
+
+            Ok(Some((Bytes::from(decoded.bytes), stream)))
+        },
+    )
+}
+
+struct ObjectStreamState<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    state: AppState<Db, Cluster, Blockchain>,
+    chunks: Vec<ManifestChunk>,
+    next: usize,
 }
 
 async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
