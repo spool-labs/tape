@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use peer_http::{GatewayApi, HttpApi};
+use peer_http::HttpApi;
 use peer_manager::PeerManager;
 use rpc::Rpc;
 use rpc_client::RpcClient;
@@ -58,28 +58,6 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
             payer: None,
             metrics: Arc::new(Noop),
         }
-    }
-}
-
-/// Read-only constructor using a public gateway endpoint.
-impl<Blockchain: Rpc> Tapedrive<Blockchain, GatewayApi> {
-    /// Create a read-only Tapedrive client that sends storage reads through a
-    /// gateway URL instead of directly contacting storage nodes.
-    pub fn new_gateway_read_only(
-        rpc: Blockchain,
-        gateway_url: impl Into<String>,
-    ) -> Result<Self, TapedriveError> {
-        let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
-        let peer_manager = Arc::new(PeerManager::new());
-        let api = Arc::new(GatewayApi::new(gateway_url)?);
-        Ok(Self {
-            state: ArcSwap::from_pointee(ProtocolState::default()),
-            peer_manager,
-            api,
-            rpc: rpc_client,
-            payer: None,
-            metrics: Arc::new(Noop),
-        })
     }
 }
 
@@ -294,22 +272,5 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let result = read_into(self, manifest, writer).await;
         timer.finish_result(&result);
         result
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use rpc_litesvm::LiteSvmRpc;
-
-    use super::Tapedrive;
-
-    #[test]
-    fn gateway_constructor_builds_read_client() {
-        let client =
-            Tapedrive::new_gateway_read_only(LiteSvmRpc::new(), "http://127.0.0.1:8080///")
-                .unwrap();
-
-        assert_eq!(client.api.base_url(), "http://127.0.0.1:8080");
-        assert!(client.payer.is_none());
     }
 }

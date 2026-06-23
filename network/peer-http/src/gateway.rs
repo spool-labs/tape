@@ -41,6 +41,17 @@ impl GatewayApi {
         &self.base_url
     }
 
+    /// Fetch exact decoded bytes for one track from the gateway public API.
+    pub async fn get_track_bytes(&self, track: Address) -> Result<Vec<u8>, ApiError> {
+        self.get_bytes(gateway_track_url(&track.to_string())).await
+    }
+
+    /// Fetch logical object bytes for a representing track from the gateway
+    /// public API. If the track is an SDK chunk manifest, the gateway follows it.
+    pub async fn get_object_bytes(&self, track: Address) -> Result<Vec<u8>, ApiError> {
+        self.get_bytes(gateway_object_url(&track.to_string())).await
+    }
+
     fn url(&self, path: String) -> String {
         format!("{}{}", self.base_url, path)
     }
@@ -323,13 +334,27 @@ fn unsupported(op: &str) -> ApiError {
     ApiError::Other(format!("gateway api does not support {op}"))
 }
 
+fn gateway_track_url(track_id: &str) -> String {
+    format!("/track/{track_id}")
+}
+
+fn gateway_object_url(track_id: &str) -> String {
+    format!("/object/{track_id}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::GatewayApi;
+    use super::{GatewayApi, gateway_object_url, gateway_track_url};
 
     #[test]
     fn normalizes_base_url() {
         let api = GatewayApi::new("http://127.0.0.1:3000///").unwrap();
         assert_eq!(api.base_url(), "http://127.0.0.1:3000");
+    }
+
+    #[test]
+    fn decoded_byte_urls_are_unversioned() {
+        assert_eq!(gateway_track_url("abc"), "/track/abc");
+        assert_eq!(gateway_object_url("abc"), "/object/abc");
     }
 }
