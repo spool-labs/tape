@@ -264,7 +264,11 @@ impl SolanaRpc {
         }
 
         if let Some(tx_error) = err.get_transaction_error() {
-            return RpcError::Transaction(tx_error.to_string());
+            let tx_error = tx_error.to_string();
+            if err_str.contains(&tx_error) {
+                return RpcError::Transaction(err_str);
+            }
+            return RpcError::Transaction(format!("{tx_error}; {err_str}"));
         }
 
         if err_str.contains("Transaction simulation failed") {
