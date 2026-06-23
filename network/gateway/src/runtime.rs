@@ -64,10 +64,12 @@ where
     let (senders, receivers) = downstream_channels();
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
+    let http_server =
+        GatewayHttpServer::new(context.clone(), config.http.clone(), cancel.clone())?;
 
     supervisor.spawn(
         ServiceName::HttpServer,
-        GatewayHttpServer::new(context.clone(), config.http.clone(), cancel.clone()).run(),
+        http_server.run(),
     );
 
     supervisor.spawn(

@@ -11,6 +11,7 @@ use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed2
 
 use crate::core::error::NodeError;
 use super::{
+    gateway::GatewayConfig,
     helpers::{deserialize_pathbuf, expand_path},
     http::{HttpConfig, NetworkConfig},
     https::HttpsConfig,
@@ -73,6 +74,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub metrics: MetricsConfig,
 
+    /// Gateway-only settings. Ignored by storage-node runtime.
+    #[serde(default)]
+    pub gateway: GatewayConfig,
+
     /// Genesis configuration.
     #[serde(default)]
     pub genesis_preset: GenesisPreset,
@@ -112,6 +117,7 @@ impl Default for NodeConfig {
             recovery: RecoveryConfig::default(),
             logging: LoggingConfig::default(),
             metrics: MetricsConfig::default(),
+            gateway: GatewayConfig::default(),
             genesis_preset: GenesisPreset::default(),
         }
     }
@@ -154,6 +160,108 @@ impl NodeConfig {
                 "node.commission must be <= {}",
                 BasisPoints::MAX
             )));
+        }
+
+        if self.gateway.cache.eviction_batch == 0 {
+            return Err(ConfigError::Invalid(
+                "gateway.cache.eviction_batch must be greater than zero".into(),
+            ));
+        }
+
+        if self.gateway.metering.object_read_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "gateway.metering.object_read_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.gateway.metering.object_read_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "gateway.metering.object_read_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.gateway.metering.object_read_bytes_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "gateway.metering.object_read_bytes_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.gateway.metering.object_read_byte_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "gateway.metering.object_read_byte_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.gateway.metering.over_budget_penalty_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "gateway.metering.over_budget_penalty_secs must be greater than zero".into(),
+            ));
+        }
+
+        if self.gateway.metering.stale_entry_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "gateway.metering.stale_entry_secs must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.anonymous_write_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_write_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.anonymous_write_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_write_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.anonymous_read_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_read_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.anonymous_read_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_read_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.probe_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.probe_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.probe_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.probe_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.trusted_metered_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.trusted_metered_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.trusted_metered_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.trusted_metered_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.over_budget_penalty_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.over_budget_penalty_secs must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.stale_entry_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.stale_entry_secs must be greater than zero".into(),
+            ));
         }
 
         if let Some(host) = &self.network.host {
@@ -286,6 +394,17 @@ http:
   concurrency: 1024
   slice_max_bytes: 2097152
   peer_max_bytes: 524288
+  admission:
+    anonymous_write_per_sec: 2
+    anonymous_write_burst: 3
+    anonymous_read_per_sec: 11
+    anonymous_read_burst: 22
+    probe_per_sec: 33
+    probe_burst: 44
+    trusted_metered_per_sec: 200
+    trusted_metered_burst: 400
+    over_budget_penalty_secs: 9
+    stale_entry_secs: 90
 https:
   listen: "0.0.0.0:3430"
   identity_keypair: "/etc/tape/tls.json"
@@ -299,6 +418,18 @@ store:
     track_batch: 64
     slice_batch: 32
     reclaim_min_deleted_slices: 40
+gateway:
+  cache:
+    max_bytes: 1073741824
+    eviction_batch: 16
+    reclaim_after_deleted_slices: 64
+  metering:
+    object_read_per_sec: 12
+    object_read_burst: 24
+    object_read_bytes_per_sec: 1048576
+    object_read_byte_burst: 2097152
+    over_budget_penalty_secs: 8
+    stale_entry_secs: 120
 recovery:
   max_workers: 42
   sync_batch: 99
@@ -329,6 +460,16 @@ metrics:
         assert_eq!(config.http.concurrency, 1024);
         assert_eq!(config.http.slice_max_bytes, 2 * 1024 * 1024);
         assert_eq!(config.http.peer_max_bytes, 512 * 1024);
+        assert_eq!(config.http.admission.anonymous_write_per_sec, 2);
+        assert_eq!(config.http.admission.anonymous_write_burst, 3);
+        assert_eq!(config.http.admission.anonymous_read_per_sec, 11);
+        assert_eq!(config.http.admission.anonymous_read_burst, 22);
+        assert_eq!(config.http.admission.probe_per_sec, 33);
+        assert_eq!(config.http.admission.probe_burst, 44);
+        assert_eq!(config.http.admission.trusted_metered_per_sec, 200);
+        assert_eq!(config.http.admission.trusted_metered_burst, 400);
+        assert_eq!(config.http.admission.over_budget_penalty_secs, 9);
+        assert_eq!(config.http.admission.stale_entry_secs, 90);
         assert_eq!(config.https.listen.to_string(), "0.0.0.0:3430");
         assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.json"));
         assert!(!config.https.auto_update);
@@ -339,6 +480,15 @@ metrics:
         assert_eq!(config.store.gc.track_batch, 64);
         assert_eq!(config.store.gc.slice_batch, 32);
         assert_eq!(config.store.gc.reclaim_min_deleted_slices, 40);
+        assert_eq!(config.gateway.cache.max_bytes, 1024 * 1024 * 1024);
+        assert_eq!(config.gateway.cache.eviction_batch, 16);
+        assert_eq!(config.gateway.cache.reclaim_after_deleted_slices, 64);
+        assert_eq!(config.gateway.metering.object_read_per_sec, 12);
+        assert_eq!(config.gateway.metering.object_read_burst, 24);
+        assert_eq!(config.gateway.metering.object_read_bytes_per_sec, 1024 * 1024);
+        assert_eq!(config.gateway.metering.object_read_byte_burst, 2 * 1024 * 1024);
+        assert_eq!(config.gateway.metering.over_budget_penalty_secs, 8);
+        assert_eq!(config.gateway.metering.stale_entry_secs, 120);
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.sync_batch, 99);
         assert_eq!(config.recovery.scan_batch, 77);

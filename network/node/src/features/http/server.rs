@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,6 +31,7 @@ use crate::config::http::HttpConfig;
 use crate::config::https::HttpsConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
+use crate::features::http::admission;
 use crate::features::http::auth::authorize_peer;
 use crate::features::http::handlers;
 use crate::features::http::peer_identity::PeerIdentityAcceptor;
@@ -86,63 +87,115 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             // Anonymous monitoring.
             .route(
                 api_routes::NODE_HEALTH_PATH,
-                get(handlers::health::health::<Db, Cluster, Blockchain>),
+                get(handlers::health::health::<Db, Cluster, Blockchain>).layer(
+                    from_fn_with_state(
+                        state.clone(),
+                        admission::probe_admission::<Db, Cluster, Blockchain>,
+                    ),
+                ),
             )
             .route(
                 api_routes::NODE_STATS_PATH,
-                get(handlers::health::stats::<Db, Cluster, Blockchain>),
+                get(handlers::health::stats::<Db, Cluster, Blockchain>).layer(
+                    from_fn_with_state(
+                        state.clone(),
+                        admission::probe_admission::<Db, Cluster, Blockchain>,
+                    ),
+                ),
             )
             // Open metadata GETs used by SDK write flows. Payload-bearing
             // inline data and slice reads remain gated.
             .route(
                 api_routes::TRACK_PATH,
-                get(handlers::track::catalog::get_track::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track::<Db, Cluster, Blockchain>).layer(
+                    from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    ),
+                ),
             )
             .route(
                 api_routes::TRACK_DATA_PATH,
-                get(handlers::track::catalog::get_track_data::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track_data::<Db, Cluster, Blockchain>)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::TRACK_PROOF_PATH,
-                get(handlers::track::catalog::get_track_proof::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track_proof::<Db, Cluster, Blockchain>)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::TAPE_TRACK_PATH,
-                get(handlers::track::catalog::get_track_by_number::<Db, Cluster, Blockchain>),
+                get(handlers::track::catalog::get_track_by_number::<Db, Cluster, Blockchain>)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             // Open direct-write support.
             .route(
                 api_routes::TRACK_SIGN_PATH,
-                get(handlers::track::sign::certify::<Db, Cluster, Blockchain>),
+                get(handlers::track::sign::certify::<Db, Cluster, Blockchain>).layer(
+                    from_fn_with_state(
+                        state.clone(),
+                        admission::direct_write_admission::<Db, Cluster, Blockchain>,
+                    ),
+                ),
             )
             // Staked-peer gated slice GET + self-authorizing PUT.
             .route(
                 api_routes::TRACK_SLICE_PATH,
                 get(handlers::track::slice::get_slice::<Db, Cluster, Blockchain>)
                     .put(handlers::track::slice::put_slice::<Db, Cluster, Blockchain>)
-                    .layer(slice_body_limit),
+                    .layer(slice_body_limit)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::slice_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             // Staked-peer gated POSTs. Snapshot/system tape catalogs are also
             // listable for bootstrap catch-up.
             .route(
                 api_routes::TAPE_TRACK_FIND_PATH,
                 post(handlers::track::catalog::find_track::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit.clone())
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::TAPE_TRACK_LIST_PATH,
                 post(handlers::track::catalog::list_tracks_by_tape::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit.clone())
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::TAPE_OBJECT_LIST_PATH,
                 post(handlers::track::catalog::list_objects::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit.clone())
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::TRACK_REPAIR_PATH,
                 post(handlers::track::repair::repair::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit.clone())
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             // Active-peer only: handler signatures carry `_active_peer: ActivePeer`,
             // which 403s when the extension isn't present (plaintext listener,
@@ -150,29 +203,48 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::SYNC_SLICES_PATH,
                 post(handlers::track::sync::sync_slices::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit.clone())
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::SYNC_TRACKS_PATH,
                 post(handlers::track::sync::sync_tracks::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit.clone())
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::VOTE_PATH,
                 post(handlers::vote::vote::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit.clone())
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             .route(
                 api_routes::TRACK_INCONSISTENCY_PATH,
                 post(handlers::track::inconsistency::invalidate::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit),
+                    .layer(peer_body_limit)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             );
 
         #[cfg(feature = "metrics")]
         if self.metrics_enabled {
             router = router.route(
                 api_routes::NODE_METRICS_PATH,
-                get(handlers::metrics::metrics),
+                get(handlers::metrics::metrics).layer(from_fn_with_state(
+                    state.clone(),
+                    admission::probe_admission::<Db, Cluster, Blockchain>,
+                )),
             );
         }
 
@@ -241,7 +313,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 match tokio::net::TcpListener::bind(http_listen).await {
                     Ok(listener) => {
                         info!(listen = %http_listen, "http listener bound");
-                        let _ = axum::serve(listener, http_router)
+                        let _ = axum::serve(
+                            listener,
+                            http_router.into_make_service_with_connect_info::<SocketAddr>(),
+                        )
                             .with_graceful_shutdown(async move {
                                 http_cancel.cancelled().await;
                             })
@@ -258,7 +333,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let result = axum_server::bind(https_listen)
             .acceptor(acceptor)
             .handle(https_handle)
-            .serve(https_router.into_make_service())
+            .serve(https_router.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .map_err(NodeError::Io);
 

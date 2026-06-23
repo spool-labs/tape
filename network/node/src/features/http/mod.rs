@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod auth;
 mod error;
 pub mod handlers;

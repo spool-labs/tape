@@ -9102,6 +9102,7 @@ version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
+ "futures",
  "rpc",
  "store",
  "store-memory",
@@ -9110,6 +9111,7 @@ dependencies = [
  "tape-crypto",
  "tape-node",
  "tape-protocol",
+ "tape-sdk",
  "tape-store",
  "tokio",
  "tokio-util",

@@ -26,6 +26,7 @@ use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
+use crate::features::http::admission::AdmissionLimiter;
 
 pub type AppContext = Arc<NodeContext<RocksStore, HttpApi, SolanaRpc>>;
 
@@ -38,6 +39,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub pending: Arc<PendingTracks>,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
+    pub admission: Arc<AdmissionLimiter>,
     pub metrics: NodeMetrics,
 
     node_id: NodeId,
@@ -201,6 +203,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
     pub async fn build(self) -> Result<Arc<NodeContext<Db, Cluster, Blockchain>>, NodeError> {
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         let (node_address, _) = node_pda(self.keypair.address());
+        let admission = Arc::new(AdmissionLimiter::new(self.config.http.admission.clone()));
 
         self.store
             .set_node_id(node_id)
@@ -224,6 +227,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             pending: Arc::new(PendingTracks::new()),
             peer_manager: self.peer_manager,
             api: self.api,
+            admission,
             metrics: NodeMetrics::default(),
             reclaim_pending: AtomicBool::new(false),
         }))

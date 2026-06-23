@@ -1,26 +1,31 @@
 use std::collections::BTreeMap;
 use std::fmt::Display;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::{DefaultBodyLimit, Path, Request, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures::stream::{FuturesUnordered, StreamExt};
 use rpc::Rpc;
 use store::{Column, Direction, Store};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::GROUP_SIZE;
+use tape_core::object::object_etag;
+use tape_core::track::blob::BlobEncoding;
 use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
-use tape_core::types::{SpoolIndex, TrackNumber};
+use tape_core::types::{ContentType, SpoolIndex, TrackNumber};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
+use tape_crypto::hash::hash;
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf};
 use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;
@@ -31,9 +36,13 @@ use tape_protocol::api::{
     ListTracksByTapeRequest, ListTracksByTapeResponse, NodeStats, ObjectListItem,
     TrackDataResponse, TrackProofResponse, TrackResponse,
 };
+use tape_sdk::codec::decoder::BlobDecoder;
+use tape_sdk::stream::manifest::ChunkManifest;
 use tape_store::TapeStore;
 use tape_store::columns::SliceCol;
-use tape_store::ops::{MetaOps, ObjectListOps, SliceOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::ops::{
+    MetaOps, ObjectListOps, ObjectMetadataOps, TapeOps, TrackDataOps, TrackOps,
+};
 use tape_store::types::SliceValue;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
@@ -41,25 +50,36 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower::load_shed::LoadShedLayer;
 use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+use crate::cache::{CacheRead, CacheSource, GatewayCacheError, GatewaySliceCache};
+use crate::meter::{GatewayMeter, GatewayMeterDecision, rate_limited_response};
 
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
 const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
+const OBJECT_PATH: &str = "/object/{track_id}";
+const TRACK_BYTES_PATH: &str = "/track/{track_id}";
 
 pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    slice_cache: Arc<GatewaySliceCache<Db>>,
+    meter: Arc<GatewayMeter>,
     http_config: HttpConfig,
     cancel: CancellationToken,
 }
 
-struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+pub(crate) struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    pub(crate) context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    pub(crate) slice_cache: Arc<GatewaySliceCache<Db>>,
+    pub(crate) meter: Arc<GatewayMeter>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, Blockchain> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
+            slice_cache: self.slice_cache.clone(),
+            meter: self.meter.clone(),
         }
     }
 }
@@ -69,6 +89,7 @@ enum RouteError {
     NotFound,
     BadRequest(String),
     BadGateway(String),
+    RateLimited(Duration),
     Internal(String),
 }
 
@@ -81,11 +102,18 @@ impl IntoResponse for RouteError {
                 tracing::warn!("gateway upstream error: {message}");
                 (StatusCode::BAD_GATEWAY, "bad gateway").into_response()
             }
+            Self::RateLimited(retry_after) => rate_limited_response(retry_after),
             Self::Internal(message) => {
                 tracing::error!("gateway internal error: {message}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
             }
         }
+    }
+}
+
+impl From<GatewayCacheError> for RouteError {
+    fn from(error: GatewayCacheError) -> Self {
+        Self::Internal(error.to_string())
     }
 }
 
@@ -99,21 +127,45 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         http_config: HttpConfig,
         cancel: CancellationToken,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, NodeError> {
+        let slice_cache = Arc::new(
+            GatewaySliceCache::new(context.store.clone(), context.config.gateway.cache.clone())
+                .map_err(|error| NodeError::Store(error.to_string()))?,
+        );
+        let meter = Arc::new(GatewayMeter::new(context.config.gateway.metering.clone()));
+
+        Ok(Self {
             context,
+            slice_cache,
+            meter,
             http_config,
             cancel,
-        }
+        })
     }
 
     fn build_router(&self) -> Router {
         let state = AppState {
             context: self.context.clone(),
+            slice_cache: self.slice_cache.clone(),
+            meter: self.meter.clone(),
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
         Router::new()
+            .route(
+                OBJECT_PATH,
+                get(get_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                    state.clone(),
+                    crate::meter::object_read_metering::<Db, Cluster, Blockchain>,
+                )),
+            )
+            .route(
+                TRACK_BYTES_PATH,
+                get(get_track_bytes::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                    state.clone(),
+                    crate::meter::object_read_metering::<Db, Cluster, Blockchain>,
+                )),
+            )
             .route(tape_protocol::api::NODE_HEALTH_PATH, get(health))
             .route(
                 tape_protocol::api::NODE_STATS_PATH,
@@ -175,7 +227,7 @@ where
 
         info!(listen = %listen, "gateway http listener bound");
 
-        axum::serve(listener, router)
+        axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async move {
                 self.cancel.cancelled().await;
             })
@@ -466,29 +518,301 @@ async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
     })
 }
 
+async fn get_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Path(track_id): Path<String>,
+) -> Result<Response, RouteError> {
+    let track_addr = parse_address(&track_id, "track id")?;
+    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    if !track.is_certified() {
+        return Err(RouteError::BadRequest("track is not certified".into()));
+    }
+
+    match state
+        .meter
+        .check_object_bytes(remote.ip(), track.size.to_bytes())
+    {
+        GatewayMeterDecision::Allowed => {}
+        GatewayMeterDecision::RateLimited { retry_after } => {
+            return Ok(rate_limited_response(retry_after));
+        }
+    }
+
+    let content_type = object_content_type(&state, track_addr)?;
+    let decoded = decode_logical_object(&state, remote, track_addr, track).await?;
+    state
+        .context
+        .metrics
+        .add_downloaded(decoded.bytes.len() as u64);
+
+    object_response(decoded.bytes, content_type, decoded.etag)
+}
+
+async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Path(track_id): Path<String>,
+) -> Result<Response, RouteError> {
+    let track_addr = parse_address(&track_id, "track id")?;
+    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    if !track.is_certified() {
+        return Err(RouteError::BadRequest("track is not certified".into()));
+    }
+
+    match state
+        .meter
+        .check_object_bytes(remote.ip(), track.size.to_bytes())
+    {
+        GatewayMeterDecision::Allowed => {}
+        GatewayMeterDecision::RateLimited { retry_after } => {
+            return Ok(rate_limited_response(retry_after));
+        }
+    }
+
+    let content_type = object_content_type(&state, track_addr)?;
+    let decoded = decode_track_bytes(&state, track_addr, track).await?;
+    state
+        .context
+        .metrics
+        .add_downloaded(decoded.bytes.len() as u64);
+
+    object_response(decoded.bytes, content_type, decoded.etag)
+}
+
+struct DecodedObject {
+    bytes: Vec<u8>,
+    etag: Hash,
+}
+
+async fn decode_logical_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    remote: SocketAddr,
+    track_addr: Address,
+    track: CompressedTrack,
+) -> Result<DecodedObject, RouteError> {
+    let decoded = decode_track_bytes(state, track_addr, track).await?;
+    let Ok(manifest) = ChunkManifest::from_bytes(&decoded.bytes) else {
+        return Ok(decoded);
+    };
+
+    match state
+        .meter
+        .check_object_bytes(remote.ip(), manifest.total_size.to_bytes())
+    {
+        GatewayMeterDecision::Allowed => {}
+        GatewayMeterDecision::RateLimited { retry_after } => {
+            return Err(RouteError::RateLimited(retry_after));
+        }
+    }
+
+    let total_size = usize::try_from(manifest.total_size.to_bytes())
+        .map_err(|_| RouteError::Internal("object is too large for this platform".into()))?;
+    let mut bytes = Vec::with_capacity(total_size);
+    for (chunk_index, entry) in manifest.chunks.iter().enumerate() {
+        let chunk_addr = track_pda(track.tape, entry.track_number).0.into();
+        let chunk = track_with_pending(state, chunk_addr)?.ok_or(RouteError::NotFound)?;
+        if !chunk.is_certified() {
+            return Err(RouteError::BadGateway(format!(
+                "manifest chunk {chunk_index} is not certified"
+            )));
+        }
+
+        let chunk_decoded = decode_track_bytes(state, chunk_addr, chunk).await?;
+        if chunk_decoded.bytes.len() as u64 != entry.size.to_bytes() {
+            return Err(RouteError::BadGateway(format!(
+                "manifest chunk {chunk_index} size mismatch"
+            )));
+        }
+        bytes.extend_from_slice(&chunk_decoded.bytes);
+    }
+
+    if bytes.len() != total_size {
+        return Err(RouteError::BadGateway(
+            "manifest object size mismatch".into(),
+        ));
+    }
+
+    Ok(DecodedObject {
+        bytes,
+        etag: decoded.etag,
+    })
+}
+
+async fn decode_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    track: CompressedTrack,
+) -> Result<DecodedObject, RouteError> {
+    let track_data = track_data_with_pending(state, track_addr)?.ok_or(RouteError::NotFound)?;
+
+    if track.is_inline() {
+        let BlobData::Inline(bytes) = track_data else {
+            return Err(RouteError::BadRequest("track data is not inline".into()));
+        };
+        if hash(&bytes) != track.value_hash {
+            return Err(RouteError::Internal("inline track hash mismatch".into()));
+        }
+
+        return Ok(DecodedObject {
+            bytes,
+            etag: object_etag(&track, None),
+        });
+    }
+
+    if !track.is_coded() {
+        return Err(RouteError::BadRequest("unsupported track kind".into()));
+    }
+
+    let BlobData::Coded(blob) = track_data else {
+        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
+    };
+    if blob.get_hash() != track.value_hash || blob.commitment_root() != blob.commitment {
+        return Err(RouteError::Internal("blob commitment mismatch".into()));
+    }
+
+    let slices = fetch_decoding_slices(state, track_addr, track, blob).await?;
+    let mut decoder = BlobDecoder::with_profile(blob.profile);
+    let mut bytes = decoder
+        .decode(slices)
+        .map_err(|error| RouteError::BadGateway(format!("decode object: {error}")))?;
+    let logical_size = usize::try_from(blob.size.to_bytes())
+        .map_err(|_| RouteError::Internal("object is too large for this platform".into()))?;
+    if bytes.len() < logical_size {
+        return Err(RouteError::BadGateway("decoded object is truncated".into()));
+    }
+    bytes.truncate(logical_size);
+
+    Ok(DecodedObject {
+        bytes,
+        etag: object_etag(&track, Some(&blob)),
+    })
+}
+
+async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    track: CompressedTrack,
+    blob: BlobEncoding,
+) -> Result<Vec<(SpoolIndex, Vec<u8>)>, RouteError> {
+    let k = blob.profile.k() as usize;
+    if k == 0 || k > GROUP_SIZE {
+        return Err(RouteError::Internal("invalid blob encoding profile".into()));
+    }
+
+    let peers = state.context.state().group_peers(track.group);
+    if peers.is_empty() {
+        return Err(RouteError::BadGateway("no peers for track group".into()));
+    }
+
+    let mut fetches = FuturesUnordered::new();
+    for (spool_id, _) in peers {
+        fetches.push(async move {
+            let read = read_cached_slice(state, track_addr, spool_id).await?;
+            Ok::<_, RouteError>((spool_id, read.data))
+        });
+    }
+
+    let mut slices = Vec::with_capacity(k);
+    while let Some(result) = fetches.next().await {
+        match result {
+            Ok((spool_id, data)) => {
+                let Some(position) = track.group.position_of(spool_id) else {
+                    warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice outside track group");
+                    continue;
+                };
+                if position >= GROUP_SIZE || hash_leaf(&data) != blob.leaves[position] {
+                    warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice with mismatched leaf hash");
+                    continue;
+                }
+
+                slices.push((SpoolIndex(position as u64), data));
+                if slices.len() >= k {
+                    return Ok(slices);
+                }
+            }
+            Err(error) => {
+                debug!(track = %track_addr, ?error, "gateway object slice fetch failed");
+            }
+        }
+    }
+
+    Err(RouteError::BadGateway(
+        "insufficient verified slices for object decode".into(),
+    ))
+}
+
+fn object_content_type<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+) -> Result<ContentType, RouteError> {
+    let content_type = state
+        .context
+        .store
+        .get_object_metadata(track_addr)
+        .map_err(store_error)?
+        .map(|metadata| metadata.content_type)
+        .unwrap_or(ContentType::Unknown);
+    Ok(content_type)
+}
+
+fn object_response(
+    bytes: Vec<u8>,
+    content_type: ContentType,
+    etag: Hash,
+) -> Result<Response, RouteError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(content_type.to_str()),
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&bytes.len().to_string())
+            .map_err(|error| RouteError::Internal(format!("content length header: {error}")))?,
+    );
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{etag}\""))
+            .map_err(|error| RouteError::Internal(format!("etag header: {error}")))?,
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+
+    Ok((StatusCode::OK, headers, bytes).into_response())
+}
+
 async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
 ) -> Result<impl IntoResponse, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
-
-    if let Some(data) = state
-        .context
-        .store
-        .get_slice(spool_id, track_addr)
-        .map_err(store_error)?
-    {
-        state.context.metrics.add_downloaded(data.len() as u64);
-        return Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], data));
-    }
-
-    let data = fetch_and_cache_slice(&state, track_addr, spool_id).await?;
+    let read = read_cached_slice(&state, track_addr, spool_id).await?;
+    let data = read.data;
     state.context.metrics.add_downloaded(data.len() as u64);
+    if read.source == CacheSource::Hit {
+        debug!(track = %track_addr, spool = spool_id.0, bytes = data.len(), "gateway served cached slice");
+    }
 
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], data))
 }
 
-async fn fetch_and_cache_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+async fn read_cached_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    spool_id: SpoolIndex,
+) -> Result<CacheRead, RouteError> {
+    state
+        .slice_cache
+        .get_or_insert_with(spool_id, track_addr, || {
+            fetch_slice_from_owner(state, track_addr, spool_id)
+        })
+        .await
+}
+
+async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
     spool_id: SpoolIndex,
@@ -533,18 +857,12 @@ async fn fetch_and_cache_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadGateway("slice leaf hash mismatch".into()));
     }
 
-    state
-        .context
-        .store
-        .put_slice(spool_id, track_addr, response.data.clone())
-        .map_err(store_error)?;
-
     debug!(
         track = %track_addr,
         spool = spool_id.0,
         owner = %owner,
         bytes = response.data.len(),
-        "gateway cached slice"
+        "gateway fetched slice from owner"
     );
 
     Ok(response.data)

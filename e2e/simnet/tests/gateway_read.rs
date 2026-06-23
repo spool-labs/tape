@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
-use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::track_pda;
+use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::address::Address;
@@ -240,6 +241,15 @@ async fn staked_gateway_inner() {
     eprintln!("gateway_read: gateway SDK read succeeded");
     assert_eq!(gateway_read, data, "gateway read should reconstruct data");
 
+    assert_gateway_decoded_route(&gateway.base_url(), "object", &track_address, &data)
+        .await
+        .expect("gateway object endpoint should return decoded bytes");
+    eprintln!("gateway_read: gateway object endpoint succeeded");
+    assert_gateway_decoded_route(&gateway.base_url(), "track", &track_address, &data)
+        .await
+        .expect("gateway track endpoint should return decoded bytes");
+    eprintln!("gateway_read: gateway track endpoint succeeded");
+
     let stats_after = gateway_stats(&gateway.base_url())
         .await
         .expect("gateway stats after read");
@@ -247,17 +257,9 @@ async fn staked_gateway_inner() {
         stats_after.slices_stored > 0,
         "gateway read should cache at least one slice"
     );
-
-    warm_all_gateway_slices(&gateway.base_url(), &track_address, track.group)
-        .await
-        .expect("warm all gateway slices");
-    eprintln!("gateway_read: gateway cache warmed");
-    let warmed_stats = gateway_stats(&gateway.base_url())
-        .await
-        .expect("gateway stats after warmup");
-    assert_eq!(
-        warmed_stats.slices_stored, GROUP_SIZE as u64,
-        "explicit warmup should cache every group slice"
+    assert!(
+        stats_after.slices_stored >= u64::from(EncodingProfile::clay_default().k()),
+        "gateway should cache enough slices for offline decode"
     );
 
     harness.stop_all().await.expect("stop gated storage nodes");
@@ -270,7 +272,73 @@ async fn staked_gateway_inner() {
     assert_eq!(cached_read, data, "cached gateway read should match data");
     eprintln!("gateway_read: cached gateway read succeeded");
 
+    assert_gateway_decoded_route(&gateway.base_url(), "object", &track_address, &data)
+        .await
+        .expect("gateway cached object endpoint with storage nodes offline");
+    eprintln!("gateway_read: cached gateway object endpoint succeeded");
+    assert_gateway_decoded_route(&gateway.base_url(), "track", &track_address, &data)
+        .await
+        .expect("gateway cached track endpoint with storage nodes offline");
+    eprintln!("gateway_read: cached gateway track endpoint succeeded");
+
     gateway.stop().await.expect("stop gateway");
+}
+
+async fn assert_gateway_decoded_route(
+    gateway_base: &str,
+    route: &str,
+    track: &Address,
+    expected: &[u8],
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let response = client
+        .get(format!("{gateway_base}/{route}/{track}"))
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "gateway {route} endpoint should return 200"
+    );
+
+    let headers = response.headers().clone();
+    assert_eq!(
+        headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/octet-stream"),
+        "unnamed track should use fallback content type"
+    );
+    let expected_content_length = expected.len().to_string();
+    assert_eq!(
+        headers
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_content_length.as_str()),
+        "object content length should match decoded bytes"
+    );
+    let etag = headers
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("object response should include etag");
+    assert!(
+        etag.starts_with('"') && etag.ends_with('"'),
+        "etag should be quoted"
+    );
+    assert_eq!(
+        headers
+            .get(reqwest::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=31536000, immutable"),
+        "immutable track should be edge-cacheable"
+    );
+
+    let bytes = response.bytes().await?;
+    assert_eq!(bytes.as_ref(), expected, "object bytes should match track data");
+    Ok(())
 }
 
 async fn assert_direct_slice_forbidden(
@@ -317,33 +385,6 @@ async fn assert_direct_slice_forbidden(
         StatusCode::FORBIDDEN,
         "anonymous storage-node read should be blocked by StakedPeer"
     );
-    Ok(())
-}
-
-async fn warm_all_gateway_slices(
-    gateway_base: &str,
-    track: &Address,
-    group: tape_core::spooler::GroupIndex,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
-    for position in 0..GROUP_SIZE {
-        let spool = group.spool_at(position);
-        let response = client
-            .get(format!(
-                "{gateway_base}{}",
-                slice_url(&track.to_string(), spool)
-            ))
-            .send()
-            .await?;
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "gateway slice warmup failed for spool {}",
-            spool.0
-        );
-    }
     Ok(())
 }
 

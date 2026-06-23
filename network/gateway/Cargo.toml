@@ -14,12 +14,14 @@ tape-api = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true }
 tape-node = { workspace = true }
 tape-protocol = { workspace = true }
+tape-sdk = { workspace = true }
 tape-store = { workspace = true }
 rpc = { workspace = true }
 store = { workspace = true }
 
 axum = { workspace = true }
 clap = { workspace = true }
+futures = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
