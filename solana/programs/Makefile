@@ -27,7 +27,7 @@ all: build
 build: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
 		echo "Running cargo build-sbf in $$dir..."; \
-		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf) || exit $$?; \
+		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf --arch v3) || exit $$?; \
 	done
 
 # Test target: run cargo test-sbf in each program directory.
@@ -36,7 +36,7 @@ build: $(PROGRAMS)
 test: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
 		echo "Running cargo test-sbf in $$dir..."; \
-		(cd $$dir && RUSTC_WRAPPER= cargo test-sbf) || exit $$?; \
+		(cd $$dir && RUSTC_WRAPPER= cargo test-sbf --arch v3) || exit $$?; \
 	done
 
 # Local validator target
