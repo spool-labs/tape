@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "solana"))]
 use serde_json;
 #[cfg(not(target_os = "solana"))]
-use solana_program::pubkey::Pubkey as SolanaPubkey;
+use solana_pubkey::Pubkey as SolanaPubkey;
 
 use super::consts::{ED25519_PUBKEY_LEN, ED25519_SIG_LEN};
 #[cfg(not(target_os = "solana"))]
@@ -304,7 +304,7 @@ impl Keypair {
     }
 
     pub fn from_solana_keypair(
-        keypair: &solana_sdk::signature::Keypair,
+        keypair: &solana_keypair::Keypair,
     ) -> Result<Self, SignatureError> {
         Self::from_keypair_bytes(keypair.to_bytes())
     }
@@ -334,21 +334,16 @@ impl Keypair {
 
     pub fn try_to_solana_keypair(
         &self,
-    ) -> Result<solana_sdk::signature::Keypair, SignatureError> {
-        solana_sdk::signature::Keypair::try_from(self.to_keypair_bytes().as_ref())
+    ) -> Result<solana_keypair::Keypair, SignatureError> {
+        solana_keypair::Keypair::try_from(self.to_keypair_bytes().as_ref())
             .map_err(|_| SignatureError::InvalidArgument)
-    }
-
-    /// Get the Solana pubkey for this keypair.
-    pub fn to_solana_pubkey(&self) -> SolanaPubkey {
-        self.pubkey().into()
     }
 }
 
 // Tests use rand which is only available off-chain
 #[cfg(all(test, not(target_os = "solana")))]
 mod tests {
-    use solana_sdk::signer::Signer as SolanaSigner;
+    use solana_signer::Signer as SolanaSigner;
 
     use super::*;
 
@@ -460,11 +455,12 @@ mod tests {
 
     #[test]
     fn test_from_solana_keypair() {
-        let keypair = solana_sdk::signature::Keypair::new();
+        let keypair = solana_keypair::Keypair::new();
         let recovered = Keypair::from_solana_keypair(&keypair).expect("should recover");
 
         assert_eq!(recovered.to_keypair_bytes(), keypair.to_bytes());
-        assert_eq!(recovered.to_solana_pubkey(), keypair.pubkey());
+        let recovered_pubkey: SolanaPubkey = recovered.pubkey().into();
+        assert_eq!(recovered_pubkey, keypair.pubkey());
     }
 
     #[test]

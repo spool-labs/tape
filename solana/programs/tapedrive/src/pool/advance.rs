@@ -158,7 +158,7 @@ fn compute_member_share(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_sdk::account::Account;
+    use solana_account::Account;
     use tape_api::state::Committee;
     use tape_core::staking::StakingPool;
     use tape_test::*;

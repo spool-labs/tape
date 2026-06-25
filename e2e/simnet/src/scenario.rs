@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use solana_sdk::signature::Signature;
-use solana_sdk::signer::Signer;
+use solana_signature::Signature;
+use solana_signer::Signer;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::{
     build_create_archive_ix, build_create_committee_ix, build_create_epoch_ix,

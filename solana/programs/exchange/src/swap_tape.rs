@@ -1,6 +1,5 @@
 use solana_program::program::invoke;
-#[allow(deprecated)]
-use solana_program::system_instruction;
+use solana_system_interface::instruction as system_instruction;
 use tape_api::program::prelude::*;
 
 pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

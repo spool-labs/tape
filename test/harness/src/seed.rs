@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use bytemuck::Zeroable;
-use solana_sdk::program_option::COption;
-use solana_sdk::program_pack::Pack;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
+use solana_keypair::Keypair;
+use solana_program_option::COption;
+use solana_program_pack::Pack;
+use solana_pubkey::Pubkey;
+use solana_signer::Signer;
 use spl_token::state::{Account as TokenAccount, AccountState, Mint};
 use tape_api::dynamic::DynamicState;
 use tape_api::program::{

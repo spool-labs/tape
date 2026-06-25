@@ -3,8 +3,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer as _;
+use solana_keypair::Keypair;
+use solana_signer::Signer as _;
 use tape_core::bls::BlsPrivateKey;
 use tape_sdk::keys::helpers::{load_bls_keypair, load_solana_keypair};
 use tokio::process::{Child, Command};

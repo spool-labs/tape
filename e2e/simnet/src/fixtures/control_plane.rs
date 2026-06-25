@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signer::Signer;
+use solana_compute_budget_interface::ComputeBudgetInstruction;
+use solana_pubkey::Pubkey;
+use solana_signer::Signer;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_add_to_blacklist_ix, build_advance_pool_ix, build_set_committee_size_ix,

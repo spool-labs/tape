@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use rpc::Rpc;
 use rpc_client::RpcClient;
-use solana_sdk::program_pack::Pack;
-use solana_sdk::signer::Signer;
+use solana_program_pack::Pack;
+use solana_signer::Signer;
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::build_claim_commission_ix;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;

@@ -233,7 +233,7 @@ mod tests {
         node: Node,
         committee_data: Vec<u8>,
         peer_set_data: Vec<u8>,
-    ) -> Vec<(Pubkey, solana_sdk::account::Account)> {
+    ) -> Vec<(Pubkey, solana_account::Account)> {
         let target = EpochNumber(1);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda(target);

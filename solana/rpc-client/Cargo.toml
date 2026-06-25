@@ -20,9 +20,17 @@ tape-crypto.workspace = true
 tape-metrics = { workspace = true, optional = true }
 
 # Solana dependencies
-solana-sdk.workspace = true
 solana-client.workspace = true
 solana-account-decoder.workspace = true
+solana-commitment-config.workspace = true
+solana-compute-budget-interface.workspace = true
+solana-instruction.workspace = true
+solana-keypair.workspace = true
+solana-pubkey.workspace = true
+solana-signature.workspace = true
+solana-signer.workspace = true
+solana-system-interface.workspace = true
+solana-transaction.workspace = true
 solana-transaction-status.workspace = true
 
 # Async runtime

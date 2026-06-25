@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::signer::keypair::Keypair;
+use solana_keypair::Keypair;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::{spool_for_slice, GROUP_SIZE};
 use tape_core::spooler::GroupIndex;

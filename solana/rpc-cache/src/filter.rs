@@ -94,7 +94,8 @@ fn strip_tx(mut tx: EncodedTransactionWithStatusMeta) -> EncodedTransactionWithS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_sdk::message::MessageHeader;
+    use solana_message::MessageHeader;
+    use solana_transaction_error::TransactionError;
     use solana_transaction_status::{
         UiCompiledInstruction, UiLoadedAddresses, UiRawMessage, UiTransaction,
         UiTransactionStatusMeta,
@@ -113,7 +114,7 @@ mod tests {
         let status = if ok {
             Ok(())
         } else {
-            Err(solana_sdk::transaction::TransactionError::AccountNotFound)
+            Err(TransactionError::AccountNotFound)
         };
         EncodedTransactionWithStatusMeta {
             transaction: EncodedTransaction::Json(UiTransaction {

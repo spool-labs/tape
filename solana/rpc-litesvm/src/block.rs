@@ -1,6 +1,6 @@
 use litesvm::types::TransactionResult;
-use solana_sdk::clock::Slot;
-use solana_sdk::transaction::VersionedTransaction;
+use solana_clock::Slot;
+use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_status::{
     BlockEncodingOptions, ConfirmedBlock, TransactionDetails, TransactionWithStatusMeta,
     UiConfirmedBlock, UiTransactionEncoding, VersionedTransactionWithStatusMeta,

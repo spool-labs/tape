@@ -8,7 +8,7 @@ use tape_core::types::StorageUnits;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_sdk::keys::tape_key::TapeKey;
-use tape_sdk::stream::manifest::CHUNK_SIZE;
+use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::tapedrive::Tapedrive;
 use tokio::io::AsyncReadExt;
 
@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 
     let tape_key = TapeKey::generate();
     let size = StorageUnits::from_bytes(cli.size_bytes as u64);
-    let chunk_count = size.to_bytes().div_ceil(CHUNK_SIZE as u64);
+    let chunk_count = size.to_bytes().div_ceil(MAX_TRACK_SIZE as u64);
     let reserve_capacity = size + StorageUnits::from_bytes(RESERVE_HEADROOM_BYTES);
 
     println!("preparing upload stream");

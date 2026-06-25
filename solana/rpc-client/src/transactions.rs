@@ -1,11 +1,11 @@
 use crate::client::RpcClient;
 use crate::compute::with_compute_unit_limit;
-use solana_sdk::instruction::Instruction;
-use solana_sdk::pubkey::Pubkey as SolanaPubkey;
-use solana_sdk::signature::Signature as SolanaSignature;
-use solana_sdk::signer::{Signer as SolanaSigner, SignerError as SolanaSignerError};
-use solana_sdk::transaction::Transaction;
 use rpc::{Rpc, RpcError};
+use solana_instruction::Instruction;
+use solana_pubkey::Pubkey as SolanaPubkey;
+use solana_signature::Signature as SolanaSignature;
+use solana_signer::{Signer as SolanaSigner, SignerError as SolanaSignerError};
+use solana_transaction::Transaction;
 use tape_crypto::signer::Signer as TapeSigner;
 use tape_crypto::tx::Txid;
 
@@ -340,10 +340,10 @@ impl<R: Rpc> RpcClient<R> {
 mod tests {
     use super::*;
     use rpc_solana::RpcConfig;
+    use solana_keypair::Keypair as SolanaKeypair;
+    use solana_pubkey::Pubkey;
+    use solana_system_interface::instruction as system_instruction;
     use tape_crypto::ed25519::Keypair;
-    use solana_sdk::signature::Keypair as SolanaKeypair;
-    use solana_sdk::pubkey::Pubkey;
-    use solana_sdk::system_instruction;
 
     #[tokio::test]
     #[ignore] // Requires actual RPC endpoint
@@ -352,9 +352,9 @@ mod tests {
         let client = RpcClient::new(config).unwrap();
 
         let solana_payer = SolanaKeypair::new();
-        let payer = Keypair::from_solana_keypair(&solana_payer).expect("convert payer");
+        let payer = Keypair::from_keypair_bytes(solana_payer.to_bytes()).expect("convert payer");
         let to = Pubkey::new_unique();
-        let payer_pubkey = payer.to_solana_pubkey();
+        let payer_pubkey = payer.pubkey().into();
 
         let instruction = system_instruction::transfer(&payer_pubkey, &to, 1000);
 

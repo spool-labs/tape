@@ -65,7 +65,8 @@ openssl = { version = "0.10", features = ["vendored"] }
 [dev-dependencies]
 anyhow = { workspace = true }
 tempfile = "3"
-solana-sdk = { workspace = true }
+solana-keypair = { workspace = true }
+solana-signature = { workspace = true }
 rpc-litesvm = { workspace = true }
 peer-memory = { workspace = true }
 store-memory = { workspace = true }

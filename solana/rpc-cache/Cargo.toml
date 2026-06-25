@@ -34,8 +34,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
 solana-client = { workspace = true }
-solana-sdk = { workspace = true }
+solana-commitment-config = { workspace = true }
+solana-message = { workspace = true }
 solana-transaction-status = { workspace = true }
+solana-transaction-error = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }

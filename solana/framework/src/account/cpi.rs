@@ -5,6 +5,7 @@ use solana_program::{
     account_info::AccountInfo, entrypoint::ProgramResult, instruction::Instruction,
     program_error::ProgramError, pubkey::Pubkey, rent::Rent, sysvar::Sysvar,
 };
+use solana_system_interface::instruction as system_instruction;
 
 use crate::{trace, CloseAccount, Discriminator};
 
@@ -51,7 +52,7 @@ pub fn create_account<'a, 'info>(
     let lamports_required = (Rent::get()?).minimum_balance(space);
 
     solana_program::program::invoke(
-        &solana_program::system_instruction::create_account(
+        &system_instruction::create_account(
             from_pubkey.key,
             to_pubkey.key,
             lamports_required,
@@ -217,7 +218,7 @@ pub(crate) fn allocate_account_with_bump_unchecked<'a, 'info>(
     if target_account.lamports().eq(&0) {
         // If balance is zero, create account
         solana_program::program::invoke_signed(
-            &solana_program::system_instruction::create_account(
+            &system_instruction::create_account(
                 payer.key,
                 target_account.key,
                 rent.minimum_balance(space),
@@ -240,7 +241,7 @@ pub(crate) fn allocate_account_with_bump_unchecked<'a, 'info>(
             .saturating_sub(target_account.lamports());
         if rent_exempt_balance.gt(&0) {
             solana_program::program::invoke(
-                &solana_program::system_instruction::transfer(
+                &system_instruction::transfer(
                     payer.key,
                     target_account.key,
                     rent_exempt_balance,
@@ -255,14 +256,14 @@ pub(crate) fn allocate_account_with_bump_unchecked<'a, 'info>(
 
         // 2) allocate space for the account
         solana_program::program::invoke_signed(
-            &solana_program::system_instruction::allocate(target_account.key, space as u64),
+            &system_instruction::allocate(target_account.key, space as u64),
             &[target_account.clone(), system_program.clone()],
             &[seeds],
         )?;
 
         // 3) assign our program as the owner
         solana_program::program::invoke_signed(
-            &solana_program::system_instruction::assign(target_account.key, owner),
+            &system_instruction::assign(target_account.key, owner),
             &[target_account.clone(), system_program.clone()],
             &[seeds],
         )?;
@@ -315,7 +316,7 @@ pub fn resize_account<'info>(
 
     if rent_exempt_balance.gt(&0) {
         solana_program::program::invoke(
-            &solana_program::system_instruction::transfer(
+            &system_instruction::transfer(
                 payer.key,
                 target_account.key,
                 rent_exempt_balance,

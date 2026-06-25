@@ -6,7 +6,7 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(not(target_os = "solana"))]
-use solana_sdk::signature::Signature as SolanaSignature;
+use solana_signature::Signature as SolanaRuntimeSignature;
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -35,6 +35,7 @@ impl Txid {
     pub const fn as_bytes(&self) -> &[u8; 64] {
         &self.0
     }
+
 }
 
 impl AsRef<[u8]> for Txid {
@@ -58,7 +59,7 @@ impl From<Txid> for [u8; 64] {
 #[cfg(not(target_os = "solana"))]
 impl fmt::Display for Txid {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&SolanaSignature::from(self.0), formatter)
+        fmt::Display::fmt(&SolanaRuntimeSignature::from(self.0), formatter)
     }
 }
 
@@ -125,14 +126,14 @@ impl<'de> Deserialize<'de> for Txid {
 }
 
 #[cfg(not(target_os = "solana"))]
-impl From<SolanaSignature> for Txid {
-    fn from(value: SolanaSignature) -> Self {
+impl From<SolanaRuntimeSignature> for Txid {
+    fn from(value: SolanaRuntimeSignature) -> Self {
         Self(value.into())
     }
 }
 
 #[cfg(not(target_os = "solana"))]
-impl From<Txid> for SolanaSignature {
+impl From<Txid> for SolanaRuntimeSignature {
     fn from(value: Txid) -> Self {
         value.0.into()
     }
@@ -140,8 +141,8 @@ impl From<Txid> for SolanaSignature {
 
 #[cfg(all(test, not(target_os = "solana")))]
 mod tests {
-    use solana_sdk::signature::Keypair as SolanaKeypair;
-    use solana_sdk::signer::Signer as SolanaSigner;
+    use solana_keypair::Keypair as SolanaKeypair;
+    use solana_signer::Signer as SolanaSigner;
 
     use super::Txid;
 
@@ -150,7 +151,7 @@ mod tests {
         let keypair = SolanaKeypair::new();
         let signature = keypair.sign_message(b"hello txid");
         let txid = Txid::from(signature);
-        let recovered_signature: solana_sdk::signature::Signature = txid.into();
+        let recovered_signature: solana_signature::Signature = txid.into();
         let recovered_txid = Txid::from(recovered_signature);
 
         assert_eq!(recovered_signature, signature);

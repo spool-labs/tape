@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use solana_program::instruction::{AccountMeta, Instruction};
+use tape_solana::system_program;
 
 use tape_core::bls::BlsSignature;
 use tape_core::cert::{AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT};
@@ -79,7 +80,7 @@ pub fn build_propose_snapshot_ix(
             AccountMeta::new_readonly(curr_epoch_address.into(), false),
             AccountMeta::new_readonly(target_epoch_address.into(), false),
             AccountMeta::new(vote_address.into(), false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: ProposeSnapshot { hash }.to_bytes(),
     }
@@ -139,7 +140,7 @@ pub fn build_finalize_snapshot_ix(
             AccountMeta::new(voting_epoch_address.into(), false),
             AccountMeta::new_readonly(target_epoch_address.into(), false),
             AccountMeta::new(snapshot_tape_address.into(), false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: FinalizeSnapshot {
             epoch,
@@ -168,7 +169,7 @@ pub fn build_propose_assignment_ix(
             AccountMeta::new_readonly(curr_epoch_address.into(), false),
             AccountMeta::new_readonly(target_epoch_address.into(), false),
             AccountMeta::new(vote_address.into(), false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: ProposeAssignment { hash }.to_bytes(),
     }
@@ -231,7 +232,7 @@ pub fn build_finalize_group_ix(
             AccountMeta::new(group_address.into(), false),
             AccountMeta::new(committee_address.into(), false),
             AccountMeta::new_readonly(peer_set_address.into(), false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: FinalizeGroup {
             epoch,

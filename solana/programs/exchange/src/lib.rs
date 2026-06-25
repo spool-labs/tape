@@ -64,9 +64,9 @@ entrypoint!(process_instruction);
 
 #[cfg(test)]
 mod tests {
+    use solana_account::Account;
     use tape_api::program::prelude::*;
     use tape_test::*;
-    use solana_sdk::account::Account;
 
     fn to_pubkey(address: impl Into<Pubkey>) -> Pubkey {
         address.into()

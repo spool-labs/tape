@@ -1,6 +1,7 @@
 use tape_solana::*;
 use tape_crypto::address::Address;
 use crate::utils::ata;
+use crate::program::metaplex;
 use crate::program::token;
 use crate::program::token::*;
 
@@ -33,7 +34,7 @@ pub fn build_initialize_mint_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
-            AccountMeta::new_readonly(mpl_token_metadata::ID, false),
+            AccountMeta::new_readonly(metaplex::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: InitializeMint {}.to_bytes(),

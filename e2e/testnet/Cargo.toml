@@ -17,8 +17,13 @@ path = "src/bin/upload-file/main.rs"
 [dependencies]
 anyhow.workspace = true
 tokio.workspace = true
-solana-sdk.workspace = true
 solana-client.workspace = true
+solana-commitment-config.workspace = true
+solana-compute-budget-interface.workspace = true
+solana-instruction.workspace = true
+solana-keypair.workspace = true
+solana-pubkey.workspace = true
+solana-signer.workspace = true
 rpc.workspace = true
 rpc-client.workspace = true
 rpc-solana.workspace = true

@@ -364,7 +364,7 @@ impl CertificationCollector {
         authority: Address,
         track: CompressedTrackProof,
         collected: &CollectedSignatures,
-    ) -> solana_sdk::instruction::Instruction {
+    ) -> solana_instruction::Instruction {
         build_certify_track_ix(
             fee_payer,
             authority,

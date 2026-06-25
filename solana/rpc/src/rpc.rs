@@ -6,11 +6,11 @@
 //! - Test backends (for simulation/integration environments)
 
 use async_trait::async_trait;
+use solana_account::Account;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
-use solana_sdk::account::Account;
-use solana_sdk::commitment_config::CommitmentLevel;
-use solana_sdk::hash::Hash;
-use solana_sdk::transaction::Transaction;
+use solana_commitment_config::CommitmentLevel;
+use solana_hash::Hash;
+use solana_transaction::{Transaction, TransactionError};
 use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
@@ -133,5 +133,5 @@ pub trait Rpc: Send + Sync {
     async fn get_signature_status(
         &self,
         txid: &Txid,
-    ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError>;
+    ) -> Result<Option<Result<(), TransactionError>>, RpcError>;
 }

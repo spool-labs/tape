@@ -119,12 +119,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_signature::Signature;
     use std::time::Duration;
-    use solana_sdk::signature::Signature;
+
+    fn test_txid(byte: u8) -> Txid {
+        Signature::from([byte; 64]).into()
+    }
 
     #[test]
     fn confirmed() {
-        let sig: Txid = Signature::new_unique().into();
+        let sig = test_txid(1);
         let outcome = classify_tx(Ok(sig));
         assert!(matches!(outcome, TxOutcome::Confirmed(_)));
     }
@@ -219,7 +223,7 @@ mod tests {
 
         let outcome = submit_if_at_tip(&bus, async {
             polled.store(true, std::sync::atomic::Ordering::Relaxed);
-            Ok(Signature::new_unique().into())
+            Ok(test_txid(2))
         })
         .await;
 
@@ -232,7 +236,7 @@ mod tests {
         let bus = IngestBus::new();
         bus.publish(crate::core::ingest::IngestState::AtTip);
 
-        let sig: Txid = Signature::new_unique().into();
+        let sig = test_txid(3);
         let outcome = submit_if_at_tip(&bus, async move { Ok(sig) }).await;
 
         assert!(matches!(outcome, TxOutcome::Confirmed(_)));

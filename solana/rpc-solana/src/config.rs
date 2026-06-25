@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use solana_sdk::commitment_config::CommitmentLevel;
+use solana_commitment_config::CommitmentLevel;
 use std::time::Duration;
 
 /// RPC client configuration

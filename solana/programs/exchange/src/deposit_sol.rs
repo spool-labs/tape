@@ -1,6 +1,5 @@
-#[allow(deprecated)]
-use solana_program::system_instruction;
 use solana_program::program::invoke;
+use solana_system_interface::instruction as system_instruction;
 
 use tape_api::program::prelude::*;
 

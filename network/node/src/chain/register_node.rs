@@ -65,7 +65,7 @@ mod tests {
 
         let mut rng = rand::thread_rng();
         let keypair = Keypair::new(&mut rng);
-        let authority = keypair.to_solana_pubkey();
+        let authority = keypair.pubkey().into();
         harness
             .rpc()
             .airdrop(&authority, 10_000_000_000)

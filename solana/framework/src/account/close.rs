@@ -1,6 +1,7 @@
 //! Account closing functionality.
 
 use solana_program::{account_info::AccountInfo, program_error::ProgramError};
+use solana_system_interface::program as system_program;
 
 /// Trait for closing accounts.
 pub trait CloseAccount<'info> {
@@ -15,7 +16,7 @@ impl<'info> CloseAccount<'info> for AccountInfo<'info> {
         **self.lamports.borrow_mut() = 0;
 
         // Assign system program as the owner
-        self.assign(&solana_program::system_program::ID);
+        self.assign(&system_program::id());
 
         // Resize data to zero.
         self.resize(0)?;

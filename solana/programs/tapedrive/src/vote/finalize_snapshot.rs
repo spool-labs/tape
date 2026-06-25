@@ -102,7 +102,7 @@ mod tests {
         target_epoch_id: EpochNumber,
         voting_phase: EpochPhase,
         target_epoch: Epoch,
-    ) -> Vec<(Pubkey, solana_sdk::account::Account)> {
+    ) -> Vec<(Pubkey, solana_account::Account)> {
         let voting_epoch_id = target_epoch_id.next();
 
         let (system_address, _) = system_pda();

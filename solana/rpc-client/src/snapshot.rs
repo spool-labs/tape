@@ -1,6 +1,6 @@
 use crate::client::RpcClient;
 use rpc::{Rpc, RpcError};
-use solana_sdk::commitment_config::CommitmentLevel;
+use solana_commitment_config::CommitmentLevel;
 use tape_api::program::tapedrive::snapshot_tape_pda;
 use tape_api::state::Tape;
 use tape_core::types::EpochNumber;

@@ -1,7 +1,7 @@
 # Runtime developer shortcuts
 #
 # Usage:
-#   make programs     - Build all Solana programs via solana/programs/Makefile
+#   make programs     - Build SBPFv3 Solana programs into target/deploy
 #   make node         - Build tape-node release binary with metrics enabled
 #   make explorer     - Build and test the separate explorer workspace
 #   make testnet      - Build the testnet orchestrator release binary

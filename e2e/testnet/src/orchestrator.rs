@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::future::join_all;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
+use solana_keypair::Keypair;
+use solana_pubkey::Pubkey;
+use solana_signer::Signer;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::EpochNumber;
 use tape_sdk::keys::helpers::load_solana_keypair;

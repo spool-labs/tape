@@ -1,7 +1,7 @@
 use rand::Rng;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair as SolanaKeypair;
+use solana_keypair::Keypair as SolanaKeypair;
+use solana_pubkey::Pubkey;
 use tape_crypto::ed25519::Keypair;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;

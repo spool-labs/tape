@@ -80,12 +80,12 @@ pub fn reserve_archive(
         .tape_count
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    let id = user_tape_number(next_count)
+    let tape_id = user_tape_number(next_count)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     archive.tape_count = next_count;
 
-    Ok(TapeReservation { spec, id, cost, burned, scheduled })
+    Ok(TapeReservation { spec, id: tape_id, cost, burned, scheduled })
 }
 
 fn bps_amount(amount: Coin<TAPE>, bps: BasisPoints) -> Result<Coin<TAPE>, ProgramError> {

@@ -1,10 +1,12 @@
 use rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::message::Message;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signer};
-use solana_sdk::system_instruction;
-use solana_sdk::transaction::Transaction;
+use solana_hash::Hash as SolanaHash;
+use solana_keypair::Keypair;
+use solana_message::Message;
+use solana_pubkey::Pubkey;
+use solana_signer::Signer;
+use solana_system_interface::instruction as system_instruction;
+use solana_transaction::Transaction;
 use tape_crypto::address::Address;
 
 #[tokio::test]
@@ -17,7 +19,7 @@ async fn basic_slot_and_blockhash_are_available() {
         .expect("blockhash available");
 
     assert!(slot < u64::MAX);
-    assert_ne!(hash, solana_sdk::hash::Hash::default());
+    assert_ne!(hash, SolanaHash::default());
 }
 
 #[tokio::test]

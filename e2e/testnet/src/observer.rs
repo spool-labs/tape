@@ -6,7 +6,7 @@ use futures::future::join_all;
 use rpc::RpcError;
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
-use solana_sdk::pubkey::Pubkey;
+use solana_pubkey::Pubkey;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;

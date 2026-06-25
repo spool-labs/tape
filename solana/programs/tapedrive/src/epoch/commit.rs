@@ -162,14 +162,14 @@ mod tests {
     const COMMITTEE_SIZE: u64 = GROUP_SIZE as u64;
     const SPOOL_GROUPS: u64 = 50;
 
-    fn slot_hashes_account() -> (Pubkey, solana_sdk::account::Account) {
+    fn slot_hashes_account() -> (Pubkey, solana_account::Account) {
         // 8-byte count = 1, then one entry: 8-byte slot + 32-byte hash.
         let mut data = vec![0u8; 48];
         data[0] = 1;
         data[16..48].copy_from_slice(&[0x42u8; 32]); // deterministic test hash
         (
             sysvar::slot_hashes::ID,
-            solana_sdk::account::Account {
+            solana_account::Account {
                 lamports: 1,
                 data,
                 owner: sysvar::ID,

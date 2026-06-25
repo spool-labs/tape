@@ -1,4 +1,5 @@
 pub mod exchange;
+pub mod metaplex;
 pub mod staking;
 pub mod token;
 pub mod tapedrive;
@@ -44,6 +45,7 @@ pub mod prelude {
     pub use crate::dynamic::DynamicState;
     pub use crate::loaders::{AccountInfoHelper, AccountInfoLoader, FromAccountSlice};
     pub use crate::program::exchange::*;
+    pub use crate::program::metaplex;
     pub use crate::program::staking::*;
     pub use crate::program::tapedrive::*;
     pub use crate::program::token::*;

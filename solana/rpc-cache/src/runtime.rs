@@ -19,7 +19,7 @@ use bytes::Bytes;
 use moka::future::Cache as MokaCache;
 use serde_json::{Value, json};
 use solana_client::rpc_config::RpcBlockConfig;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
+use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_transaction_status::{TransactionDetails, UiConfirmedBlock, UiTransactionEncoding};
 use tape_api::program::tapedrive::{epoch_pda, SYSTEM_ADDRESS};
 use tape_api::state::{Epoch, System};

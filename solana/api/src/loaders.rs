@@ -3,7 +3,7 @@ use tape_core::spooler::GroupIndex;
 use tape_core::types::EpochNumber;
 
 use crate::program::{
-    tapedrive, ARCHIVE_ADDRESS, ARCHIVE_ATA, METADATA_ADDRESS, MINT_ADDRESS,
+    metaplex, tapedrive, ARCHIVE_ADDRESS, ARCHIVE_ATA, METADATA_ADDRESS, MINT_ADDRESS,
     PEER_SET_ADDRESS, SUBSIDY_ADDRESS, SUBSIDY_ATA, SYSTEM_ADDRESS, TREASURY_ADDRESS,
 };
 use crate::errors::TapeError;
@@ -119,7 +119,7 @@ impl AccountInfoLoader for AccountInfo<'_> {
         let metadata_address: Pubkey = METADATA_ADDRESS.into();
 
         self.has_address(&metadata_address)?
-            .has_owner(&mpl_token_metadata::ID)
+            .has_owner(&metaplex::ID)
     }
 
     fn is_treasury(&self) -> Result<&Self, ProgramError> {

@@ -1,10 +1,11 @@
 use rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::message::Message;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signer};
-use solana_sdk::system_instruction;
-use solana_sdk::transaction::Transaction;
+use solana_keypair::Keypair;
+use solana_message::Message;
+use solana_pubkey::Pubkey;
+use solana_signer::Signer;
+use solana_system_interface::instruction as system_instruction;
+use solana_transaction::Transaction;
 
 #[tokio::test]
 async fn fetched_block_is_parseable_by_tape_blocks() {

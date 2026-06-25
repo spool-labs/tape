@@ -287,7 +287,7 @@ mod tests {
         );
     }
 
-    fn clone_keypair(keypair: &solana_sdk::signature::Keypair) -> Keypair {
+    fn clone_keypair(keypair: &solana_keypair::Keypair) -> Keypair {
         Keypair::from_solana_keypair(keypair).expect("clone keypair")
     }
 

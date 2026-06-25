@@ -6,7 +6,7 @@
 #   - `make build` (from here or root) builds all programs
 #
 # Usage:
-#   make build - Build all programs (cargo build-sbf)
+#   make build - Build all programs as SBPFv3 (cargo build-sbf --arch v3)
 #   make local - Start a local solana-test-validator with all programs loaded
 #   make reset-ledger - Remove the local validator ledger directory
 #   make test  - Test all programs (cargo test-sbf)
@@ -14,29 +14,30 @@
 
 PROGRAMS = exchange staking token tapedrive
 ROOT_TARGET_DEPLOY = ../../target/deploy
-ROOT_TEST_ELFS = ../../test/elfs
+ROOT_TEST_ELFS ?= ../../test/elfs
 LEDGER_DIR = test-ledger
+SBF_ARCH ?= v3
 
 # Default target
 .PHONY: all
 all: build
 
-# Build target: run cargo build-sbf in each program directory.
+# Build target: run cargo build-sbf in each program directory as SBPFv3.
 # Clear RUSTC_WRAPPER so host-side wrappers do not intercept Solana's SBF rustc.
 .PHONY: build
 build: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
-		echo "Running cargo build-sbf in $$dir..."; \
-		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf --arch v3) || exit $$?; \
+		echo "Running cargo build-sbf --arch $(SBF_ARCH) in $$dir..."; \
+		(cd $$dir && RUSTC_WRAPPER= cargo build-sbf --arch $(SBF_ARCH)) || exit $$?; \
 	done
 
-# Test target: run cargo test-sbf in each program directory.
+# Test target: run cargo test-sbf in each program directory as SBPFv3.
 # Clear RUSTC_WRAPPER so host-side wrappers do not intercept Solana's SBF rustc.
 .PHONY: test
 test: $(PROGRAMS)
 	@for dir in $(PROGRAMS); do \
-		echo "Running cargo test-sbf in $$dir..."; \
-		(cd $$dir && RUSTC_WRAPPER= cargo test-sbf --arch v3) || exit $$?; \
+		echo "Running cargo test-sbf --arch $(SBF_ARCH) in $$dir..."; \
+		(cd $$dir && RUSTC_WRAPPER= cargo test-sbf --arch $(SBF_ARCH)) || exit $$?; \
 	done
 
 # Local validator target

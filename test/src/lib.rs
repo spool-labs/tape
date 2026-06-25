@@ -1,7 +1,7 @@
 use tape_api::program::prelude::*;
 use tape_api::program;
 use mollusk_svm::{
-    program::{keyed_account_for_system_program, loader_keys::LOADER_V2},
+    program::{keyed_account_for_system_program, loader_keys::{LOADER_V2, LOADER_V3}},
     result::Config as CheckConfig,
     sysvar::Sysvars,
     Mollusk,
@@ -12,19 +12,15 @@ use mollusk_svm_programs_token::{
     token as spl_token_program,
 };
 
-#[allow(deprecated)]
-use solana_sdk::bpf_loader_upgradeable;
-use solana_sdk::{
-    account::Account,
-    instruction::Instruction,
-    program_pack::Pack,
-    pubkey::Pubkey,
-    rent::Rent,
-};
+use solana_account::Account;
+use solana_instruction::Instruction;
+use solana_program_option::COption;
+use solana_program_pack::Pack;
+use solana_pubkey::Pubkey;
+use solana_rent::Rent;
+use solana_system_interface::program as system_program;
 
-pub(crate) const DEFAULT_LOADER_KEY: Pubkey = bpf_loader_upgradeable::id();
-
-use solana_program::program_option::COption;
+pub(crate) const DEFAULT_LOADER_KEY: Pubkey = LOADER_V3;
 use pretty_hex::*;
 use bincode;
 
@@ -59,7 +55,7 @@ pub fn sol(key: impl Into<Pubkey>, lamports: u64) -> (Pubkey, Account) {
     (key, Account {
         lamports,
         data: vec![],
-        owner: solana_program::system_program::ID,
+        owner: system_program::ID,
         executable: false,
         rent_epoch: 0,
     })
@@ -175,7 +171,7 @@ pub fn rent_sysvar() -> (Pubkey, Account) {
 const METAPLEX_ELF : &[u8] = program_elf!("elfs/mpl_token_metadata.so");
 pub fn mpl_program() -> (Pubkey, Account) {
     (
-        mpl_token_metadata::ID, 
+        program::metaplex::ID,
         mollusk_svm::program::create_program_account_loader_v2(METAPLEX_ELF)
     )
 }
@@ -207,18 +203,18 @@ pub fn tapedrive_program() -> (Pubkey, Account) {
 pub fn with_programs(programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
     let mut mollusk = Mollusk::default();
 
-    mollusk.add_program_with_elf_and_loader(&program::exchange::ID, EXCHANGE_ELF, &DEFAULT_LOADER_KEY);
-    mollusk.add_program_with_elf_and_loader(&program::staking::ID, STAKING_ELF, &DEFAULT_LOADER_KEY);
-    mollusk.add_program_with_elf_and_loader(&program::tapedrive::ID, TAPEDRIVE_ELF, &DEFAULT_LOADER_KEY);
-    mollusk.add_program_with_elf_and_loader(&program::token::ID, TOKEN_ELF, &DEFAULT_LOADER_KEY);
+    mollusk.add_program_with_loader_and_elf(&program::exchange::ID, &DEFAULT_LOADER_KEY, EXCHANGE_ELF);
+    mollusk.add_program_with_loader_and_elf(&program::staking::ID, &DEFAULT_LOADER_KEY, STAKING_ELF);
+    mollusk.add_program_with_loader_and_elf(&program::tapedrive::ID, &DEFAULT_LOADER_KEY, TAPEDRIVE_ELF);
+    mollusk.add_program_with_loader_and_elf(&program::token::ID, &DEFAULT_LOADER_KEY, TOKEN_ELF);
 
-    mollusk.logger = Some(solana_log_collector::LogCollector::new_ref());
+    mollusk.logger = Some(solana_svm_log_collector::LogCollector::new_ref());
 
     spl_token_program::add_program(&mut mollusk);
     spl_ata_program::add_program(&mut mollusk);
 
-    for (id, elf) in programs {
-        mollusk.add_program_with_elf_and_loader(id, elf, &LOADER_V2);
+    for (program_id, elf) in programs {
+        mollusk.add_program_with_loader_and_elf(program_id, &LOADER_V2, elf);
     }
 
     TestEnv { mollusk }
@@ -300,7 +296,7 @@ impl TestEnv {
 
 pub fn test_env() -> TestEnv {
     with_programs(&[
-        (&mpl_token_metadata::ID, METAPLEX_ELF),
+        (&program::metaplex::ID, METAPLEX_ELF),
     ])
 }
 

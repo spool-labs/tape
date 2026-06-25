@@ -31,8 +31,9 @@ rpc-client = { path = "../solana/rpc-client" }
 # Logging
 tracing = "0.1"
 
-# Solana (for keypair helpers)
-solana-sdk = { workspace = true }
+# Solana
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
 
 # Serialization (for keypair loading)
 serde_json = { workspace = true }

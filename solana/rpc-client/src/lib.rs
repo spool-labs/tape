@@ -19,7 +19,8 @@
 //! ```ignore
 //! use rpc_client::RpcClient;
 //! use rpc_solana::RpcConfig;
-//! use solana_sdk::signature::{Keypair, Signer};
+//! use solana_keypair::Keypair;
+//! use solana_signer::Signer;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,7 +66,9 @@
 //!
 //! ```ignore
 //! use rpc_client::RpcClient;
-//! use solana_sdk::signature::{Keypair, Signer};
+//! use solana_keypair::Keypair;
+//! use solana_signer::Signer;
+//! use solana_system_interface::instruction as system_instruction;
 //! # use tape_api::instruction::*; // Assuming tape-api provides instruction builders
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,7 +76,7 @@
 //! let payer = Keypair::new();
 //!
 //! // Build instruction using tape-api (example)
-//! # let ix = solana_sdk::system_instruction::transfer(&payer.pubkey(), &payer.pubkey(), 0);
+//! # let ix = system_instruction::transfer(&payer.pubkey(), &payer.pubkey(), 0);
 //! // let ix = build_register_node_ix(&payer.pubkey(), "my-node");
 //!
 //! // Submit with automatic retry and confirmation

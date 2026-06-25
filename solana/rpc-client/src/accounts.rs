@@ -2,7 +2,7 @@ use crate::client::RpcClient;
 use core::mem::size_of;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
-use solana_sdk::commitment_config::CommitmentLevel;
+use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use rpc::{Rpc, RpcError};
 
 use tape_api::dynamic::DynamicState;
@@ -488,7 +488,7 @@ impl<R: Rpc> RpcClient<R> {
             ))]),
             account_config: solana_client::rpc_config::RpcAccountInfoConfig {
                 encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
+                commitment: Some(CommitmentConfig {
                     commitment: self.rpc().commitment(),
                 }),
                 data_slice: None,
@@ -524,7 +524,7 @@ impl<R: Rpc> RpcClient<R> {
             ))]),
             account_config: solana_client::rpc_config::RpcAccountInfoConfig {
                 encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
+                commitment: Some(CommitmentConfig {
                     commitment: self.rpc().commitment(),
                 }),
                 data_slice: None,
@@ -583,7 +583,7 @@ impl<R: Rpc> RpcClient<R> {
             ]),
             account_config: solana_client::rpc_config::RpcAccountInfoConfig {
                 encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
+                commitment: Some(CommitmentConfig {
                     commitment: self.rpc().commitment(),
                 }),
                 data_slice: None,
@@ -636,7 +636,7 @@ impl<R: Rpc> RpcClient<R> {
             ]),
             account_config: solana_client::rpc_config::RpcAccountInfoConfig {
                 encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
-                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
+                commitment: Some(CommitmentConfig {
                     commitment: self.rpc().commitment(),
                 }),
                 data_slice: None,

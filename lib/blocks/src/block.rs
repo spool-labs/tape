@@ -283,12 +283,12 @@ mod tests {
     use super::*;
     use base64::encode as base64_encode;
     use bs58::encode as bs58_encode;
-    use solana_sdk::instruction::Instruction;
-    use solana_sdk::message::MessageHeader;
-    use solana_sdk::pubkey::Pubkey;
-    use solana_sdk::hash::Hash as SolanaHash;
-    use solana_sdk::signature::{Keypair, Signer};
-    use solana_sdk::sysvar;
+    use solana_hash::Hash as SolanaHash;
+    use solana_instruction::Instruction;
+    use solana_keypair::Keypair;
+    use solana_message::MessageHeader;
+    use solana_pubkey::Pubkey;
+    use solana_signer::Signer;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{EpochPhase, NodePreferences};
     use bytemuck::Zeroable;
@@ -552,7 +552,7 @@ mod tests {
         let authority = Address::new_unique();
         let system = system_pda().0;
         let tape = tape_pda(authority).0;
-        let slot_hashes = sysvar::slot_hashes::ID;
+        let slot_hashes = Pubkey::from_str_const("SysvarS1otHashes111111111111111111111111111");
         let other_program = Pubkey::new_unique();
         let tapedrive_program = tapedrive::ID;
         let account_keys = vec![
@@ -711,7 +711,7 @@ mod tests {
         let authority = Address::new_unique();
         let system = system_pda().0;
         let tape = tape_pda(authority).0;
-        let slot_hashes = sysvar::slot_hashes::ID;
+        let slot_hashes = Pubkey::from_str_const("SysvarS1otHashes111111111111111111111111111");
         let outer_program = Pubkey::new_unique();
         let tapedrive_program = tapedrive::ID;
 

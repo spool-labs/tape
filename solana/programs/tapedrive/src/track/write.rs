@@ -61,7 +61,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_sdk::account::Account;
+    use solana_account::Account;
     use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;

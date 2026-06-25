@@ -1,5 +1,5 @@
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::instruction::Instruction;
+use solana_compute_budget_interface::ComputeBudgetInstruction;
+use solana_instruction::Instruction;
 
 pub fn with_compute_unit_limit(
     compute_unit_limit: u32,
@@ -15,8 +15,8 @@ pub fn with_compute_unit_limit(
 
 #[cfg(test)]
 mod tests {
-    use solana_sdk::instruction::Instruction;
-    use solana_sdk::pubkey::Pubkey;
+    use solana_instruction::Instruction;
+    use solana_pubkey::Pubkey;
 
     use super::with_compute_unit_limit;
 

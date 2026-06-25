@@ -65,7 +65,7 @@ pub enum HelperError {
 /// ```
 pub fn load_solana_keypair(
     path: &Path,
-) -> Result<solana_sdk::signature::Keypair, HelperError> {
+) -> Result<solana_keypair::Keypair, HelperError> {
     let keypair = Keypair::try_load_json_file(path)?;
     keypair.try_to_solana_keypair().map_err(|error| {
         KeypairFileError::InvalidKeypair(error.to_string()).into()

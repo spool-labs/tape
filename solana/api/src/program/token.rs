@@ -1,13 +1,13 @@
 use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_crypto::address::Address;
+use crate::program::metaplex;
 
 tape_solana::declare_id!("An8uAQ8RWwMrQDaMivMKgF6T3XcYBSnhTBDkhu2TxNK2");
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
-pub const METADATA_PROGRAM_ID: [u8; 32] =
-    unsafe { *(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) };
+pub const METADATA_PROGRAM_ID: [u8; 32] = metaplex::PROGRAM_ID;
 
 pub const MINT:      &[u8] = b"mint";
 pub const MINT_SEED: &[u8] = &[152, 68, 212, 200, 25, 113, 221, 71];
@@ -71,8 +71,8 @@ pub fn metadata_pda() -> (Address, u8) {
     let (mint, _) = mint_pda();
 
     Address::find_program_address(
-        &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref()],
-        mpl_token_metadata::ID,
+        &[METADATA, metaplex::ID.as_ref(), mint.as_ref()],
+        metaplex::ID,
     )
 }
 
@@ -125,8 +125,8 @@ mod tests {
         let (pda, bump) = metadata_pda();
         let (mint, _) = mint_pda();
         let (expected_pda, expected_bump) = Pubkey::find_program_address(
-            &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref()],
-            &mpl_token_metadata::ID,
+            &[METADATA, metaplex::ID.as_ref(), mint.as_ref()],
+            &metaplex::ID,
         );
 
         assert_eq!(pda, expected_pda.into());

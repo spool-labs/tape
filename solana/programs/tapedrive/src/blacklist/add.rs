@@ -75,7 +75,7 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 mod tests {
     use super::*;
     use core::mem::size_of;
-    use solana_sdk::account::Account;
+    use solana_account::Account;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::CompressedTrack;

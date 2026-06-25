@@ -21,8 +21,6 @@ pub use utils::*;
 // Re-export common dependencies for convenience
 pub use bytemuck::{Pod, Zeroable};
 pub use num_enum::{IntoPrimitive, TryFromPrimitive};
-#[allow(deprecated)]
-pub use solana_program::system_program;
 pub use solana_program::{
     account_info::AccountInfo,
     clock::Clock,
@@ -34,4 +32,5 @@ pub use solana_program::{
     sysvar,
     sysvar::Sysvar,
 };
+pub use solana_system_interface::program as system_program;
 pub use thiserror::Error;

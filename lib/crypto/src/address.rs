@@ -5,7 +5,14 @@ use core::str::FromStr;
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "solana")]
 use solana_program::pubkey::{
+    ParsePubkeyError,
+    Pubkey as SolanaPubkey,
+    PubkeyError as SolanaPubkeyError,
+};
+#[cfg(not(target_os = "solana"))]
+use solana_pubkey::{
     ParsePubkeyError,
     Pubkey as SolanaPubkey,
     PubkeyError as SolanaPubkeyError,
@@ -138,7 +145,7 @@ impl From<&Hash> for Address {
 
 #[cfg(all(test, not(target_os = "solana")))]
 mod tests {
-    use solana_program::pubkey::Pubkey as SolanaPubkey;
+    use solana_pubkey::Pubkey as SolanaPubkey;
 
     use crate::ed25519::{Keypair, Pubkey};
 

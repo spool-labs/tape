@@ -1,6 +1,7 @@
 //! Lamport transfer helpers.
 
 use solana_program::{account_info::AccountInfo, program_error::ProgramError};
+use solana_system_interface::instruction as system_instruction;
 
 /// Trait for transferring lamports between accounts.
 pub trait LamportTransfer<'a, 'info> {
@@ -20,7 +21,7 @@ impl<'a, 'info> LamportTransfer<'a, 'info> for AccountInfo<'info> {
     #[inline(always)]
     fn collect(&'a self, lamports: u64, from: &'a AccountInfo<'info>) -> Result<(), ProgramError> {
         solana_program::program::invoke(
-            &solana_program::system_instruction::transfer(from.key, self.key, lamports),
+            &system_instruction::transfer(from.key, self.key, lamports),
             &[from.clone(), self.clone()],
         )
     }

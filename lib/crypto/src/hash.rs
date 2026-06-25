@@ -4,6 +4,8 @@ use core::str::FromStr;
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "solana"))]
+use solana_hash::{Hash as SolanaRuntimeHash, ParseHashError};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -37,42 +39,71 @@ impl Hash {
 
     #[cfg(not(target_os = "solana"))]
     pub fn new_unique() -> Self {
-        solana_program::pubkey::Pubkey::new_unique().to_bytes().into()
+        SolanaRuntimeHash::new_unique().to_bytes().into()
     }
 
     pub fn to_bytes(self) -> [u8; HASH_BYTES] {
         self.0
+    }
+
+}
+
+#[cfg(not(target_os = "solana"))]
+impl From<SolanaRuntimeHash> for Hash {
+    fn from(value: SolanaRuntimeHash) -> Self {
+        Self(value.to_bytes())
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+impl From<Hash> for SolanaRuntimeHash {
+    fn from(value: Hash) -> Self {
+        SolanaRuntimeHash::new_from_array(value.0)
     }
 }
 
 #[cfg(not(target_os = "solana"))]
 impl core::fmt::Display for Hash {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(
-            &solana_program::hash::Hash::new_from_array(self.0),
-            formatter,
-        )
+        core::fmt::Display::fmt(&SolanaRuntimeHash::new_from_array(self.0), formatter)
     }
 }
 
+#[cfg(not(target_os = "solana"))]
+impl FromStr for Hash {
+    type Err = ParseHashError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        SolanaRuntimeHash::from_str(s).map(|h| Self(h.to_bytes()))
+    }
+}
+
+#[cfg(target_os = "solana")]
 impl FromStr for Hash {
     type Err = solana_program::hash::ParseHashError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        solana_program::hash::Hash::from_str(s)
-            .map(|h| Self(h.to_bytes()))
+        solana_program::hash::Hash::from_str(s).map(|h| Self(h.to_bytes()))
     }
 }
 
 #[inline(always)]
 pub fn hashv(data: &[&[u8]]) -> Hash {
+    #[cfg(not(target_os = "solana"))]
+    let res = solana_sha256_hasher::hashv(data);
+    #[cfg(target_os = "solana")]
     let res = solana_program::hash::hashv(data);
+
     Hash(res.to_bytes())
 }
 
 #[inline(always)]
 pub fn hash(data: &[u8]) -> Hash {
+    #[cfg(not(target_os = "solana"))]
+    let res = solana_sha256_hasher::hash(data);
+    #[cfg(target_os = "solana")]
     let res = solana_program::hash::hash(data);
+
     Hash(res.to_bytes())
 }
 
@@ -83,7 +114,7 @@ mod tests {
     #[test]
     fn display_uses_solana_hash_encoding() {
         let hash = Hash([7u8; HASH_BYTES]);
-        let expected = solana_program::hash::Hash::new_from_array(hash.0).to_string();
+        let expected = SolanaRuntimeHash::new_from_array(hash.0).to_string();
 
         assert_eq!(hash.to_string(), expected);
         assert!(!hash.to_string().contains('['));

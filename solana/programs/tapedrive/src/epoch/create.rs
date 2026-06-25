@@ -22,8 +22,8 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let id = args.epoch;
-    let (epoch_address, _) = epoch_pda(id);
+    let epoch_id = args.epoch;
+    let (epoch_address, _) = epoch_pda(epoch_id);
 
     epoch_info
         .is_empty()?
@@ -35,20 +35,20 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[EPOCH, &id.pack()],
+        &[EPOCH, &epoch_id.pack()],
     )?;
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    epoch.id = id;
-    if id == EpochNumber(0) {
+    epoch.id = epoch_id;
+    if epoch_id == EpochNumber(0) {
         let clock = Clock::get()?;
         epoch.start_slot = SlotNumber(clock.slot);
         epoch.start_time = clock.unix_timestamp;
     }
     epoch.state.phase = EpochPhase::Unknown as u64;
 
-    EpochCreated { epoch: id }.log();
+    EpochCreated { epoch: epoch_id }.log();
 
     Ok(())
 }

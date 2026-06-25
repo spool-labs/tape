@@ -1,12 +1,12 @@
 use litesvm::types::{FailedTransactionMetadata, TransactionMetadata, TransactionResult};
-use solana_sdk::transaction::TransactionError;
+use solana_transaction::TransactionError;
 use solana_transaction_status::{
     InnerInstruction, InnerInstructions, TransactionConfirmationStatus, TransactionStatus,
     TransactionStatusMeta,
 };
 
 fn meta_to_inner_instructions(
-    inner: &[Vec<solana_sdk::message::inner_instruction::InnerInstruction>],
+    inner: &[Vec<solana_message::inner_instruction::InnerInstruction>],
 ) -> Vec<InnerInstructions> {
     inner
         .iter()

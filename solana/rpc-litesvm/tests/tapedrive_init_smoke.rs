@@ -3,8 +3,9 @@ use std::str::FromStr;
 
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_keypair::Keypair;
+use solana_pubkey::Pubkey;
+use solana_signer::Signer;
 use tape_api::genesis::GenesisConfig;
 use tape_api::instruction::{
     build_create_archive_ix, build_create_committee_ix, build_create_epoch_ix,

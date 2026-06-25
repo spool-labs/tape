@@ -2,8 +2,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signer::keypair::Keypair;
+use solana_keypair::Keypair;
+use solana_pubkey::Pubkey;
 use tokio::task::JoinHandle;
 
 use crate::chain::ChainFixture;

@@ -245,7 +245,7 @@ impl NodeHarnessBuilder {
 
 pub use tape_chain_harness::{ChainFixture, HarnessSpec};
 
-fn clone_keypair(keypair: &solana_sdk::signature::Keypair) -> Keypair {
+fn clone_keypair(keypair: &solana_keypair::Keypair) -> Keypair {
     Keypair::from_solana_keypair(keypair).expect("clone keypair")
 }
 

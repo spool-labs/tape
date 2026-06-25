@@ -596,7 +596,7 @@ mod tests {
     use bytemuck::Zeroable;
     use crate::event::TapedriveEvent;
     use crate::merge::merge;
-    use solana_sdk::instruction::Instruction;
+    use solana_instruction::Instruction;
     use solana_transaction_status::UiCompiledInstruction;
     use tape_api::instruction::{
         build_finalize_group_ix, build_vote_assignment_ix, build_vote_snapshot_ix,

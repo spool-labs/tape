@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
+use solana_keypair::Keypair;
+use solana_pubkey::Pubkey;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::NodeId;
 

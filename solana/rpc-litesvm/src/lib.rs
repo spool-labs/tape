@@ -7,21 +7,22 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agave_feature_set::{disable_sbpf_v0_execution, FeatureSet};
 use async_trait::async_trait;
 use block::{RecordedTransaction, SlotData};
 use convert::{tx_result_to_status_result, tx_result_to_transaction_status};
 use litesvm::types::TransactionResult;
 use litesvm::LiteSVM;
 use rpc::{Rpc, RpcError};
+use solana_account::{Account, ReadableAccount as SvmReadableAccount};
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::RpcFilterType;
-use solana_sdk::account::{Account, ReadableAccount};
-use solana_sdk::clock::{Clock, Slot};
-use solana_sdk::commitment_config::CommitmentLevel;
-use solana_sdk::hash::Hash;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signature;
-use solana_sdk::transaction::Transaction;
+use solana_clock::{Clock as SvmClock, Slot};
+use solana_commitment_config::CommitmentLevel;
+use solana_hash::Hash;
+use solana_pubkey::Pubkey;
+use solana_signature::Signature;
+use solana_transaction::{versioned::VersionedTransaction, Transaction};
 use solana_transaction_status::{
     ConfirmedTransactionWithStatusMeta, EncodedConfirmedTransactionWithStatusMeta,
     TransactionWithStatusMeta, UiConfirmedBlock, UiTransactionEncoding,
@@ -80,7 +81,14 @@ impl LiteSvmRpc {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
-                svm: LiteSVM::new()
+                svm: LiteSVM::default()
+                    .with_feature_set(local_feature_set())
+                    .with_builtins()
+                    .with_lamports(1_000_000_000_000_000)
+                    .with_sysvars()
+                    .with_feature_accounts()
+                    .with_default_programs()
+                    .with_sigverify(true)
                     .with_blockhash_check(false)
                     .with_transaction_history(10_000),
                 slots: HashMap::new(),
@@ -153,7 +161,7 @@ impl LiteSvmRpc {
                 inner.confirmed_tip = slot;
                 inner.pending_slot = inner.confirmed_tip + 1;
 
-                let mut clock = inner.svm.get_sysvar::<Clock>();
+                let mut clock = inner.svm.get_sysvar::<SvmClock>();
                 clock.unix_timestamp = clock.unix_timestamp.saturating_add(tick_seconds);
                 inner.svm.set_sysvar(&clock);
             }
@@ -165,7 +173,7 @@ impl LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        Ok(inner.svm.get_sysvar::<Clock>().unix_timestamp)
+        Ok(inner.svm.get_sysvar::<SvmClock>().unix_timestamp)
     }
 
     pub fn drop_blocks_through(&self, slot: u64) -> Result<usize, RpcError> {
@@ -196,9 +204,10 @@ impl LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let svm_program_id = program_id.into();
         inner
             .svm
-            .add_program_from_file(program_id, path)
+            .add_program_from_file(svm_program_id, path)
             .map_err(|e| RpcError::Internal(format!("add_program_from_file failed: {e:?}")))
     }
 
@@ -211,9 +220,10 @@ impl LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let svm_program_id = program_id.into();
         inner
             .svm
-            .add_program(program_id, program_bytes)
+            .add_program(svm_program_id, program_bytes)
             .map_err(|e| RpcError::Internal(format!("add_program failed: {e:?}")))
     }
 
@@ -227,9 +237,10 @@ impl LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let svm_pubkey = pubkey.into();
         inner
             .svm
-            .set_account(pubkey.into(), account)
+            .set_account(svm_pubkey, account)
             .map_err(|e| RpcError::Request(format!("set_account failed: {e:?}")))
     }
 
@@ -246,24 +257,31 @@ impl LiteSvmRpc {
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
 
         let lamports = inner.svm.minimum_balance_for_rent_exemption(data.len());
-        let mut account = Account::new(lamports, data.len(), &owner.into());
+        let owner = owner.into();
+        let mut account = Account::new(lamports, data.len(), &owner);
         account.data = data.to_vec();
 
+        let svm_pubkey = pubkey.into();
         inner
             .svm
-            .set_account(pubkey.into(), account)
+            .set_account(svm_pubkey, account)
             .map_err(|e| RpcError::Request(format!("set_account_data failed: {e:?}")))
     }
 
     fn current_slot_locked(inner: &Inner) -> Slot {
-        inner.svm.get_sysvar::<Clock>().slot
+        inner.svm.get_sysvar::<SvmClock>().slot
     }
 
-    fn balances_for_transaction(inner: &Inner, tx: &solana_sdk::transaction::VersionedTransaction) -> Vec<u64> {
+    fn balances_for_transaction(inner: &Inner, tx: &VersionedTransaction) -> Vec<u64> {
         tx.message
             .static_account_keys()
             .iter()
-            .map(|pk| inner.svm.get_balance(pk).unwrap_or(0))
+            .map(|pk| {
+                inner
+                    .svm
+                    .get_balance(pk)
+                    .unwrap_or(0)
+            })
             .collect()
     }
 
@@ -295,7 +313,7 @@ impl LiteSvmRpc {
 
     fn record_transaction_locked(
         inner: &mut Inner,
-        tx: solana_sdk::transaction::VersionedTransaction,
+        tx: VersionedTransaction,
         result: &TransactionResult,
         pre_balances: Vec<u64>,
         post_balances: Vec<u64>,
@@ -438,6 +456,7 @@ impl Rpc for LiteSvmRpc {
             slot,
             tx_with_meta,
             block_time: None,
+            index: 0,
         }
         .encode(UiTransactionEncoding::Json, Some(0))
         .map_err(|e| RpcError::Internal(format!("failed to encode transaction: {e}")))
@@ -465,10 +484,10 @@ impl Rpc for LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        let solana_pubkey: Pubkey = (*pubkey).into();
+        let svm_pubkey: Pubkey = (*pubkey).into();
         inner
             .svm
-            .get_account(&solana_pubkey)
+            .get_account(&svm_pubkey)
             .ok_or(RpcError::AccountNotFound(*pubkey))
     }
 
@@ -483,8 +502,10 @@ impl Rpc for LiteSvmRpc {
         Ok(pubkeys
             .iter()
             .map(|pk| {
-                let solana_pubkey: Pubkey = (*pk).into();
-                inner.svm.get_account(&solana_pubkey)
+                let svm_pubkey: Pubkey = (*pk).into();
+                inner
+                    .svm
+                    .get_account(&svm_pubkey)
             })
             .collect())
     }
@@ -498,8 +519,7 @@ impl Rpc for LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        let solana_program_id: Pubkey = (*program_id).into();
-
+        let svm_program_id: Pubkey = (*program_id).into();
         let filters = config.filters.unwrap_or_default();
 
         let out = inner
@@ -508,7 +528,7 @@ impl Rpc for LiteSvmRpc {
             .inner
             .iter()
             .filter_map(|(k, acc)| {
-                if acc.owner() != &solana_program_id {
+                if acc.owner() != &svm_program_id {
                     return None;
                 }
 
@@ -519,7 +539,16 @@ impl Rpc for LiteSvmRpc {
                 });
 
                 if passes {
-                    Some(((*k).into(), Account::from(acc.clone())))
+                    Some((
+                        Address::from(*k),
+                        Account {
+                            lamports: acc.lamports(),
+                            data: acc.data().to_vec(),
+                            owner: *acc.owner(),
+                            executable: acc.executable(),
+                            rent_epoch: acc.rent_epoch(),
+                        },
+                    ))
                 } else {
                     None
                 }
@@ -540,7 +569,7 @@ impl Rpc for LiteSvmRpc {
         let tx_slot = inner.pending_slot;
         inner.svm.warp_to_slot(tx_slot);
 
-        let vtx: solana_sdk::transaction::VersionedTransaction = transaction.clone().into();
+        let vtx: VersionedTransaction = transaction.clone().into();
         let pre_balances = Self::balances_for_transaction(&inner, &vtx);
 
         let result = inner.svm.send_transaction(vtx.clone());
@@ -553,8 +582,11 @@ impl Rpc for LiteSvmRpc {
         inner.svm.expire_blockhash();
 
         match result {
-            Ok(meta) => Ok(meta.signature.into()),
-            Err(failed) => Err(RpcError::Transaction(transaction_error(&failed.err, &failed.meta.logs))),
+            Ok(meta) => Ok(Txid::from(meta.signature)),
+            Err(failed) => Err(RpcError::Transaction(transaction_error(
+                &failed.err,
+                &failed.meta.logs,
+            ))),
         }
     }
 
@@ -569,18 +601,18 @@ impl Rpc for LiteSvmRpc {
     async fn get_signature_status(
         &self,
         txid: &Txid,
-    ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError> {
+    ) -> Result<Option<Result<(), solana_transaction::TransactionError>>, RpcError> {
         let inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        let signature: Signature = (*txid).into();
+        let svm_signature: Signature = (*txid).into();
 
         let Some(slot) = inner.tx_slot_index.get(txid) else {
             return Ok(None);
         };
 
-        let status = match inner.svm.get_transaction(&signature) {
+        let status = match inner.svm.get_transaction(&svm_signature) {
             Some(result) => {
                 let _ = tx_result_to_transaction_status(&result, *slot);
                 tx_result_to_status_result(&result)
@@ -598,8 +630,14 @@ impl Default for LiteSvmRpc {
     }
 }
 
+fn local_feature_set() -> FeatureSet {
+    let mut feature_set = FeatureSet::all_enabled();
+    feature_set.deactivate(&disable_sbpf_v0_execution::id());
+    feature_set
+}
+
 fn transaction_error(
-    error: &solana_sdk::transaction::TransactionError,
+    error: &solana_transaction_error::TransactionError,
     logs: &[String],
 ) -> String {
     if logs.is_empty() {

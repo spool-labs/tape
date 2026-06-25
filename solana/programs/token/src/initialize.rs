@@ -54,7 +54,7 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     token_program_info
         .is_program(&spl_token::ID)?;
     metadata_program_info
-        .is_program(&mpl_token_metadata::ID)?;
+        .is_program(&metaplex::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
@@ -93,30 +93,24 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     )?;
 
     // Initialize mint metadata.
-    mpl_token_metadata::instructions::CreateMetadataAccountV3Cpi {
-        __program: metadata_program_info,
-        metadata: metadata_info,
-        mint: mint_info,
-        mint_authority: treasury_info,
-        payer: fee_payer_info,
-        update_authority: (authority_info, true),
-        system_program: system_program_info,
-        rent: Some(rent_sysvar_info),
-        __args: mpl_token_metadata::instructions::CreateMetadataAccountV3InstructionArgs {
-            data: mpl_token_metadata::types::DataV2 {
-                name: METADATA_NAME.to_string(),
-                symbol: METADATA_SYMBOL.to_string(),
-                uri: METADATA_URI.to_string(),
-                seller_fee_basis_points: 0,
-                creators: None,
-                collection: None,
-                uses: None,
-            },
+    metaplex::create_metadata_account_v3_signed(
+        metadata_program_info,
+        metadata_info,
+        mint_info,
+        treasury_info,
+        fee_payer_info,
+        authority_info,
+        system_program_info,
+        Some(rent_sysvar_info),
+        metaplex::MetadataData {
+            name: METADATA_NAME,
+            symbol: METADATA_SYMBOL,
+            uri: METADATA_URI,
+            seller_fee_basis_points: 0,
             is_mutable: true,
-            collection_details: None,
         },
-    }
-    .invoke_signed(&[&[TREASURY, &[TREASURY_BUMP]]])?;
+        &[&[TREASURY, &[TREASURY_BUMP]]],
+    )?;
 
     // Create authority_ata token account.
     create_associated_token_account(

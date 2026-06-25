@@ -1,5 +1,5 @@
 use std::time::Duration;
-use solana_sdk::pubkey::Pubkey;
+use solana_pubkey::Pubkey;
 
 /// A serialized account payload to seed into the simulated on-chain state.
 #[derive(Debug, Clone)]

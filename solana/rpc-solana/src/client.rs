@@ -3,15 +3,15 @@
 use crate::config::RpcConfig;
 use crate::failover::EndpointFailover;
 use async_trait::async_trait;
+use solana_account::Account;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcTransactionConfig};
-use solana_sdk::account::Account;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_sdk::hash::Hash;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signature;
-use solana_sdk::transaction::Transaction;
+use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
+use solana_hash::Hash;
+use solana_pubkey::Pubkey;
+use solana_signature::Signature;
+use solana_transaction::{Transaction, TransactionError};
 use solana_transaction_status::{
     EncodedConfirmedTransactionWithStatusMeta, TransactionDetails, UiConfirmedBlock,
     UiTransactionEncoding,
@@ -303,7 +303,7 @@ impl SolanaRpc {
 
 #[async_trait]
 impl Rpc for SolanaRpc {
-    fn commitment(&self) -> solana_sdk::commitment_config::CommitmentLevel {
+    fn commitment(&self) -> CommitmentLevel {
         self.config.commitment
     }
 
@@ -739,7 +739,7 @@ impl Rpc for SolanaRpc {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.get_program_accounts_with_config(&solana_program_id, config_clone),
+                    client.get_program_ui_accounts_with_config(&solana_program_id, config_clone),
                 )
                 .await
             };
@@ -759,8 +759,17 @@ impl Rpc for SolanaRpc {
 
                     return Ok(accounts
                         .into_iter()
-                        .map(|(address, account)| (address.into(), account))
-                        .collect());
+                        .map(|(address, account)| {
+                            account
+                                .to_account()
+                                .map(|account| (address.into(), account))
+                                .ok_or_else(|| {
+                                    RpcError::Deserialization(
+                                        "program account was not binary-decodable".to_string(),
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?);
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
@@ -868,7 +877,7 @@ impl Rpc for SolanaRpc {
     async fn get_signature_status(
         &self,
         txid: &Txid,
-    ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError> {
+    ) -> Result<Option<Result<(), TransactionError>>, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -930,8 +939,8 @@ fn flatten_error(err: &(dyn std::error::Error + 'static)) -> String {
 mod tests {
     use super::*;
     use solana_client::client_error::ClientErrorKind;
-    use solana_sdk::instruction::InstructionError;
-    use solana_sdk::transaction::TransactionError;
+    use solana_instruction_error::InstructionError;
+    use solana_transaction::TransactionError;
 
     #[test]
     fn test_client_creation() {
@@ -953,14 +962,11 @@ mod tests {
     #[tokio::test]
     async fn test_commitment_config() {
         let config = RpcConfig {
-            commitment: solana_sdk::commitment_config::CommitmentLevel::Finalized,
+            commitment: CommitmentLevel::Finalized,
             ..Default::default()
         };
         let client = SolanaRpc::new(config).unwrap();
-        assert_eq!(
-            client.commitment(),
-            solana_sdk::commitment_config::CommitmentLevel::Finalized
-        );
+        assert_eq!(client.commitment(), CommitmentLevel::Finalized);
     }
 
     #[test]

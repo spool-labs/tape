@@ -6,7 +6,7 @@ use peer_tls::{apply_pinned_tls, install_default_provider};
 use rand::RngCore;
 use reqwest::Client;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::signature::Keypair;
+use solana_keypair::Keypair;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BasisPoints, StorageUnits};

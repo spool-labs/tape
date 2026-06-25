@@ -23,11 +23,12 @@ pub fn hash_to_curve<T: AsRef<[u8]>>(message: T) -> Result<G1Point, BLSError> {
             // SHA-256 via the sol_sha256 syscall (1 stack frame). The pure-Rust
             // solana_nostd_sha256 compiles to a ~64-deep call chain under the v3
             // (platform-tools v1.54) toolchain and trips MAX_CALL_DEPTH at runtime.
-            let hash = solana_program::hash::hashv(&[
-                b"BLS-BN254-RO",
-                message.as_ref(),
-                &[n]
-            ]).to_bytes();
+            #[cfg(target_os = "solana")]
+            let hash = solana_program::hash::hashv(&[b"BLS-BN254-RO", message.as_ref(), &[n]])
+                .to_bytes();
+            #[cfg(not(target_os = "solana"))]
+            let hash = solana_sha256_hasher::hashv(&[b"BLS-BN254-RO", message.as_ref(), &[n]])
+                .to_bytes();
 
             let hash_ubig = UBig::from_be_bytes(&hash);
 

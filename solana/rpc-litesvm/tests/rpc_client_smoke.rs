@@ -1,9 +1,10 @@
 use rpc::Rpc;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signer};
-use solana_sdk::system_instruction;
+use solana_keypair::Keypair;
+use solana_pubkey::Pubkey;
+use solana_signer::Signer;
+use solana_system_interface::instruction as system_instruction;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as TapeKeypair;
 

@@ -20,7 +20,6 @@ bytemuck.workspace = true
 num_enum.workspace = true
 thiserror.workspace = true
 solana-program.workspace = true
-mpl-token-metadata.workspace = true
 spl-token.workspace = true
 spl-associated-token-account.workspace = true
 array-const-fn-init.workspace = true
