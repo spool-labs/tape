@@ -399,6 +399,36 @@ impl Store for RocksStore {
         result
     }
 
+    fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> Result<()> {
+        #[cfg(feature = "metrics")]
+        let timer = OperationTimer::new();
+
+        let cf_handle = self
+            .db
+            .cf_handle(cf)
+            .ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+
+        let result = self
+            .db
+            .delete_range_cf(&cf_handle, start, end)
+            .map_err(|e| Error::Database(e.to_string()));
+
+        #[cfg(feature = "metrics")]
+        if let Some(metrics) = get_metrics() {
+            let status = if result.is_ok() { "success" } else { "error" };
+            metrics
+                .delete_duration
+                .with_label_values(&[cf])
+                .observe(timer.elapsed_secs());
+            metrics
+                .operations_total
+                .with_label_values(&[cf, "delete_range", status])
+                .inc();
+        }
+
+        result
+    }
+
     fn delete(&self, cf: &str, key: &[u8]) -> Result<()> {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
@@ -447,7 +477,6 @@ impl Store for RocksStore {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
 
-        // Use get_pinned_cf for efficiency - avoids allocation if we just need existence check
         let cf_handle = self
             .db
             .cf_handle(cf)
@@ -655,43 +684,6 @@ impl Store for RocksStore {
         }
 
         result
-    }
-
-    fn iter_keys_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-        #[cfg(feature = "metrics")]
-        let timer = OperationTimer::new();
-
-        let cf_handle = self
-            .db
-            .cf_handle(cf)
-            .ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
-
-        let mut iter = self.db.raw_iterator_cf(&cf_handle);
-        iter.seek(prefix);
-
-        let mut keys = Vec::new();
-        while iter.valid() {
-            match iter.key() {
-                Some(key) if key.starts_with(prefix) => keys.push(key.to_vec()),
-                _ => break,
-            }
-            iter.next();
-        }
-        iter.status().map_err(|e| Error::Database(e.to_string()))?;
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = get_metrics() {
-            metrics
-                .iter_duration
-                .with_label_values(&[cf, "keys_prefix"])
-                .observe(timer.elapsed_secs());
-            metrics
-                .operations_total
-                .with_label_values(&[cf, "iter_keys_prefix", "success"])
-                .inc();
-        }
-
-        Ok(keys)
     }
 
     fn iter_from(&self, cf: &str, start: &[u8], direction: Direction) -> Result<StoreIter<'_>> {
@@ -956,27 +948,6 @@ mod tests {
     }
 
     #[test]
-    fn iter_keys_prefix() {
-        let dir = tempdir().unwrap();
-        let store = RocksStore::open(dir.path(), &["test"]).unwrap();
-
-        store.put("test", b"user:1", b"alice").unwrap();
-        store.put("test", b"user:2", b"bob").unwrap();
-        store.put("test", b"post:1", b"hello").unwrap();
-        store.put("test", b"user:3", b"charlie").unwrap();
-
-        // Returns only the matching keys, in order, and stops at the prefix edge.
-        let keys = store.iter_keys_prefix("test", b"user:").unwrap();
-        assert_eq!(
-            keys,
-            vec![b"user:1".to_vec(), b"user:2".to_vec(), b"user:3".to_vec()]
-        );
-
-        // A prefix with no matches yields nothing.
-        assert!(store.iter_keys_prefix("test", b"zzz:").unwrap().is_empty());
-    }
-
-    #[test]
     fn iter_from() {
         let dir = tempdir().unwrap();
         let store = RocksStore::open(dir.path(), &["test"]).unwrap();
@@ -1016,6 +987,25 @@ mod tests {
         assert_eq!(range.len(), 2);
         assert_eq!(range[0].0, b"b".to_vec());
         assert_eq!(range[1].0, b"c".to_vec());
+    }
+
+    #[test]
+    fn delete_range() {
+        let dir = tempdir().unwrap();
+        let store = RocksStore::open(dir.path(), &["test"]).unwrap();
+
+        store.put("test", b"a", b"1").unwrap();
+        store.put("test", b"b", b"2").unwrap();
+        store.put("test", b"c", b"3").unwrap();
+        store.put("test", b"d", b"4").unwrap();
+
+        // [b, d) drops b and c; a and d (the exclusive end) survive.
+        store.delete_range("test", b"b", b"d").unwrap();
+
+        assert!(store.get("test", b"a").unwrap().is_some());
+        assert!(store.get("test", b"b").unwrap().is_none());
+        assert!(store.get("test", b"c").unwrap().is_none());
+        assert!(store.get("test", b"d").unwrap().is_some());
     }
 
     #[test]
