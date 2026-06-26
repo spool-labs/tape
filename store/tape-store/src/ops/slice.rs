@@ -145,13 +145,15 @@ impl<S: Store> SliceOps for TapeStore<S> {
         spool_id: SpoolIndex,
     ) -> Result<Vec<Address>> {
         let prefix = SliceKey::spool_prefix(spool_id);
-        let iter = self
+        // Keys-only scan: the spool's slice values live in blob files, so reading
+        // them just to extract the track address is wasted I/O.
+        let keys = self
             .inner()
             .inner()
-            .iter_prefix(SliceCol::CF_NAME, &prefix)?;
+            .iter_keys_prefix(SliceCol::CF_NAME, &prefix)?;
 
-        let mut results = Vec::new();
-        for (key_bytes, _value_bytes) in iter {
+        let mut results = Vec::with_capacity(keys.len());
+        for key_bytes in keys {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
             results.push(key.track_address);
@@ -161,12 +163,12 @@ impl<S: Store> SliceOps for TapeStore<S> {
 
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
         let prefix = SliceKey::spool_prefix(spool_id);
-        let iter = self
+        // Keys-only: never read/copy the (blob) values just to count them.
+        Ok(self
             .inner()
             .inner()
-            .iter_prefix(SliceCol::CF_NAME, &prefix)?;
-
-        Ok(iter.count())
+            .iter_keys_prefix(SliceCol::CF_NAME, &prefix)?
+            .len())
     }
 
     fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<usize> {

@@ -43,6 +43,12 @@ pub trait Store: Send + Sync {
     /// Iterate over entries matching the key prefix in lexicographic order.
     fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<StoreIter<'_>>;
 
+    /// Collect the keys under `prefix` WITHOUT reading their values. Backends can
+    /// override to skip value (e.g. blob-file) reads when only keys are needed.
+    fn iter_keys_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
+        Ok(self.iter_prefix(cf, prefix)?.map(|(k, _)| k).collect())
+    }
+
     /// Iterate from the start key (inclusive) in the specified direction.
     fn iter_from(&self, cf: &str, start: &[u8], direction: Direction) -> Result<StoreIter<'_>>;
 
