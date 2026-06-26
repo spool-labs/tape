@@ -6,14 +6,13 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::ContentType;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_sdk::stream::manifest::ChunkManifest;
 
 use super::decode::decode_track_bytes;
-use super::response::object_headers;
+use super::response::{object_headers, ObjectResponseMetadata};
 use crate::http::error::RouteError;
 use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
@@ -59,7 +58,7 @@ pub(in crate::http::handlers::object) fn manifest_chunks<
 pub(in crate::http::handlers::object) fn object_stream_response<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
     chunks: Vec<ManifestChunk>,
-    content_type: ContentType,
+    metadata: ObjectResponseMetadata,
     etag: Hash,
     content_length: u64,
 ) -> Result<Response, RouteError>
@@ -68,7 +67,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let headers = object_headers(content_length, content_type, etag)?;
+    let headers = object_headers(content_length, &metadata, etag)?;
     let body = Body::from_stream(manifest_chunk_stream(state, chunks));
     Ok((StatusCode::OK, headers, body).into_response())
 }

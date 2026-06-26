@@ -138,7 +138,7 @@ mod tests {
             }),
             meta: Some(UiTransactionStatusMeta {
                 err: None,
-                status,
+                status: status.map_err(Into::into),
                 fee: 5000,
                 pre_balances: vec![1, 2, 3],
                 post_balances: vec![1, 2, 3],

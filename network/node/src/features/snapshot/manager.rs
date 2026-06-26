@@ -3,20 +3,22 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_blocks::ParsedInstruction;
 use tape_core::system::{EpochPhase, VoteKind};
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::Hash;
 use tape_protocol::{Api, ProtocolState};
-use tape_store::ops::{EventLogOps, SnapshotOps, VoteOps};
+use tape_store::ops::{EventLogOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps, VoteOps};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::bootstrap::fetch::{fetch_and_decode_epoch, persist_snapshot_metadata};
 use crate::features::snapshot::build::{
     build_snapshot, persist_snapshot_candidate, SnapshotCandidate,
 };
@@ -195,15 +197,28 @@ where
         epoch: EpochNumber,
         hash: Hash,
     ) -> Result<(), NodeError> {
+        let mut materialized = false;
+
         if let Some(candidate) = self.build_candidate(state, epoch).await? {
             if candidate.hash == hash {
                 persist_snapshot_candidate(self.context.as_ref(), &candidate)?;
+                materialized = true;
             } else {
                 warn!(
                     epoch = epoch.0,
                     local_hash = %candidate.hash,
                     finalized_hash = %hash,
                     "snapshot: finalized hash does not match local candidate"
+                );
+            }
+        }
+
+        if !materialized {
+            if let Err(error) = self.ensure_snapshot_metadata(epoch).await {
+                warn!(
+                    epoch = epoch.0,
+                    %error,
+                    "snapshot: finalized metadata materialization failed"
                 );
             }
         }
@@ -229,6 +244,23 @@ where
         let state = self.context.state();
 
         if state.epoch().is_zero() {
+            return Ok(());
+        }
+
+        if state.phase() == EpochPhase::Active {
+            if let Some(previous) = state
+                .previous
+                .as_ref()
+                .filter(|previous| previous.epoch.has_snapshot_hash())
+            {
+                if let Err(error) = self.ensure_snapshot_metadata(previous.epoch.id).await {
+                    warn!(
+                        epoch = previous.epoch.id.0,
+                        %error,
+                        "snapshot: active-epoch metadata repair failed"
+                    );
+                }
+            }
             return Ok(());
         }
 
@@ -265,6 +297,61 @@ where
         epoch: EpochNumber,
     ) -> Result<Option<SnapshotCandidate>, NodeError> {
         build_snapshot(&self.context, state, epoch, &self.cancel).await
+    }
+
+    async fn ensure_snapshot_metadata(&self, epoch: EpochNumber) -> Result<(), NodeError> {
+        if self.snapshot_metadata_complete(epoch)? {
+            return Ok(());
+        }
+
+        let decoded = fetch_and_decode_epoch(&self.context, epoch, &self.cancel).await?;
+        persist_snapshot_metadata(self.context.as_ref(), epoch, &decoded)?;
+        info!(
+            epoch = epoch.0,
+            tracks = decoded.tracks.len(),
+            "snapshot: finalized metadata materialized"
+        );
+        Ok(())
+    }
+
+    fn snapshot_metadata_complete(&self, epoch: EpochNumber) -> Result<bool, NodeError> {
+        let snapshot_tape = snapshot_tape_pda(epoch).0;
+        let Some(tape) = self
+            .context
+            .store
+            .get_tape(snapshot_tape)
+            .map_err(|error| NodeError::Store(format!("get_tape: {error}")))?
+        else {
+            return Ok(false);
+        };
+
+        if tape.next_track_number.0 == 0 {
+            return Ok(false);
+        }
+
+        for number in 0..tape.next_track_number.0 {
+            let track = track_pda(snapshot_tape, TrackNumber(number)).0;
+            if self
+                .context
+                .store
+                .get_track(track)
+                .map_err(|error| NodeError::Store(format!("get_track: {error}")))?
+                .is_none()
+            {
+                return Ok(false);
+            }
+            if self
+                .context
+                .store
+                .get_track_data(track)
+                .map_err(|error| NodeError::Store(format!("get_track_data: {error}")))?
+                .is_none()
+            {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     async fn run_vote_round(

@@ -399,36 +399,6 @@ impl Store for RocksStore {
         result
     }
 
-    fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> Result<()> {
-        #[cfg(feature = "metrics")]
-        let timer = OperationTimer::new();
-
-        let cf_handle = self
-            .db
-            .cf_handle(cf)
-            .ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
-
-        let result = self
-            .db
-            .delete_range_cf(&cf_handle, start, end)
-            .map_err(|e| Error::Database(e.to_string()));
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = get_metrics() {
-            let status = if result.is_ok() { "success" } else { "error" };
-            metrics
-                .delete_duration
-                .with_label_values(&[cf])
-                .observe(timer.elapsed_secs());
-            metrics
-                .operations_total
-                .with_label_values(&[cf, "delete_range", status])
-                .inc();
-        }
-
-        result
-    }
-
     fn delete(&self, cf: &str, key: &[u8]) -> Result<()> {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
@@ -477,6 +447,7 @@ impl Store for RocksStore {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
 
+        // Use get_pinned_cf for efficiency - avoids allocation if we just need existence check
         let cf_handle = self
             .db
             .cf_handle(cf)
@@ -987,25 +958,6 @@ mod tests {
         assert_eq!(range.len(), 2);
         assert_eq!(range[0].0, b"b".to_vec());
         assert_eq!(range[1].0, b"c".to_vec());
-    }
-
-    #[test]
-    fn delete_range() {
-        let dir = tempdir().unwrap();
-        let store = RocksStore::open(dir.path(), &["test"]).unwrap();
-
-        store.put("test", b"a", b"1").unwrap();
-        store.put("test", b"b", b"2").unwrap();
-        store.put("test", b"c", b"3").unwrap();
-        store.put("test", b"d", b"4").unwrap();
-
-        // [b, d) drops b and c; a and d (the exclusive end) survive.
-        store.delete_range("test", b"b", b"d").unwrap();
-
-        assert!(store.get("test", b"a").unwrap().is_some());
-        assert!(store.get("test", b"b").unwrap().is_none());
-        assert!(store.get("test", b"c").unwrap().is_none());
-        assert!(store.get("test", b"d").unwrap().is_some());
     }
 
     #[test]

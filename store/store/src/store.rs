@@ -37,21 +37,6 @@ pub trait Store: Send + Sync {
     /// Apply a batch of write operations atomically.
     fn write_batch(&self, batch: WriteBatch) -> Result<()>;
 
-    /// Delete every key in the range `[start, end)` from the column family.
-    /// Backends can override with a native range tombstone; the default collects
-    /// the keys in range and deletes them in one batch.
-    fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> Result<()> {
-        let keys: Vec<Vec<u8>> = self.iter_range(cf, start, end)?.map(|(k, _)| k).collect();
-        if keys.is_empty() {
-            return Ok(());
-        }
-        let mut batch = WriteBatch::new();
-        for key in &keys {
-            batch.delete(cf, key);
-        }
-        self.write_batch(batch)
-    }
-
     /// Iterate over all entries in lexicographic key order.
     fn iter(&self, cf: &str) -> Result<StoreIter<'_>>;
 

@@ -156,14 +156,6 @@ impl SliceKey {
     pub fn spool_prefix(spool_id: SpoolIndex) -> [u8; 2] {
         (spool_id.as_u64() as u16).to_be_bytes()
     }
-
-    /// Byte range `[start, end)` covering every slice key for this spool, for a
-    /// range delete or scan. `end` is `None` when the spool prefix is the maximum
-    /// (`u16::MAX`) and so has no 2-byte exclusive successor.
-    pub fn spool_key_range(spool_id: SpoolIndex) -> ([u8; 2], Option<[u8; 2]>) {
-        let spool = spool_id.as_u64() as u16;
-        (spool.to_be_bytes(), spool.checked_add(1).map(u16::to_be_bytes))
-    }
 }
 
 /// Key for tape-local ordered track lookup (72 bytes).

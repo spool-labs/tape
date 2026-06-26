@@ -1,12 +1,9 @@
-//! Process orchestration: build state, run bootstrap to completion,
-//! then spawn the HTTP server and live-tail tasks under a shared
+//! Process orchestration: build state, expose HTTP observability immediately,
+//! run bootstrap to completion, then spawn live-tail tasks under a shared
 //! shutdown token.
 //!
-//! Mirrors the pattern used by `network/node` — bootstrap is *not* a
-//! supervised service. It runs in `run_application` before the HTTP
-//! listener binds, so the cache simply doesn't accept connections
-//! until the slot store is filled. There is no in-between "503 while
-//! warming" state to think about.
+//! Bootstrap is still required before the cache is considered healthy, but
+//! `/v1/health` and `/v1/stats` are reachable while it catches up.
 
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -71,23 +68,18 @@ pub async fn run_application(config: Config) -> Result<()> {
     let state = build_state(&config)?;
     let cancel = CancellationToken::new();
 
-    bootstrap(state.clone(), config.bootstrap_lookback_epochs, cancel.clone()).await?;
-    state.stats.bootstrap_done.store(true, Ordering::Relaxed);
-
     let listener = TcpListener::bind(&config.listen)
         .await
         .with_context(|| format!("binding {}", config.listen))?;
     info!(
         listen = %config.listen,
         upstream = %config.upstream,
-        epoch_start_slot = state.stats.epoch_start_slot.load(Ordering::Relaxed),
-        bootstrap_target_slot = state.stats.bootstrap_target_slot.load(Ordering::Relaxed),
-        "rpc-cache accepting connections"
+        "rpc-cache accepting observability connections"
     );
 
     let server_state = state.clone();
     let server_cancel = cancel.clone();
-    let http_task = tokio::spawn(async move {
+    let mut http_task = tokio::spawn(async move {
         let router = crate::server::router(server_state)
             .into_make_service_with_connect_info::<SocketAddr>();
         axum::serve(listener, router)
@@ -96,9 +88,49 @@ pub async fn run_application(config: Config) -> Result<()> {
             .context("axum serve")
     });
 
+    let bootstrap_state = state.clone();
+    let bootstrap_cancel = cancel.clone();
+    let mut bootstrap_task = tokio::spawn(async move {
+        bootstrap(
+            bootstrap_state.clone(),
+            config.bootstrap_lookback_epochs,
+            bootstrap_cancel,
+        )
+        .await?;
+        bootstrap_state
+            .stats
+            .bootstrap_done
+            .store(true, Ordering::Relaxed);
+        Ok(())
+    });
+
+    tokio::select! {
+        _ = wait_shutdown_signal() => {
+            info!("shutdown signal received");
+            cancel.cancel();
+            return Ok(());
+        }
+        r = &mut http_task => {
+            warn!(result = ?join_result(r), "http server exited before bootstrap completed");
+            cancel.cancel();
+            return Ok(());
+        }
+        r = &mut bootstrap_task => {
+            join_result(r).context("rpc-cache bootstrap")?;
+        }
+    }
+
+    info!(
+        listen = %config.listen,
+        upstream = %config.upstream,
+        epoch_start_slot = state.stats.epoch_start_slot.load(Ordering::Relaxed),
+        bootstrap_target_slot = state.stats.bootstrap_target_slot.load(Ordering::Relaxed),
+        "rpc-cache accepting warmed connections"
+    );
+
     let tail_state = state.clone();
     let tail_cancel = cancel.clone();
-    let tail_task = tokio::spawn(async move { live_tail(tail_state, tail_cancel).await });
+    let mut tail_task = tokio::spawn(async move { live_tail(tail_state, tail_cancel).await });
 
     let signal_cancel = cancel.clone();
     tokio::select! {
@@ -106,11 +138,13 @@ pub async fn run_application(config: Config) -> Result<()> {
             info!("shutdown signal received");
             signal_cancel.cancel();
         }
-        r = flatten(http_task) => {
+        r = &mut http_task => {
+            let r = join_result(r);
             warn!(result = ?r, "http server exited before shutdown");
             signal_cancel.cancel();
         }
-        r = flatten(tail_task) => {
+        r = &mut tail_task => {
+            let r = join_result(r);
             warn!(result = ?r, "live tail exited before shutdown");
             signal_cancel.cancel();
         }
@@ -333,6 +367,7 @@ async fn fetch_and_store(state: &AppState, slot: u64) {
     match fetch_slot_block(state, slot).await {
         Ok(cached) => {
             state.slot_store.insert(slot, cached).await;
+            state.stats.newest_cached_slot.fetch_max(slot, Ordering::Relaxed);
         }
         Err(msg) => {
             warn!(slot, error = %msg, "block fetch failed; leaving slot uncached");
@@ -546,8 +581,8 @@ async fn wait_shutdown_signal() {
     }
 }
 
-async fn flatten<T>(handle: tokio::task::JoinHandle<Result<T>>) -> Result<T> {
-    match handle.await {
+fn join_result<T>(result: std::result::Result<Result<T>, tokio::task::JoinError>) -> Result<T> {
+    match result {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(e)) => Err(e),
         Err(e) => Err(anyhow!("task join: {e}")),

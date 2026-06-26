@@ -9,7 +9,7 @@ use tape_sdk::stream::manifest::ChunkManifest;
 
 use super::decode::decode_track_bytes;
 use super::manifest::{manifest_chunks, object_stream_response};
-use super::response::{object_content_type, object_response};
+use super::response::{object_response, object_response_metadata};
 use crate::http::error::RouteError;
 use crate::http::handlers::track::{parse_address, track_with_pending};
 use crate::http::state::AppState;
@@ -43,14 +43,14 @@ pub(crate) async fn get_object<
         }
     }
 
-    let content_type = object_content_type(&state, track_addr)?;
+    let metadata = object_response_metadata(&state, track_addr)?;
     let decoded = decode_track_bytes(&state, track_addr, track).await?;
     let Ok(manifest) = ChunkManifest::from_bytes(&decoded.bytes) else {
         state
             .context
             .metrics
             .add_downloaded(decoded.bytes.len() as u64);
-        return object_response(decoded.bytes, content_type, decoded.etag);
+        return object_response(decoded.bytes, &metadata, decoded.etag);
     };
 
     match state
@@ -67,7 +67,7 @@ pub(crate) async fn get_object<
     object_stream_response(
         state,
         chunks,
-        content_type,
+        metadata,
         decoded.etag,
         manifest.total_size.to_bytes(),
     )
@@ -94,12 +94,12 @@ pub(crate) async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    let content_type = object_content_type(&state, track_addr)?;
+    let metadata = object_response_metadata(&state, track_addr)?;
     let decoded = decode_track_bytes(&state, track_addr, track).await?;
     state
         .context
         .metrics
         .add_downloaded(decoded.bytes.len() as u64);
 
-    object_response(decoded.bytes, content_type, decoded.etag)
+    object_response(decoded.bytes, &metadata, decoded.etag)
 }

@@ -1,6 +1,6 @@
 //! Slice data operations (merged primary + recovery)
 
-use store::{Column, Store, WriteBatch};
+use store::{Column, Store};
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 
@@ -47,8 +47,8 @@ pub trait SliceOps {
     /// Count slices in a spool without loading data.
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize>;
 
-    /// Delete all slices for a spool with a single range delete.
-    fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<()>;
+    /// Delete all slices for a spool. Returns count of deleted slices.
+    fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<usize>;
 }
 
 impl<S: Store> SliceOps for TapeStore<S> {
@@ -169,29 +169,21 @@ impl<S: Store> SliceOps for TapeStore<S> {
         Ok(iter.count())
     }
 
-    fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<()> {
+    fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
         let raw = self.inner().inner();
+        let prefix = SliceKey::spool_prefix(spool_id);
 
-        // A spool's slices occupy the contiguous key range [spool, spool+1);
-        // drop them with one range tombstone.
-        let (start, end) = SliceKey::spool_key_range(spool_id);
-        match end {
-            Some(end) => raw.delete_range(SliceCol::CF_NAME, &start, &end)?,
-            None => {
-                // The max spool prefix has no exclusive successor; fall back to
-                // collecting keys and batch-deleting them.
-                let keys: Vec<Vec<u8>> = raw
-                    .iter_prefix(SliceCol::CF_NAME, &start)?
-                    .map(|(k, _)| k)
-                    .collect();
-                let mut batch = WriteBatch::new();
-                for key in &keys {
-                    batch.delete(SliceCol::CF_NAME, key);
-                }
-                raw.write_batch(batch)?;
-            }
+        let keys: Vec<Vec<u8>> = raw
+            .iter_prefix(SliceCol::CF_NAME, &prefix)?
+            .map(|(k, _)| k)
+            .collect();
+
+        let count = keys.len();
+        for key in keys {
+            raw.delete(SliceCol::CF_NAME, &key)?;
         }
-        Ok(())
+
+        Ok(count)
     }
 }
 
@@ -365,33 +357,10 @@ mod tests {
         store.put_slice(SpoolIndex(42), t2, vec![2]).unwrap();
         store.put_slice(SpoolIndex(99), t3, vec![3]).unwrap();
 
-        store.delete_all_slices_for_spool(SpoolIndex(42)).unwrap();
+        let count = store.delete_all_slices_for_spool(SpoolIndex(42)).unwrap();
+        assert_eq!(count, 2);
         assert_eq!(store.count_slices_by_spool(SpoolIndex(42)).unwrap(), 0);
         assert_eq!(store.count_slices_by_spool(SpoolIndex(99)).unwrap(), 1);
-    }
-
-    #[test]
-    fn delete_all_for_spool_keeps_neighbors() {
-        // Deleting spool N must leave N-1 and N+1 intact — the range bounds must
-        // be exact, not bleed past the [spool, spool+1) prefix.
-        let store = test_store();
-        let prev = Address::new_unique();
-        let mid_a = Address::new_unique();
-        let mid_b = Address::new_unique();
-        let next = Address::new_unique();
-
-        store.put_slice(SpoolIndex(41), prev, vec![0xAA]).unwrap();
-        store.put_slice(SpoolIndex(42), mid_a, vec![0xBB]).unwrap();
-        store.put_slice(SpoolIndex(42), mid_b, vec![0xCC]).unwrap();
-        store.put_slice(SpoolIndex(43), next, vec![0xDD]).unwrap();
-
-        store.delete_all_slices_for_spool(SpoolIndex(42)).unwrap();
-
-        assert_eq!(store.count_slices_by_spool(SpoolIndex(41)).unwrap(), 1);
-        assert_eq!(store.count_slices_by_spool(SpoolIndex(42)).unwrap(), 0);
-        assert_eq!(store.count_slices_by_spool(SpoolIndex(43)).unwrap(), 1);
-        assert_eq!(store.get_slice(SpoolIndex(41), prev).unwrap().unwrap(), vec![0xAA]);
-        assert_eq!(store.get_slice(SpoolIndex(43), next).unwrap().unwrap(), vec![0xDD]);
     }
 
     #[test]

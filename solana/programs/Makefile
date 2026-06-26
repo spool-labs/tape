@@ -44,10 +44,10 @@ test: $(PROGRAMS)
 .PHONY: local
 local:
 	solana-test-validator \
-		--bpf-program 5YdY3tWB4nxUKXRsoCXUGhThKRB1CdYKoQCDAgxyahMu $(ROOT_TARGET_DEPLOY)/tapedrive.so \
-		--bpf-program An8uAQ8RWwMrQDaMivMKgF6T3XcYBSnhTBDkhu2TxNK2 $(ROOT_TARGET_DEPLOY)/token.so \
-		--bpf-program 3VqjHk3Xsqk7LLUqSE1yJgQaTVYDhiuQXZoeDb2MhGXz $(ROOT_TARGET_DEPLOY)/exchange.so \
-		--bpf-program 9kvrUxhcj4f1PhrbDmhpgU8BMqZjjecSpXCAzBUga2p6 $(ROOT_TARGET_DEPLOY)/staking.so \
+		--bpf-program 2QzE2gG9mXQnSVptHvgUqtu7Ux42eDSzyiUBxUyikYdR $(ROOT_TARGET_DEPLOY)/tapedrive.so \
+		--bpf-program 6kbWLipEkY9BoYoUtyaDE3zumZjB68hmK37HDC9UtE9E $(ROOT_TARGET_DEPLOY)/token.so \
+		--bpf-program c8KFakci8uCzkFbkPu1xX2AwX5bPfvCyrfgzMkZBipp $(ROOT_TARGET_DEPLOY)/exchange.so \
+		--bpf-program GJ6SYCH3PWbBd5D37xBeDPwnViRhqtgom2Y65Z4d3wSb $(ROOT_TARGET_DEPLOY)/staking.so \
 		--bpf-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s $(ROOT_TEST_ELFS)/mpl_token_metadata.so
 
 .PHONY: reset-ledger
