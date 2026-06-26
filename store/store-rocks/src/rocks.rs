@@ -666,8 +666,6 @@ impl Store for RocksStore {
             .cf_handle(cf)
             .ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
 
-        // Raw iterator reading only key(): never dereferences blob-file values
-        // when only the keys are wanted.
         let mut iter = self.db.raw_iterator_cf(&cf_handle);
         iter.seek(prefix);
 
