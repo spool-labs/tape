@@ -71,11 +71,12 @@ impl<S: Store> TrackOps for TapeStore<S> {
     }
 
     fn count_tracks(&self) -> Result<usize> {
-        let iter = self
+        // Keys-only: count without deserializing/copying every track value.
+        Ok(self
             .inner()
             .inner()
-            .iter_from(TrackCol::CF_NAME, &[], store::Direction::Asc)?;
-        Ok(iter.count())
+            .iter_keys_prefix(TrackCol::CF_NAME, &[])?
+            .len())
     }
 
     fn iter_tracks_from(
