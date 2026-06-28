@@ -64,8 +64,6 @@ pub enum ContentType {
     ApplicationRtf,
     ApplicationSql,
     ApplicationYaml,
-
-    ApplicationOctetStream,
 }
 
 impl ContentType {
@@ -135,9 +133,6 @@ impl ContentType {
                 Self::ApplicationYaml
             }
 
-            // Explicit octet-stream is its own type
-            ("application", "octet-stream") => Self::ApplicationOctetStream,
-
             // Any other text-family type is generic text rather than unknown:
             // source code (text/x-python, text/x-rust, …) and emails
             // (message/rfc822) are all plain text.
@@ -204,9 +199,6 @@ impl ContentType {
             Self::ApplicationRtf => "application/rtf",
             Self::ApplicationSql => "application/sql",
             Self::ApplicationYaml => "application/x-yaml",
-
-            // Explicit octet-stream is its own type
-            Self::ApplicationOctetStream => "application/octet-stream",
         }
     }
 
@@ -266,9 +258,6 @@ impl ContentType {
             Self::ApplicationRtf => "rtf",
             Self::ApplicationSql => "sql",
             Self::ApplicationYaml => "yaml",
-
-            // Explicit octet-stream is its own type
-            Self::ApplicationOctetStream => "bin",
         }
     }
 }
@@ -310,13 +299,12 @@ mod tests {
         assert_eq!(ContentType::from_str("application/yaml"), ContentType::ApplicationYaml);
     }
 
-    // an explicit octet-stream is its own type; only unrecognized families are
-    // Unknown (which still serves as octet-stream over HTTP).
+    // binary and other unknown families stay unknown (i.e. octet-stream)
     #[test]
     fn parse_unknown() {
         assert_eq!(
             ContentType::from_str("application/octet-stream"),
-            ContentType::ApplicationOctetStream
+            ContentType::Unknown
         );
         assert_eq!(ContentType::from_str("application/x-binary"), ContentType::Unknown);
         assert_eq!(ContentType::Unknown.to_str(), "application/octet-stream");
