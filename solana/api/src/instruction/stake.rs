@@ -63,6 +63,7 @@ pub fn build_unstake_ix(
 
     let (stake_address, _) = stake_pda(authority);
     let (vault_address, _) = vault_pda(stake_address);
+    let (stake_authority_address, _) = stake_authority_pda();
     let authority_ata      = ata(&authority);
 
     Instruction {
@@ -73,6 +74,7 @@ pub fn build_unstake_ix(
             AccountMeta::new(authority_ata.into(), false),
             AccountMeta::new(vault_address.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(stake_authority_address.into(), true),
         ],
         data: UnstakeTokens {}.to_bytes(),
     }
@@ -94,6 +96,7 @@ pub fn build_split_stake_ix(
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
 
     let (mint_address, _) = mint_pda();
+    let (stake_authority_address, _) = stake_authority_pda();
 
     Instruction {
         program_id: staking::ID,
@@ -108,6 +111,7 @@ pub fn build_split_stake_ix(
             AccountMeta::new_readonly(mint_address.into(), false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(stake_authority_address.into(), true),
         ],
         data: SplitStake { amount }.to_bytes(),
     }
@@ -127,6 +131,8 @@ pub fn build_merge_stake_ix(
     let (dest_stake_address, _)   = stake_pda(recipient);
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
 
+    let (stake_authority_address, _) = stake_authority_pda();
+
     Instruction {
         program_id: staking::ID,
         accounts: vec![
@@ -138,6 +144,7 @@ pub fn build_merge_stake_ix(
             AccountMeta::new(dest_vault_address.into(), false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(stake_authority_address.into(), true),
         ],
         data: MergeStake {}.to_bytes(),
     }

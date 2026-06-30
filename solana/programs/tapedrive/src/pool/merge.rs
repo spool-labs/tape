@@ -16,6 +16,7 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
         token_program_info,
         staking_program_info,
+        stake_authority_info,
     ] = accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -93,8 +94,9 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     dest_stake.inner.amount = dest_stake.inner.amount.saturating_add(amount);
     source_stake.inner.amount = TAPE::zero();
 
-    // CPI into staking program to move all funds and close source vault
-    solana_program::program::invoke(
+    // CPI into staking program to move all funds and close source vault. We co-sign with the
+    // stake authority so the immutable staking program only moves funds through this path.
+    invoke_signed_with_bump(
         &build_merge_stake_ix(
             (*fee_payer_info.key).into(),
             (*source_authority_info.key).into(),
@@ -109,7 +111,10 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
             dest_vault_info.clone(),
 
             token_program_info.clone(),
+            stake_authority_info.clone(),
         ],
+        &[STAKE_AUTHORITY],
+        STAKE_AUTHORITY_BUMP,
     )?;
 
     close_account(
@@ -143,6 +148,8 @@ mod tests {
 
         let (dest_stake_address, _) = stake_pda(dest_authority.into());
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
+
+        let (stake_authority_address, _) = stake_authority_pda();
 
         // Prepare node
         let node = Node::zeroed();
@@ -185,6 +192,7 @@ mod tests {
 
             token_program(),
             staking_program(),
+            sol(stake_authority_address, 0),
         ];
 
         let env = test_env();
