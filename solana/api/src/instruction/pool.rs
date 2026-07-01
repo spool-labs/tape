@@ -142,7 +142,6 @@ pub fn build_unstake_from_pool_ix(
     let (stake_address, _)   = stake_pda(authority);
     let (vault_address, _)   = vault_pda(stake_address);
     let (history_address, _) = history_pda(pool);
-    let (stake_authority_address, _) = stake_authority_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -162,7 +161,6 @@ pub fn build_unstake_from_pool_ix(
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(staking::ID, false),
-            AccountMeta::new_readonly(stake_authority_address.into(), false),
         ],
         data: UnstakeFromPool { rate: pool_rate }.to_bytes(),
     }
@@ -181,7 +179,6 @@ pub fn build_split_pool_stake_ix(
     let (source_vault, _) = vault_pda(source_stake);
     let (dest_vault, _)   = vault_pda(dest_stake);
     let (mint_address, _) = mint_pda();
-    let (stake_authority_address, _) = stake_authority_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -200,7 +197,6 @@ pub fn build_split_pool_stake_ix(
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(staking::ID, false),
-            AccountMeta::new_readonly(stake_authority_address.into(), false),
         ],
         data: SplitPoolStake { amount }.to_bytes(),
     }
@@ -217,7 +213,6 @@ pub fn build_merge_pool_stake_ix(
 
     let (source_vault, _) = vault_pda(source_stake);
     let (dest_vault, _)   = vault_pda(dest_stake);
-    let (stake_authority_address, _) = stake_authority_pda();
 
     Instruction {
         program_id: tapedrive::ID,
@@ -234,7 +229,6 @@ pub fn build_merge_pool_stake_ix(
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(staking::ID, false),
-            AccountMeta::new_readonly(stake_authority_address.into(), false),
         ],
         data: MergePoolStake {}.to_bytes(),
     }

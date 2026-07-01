@@ -11,7 +11,6 @@ pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         dest_vault_info,
 
         token_program_info,
-        stake_authority_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -23,12 +22,8 @@ pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     authority_info
         .is_signer()?;
 
-    // Vault moves require the parent program to co-sign with its stake authority,
-    // so pool accounting cannot be desynced by merging outside the parent.
-    let (stake_authority_address, _) = stake_authority_pda();
-    stake_authority_info
-        .is_signer()?
-        .has_address(&stake_authority_address.into())?;
+    // No check done against "pool_info" to reduce risks of stake being locked due to parent
+    // program changes
 
     token_program_info
         .is_program(&spl_token::ID)?;
@@ -110,8 +105,6 @@ mod tests {
         let (dest_stake_address, _) = stake_pda(recipient.into());
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
-        let (stake_authority_address, _) = stake_authority_pda();
-
         let initial_balance: u64 = 1_000;
 
         let accounts = vec![
@@ -131,7 +124,6 @@ mod tests {
             ),
 
             token_program(),
-            sol(to_pubkey(stake_authority_address), 0),
         ];
 
         let env = test_env();

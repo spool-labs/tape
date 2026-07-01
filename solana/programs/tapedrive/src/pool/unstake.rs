@@ -22,7 +22,6 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
         token_program_info,
         staking_program_info,
-        stake_authority_info,
     ] = accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -154,9 +153,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         &[ARCHIVE],
     )?;
 
-    // Transfer out the principal, and close vault. We co-sign with the stake authority
-    // so the immutable staking program only releases funds through this path.
-    invoke_signed_with_bump(
+    // Transfer out the principal, and close vault
+    solana_program::program::invoke(
         &build_unstake_ix(
             (*fee_payer_info.key).into(),
             (*authority_info.key).into(),
@@ -167,10 +165,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
             authority_ata_info.clone(),
             vault_info.clone(),
             token_program_info.clone(),
-            stake_authority_info.clone(),
         ],
-        &[STAKE_AUTHORITY],
-        STAKE_AUTHORITY_BUMP,
     )?;
 
     StakeWithdrawn {
@@ -251,7 +246,6 @@ mod tests {
         let (history_address, _) = history_pda(pool_address.into());
         let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
-        let (stake_authority_address, _) = stake_authority_pda();
 
         let e0: EpochNumber = EpochNumber(42);     // activation epoch
         let e3: EpochNumber = e0 + EpochNumber(3);
@@ -333,7 +327,6 @@ mod tests {
 
             token_program(),
             staking_program(),
-            sol(stake_authority_address, 0),
         ];
 
         let env = test_env();

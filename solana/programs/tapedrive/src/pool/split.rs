@@ -18,7 +18,6 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         token_program_info,
         system_program_info,
         staking_program_info,
-        stake_authority_info,
     ] = accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -121,9 +120,8 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .has_address(&dest_vault_address.into())?
         .is_writable()?;
 
-    // CPI into staking program to split the underlying vaults. We co-sign with the
-    // stake authority so the immutable staking program only moves funds through this path.
-    invoke_signed_with_bump(
+    // CPI into staking program to split the underlying vaults
+    solana_program::program::invoke(
         &build_split_stake_ix(
             (*fee_payer_info.key).into(),
             (*source_authority_info.key).into(),
@@ -141,10 +139,7 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
             mint_info.clone(),
             token_program_info.clone(),
             system_program_info.clone(),
-            stake_authority_info.clone(),
         ],
-        &[STAKE_AUTHORITY],
-        STAKE_AUTHORITY_BUMP,
     )?;
 
     Ok(())
@@ -173,8 +168,6 @@ mod tests {
 
         let (dest_stake_address, _) = stake_pda(dest_authority.into());
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
-
-        let (stake_authority_address, _) = stake_authority_pda();
 
         // Prepare a minimal node
         let node = Node::zeroed();
@@ -212,7 +205,6 @@ mod tests {
             token_program(),
             system_program(),
             staking_program(),
-            sol(stake_authority_address, 0),
         ];
 
         let env = test_env();
