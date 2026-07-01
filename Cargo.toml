@@ -36,12 +36,12 @@ members = [
   "e2e/simnet",
   "e2e/devnet",
   "e2e/testnet",
-  "tools/tape-admin",
-  "tools/tape-grind",
-  "tools/tape-loadgen",
-  "tools/tape-network",
-  "tools/tape",
-  "tools/tape-cli-common",
+  # "tools/tape-admin",
+  # "tools/tape-grind",
+  # "tools/tape-loadgen",
+  # "tools/tape-network",
+  # "tools/tape",
+  # "tools/tape-cli-common",
 ]
 
 # Programs and test crates excluded from default cargo build/check:
@@ -71,12 +71,12 @@ default-members = [
   "network/peer-tls",
   "network/protocol",
   "lib/retry",
-  "tools/tape-admin",
-  "tools/tape-grind",
-  "tools/tape-loadgen",
-  "tools/tape-network",
-  "tools/tape",
-  "tools/tape-cli-common",
+  # "tools/tape-admin",
+  # "tools/tape-grind",
+  # "tools/tape-loadgen",
+  # "tools/tape-network",
+  # "tools/tape",
+  # "tools/tape-cli-common",
 ]
 
 [workspace.package]
