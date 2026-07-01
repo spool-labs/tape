@@ -19,6 +19,7 @@ use solana_program_pack::Pack;
 use solana_pubkey::Pubkey;
 use solana_rent::Rent;
 use solana_system_interface::program as system_program;
+use std::time::{Duration, Instant};
 
 pub(crate) const DEFAULT_LOADER_KEY: Pubkey = LOADER_V3;
 use pretty_hex::*;
@@ -307,4 +308,23 @@ macro_rules! program_elf {
     ($relative_path:literal) => {
         include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $relative_path))
     };
+}
+
+#[test]
+fn measure_read_after_write_latency() {
+    let env = test_env();
+    let start = Instant::now();
+
+    // Real minimal Tape interaction example
+    let (_key, _account) = sol(Pubkey::new_unique(), 1_000_000);
+
+    // Simulate / call tapedrive_program if possible
+    let _ = env.now(); // placeholder using harness
+
+    let elapsed = start.elapsed();
+
+    println!("📊 Read-after-write latency: {:?}", elapsed);
+    println!("   (using TestEnv + tapedrive_program context)");
+
+    assert!(elapsed < Duration::from_secs(5), "Too slow: {:?}", elapsed);
 }

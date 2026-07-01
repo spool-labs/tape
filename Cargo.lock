@@ -193,15 +193,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "android_system_properties"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "anes"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1125,19 +1116,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono"
-version = "0.4.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fac4744fb15ae8337dc853fee7fb3f4e48c0fbaa23d0afe49c447b4fab126118"
-dependencies = [
- "iana-time-zone",
- "js-sys",
- "num-traits",
- "wasm-bindgen",
- "windows-link",
-]
-
-[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1311,19 +1289,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
-]
-
-[[package]]
-name = "console"
-version = "0.15.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
-dependencies = [
- "encode_unicode",
- "libc",
- "once_cell",
- "unicode-width 0.2.0",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2782,30 +2747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iana-time-zone"
-version = "0.1.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
-dependencies = [
- "android_system_properties",
- "core-foundation-sys",
- "iana-time-zone-haiku",
- "js-sys",
- "log",
- "wasm-bindgen",
- "windows-core",
-]
-
-[[package]]
-name = "iana-time-zone-haiku"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2933,24 +2874,11 @@ dependencies = [
 
 [[package]]
 name = "indicatif"
-version = "0.17.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
-dependencies = [
- "console 0.15.11",
- "number_prefix",
- "portable-atomic",
- "unicode-width 0.2.0",
- "web-time",
-]
-
-[[package]]
-name = "indicatif"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25470f23803092da7d239834776d653104d551bc4d7eacaf31e6837854b8e9eb"
 dependencies = [
- "console 0.16.3",
+ "console",
  "portable-atomic",
  "unicode-width 0.2.0",
  "unit-prefix",
@@ -3511,16 +3439,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
-name = "mime_guess"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
-dependencies = [
- "mime",
- "unicase",
-]
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3910,12 +3828,6 @@ dependencies = [
  "quote",
  "syn 2.0.115",
 ]
-
-[[package]]
-name = "number_prefix"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "oid-registry"
@@ -4900,7 +4812,6 @@ dependencies = [
  "solana-transaction-error",
  "solana-transaction-status",
  "tape-api",
- "tape-cli-common",
  "tape-core",
  "tape-crypto",
  "thiserror 2.0.18",
@@ -5843,7 +5754,7 @@ dependencies = [
  "futures",
  "futures-util",
  "indexmap",
- "indicatif 0.18.4",
+ "indicatif",
  "log",
  "quinn",
  "rayon",
@@ -6869,7 +6780,7 @@ dependencies = [
  "bincode",
  "bs58",
  "futures",
- "indicatif 0.18.4",
+ "indicatif",
  "log",
  "reqwest",
  "reqwest-middleware",
@@ -7442,7 +7353,7 @@ dependencies = [
  "bincode",
  "futures-util",
  "indexmap",
- "indicatif 0.18.4",
+ "indicatif",
  "log",
  "rayon",
  "solana-client-traits",
@@ -8272,69 +8183,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
-name = "tape"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "hex",
- "indicatif 0.17.11",
- "mime_guess",
- "peer-http",
- "rand 0.8.5",
- "rpc",
- "rpc-client",
- "rpc-solana",
- "serde",
- "serde_json",
- "serde_yaml",
- "solana-keypair",
- "tape-api",
- "tape-cli-common",
- "tape-core",
- "tape-crypto",
- "tape-sdk",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "tape-admin"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "clap",
- "hex",
- "rocksdb",
- "rpc",
- "rpc-client",
- "rpc-solana",
- "serde",
- "serde_json",
- "solana-instruction",
- "solana-pubkey 4.1.0",
- "solana-signer",
- "solana-system-interface 3.0.0",
- "store",
- "store-rocks",
- "tape-api",
- "tape-cli-common",
- "tape-core",
- "tape-crypto",
- "tape-sdk",
- "tape-snapshot",
- "tape-store",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wincode 0.1.2",
-]
-
-[[package]]
 name = "tape-api"
 version = "0.3.0"
 dependencies = [
@@ -8394,24 +8242,6 @@ dependencies = [
  "tape-protocol",
  "tape-test",
  "tokio",
- "tracing",
-]
-
-[[package]]
-name = "tape-cli-common"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "rpc",
- "serde",
- "serde_json",
- "serde_yaml",
- "tape-api",
- "tape-crypto",
- "tape-sdk",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -8596,59 +8426,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-grind"
-version = "0.3.0"
-dependencies = [
- "clap",
- "five8",
- "solana-pubkey 4.1.0",
- "tape-api",
-]
-
-[[package]]
-name = "tape-loadgen"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "rand 0.8.5",
-]
-
-[[package]]
 name = "tape-metrics"
 version = "0.3.0"
 dependencies = [
  "prometheus",
-]
-
-[[package]]
-name = "tape-network"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "futures",
- "hex",
- "regex",
- "reqwest",
- "rpc",
- "serde",
- "serde_json",
- "serde_yaml",
- "tape-admin",
- "tape-api",
- "tape-cli-common",
- "tape-core",
- "tape-crypto",
- "tape-protocol",
- "tape-sdk",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -9346,12 +9127,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
-name = "unicase"
-version = "2.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9791,41 +9566,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26a7a568eda854acc9945ed136a9d50b8c6d31911584624958808ae96eee3912"
 dependencies = [
  "darling 0.21.3",
- "proc-macro2",
- "quote",
- "syn 2.0.115",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement",
- "windows-interface",
- "windows-link",
- "windows-result",
- "windows-strings",
-]
-
-[[package]]
-name = "windows-implement"
-version = "0.60.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.115",
-]
-
-[[package]]
-name = "windows-interface"
-version = "0.59.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
-dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.115",
