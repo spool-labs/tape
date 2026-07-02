@@ -59,6 +59,14 @@ impl TAPE {
         )
     }
 
+    /// Construct from an f64 amount in whole TAPE (e.g. a config value like `1000.0`),
+    /// rounding to the nearest flux. Boundary converter for f64 inputs only — prefer the
+    /// integer/string constructors for logic; `as_f64` is display-only.
+    #[inline]
+    pub fn from_f64(v: f64) -> Self {
+        TAPE((v * Self::SCALE as f64).round() as u64)
+    }
+
     /// Infallible string constructor (panics on invalid input).
     #[inline]
     pub fn from<S: AsRef<str>>(s: S) -> Self {
@@ -125,6 +133,14 @@ impl SOL {
             whole.checked_mul(Self::SCALE).unwrap()
                  .checked_add(fraction).unwrap()
         )
+    }
+
+    /// Construct from an f64 amount in whole SOL (e.g. a config value like `0.3`),
+    /// rounding to the nearest lamport. Boundary converter for f64 inputs only — prefer
+    /// the integer/string constructors for logic; `as_f64` is display-only.
+    #[inline]
+    pub fn from_f64(v: f64) -> Self {
+        SOL((v * Self::SCALE as f64).round() as u64)
     }
 
     /// Infallible string constructor (panics on invalid input).

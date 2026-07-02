@@ -5,6 +5,7 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use rpc::Rpc;
 use store::Store;
@@ -14,13 +15,15 @@ use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::replay::engine::{ReplayEngine, ReplayPersistFn};
 use crate::features::store::manager::persist_batch;
+
+const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
 pub async fn replay_finalized_range<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -64,6 +67,7 @@ where
 
     let mut event_count = 0usize;
     let mut slot = start_slot;
+    let mut last_progress_log = Instant::now();
     while slot <= end_slot {
         if cancel.is_cancelled() {
             return Err(NodeError::Store("bootstrap block replay: cancelled".into()));
@@ -74,8 +78,25 @@ where
                 event_count = event_count.saturating_add(replay.apply_block_with(&block, persist)?);
             }
             None => {
+                context.bootstrap.record_skipped();
                 debug!(slot = slot.0, "bootstrap: skipped slot during block replay");
             }
+        }
+
+        context.bootstrap.record_slot(slot.0);
+
+        if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
+            last_progress_log = Instant::now();
+            let progress = context.bootstrap.snapshot();
+            info!(
+                slot = slot.0,
+                target_slot = end_slot.0,
+                percent = (progress.percent_done() * 10.0).round() / 10.0,
+                slots_per_sec = (progress.slots_per_sec * 10.0).round() / 10.0,
+                eta_secs = progress.eta_secs.unwrap_or(0),
+                skipped = progress.skipped_slots,
+                "bootstrap: block replay progress"
+            );
         }
 
         match slot.checked_next() {

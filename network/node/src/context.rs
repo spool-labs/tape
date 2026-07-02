@@ -9,8 +9,8 @@ use peer_http::HttpApi;
 use rpc::Rpc;
 use rpc_client::RpcClient;
 use rpc_solana::SolanaRpc;
-use store::{DiskTier, Store, StoreTier};
-use store_rocks::SplitStore;
+use store::Store;
+use store_rocks::RocksStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
@@ -21,6 +21,7 @@ use tape_protocol::{Api, ProtocolState};
 use tape_store::{TapeStore, ops::MetaOps};
 
 use crate::config::node::NodeConfig;
+use crate::core::bootstrap::BootstrapBus;
 use crate::core::error::NodeError;
 use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
@@ -28,7 +29,7 @@ use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::http::admission::AdmissionLimiter;
 
-pub type AppContext = Arc<NodeContext<SplitStore, HttpApi, SolanaRpc>>;
+pub type AppContext = Arc<NodeContext<RocksStore, HttpApi, SolanaRpc>>;
 
 pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub config: Arc<NodeConfig>,
@@ -36,6 +37,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub rpc: Arc<RpcClient<Blockchain>>,
     pub state: StateBus,
     pub ingest: IngestBus,
+    pub bootstrap: BootstrapBus,
     pub pending: Arc<PendingTracks>,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
@@ -155,39 +157,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     pub fn set_reclaim_pending(&self, is_pending: bool) {
         self.reclaim_pending.store(is_pending, Ordering::Relaxed);
     }
-
-    /// Whether new uploads should be rejected because a tier is low on space.
-    ///
-    /// Disabled (always false) unless a free-space floor is configured.
-    pub fn is_write_throttled(&self) -> bool {
-        let min_free = self.config.store.min_free_bytes;
-        let bulk_min_free = self.config.store.bulk_min_free_bytes;
-        if min_free == 0 && bulk_min_free == 0 {
-            return false;
-        }
-        match self.store.inner().inner().disk_tiers() {
-            Ok(tiers) => tier_below_threshold(&tiers, min_free, bulk_min_free),
-            Err(_) => false,
-        }
-    }
-}
-
-/// Whether any tier's free space sits below its configured floor. A zero floor
-/// or an unknown free figure never throttles.
-fn tier_below_threshold(tiers: &[DiskTier], min_free: u64, bulk_min_free: u64) -> bool {
-    for tier in tiers {
-        let floor = match tier.tier {
-            StoreTier::Primary => min_free,
-            StoreTier::Bulk => bulk_min_free,
-        };
-        if floor == 0 {
-            continue;
-        }
-        if tier.free_bytes.is_some_and(|free| free < floor) {
-            return true;
-        }
-    }
-    false
 }
 
 pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -257,6 +226,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             rpc: Arc::new(self.rpc),
             state: StateBus::default(),
             ingest: IngestBus::default(),
+            bootstrap: BootstrapBus::default(),
             pending: Arc::new(PendingTracks::new()),
             peer_manager: self.peer_manager,
             api: self.api,
@@ -282,27 +252,7 @@ mod tests {
     use tape_store::ops::MetaOps;
     use tape_store::TapeStore;
 
-    use super::{tier_below_threshold, NodeConfig, NodeContextBuilder};
-    use store::{DiskTier, StoreTier};
-
-    fn tier(role: StoreTier, free: Option<u64>) -> DiskTier {
-        DiskTier { tier: role, used_bytes: 0, free_bytes: free }
-    }
-
-    // a tier below its floor throttles; zero floor or unknown free never does
-    #[test]
-    fn throttle_thresholds() {
-        let tiers = vec![
-            tier(StoreTier::Primary, Some(10_000)),
-            tier(StoreTier::Bulk, Some(500)),
-        ];
-
-        assert!(!tier_below_threshold(&tiers, 0, 0));
-        assert!(tier_below_threshold(&tiers, 0, 1_000));
-        assert!(!tier_below_threshold(&tiers, 0, 400));
-        assert!(tier_below_threshold(&tiers, 20_000, 0));
-        assert!(!tier_below_threshold(&[tier(StoreTier::Bulk, None)], 0, 1_000));
-    }
+    use super::{NodeConfig, NodeContextBuilder};
 
     #[tokio::test]
     async fn resolves_identity() {

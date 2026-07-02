@@ -5,7 +5,7 @@ use store::Store;
 use tape_core::types::SlotNumber;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{AppContext, NodeContext};
-use tape_node::core::bootstrap::build_context;
+use tape_node::core::startup::build_context;
 use tape_node::core::channels::{downstream_channels, store_channel};
 use tape_node::core::error::NodeError;
 use tape_node::core::types::{ChannelName, ServiceName};

@@ -16,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 use crate::config::node::NodeConfig;
 use crate::config::logs::{LoggingConfig, LoggingFormat};
 use crate::context::NodeContext;
-use crate::core::bootstrap::build_context;
+use crate::core::startup::build_context;
 use crate::core::channels::{downstream_channels, store_channel};
 use crate::core::error::NodeError;
 use crate::core::types::ServiceName;
@@ -198,11 +198,87 @@ where
     Ok(())
 }
 
+/// Start the HTTP/HTTPS listeners before bootstrap so health, stats, and
+/// metrics are reachable while the node catches up. The returned handle is
+/// adopted by the supervisor once live services start.
+fn spawn_http_server<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &NodeConfig,
+    cancel: &CancellationToken,
+) -> JoinHandle<Result<(), NodeError>>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    tokio::spawn(
+        HttpServer::new(
+            context.clone(),
+            config.http.clone(),
+            config.https.clone(),
+            cfg!(feature = "metrics") && config.metrics.enabled,
+            cancel.clone(),
+        )
+        .run()
+        .in_current_span(),
+    )
+}
+
+/// Run bootstrap with the status listener already serving. A listener that
+/// dies during catch-up fails bootstrap immediately rather than hours later;
+/// a bootstrap failure shuts the listener down before propagating.
+async fn bootstrap_with_status_listener<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &NodeConfig,
+    cancel: &CancellationToken,
+) -> Result<(SlotNumber, JoinHandle<Result<(), NodeError>>), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let mut http_server = spawn_http_server(context, config, cancel);
+
+    tokio::select! {
+        result = bootstrap::run(context, config, cancel) => match result {
+            Ok(start_slot) => Ok((start_slot, http_server)),
+            Err(error) => {
+                cancel.cancel();
+                let _ = http_server.await;
+                Err(error)
+            }
+        },
+        joined = &mut http_server => {
+            cancel.cancel();
+            Err(match joined {
+                Ok(Ok(())) => NodeError::UnexpectedServiceExit {
+                    service: ServiceName::HttpServer,
+                },
+                Ok(Err(error)) => error,
+                Err(source) => NodeError::ServiceJoin {
+                    service: ServiceName::HttpServer,
+                    source,
+                },
+            })
+        }
+    }
+}
+
+async fn join_http_server(handle: JoinHandle<Result<(), NodeError>>) -> Result<(), NodeError> {
+    handle.await.unwrap_or_else(|source| {
+        Err(NodeError::ServiceJoin {
+            service: ServiceName::HttpServer,
+            source,
+        })
+    })
+}
+
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: NodeConfig,
     start_slot: SlotNumber,
     cancel: CancellationToken,
+    http_server: JoinHandle<Result<(), NodeError>>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -213,16 +289,7 @@ where
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
 
-    supervisor.spawn(
-        ServiceName::HttpServer,
-        HttpServer::new(
-            context.clone(),
-            config.http.clone(),
-            config.https.clone(),
-            cfg!(feature = "metrics") && config.metrics.enabled,
-            cancel.clone()
-        ).run(),
-    );
+    supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));
 
     supervisor.spawn(
         ServiceName::BlockIngestor,
@@ -332,8 +399,9 @@ where
     Blockchain: Rpc + 'static,
 {
     let cancel = CancellationToken::new();
-    let start_slot = bootstrap::run(&context, &config, &cancel).await?;
-    supervise_with_context(context, config, start_slot, cancel).await
+    let (start_slot, http_server) =
+        bootstrap_with_status_listener(&context, &config, &cancel).await?;
+    supervise_with_context(context, config, start_slot, cancel, http_server).await
 }
 
 pub async fn start_with_context<Db, Cluster, Blockchain>(
@@ -346,7 +414,8 @@ where
     Blockchain: Rpc + 'static,
 {
     let cancel = CancellationToken::new();
-    let start_slot = bootstrap::run(&context, &config, &cancel).await?;
+    let (start_slot, http_server) =
+        bootstrap_with_status_listener(&context, &config, &cancel).await?;
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();
     let task_cancel = cancel.clone();
@@ -358,6 +427,7 @@ where
                 config,
                 start_slot,
                 task_cancel,
+                http_server,
             )
             .await;
             task_status.mark_stopped();

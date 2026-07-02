@@ -1,7 +1,9 @@
 //! Bootstrap catch-up runs before supervisor startup. It may fetch current
 //! protocol state for peer discovery and planning, but historical blocks are
-//! applied only through the replay/store path. Live services start after the
-//! store has caught up to the checkpoint boundary.
+//! applied only through the replay/store path. The HTTP status listener is
+//! already serving while this runs; other live services start after the
+//! store has caught up to the checkpoint boundary. Progress is published to
+//! `context.bootstrap` for the health/stats handlers.
 
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -80,6 +82,7 @@ where
 
     let start_slot = run_replay_phases(context, config, &checkpoint, cancel, persist).await?;
     validate::validate_bootstrap_store(context.store.as_ref())?;
+    context.bootstrap.mark_ready();
 
     info!(
         node_id = context.node_id().0,
@@ -341,6 +344,7 @@ where
         return Ok(());
     }
 
+    context.bootstrap.begin_block_replay(start_slot.0, end_slot.0);
     replay.set_current_epoch(start_epoch);
     let events = block::replay_finalized_range_with_persist(
         context,
@@ -382,6 +386,7 @@ where
         return Err(NodeError::Store("bootstrap: cancelled".into()));
     }
 
+    context.bootstrap.begin_snapshot_replay(epoch.0);
     let decoded = fetch::fetch_and_decode_epoch(context, epoch, cancel).await?;
     replay.apply_snapshot_log(&decoded.log)?;
     fetch::persist_snapshot_metadata(context, epoch, &decoded)?;

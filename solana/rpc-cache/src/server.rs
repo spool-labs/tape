@@ -15,6 +15,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use axum::{
     Router,
@@ -54,6 +55,7 @@ pub enum CachedBlock {
 pub struct CacheStats {
     pub bootstrap_done: AtomicBool,
     pub bootstrap_target_slot: AtomicU64,
+    pub bootstrap_fill_start_slot: AtomicU64,
     pub epoch_start_slot: AtomicU64,
     pub newest_cached_slot: AtomicU64,
     pub last_observed_live_slot: AtomicU64,
@@ -62,6 +64,7 @@ pub struct CacheStats {
     pub slots_fetched: AtomicU64,
     pub slots_skipped: AtomicU64,
     pub upstream_calls: AtomicU64,
+    started: Instant,
 }
 
 impl CacheStats {
@@ -69,6 +72,7 @@ impl CacheStats {
         Self {
             bootstrap_done: AtomicBool::new(false),
             bootstrap_target_slot: AtomicU64::new(0),
+            bootstrap_fill_start_slot: AtomicU64::new(0),
             epoch_start_slot: AtomicU64::new(0),
             newest_cached_slot: AtomicU64::new(0),
             last_observed_live_slot: AtomicU64::new(0),
@@ -77,7 +81,28 @@ impl CacheStats {
             slots_fetched: AtomicU64::new(0),
             slots_skipped: AtomicU64::new(0),
             upstream_calls: AtomicU64::new(0),
+            started: Instant::now(),
         }
+    }
+
+    /// Backfill rate/ETA derived from progress since process start. Only
+    /// meaningful while bootstrapping; `None` once done.
+    pub fn bootstrap_rate(&self) -> Option<(f64, u64)> {
+        if self.bootstrap_done.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let fill_start = self.bootstrap_fill_start_slot.load(Ordering::Relaxed);
+        let newest = self.newest_cached_slot.load(Ordering::Relaxed);
+        let target = self.bootstrap_target_slot.load(Ordering::Relaxed);
+        let elapsed = self.started.elapsed().as_secs_f64();
+        if newest <= fill_start || elapsed <= 0.0 {
+            return None;
+        }
+
+        let slots_per_sec = (newest - fill_start) as f64 / elapsed;
+        let eta_secs = (target.saturating_sub(newest) as f64 / slots_per_sec) as u64;
+        Some((slots_per_sec, eta_secs))
     }
 }
 
@@ -141,10 +166,18 @@ async fn stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let entries = state.slot_store.entry_count();
     let bytes = state.slot_store.weighted_size();
 
+    let (slots_per_sec, eta_secs) = match s.bootstrap_rate() {
+        Some((rate, eta)) => ((rate * 10.0).round() / 10.0, Some(eta)),
+        None => (0.0, None),
+    };
+
     let body = json!({
         "bootstrap_done": s.bootstrap_done.load(Ordering::Relaxed),
         "epoch_start_slot": s.epoch_start_slot.load(Ordering::Relaxed),
         "bootstrap_target_slot": s.bootstrap_target_slot.load(Ordering::Relaxed),
+        "bootstrap_fill_start_slot": s.bootstrap_fill_start_slot.load(Ordering::Relaxed),
+        "bootstrap_slots_per_sec": slots_per_sec,
+        "bootstrap_eta_secs": eta_secs,
         "newest_cached_slot": newest,
         "last_observed_live_slot": live,
         "lag_from_live_slot": lag,

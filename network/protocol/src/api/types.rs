@@ -84,14 +84,6 @@ pub struct StripeSubChunkRequest {
     pub sub_chunks: Vec<u32>,
 }
 
-/// Disk usage for one physical storage tier.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TierStats {
-    pub name: String,
-    pub store_disk_bytes: u64,
-    pub free_disk_bytes: Option<u64>,
-}
-
 /// Response from the node stats endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeStats {
@@ -104,7 +96,6 @@ pub struct NodeStats {
     pub slice_payload_bytes: u64,
     pub store_disk_bytes: u64,
     pub free_disk_bytes: Option<u64>,
-    pub disk_tiers: Vec<TierStats>,
     pub reclaim_pending: bool,
     pub slices_stored: u64,
     pub bytes_uploaded: u64,
@@ -113,6 +104,10 @@ pub struct NodeStats {
     pub ingest_state: String,
     pub ingest_lag_slots: u64,
     pub ingest_tip_slot: u64,
+    pub bootstrap_done: bool,
+    pub bootstrap_phase: String,
+    pub bootstrap_current_slot: u64,
+    pub bootstrap_target_slot: u64,
 }
 
 /// Payload for slice upload requests.

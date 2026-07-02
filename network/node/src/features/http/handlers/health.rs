@@ -1,45 +1,83 @@
 use std::fmt::Display;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::Json;
 use tracing::debug;
 
 use rpc::Rpc;
-use store::{DiskTier, Store, StoreTier};
-use tape_protocol::{Api, api::{NodeStats, TierStats}};
+use store::Store;
+use tape_protocol::{Api, api::NodeStats};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
+use crate::core::bootstrap::BootstrapSnapshot;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
-
-/// Map a backend disk tier to its wire representation.
-fn tier_stats(tier: DiskTier) -> TierStats {
-    let name = match tier.tier {
-        StoreTier::Primary => "primary",
-        StoreTier::Bulk => "bulk",
-    };
-    TierStats {
-        name: name.to_string(),
-        store_disk_bytes: tier.used_bytes,
-        free_disk_bytes: tier.free_bytes,
-    }
-}
 
 #[derive(Debug, serde::Serialize)]
 pub struct HealthResponse {
     pub status: HealthStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<BootstrapProgress>,
 }
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
     Ready,
+    Bootstrapping,
 }
 
-pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: HealthStatus::Ready,
-    })
+#[derive(Debug, serde::Serialize)]
+pub struct BootstrapProgress {
+    pub phase: &'static str,
+    pub snapshot_epoch: u64,
+    pub start_slot: u64,
+    pub current_slot: u64,
+    pub target_slot: u64,
+    pub percent_done: f64,
+    pub slots_per_sec: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_secs: Option<u64>,
+    pub skipped_slots: u64,
+}
+
+impl From<BootstrapSnapshot> for BootstrapProgress {
+    fn from(snapshot: BootstrapSnapshot) -> Self {
+        Self {
+            phase: snapshot.phase.label(),
+            snapshot_epoch: snapshot.snapshot_epoch,
+            start_slot: snapshot.start_slot,
+            current_slot: snapshot.current_slot,
+            target_slot: snapshot.target_slot,
+            percent_done: snapshot.percent_done(),
+            slots_per_sec: snapshot.slots_per_sec,
+            eta_secs: snapshot.eta_secs,
+            skipped_slots: snapshot.skipped_slots,
+        }
+    }
+}
+
+pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+) -> (StatusCode, Json<HealthResponse>) {
+    if state.context.bootstrap.is_ready() {
+        return (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: HealthStatus::Ready,
+                bootstrap: None,
+            }),
+        );
+    }
+
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(HealthResponse {
+            status: HealthStatus::Bootstrapping,
+            bootstrap: Some(state.context.bootstrap.snapshot().into()),
+        }),
+    )
 }
 
 pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -65,6 +103,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ingest_tip_raw.saturating_sub(ingest_dispatched)
     };
     let ingest_state = state.context.ingest_state().label().to_string();
+    let bootstrap = state.context.bootstrap.snapshot();
 
     let owned_spools = store
         .iter_all_spools()
@@ -91,14 +130,6 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .available_disk_bytes()
         .map_err(store_error)?;
-    let disk_tiers = store
-        .inner()
-        .inner()
-        .disk_tiers()
-        .map_err(store_error)?
-        .into_iter()
-        .map(tier_stats)
-        .collect();
 
     let stats = NodeStats {
         last_processed_slot,
@@ -112,7 +143,6 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         slice_payload_bytes,
         store_disk_bytes,
         free_disk_bytes,
-        disk_tiers,
         reclaim_pending: state.context.is_reclaim_pending(),
         slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,
@@ -121,6 +151,10 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ingest_state,
         ingest_lag_slots,
         ingest_tip_slot,
+        bootstrap_done: state.context.bootstrap.is_ready(),
+        bootstrap_phase: bootstrap.phase.label().to_string(),
+        bootstrap_current_slot: bootstrap.current_slot,
+        bootstrap_target_slot: bootstrap.target_slot,
     };
 
     debug!(
@@ -135,4 +169,52 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::extract::State;
+    use axum::http::StatusCode;
+
+    use super::{health, HealthStatus};
+    use crate::features::http::state::AppState;
+    use crate::harness::{NodeHarness, TestContext};
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
+
+    #[tokio::test]
+    async fn health_during_bootstrap() {
+        let ctx = test_context().await;
+        ctx.bootstrap.begin_block_replay(100, 200);
+        ctx.bootstrap.record_slot(150);
+
+        let (status, body) = health(State(AppState { context: ctx.clone() })).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(matches!(body.0.status, HealthStatus::Bootstrapping));
+        let progress = body.0.bootstrap.expect("progress while bootstrapping");
+        assert_eq!(progress.phase, "block_replay");
+        assert_eq!(progress.current_slot, 150);
+        assert_eq!(progress.target_slot, 200);
+    }
+
+    #[tokio::test]
+    async fn health_when_ready() {
+        let ctx = test_context().await;
+        ctx.bootstrap.mark_ready();
+
+        let (status, body) = health(State(AppState { context: ctx.clone() })).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(matches!(body.0.status, HealthStatus::Ready));
+        assert!(body.0.bootstrap.is_none());
+    }
 }

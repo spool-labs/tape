@@ -7,7 +7,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{BoxError, Router};
 
@@ -82,9 +82,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let slice_body_limit = DefaultBodyLimit::max(self.http_config.slice_max_bytes);
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
+        // Anonymous monitoring. These routes serve while the node bootstraps;
+        // everything else 503s until catch-up completes.
         #[allow(unused_mut)]
-        let mut router = Router::new()
-            // Anonymous monitoring.
+        let mut status_router = Router::new()
             .route(
                 api_routes::NODE_HEALTH_PATH,
                 get(handlers::health::health::<Db, Cluster, Blockchain>).layer(
@@ -102,7 +103,20 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         admission::probe_admission::<Db, Cluster, Blockchain>,
                     ),
                 ),
-            )
+            );
+
+        #[cfg(feature = "metrics")]
+        if self.metrics_enabled {
+            status_router = status_router.route(
+                api_routes::NODE_METRICS_PATH,
+                get(handlers::metrics::metrics).layer(from_fn_with_state(
+                    state.clone(),
+                    admission::probe_admission::<Db, Cluster, Blockchain>,
+                )),
+            );
+        }
+
+        let service_router = Router::new()
             // Open metadata GETs used by SDK write flows. Payload-bearing
             // inline data and slice reads remain gated.
             .route(
@@ -235,20 +249,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,
                     )),
-            );
+            )
+            .layer(from_fn_with_state(
+                state.clone(),
+                require_ready::<Db, Cluster, Blockchain>,
+            ));
 
-        #[cfg(feature = "metrics")]
-        if self.metrics_enabled {
-            router = router.route(
-                api_routes::NODE_METRICS_PATH,
-                get(handlers::metrics::metrics).layer(from_fn_with_state(
-                    state.clone(),
-                    admission::probe_admission::<Db, Cluster, Blockchain>,
-                )),
-            );
-        }
-
-        router
+        status_router
+            .merge(service_router)
             .with_state(state.clone())
             .layer(from_fn_with_state(
                 state,
@@ -364,6 +372,19 @@ async fn handle_http_error(error: BoxError) -> StatusCode {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     }
+}
+
+/// Service routes 503 until bootstrap catch-up completes; status routes are
+/// registered outside this layer and serve throughout.
+async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if !state.context.bootstrap.is_ready() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    next.run(req).await
 }
 
 async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(

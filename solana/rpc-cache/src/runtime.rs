@@ -8,8 +8,8 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
@@ -40,6 +40,7 @@ const SKIPPED_SLOT_CODE: i64 = -32007;
 const SKIPPED_OR_LTS_CODE: i64 = -32009;
 
 const BOOTSTRAP_CONCURRENCY: usize = 16;
+const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const LIVE_TAIL_POLL: Duration = Duration::from_millis(400);
 const LIVE_TAIL_CONCURRENCY: usize = 4;
 const MAX_BLOCK_FETCH_ATTEMPTS: u32 = 5;
@@ -217,6 +218,7 @@ async fn bootstrap(
     // the current epoch's start when the older epoch account is gone.
     let fill_start = bootstrap_floor(&state, system.current_epoch, lookback_epochs, epoch_start)
         .await;
+    state.stats.bootstrap_fill_start_slot.store(fill_start, Ordering::Relaxed);
 
     let live = fetch_live_slot(&state.upstream)
         .await
@@ -343,6 +345,11 @@ async fn fetch_range(
     concurrency: usize,
     cancel: &CancellationToken,
 ) {
+    let total = range.end().saturating_sub(*range.start()).saturating_add(1);
+    let done = Arc::new(AtomicU64::new(0));
+    let started = Instant::now();
+    let mut last_progress_log = Instant::now();
+
     let mut set: JoinSet<()> = JoinSet::new();
     for slot in range {
         if cancel.is_cancelled() {
@@ -351,16 +358,45 @@ async fn fetch_range(
         while set.len() >= concurrency {
             let _ = set.join_next().await;
         }
+
+        if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
+            last_progress_log = Instant::now();
+            log_range_progress(slot, done.load(Ordering::Relaxed), total, started);
+        }
+
         let st = state.clone();
         let ct = cancel.clone();
+        let done = done.clone();
         set.spawn(async move {
             if ct.is_cancelled() {
                 return;
             }
             fetch_and_store(&st, slot).await;
+            done.fetch_add(1, Ordering::Relaxed);
         });
     }
     while set.join_next().await.is_some() {}
+}
+
+fn log_range_progress(slot: u64, done: u64, total: u64, started: Instant) {
+    let elapsed = started.elapsed().as_secs_f64();
+    let slots_per_sec = if elapsed > 0.0 { done as f64 / elapsed } else { 0.0 };
+    let remaining = total.saturating_sub(done);
+    let eta_secs = if slots_per_sec > 0.0 {
+        (remaining as f64 / slots_per_sec) as u64
+    } else {
+        0
+    };
+
+    info!(
+        slot,
+        done,
+        total,
+        percent = (done as f64 * 1000.0 / total as f64).round() / 10.0,
+        slots_per_sec = (slots_per_sec * 10.0).round() / 10.0,
+        eta_secs,
+        "fetch range progress"
+    );
 }
 
 async fn fetch_and_store(state: &AppState, slot: u64) {

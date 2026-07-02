@@ -43,11 +43,9 @@
 
 pub mod config;
 mod rocks;
-mod split;
 
 pub use config::ColumnFamilyConfig;
 pub use rocks::RocksStore;
-pub use split::SplitStore;
 
 // Re-export commonly used RocksDB types for convenience
 pub use rocksdb::{ColumnFamilyDescriptor, Options};

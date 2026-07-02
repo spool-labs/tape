@@ -260,11 +260,6 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    if matches!(mode, AdmissionMode::DirectWrite) && state.context.is_write_throttled() {
-        debug!("rejecting write: a storage tier is below its free-space floor");
-        return insufficient_storage_response();
-    }
-
     let caller = caller_from_request(&req);
     let decision = match mode {
         AdmissionMode::DirectWrite => state.context.admission.check_direct_write(caller),
@@ -296,10 +291,6 @@ fn caller_from_request(req: &Request) -> AdmissionCaller {
         .map(|ConnectInfo(addr)| addr.ip())
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     AdmissionCaller::Anonymous(ip)
-}
-
-fn insufficient_storage_response() -> Response {
-    (StatusCode::INSUFFICIENT_STORAGE, "storage tier full").into_response()
 }
 
 fn rate_limited_response(retry_after: Duration) -> Response {

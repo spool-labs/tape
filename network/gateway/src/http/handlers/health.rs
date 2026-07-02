@@ -1,9 +1,9 @@
 use axum::extract::State;
 use axum::Json;
 use rpc::Rpc;
-use store::{Column, DiskTier, Direction, Store, StoreTier};
+use store::{Column, Direction, Store};
 use tape_protocol::Api;
-use tape_protocol::api::{NodeStats, TierStats};
+use tape_protocol::api::NodeStats;
 use tape_store::TapeStore;
 use tape_store::columns::SliceCol;
 use tape_store::ops::{MetaOps, TrackOps};
@@ -15,19 +15,6 @@ use crate::http::state::AppState;
 
 pub(crate) async fn health() -> &'static str {
     "ok"
-}
-
-/// Map a backend disk tier to its wire representation.
-fn tier_stats(tier: DiskTier) -> TierStats {
-    let name = match tier.tier {
-        StoreTier::Primary => "primary",
-        StoreTier::Bulk => "bulk",
-    };
-    TierStats {
-        name: name.to_string(),
-        store_disk_bytes: tier.used_bytes,
-        free_disk_bytes: tier.free_bytes,
-    }
 }
 
 pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -56,6 +43,7 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ingest_tip_raw.saturating_sub(ingest_dispatched)
     };
     let ingest_state = state.context.ingest_state().label().to_string();
+    let bootstrap = state.context.bootstrap.snapshot();
     let (slices_stored, slice_payload_bytes) = cached_slice_stats(store)?;
     let store_disk_bytes = store
         .inner()
@@ -67,14 +55,6 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .available_disk_bytes()
         .map_err(store_error)?;
-    let disk_tiers = store
-        .inner()
-        .inner()
-        .disk_tiers()
-        .map_err(store_error)?
-        .into_iter()
-        .map(tier_stats)
-        .collect();
 
     Ok(Json(NodeStats {
         last_processed_slot,
@@ -86,7 +66,6 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         slice_payload_bytes,
         store_disk_bytes,
         free_disk_bytes,
-        disk_tiers,
         reclaim_pending: state.context.is_reclaim_pending(),
         slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,
@@ -95,6 +74,10 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ingest_state,
         ingest_lag_slots,
         ingest_tip_slot,
+        bootstrap_done: state.context.bootstrap.is_ready(),
+        bootstrap_phase: bootstrap.phase.label().to_string(),
+        bootstrap_current_slot: bootstrap.current_slot,
+        bootstrap_target_slot: bootstrap.target_slot,
     }))
 }
 
