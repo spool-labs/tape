@@ -192,15 +192,14 @@ pub fn create_bulk_store_configs() -> Vec<ColumnFamilyDescriptor> {
         .collect()
 }
 
+/// Cap on total write-ahead-log size, so a write burst cannot balloon the tier
+const MAX_TOTAL_WAL_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// Create database-wide options for TapeStore
 ///
-/// Returns a configured `Options` instance with settings optimized for the
-/// TapeStore workload:
-///
-/// - **Write Buffers**: 64 MiB per CF, up to 4 buffers
-/// - **Parallelism**: Scales with CPU count
-/// - **Compression**: LZ4 for fast compression/decompression
-/// - **Rate Limiting**: 100 MB/s to prevent I/O spikes during compaction
+/// Returns a configured Options instance with settings optimized for the
+/// TapeStore workload: 64 MiB write buffers, parallelism scaled to CPU count,
+/// LZ4 compression, a compaction rate limit, and a bounded WAL.
 pub fn create_db_options() -> Options {
     create_db_options_with_compaction_rate_limit_mb_per_sec(100)
 }
@@ -237,6 +236,9 @@ pub fn create_db_options_with_compaction_rate_limit_mb_per_sec(
         .saturating_mul(1024 * 1024)
         .min(i64::MAX as u64) as i64;
     opts.set_ratelimiter(rate_limit_bytes_per_sec, 100_000, 10);
+
+    // Bound the WAL so a write burst cannot fill the fast tier
+    opts.set_max_total_wal_size(MAX_TOTAL_WAL_SIZE_BYTES);
 
     opts
 }
