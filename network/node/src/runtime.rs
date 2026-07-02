@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -226,21 +227,18 @@ where
 
 /// Run bootstrap with the status listener already serving. A listener that
 /// dies during catch-up fails bootstrap immediately rather than hours later;
-/// a bootstrap failure shuts the listener down before propagating.
-async fn bootstrap_with_status_listener<Db, Cluster, Blockchain>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &NodeConfig,
+/// a bootstrap failure shuts the listener down before propagating. Shared
+/// with the gateway, which spawns its own listener and bootstrap future.
+pub async fn bootstrap_with_status_listener<F>(
+    bootstrap: F,
+    mut http_server: JoinHandle<Result<(), NodeError>>,
     cancel: &CancellationToken,
 ) -> Result<(SlotNumber, JoinHandle<Result<(), NodeError>>), NodeError>
 where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
+    F: Future<Output = Result<SlotNumber, NodeError>>,
 {
-    let mut http_server = spawn_http_server(context, config, cancel);
-
     tokio::select! {
-        result = bootstrap::run(context, config, cancel) => match result {
+        result = bootstrap => match result {
             Ok(start_slot) => Ok((start_slot, http_server)),
             Err(error) => {
                 cancel.cancel();
@@ -264,7 +262,7 @@ where
     }
 }
 
-async fn join_http_server(handle: JoinHandle<Result<(), NodeError>>) -> Result<(), NodeError> {
+pub async fn join_http_server(handle: JoinHandle<Result<(), NodeError>>) -> Result<(), NodeError> {
     handle.await.unwrap_or_else(|source| {
         Err(NodeError::ServiceJoin {
             service: ServiceName::HttpServer,
@@ -399,8 +397,13 @@ where
     Blockchain: Rpc + 'static,
 {
     let cancel = CancellationToken::new();
-    let (start_slot, http_server) =
-        bootstrap_with_status_listener(&context, &config, &cancel).await?;
+    let http_server = spawn_http_server(&context, &config, &cancel);
+    let (start_slot, http_server) = bootstrap_with_status_listener(
+        bootstrap::run(&context, &config, &cancel),
+        http_server,
+        &cancel,
+    )
+    .await?;
     supervise_with_context(context, config, start_slot, cancel, http_server).await
 }
 
@@ -414,8 +417,13 @@ where
     Blockchain: Rpc + 'static,
 {
     let cancel = CancellationToken::new();
-    let (start_slot, http_server) =
-        bootstrap_with_status_listener(&context, &config, &cancel).await?;
+    let http_server = spawn_http_server(&context, &config, &cancel);
+    let (start_slot, http_server) = bootstrap_with_status_listener(
+        bootstrap::run(&context, &config, &cancel),
+        http_server,
+        &cancel,
+    )
+    .await?;
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();
     let task_cancel = cancel.clone();

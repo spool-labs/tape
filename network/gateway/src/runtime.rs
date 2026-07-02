@@ -14,11 +14,13 @@ use tape_node::features::block::ingestor::{BlockIngestor, ParsedBlock};
 use tape_node::features::bootstrap;
 use tape_node::features::replay::manager::ReplayManager;
 use tape_node::features::state::manager::StateManager;
+use tape_node::runtime::{bootstrap_with_status_listener, join_http_server};
 use tape_node::supervisor::Supervisor;
 use tape_protocol::Api;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, Instrument};
 
 use crate::http::server::GatewayHttpServer;
 use crate::store::GatewayStoreManager;
@@ -52,9 +54,9 @@ async fn drain_block_channel(
 
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: NodeConfig,
     start_slot: SlotNumber,
     cancel: CancellationToken,
+    http_server: JoinHandle<Result<(), NodeError>>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -64,13 +66,8 @@ where
     let (senders, receivers) = downstream_channels();
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
-    let http_server =
-        GatewayHttpServer::new(context.clone(), config.http.clone(), cancel.clone())?;
 
-    supervisor.spawn(
-        ServiceName::HttpServer,
-        http_server.run(),
-    );
+    supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));
 
     supervisor.spawn(
         ServiceName::BlockIngestor,
@@ -120,10 +117,16 @@ where
     Blockchain: Rpc + 'static,
 {
     let cancel = CancellationToken::new();
-    let start_slot =
-        bootstrap::run_with_persist(&context, &config, &cancel, crate::store::persist_batch::<Db>)
-            .await?;
-    supervise_with_context(context, config, start_slot, cancel).await
+    let http_server =
+        GatewayHttpServer::new(context.clone(), config.http.clone(), cancel.clone())?;
+    let http_server = tokio::spawn(http_server.run().in_current_span());
+    let (start_slot, http_server) = bootstrap_with_status_listener(
+        bootstrap::run_with_persist(&context, &config, &cancel, crate::store::persist_batch::<Db>),
+        http_server,
+        &cancel,
+    )
+    .await?;
+    supervise_with_context(context, start_slot, cancel, http_server).await
 }
 
 pub async fn run_application(config: NodeConfig) -> Result<(), NodeError> {

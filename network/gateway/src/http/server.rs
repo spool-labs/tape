@@ -6,7 +6,7 @@ use axum::error_handling::HandleErrorLayer;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use rpc::Rpc;
@@ -70,7 +70,19 @@ where
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
-        Router::new()
+        // Status routes serve while the gateway bootstraps; everything else
+        // 503s until catch-up completes.
+        let status_router = Router::new()
+            .route(
+                tape_protocol::api::NODE_HEALTH_PATH,
+                get(health::health::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                tape_protocol::api::NODE_STATS_PATH,
+                get(health::stats::<Db, Cluster, Blockchain>),
+            );
+
+        let service_router = Router::new()
             .route(
                 object::OBJECT_PATH,
                 get(object::get_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
@@ -86,11 +98,6 @@ where
                         crate::meter::object_read_metering::<Db, Cluster, Blockchain>,
                     ),
                 ),
-            )
-            .route(tape_protocol::api::NODE_HEALTH_PATH, get(health::health))
-            .route(
-                tape_protocol::api::NODE_STATS_PATH,
-                get(health::stats::<Db, Cluster, Blockchain>),
             )
             .route(
                 tape_protocol::api::TRACK_PATH,
@@ -127,6 +134,13 @@ where
                 post(track::catalog::list_objects::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit),
             )
+            .layer(from_fn_with_state(
+                state.clone(),
+                require_ready::<Db, Cluster, Blockchain>,
+            ));
+
+        status_router
+            .merge(service_router)
             .with_state(state.clone())
             .layer(from_fn_with_state(
                 state,
@@ -168,6 +182,19 @@ async fn handle_http_error(error: axum::BoxError) -> StatusCode {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     }
+}
+
+/// Service routes 503 until bootstrap catch-up completes; status routes are
+/// registered outside this layer and serve throughout.
+async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if !state.context.bootstrap.is_ready() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    next.run(req).await
 }
 
 async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(

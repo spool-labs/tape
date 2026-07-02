@@ -250,4 +250,61 @@ mod tests {
             ],
         );
     }
+
+    // a direct call without the parent stake authority signature is rejected
+    #[test]
+    fn split_requires_authority() {
+        let amount: u64 = 1_000;
+        let initial_source_balance: u64 = 5_000;
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+
+        let mut instruction = build_split_stake_ix(
+            fee_payer.into(),
+            authority.into(),
+            recipient.into(),
+            amount.into(),
+        );
+        // An attacker cannot produce the parent program's PDA signature.
+        instruction
+            .accounts
+            .last_mut()
+            .expect("stake authority meta")
+            .is_signer = false;
+
+        let (source_stake_address, _) = stake_pda(authority.into());
+        let (source_vault_address, _) = vault_pda(source_stake_address);
+
+        let (dest_stake_address, _) = stake_pda(recipient.into());
+        let (dest_vault_address, _) = vault_pda(dest_stake_address);
+
+        let (stake_authority_address, _) = stake_authority_pda();
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            sol(recipient, 0),
+
+            token(
+                to_pubkey(source_vault_address),
+                to_pubkey(source_vault_address),
+                initial_source_balance,
+            ),
+            empty(to_pubkey(dest_vault_address)),
+
+            mint(0),
+            token_program(),
+            system_program(),
+            sol(to_pubkey(stake_authority_address), 0),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(ProgramError::MissingRequiredSignature)],
+        );
+    }
 }

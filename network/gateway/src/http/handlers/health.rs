@@ -1,7 +1,9 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::Json;
 use rpc::Rpc;
 use store::{Column, Direction, Store};
+use tape_node::features::http::handlers::health::{HealthResponse, HealthStatus};
 use tape_protocol::Api;
 use tape_protocol::api::NodeStats;
 use tape_store::TapeStore;
@@ -13,8 +15,26 @@ use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
 use crate::http::state::AppState;
 
-pub(crate) async fn health() -> &'static str {
-    "ok"
+pub(crate) async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+) -> (StatusCode, Json<HealthResponse>) {
+    if state.context.bootstrap.is_ready() {
+        return (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: HealthStatus::Ready,
+                bootstrap: None,
+            }),
+        );
+    }
+
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(HealthResponse {
+            status: HealthStatus::Bootstrapping,
+            bootstrap: Some(state.context.bootstrap.snapshot().into()),
+        }),
+    )
 }
 
 pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
