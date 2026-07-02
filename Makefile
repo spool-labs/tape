@@ -20,8 +20,8 @@
 #   make admin        - Build tape-admin release binary
 #   make network      - Build tape-network release binary
 #   make tape         - Build tape (end-user) CLI release binary
-#   make node-linux   - Cross-compile tape-node for x86_64 Linux (requires cross
-#                       toolchain; on macOS use `tape-network build-linux` instead)
+#   make node-linux   - Build tape-node for x86_64 Linux (native, Linux only; from
+#                       macOS use `tape-network build-linux` — the DO builder droplet)
 #   make deploy-tools - All of the above plus the Solana programs
 #   make install      - `cargo install` tape-node, tape-admin, tape-network, and
 #                       tape into ~/.cargo/bin
@@ -157,15 +157,18 @@ network:
 tape:
 	cargo build --release -p tape
 
-# Cross-compile tape-node for x86_64 Linux droplets. On macOS this relies on
-# cargo-zigbuild + zig (see tools/tape-network/README.md). On Linux the
-# standard target triple works via cargo.
+# Build tape-node for x86_64 Linux. Cross-compiling from macOS does not work (RocksDB +
+# vendored openssl choke under a cross cc wrapper), so from macOS use the DigitalOcean
+# builder — `tape-network build-linux` — which builds natively on an ephemeral droplet.
+# This target is that native build; it runs on the droplet and on Linux dev boxes.
 ifeq ($(UNAME_S),Linux)
 node-linux:
 	cargo build --release --target x86_64-unknown-linux-gnu --features metrics -p tape-node
 else
 node-linux:
-	cargo zigbuild --release --target x86_64-unknown-linux-gnu --features metrics -p tape-node
+	@echo "local cross-compile is unsupported (RocksDB). Build on Linux instead:" >&2
+	@echo "  tape-network build-linux   # provisions an ephemeral DO builder droplet" >&2
+	@exit 1
 endif
 
 deploy-tools: programs admin network tape node-linux
