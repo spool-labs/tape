@@ -27,3 +27,11 @@ where
     Ok(expand_path(path))
 }
 
+pub fn deserialize_option_pathbuf<'de, D>(deserializer: D) -> Result<Option<PathBuf>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let path = Option::<String>::deserialize(deserializer)?;
+    Ok(path.map(expand_path))
+}
+

@@ -163,6 +163,35 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
     ]
 }
 
+/// Subdirectory of a store root holding the metadata (fast tier) database
+pub const META_SUBDIR: &str = "meta";
+
+/// Subdirectory of a store root holding the bulk (large tier) database
+pub const BULK_SUBDIR: &str = "bulk";
+
+/// Column families that hold bulk payloads and live on the bulk tier
+///
+/// The slice and snapshot families use key-value separation; track data is
+/// stored inline but can be large. Everything else is small metadata that
+/// stays on the fast tier.
+pub const BULK_COLUMN_FAMILIES: &[&str] = &["track_data", "slice", "snapshot_artifact"];
+
+/// Column family configurations for the metadata (fast tier) store
+pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {
+    create_tape_store_configs()
+        .into_iter()
+        .filter(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.name()))
+        .collect()
+}
+
+/// Column family configurations for the bulk (large tier) store
+pub fn create_bulk_store_configs() -> Vec<ColumnFamilyDescriptor> {
+    create_tape_store_configs()
+        .into_iter()
+        .filter(|cf| BULK_COLUMN_FAMILIES.contains(&cf.name()))
+        .collect()
+}
+
 /// Create database-wide options for TapeStore
 ///
 /// Returns a configured `Options` instance with settings optimized for the
@@ -255,5 +284,23 @@ mod tests {
     fn test_db_options() {
         let opts = create_db_options();
         drop(opts);
+    }
+
+    // the two tiers split every column family with no overlap
+    #[test]
+    fn test_tier_partition() {
+        let meta: Vec<String> = create_metadata_store_configs()
+            .iter()
+            .map(|cf| cf.name().to_string())
+            .collect();
+        let bulk: Vec<String> = create_bulk_store_configs()
+            .iter()
+            .map(|cf| cf.name().to_string())
+            .collect();
+
+        // The two tiers partition all 18 column families with no overlap.
+        assert_eq!(meta.len() + bulk.len(), 18);
+        assert_eq!(bulk, vec!["track_data", "slice", "snapshot_artifact"]);
+        assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
     }
 }

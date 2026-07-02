@@ -10,7 +10,7 @@ use rpc::Rpc;
 use rpc_client::RpcClient;
 use rpc_solana::SolanaRpc;
 use store::Store;
-use store_rocks::RocksStore;
+use store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
@@ -28,7 +28,7 @@ use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::http::admission::AdmissionLimiter;
 
-pub type AppContext = Arc<NodeContext<RocksStore, HttpApi, SolanaRpc>>;
+pub type AppContext = Arc<NodeContext<SplitStore, HttpApi, SolanaRpc>>;
 
 pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub config: Arc<NodeConfig>,

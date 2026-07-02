@@ -6,7 +6,7 @@ use peer_manager::PeerManager;
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
-use store_rocks::RocksStore;
+use store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
@@ -24,17 +24,18 @@ use crate::config::node::NodeConfig;
 use crate::context::{AppContext, NodeContextBuilder};
 use crate::core::error::NodeError;
 
-pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<RocksStore>, NodeError> {
-    TapeStore::open_primary_with_compaction_rate_limit(
-        &config.store.path,
-        config.store.compaction_mb_per_sec,
-    )
-    .map_err(|error| {
-        NodeError::Store(format!(
-            "failed to open storage at {}: {error}",
-            config.store.path.display()
-        ))
-    })
+pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, NodeError> {
+    let meta_dir = config.store.meta_dir();
+    let bulk_dir = config.store.bulk_dir();
+
+    TapeStore::open_primary_tiered(&meta_dir, &bulk_dir, config.store.compaction_mb_per_sec)
+        .map_err(|error| {
+            NodeError::Store(format!(
+                "failed to open storage (meta={}, bulk={}): {error}",
+                meta_dir.display(),
+                bulk_dir.display()
+            ))
+        })
 }
 
 fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {

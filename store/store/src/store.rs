@@ -35,6 +35,9 @@ pub trait Store: Send + Sync {
     fn contains(&self, cf: &str, key: &[u8]) -> Result<bool>;
 
     /// Apply a batch of write operations atomically.
+    ///
+    /// Atomicity holds only within a single backend. A backend split across
+    /// independent instances may write a cross-instance batch non-atomically.
     fn write_batch(&self, batch: WriteBatch) -> Result<()>;
 
     /// Delete every key in the range `[start, end)` from the column family.
