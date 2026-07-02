@@ -43,6 +43,7 @@ pub const HISTORY:            &[u8] = b"history";
 pub const CASSETTE:           &[u8] = b"cassette";
 pub const TRACK:              &[u8] = b"track";
 pub const STAKE:              &[u8] = b"stake";
+pub const STAKE_AUTHORITY:    &[u8] = b"stake_authority";
 pub const VOTE:               &[u8] = b"vote";
 pub const VOTE_SNAPSHOT:      &[u8] = b"snapshot";
 pub const VOTE_ASSIGNMENT:    &[u8] = b"assignment";
@@ -72,6 +73,12 @@ pub const PEER_SET_ADDRESS: Address =
 
 pub const PEER_SET_BUMP: u8 =
     ed25519::derive_program_address(&[PEER_SET], &PROGRAM_ID).1;
+
+pub const STAKE_AUTHORITY_ADDRESS: Address =
+    Address::new(ed25519::derive_program_address(&[STAKE_AUTHORITY], &PROGRAM_ID).0);
+
+pub const STAKE_AUTHORITY_BUMP: u8 =
+    ed25519::derive_program_address(&[STAKE_AUTHORITY], &PROGRAM_ID).1;
 
 pub const ARCHIVE_ATA: Address = Address::new(
     ed25519::derive_program_address(
@@ -232,6 +239,18 @@ pub fn stake_pda(authority: Address) -> (Address, u8) {
     Address::find_program_address(&[STAKE, authority.as_ref()], id())
 }
 
+#[cfg(debug_assertions)]
+#[inline(always)]
+pub fn stake_authority_pda() -> (Address, u8) {
+    Address::find_program_address(&[STAKE_AUTHORITY], id())
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn stake_authority_pda() -> (Address, u8) {
+    (STAKE_AUTHORITY_ADDRESS, STAKE_AUTHORITY_BUMP)
+}
+
 #[inline(always)]
 pub fn history_pda(node: Address) -> (Address, u8) {
     Address::find_program_address(&[HISTORY, node.as_ref()], id())
@@ -300,6 +319,10 @@ mod tests {
         let (pda, bump) = peer_set_pda();
         assert_eq!(pda, PEER_SET_ADDRESS);
         assert_eq!(bump, PEER_SET_BUMP);
+
+        let (pda, bump) = stake_authority_pda();
+        assert_eq!(pda, STAKE_AUTHORITY_ADDRESS);
+        assert_eq!(bump, STAKE_AUTHORITY_BUMP);
     }
 
     #[test]
