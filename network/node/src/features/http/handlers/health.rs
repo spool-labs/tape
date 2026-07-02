@@ -5,12 +5,25 @@ use axum::Json;
 use tracing::debug;
 
 use rpc::Rpc;
-use store::Store;
-use tape_protocol::{Api, api::NodeStats};
+use store::{DiskTier, Store, StoreTier};
+use tape_protocol::{Api, api::{NodeStats, TierStats}};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
+
+/// Map a backend disk tier to its wire representation.
+fn tier_stats(tier: DiskTier) -> TierStats {
+    let name = match tier.tier {
+        StoreTier::Primary => "primary",
+        StoreTier::Bulk => "bulk",
+    };
+    TierStats {
+        name: name.to_string(),
+        store_disk_bytes: tier.used_bytes,
+        free_disk_bytes: tier.free_bytes,
+    }
+}
 
 #[derive(Debug, serde::Serialize)]
 pub struct HealthResponse {
@@ -78,6 +91,14 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .available_disk_bytes()
         .map_err(store_error)?;
+    let disk_tiers = store
+        .inner()
+        .inner()
+        .disk_tiers()
+        .map_err(store_error)?
+        .into_iter()
+        .map(tier_stats)
+        .collect();
 
     let stats = NodeStats {
         last_processed_slot,
@@ -91,6 +112,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         slice_payload_bytes,
         store_disk_bytes,
         free_disk_bytes,
+        disk_tiers,
         reclaim_pending: state.context.is_reclaim_pending(),
         slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,

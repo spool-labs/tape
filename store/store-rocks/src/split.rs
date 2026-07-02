@@ -9,7 +9,7 @@
 //! Pointing both instances at the same device gives the old single-device
 //! layout, so a one-drive box needs no special handling.
 
-use store::{BatchOp, Direction, Result, Store, StoreIter, WriteBatch};
+use store::{BatchOp, DiskTier, Direction, Result, Store, StoreIter, StoreTier, WriteBatch};
 
 use crate::RocksStore;
 
@@ -174,6 +174,21 @@ impl Store for SplitStore {
         self.meta.reclaim_space()?;
         self.bulk.reclaim_space()
     }
+
+    fn disk_tiers(&self) -> Result<Vec<DiskTier>> {
+        Ok(vec![
+            DiskTier {
+                tier: StoreTier::Primary,
+                used_bytes: self.meta.actual_size_bytes()?,
+                free_bytes: self.meta.available_disk_bytes()?,
+            },
+            DiskTier {
+                tier: StoreTier::Bulk,
+                used_bytes: self.bulk.actual_size_bytes()?,
+                free_bytes: self.bulk.available_disk_bytes()?,
+            },
+        ])
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +253,18 @@ mod tests {
         assert_eq!(store.get("slice", b"b").unwrap(), Some(b"2".to_vec()));
         // The bulk batch did not leak into the metadata tier.
         assert_eq!(store.meta().get("meta", b"b").unwrap(), None);
+    }
+
+    // disk usage is reported as a primary and a bulk tier
+    #[test]
+    fn reports_two_tiers() {
+        let dir = tempdir().unwrap();
+        let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
+
+        let tiers = store.disk_tiers().unwrap();
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].tier, StoreTier::Primary);
+        assert_eq!(tiers[1].tier, StoreTier::Bulk);
     }
 
     // iteration is scoped to the owning instance

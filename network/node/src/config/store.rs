@@ -21,6 +21,16 @@ pub struct StoreConfig {
     #[serde(default = "default_compaction_mb_per_sec")]
     pub compaction_mb_per_sec: u64,
 
+    /// Reject new uploads when the metadata tier has fewer free bytes than this.
+    /// 0 disables the check.
+    #[serde(default)]
+    pub min_free_bytes: u64,
+
+    /// Reject new uploads when the bulk tier has fewer free bytes than this.
+    /// 0 disables the check.
+    #[serde(default)]
+    pub bulk_min_free_bytes: u64,
+
     /// Local garbage-collection settings.
     #[serde(default)]
     pub gc: GcConfig,
@@ -47,6 +57,8 @@ impl Default for StoreConfig {
             path: default_store_path(),
             bulk_path: None,
             compaction_mb_per_sec: default_compaction_mb_per_sec(),
+            min_free_bytes: 0,
+            bulk_min_free_bytes: 0,
             gc: GcConfig::default(),
         }
     }
