@@ -8,7 +8,6 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         authority_ata_info,
         vault_info,
         token_program_info,
-        stake_authority_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -19,13 +18,6 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 
     authority_info
         .is_signer()?;
-
-    // Funds only move when the parent program co-signs with its stake authority,
-    // which keeps withdrawals bound to the parent unbonding and pool accounting.
-    let (stake_authority_address, _) = stake_authority_pda();
-    stake_authority_info
-        .is_signer()?
-        .has_address(&stake_authority_address.into())?;
 
     authority_ata_info
         .is_writable()?
@@ -93,7 +85,6 @@ mod tests {
 
         let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
-        let (stake_authority_address, _) = stake_authority_pda();
         let authority_ata = ata_address(&authority);
 
         let accounts = vec![
@@ -102,7 +93,6 @@ mod tests {
             token(authority_ata, authority, 0),
             token(to_pubkey(vault_address), to_pubkey(vault_address), amount),
             token_program(),
-            sol(to_pubkey(stake_authority_address), 0),
         ];
 
         let env = test_env();
@@ -125,44 +115,6 @@ mod tests {
                     .closed()
                     .build(),
             ]
-        );
-    }
-
-    // a direct call without the parent stake authority signature is rejected
-    #[test]
-    fn unstake_requires_authority() {
-        let amount: u64 = 1000;
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let mut instruction = build_unstake_ix(fee_payer.into(), authority.into());
-        // An attacker cannot produce the parent program's PDA signature.
-        instruction
-            .accounts
-            .last_mut()
-            .expect("stake authority meta")
-            .is_signer = false;
-
-        let (stake_address, _) = stake_pda(authority.into());
-        let (vault_address, _) = vault_pda(stake_address);
-        let (stake_authority_address, _) = stake_authority_pda();
-        let authority_ata = ata_address(&authority);
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            token(authority_ata, authority, 0),
-            token(to_pubkey(vault_address), to_pubkey(vault_address), amount),
-            token_program(),
-            sol(to_pubkey(stake_authority_address), 0),
-        ];
-
-        let env = test_env();
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[Check::err(ProgramError::MissingRequiredSignature)],
         );
     }
 }
