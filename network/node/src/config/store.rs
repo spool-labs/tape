@@ -2,63 +2,29 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::helpers::{deserialize_option_pathbuf, deserialize_pathbuf};
+use super::helpers::deserialize_pathbuf;
 
 /// Local RocksDB store settings.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct StoreConfig {
-    /// Filesystem path for the store root. Holds the metadata store in a meta
-    /// subdirectory, and the bulk store in a bulk subdirectory unless a separate
-    /// bulk path is set.
+    /// Filesystem path for the primary RocksDB database.
     #[serde(default = "default_store_path", deserialize_with = "deserialize_pathbuf")]
     pub path: PathBuf,
-
-    /// Optional separate root for the bulk store, for a large secondary device
-    #[serde(default, deserialize_with = "deserialize_option_pathbuf")]
-    pub bulk_path: Option<PathBuf>,
 
     /// Global RocksDB compaction rate limit in MB/s.
     #[serde(default = "default_compaction_mb_per_sec")]
     pub compaction_mb_per_sec: u64,
-
-    /// Reject new uploads when the metadata volume has fewer free bytes than this.
-    /// 0 disables the check.
-    #[serde(default)]
-    pub min_free_bytes: u64,
-
-    /// Reject new uploads when the bulk volume has fewer free bytes than this.
-    /// 0 disables the check.
-    #[serde(default)]
-    pub bulk_min_free_bytes: u64,
 
     /// Local garbage-collection settings.
     #[serde(default)]
     pub gc: GcConfig,
 }
 
-impl StoreConfig {
-    /// Directory of the metadata (fast volume) database
-    pub fn meta_dir(&self) -> PathBuf {
-        self.path.join(tape_store::config::META_SUBDIR)
-    }
-
-    /// Directory of the bulk (large volume) database, under the bulk path if set
-    pub fn bulk_dir(&self) -> PathBuf {
-        self.bulk_path
-            .as_ref()
-            .unwrap_or(&self.path)
-            .join(tape_store::config::BULK_SUBDIR)
-    }
-}
-
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
             path: default_store_path(),
-            bulk_path: None,
             compaction_mb_per_sec: default_compaction_mb_per_sec(),
-            min_free_bytes: 0,
-            bulk_min_free_bytes: 0,
             gc: GcConfig::default(),
         }
     }
@@ -122,40 +88,4 @@ fn default_slice_batch() -> usize {
 
 fn default_reclaim_min_deleted_slices() -> usize {
     20
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn single_device_layout() {
-        let config = StoreConfig {
-            path: PathBuf::from("/mnt/nvme/tape"),
-            bulk_path: None,
-            ..StoreConfig::default()
-        };
-        // Both volumes live under the store root in separate subdirectories.
-        assert_eq!(config.meta_dir(), PathBuf::from("/mnt/nvme/tape/meta"));
-        assert_eq!(config.bulk_dir(), PathBuf::from("/mnt/nvme/tape/bulk"));
-    }
-
-    #[test]
-    fn separate_bulk_device_layout() {
-        let config = StoreConfig {
-            path: PathBuf::from("/mnt/nvme/tape"),
-            bulk_path: Some(PathBuf::from("/mnt/hdd/tape")),
-            ..StoreConfig::default()
-        };
-        assert_eq!(config.meta_dir(), PathBuf::from("/mnt/nvme/tape/meta"));
-        assert_eq!(config.bulk_dir(), PathBuf::from("/mnt/hdd/tape/bulk"));
-    }
-
-    #[test]
-    fn bulk_path_defaults_to_none() {
-        let config: StoreConfig = serde_yaml::from_str("path: /data/tape").unwrap();
-        assert_eq!(config.path, PathBuf::from("/data/tape"));
-        assert_eq!(config.bulk_path, None);
-        assert_eq!(config.bulk_dir(), PathBuf::from("/data/tape/bulk"));
-    }
 }
