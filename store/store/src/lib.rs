@@ -67,7 +67,7 @@ pub use metrics::{get_metrics, init_metrics, OperationTimer, StoreMetrics};
 pub use batch::{BatchOp, WriteBatch};
 pub use column::Column;
 pub use error::Error;
-pub use store::{Direction, KeyValue, Store, StoreIter};
+pub use store::{DiskVolume, Direction, KeyValue, Store, StoreIter, StoreVolume};
 pub use typed::TypedStore;
 
 pub type Result<T> = std::result::Result<T, Error>;
