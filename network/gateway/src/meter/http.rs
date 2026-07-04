@@ -34,10 +34,30 @@ where
 }
 
 pub(crate) fn caller_ip(req: &Request) -> IpAddr {
-    req.extensions()
+    let peer = req
+        .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| addr.ip())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    if !peer.is_loopback() {
+        return peer;
+    }
+    // Behind the local reverse proxy every socket peer is 127.0.0.1; the
+    // rightmost X-Forwarded-For entry is the one nginx appended and the only
+    // one a client can't forge.
+    forwarded_ip(req).unwrap_or(peer)
+}
+
+fn forwarded_ip(req: &Request) -> Option<IpAddr> {
+    req.headers()
+        .get("x-forwarded-for")?
+        .to_str()
+        .ok()?
+        .rsplit(',')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 pub(crate) fn rate_limited_response(retry_after: Duration) -> Response {
