@@ -87,7 +87,7 @@ impl UploadManager {
             mode = if force_raw { "raw" } else { "blob" },
             upload_number,
             size_bytes = upload.size_bytes,
-            "starting testnet upload"
+            "starting localnet upload"
         );
 
         let rpc_url = self.rpc_url.clone();
@@ -112,12 +112,12 @@ impl UploadManager {
                         Some(result.track_address),
                         None,
                     );
-                    info!(tape = %tape_address, certified = result.certified, "testnet upload completed");
+                    info!(tape = %tape_address, certified = result.certified, "localnet upload completed");
                 }
                 Err(err) => {
                     let details = format_error_chain(&err);
                     update_upload_status(&uploads, &tape_address, "failed", None, Some(details.clone()));
-                    error!(tape = %tape_address, error = %details, "testnet upload failed");
+                    error!(tape = %tape_address, error = %details, "localnet upload failed");
                 }
             }
         });
@@ -202,7 +202,7 @@ async fn run_upload(
                         tape = %tape_address,
                         delay_ms = delay.as_millis() as u64,
                         error = %details,
-                        "testnet reserve failed, retrying"
+                        "localnet reserve failed, retrying"
                     );
                     sleep(delay).await;
                     continue;

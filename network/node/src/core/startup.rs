@@ -419,7 +419,7 @@ mod tests {
             tls_pubkey,
             bls.public_key().expect("bls pubkey"),
             bls.proof_of_possession().expect("bls pop"),
-            NodePreferences::from(&GenesisConfig::local()),
+            NodePreferences::from(&GenesisConfig::simnet()),
         )
         .await
         .expect("register node");
