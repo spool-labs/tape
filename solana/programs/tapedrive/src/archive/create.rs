@@ -147,7 +147,7 @@ mod tests {
         let system = System::zeroed();
         let peer_set = PeerSet::zeroed();
 
-        let config = GenesisConfig::simnet();
+        let config = GenesisConfig::local();
         let instruction = build_create_archive_ix(
             fee_payer.into(),
             authority.into(),

@@ -38,8 +38,10 @@ pub mod error;
 pub mod ops;
 pub mod types;
 
+use std::path::Path;
+
 use store::{Store, TypedStore};
-use store_rocks::RocksStore;
+use store_rocks::{RocksStore, SplitStore};
 
 
 /// Wrapper around TypedStore providing tape-specific storage operations
@@ -81,56 +83,140 @@ impl<S: Store> std::ops::DerefMut for TapeStore<S> {
     }
 }
 
-// RocksStore-specific constructors
-impl TapeStore<RocksStore> {
-    /// Open a primary TapeStore database with optimized configuration
-    pub fn open_primary<P: AsRef<std::path::Path>>(path: P) -> Result<Self, store::Error> {
-        Self::open_primary_with_compaction_rate_limit(path, 100)
+/// Wrap an opened metadata store and bulk store in a split store, naming which
+/// column families live on the bulk volume
+fn split_store(meta: RocksStore, bulk: RocksStore) -> SplitStore {
+    let bulk_cfs: Vec<String> = config::BULK_COLUMN_FAMILIES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    SplitStore::new(meta, bulk, bulk_cfs)
+}
+
+// Split-store constructors: a metadata store on the fast volume and a bulk
+// store on the large volume, split by column family.
+impl TapeStore<SplitStore> {
+    /// Open a primary store under a single root directory
+    ///
+    /// The metadata store lives in a meta subdirectory and the bulk store in a
+    /// bulk subdirectory, so a single-device box needs only one path. Use the
+    /// split variant to place the bulk store on a separate device.
+    pub fn open_primary<P: AsRef<Path>>(root: P) -> Result<Self, store::Error> {
+        Self::open_primary_with_compaction_rate_limit(root, 100)
     }
 
-    pub fn open_primary_with_compaction_rate_limit<P: AsRef<std::path::Path>>(
-        path: P,
+    pub fn open_primary_with_compaction_rate_limit<P: AsRef<Path>>(
+        root: P,
         compaction_rate_limit_mb_per_sec: u64,
     ) -> Result<Self, store::Error> {
-        let db_opts =
+        let root = root.as_ref();
+        Self::open_primary_split(
+            root.join(config::META_SUBDIR),
+            root.join(config::BULK_SUBDIR),
+            compaction_rate_limit_mb_per_sec,
+        )
+    }
+
+    /// Open a primary store with the metadata and bulk stores at explicit,
+    /// independent directories, typically on different devices
+    pub fn open_primary_split<P: AsRef<Path>>(
+        meta_dir: P,
+        bulk_dir: P,
+        compaction_rate_limit_mb_per_sec: u64,
+    ) -> Result<Self, store::Error> {
+        std::fs::create_dir_all(meta_dir.as_ref())?;
+        std::fs::create_dir_all(bulk_dir.as_ref())?;
+
+        let meta = RocksStore::open_with_cf_config(
+            meta_dir.as_ref(),
             config::create_db_options_with_compaction_rate_limit_mb_per_sec(
                 compaction_rate_limit_mb_per_sec,
-            );
-        let cf_configs = config::create_tape_store_configs();
-        let rocks = RocksStore::open_with_cf_config(path, db_opts, cf_configs)?;
-        Ok(Self::new(rocks))
+            ),
+            config::create_metadata_store_configs(),
+        )?;
+        let bulk = RocksStore::open_with_cf_config(
+            bulk_dir.as_ref(),
+            config::create_db_options_with_compaction_rate_limit_mb_per_sec(
+                compaction_rate_limit_mb_per_sec,
+            ),
+            config::create_bulk_store_configs(),
+        )?;
+        Ok(Self::new(split_store(meta, bulk)))
     }
 
-    /// Open a read-only TapeStore replica.
+    /// Open a read-only replica under a single root directory
     ///
-    /// Passes the full column-family configs: opening by CF name alone uses
-    /// default table options, which cannot read CFs written under a
-    /// different table format.
-    pub fn open_read_only<P: AsRef<std::path::Path>>(path: P) -> Result<Self, store::Error> {
-        let rocks = RocksStore::open_read_only_with_cf_config(
-            path,
-            store_rocks::Options::default(),
-            config::create_tape_store_configs(),
-        )?;
-        Ok(Self::new(rocks))
+    /// Passes the full column-family configs per volume: opening by column-family
+    /// name alone uses default table options, which cannot read families written
+    /// under a different table format.
+    pub fn open_read_only<P: AsRef<Path>>(root: P) -> Result<Self, store::Error> {
+        let root = root.as_ref();
+        Self::open_read_only_split(root.join(config::META_SUBDIR), root.join(config::BULK_SUBDIR))
     }
 
-    /// Open a secondary TapeStore instance for catch-up reads, with the same
-    /// column-family configs as the primary.
-    pub fn open_secondary<P: AsRef<std::path::Path>>(
-        primary_path: P,
-        secondary_path: P,
+    /// Open a read-only replica with the two volumes at explicit directories
+    pub fn open_read_only_split<P: AsRef<Path>>(
+        meta_dir: P,
+        bulk_dir: P,
     ) -> Result<Self, store::Error> {
-        let rocks = RocksStore::open_secondary_with_cf_config(
-            primary_path,
-            secondary_path,
-            config::create_db_options(),
-            config::create_tape_store_configs(),
+        let meta = RocksStore::open_read_only_with_cf_config(
+            meta_dir.as_ref(),
+            store_rocks::Options::default(),
+            config::create_metadata_store_configs(),
         )?;
-        Ok(Self::new(rocks))
+        let bulk = RocksStore::open_read_only_with_cf_config(
+            bulk_dir.as_ref(),
+            store_rocks::Options::default(),
+            config::create_bulk_store_configs(),
+        )?;
+        Ok(Self::new(split_store(meta, bulk)))
     }
 
-    /// Sync secondary instance with primary database
+    /// Open a secondary store for catch-up reads
+    ///
+    /// The primary and secondary roots each contain meta and bulk
+    /// subdirectories.
+    pub fn open_secondary<P: AsRef<Path>>(
+        primary_root: P,
+        secondary_root: P,
+    ) -> Result<Self, store::Error> {
+        let primary_root = primary_root.as_ref();
+        let secondary_root = secondary_root.as_ref();
+        Self::open_secondary_split(
+            primary_root.join(config::META_SUBDIR),
+            secondary_root.join(config::META_SUBDIR),
+            primary_root.join(config::BULK_SUBDIR),
+            secondary_root.join(config::BULK_SUBDIR),
+        )
+    }
+
+    /// Open a secondary for catch-up reads with the two volumes at explicit
+    /// primary and secondary directories
+    pub fn open_secondary_split<P: AsRef<Path>>(
+        meta_primary: P,
+        meta_secondary: P,
+        bulk_primary: P,
+        bulk_secondary: P,
+    ) -> Result<Self, store::Error> {
+        std::fs::create_dir_all(meta_secondary.as_ref())?;
+        std::fs::create_dir_all(bulk_secondary.as_ref())?;
+
+        let meta = RocksStore::open_secondary_with_cf_config(
+            meta_primary.as_ref(),
+            meta_secondary.as_ref(),
+            config::create_db_options(),
+            config::create_metadata_store_configs(),
+        )?;
+        let bulk = RocksStore::open_secondary_with_cf_config(
+            bulk_primary.as_ref(),
+            bulk_secondary.as_ref(),
+            config::create_db_options(),
+            config::create_bulk_store_configs(),
+        )?;
+        Ok(Self::new(split_store(meta, bulk)))
+    }
+
+    /// Sync both secondary instances with their primaries
     pub fn catch_up_with_primary(&self) -> Result<(), store::Error> {
         self.inner.inner().catch_up_with_primary()
     }
@@ -449,6 +535,53 @@ mod tests {
         assert_eq!(secondary.count_tracks().unwrap(), 5);
         assert!(secondary.get_tape(tape).unwrap().is_some());
         assert!(secondary.get_object_info(tracks[0]).unwrap().is_some());
+    }
+
+    // Count files with the given extension anywhere under the directory
+    #[cfg(not(miri))]
+    fn count_files_with_ext(dir: &std::path::Path, ext: &str) -> usize {
+        let mut total = 0;
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                total += count_files_with_ext(&path, ext);
+            } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+                total += 1;
+            }
+        }
+        total
+    }
+
+    // slice blobs land in the bulk directory and never in the metadata one
+    #[test]
+    #[cfg(not(miri))]
+    fn split_placement() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let meta_dir = dir.path().join("nvme");
+        let bulk_dir = dir.path().join("sata");
+        let store = TapeStore::open_primary_split(&meta_dir, &bulk_dir, 100).unwrap();
+
+        // A track is small metadata; a slice over the 256 KiB threshold is a blob.
+        store
+            .put_track(Address::new_unique(), certified_track(Address::new_unique(), 0))
+            .unwrap();
+        store
+            .put_slice(SpoolIndex(7), Address::new_unique(), vec![0xAB; 512 * 1024])
+            .unwrap();
+        store.inner().inner().flush().unwrap();
+
+        // Blob files exist only under the bulk directory.
+        assert!(count_files_with_ext(&bulk_dir, "blob") > 0, "slice blob not in bulk dir");
+        assert_eq!(count_files_with_ext(&meta_dir, "blob"), 0, "blob leaked into meta dir");
+
+        // Both values read back through the unified store.
+        assert_eq!(store.count_tracks().unwrap(), 1);
+        assert_eq!(store.iter_slices_by_spool(SpoolIndex(7)).unwrap().len(), 1);
     }
 
     /// The RocksDB backend must observe the same results as MemoryStore,

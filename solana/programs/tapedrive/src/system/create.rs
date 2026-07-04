@@ -78,7 +78,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let config = GenesisConfig::simnet();
+        let config = GenesisConfig::local();
         let instruction = build_create_system_ix(
             fee_payer.into(),
             authority.into(),

@@ -56,7 +56,7 @@ pub struct NodePreferences {
     pub access_threshold: Coin<TAPE>,
 
     /// The preferred epoch duration in seconds.
-    /// Reference targets: ~20s simnet, ~100s localnet, ~3_600s devnet, ~604_800s mainnet.
+    /// Reference targets: ~100s devnet, ~86_400s testnet, ~604_800s mainnet.
     pub epoch_duration: EpochDuration,
 }
 

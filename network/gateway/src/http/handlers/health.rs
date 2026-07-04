@@ -2,10 +2,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use rpc::Rpc;
-use store::{Column, Direction, Store};
+use store::{Column, DiskVolume, Direction, Store, StoreVolume};
 use tape_node::features::http::handlers::health::{HealthResponse, HealthStatus};
 use tape_protocol::Api;
-use tape_protocol::api::NodeStats;
+use tape_protocol::api::{NodeStats, VolumeStats};
 use tape_store::TapeStore;
 use tape_store::columns::SliceCol;
 use tape_store::ops::{MetaOps, TrackOps};
@@ -35,6 +35,19 @@ pub(crate) async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
             bootstrap: Some(state.context.bootstrap.snapshot().into()),
         }),
     )
+}
+
+/// Map a backend disk volume to its wire representation.
+fn volume_stats(volume: DiskVolume) -> VolumeStats {
+    let name = match volume.volume {
+        StoreVolume::Primary => "primary",
+        StoreVolume::Bulk => "bulk",
+    };
+    VolumeStats {
+        name: name.to_string(),
+        store_disk_bytes: volume.used_bytes,
+        free_disk_bytes: volume.free_bytes,
+    }
 }
 
 pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -75,6 +88,14 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .available_disk_bytes()
         .map_err(store_error)?;
+    let disk_volumes = store
+        .inner()
+        .inner()
+        .disk_volumes()
+        .map_err(store_error)?
+        .into_iter()
+        .map(volume_stats)
+        .collect();
 
     Ok(Json(NodeStats {
         last_processed_slot,
@@ -86,6 +107,7 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         slice_payload_bytes,
         store_disk_bytes,
         free_disk_bytes,
+        disk_volumes,
         reclaim_pending: state.context.is_reclaim_pending(),
         slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,

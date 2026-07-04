@@ -8495,7 +8495,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-e2e-localnet"
+name = "tape-e2e-simnet"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "peer-http",
+ "peer-manager",
+ "peer-tls",
+ "rand 0.8.5",
+ "reqwest",
+ "rpc",
+ "rpc-client",
+ "rpc-litesvm",
+ "solana-compute-budget-interface",
+ "solana-keypair",
+ "solana-program-pack",
+ "solana-pubkey 4.1.0",
+ "solana-signature",
+ "solana-signer",
+ "spl-token",
+ "store-memory",
+ "tape-api",
+ "tape-chain-harness",
+ "tape-core",
+ "tape-crypto",
+ "tape-gateway",
+ "tape-node",
+ "tape-protocol",
+ "tape-sdk",
+ "tape-store",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tape-e2e-testnet"
 version = "0.3.0"
 dependencies = [
  "anyhow",
@@ -8529,43 +8566,6 @@ dependencies = [
  "tape-sdk",
  "tokio",
  "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "tape-e2e-simnet"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "peer-http",
- "peer-manager",
- "peer-tls",
- "rand 0.8.5",
- "reqwest",
- "rpc",
- "rpc-client",
- "rpc-litesvm",
- "solana-compute-budget-interface",
- "solana-keypair",
- "solana-program-pack",
- "solana-pubkey 4.1.0",
- "solana-signature",
- "solana-signer",
- "spl-token",
- "store-memory",
- "tape-api",
- "tape-chain-harness",
- "tape-core",
- "tape-crypto",
- "tape-gateway",
- "tape-node",
- "tape-protocol",
- "tape-sdk",
- "tape-store",
- "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
