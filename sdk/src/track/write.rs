@@ -22,7 +22,9 @@ use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
-use tape_retry::{retry, retry_if, Backoff, RetryConfig, Retryable};
+use tape_protocol::api::GetTrackByNumberReq;
+use futures::stream::StreamExt;
+use tape_retry::{retry, retry_if, RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
 use tokio::time::sleep;
 
@@ -40,6 +42,12 @@ use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 // inside a single Solana transaction packet. This can be adjusted in the future if 4k transactions
 // become widely supported.
 pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
+
+/// Poll cadence for visibility and certification waits.
+const POLL_INTERVAL_MS: u64 = 400;
+
+/// Visibility poll attempts before giving up.
+const VISIBILITY_POLL_LIMIT: usize = 30;
 
 pub const UNNAMED_TRACK: &[u8] = b"";
 pub const UNTYPED_TRACK: ContentType = ContentType::Unknown;
@@ -588,32 +596,37 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     let required = min_correct(state.group_member_count(group) as u64) as usize;
 
     let mut seen = HashSet::new();
-    let target = group_peers
+    let peers: Vec<_> = group_peers
         .iter()
         .filter(|(_, node_id)| seen.insert(*node_id))
-        .count();
+        .map(|(_, node_id)| *node_id)
+        .collect();
+    let target = peers.len();
 
-    let mut backoff = Backoff::new(visibility_retry_config());
+    let mut attempt = 0usize;
 
     loop {
-        let mut visible = 0usize;
-        let mut seen = HashSet::new();
-
-        for (_, node_id) in &group_peers {
-            if !seen.insert(*node_id) {
-                continue;
-            }
-
+        // Probe every peer concurrently: a round costs one round-trip
+        // instead of one per peer.
+        let probes = peers.iter().map(|node_id| async move {
             let req = GetTrackDataReq { track: track_address };
             match client.api.get_track_data(*node_id, &req).await {
-                Ok(_) => visible += 1,
-                Err(error) => debug!(
-                    node = %node_id,
-                    error = %error,
-                    "track metadata not yet visible on node"
-                ),
+                Ok(_) => true,
+                Err(error) => {
+                    debug!(
+                        node = %node_id,
+                        error = %error,
+                        "track metadata not yet visible on node"
+                    );
+                    false
+                }
             }
-        }
+        });
+        let visible = futures::future::join_all(probes)
+            .await
+            .into_iter()
+            .filter(|visible| *visible)
+            .count();
 
         if visible >= required {
             if visible < target {
@@ -627,22 +640,24 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             return Ok(());
         }
 
-        let Some(delay) = backoff.next_delay() else {
+        attempt += 1;
+        if attempt > VISIBILITY_POLL_LIMIT {
             return Err(TapedriveError::Upload(UploadError::Network(format!(
                 "track metadata visible on {visible}/{target} nodes, need {required}"
             ))));
-        };
+        }
 
-        warn!(
-            attempt = backoff.attempt(),
-            delay_ms = delay.as_millis() as u64,
-            visible,
-            target,
-            required,
-            "track metadata not yet visible on required nodes"
-        );
+        if attempt % 5 == 0 {
+            warn!(
+                attempt,
+                visible,
+                target,
+                required,
+                "track metadata not yet visible on required nodes"
+            );
+        }
 
-        sleep(delay).await;
+        sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
 }
 
@@ -750,16 +765,33 @@ async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     track_number: TrackNumber,
 ) -> Result<CompressedTrack, TapedriveError> {
     let result = retry_if(
-        write_retry_config(),
+        completion_poll_config(),
         None,
         || async {
-            let track = query::query_track_by_number(client, tape, track_number)
+            // Race every peer and accept the first response that is already
+            // certified: the fastest responder may lag the certify tx, so a
+            // fresh answer from any node wins over a quick stale one.
+            let peers = query::queryable_peers(client)
                 .await
                 .map_err(TrackCompletionError::from)?;
-            if track.is_certified() {
-                Ok(track)
-            } else {
-                Err(TrackCompletionError::NotCertifiedYet)
+            let mut requests = query::race_peers(peers, |node| {
+                let req = GetTrackByNumberReq { tape: *tape, track_number };
+                async move { client.api.get_track_by_number(node, &req).await }
+            });
+
+            let mut uncertified = None;
+            while let Some(result) = requests.next().await {
+                if let Ok(res) = result {
+                    if res.track.is_certified() {
+                        return Ok(res.track);
+                    }
+                    uncertified = Some(res.track);
+                }
+            }
+
+            match uncertified {
+                Some(_) => Err(TrackCompletionError::NotCertifiedYet),
+                None => Err(TrackCompletionError::Client(TapedriveError::NotFound)),
             }
         },
         should_retry_track_completion,
@@ -873,11 +905,13 @@ fn write_retry_config() -> RetryConfig {
     }
 }
 
-fn visibility_retry_config() -> RetryConfig {
+/// Flat short poll for states that land within seconds; a backoff would
+/// oversleep the arrival.
+fn completion_poll_config() -> RetryConfig {
     RetryConfig {
-        base_delay: Duration::from_millis(500),
-        max_delay: Duration::from_secs(5),
-        max_retries: Some(6),
+        base_delay: Duration::from_millis(POLL_INTERVAL_MS),
+        max_delay: Duration::from_millis(POLL_INTERVAL_MS),
+        max_retries: Some(40),
     }
 }
 

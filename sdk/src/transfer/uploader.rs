@@ -26,8 +26,8 @@ use tracing::{info, warn};
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
 
-/// Default concurrency limit for uploads.
-const DEFAULT_CONCURRENCY: usize = 8;
+/// Default concurrency limit for uploads: one in-flight slice per group member.
+const DEFAULT_CONCURRENCY: usize = GROUP_SIZE;
 
 /// A slice with its merkle proof, ready for upload.
 #[derive(Clone)]
