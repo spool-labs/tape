@@ -44,14 +44,14 @@ pub struct UploadView {
 }
 
 #[derive(Clone, Serialize)]
-pub struct LocalnetView {
+pub struct TestnetView {
     pub cluster: ClusterView,
     pub nodes: Vec<NodeView>,
     pub spools: Vec<SpoolView>,
     pub uploads: Vec<UploadView>,
 }
 
-impl Default for LocalnetView {
+impl Default for TestnetView {
     fn default() -> Self {
         Self {
             cluster: ClusterView::default(),

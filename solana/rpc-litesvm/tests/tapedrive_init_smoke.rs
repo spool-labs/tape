@@ -62,7 +62,7 @@ async fn initialize_system_with_tapedrive_programs() {
     // RpcClient signs with tape's own Signer; derive it from the funded payer.
     let signer = TapeKeypair::from_solana_keypair(&payer).expect("derive tape keypair");
     let admin: Address = payer.pubkey().into();
-    let config = GenesisConfig::simnet();
+    let config = GenesisConfig::local();
 
     // Genesis singleton bringup, mirroring tape-admin `init_all`: mint, system,
     // peer set, archive, then the bootstrap/genesis/candidate epoch + committee

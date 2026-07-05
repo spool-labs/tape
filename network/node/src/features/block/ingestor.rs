@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use futures::stream::{FuturesOrdered, StreamExt};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -21,6 +22,9 @@ use crate::core::types::ChannelName;
 use crate::features::block::pending_blocks::{AppendOutcome, PendingBlocks};
 
 const TIP_POLL_MS: u64 = 400;
+
+/// Blocks kept in flight while catching up; matches the rpc-cache backfill concurrency.
+pub const FETCH_PIPELINE_DEPTH: usize = 16;
 
 #[derive(Debug, Default)]
 pub struct ParsedBlock {
@@ -97,14 +101,59 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => return Ok(()),
-                result = self.fetch_parse_and_dispatch(next_slot) => {
-                    match result? {
-                        IngestStep::Continue => next_slot.increment(),
-                        IngestStep::Wait => {}
-                    }
+                result = self.ingest_step(next_slot) => {
+                    next_slot = result?;
                 }
             }
         }
+    }
+
+    /// Run one ingest step and return the next slot to fetch.
+    ///
+    /// A serial fetch cannot outpace slot production on high-latency RPC
+    /// links, which starves the promotion witness forever: the queue tail
+    /// never passes the finalized tip. Far behind the confirmed tip, catch up
+    /// by fetching a bounded window of blocks concurrently and applying them
+    /// in slot order; near the tip, fall back to the serial path.
+    async fn ingest_step(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
+        let tip = match self.context.rpc.get_slot().await {
+            Ok(tip) => tip,
+            Err(error) => {
+                error!(
+                    error = %error,
+                    "block_ingestor: get_slot failed: {}",
+                    error
+                );
+                return Err(NodeError::from(error));
+            }
+        };
+
+        if tip.saturating_sub(next_slot.0) < FETCH_PIPELINE_DEPTH as u64 {
+            return match self.fetch_parse_and_dispatch(next_slot).await? {
+                IngestStep::Continue => Ok(SlotNumber(next_slot.0.saturating_add(1))),
+                IngestStep::Wait => Ok(next_slot),
+            };
+        }
+
+        let end_slot = next_slot.0 + FETCH_PIPELINE_DEPTH as u64 - 1;
+        let mut fetches = FuturesOrdered::new();
+        for slot in next_slot.0..=end_slot {
+            fetches.push_back(fetch_block_task(
+                self.context.clone(),
+                self.cancel.clone(),
+                SlotNumber(slot),
+            ));
+        }
+
+        while let Some(fetched) = fetches.next().await {
+            if let Some(block) = fetched? {
+                self.enqueue(block);
+            }
+        }
+
+        self.refresh_finalized_tip().await?;
+        self.promote().await?;
+        Ok(SlotNumber(end_slot.saturating_add(1)))
     }
 
     async fn fetch_parse_and_dispatch(&mut self, slot: SlotNumber) -> Result<IngestStep, NodeError> {
@@ -168,82 +217,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             return Ok(FetchOutcome::PastTip);
         }
 
-        let context = self.context.clone();
-        let attempt_progress = progress.clone();
-
-        let block = retry_if(
-            RetryConfig::infinite(),
-            Some(&self.cancel),
-            move || {
-                let context = context.clone();
-                let attempt_progress = attempt_progress.clone();
-                async move {
-                    attempt_progress.record_attempt();
-                    context.rpc.get_block(slot.0).await
-                }
-            },
-            |error| error.is_retriable() && !error.is_skipped_slot(),
-        )
-        .await;
-
-        let block = match block {
-            Ok(block) => block,
-            Err(error) if error.is_skipped_slot() => {
-                debug!(slot = slot.0, "slot skipped");
-                return Ok(FetchOutcome::Skipped);
-            }
-            Err(error) => {
-                error!(
-                    slot = slot.0,
-                    error = %error,
-                    "block_ingestor: get_block failed: {}",
-                    error
-                );
-                return Err(NodeError::from(error));
-            }
-        };
-
-        let parent_slot = SlotNumber(block.parent_slot);
-        let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
-        let previous_blockhash =
-            parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
-
-        let sourced = match parse_and_merge_with_sources(&block) {
-            Ok(instructions) => instructions,
-            Err(error) => {
-                error!(
-                    slot = slot.0,
-                    error = %error,
-                    "block_ingestor: parse_and_merge_with_sources failed: {}",
-                    error
-                );
-                return Err(NodeError::from(error));
-            }
-        };
-        let mut instructions = Vec::with_capacity(sourced.len());
-        let mut instruction_tx_ids = Vec::with_capacity(sourced.len());
-        for sourced in sourced {
-            instruction_tx_ids.push(sourced.tx_id);
-            instructions.push(sourced.instruction);
+        match fetch_block_task(self.context.clone(), self.cancel.clone(), slot).await? {
+            Some(block) => Ok(FetchOutcome::Block(block)),
+            None => Ok(FetchOutcome::Skipped),
         }
-
-        let parsed = Arc::new(ParsedBlock {
-            slot,
-            parent_slot,
-            blockhash,
-            previous_blockhash,
-            block_time: block.block_time,
-            instructions,
-            instruction_tx_ids,
-        });
-
-        debug!(
-            slot = parsed.slot.0,
-            extracted = parsed.instructions.len(),
-            "parsed block"
-        );
-
-        Ok(FetchOutcome::Block(parsed))
     }
 
     /// Append `block` to the pending queue, applying its track events to
@@ -375,6 +352,96 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
         Ok(())
     }
+}
+
+/// Fetch and parse one block, retrying transient failures. Returns None when
+/// the chain skipped the slot.
+async fn fetch_block_task<Db, Cluster, Blockchain>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    cancel: CancellationToken,
+    slot: SlotNumber,
+) -> Result<Option<Arc<ParsedBlock>>, NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let attempt_progress = context.ingest.progress();
+    let fetch_context = context.clone();
+
+    let block = retry_if(
+        RetryConfig::infinite(),
+        Some(&cancel),
+        move || {
+            let context = fetch_context.clone();
+            let attempt_progress = attempt_progress.clone();
+            async move {
+                attempt_progress.record_attempt();
+                context.rpc.get_block(slot.0).await
+            }
+        },
+        |error| error.is_retriable() && !error.is_skipped_slot(),
+    )
+    .await;
+
+    let block = match block {
+        Ok(block) => block,
+        Err(error) if error.is_skipped_slot() => {
+            debug!(slot = slot.0, "slot skipped");
+            return Ok(None);
+        }
+        Err(error) => {
+            error!(
+                slot = slot.0,
+                error = %error,
+                "block_ingestor: get_block failed: {}",
+                error
+            );
+            return Err(NodeError::from(error));
+        }
+    };
+
+    let parent_slot = SlotNumber(block.parent_slot);
+    let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
+    let previous_blockhash =
+        parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
+
+    let sourced = match parse_and_merge_with_sources(&block) {
+        Ok(instructions) => instructions,
+        Err(error) => {
+            error!(
+                slot = slot.0,
+                error = %error,
+                "block_ingestor: parse_and_merge_with_sources failed: {}",
+                error
+            );
+            return Err(NodeError::from(error));
+        }
+    };
+    let mut instructions = Vec::with_capacity(sourced.len());
+    let mut instruction_tx_ids = Vec::with_capacity(sourced.len());
+    for sourced in sourced {
+        instruction_tx_ids.push(sourced.tx_id);
+        instructions.push(sourced.instruction);
+    }
+
+    let parsed = Arc::new(ParsedBlock {
+        slot,
+        parent_slot,
+        blockhash,
+        previous_blockhash,
+        block_time: block.block_time,
+        instructions,
+        instruction_tx_ids,
+    });
+
+    debug!(
+        slot = parsed.slot.0,
+        extracted = parsed.instructions.len(),
+        "parsed block"
+    );
+
+    Ok(Some(parsed))
 }
 
 #[cfg(test)]

@@ -7,6 +7,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
+use futures::stream;
 use rpc::Rpc;
 use store::Store;
 use tape_blocks::parse_and_merge_with_sources;
@@ -19,7 +21,7 @@ use tracing::{debug, error, info};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::block::ingestor::ParsedBlock;
+use crate::features::block::ingestor::{ParsedBlock, FETCH_PIPELINE_DEPTH};
 use crate::features::replay::engine::{ReplayEngine, ReplayPersistFn};
 use crate::features::store::manager::persist_batch;
 
@@ -66,14 +68,27 @@ where
     }
 
     let mut event_count = 0usize;
-    let mut slot = start_slot;
     let mut last_progress_log = Instant::now();
-    while slot <= end_slot {
+
+    // Fetch latency dominates replay wall time on distant RPC endpoints, so
+    // keep a pipeline of requests in flight. Results arrive in slot order, so
+    // blocks still apply strictly sequentially.
+    let mut blocks = stream::iter((start_slot.0..=end_slot.0).map(SlotNumber))
+        .map(|slot| {
+            let context = Arc::clone(context);
+            async move {
+                let fetched = fetch_parsed_block(&context, slot).await;
+                (slot, fetched)
+            }
+        })
+        .buffered(FETCH_PIPELINE_DEPTH);
+
+    while let Some((slot, fetched)) = blocks.next().await {
         if cancel.is_cancelled() {
             return Err(NodeError::Store("bootstrap block replay: cancelled".into()));
         }
 
-        match fetch_parsed_block(context, slot).await? {
+        match fetched? {
             Some(block) => {
                 event_count = event_count.saturating_add(replay.apply_block_with(&block, persist)?);
             }
@@ -97,11 +112,6 @@ where
                 skipped = progress.skipped_slots,
                 "bootstrap: block replay progress"
             );
-        }
-
-        match slot.checked_next() {
-            Some(next) => slot = next,
-            None => break,
         }
     }
 

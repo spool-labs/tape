@@ -14,7 +14,7 @@ use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_protocol::api::NodeStats;
 
-use crate::view::{ClusterView, NodeView, SpoolView, LocalnetView};
+use crate::view::{ClusterView, NodeView, SpoolView, TestnetView};
 
 /// Lightweight node reference, copied under lock, used outside it.
 #[derive(Clone)]
@@ -224,7 +224,7 @@ impl Observer {
         }
     }
 
-    pub async fn snapshot(&self, nodes: Vec<NodeRef>) -> Result<LocalnetView> {
+    pub async fn snapshot(&self, nodes: Vec<NodeRef>) -> Result<TestnetView> {
         let chain = self.chain_state().await?;
         let mut node_views = join_all(nodes.iter().map(|node| self.observe_node(node))).await;
         node_views.sort_by_key(|node| node.local_id);
@@ -253,7 +253,7 @@ impl Observer {
             })
             .collect();
 
-        Ok(LocalnetView {
+        Ok(TestnetView {
             cluster: ClusterView {
                 epoch: chain.epoch.0,
                 phase: match chain.phase {

@@ -9,20 +9,20 @@ use std::future::IntoFuture;
 
 use arc_swap::ArcSwap;
 use clap::Parser;
-use tape_e2e_localnet::api::{self, AppState};
-use tape_e2e_localnet::config::LocalnetConfig;
-use tape_e2e_localnet::observer::Observer;
-use tape_e2e_localnet::orchestrator::Orchestrator;
-use tape_e2e_localnet::poller;
-use tape_e2e_localnet::tui::{self, Command as TuiCommand};
-use tape_e2e_localnet::upload::UploadManager;
-use tape_e2e_localnet::view::LocalnetView;
+use tape_e2e_testnet::api::{self, AppState};
+use tape_e2e_testnet::config::TestnetConfig;
+use tape_e2e_testnet::observer::Observer;
+use tape_e2e_testnet::orchestrator::Orchestrator;
+use tape_e2e_testnet::poller;
+use tape_e2e_testnet::tui::{self, Command as TuiCommand};
+use tape_e2e_testnet::upload::UploadManager;
+use tape_e2e_testnet::view::TestnetView;
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 use tape_node::core::limits::check_fd_limit;
 
 #[derive(Parser)]
-#[command(name = "localnet", about = "Tapedrive local-validator e2e orchestrator")]
+#[command(name = "testnet", about = "Tapedrive production-like testnet orchestrator")]
 struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:8899")]
     rpc_url: String,
@@ -30,7 +30,7 @@ struct Cli {
     #[arg(long, default_value = "target/debug/tape-node")]
     node_binary: PathBuf,
 
-    #[arg(long, default_value = "target/localnet")]
+    #[arg(long, default_value = "target/testnet")]
     data_dir: PathBuf,
 
     #[arg(long, default_value_t = 4000)]
@@ -83,7 +83,7 @@ async fn async_main() -> ExitCode {
     let api_port = cli.api_port;
     let admin_keypair_path = cli.data_dir.join("admin.json");
 
-    let config = LocalnetConfig {
+    let config = TestnetConfig {
         rpc_url: cli.rpc_url.clone(),
         node_binary: cli.node_binary,
         data_dir: cli.data_dir,
@@ -91,7 +91,7 @@ async fn async_main() -> ExitCode {
         sol_airdrop: cli.sol_airdrop,
         stake_amount: cli.stake_amount,
         spool_groups: cli.spool_groups,
-        ..LocalnetConfig::default()
+        ..TestnetConfig::default()
     };
 
     let observer = match Observer::new(&cli.rpc_url) {
@@ -123,7 +123,7 @@ async fn async_main() -> ExitCode {
         }
     }
 
-    let snapshot = Arc::new(ArcSwap::from_pointee(LocalnetView::default()));
+    let snapshot = Arc::new(ArcSwap::from_pointee(TestnetView::default()));
     let observer = Arc::new(observer);
     let orchestrator = Arc::new(Mutex::new(orch));
     let upload_manager = Arc::new(UploadManager::new(
@@ -158,7 +158,7 @@ async fn async_main() -> ExitCode {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TuiCommand>();
     let tui_shutdown = shutdown.clone();
     let tui_thread = thread::Builder::new()
-        .name("localnet-tui".into())
+        .name("testnet-tui".into())
         .spawn(move || {
             if let Err(error) = tui::run_tui(snapshot, cmd_tx, tui_shutdown) {
                 eprintln!("tui error: {error:#}");

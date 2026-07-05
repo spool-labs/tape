@@ -81,7 +81,7 @@ mod tests {
         let network_tls = NetworkTlsPubkey::new(tls_keypair.pubkey().to_bytes());
 
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        let preferences = NodePreferences::from(&GenesisConfig::simnet());
+        let preferences = NodePreferences::from(&GenesisConfig::local());
         submit_register_node(
             &rpc, &keypair, name, commission, address, network_tls, bls_pubkey, bls_pop, preferences,
         )
