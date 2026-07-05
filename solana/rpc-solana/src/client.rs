@@ -316,7 +316,10 @@ async fn send_and_poll(
         .send_transaction_with_config(
             transaction,
             RpcSendTransactionConfig {
-                preflight_commitment: Some(commitment.commitment),
+                // The write paths construct well-formed transactions and read
+                // failures from signature status, so the preflight simulation
+                // only adds a round-trip.
+                skip_preflight: true,
                 ..RpcSendTransactionConfig::default()
             },
         )
