@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use solana_account::Account;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcTransactionConfig};
+use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcTransactionConfig};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -56,6 +56,9 @@ pub struct SolanaRpc {
     config: RpcConfig,
     failover: Arc<RwLock<EndpointFailover>>,
     client: Arc<RwLock<RpcClient>>,
+    /// Recently fetched blockhash reused across the transactions of one
+    /// logical operation; hashes stay valid far longer than this window.
+    blockhash_cache: Arc<RwLock<Option<(Hash, std::time::Instant)>>>,
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
 }
@@ -99,6 +102,7 @@ impl SolanaRpc {
         Ok(Self {
             config,
             failover: Arc::new(RwLock::new(failover)),
+            blockhash_cache: Arc::new(RwLock::new(None)),
             client: Arc::new(RwLock::new(client)),
             #[cfg(feature = "metrics")]
             metrics,
@@ -297,6 +301,39 @@ impl SolanaRpc {
 
 }
 
+/// Send a transaction and poll its signature status at a short fixed cadence.
+/// The library confirm loop polls every 500ms, which adds up to half a slot of
+/// pure sleep per transaction on top of confirmation itself.
+async fn send_and_poll(
+    client: &RpcClient,
+    transaction: &Transaction,
+    commitment: CommitmentLevel,
+) -> Result<Signature, solana_client::client_error::ClientError> {
+    const CONFIRM_POLL_MS: u64 = 200;
+
+    let commitment = CommitmentConfig { commitment };
+    let signature = client
+        .send_transaction_with_config(
+            transaction,
+            RpcSendTransactionConfig {
+                preflight_commitment: Some(commitment.commitment),
+                ..RpcSendTransactionConfig::default()
+            },
+        )
+        .await?;
+
+    loop {
+        if let Some(status) = client
+            .get_signature_status_with_commitment(&signature, commitment)
+            .await?
+        {
+            status?;
+            return Ok(signature);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(CONFIRM_POLL_MS)).await;
+    }
+}
+
 // ============================================================================
 // Rpc trait implementation
 // ============================================================================
@@ -430,6 +467,14 @@ impl Rpc for SolanaRpc {
     }
 
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
+        const BLOCKHASH_REUSE: std::time::Duration = std::time::Duration::from_secs(10);
+
+        if let Some((hash, fetched_at)) = *self.blockhash_cache.read().await {
+            if fetched_at.elapsed() < BLOCKHASH_REUSE {
+                return Ok(hash);
+            }
+        }
+
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -451,6 +496,7 @@ impl Rpc for SolanaRpc {
                         metrics.record_request("getLatestBlockhash", "success", timer.elapsed_secs());
                     }
 
+                    *self.blockhash_cache.write().await = Some((hash, std::time::Instant::now()));
                     return Ok(hash);
                 }
                 Ok(Err(e)) => {
@@ -841,7 +887,7 @@ impl Rpc for SolanaRpc {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.send_and_confirm_transaction(&transaction),
+                    send_and_poll(&client, &transaction, self.config.commitment),
                 )
                 .await
             };
