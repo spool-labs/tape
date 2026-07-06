@@ -285,17 +285,21 @@ where
 
     let store_stage = async move {
         let mut in_flight = FuturesOrdered::new();
-        let mut registering = true;
-        while registering || !in_flight.is_empty() {
+        let mut is_registering = true;
+        while is_registering || !in_flight.is_empty() {
             tokio::select! {
+                // Safe: recv is cancellation-safe and a chunk only leaves the
+                // channel when this branch completes.
                 registered = registered_receiver.recv(),
-                    if registering && in_flight.len() < STORE_CONCURRENCY =>
+                    if is_registering && in_flight.len() < STORE_CONCURRENCY =>
                 {
                     match registered {
                         Some(registered) => in_flight.push_back(store_chunk(client, registered)),
-                        None => registering = false,
+                        None => is_registering = false,
                     }
                 }
+                // Safe: FuturesOrdered::next only removes a future once it
+                // completes; a cancelled poll leaves every upload in place.
                 stored = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(stored) = stored else { continue };
                     if stored_sender.send(stored?).await.is_err() {

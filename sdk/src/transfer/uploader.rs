@@ -145,7 +145,7 @@ impl DistributedUploader {
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
         for (node, spools) in node_groups {
             let track = self.track;
-            let permit = self.concurrency_limit.clone();
+            let concurrency_limit = self.concurrency_limit.clone();
             let quorum_reached = quorum_reached.clone();
             let peer_client = peer_client.clone();
             let result_sender = result_sender.clone();
@@ -156,6 +156,10 @@ impl DistributedUploader {
                 .filter_map(|spool| slice_map.get(spool).map(|s| (*spool, (*s).clone())))
                 .collect();
 
+            // Deliberately unjoined: once quorum returns this call, straggler
+            // tasks finish on their own and anything they fail to land is
+            // repaired by the recovery worker. The send fails harmlessly after
+            // the receiver is dropped at quorum.
             tokio::spawn(async move {
                 let result = upload_node_slices(
                     peer_client.as_ref(),
@@ -163,7 +167,7 @@ impl DistributedUploader {
                     track,
                     slices,
                     quorum_reached.as_ref(),
-                    permit,
+                    concurrency_limit,
                 )
                 .await;
                 let _ = result_sender.send(result);
@@ -254,9 +258,12 @@ async fn upload_node_slices<P: Api>(
     track: Address,
     slices: Vec<(SpoolIndex, SliceWithProof)>,
     quorum_reached: &AtomicBool,
-    permit: Arc<Semaphore>,
+    concurrency_limit: Arc<Semaphore>,
 ) -> Result<NodeUploadResult, UploadError> {
-    let _permit = permit.acquire().await.map_err(|_| UploadError::Semaphore)?;
+    let _permit = concurrency_limit
+        .acquire()
+        .await
+        .map_err(|_| UploadError::Semaphore)?;
 
     let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
         let payload = slice.to_payload();
