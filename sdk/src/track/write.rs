@@ -547,7 +547,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
         .chunks(chunks);
 
     let result = uploader
-        .upload_all(client.api.as_ref())
+        .upload_all(client.api.clone())
         .await
         .map_err(TapedriveError::Upload);
 
