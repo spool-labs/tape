@@ -40,7 +40,6 @@ serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
 dirs = { workspace = true }
 axum = { workspace = true }
-futures = { workspace = true }
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = "0.23"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }

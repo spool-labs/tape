@@ -1,25 +1,23 @@
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use futures::StreamExt;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use rpc::Rpc;
 use store::Store;
-use tape_blocks::ParsedInstruction;
+use tape_blocks::{parse_and_merge_with_sources, ParsedInstruction};
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
+use tape_retry::{RetryConfig, retry_if};
 
 use crate::core::channels::{DownstreamSenders, send_block};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
-use crate::features::block::fetch::{
-    FETCH_PIPELINE_DEPTH, fetch_and_parse_block, fetch_blocks_ordered,
-};
 use crate::features::block::pending_blocks::{AppendOutcome, PendingBlocks};
 
 const TIP_POLL_MS: u64 = 400;
@@ -33,6 +31,33 @@ pub struct ParsedBlock {
     pub block_time: Option<i64>,
     pub instructions: Vec<ParsedInstruction>,
     pub instruction_tx_ids: Vec<Txid>,
+}
+
+fn parse_chain_hash(slot: SlotNumber, label: &str, encoded: &str) -> Result<Hash, NodeError> {
+    Hash::from_str(encoded).map_err(|err| {
+        error!(
+            slot = slot.0,
+            label,
+            encoded,
+            error = %err,
+            "block_ingestor: chain hash parse failed"
+        );
+        NodeError::BlockMalformed {
+            slot: slot.0,
+            reason: format!("{label}: {err}"),
+        }
+    })
+}
+
+enum IngestStep {
+    Continue,
+    Wait,
+}
+
+enum FetchOutcome {
+    Block(Arc<ParsedBlock>),
+    PastTip,
+    Skipped,
 }
 
 pub struct BlockIngestor<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -72,91 +97,33 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => return Ok(()),
-                result = self.ingest_step(next_slot) => {
-                    next_slot = result?;
+                result = self.fetch_parse_and_dispatch(next_slot) => {
+                    match result? {
+                        IngestStep::Continue => next_slot.increment(),
+                        IngestStep::Wait => {}
+                    }
                 }
             }
         }
     }
 
-    /// Run one ingest step and return the next slot to fetch.
-    ///
-    /// A serial fetch cannot outpace slot production on high-latency RPC
-    /// links, which starves the promotion witness forever: the queue tail
-    /// never passes the finalized tip. Far behind the confirmed tip, catch up
-    /// by streaming the gap through a fetch pipeline and applying blocks in
-    /// slot order; near the tip, fall back to the serial path.
-    async fn ingest_step(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
-        let tip = match self.context.rpc.get_slot().await {
-            Ok(tip) => tip,
-            Err(error) => {
-                error!(
-                    error = %error,
-                    "block_ingestor: get_slot failed: {}",
-                    error
-                );
-                return Err(NodeError::from(error));
-            }
-        };
-
-        if tip.saturating_sub(next_slot.0) < FETCH_PIPELINE_DEPTH as u64 {
-            return self.fetch_parse_and_dispatch(next_slot, tip).await;
-        }
-
-        let end_slot = SlotNumber(tip);
-        let mut blocks = fetch_blocks_ordered(
-            self.context.clone(),
-            self.cancel.clone(),
-            next_slot.0..=end_slot.0,
-        );
-
-        // Promote as the stream advances so consumers make progress across a
-        // long gap instead of waiting for the full catch-up to drain.
-        let mut since_promote = 0usize;
-        while let Some((_, fetched)) = blocks.next().await {
-            if let Some(block) = fetched? {
-                self.enqueue(block);
-            }
-            since_promote += 1;
-            if since_promote >= FETCH_PIPELINE_DEPTH {
-                since_promote = 0;
-                self.refresh_finalized_tip().await?;
-                self.promote().await?;
-            }
-        }
-        drop(blocks);
-
-        self.refresh_finalized_tip().await?;
-        self.promote().await?;
-        Ok(end_slot.next())
-    }
-
-    /// Serial near-tip path: fetch one block at or below the confirmed tip,
-    /// promote, and return the next slot to fetch.
-    async fn fetch_parse_and_dispatch(
-        &mut self,
-        slot: SlotNumber,
-        tip: u64,
-    ) -> Result<SlotNumber, NodeError> {
+    async fn fetch_parse_and_dispatch(&mut self, slot: SlotNumber) -> Result<IngestStep, NodeError> {
         self.refresh_finalized_tip().await?;
 
-        // Ingest readiness is measured against finalized_tip, because
-        // promoted/durable consumers intentionally lag confirmed.
-        let next = if slot.0 > tip {
-            sleep(Duration::from_millis(TIP_POLL_MS)).await;
-            slot
+        let outcome = self.fetch_block(slot).await?;
+        let step = if matches!(outcome, FetchOutcome::PastTip) {
+            IngestStep::Wait
         } else {
-            let fetched =
-                fetch_and_parse_block(self.context.clone(), self.cancel.clone(), slot).await?;
-            if let Some(block) = fetched {
-                self.enqueue(block);
-            }
-            slot.next()
+            IngestStep::Continue
         };
+
+        if let FetchOutcome::Block(block) = outcome {
+            self.enqueue(block);
+        }
 
         self.promote().await?;
 
-        Ok(next)
+        Ok(step)
     }
 
     async fn refresh_finalized_tip(&mut self) -> Result<(), NodeError> {
@@ -174,6 +141,109 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         self.finalized_tip = SlotNumber(tip);
         self.context.ingest.progress().record_tip(tip);
         Ok(())
+    }
+
+    async fn fetch_block(&self, slot: SlotNumber) -> Result<FetchOutcome, NodeError> {
+        let progress = self.context.ingest.progress();
+        progress.record_attempt();
+
+        let tip = match self.context.rpc.get_slot().await {
+            Ok(tip) => tip,
+            Err(error) => {
+                error!(
+                    slot = slot.0,
+                    error = %error,
+                    "block_ingestor: get_slot failed: {}",
+                    error
+                );
+                return Err(NodeError::from(error));
+            }
+        };
+
+        // This is the confirmed fetch tip, used only to avoid asking for
+        // future blocks. Ingest readiness is measured against finalized_tip,
+        // because promoted/durable consumers intentionally lag confirmed.
+        if slot.0 > tip {
+            sleep(Duration::from_millis(TIP_POLL_MS)).await;
+            return Ok(FetchOutcome::PastTip);
+        }
+
+        let context = self.context.clone();
+        let attempt_progress = progress.clone();
+
+        let block = retry_if(
+            RetryConfig::infinite(),
+            Some(&self.cancel),
+            move || {
+                let context = context.clone();
+                let attempt_progress = attempt_progress.clone();
+                async move {
+                    attempt_progress.record_attempt();
+                    context.rpc.get_block(slot.0).await
+                }
+            },
+            |error| error.is_retriable() && !error.is_skipped_slot(),
+        )
+        .await;
+
+        let block = match block {
+            Ok(block) => block,
+            Err(error) if error.is_skipped_slot() => {
+                debug!(slot = slot.0, "slot skipped");
+                return Ok(FetchOutcome::Skipped);
+            }
+            Err(error) => {
+                error!(
+                    slot = slot.0,
+                    error = %error,
+                    "block_ingestor: get_block failed: {}",
+                    error
+                );
+                return Err(NodeError::from(error));
+            }
+        };
+
+        let parent_slot = SlotNumber(block.parent_slot);
+        let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
+        let previous_blockhash =
+            parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
+
+        let sourced = match parse_and_merge_with_sources(&block) {
+            Ok(instructions) => instructions,
+            Err(error) => {
+                error!(
+                    slot = slot.0,
+                    error = %error,
+                    "block_ingestor: parse_and_merge_with_sources failed: {}",
+                    error
+                );
+                return Err(NodeError::from(error));
+            }
+        };
+        let mut instructions = Vec::with_capacity(sourced.len());
+        let mut instruction_tx_ids = Vec::with_capacity(sourced.len());
+        for sourced in sourced {
+            instruction_tx_ids.push(sourced.tx_id);
+            instructions.push(sourced.instruction);
+        }
+
+        let parsed = Arc::new(ParsedBlock {
+            slot,
+            parent_slot,
+            blockhash,
+            previous_blockhash,
+            block_time: block.block_time,
+            instructions,
+            instruction_tx_ids,
+        });
+
+        debug!(
+            slot = parsed.slot.0,
+            extracted = parsed.instructions.len(),
+            "parsed block"
+        );
+
+        Ok(FetchOutcome::Block(parsed))
     }
 
     /// Append `block` to the pending queue, applying its track events to
@@ -397,9 +467,8 @@ mod tests {
 
         // First fetch: queues the join block but cannot promote yet because
         // the ingestor has not seen a later confirmed block.
-        let tip = ctx.rpc.get_slot().await.expect("get tip");
         ingestor
-            .fetch_parse_and_dispatch(join_slot, tip)
+            .fetch_parse_and_dispatch(join_slot)
             .await
             .expect("dispatch join slot");
         assert!(
@@ -411,7 +480,7 @@ mod tests {
 
         // Second fetch: queues the later block, which lets the join block promote.
         ingestor
-            .fetch_parse_and_dispatch(later_slot, tip)
+            .fetch_parse_and_dispatch(later_slot)
             .await
             .expect("dispatch later confirmed slot");
 

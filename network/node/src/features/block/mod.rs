@@ -1,4 +1,3 @@
-pub mod fetch;
 pub mod ingest_monitor;
 pub mod ingestor;
 pub mod pending_blocks;

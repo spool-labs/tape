@@ -8661,7 +8661,6 @@ dependencies = [
  "bytemuck",
  "clap",
  "dirs",
- "futures",
  "hex",
  "hyper",
  "lz4_flex",
