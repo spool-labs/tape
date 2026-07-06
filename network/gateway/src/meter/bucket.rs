@@ -113,12 +113,18 @@ impl GatewayMeter {
             bucket.last_refill = now;
         }
 
-        if bucket.tokens >= cost {
+        // A request larger than the burst cap is admitted on a full bucket
+        // and runs it into debt; the caller is then blocked until the
+        // deficit refills. Requiring tokens >= cost would make any object
+        // larger than the burst permanently unfetchable.
+        if bucket.tokens >= cost.min(burst) {
             bucket.tokens -= cost;
             return GatewayMeterDecision::Allowed;
         }
 
-        let retry_after = Duration::from_secs(self.config.over_budget_penalty_secs);
+        let deficit_secs = (-bucket.tokens / refill_per_sec).ceil() as u64;
+        let retry_after =
+            Duration::from_secs(deficit_secs.max(self.config.over_budget_penalty_secs));
         bucket.blocked_until = Some(now + retry_after);
         GatewayMeterDecision::RateLimited { retry_after }
     }
@@ -199,5 +205,23 @@ mod tests {
             meter.check_object_bytes(second, 6),
             GatewayMeterDecision::Allowed
         );
+    }
+
+    // An object larger than the byte burst must serve once and then block
+    // the caller while the debt refills, not stay unfetchable forever.
+    #[test]
+    fn oversized_object_runs_bucket_into_debt() {
+        let meter = test_meter();
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        assert_eq!(
+            meter.check_object_bytes(ip, 100),
+            GatewayMeterDecision::Allowed
+        );
+        let GatewayMeterDecision::RateLimited { retry_after } = meter.check_object_bytes(ip, 1)
+        else {
+            panic!("expected debt to rate limit the next read");
+        };
+        assert!(retry_after >= Duration::from_secs(9));
     }
 }
