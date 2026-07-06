@@ -35,7 +35,7 @@ members = [
   "lib/retry",
   "e2e/simnet",
   "e2e/devnet",
-  "e2e/testnet",
+  "e2e/localnet",
   "tools/tape-admin",
   "tools/tape-grind",
   "tools/tape-loadgen",

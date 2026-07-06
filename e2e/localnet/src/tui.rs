@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use tape_core::erasure::GROUP_SIZE;
 
-use crate::view::{NodeView, TestnetView, UploadView};
+use crate::view::{NodeView, LocalnetView, UploadView};
 
 const GROUP_COLS: usize = 7;
 const GROUP_ROWS: usize = 3;
@@ -31,7 +31,7 @@ pub enum Command {
 }
 
 pub fn run_tui(
-    snapshot: Arc<ArcSwap<TestnetView>>,
+    snapshot: Arc<ArcSwap<LocalnetView>>,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<Command>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -106,7 +106,7 @@ impl Drop for TerminalDropGuard {
     }
 }
 
-fn render_frame(frame: &mut Frame<'_>, view: &TestnetView, disconnected: bool) {
+fn render_frame(frame: &mut Frame<'_>, view: &LocalnetView, disconnected: bool) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(0, 0, 0))),
@@ -142,7 +142,7 @@ fn render_frame(frame: &mut Frame<'_>, view: &TestnetView, disconnected: bool) {
     render_help_bar(frame, chunks[3], view, disconnected);
 }
 
-fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
+fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     let healthy_nodes = view.nodes.iter().filter(|node| node.healthy).count();
     let metrics_nodes = view
         .nodes
@@ -164,7 +164,7 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
     };
 
     let left = format!(
-        " TESTNET  Nodes:{}  Healthy:{}  Metrics:{}  Groups:{}  C[{}/{}/{}]  {}",
+        " LOCALNET  Nodes:{}  Healthy:{}  Metrics:{}  Groups:{}  C[{}/{}/{}]  {}",
         view.nodes.len(),
         healthy_nodes,
         metrics_nodes,
@@ -190,7 +190,7 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
+fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -276,7 +276,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
     frame.render_widget(Paragraph::new(lines), pad_left(inner));
 }
 
-fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
+fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -377,7 +377,7 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
     frame.render_widget(table, inner);
 }
 
-fn render_help_bar(frame: &mut Frame<'_>, area: Rect, view: &TestnetView, disconnected: bool) {
+fn render_help_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView, disconnected: bool) {
     let status = if disconnected { "disconnected" } else { "ready" };
     let mut spans = vec![
         Span::styled(" a ", Style::default().fg(Color::Green)),
@@ -410,7 +410,7 @@ fn render_help_bar(frame: &mut Frame<'_>, area: Rect, view: &TestnetView, discon
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_upload_table(frame: &mut Frame<'_>, area: Rect, view: &TestnetView) {
+fn render_upload_table(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))

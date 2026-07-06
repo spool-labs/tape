@@ -17,23 +17,6 @@ pub type KeyValue = (Vec<u8>, Vec<u8>);
 /// Boxed iterator type for store operations
 pub type StoreIter<'a> = Box<dyn Iterator<Item = KeyValue> + 'a>;
 
-/// Role of a physical storage volume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoreVolume {
-    /// The metadata/index volume, or the whole store when not split.
-    Primary,
-    /// The bulk volume for large payloads.
-    Bulk,
-}
-
-/// Best-effort disk usage for one physical storage volume.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiskVolume {
-    pub volume: StoreVolume,
-    pub used_bytes: u64,
-    pub free_bytes: Option<u64>,
-}
-
 /// Trait for key-value storage with column family support
 ///
 /// All implementations must be thread-safe (Send + Sync).
@@ -52,9 +35,6 @@ pub trait Store: Send + Sync {
     fn contains(&self, cf: &str, key: &[u8]) -> Result<bool>;
 
     /// Apply a batch of write operations atomically.
-    ///
-    /// Atomicity holds only within a single backend. A backend split across
-    /// independent instances may write a cross-instance batch non-atomically.
     fn write_batch(&self, batch: WriteBatch) -> Result<()>;
 
     /// Delete every key in the range `[start, end)` from the column family.
@@ -112,17 +92,5 @@ pub trait Store: Send + Sync {
     /// backend space. Backends that do not support reclamation should no-op.
     fn reclaim_space(&self) -> Result<()> {
         Ok(())
-    }
-
-    /// Best-effort disk usage per physical volume.
-    ///
-    /// Backends split across devices report one entry per volume. The default
-    /// is a single primary volume covering the whole store.
-    fn disk_volumes(&self) -> Result<Vec<DiskVolume>> {
-        Ok(vec![DiskVolume {
-            volume: StoreVolume::Primary,
-            used_bytes: self.actual_size_bytes()?,
-            free_bytes: self.available_disk_bytes()?,
-        }])
     }
 }

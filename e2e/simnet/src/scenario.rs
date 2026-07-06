@@ -68,7 +68,7 @@ impl<'a> SimnetScenario<'a> {
             .send_instructions_and_advance(
                 admin,
                 vec![
-                    build_create_system_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::local()),
+                    build_create_system_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::simnet()),
                     build_create_peer_set_ix(admin_pub.into()),
                 ],
                 slot_bump,
@@ -80,7 +80,7 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_create_archive_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::local())],
+                vec![build_create_archive_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::simnet())],
                 slot_bump,
             )
             .await
@@ -136,7 +136,7 @@ impl<'a> SimnetScenario<'a> {
         let ix = build_start_network_ix(
             admin_pub.into(),
             admin_pub.into(),
-            &GenesisConfig::local(),
+            &GenesisConfig::simnet(),
         );
 
         self.harness
@@ -184,7 +184,7 @@ impl<'a> SimnetScenario<'a> {
             network_tls,
             bls_pubkey,
             bls_pop,
-            NodePreferences::from(&GenesisConfig::local()),
+            NodePreferences::from(&GenesisConfig::simnet()),
         );
 
         self.harness
@@ -225,7 +225,7 @@ impl<'a> SimnetScenario<'a> {
             gateway.tls_pubkey(),
             bls_pubkey,
             bls_pop,
-            NodePreferences::from(&GenesisConfig::local()),
+            NodePreferences::from(&GenesisConfig::simnet()),
         );
 
         self.harness

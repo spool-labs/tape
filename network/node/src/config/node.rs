@@ -86,21 +86,24 @@ pub struct NodeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum GenesisPreset {
-    /// Mainnet profile (1-week epochs). Safe default.
+    /// Production profile (1-week epochs). Safe default.
     #[default]
-    Default,
-    /// Fast local profile (short epochs) for simnet/devnet.
-    Local,
-    /// Testnet profile (100s epochs).
-    Testnet,
+    Mainnet,
+    /// Deployed fleet on Solana devnet (1-hour epochs).
+    Devnet,
+    /// Local-validator e2e profile (100s epochs).
+    Localnet,
+    /// In-memory simnet profile (20s epochs).
+    Simnet,
 }
 
 impl GenesisPreset {
     pub fn config(self) -> GenesisConfig {
         match self {
-            GenesisPreset::Default => GenesisConfig::default(),
-            GenesisPreset::Local => GenesisConfig::local(),
-            GenesisPreset::Testnet => GenesisConfig::testnet(),
+            GenesisPreset::Mainnet => GenesisConfig::mainnet(),
+            GenesisPreset::Devnet => GenesisConfig::devnet(),
+            GenesisPreset::Localnet => GenesisConfig::localnet(),
+            GenesisPreset::Simnet => GenesisConfig::simnet(),
         }
     }
 }
