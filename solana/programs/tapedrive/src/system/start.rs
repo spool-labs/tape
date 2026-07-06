@@ -360,7 +360,7 @@ mod tests {
         let config = GenesisConfig {
             spool_groups: 50,
             subsidy_amount: TAPE(50),
-            ..GenesisConfig::local()
+            ..GenesisConfig::simnet()
         };
         let committee_size = config.committee_size;
         let peer_capacity = committee_size;
@@ -540,7 +540,7 @@ mod tests {
         let (mut staged_members, _, expected_peers) = genesis_committee();
         staged_members[0].stake = TAPE::zero();
 
-        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::local() };
+        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
         let committee_size = config.committee_size;
         let peer_capacity = committee_size;
 
@@ -633,7 +633,7 @@ mod tests {
         let (staged_members, _, expected_peers) = genesis_committee();
         let staged_members = &staged_members[..GROUP_SIZE - 1];
 
-        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::local() };
+        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
         let committee_size = config.committee_size;
         let peer_capacity = committee_size;
 
@@ -724,7 +724,7 @@ mod tests {
         let (staged_members, _, expected_peers) = genesis_committee();
         let expected_peers = &expected_peers[..GROUP_SIZE - 1];
 
-        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::local() };
+        let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
         let committee_size = config.committee_size;
         let peer_capacity = committee_size;
 

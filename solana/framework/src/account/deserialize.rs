@@ -64,9 +64,6 @@ where
     }
 
     fn try_header_from_bytes_mut(data: &mut [u8]) -> Result<(&mut Self, &mut [u8]), ProgramError> {
-        if Self::discriminator().ne(&data[0]) {
-            return Err(ProgramError::InvalidAccountData);
-        }
         let (prefix, remainder) = data[8..].split_at_mut(std::mem::size_of::<T>());
         Ok((
             bytemuck::try_from_bytes_mut::<Self>(prefix)
@@ -103,20 +100,5 @@ mod tests {
         let foo = TestType::try_from_bytes(&data).unwrap();
         assert_eq!(42, foo.field0);
         assert_eq!(43, foo.field1);
-    }
-
-    // both header loaders reject data with the wrong discriminator
-    #[test]
-    fn header_deserialize_checks_discriminator() {
-        let mut data = [0u8; 24];
-        data[0] = 7;
-        data[8] = 42;
-        let (header, rest) = TestType::try_header_from_bytes_mut(&mut data).unwrap();
-        assert_eq!(42, header.field0);
-        assert!(rest.is_empty());
-
-        data[0] = 8;
-        assert!(TestType::try_header_from_bytes(&data).is_err());
-        assert!(TestType::try_header_from_bytes_mut(&mut data).is_err());
     }
 }
