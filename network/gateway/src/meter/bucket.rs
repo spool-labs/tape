@@ -210,7 +210,7 @@ mod tests {
     // An object larger than the byte burst must serve once and then block
     // the caller while the debt refills, not stay unfetchable forever.
     #[test]
-    fn oversized_object_runs_bucket_into_debt() {
+    fn oversized_object() {
         let meter = test_meter();
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
