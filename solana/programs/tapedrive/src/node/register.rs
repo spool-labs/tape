@@ -155,7 +155,7 @@ mod tests {
         let bls_pubkey = secret.public_key().expect("pubkey");
         let bls_pop = secret.proof_of_possession().expect("pop");
 
-        let preferences = NodePreferences::from(&GenesisConfig::simnet());
+        let preferences = NodePreferences::from(&GenesisConfig::local());
 
         let instruction = build_register_node_ix(
             fee_payer.into(),
@@ -255,7 +255,7 @@ mod tests {
             NetworkTlsPubkey::new_unique(),
             bls_pubkey,
             bls_pop,
-            NodePreferences::from(&GenesisConfig::simnet()),
+            NodePreferences::from(&GenesisConfig::local()),
         );
 
         let (system_address, _) = system_pda();

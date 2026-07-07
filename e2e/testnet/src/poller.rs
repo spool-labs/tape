@@ -8,9 +8,9 @@ use tracing::warn;
 use crate::observer::Observer;
 use crate::orchestrator::Orchestrator;
 use crate::upload::UploadManager;
-use crate::view::LocalnetView;
+use crate::view::TestnetView;
 
-pub type SnapshotHandle = Arc<ArcSwap<LocalnetView>>;
+pub type SnapshotHandle = Arc<ArcSwap<TestnetView>>;
 
 pub async fn run(
     observer: Arc<Observer>,
@@ -29,7 +29,7 @@ pub async fn run(
                 view.uploads = upload_manager.snapshot();
                 snapshot.store(Arc::new(view));
             }
-            Err(error) => warn!(error = %error, "localnet snapshot refresh failed"),
+            Err(error) => warn!(error = %error, "testnet snapshot refresh failed"),
         }
 
         tokio::time::sleep(Duration::from_millis(500)).await;

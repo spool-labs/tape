@@ -18,12 +18,12 @@ const DEFAULT_UPLOAD_EPOCHS: u64 = 4;
 const DEFAULT_FILL_BYTE: u8 = 0xA5;
 
 #[derive(Parser, Debug)]
-#[command(name = "upload-file", about = "Upload a large file against the running localnet")]
+#[command(name = "upload-file", about = "Upload a large file against the running testnet")]
 struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:8899")]
     rpc_url: String,
 
-    #[arg(long, default_value = "target/localnet/admin.json")]
+    #[arg(long, default_value = "target/testnet/admin.json")]
     admin_keypair: PathBuf,
 
     #[arg(long, default_value_t = DEFAULT_FILE_SIZE_BYTES)]

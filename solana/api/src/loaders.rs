@@ -151,7 +151,7 @@ pub trait FromAccountSlice {
         len: usize,
     ) -> Result<&T, ProgramError>
     where
-        T: AccountDeserialize + Pod;
+        T: Discriminator + Pod;
 
     fn from_slice_mut<T>(
         &self,
@@ -160,7 +160,7 @@ pub trait FromAccountSlice {
         len: usize,
     ) -> Result<&mut T, ProgramError>
     where
-        T: AccountDeserialize + Pod;
+        T: Discriminator + Pod;
 
     fn from_slice_array<B>(
         &self,
@@ -190,17 +190,23 @@ impl FromAccountSlice for AccountInfo<'_> {
         len: usize,
     ) -> Result<&T, ProgramError>
     where
-        T: AccountDeserialize + Pod,
+        T: Discriminator + Pod,
     {
         unsafe {
             // Validate account owner.
             self.has_owner(program_id)?;
 
+            // Get account data
+            let data = self.try_borrow_data()?;
+
+            // Validate discriminator
+            if data.first() != Some(&T::discriminator()) {
+                return Err(ProgramError::InvalidAccountData);
+            }
+
             // Skip discriminator
             let offset = offset + 8;
 
-            // Get account data
-            let data = self.try_borrow_data()?;
             let slice = core::slice::from_raw_parts(
                 data.as_ptr().add(offset), len);
 
@@ -219,17 +225,23 @@ impl FromAccountSlice for AccountInfo<'_> {
         len: usize,
     ) -> Result<&mut T, ProgramError>
     where
-        T: AccountDeserialize + Pod,
+        T: Discriminator + Pod,
     {
         unsafe {
             // Validate account owner.
             self.has_owner(program_id)?;
 
+            // Get account data
+            let mut data = self.try_borrow_mut_data()?;
+
+            // Validate discriminator
+            if data.first() != Some(&T::discriminator()) {
+                return Err(ProgramError::InvalidAccountData);
+            }
+
             // Skip discriminator
             let offset = offset + 8;
 
-            // Get account data
-            let mut data = self.try_borrow_mut_data()?;
             let slice = core::slice::from_raw_parts_mut(
                 data.as_mut_ptr().add(offset), len);
 
