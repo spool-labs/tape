@@ -11,12 +11,12 @@ use tape_sdk::keys::helpers::load_solana_keypair;
 use tracing::info;
 
 use crate::chain::ChainManager;
-use crate::config::TestnetConfig;
+use crate::config::LocalnetConfig;
 use crate::observer::NodeRef;
 use crate::process::{ProcessSupervisor, RemoveNodeError, write_solana_keypair};
 
 pub struct Orchestrator {
-    config: TestnetConfig,
+    config: LocalnetConfig,
     chain: ChainManager,
     processes: ProcessSupervisor,
 }
@@ -28,16 +28,16 @@ struct NodeSetupContext {
 }
 
 impl Orchestrator {
-    pub fn new(config: TestnetConfig) -> Result<Self> {
+    pub fn new(config: LocalnetConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir)
-            .with_context(|| format!("create testnet data dir: {}", config.data_dir.display()))?;
+            .with_context(|| format!("create localnet data dir: {}", config.data_dir.display()))?;
 
         let admin_path = config.data_dir.join("admin.json");
         let (admin, created) = load_or_create_admin_keypair(&admin_path)?;
         if created {
-            info!(admin = %admin.pubkey(), path = %admin_path.display(), "created testnet admin keypair");
+            info!(admin = %admin.pubkey(), path = %admin_path.display(), "created localnet admin keypair");
         } else {
-            info!(admin = %admin.pubkey(), path = %admin_path.display(), "loaded testnet admin keypair");
+            info!(admin = %admin.pubkey(), path = %admin_path.display(), "loaded localnet admin keypair");
         }
 
         let chain = ChainManager::new(&config.rpc_url, admin).context("create chain manager")?;
@@ -50,9 +50,9 @@ impl Orchestrator {
         );
         let existing_nodes = processes
             .load_existing_nodes()
-            .context("load existing testnet nodes")?;
+            .context("load existing localnet nodes")?;
         if existing_nodes > 0 {
-            info!(count = existing_nodes, "loaded existing testnet node identities");
+            info!(count = existing_nodes, "loaded existing localnet node identities");
         }
 
         Ok(Self {
@@ -322,7 +322,7 @@ fn load_or_create_admin_keypair(path: &std::path::Path) -> Result<(Keypair, bool
     if path.exists() {
         return Ok((
             load_solana_keypair(path)
-                .with_context(|| format!("load testnet admin keypair: {}", path.display()))?,
+                .with_context(|| format!("load localnet admin keypair: {}", path.display()))?,
             false,
         ));
     }

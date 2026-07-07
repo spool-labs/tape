@@ -118,7 +118,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_system",
-            vec![build_create_system_ix(admin_address, admin_address, &GenesisConfig::testnet())],
+            vec![build_create_system_ix(admin_address, admin_address, &GenesisConfig::localnet())],
         )
         .await?;
 
@@ -130,7 +130,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_archive",
-            vec![build_create_archive_ix(admin_address, admin_address, &GenesisConfig::testnet())],
+            vec![build_create_archive_ix(admin_address, admin_address, &GenesisConfig::localnet())],
         )
         .await?;
 
@@ -324,7 +324,7 @@ impl ChainManager {
 
         let config = GenesisConfig {
             spool_groups,
-            ..GenesisConfig::testnet()
+            ..GenesisConfig::localnet()
         };
         let ix = build_start_network_ix(
             self.admin.pubkey().into(),

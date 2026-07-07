@@ -1,5 +1,5 @@
 [package]
-name = "tape-e2e-testnet"
+name = "tape-e2e-localnet"
 version.workspace = true
 edition.workspace = true
 
@@ -7,8 +7,8 @@ edition.workspace = true
 doctest = false
 
 [[bin]]
-name = "testnet"
-path = "src/bin/testnet/main.rs"
+name = "localnet"
+path = "src/bin/localnet/main.rs"
 
 [[bin]]
 name = "upload-file"

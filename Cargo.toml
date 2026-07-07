@@ -35,13 +35,14 @@ members = [
   "lib/retry",
   "e2e/simnet",
   "e2e/devnet",
-  "e2e/testnet",
+  "e2e/localnet",
   "tools/tape-admin",
   "tools/tape-grind",
   "tools/tape-loadgen",
   "tools/tape-network",
   "tools/tape",
   "tools/tape-cli-common",
+  "tools/tape-store-cli",
 ]
 
 # Programs and test crates excluded from default cargo build/check:
@@ -77,6 +78,7 @@ default-members = [
   "tools/tape-network",
   "tools/tape",
   "tools/tape-cli-common",
+  "tools/tape-store-cli",
 ]
 
 [workspace.package]

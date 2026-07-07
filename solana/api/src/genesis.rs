@@ -26,23 +26,32 @@ pub struct GenesisConfig {
 }
 
 impl GenesisConfig {
+    /// Production profile: 1-week epochs.
     #[inline(always)]
-    pub const fn default() -> Self {
-        DEFAULT
+    pub const fn mainnet() -> Self {
+        MAINNET
     }
 
+    /// Deployed fleet on Solana devnet: 1-hour epochs.
     #[inline(always)]
-    pub const fn local() -> Self {
-        LOCAL
+    pub const fn devnet() -> Self {
+        DEVNET
     }
 
+    /// Local-validator e2e harness: 100-second epochs.
     #[inline(always)]
-    pub const fn testnet() -> Self {
-        TESTNET
+    pub const fn localnet() -> Self {
+        LOCALNET
+    }
+
+    /// In-memory simnet harness: 20-second epochs.
+    #[inline(always)]
+    pub const fn simnet() -> Self {
+        SIMNET
     }
 }
 
-const DEFAULT: GenesisConfig = GenesisConfig {
+const MAINNET: GenesisConfig = GenesisConfig {
     committee_size: GROUP_SIZE as u64,
     spool_groups: 1,
     min_version: VersionId(0),
@@ -56,20 +65,25 @@ const DEFAULT: GenesisConfig = GenesisConfig {
     subsidy_amount: TAPE(0),
 };
 
-const TESTNET: GenesisConfig = GenesisConfig {
+const DEVNET: GenesisConfig = GenesisConfig {
+    epoch_duration: EpochDuration(3_600),          // 1 hour
+    ..LOCALNET
+};
+
+const LOCALNET: GenesisConfig = GenesisConfig {
     min_epoch_duration: EpochDuration(60),         // 60 seconds
     max_epoch_duration: EpochDuration(1_209_600),  // 2 weeks
     epoch_duration: EpochDuration(100),            // 100 seconds
     spool_groups: 10,
     subsidy_amount: TAPE(50_000 * ONE_TAPE),       // 50000 TAPE
-    ..DEFAULT
+    ..MAINNET
 };
 
-const LOCAL: GenesisConfig = GenesisConfig {
+const SIMNET: GenesisConfig = GenesisConfig {
     min_epoch_duration: EpochDuration(10),         // 10 seconds
     max_epoch_duration: EpochDuration(200),        // 200 seconds
     epoch_duration: EpochDuration(20),             // 20 seconds
-    ..DEFAULT
+    ..MAINNET
 };
 
 impl From<&GenesisConfig> for NodePreferences {

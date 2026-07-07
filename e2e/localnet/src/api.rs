@@ -14,13 +14,13 @@ use tower_http::cors::CorsLayer;
 use crate::orchestrator::Orchestrator;
 use crate::process::RemoveNodeError;
 use crate::upload::UploadManager;
-use crate::view::TestnetView;
+use crate::view::LocalnetView;
 
 #[derive(Clone)]
 pub struct AppState {
     pub orchestrator: Arc<Mutex<Orchestrator>>,
     pub upload_manager: Arc<UploadManager>,
-    pub snapshot: Arc<ArcSwap<TestnetView>>,
+    pub snapshot: Arc<ArcSwap<LocalnetView>>,
 }
 
 pub fn router(state: AppState) -> Router {

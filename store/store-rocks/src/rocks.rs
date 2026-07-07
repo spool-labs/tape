@@ -9,7 +9,9 @@ use rocksdb::{
     WriteBatch as RocksWriteBatch,
 };
 
-use store::{BatchOp, Direction, Error, Result, Store, StoreIter, WriteBatch};
+use store::{
+    BatchOp, CfDiskUsage, Direction, Error, Result, Store, StoreIter, StoreVolume, WriteBatch,
+};
 
 #[cfg(feature = "metrics")]
 use store::get_metrics;
@@ -808,6 +810,31 @@ impl Store for RocksStore {
         available_space(&self.path)
             .map(Some)
             .map_err(Error::Io)
+    }
+
+    fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
+        let mut usage = Vec::with_capacity(self.column_families.len());
+        for cf in self.column_families.iter().map(String::as_str) {
+            let Some(handle) = self.db.cf_handle(cf) else {
+                continue;
+            };
+            let read = |property: &str| {
+                self.db
+                    .property_int_value_cf(&handle, property)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0)
+            };
+            usage.push(CfDiskUsage {
+                cf: cf.to_string(),
+                // A single instance is one volume; the split store overrides this per half.
+                volume: StoreVolume::Primary,
+                sst_bytes: read("rocksdb.total-sst-files-size"),
+                blob_bytes: read("rocksdb.total-blob-file-size"),
+                num_keys: read("rocksdb.estimate-num-keys"),
+            });
+        }
+        Ok(usage)
     }
 
     fn reclaim_space(&self) -> Result<()> {

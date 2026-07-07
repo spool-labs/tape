@@ -77,7 +77,7 @@ impl ProcessSupervisor {
         }
 
         let mut node_dirs = std::fs::read_dir(&self.data_root)
-            .with_context(|| format!("read testnet data dir: {}", self.data_root.display()))?
+            .with_context(|| format!("read localnet data dir: {}", self.data_root.display()))?
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
                 let file_type = entry.file_type().ok()?;
@@ -393,12 +393,12 @@ fn build_node_yaml(
 ) -> String {
     format!(
         r#"node:
-  name: "testnet-node-{id}"
+  name: "localnet-node-{id}"
   node_keypair: "{keypair}"
   bls_keypair: "{bls}"
   commission: 4500
 
-genesis_preset: testnet
+genesis_preset: localnet
 
 solana:
   rpc: "{rpc_url}"
