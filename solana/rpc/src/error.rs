@@ -140,7 +140,9 @@ fn is_retriable_message(msg: &str) -> bool {
         || msg.contains("network")
         || msg.contains("reset by peer")
         || msg.contains("error sending request")
+        || msg.contains("bad gateway")
         || msg.contains("429")
+        || msg.contains("502")
         || msg.contains("503")
         || msg.contains("504")
 }
@@ -153,6 +155,8 @@ fn is_endpoint_error_message(msg: &str) -> bool {
         || msg.contains("too many requests")
         || msg.contains("rate limit")
         || msg.contains("connection")
+        || msg.contains("bad gateway")
+        || msg.contains("502")
         || msg.contains("503")
         || msg.contains("504")
         || msg.contains("429")
@@ -223,6 +227,16 @@ mod tests {
         assert!(
             RpcError::Request("request timed out".into()).is_retriable(),
             "timed out variant must be retriable"
+        );
+        let nginx_502 =
+            "HTTP status server error (502 Bad Gateway) for url (http://cache:8899/)";
+        assert!(
+            RpcError::Request(nginx_502.into()).is_retriable(),
+            "502 must be retriable"
+        );
+        assert!(
+            RpcError::Request(nginx_502.into()).should_failover(),
+            "502 must fail over"
         );
         assert!(
             RpcError::Request("compute budget exceeded".into()).is_retriable(),

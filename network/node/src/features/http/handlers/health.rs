@@ -6,26 +6,13 @@ use axum::Json;
 use tracing::debug;
 
 use rpc::Rpc;
-use store::{DiskVolume, Store, StoreVolume};
-use tape_protocol::{Api, api::{NodeStats, VolumeStats}};
+use store::Store;
+use tape_protocol::{Api, api::NodeStats};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
 use crate::core::bootstrap::BootstrapSnapshot;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
-
-/// Map a backend disk volume to its wire representation.
-fn volume_stats(volume: DiskVolume) -> VolumeStats {
-    let name = match volume.volume {
-        StoreVolume::Primary => "primary",
-        StoreVolume::Bulk => "bulk",
-    };
-    VolumeStats {
-        name: name.to_string(),
-        store_disk_bytes: volume.used_bytes,
-        free_disk_bytes: volume.free_bytes,
-    }
-}
 
 #[derive(Debug, serde::Serialize)]
 pub struct HealthResponse {
@@ -143,14 +130,6 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .available_disk_bytes()
         .map_err(store_error)?;
-    let disk_volumes = store
-        .inner()
-        .inner()
-        .disk_volumes()
-        .map_err(store_error)?
-        .into_iter()
-        .map(volume_stats)
-        .collect();
 
     let stats = NodeStats {
         last_processed_slot,
@@ -164,7 +143,6 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         slice_payload_bytes,
         store_disk_bytes,
         free_disk_bytes,
-        disk_volumes,
         reclaim_pending: state.context.is_reclaim_pending(),
         slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,
@@ -173,6 +151,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ingest_state,
         ingest_lag_slots,
         ingest_tip_slot,
+        ingest_fetch_slot: ingest_progress.last_fetch_slot(),
+        ingest_queue_len: ingest_progress.queue_len(),
         bootstrap_done: state.context.bootstrap.is_ready(),
         bootstrap_phase: bootstrap.phase.label().to_string(),
         bootstrap_current_slot: bootstrap.current_slot,

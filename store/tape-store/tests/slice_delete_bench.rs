@@ -26,7 +26,7 @@ const CASES: &[(usize, usize)] = &[
     (16 * 1024, 50_000),
 ];
 
-fn populate(store: &TapeStore<store_rocks::SplitStore>, spool: SpoolIndex, count: usize, size: usize) {
+fn populate(store: &TapeStore<store_rocks::RocksStore>, spool: SpoolIndex, count: usize, size: usize) {
     for _ in 0..count {
         store
             .put_slice(spool, Address::new_unique(), vec![0xAB; size])

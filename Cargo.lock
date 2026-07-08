@@ -8858,21 +8858,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-store-cli"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "serde",
- "serde_json",
- "store",
- "store-rocks",
- "tape-core",
- "tape-crypto",
- "tape-store",
-]
-
-[[package]]
 name = "tape-test"
 version = "0.3.0"
 dependencies = [

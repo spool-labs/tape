@@ -17,45 +17,6 @@ pub type KeyValue = (Vec<u8>, Vec<u8>);
 /// Boxed iterator type for store operations
 pub type StoreIter<'a> = Box<dyn Iterator<Item = KeyValue> + 'a>;
 
-/// Role of a physical storage volume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoreVolume {
-    /// The metadata/index volume, or the whole store when not split.
-    Primary,
-    /// The bulk volume for large payloads.
-    Bulk,
-}
-
-/// Best-effort disk usage for one physical storage volume.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiskVolume {
-    pub volume: StoreVolume,
-    pub used_bytes: u64,
-    pub free_bytes: Option<u64>,
-}
-
-/// Best-effort on-disk usage for one column family, tagged with its volume.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CfDiskUsage {
-    /// Column family name.
-    pub cf: String,
-    /// Physical volume the column lives on.
-    pub volume: StoreVolume,
-    /// Bytes held in SST files.
-    pub sst_bytes: u64,
-    /// Bytes held in blob files, zero for columns that store values inline.
-    pub blob_bytes: u64,
-    /// Estimated live key count.
-    pub num_keys: u64,
-}
-
-impl CfDiskUsage {
-    /// Total on-disk bytes for the column family (SST plus blob files).
-    pub fn total_bytes(&self) -> u64 {
-        self.sst_bytes.saturating_add(self.blob_bytes)
-    }
-}
-
 /// Trait for key-value storage with column family support
 ///
 /// All implementations must be thread-safe (Send + Sync).
@@ -74,9 +35,6 @@ pub trait Store: Send + Sync {
     fn contains(&self, cf: &str, key: &[u8]) -> Result<bool>;
 
     /// Apply a batch of write operations atomically.
-    ///
-    /// Atomicity holds only within a single backend. A backend split across
-    /// independent instances may write a cross-instance batch non-atomically.
     fn write_batch(&self, batch: WriteBatch) -> Result<()>;
 
     /// Delete every key in the range `[start, end)` from the column family.
@@ -128,32 +86,11 @@ pub trait Store: Send + Sync {
         Ok(None)
     }
 
-    /// Best-effort on-disk usage per column family.
-    ///
-    /// Persistent backends report SST and blob-file bytes and an estimated key
-    /// count for each column family, tagged with its volume. Backends that
-    /// cannot introspect cheaply return an empty vec.
-    fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
-        Ok(Vec::new())
-    }
-
     /// Best-effort background space reclamation.
     ///
     /// Persistent stores can use this to compact tombstoned data and release
     /// backend space. Backends that do not support reclamation should no-op.
     fn reclaim_space(&self) -> Result<()> {
         Ok(())
-    }
-
-    /// Best-effort disk usage per physical volume.
-    ///
-    /// Backends split across devices report one entry per volume. The default
-    /// is a single primary volume covering the whole store.
-    fn disk_volumes(&self) -> Result<Vec<DiskVolume>> {
-        Ok(vec![DiskVolume {
-            volume: StoreVolume::Primary,
-            used_bytes: self.actual_size_bytes()?,
-            free_bytes: self.available_disk_bytes()?,
-        }])
     }
 }

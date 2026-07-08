@@ -42,7 +42,6 @@ members = [
   "tools/tape-network",
   "tools/tape",
   "tools/tape-cli-common",
-  "tools/tape-store-cli",
 ]
 
 # Programs and test crates excluded from default cargo build/check:
@@ -78,7 +77,6 @@ default-members = [
   "tools/tape-network",
   "tools/tape",
   "tools/tape-cli-common",
-  "tools/tape-store-cli",
 ]
 
 [workspace.package]

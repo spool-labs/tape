@@ -71,7 +71,7 @@ where
             let context = fetch_context.clone();
             let attempt_progress = attempt_progress.clone();
             async move {
-                attempt_progress.record_attempt();
+                attempt_progress.record_fetch(slot.0);
                 context.rpc.get_block(slot.0).await
             }
         },

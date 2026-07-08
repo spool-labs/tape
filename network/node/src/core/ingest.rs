@@ -46,6 +46,8 @@ pub struct IngestProgress {
     last_attempt_ms: AtomicU64,
     last_dispatched_slot: AtomicU64,
     last_known_tip: AtomicU64,
+    last_fetch_slot: AtomicU64,
+    queue_len: AtomicU64,
     started: Instant,
 }
 
@@ -55,6 +57,8 @@ impl IngestProgress {
             last_attempt_ms: AtomicU64::new(u64::MAX),
             last_dispatched_slot: AtomicU64::new(0),
             last_known_tip: AtomicU64::new(u64::MAX),
+            last_fetch_slot: AtomicU64::new(0),
+            queue_len: AtomicU64::new(0),
             started: Instant::now(),
         }
     }
@@ -62,6 +66,17 @@ impl IngestProgress {
     pub fn record_attempt(&self) {
         self.last_attempt_ms
             .store(self.elapsed_ms(), Ordering::Relaxed);
+    }
+
+    /// Record a block fetch attempt at `slot`. Keeps the fetch cursor
+    /// observable while promotion still holds dispatch back.
+    pub fn record_fetch(&self, slot: u64) {
+        self.last_fetch_slot.store(slot, Ordering::Relaxed);
+        self.record_attempt();
+    }
+
+    pub fn record_queue_len(&self, len: u64) {
+        self.queue_len.store(len, Ordering::Relaxed);
     }
 
     pub fn record_tip(&self, tip: u64) {
@@ -84,6 +99,14 @@ impl IngestProgress {
 
     pub fn last_known_tip(&self) -> u64 {
         self.last_known_tip.load(Ordering::Relaxed)
+    }
+
+    pub fn last_fetch_slot(&self) -> u64 {
+        self.last_fetch_slot.load(Ordering::Relaxed)
+    }
+
+    pub fn queue_len(&self) -> u64 {
+        self.queue_len.load(Ordering::Relaxed)
     }
 
     pub fn now_ms(&self) -> u64 {

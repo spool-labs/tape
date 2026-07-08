@@ -79,13 +79,16 @@ fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Query part carries the RPC api key; never log it.
+    let rpc_display = config.solana.rpc.split('?').next().unwrap_or("");
+
     if let Some(host) = &config.network.host {
         info!(
             node_name = %config.node.name,
             listen = %config.http.listen,
             host = %host,
             port = config.network.port,
-            rpc = %config.solana.rpc,
+            rpc = rpc_display,
             boot_marker = BOOT_MARKER,
             "starting node"
         );
@@ -93,7 +96,7 @@ fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
         info!(
             node_name = %config.node.name,
             listen = %config.http.listen,
-            rpc = %config.solana.rpc,
+            rpc = rpc_display,
             boot_marker = BOOT_MARKER,
             "starting node"
         );

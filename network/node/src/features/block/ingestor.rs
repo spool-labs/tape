@@ -1,9 +1,9 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use futures::StreamExt;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use rpc::Rpc;
 use store::Store;
@@ -23,6 +23,10 @@ use crate::features::block::fetch::{
 use crate::features::block::pending_blocks::{AppendOutcome, PendingBlocks};
 
 const TIP_POLL_MS: u64 = 400;
+
+/// Minimum interval between INFO-level dispatch summaries. Per-block
+/// dispatch logging is debug-level; at catch-up rates it would flood.
+const DISPATCH_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Default)]
 pub struct ParsedBlock {
@@ -44,6 +48,8 @@ pub struct BlockIngestor<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// Most recently observed finalized slot. Refreshed on every iteration
     /// and consulted by the queue promotion check.
     finalized_tip: SlotNumber,
+    dispatch_log_at: Instant,
+    dispatch_log_count: u64,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc>
@@ -62,6 +68,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             cancel,
             queue: PendingBlocks::new(),
             finalized_tip: SlotNumber(0),
+            dispatch_log_at: Instant::now(),
+            dispatch_log_count: 0,
         }
     }
 
@@ -82,10 +90,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     /// Run one ingest step and return the next slot to fetch.
     ///
     /// A serial fetch cannot outpace slot production on high-latency RPC
-    /// links, which starves the promotion witness forever: the queue tail
-    /// never passes the finalized tip. Far behind the confirmed tip, catch up
-    /// by streaming the gap through a fetch pipeline and applying blocks in
-    /// slot order; near the tip, fall back to the serial path.
+    /// links, so promotion would starve: the queue tail never passes the
+    /// finalized tip. Far behind the confirmed tip, catch up by streaming
+    /// the gap through a fetch pipeline and applying blocks in slot order;
+    /// near the tip, fall back to the serial path.
     async fn ingest_step(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
         let tip = match self.context.rpc.get_slot().await {
             Ok(tip) => tip,
@@ -102,6 +110,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         if tip.saturating_sub(next_slot.0) < FETCH_PIPELINE_DEPTH as u64 {
             return self.fetch_parse_and_dispatch(next_slot, tip).await;
         }
+
+        // Refresh before streaming so blocks already behind the finalized
+        // tip promote immediately instead of waiting for a later block.
+        self.refresh_finalized_tip().await?;
 
         let end_slot = SlotNumber(tip);
         let mut blocks = fetch_blocks_ordered(
@@ -182,7 +194,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     /// cleared and the new block becomes the start of a new chain.
     fn enqueue(&mut self, block: Arc<ParsedBlock>) {
         let slot = block.slot;
-        let outcome = self.queue.append(Arc::clone(&block));
+        let finalized_when_fetched = slot <= self.finalized_tip;
+        let outcome = self.queue.append(Arc::clone(&block), finalized_when_fetched);
         match outcome {
             AppendOutcome::Appended => {
                 self.context.pending.apply_block(&block);
@@ -209,10 +222,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                     "block_ingestor: chain break beyond queue depth, queue cleared"
                 );
                 // Queue is empty now; the next append skips the chain check.
-                let _ = self.queue.append(Arc::clone(&block));
+                let _ = self.queue.append(Arc::clone(&block), finalized_when_fetched);
                 self.context.pending.apply_block(&block);
             }
         }
+        self.context
+            .ingest
+            .progress()
+            .record_queue_len(self.queue.len() as u64);
     }
 
     /// Promote every queue head whose slot is at or below the finalized tip,
@@ -230,7 +247,24 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             self.fanout(&block).await?;
             self.context.metrics.inc_blocks_processed();
             progress.record_dispatched(block.slot.0);
-            info!(slot = block.slot.0, "dispatched parsed block");
+            self.dispatch_log_count += 1;
+            debug!(slot = block.slot.0, "dispatched parsed block");
+        }
+
+        progress.record_queue_len(self.queue.len() as u64);
+
+        if self.dispatch_log_count > 0 && self.dispatch_log_at.elapsed() >= DISPATCH_LOG_INTERVAL {
+            info!(
+                blocks = self.dispatch_log_count,
+                through_slot = progress.last_dispatched_slot(),
+                queued = self.queue.len(),
+                lag = progress
+                    .last_known_tip()
+                    .saturating_sub(progress.last_dispatched_slot()),
+                "dispatched parsed blocks"
+            );
+            self.dispatch_log_count = 0;
+            self.dispatch_log_at = Instant::now();
         }
 
         Ok(())
@@ -370,12 +404,11 @@ mod tests {
             .await
             .expect("discover later confirmed slot");
 
-        // Pin finalized at the join slot. The join block is at-or-below
-        // finalized; the later confirmed block is strictly past it, so the
-        // join block becomes promotable.
+        // Pin finalized just below the join slot so the join block is fetched
+        // ahead of finality and must wait for a later confirmed block.
         harness
             .rpc()
-            .set_finalized_tip(join_slot.0)
+            .set_finalized_tip(join_slot.0 - 1)
             .expect("set finalized tip");
 
         let (senders, receivers) = downstream_channels();
@@ -409,7 +442,12 @@ mod tests {
             "join block should not promote before a later confirmed block is queued"
         );
 
-        // Second fetch: queues the later block, which lets the join block promote.
+        // Advance finality to the join slot, then queue the later block,
+        // which lets the join block promote.
+        harness
+            .rpc()
+            .set_finalized_tip(join_slot.0)
+            .expect("advance finalized tip");
         ingestor
             .fetch_parse_and_dispatch(later_slot, tip)
             .await
@@ -434,6 +472,74 @@ mod tests {
         assert_eq!(entries[0].slot, join_slot);
         assert!(matches!(
             entries[0].records.as_slice(),
+            [record] if matches!(&record.event, ReplayableEvent::JoinCommittee { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn already_finalized_block_dispatches_immediately() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let confirmed_tip = ctx.rpc.get_slot().await.expect("get confirmed tip");
+
+        submit_join_committee(&ctx)
+            .await
+            .expect("submit join committee");
+        harness
+            .rpc()
+            .warp_to_slot(confirmed_tip + 1)
+            .expect("confirm join block");
+        let join_slot = produced_slot(harness.rpc(), &[confirmed_tip, confirmed_tip + 1])
+            .await
+            .expect("discover join slot");
+
+        // Finality has already passed the join slot when it is fetched, so
+        // it dispatches without waiting for a later confirmed block.
+        harness
+            .rpc()
+            .set_finalized_tip(join_slot.0)
+            .expect("set finalized tip");
+
+        let (senders, receivers) = downstream_channels();
+        let (store_tx, mut store_rx) = store_channel();
+        let replay = ReplayManager::new(
+            ctx.clone(),
+            receivers.replay,
+            store_tx,
+            CancellationToken::new(),
+        );
+        let replay_task = tokio::spawn(replay.run());
+
+        let mut ingestor = BlockIngestor::new(
+            ctx.clone(),
+            join_slot,
+            senders,
+            CancellationToken::new(),
+        );
+
+        let tip = ctx.rpc.get_slot().await.expect("get tip");
+        ingestor
+            .fetch_parse_and_dispatch(join_slot, tip)
+            .await
+            .expect("dispatch join slot");
+
+        let batch = timeout(Duration::from_secs(1), store_rx.recv())
+            .await
+            .expect("receive replay batch in time")
+            .expect("replay batch");
+
+        replay_task.abort();
+        let _ = replay_task.await;
+
+        assert_eq!(batch.slot, join_slot);
+        assert!(matches!(
+            batch.records.as_slice(),
             [record] if matches!(&record.event, ReplayableEvent::JoinCommittee { .. })
         ));
     }
