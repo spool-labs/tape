@@ -810,6 +810,38 @@ impl Store for RocksStore {
             .map_err(Error::Io)
     }
 
+    fn live_data_size_bytes(&self) -> Result<Option<u64>> {
+        // SST plus blob files, since the bulk store keeps slice payloads in BlobDB.
+        let mut total = 0u64;
+        for cf in self
+            .column_families
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once("default"))
+        {
+            let Some(handle) = self.db.cf_handle(cf) else {
+                continue;
+            };
+            for prop in ["rocksdb.total-sst-files-size", "rocksdb.total-blob-file-size"] {
+                if let Ok(Some(bytes)) = self.db.property_int_value_cf(&handle, prop) {
+                    total = total.saturating_add(bytes);
+                }
+            }
+        }
+        Ok(Some(total))
+    }
+
+    fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
+        let Some(handle) = self.db.cf_handle(cf) else {
+            return Ok(None);
+        };
+        Ok(self
+            .db
+            .property_int_value_cf(&handle, "rocksdb.estimate-num-keys")
+            .ok()
+            .flatten())
+    }
+
     fn reclaim_space(&self) -> Result<()> {
         self.flush()?;
         self.compact_column_family("default");

@@ -12,6 +12,7 @@ pub enum ServiceName {
     StoreManager,
     StateManager,
     GcManager,
+    PeerAggregator,
 }
 
 impl ServiceName {
@@ -29,6 +30,7 @@ impl ServiceName {
             Self::StoreManager => "StoreManager",
             Self::StateManager => "StateManager",
             Self::GcManager => "GcManager",
+            Self::PeerAggregator => "PeerAggregator",
         }
     }
 }

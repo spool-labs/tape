@@ -154,6 +154,7 @@ impl PeerManager {
                         network_address: node.metadata.network_address,
                         preferences: node.preferences,
                         stake: node.pool.stake,
+                        name: node.metadata.name,
                     },
                 )
             })

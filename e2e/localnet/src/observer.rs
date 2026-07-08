@@ -148,7 +148,7 @@ impl Observer {
     /// a TLS handshake + pinning dance for every scrape tick. The main TLS
     /// port is for peer traffic; the loopback port is for local ops tooling.
     async fn scrape_node(&self, port: u16) -> NodeScrape {
-        let base = format!("http://127.0.0.1:{port}");
+        let base = format!("http://{}:{port}", crate::process::LOCAL_HOST);
 
         let health_fut = self.http.get(format!("{base}/v1/health")).send();
         let stats_fut = self.http.get(format!("{base}/v1/stats")).send();
@@ -253,18 +253,12 @@ impl Observer {
             })
             .collect();
 
+        let phase_index = u64::from(chain.phase) as u8;
         Ok(LocalnetView {
             cluster: ClusterView {
                 epoch: chain.epoch.0,
-                phase: match chain.phase {
-                    EpochPhase::Sync => "Sync",
-                    EpochPhase::Snapshot => "Snapshot",
-                    EpochPhase::Active => "Active",
-                    EpochPhase::Closing => "Closing",
-                    EpochPhase::Completed => "Completed",
-                    _ => "Unknown",
-                }
-                .to_string(),
+                phase: tape_observe_api::phase_name(phase_index).to_string(),
+                phase_index,
                 phase_weight: chain.phase_weight,
                 slot: chain.slot.0,
                 live_group_count: chain.live_group_count,

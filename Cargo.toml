@@ -25,6 +25,8 @@ members = [
   "solana/rpc-litesvm",
   "solana/rpc-cache",
   "lib/metrics",
+  "lib/observe-api",
+  "monitoring/dashboard",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -63,6 +65,7 @@ default-members = [
   "store/store-rocks",
   "store/tape-store",
   "lib/metrics",
+  "lib/observe-api",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -112,6 +115,7 @@ tape-sdk = { version = "0.3.0", path = "./sdk" }
 tape-test = { version = "0.3.0", path = "./test" }
 tape-chain-harness = { version = "0.3.0", path = "./test/harness" }
 tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
+tape-observe-api = { version = "0.1.0", path = "./lib/observe-api" }
 tape-gateway = { version = "0.3.0", path = "./network/gateway" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 peer-manager = { version = "0.3.0", path = "./network/peer-manager" }
@@ -231,3 +235,13 @@ inherits = "release"
 debug = "full"
 split-debuginfo = "packed"
 strip = "none"
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"

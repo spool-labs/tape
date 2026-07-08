@@ -124,6 +124,7 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     })
     .map_err(|error| RouteError::Internal(format!("serialize track data response: {error}")))?;
 
+    state.context.metrics.add_downloaded(body.len() as u64);
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], body))
 }
 
@@ -498,6 +499,7 @@ mod tests {
             bls_pubkey: Zeroable::zeroed(),
             tls_pubkey: Zeroable::zeroed(),
             network_address: Zeroable::zeroed(),
+            name: Zeroable::zeroed(),
             preferences,
             stake: TAPE(0),
         });

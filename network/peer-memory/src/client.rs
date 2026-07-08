@@ -155,6 +155,10 @@ impl Api for MemoryApi {
     async fn get_stats(&self, node: Address, _req: &GetStatsReq) -> Result<GetStatsRes, ApiError> {
         dispatch!(self, node, GetStatsReq, GetStats)
     }
+
+    async fn get_observe_board(&self, _node: Address) -> Result<Vec<u8>, ApiError> {
+        Err(ApiError::Other("observe snapshot unsupported in memory api".into()))
+    }
 }
 
 #[cfg(test)]

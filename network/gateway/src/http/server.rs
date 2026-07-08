@@ -82,6 +82,21 @@ where
                 get(health::stats::<Db, Cluster, Blockchain>),
             );
 
+        #[cfg(feature = "metrics")]
+        let status_router = if self.context.config.metrics.enabled {
+            status_router
+                .route(
+                    tape_protocol::api::NODE_METRICS_PATH,
+                    get(tape_node::observe::http::metrics),
+                )
+                .route(
+                    tape_protocol::api::OBSERVE_BOARD_PATH,
+                    get(observe_board::<Db, Cluster, Blockchain>),
+                )
+        } else {
+            status_router
+        };
+
         let service_router = Router::new()
             .route(
                 object::OBJECT_PATH,
@@ -197,11 +212,28 @@ async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     next.run(req).await
 }
 
+#[cfg(feature = "metrics")]
+async fn observe_board<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        tape_node::observe::cached_board(&state.context),
+    )
+}
+
 async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     req: Request,
     next: Next,
 ) -> Response {
     state.context.metrics.inc_requests_total();
+
+    #[cfg(feature = "metrics")]
+    {
+        tape_node::observe::http::instrument(req, next).await
+    }
+
+    #[cfg(not(feature = "metrics"))]
     next.run(req).await
 }

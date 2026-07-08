@@ -932,33 +932,6 @@ fn flatten_error(err: &(dyn std::error::Error + 'static)) -> String {
         out.push_str(&inner.to_string());
         source = inner.source();
     }
-    redact_url_query(&out)
-}
-
-/// Strip query strings from URLs embedded in error text; they carry
-/// credentials (`?api=<key>`) and end up in logs.
-fn redact_url_query(msg: &str) -> String {
-    let mut out = String::with_capacity(msg.len());
-    let mut rest = msg;
-    while let Some(pos) = rest.find('?') {
-        let (head, tail) = rest.split_at(pos);
-        out.push_str(head);
-        let in_url = head
-            .rsplit(|c: char| c.is_whitespace() || c == '(')
-            .next()
-            .is_some_and(|token| token.starts_with("http://") || token.starts_with("https://"));
-        if in_url {
-            let end = tail
-                .find([')', ']', '"', '\'', ' ', '\t', '\n'])
-                .unwrap_or(tail.len());
-            out.push_str("?<redacted>");
-            rest = &tail[end..];
-        } else {
-            out.push('?');
-            rest = &tail[1..];
-        }
-    }
-    out.push_str(rest);
     out
 }
 
@@ -974,19 +947,6 @@ mod tests {
         let config = RpcConfig::default();
         let client = SolanaRpc::new(config);
         assert!(client.is_ok());
-    }
-
-    #[test]
-    fn redacts_url_query_in_error_text() {
-        let msg = "HTTP status server error (502 Bad Gateway) for url (http://143.198.31.76:8899/?api=18a91636db43f5602b706be879b3ad531c32b8248871ee50)";
-        let redacted = redact_url_query(msg);
-        assert_eq!(
-            redacted,
-            "HTTP status server error (502 Bad Gateway) for url (http://143.198.31.76:8899/?<redacted>)"
-        );
-
-        let plain = "was the slot skipped? maybe";
-        assert_eq!(redact_url_query(plain), plain);
     }
 
     #[test]

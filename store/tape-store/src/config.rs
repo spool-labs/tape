@@ -163,15 +163,43 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
     ]
 }
 
+/// Subdirectory of a store root holding the metadata (fast volume) database
+pub const META_SUBDIR: &str = "meta";
+
+/// Subdirectory of a store root holding the bulk (large volume) database
+pub const BULK_SUBDIR: &str = "bulk";
+
+/// Column families that hold bulk payloads and live on the bulk volume
+///
+/// The slice and snapshot families use key-value separation; track data is
+/// stored inline but can be large. Everything else is small metadata that
+/// stays on the fast volume.
+pub const BULK_COLUMN_FAMILIES: &[&str] = &["track_data", "slice", "snapshot_artifact"];
+
+/// Column family configurations for the metadata (fast volume) store
+pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {
+    create_tape_store_configs()
+        .into_iter()
+        .filter(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.name()))
+        .collect()
+}
+
+/// Column family configurations for the bulk (large volume) store
+pub fn create_bulk_store_configs() -> Vec<ColumnFamilyDescriptor> {
+    create_tape_store_configs()
+        .into_iter()
+        .filter(|cf| BULK_COLUMN_FAMILIES.contains(&cf.name()))
+        .collect()
+}
+
+/// Cap on total write-ahead-log size, so a write burst cannot balloon the volume
+const MAX_TOTAL_WAL_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// Create database-wide options for TapeStore
 ///
-/// Returns a configured `Options` instance with settings optimized for the
-/// TapeStore workload:
-///
-/// - **Write Buffers**: 64 MiB per CF, up to 4 buffers
-/// - **Parallelism**: Scales with CPU count
-/// - **Compression**: LZ4 for fast compression/decompression
-/// - **Rate Limiting**: 100 MB/s to prevent I/O spikes during compaction
+/// Returns a configured Options instance with settings optimized for the
+/// TapeStore workload: 64 MiB write buffers, parallelism scaled to CPU count,
+/// LZ4 compression, a compaction rate limit, and a bounded WAL.
 pub fn create_db_options() -> Options {
     create_db_options_with_compaction_rate_limit_mb_per_sec(100)
 }
@@ -208,6 +236,9 @@ pub fn create_db_options_with_compaction_rate_limit_mb_per_sec(
         .saturating_mul(1024 * 1024)
         .min(i64::MAX as u64) as i64;
     opts.set_ratelimiter(rate_limit_bytes_per_sec, 100_000, 10);
+
+    // Bound the WAL so a write burst cannot fill the fast volume
+    opts.set_max_total_wal_size(MAX_TOTAL_WAL_SIZE_BYTES);
 
     opts
 }
@@ -255,5 +286,23 @@ mod tests {
     fn test_db_options() {
         let opts = create_db_options();
         drop(opts);
+    }
+
+    // the two volumes split every column family with no overlap
+    #[test]
+    fn test_volume_partition() {
+        let meta: Vec<String> = create_metadata_store_configs()
+            .iter()
+            .map(|cf| cf.name().to_string())
+            .collect();
+        let bulk: Vec<String> = create_bulk_store_configs()
+            .iter()
+            .map(|cf| cf.name().to_string())
+            .collect();
+
+        // The two volumes partition all 18 column families with no overlap.
+        assert_eq!(meta.len() + bulk.len(), 18);
+        assert_eq!(bulk, vec!["track_data", "slice", "snapshot_artifact"]);
+        assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
     }
 }

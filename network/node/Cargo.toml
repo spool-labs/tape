@@ -28,6 +28,8 @@ rpc-client = { workspace = true }
 rpc-solana = { workspace = true }
 tape-retry = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
+tape-observe-api = { workspace = true, optional = true }
+memory-stats = { version = "1", optional = true }
 
 # External
 tokio = { workspace = true }
@@ -58,6 +60,7 @@ rand = { workspace = true }
 rand_chacha = "0.3"
 hex = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }
 # Force vendored openssl so zigbuild doesn't need a system libssl for the
 # x86_64-linux cross-compile. Indirect dep via solana-rpc-client → reqwest
 # with native-tls; vendored=1 builds libssl from source via openssl-src.
@@ -77,6 +80,8 @@ tape-chain-harness = { workspace = true }
 default = []
 metrics = [
     "tape-metrics/metrics",
+    "dep:tape-observe-api",
+    "dep:memory-stats",
     "rpc-client/metrics",
     "store/metrics",
     "store-rocks/metrics",

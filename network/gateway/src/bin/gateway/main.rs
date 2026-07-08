@@ -38,12 +38,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Query part carries the RPC api key; never log it.
-    let rpc_display = config.solana.rpc.split('?').next().unwrap_or("");
-
     info!(
         node_name = %config.node.name,
-        rpc = rpc_display,
+        rpc = %config.solana.rpc,
         version = env!("CARGO_PKG_VERSION"),
         "starting gateway"
     );

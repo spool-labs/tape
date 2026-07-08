@@ -43,6 +43,10 @@ pub struct NodeHandle {
 /// Offset added to each node's TLS port to derive its loopback plain-HTTP port.
 const PLAINTEXT_PORT_OFFSET: u16 = 10_000;
 
+/// Loopback host the orchestrator binds every spawned node to. Nodes are local
+/// child processes, so all in-process probes and proxies target this host.
+pub const LOCAL_HOST: &str = "127.0.0.1";
+
 pub struct ProcessSupervisor {
     node_binary: PathBuf,
     data_root: PathBuf,
@@ -286,7 +290,7 @@ impl ProcessSupervisor {
 
     pub async fn health_check(&self, id: usize) -> bool {
         let port = self.nodes[id].plaintext_port;
-        let url = format!("http://127.0.0.1:{port}/v1/health");
+        let url = format!("http://{LOCAL_HOST}:{port}/v1/health");
 
         let client = match reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
@@ -404,11 +408,11 @@ solana:
   rpc: "{rpc_url}"
 
 network:
-  host: "127.0.0.1"
+  host: "{LOCAL_HOST}"
   port: {port}
 
 http:
-  listen: "127.0.0.1:{plaintext_port}"
+  listen: "{LOCAL_HOST}:{plaintext_port}"
 
 https:
   listen: "0.0.0.0:{port}"
