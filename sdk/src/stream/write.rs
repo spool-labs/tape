@@ -18,10 +18,10 @@ use crate::keys::operator::TapeOperator;
 use crate::tapedrive::Tapedrive;
 use crate::metrics::{Operation, Phase};
 use crate::track::write::{
-    certify_submit_with_retry, certify_with_retry, collect_certification, inline_write_fits,
-    should_retry_certification, submit_blob, submit_blob_with_logical_size, submit_certification,
-    submit_raw_with_logical_size, upload_with_retry, wait_for_certified_track, UploadPlan,
-    WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
+    certify_submit_with_retry, certify_with_retry, collect_certification, encode_blob,
+    inline_write_fits, register_blob, should_retry_certification, submit_blob_with_logical_size,
+    submit_certification, submit_raw_with_logical_size, upload_with_retry,
+    wait_for_certified_track, UploadPlan, WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
 };
 
 use super::error::StreamError;
@@ -33,9 +33,13 @@ use super::receipt::StreamReceipt;
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 
-/// Slice uploads kept in flight per chunk; two saturate a typical uplink.
-/// Higher raises peak memory, since each holds its encoded slices.
-const STORE_CONCURRENCY: usize = 2;
+/// Slice uploads kept in flight per chunk; each holds its encoded slices
+/// (~2x the chunk), so this bounds peak memory together with ENCODE_AHEAD.
+const STORE_CONCURRENCY: usize = 3;
+
+/// Encoded chunks buffered ahead of the serial register submits, so encoding
+/// (seconds of CPU per chunk) overlaps register confirmations.
+const ENCODE_AHEAD: usize = 2;
 
 /// Stored chunks whose signatures are collected ahead of the serial certify
 /// submits. Collections hold no slice data, so lookahead is cheap.
@@ -251,9 +255,10 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     result
 }
 
-/// Run chunk writes as a three-stage pipeline: register one at a time, keep a
-/// bounded number of slice uploads in flight, and certify in track order behind
-/// them. A stage error cancels the pipeline; incomplete tracks go to recovery.
+/// Run chunk writes as a three-stage pipeline: register chunks one at a time,
+/// keep up to STORE_CONCURRENCY slice uploads in flight, and certify stored
+/// chunks strictly in track order behind the uploads. Stage errors cancel the
+/// whole pipeline; incomplete tracks are left for the recovery worker.
 async fn pipeline_chunks<Blockchain, Cluster, Bytes, Chunks>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -267,17 +272,34 @@ where
     Bytes: AsRef<[u8]>,
     Chunks: Stream<Item = Result<Bytes, TapedriveError>>,
 {
+    let (encoded_sender, mut encoded_receiver) = mpsc::channel(ENCODE_AHEAD);
     let (registered_sender, mut registered_receiver) = mpsc::channel(1);
     let (stored_sender, mut stored_receiver) = mpsc::channel(chunk_count.as_usize().max(1));
 
-    let register_stage = async move {
+    // Encoding is CPU-bound; running it ahead keeps register confirmations
+    // from serializing with it.
+    let encode_stage = async move {
         let mut chunk_sources = std::pin::pin!(chunk_sources);
         let mut chunk_index = 0usize;
         while let Some(chunk_data) = chunk_sources.next().await {
-            let registered =
-                register_chunk(client, tape_key, chunk_index, chunk_count, size, chunk_data?)
-                    .await?;
+            let plan = encode_blob(
+                client,
+                chunk_data?.as_ref().to_vec(),
+                Operation::WriteStream,
+            )
+            .await?;
+            if encoded_sender.send((chunk_index, plan)).await.is_err() {
+                break;
+            }
             chunk_index += 1;
+        }
+        Ok::<_, TapedriveError>(())
+    };
+
+    let register_stage = async move {
+        while let Some((chunk_index, plan)) = encoded_receiver.recv().await {
+            let registered =
+                register_chunk(client, tape_key, chunk_index, chunk_count, size, plan).await?;
             if registered_sender.send(registered).await.is_err() {
                 break;
             }
@@ -290,7 +312,8 @@ where
         let mut is_registering = true;
         while is_registering || !in_flight.is_empty() {
             tokio::select! {
-                // Safe: a chunk only leaves the channel once this branch completes.
+                // Safe: recv is cancellation-safe and a chunk only leaves the
+                // channel when this branch completes.
                 registered = registered_receiver.recv(),
                     if is_registering && in_flight.len() < STORE_CONCURRENCY =>
                 {
@@ -299,7 +322,8 @@ where
                         None => is_registering = false,
                     }
                 }
-                // Safe: a cancelled poll drops no upload; each leaves only once it completes.
+                // Safe: FuturesOrdered::next only removes a future once it
+                // completes; a cancelled poll leaves every upload in place.
                 stored = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(stored) = stored else { continue };
                     if stored_sender.send(stored?).await.is_err() {
@@ -373,8 +397,13 @@ where
         Ok::<_, TapedriveError>(pending_chunks)
     };
 
-    let ((), (), (), pending_chunks) =
-        tokio::try_join!(register_stage, store_stage, collect_stage, certify_stage)?;
+    let ((), (), (), (), pending_chunks) = tokio::try_join!(
+        encode_stage,
+        register_stage,
+        store_stage,
+        collect_stage,
+        certify_stage
+    )?;
     Ok(pending_chunks)
 }
 
@@ -420,21 +449,23 @@ async fn verify_stream_drained<Reader: AsyncRead + Unpin>(
     Ok(())
 }
 
-/// Register one chunk track on-chain and return it with its upload plan.
+/// Register one encoded chunk track on-chain and return it with its upload plan.
 async fn register_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     chunk_index: usize,
     chunk_count: TrackNumber,
     size: StorageUnits,
-    chunk_data: impl AsRef<[u8]>,
+    plan: UploadPlan,
 ) -> Result<RegisteredChunk, TapedriveError> {
-    let (written, plan) = submit_blob(
+    let logical_size = plan.storage_units;
+    let (written, plan) = register_blob(
         client,
         tape_key,
         UNNAMED_TRACK,
         UNTYPED_TRACK,
-        chunk_data.as_ref(),
+        logical_size,
+        plan,
         Operation::WriteStream,
     )
     .await?;

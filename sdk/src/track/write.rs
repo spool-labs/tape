@@ -20,9 +20,10 @@ use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo, Track
 use tape_core::types::ContentType;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
-use futures::stream::StreamExt;
 use tape_protocol::Api;
-use tape_protocol::api::{GetTrackByNumberReq, GetTrackDataReq};
+use tape_protocol::api::GetTrackDataReq;
+use tape_protocol::api::GetTrackByNumberReq;
+use futures::stream::StreamExt;
 use tape_retry::{retry, retry_if, RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
 use tokio::time::sleep;
@@ -46,12 +47,6 @@ const POLL_INTERVAL_MS: u64 = 400;
 
 /// Visibility poll attempts before giving up.
 const VISIBILITY_POLL_LIMIT: usize = 30;
-
-/// Completion poll attempts before giving up, about 16s at the poll cadence.
-const COMPLETION_POLL_LIMIT: u32 = 40;
-
-/// Warn every Nth visibility poll while still waiting.
-const VISIBILITY_WARN_EVERY: usize = 5;
 
 pub const UNNAMED_TRACK: &[u8] = b"";
 pub const UNTYPED_TRACK: ContentType = ContentType::Unknown;
@@ -115,7 +110,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .await
     }
 
-    /// Write a named track to an existing tape as the given operator.
+    /// Write a named track to an existing tape,.
     pub async fn write_named_track_as(
         &self,
         operator: &impl TapeOperator,
@@ -269,22 +264,60 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
-fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
+fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
+    let data_len = data.len();
     let profile = EncodingProfile::clay_default();
     let mut encoder = BlobEncoder::with_profile(profile);
     let (slices, merkle_root, leaves) = encoder
-        .encode_with_leaves(data.to_vec())
+        .encode_with_leaves(data)
         .map_err(|e| TapedriveError::Encoding(e.to_string()))?;
 
     Ok(UploadPlan {
         slices,
         commitment_hash: merkle_root.into(),
-        storage_units: StorageUnits::from_bytes(data.len() as u64),
+        storage_units: StorageUnits::from_bytes(data_len as u64),
         profile,
-        stripe_size: pick_stripe_size(data.len()),
-        stripe_count: num_stripes(data.len(), pick_stripe_size(data.len())),
+        stripe_size: pick_stripe_size(data_len),
+        stripe_count: num_stripes(data_len, pick_stripe_size(data_len)),
         leaves,
     })
+}
+
+/// Encode a blob into its upload plan on a blocking thread; encoding a 64 MiB
+/// chunk is seconds of CPU work that would otherwise stall the runtime.
+pub(crate) async fn encode_blob<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    data: Vec<u8>,
+    operation: Operation,
+) -> Result<UploadPlan, TapedriveError> {
+    let encode_timer = client
+        .timer(operation, Phase::Encode)
+        .bytes(data.len() as u64);
+    let result = match tokio::task::spawn_blocking(move || prepare_plan(data)).await {
+        Ok(plan) => plan,
+        Err(join) => Err(TapedriveError::Encoding(format!("encode task failed: {join}"))),
+    };
+    encode_timer.finish_result(&result);
+    result
+}
+
+/// Register an already-encoded blob on-chain.
+pub(crate) async fn register_blob<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    content_type: ContentType,
+    logical_size: StorageUnits,
+    plan: UploadPlan,
+    operation: Operation,
+) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+    let register_timer = client
+        .timer(operation, Phase::Register)
+        .bytes(plan.storage_units.to_bytes())
+        .chunks(1);
+    let result = send_blob(client, tape_key, name, content_type, logical_size, plan).await;
+    register_timer.finish_result(&result);
+    result
 }
 
 fn track_object(
@@ -382,7 +415,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit(
+        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
             payer,
             TRACK_WRITE_CU,
             vec![write_ix],
@@ -441,31 +474,8 @@ pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>
     data: &[u8],
     operation: Operation,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
-    let encode_timer = client
-        .timer(operation, Phase::Encode)
-        .bytes(data.len() as u64);
-    let plan = prepare_plan(data);
-
-    encode_timer.finish_result(&plan);
-    let plan = plan?;
-
-    let register_timer = client
-        .timer(operation, Phase::Register)
-        .bytes(data.len() as u64)
-        .chunks(1);
-
-    let result = send_blob(
-        client,
-        tape_key,
-        name,
-        content_type,
-        logical_size,
-        data,
-        plan
-    ).await;
-
-    register_timer.finish_result(&result);
-    result
+    let plan = encode_blob(client, data.to_vec(), operation).await?;
+    register_blob(client, tape_key, name, content_type, logical_size, plan, operation).await
 }
 
 async fn send_blob<Blockchain: Rpc, Cluster: Api>(
@@ -474,7 +484,6 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
-    _data: &[u8],
     plan: UploadPlan,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let payer = client.payer()?;
@@ -503,7 +512,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit(
+        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
             payer,
             TRACK_WRITE_CU,
             vec![write_ix],
@@ -663,7 +672,7 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             ))));
         }
 
-        if attempt % VISIBILITY_WARN_EVERY == 0 {
+        if attempt % 5 == 0 {
             warn!(
                 attempt,
                 visible,
@@ -769,7 +778,7 @@ pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
     let submit = client.timer(operation, Phase::CertifySubmit);
     let result = match client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit(
+        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
             payer,
             CERTIFY_TRACK_CU,
             vec![certify_ix],
@@ -959,7 +968,7 @@ fn completion_poll_config() -> RetryConfig {
     RetryConfig {
         base_delay: Duration::from_millis(POLL_INTERVAL_MS),
         max_delay: Duration::from_millis(POLL_INTERVAL_MS),
-        max_retries: Some(COMPLETION_POLL_LIMIT),
+        max_retries: Some(40),
     }
 }
 
