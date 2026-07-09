@@ -18,9 +18,10 @@ use crate::keys::operator::TapeOperator;
 use crate::tapedrive::Tapedrive;
 use crate::metrics::{Operation, Phase};
 use crate::track::write::{
-    certify_with_retry, inline_write_fits, submit_blob, submit_blob_with_logical_size,
-    submit_raw_with_logical_size, upload_with_retry, UploadPlan, WrittenTrack, UNNAMED_TRACK,
-    UNTYPED_TRACK,
+    certify_submit_with_retry, certify_with_retry, collect_certification, inline_write_fits,
+    should_retry_certification, submit_blob, submit_blob_with_logical_size, submit_certification,
+    submit_raw_with_logical_size, upload_with_retry, wait_for_certified_track, UploadPlan,
+    WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
 };
 
 use super::error::StreamError;
@@ -35,6 +36,10 @@ const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 /// Slice uploads kept in flight per chunk; two saturate a typical uplink.
 /// Higher raises peak memory, since each holds its encoded slices.
 const STORE_CONCURRENCY: usize = 2;
+
+/// Stored chunks whose signatures are collected ahead of the serial certify
+/// submits. Collections hold no slice data, so lookahead is cheap.
+const COLLECT_LOOKAHEAD: usize = 2;
 
 // Chunks are internal fragments addressed by track number, never by name.
 struct PendingChunk {
@@ -306,19 +311,70 @@ where
         Ok::<_, TapedriveError>(())
     };
 
+    // Signatures sign the track's leaf hash, so collection for the next chunk
+    // can run while the previous chunk's certify transaction confirms.
+    let (collected_sender, mut collected_receiver) = mpsc::channel(COLLECT_LOOKAHEAD);
+    let collect_stage = async move {
+        while let Some(pending) = stored_receiver.recv().await {
+            let collected =
+                collect_certification(client, &pending.written, Operation::WriteStream).await?;
+            if collected_sender.send((pending, collected)).await.is_err() {
+                break;
+            }
+        }
+        Ok::<_, TapedriveError>(())
+    };
+
     // Each certify mutates the tape's track tree, so a proof is only valid
     // against the root left by the previous certify; the proof is re-fetched
-    // per chunk. Do not parallelize.
+    // per chunk. Do not parallelize the submits.
     let certify_stage = async move {
         let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
-        while let Some(pending) = stored_receiver.recv().await {
-            certify_with_retry(client, tape_key, &pending.written, Operation::WriteStream).await?;
+        while let Some((pending, collected)) = collected_receiver.recv().await {
+            let submitted = submit_certification(
+                client,
+                tape_key,
+                &pending.written,
+                &collected,
+                Operation::WriteStream,
+            )
+            .await;
+            match submitted {
+                Ok(()) => {}
+                // Pre-collected signatures can go stale (epoch change) while
+                // they wait in the lookahead; re-collect and submit fresh.
+                Err(err) if should_retry_certification(&err) => {
+                    certify_submit_with_retry(
+                        client,
+                        tape_key,
+                        &pending.written,
+                        Operation::WriteStream,
+                    )
+                    .await?;
+                }
+                Err(err) => return Err(err),
+            }
             pending_chunks.push(pending);
         }
+
+        // Every certify is on-chain; confirm peer visibility for all chunks at
+        // once instead of once per chunk inside the serial loop.
+        let visible = client
+            .timer(Operation::WriteStream, Phase::CertifyVisible)
+            .chunks(pending_chunks.len() as u64);
+        let tape_address = tape_key.address();
+        let result = futures::future::try_join_all(pending_chunks.iter().map(|pending| {
+            wait_for_certified_track(client, &tape_address, pending.written.track.track_number)
+        }))
+        .await;
+        visible.finish_result(&result);
+        result?;
+
         Ok::<_, TapedriveError>(pending_chunks)
     };
 
-    let ((), (), pending_chunks) = tokio::try_join!(register_stage, store_stage, certify_stage)?;
+    let ((), (), (), pending_chunks) =
+        tokio::try_join!(register_stage, store_stage, collect_stage, certify_stage)?;
     Ok(pending_chunks)
 }
 

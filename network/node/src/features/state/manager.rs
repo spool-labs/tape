@@ -104,9 +104,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 ParsedInstruction::JoinCommittee { event, .. } => {
                     handlers.handle_join_committee(*event).await?;
                 }
-                ParsedInstruction::NodeEvicted { event } => {
-                    handlers.handle_evict(*event).await?;
-                }
                 ParsedInstruction::VoteSnapshot { event, .. } => {
                     handlers.handle_snapshot_vote(*event).await?;
                 }

@@ -27,7 +27,6 @@ use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
-use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
 
 pub type AppContext = Arc<NodeContext<SplitStore, HttpApi, SolanaRpc>>;
@@ -43,7 +42,6 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub admission: Arc<AdmissionLimiter>,
-    pub eviction_queue: Arc<EvictionQueue>,
     pub metrics: NodeMetrics,
 
     node_id: NodeId,
@@ -266,7 +264,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             peer_manager: self.peer_manager,
             api: self.api,
             admission,
-            eviction_queue: Arc::new(EvictionQueue::default()),
             metrics: NodeMetrics::default(),
             reclaim_pending: AtomicBool::new(false),
         }))

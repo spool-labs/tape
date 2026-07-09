@@ -4,7 +4,6 @@ use crate::error::ParseError;
 use crate::event::TapedriveEvent;
 use crate::instruction::{ParsedInstruction, RawInstruction};
 use std::collections::VecDeque;
-use tape_core::cert::eviction_vote_hash;
 use tape_core::system::VoteKind;
 
 /// Merge raw instructions with their corresponding events.
@@ -165,37 +164,6 @@ pub fn merge(
                     ));
                 }
                 ParsedInstruction::FinalizeGroup { epoch, group, event }
-            }
-
-            RawInstruction::ProposeEviction { node, proposer } => {
-                let event = match events.pop_front() {
-                    Some(TapedriveEvent::VoteProposed(e)) => e,
-                    _ => return Err(ParseError::EventMismatch("expected VoteProposed event")),
-                };
-                if event.kind != VoteKind::Eviction as u64
-                    || event.hash != eviction_vote_hash(node)
-                {
-                    return Err(ParseError::EventMismatch("unexpected VoteProposed event"));
-                }
-                ParsedInstruction::ProposeEviction { node, proposer, event }
-            }
-
-            // A vote reaching supermajority logs the removal before the vote
-            // record. Emit the removal so the committee drop replays, then drain
-            // the vote record.
-            RawInstruction::VoteEviction => {
-                if let Some(TapedriveEvent::NodeEvicted(evicted)) = events.front() {
-                    result.push(ParsedInstruction::NodeEvicted { event: *evicted });
-                    events.pop_front();
-                }
-                let event = match events.pop_front() {
-                    Some(TapedriveEvent::VoteRecorded(e)) => e,
-                    _ => return Err(ParseError::EventMismatch("expected VoteRecorded event")),
-                };
-                if event.kind != VoteKind::Eviction as u64 {
-                    return Err(ParseError::EventMismatch("unexpected VoteRecorded event"));
-                }
-                continue;
             }
 
             RawInstruction::TrackWrite {
@@ -485,7 +453,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_api::event::{
-        AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeEvicted, NodeJoinedCommittee,
+        AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee,
         NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeDestroyed,
         TapeExtended, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
         TrackWritten, VoteProposed, VoteRecorded,
@@ -606,111 +574,6 @@ mod tests {
             }
             _ => panic!("Expected VoteSnapshot"),
         }
-    }
-
-    fn eviction_vote_recorded(node: Address, signed_groups: u64, total_groups: u64) -> VoteRecorded {
-        VoteRecorded {
-            kind: VoteKind::Eviction as u64,
-            vote: Address::new_unique(),
-            voting_epoch: EpochNumber(8),
-            target_epoch: EpochNumber(9),
-            hash: Hash(node.to_bytes()),
-            group: GroupIndex(0),
-            signer_count: 14,
-            signed_groups,
-            total_groups,
-            bitmap: SpoolBitmap::from_indices(&[0, 1, 2]),
-        }
-    }
-
-    #[test]
-    fn merge_eviction_proposal_surfaces_target() {
-        let node = Address::new_unique();
-        let proposer = Address::new_unique();
-        let proposed = VoteProposed {
-            kind: VoteKind::Eviction as u64,
-            vote: Address::new_unique(),
-            voting_epoch: EpochNumber(8),
-            target_epoch: EpochNumber(9),
-            hash: Hash(node.to_bytes()),
-            total_groups: 1,
-        };
-
-        let merged = merge(
-            vec![RawInstruction::ProposeEviction { node, proposer }],
-            vec![TapedriveEvent::VoteProposed(proposed)],
-        )
-        .unwrap();
-
-        assert_eq!(merged.len(), 1);
-        match &merged[0] {
-            ParsedInstruction::ProposeEviction { node: target, proposer: by, event } => {
-                assert_eq!(*target, node);
-                assert_eq!(*by, proposer);
-                assert_eq!(event.target_epoch, EpochNumber(9));
-            }
-            other => panic!("expected ProposeEviction, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn merge_eviction_proposal_rejects_wrong_target() {
-        let node = Address::new_unique();
-        let proposed = VoteProposed {
-            kind: VoteKind::Eviction as u64,
-            vote: Address::new_unique(),
-            voting_epoch: EpochNumber(8),
-            target_epoch: EpochNumber(9),
-            hash: Hash(Address::new_unique().to_bytes()),
-            total_groups: 1,
-        };
-
-        let merged = merge(
-            vec![RawInstruction::ProposeEviction { node, proposer: Address::new_unique() }],
-            vec![TapedriveEvent::VoteProposed(proposed)],
-        );
-
-        assert!(merged.is_err());
-    }
-
-    #[test]
-    fn merge_eviction_landing_emits_node_evicted() {
-        let node = Address::new_unique();
-        let evicted = NodeEvicted {
-            node,
-            target_epoch: EpochNumber(9),
-        };
-
-        let merged = merge(
-            vec![RawInstruction::VoteEviction],
-            vec![
-                TapedriveEvent::NodeEvicted(evicted),
-                TapedriveEvent::VoteRecorded(eviction_vote_recorded(node, 1, 1)),
-            ],
-        )
-        .unwrap();
-
-        assert_eq!(merged.len(), 1);
-        match &merged[0] {
-            ParsedInstruction::NodeEvicted { event } => {
-                assert_eq!(event.node, node);
-                assert_eq!(event.target_epoch, EpochNumber(9));
-            }
-            other => panic!("expected NodeEvicted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn merge_eviction_non_landing_vote_produces_nothing() {
-        let node = Address::new_unique();
-
-        let merged = merge(
-            vec![RawInstruction::VoteEviction],
-            vec![TapedriveEvent::VoteRecorded(eviction_vote_recorded(node, 1, 2))],
-        )
-        .unwrap();
-
-        assert!(merged.is_empty());
     }
 
     #[test]

@@ -2,7 +2,6 @@ pub mod assignment;
 pub mod blacklist;
 pub mod block;
 pub mod bootstrap;
-pub mod eviction;
 pub mod gc;
 pub mod http;
 pub mod lifecycle;

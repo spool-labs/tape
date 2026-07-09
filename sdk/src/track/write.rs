@@ -35,7 +35,7 @@ use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 use crate::track::{bootstrap_network_state, query};
-use crate::transfer::certify::CertificationCollector;
+use crate::transfer::certify::{CertificationCollector, CollectedSignatures};
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 
 // The program accepts up to 10 KiB for raw TrackWrite payloads.
@@ -691,7 +691,7 @@ fn should_retry_upload(err: &TapedriveError) -> bool {
     }
 }
 
-fn should_retry_certification(err: &TapedriveError) -> bool {
+pub(crate) fn should_retry_certification(err: &TapedriveError) -> bool {
     match err {
         TapedriveError::NotFound => true,
         TapedriveError::Certification(_) => true,
@@ -716,29 +716,41 @@ fn should_retry_track_completion(err: &TrackCompletionError) -> bool {
     }
 }
 
-async fn certify_once<Blockchain: Rpc, Cluster: Api>(
+/// Collect the certification signatures for a stored track. Signatures sign
+/// the track's leaf hash, so collection needs the slices on nodes but has no
+/// dependency on other tracks' certifies.
+pub(crate) async fn collect_certification<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
     written: &WrittenTrack,
     operation: Operation,
-) -> Result<(), TapedriveError> {
-    let track_address = written.address;
-    let group = written.track.group;
-    let payer = client.payer()?;
-    let tape_signer = tape_key.keypair();
-
+) -> Result<CollectedSignatures, TapedriveError> {
     let collect = client.timer(operation, Phase::CertifyCollect);
     let result = async {
         let state = bootstrap_network_state(client, Some(operation)).await?;
         let collector = CertificationCollector::with_defaults();
         collector
-            .collect_signatures(client.api.as_ref(), &track_address, group, &state)
+            .collect_signatures(client.api.as_ref(), &written.address, written.track.group, &state)
             .await
             .map_err(TapedriveError::Certification)
     }
     .await;
     collect.finish_result(&result);
-    let collected = result?;
+    result
+}
+
+/// Build the proof and submit the certify transaction using signatures that
+/// were already collected. The proof is only valid against the tape root left
+/// by the previous certify, so calls on one tape must stay ordered.
+pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    written: &WrittenTrack,
+    collected: &CollectedSignatures,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    let track_address = written.address;
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
 
     let proof_timer = client.timer(operation, Phase::CertifyProof);
     let proof = query::query_track_proof(client, &track_address).await;
@@ -775,7 +787,17 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     result
 }
 
-async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
+async fn certify_once<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    written: &WrittenTrack,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    let collected = collect_certification(client, written, operation).await?;
+    submit_certification(client, tape_key, written, &collected, operation).await
+}
+
+pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape: &Address,
     track_number: TrackNumber,
@@ -878,19 +900,29 @@ pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
     ).await
 }
 
-pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
+/// Submit certification with retry, without waiting for peer visibility.
+pub(crate) async fn certify_submit_with_retry<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     written: &WrittenTrack,
     operation: Operation,
-) -> Result<CompressedTrack, TapedriveError> {
+) -> Result<(), TapedriveError> {
     retry_if(
         write_retry_config(),
         None,
         || certify_once(client, tape_key, written, operation),
         should_retry_certification,
     )
-    .await?;
+    .await
+}
+
+pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    written: &WrittenTrack,
+    operation: Operation,
+) -> Result<CompressedTrack, TapedriveError> {
+    certify_submit_with_retry(client, tape_key, written, operation).await?;
 
     let visible = client.timer(operation, Phase::CertifyVisible).chunks(1);
     let result = wait_for_certified_track(client, &tape_key.address(), written.track.track_number).await;

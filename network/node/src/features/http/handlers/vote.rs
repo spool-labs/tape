@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::bls::BlsPubkey;
-use tape_core::cert::{AssignmentVoteMessage, NodeEvictMessage, SnapshotSignMessage, eviction_vote_node};
+use tape_core::cert::{AssignmentVoteMessage, SnapshotSignMessage};
 use tape_core::system::{VoteCandidate, VoteKind};
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
@@ -102,21 +102,6 @@ fn validate_candidate(
             )
             .to_bytes()
             .to_vec())
-        }
-        VoteKind::Eviction => {
-            let Some(next_epoch) = protocol.next_epoch.as_ref() else {
-                return Err(RouteError::BadRequest("eviction target epoch missing".into()));
-            };
-            if next_epoch.id != candidate.target_epoch {
-                return Err(RouteError::BadRequest(format!(
-                    "eviction vote target epoch {} does not match next epoch {}",
-                    candidate.target_epoch.0, next_epoch.id.0
-                )));
-            }
-            let node = eviction_vote_node(candidate.hash);
-            Ok(NodeEvictMessage::new(candidate.target_epoch, next_epoch.nonce, node)
-                .to_bytes()
-                .to_vec())
         }
     }
 }

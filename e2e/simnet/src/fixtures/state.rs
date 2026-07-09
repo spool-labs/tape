@@ -2,11 +2,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use rpc_client::RpcClient;
-use tape_api::prelude::{Archive, Epoch, Group, Node, System};
+use tape_api::prelude::{Archive, Epoch, Group, System};
 use tape_core::spooler::GroupIndex;
 use tape_core::system::Member;
 use tape_core::types::EpochNumber;
-use tape_crypto::Address;
 
 use crate::scenario::SimnetScenario;
 
@@ -36,15 +35,6 @@ impl SimnetScenario<'_> {
     pub async fn read_archive(&self) -> Result<Archive> {
         let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client.get_archive().await.context("read archive")
-    }
-
-    pub async fn read_node(&self, node: usize) -> Result<Node> {
-        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
-        let address = Address::from(self.node_address(node));
-        client
-            .get_node_by_address(&address)
-            .await
-            .with_context(|| format!("read node {node}"))
     }
 
     pub async fn read_committee(&self, epoch: EpochNumber) -> Result<Vec<Member>> {

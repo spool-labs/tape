@@ -5,7 +5,6 @@ pub enum ServiceName {
     BlockIngestor,
     IngestMonitor,
     AssignmentManager,
-    EvictionManager,
     LifecycleManager,
     SpoolManager,
     SnapshotManager,
@@ -23,7 +22,6 @@ impl ServiceName {
             Self::BlockIngestor => "BlockIngestor",
             Self::IngestMonitor => "IngestMonitor",
             Self::AssignmentManager => "AssignmentManager",
-            Self::EvictionManager => "EvictionManager",
             Self::LifecycleManager => "LifecycleManager",
             Self::SpoolManager => "SpoolManager",
             Self::SnapshotManager => "SnapshotManager",
@@ -39,7 +37,6 @@ impl ServiceName {
 pub enum ChannelName {
     StateManager,
     AssignmentManager,
-    EvictionManager,
     SpoolManager,
     SnapshotManager,
     ReplayManager,
