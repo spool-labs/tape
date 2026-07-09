@@ -20,10 +20,9 @@ use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo, Track
 use tape_core::types::ContentType;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
-use tape_protocol::Api;
-use tape_protocol::api::GetTrackDataReq;
-use tape_protocol::api::GetTrackByNumberReq;
 use futures::stream::StreamExt;
+use tape_protocol::Api;
+use tape_protocol::api::{GetTrackByNumberReq, GetTrackDataReq};
 use tape_retry::{retry, retry_if, RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
 use tokio::time::sleep;
@@ -47,6 +46,12 @@ const POLL_INTERVAL_MS: u64 = 400;
 
 /// Visibility poll attempts before giving up.
 const VISIBILITY_POLL_LIMIT: usize = 30;
+
+/// Completion poll attempts before giving up, about 16s at the poll cadence.
+const COMPLETION_POLL_LIMIT: u32 = 40;
+
+/// Warn every Nth visibility poll while still waiting.
+const VISIBILITY_WARN_EVERY: usize = 5;
 
 pub const UNNAMED_TRACK: &[u8] = b"";
 pub const UNTYPED_TRACK: ContentType = ContentType::Unknown;
@@ -110,7 +115,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .await
     }
 
-    /// Write a named track to an existing tape,.
+    /// Write a named track to an existing tape as the given operator.
     pub async fn write_named_track_as(
         &self,
         operator: &impl TapeOperator,
@@ -658,7 +663,7 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             ))));
         }
 
-        if attempt % 5 == 0 {
+        if attempt % VISIBILITY_WARN_EVERY == 0 {
             warn!(
                 attempt,
                 visible,
@@ -922,7 +927,7 @@ fn completion_poll_config() -> RetryConfig {
     RetryConfig {
         base_delay: Duration::from_millis(POLL_INTERVAL_MS),
         max_delay: Duration::from_millis(POLL_INTERVAL_MS),
-        max_retries: Some(40),
+        max_retries: Some(COMPLETION_POLL_LIMIT),
     }
 }
 

@@ -156,10 +156,8 @@ impl DistributedUploader {
                 .filter_map(|spool| slice_map.get(spool).map(|s| (*spool, (*s).clone())))
                 .collect();
 
-            // Deliberately unjoined: once quorum returns this call, straggler
-            // tasks finish on their own and anything they fail to land is
-            // repaired by the recovery worker. The send fails harmlessly after
-            // the receiver is dropped at quorum.
+            // Detached: stragglers finish after quorum returns, and anything they
+            // fail to land is picked up by the recovery worker.
             tokio::spawn(async move {
                 let result = upload_node_slices(
                     peer_client.as_ref(),

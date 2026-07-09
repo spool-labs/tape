@@ -32,10 +32,8 @@ use super::receipt::StreamReceipt;
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 
-/// Number of chunk slice uploads kept in flight at once. One upload leaves
-/// most of a typical client uplink idle; two saturate it. Each in-flight
-/// chunk holds its encoded slices (about three times the chunk bytes), so
-/// raising this raises peak memory.
+/// Slice uploads kept in flight per chunk; two saturate a typical uplink.
+/// Higher raises peak memory, since each holds its encoded slices.
 const STORE_CONCURRENCY: usize = 2;
 
 // Chunks are internal fragments addressed by track number, never by name.
@@ -248,10 +246,9 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     result
 }
 
-/// Run chunk writes as a three-stage pipeline: register chunks one at a time,
-/// keep up to STORE_CONCURRENCY slice uploads in flight, and certify stored
-/// chunks strictly in track order behind the uploads. Stage errors cancel the
-/// whole pipeline; incomplete tracks are left for the recovery worker.
+/// Run chunk writes as a three-stage pipeline: register one at a time, keep a
+/// bounded number of slice uploads in flight, and certify in track order behind
+/// them. A stage error cancels the pipeline; incomplete tracks go to recovery.
 async fn pipeline_chunks<Blockchain, Cluster, Bytes, Chunks>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -288,8 +285,7 @@ where
         let mut is_registering = true;
         while is_registering || !in_flight.is_empty() {
             tokio::select! {
-                // Safe: recv is cancellation-safe and a chunk only leaves the
-                // channel when this branch completes.
+                // Safe: a chunk only leaves the channel once this branch completes.
                 registered = registered_receiver.recv(),
                     if is_registering && in_flight.len() < STORE_CONCURRENCY =>
                 {
@@ -298,8 +294,7 @@ where
                         None => is_registering = false,
                     }
                 }
-                // Safe: FuturesOrdered::next only removes a future once it
-                // completes; a cancelled poll leaves every upload in place.
+                // Safe: a cancelled poll drops no upload; each leaves only once it completes.
                 stored = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(stored) = stored else { continue };
                     if stored_sender.send(stored?).await.is_err() {

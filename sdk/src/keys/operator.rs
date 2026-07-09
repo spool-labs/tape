@@ -7,13 +7,13 @@ use crate::keys::tape_key::TapeKey;
 
 /// An identity authorized to operate (write/certify tracks) on a tape.
 pub trait TapeOperator: Send + Sync {
-    /// Keypair that signs the TrackWrite/CertifyTrack instructions
+    /// Keypair that signs the write and certify instructions.
     fn keypair(&self) -> &Keypair;
 
     /// Operator pubkey placed in the instruction's signer slot.
     fn pubkey(&self) -> Pubkey;
 
-    /// On-chain address of the tape being operated on
+    /// On-chain address of the tape being operated on.
     fn address(&self) -> Address;
 }
 
@@ -38,12 +38,12 @@ pub struct TapeDelegate {
 }
 
 impl TapeDelegate {
-    /// Bind a delegate `keypair` to the `tape` it is authorized to operate on
+    /// Bind a delegate keypair to the tape it may operate on.
     pub fn new(keypair: Keypair, tape: Address) -> Self {
         Self { keypair, tape }
     }
 
-    /// The tape this delegate operates on
+    /// The tape this delegate operates on.
     pub fn tape(&self) -> Address {
         self.tape
     }

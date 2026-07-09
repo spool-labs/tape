@@ -82,9 +82,12 @@ pub(crate) async fn queryable_peers<Blockchain: Rpc, Cluster: Api>(
 /// Race one request per peer, yielding results in completion order. The
 /// caller returns on the first useful response; dropping the stream cancels
 /// the rest.
-pub(crate) fn race_peers<F>(peers: Vec<Address>, call: impl Fn(Address) -> F) -> FuturesUnordered<F>
+pub(crate) fn race_peers<PeerFuture>(
+    peers: Vec<Address>,
+    call: impl Fn(Address) -> PeerFuture,
+) -> FuturesUnordered<PeerFuture>
 where
-    F: std::future::Future,
+    PeerFuture: std::future::Future,
 {
     peers.into_iter().map(call).collect()
 }

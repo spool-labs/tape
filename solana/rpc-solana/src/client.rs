@@ -304,7 +304,7 @@ async fn send_and_poll(
     client: &RpcClient,
     transaction: &Transaction,
     commitment: CommitmentLevel,
-) -> Result<Signature, solana_client::client_error::ClientError> {
+) -> Result<Signature, ClientError> {
     const CONFIRM_POLL_MS: u64 = 200;
 
     let commitment = CommitmentConfig { commitment };
