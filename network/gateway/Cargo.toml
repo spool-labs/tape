@@ -16,7 +16,6 @@ tape-node = { workspace = true }
 tape-protocol = { workspace = true }
 tape-sdk = { workspace = true }
 tape-store = { workspace = true }
-tape-metrics = { workspace = true, optional = true }
 rpc = { workspace = true }
 store = { workspace = true }
 
@@ -35,4 +34,4 @@ store-memory = { workspace = true }
 
 [features]
 default = []
-metrics = ["tape-node/metrics", "tape-metrics/metrics"]
+metrics = ["tape-node/metrics"]

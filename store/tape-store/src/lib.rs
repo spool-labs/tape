@@ -36,6 +36,7 @@ pub mod columns;
 pub mod config;
 pub mod error;
 pub mod ops;
+pub mod stats;
 pub mod types;
 
 use std::path::Path;

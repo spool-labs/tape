@@ -106,7 +106,15 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map(|slot| slot.0)
         .unwrap_or(0);
 
-    let (ingest_tip_slot, _, ingest_lag_slots) = state.context.ingest.progress().tip_and_lag();
+    let ingest_progress = state.context.ingest.progress();
+    let ingest_tip_raw = ingest_progress.last_known_tip();
+    let ingest_dispatched = ingest_progress.last_dispatched_slot();
+    let ingest_tip_slot = if ingest_tip_raw == u64::MAX { 0 } else { ingest_tip_raw };
+    let ingest_lag_slots = if ingest_tip_raw == u64::MAX {
+        0
+    } else {
+        ingest_tip_raw.saturating_sub(ingest_dispatched)
+    };
     let ingest_state = state.context.ingest_state().label().to_string();
     let bootstrap = state.context.bootstrap.snapshot();
 
@@ -145,7 +153,6 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .collect();
 
     let stats = NodeStats {
-        version: crate::VERSION.to_string(),
         last_processed_slot,
         blocks_processed: metrics.blocks_processed_total,
         epoch_transitions: metrics.epoch_transitions_total,
@@ -166,6 +173,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ingest_state,
         ingest_lag_slots,
         ingest_tip_slot,
+        ingest_fetch_slot: ingest_progress.last_fetch_slot(),
+        ingest_queue_len: ingest_progress.queue_len(),
         bootstrap_done: state.context.bootstrap.is_ready(),
         bootstrap_phase: bootstrap.phase.label().to_string(),
         bootstrap_current_slot: bootstrap.current_slot,
@@ -191,7 +200,7 @@ mod tests {
     use axum::extract::State;
     use axum::http::StatusCode;
 
-    use super::{health, stats, HealthStatus};
+    use super::{health, HealthStatus};
     use crate::features::http::state::AppState;
     use crate::harness::{NodeHarness, TestContext};
 
@@ -231,14 +240,5 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(matches!(body.0.status, HealthStatus::Ready));
         assert!(body.0.bootstrap.is_none());
-    }
-
-    #[tokio::test]
-    async fn stats_reports_build_version() {
-        let ctx = test_context().await;
-
-        let body = stats(State(AppState { context: ctx })).await.expect("stats");
-
-        assert_eq!(body.0.version, crate::VERSION);
     }
 }

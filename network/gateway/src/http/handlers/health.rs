@@ -98,7 +98,6 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .collect();
 
     Ok(Json(NodeStats {
-        version: tape_node::VERSION.to_string(),
         last_processed_slot,
         blocks_processed: metrics.blocks_processed_total,
         epoch_transitions: metrics.epoch_transitions_total,
@@ -117,6 +116,8 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ingest_state,
         ingest_lag_slots,
         ingest_tip_slot,
+        ingest_fetch_slot: ingest_progress.last_fetch_slot(),
+        ingest_queue_len: ingest_progress.queue_len(),
         bootstrap_done: state.context.bootstrap.is_ready(),
         bootstrap_phase: bootstrap.phase.label().to_string(),
         bootstrap_current_slot: bootstrap.current_slot,

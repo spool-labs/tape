@@ -112,9 +112,9 @@ mod tests {
         ok: bool,
     ) -> EncodedTransactionWithStatusMeta {
         let status = if ok {
-            Ok(())?
+            Ok(())
         } else {
-            Err(TransactionError::AccountNotFound)?
+            Err(TransactionError::AccountNotFound)
         };
         EncodedTransactionWithStatusMeta {
             transaction: EncodedTransaction::Json(UiTransaction {

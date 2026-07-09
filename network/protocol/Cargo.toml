@@ -7,7 +7,6 @@ edition.workspace = true
 tape-api = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
-tape-observe-api = { workspace = true }
 tape-snapshot = { workspace = true }
 rpc.workspace = true
 rpc-client.workspace = true

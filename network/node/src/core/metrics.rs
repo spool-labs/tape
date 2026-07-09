@@ -1,4 +1,4 @@
-//! Node metrics facade over the global metric set.
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeMetricsSnapshot {
@@ -18,152 +18,132 @@ pub struct NodeMetricsSnapshot {
 }
 
 #[derive(Debug, Default)]
-pub struct NodeMetrics;
-
-#[cfg(feature = "metrics")]
-fn spool(op: &str, stage: &str) -> u64 {
-    tape_metrics::metrics()
-        .spool_bytes_total
-        .with_label_values(&[op, stage])
-        .get()
+pub struct NodeMetrics {
+    requests_total: AtomicU64,
+    events_total: AtomicU64,
+    blocks_processed_total: AtomicU64,
+    epoch_transitions_total: AtomicU64,
+    bytes_uploaded: AtomicU64,
+    bytes_downloaded: AtomicU64,
+    sync_bytes_fetched: AtomicU64,
+    sync_bytes_persisted: AtomicU64,
+    repair_bytes_fetched: AtomicU64,
+    repair_bytes_persisted: AtomicU64,
+    repair_escalations: AtomicU64,
+    recover_bytes_fetched: AtomicU64,
+    recover_bytes_persisted: AtomicU64,
 }
 
 impl NodeMetrics {
     pub fn snapshot(&self) -> NodeMetricsSnapshot {
-        #[cfg(feature = "metrics")]
-        {
-            let m = tape_metrics::metrics();
-            NodeMetricsSnapshot {
-                requests_total: m.requests_total.get(),
-                events_total: m.replay_events_total.get(),
-                blocks_processed_total: m.blocks_processed_total.get(),
-                epoch_transitions_total: m.epoch_transitions_total.get(),
-                bytes_uploaded: m.bytes_uploaded.get(),
-                bytes_downloaded: m.bytes_downloaded.get(),
-                sync_bytes_fetched: spool("sync", "fetched"),
-                sync_bytes_persisted: spool("sync", "persisted"),
-                repair_bytes_fetched: spool("repair", "fetched"),
-                repair_bytes_persisted: spool("repair", "persisted"),
-                repair_escalations: m.repair_escalations_total.get(),
-                recover_bytes_fetched: spool("recover", "fetched"),
-                recover_bytes_persisted: spool("recover", "persisted"),
-            }
+        NodeMetricsSnapshot {
+            requests_total: self.requests_total.load(Ordering::Relaxed),
+            events_total: self.events_total.load(Ordering::Relaxed),
+            blocks_processed_total: self.blocks_processed_total.load(Ordering::Relaxed),
+            epoch_transitions_total: self.epoch_transitions_total.load(Ordering::Relaxed),
+            bytes_uploaded: self.bytes_uploaded.load(Ordering::Relaxed),
+            bytes_downloaded: self.bytes_downloaded.load(Ordering::Relaxed),
+            sync_bytes_fetched: self.sync_bytes_fetched.load(Ordering::Relaxed),
+            sync_bytes_persisted: self.sync_bytes_persisted.load(Ordering::Relaxed),
+            repair_bytes_fetched: self.repair_bytes_fetched.load(Ordering::Relaxed),
+            repair_bytes_persisted: self.repair_bytes_persisted.load(Ordering::Relaxed),
+            repair_escalations: self.repair_escalations.load(Ordering::Relaxed),
+            recover_bytes_fetched: self.recover_bytes_fetched.load(Ordering::Relaxed),
+            recover_bytes_persisted: self.recover_bytes_persisted.load(Ordering::Relaxed),
         }
-        #[cfg(not(feature = "metrics"))]
-        NodeMetricsSnapshot::default()
     }
 
     pub fn inc_requests_total(&self) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().requests_total.inc();
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
     pub fn add_events(&self, n: u64) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().replay_events_total.inc_by(n);
+        self.events_total.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn inc_blocks_processed(&self) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().blocks_processed_total.inc();
+        self.blocks_processed_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_epoch_transitions(&self) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().epoch_transitions_total.inc();
+        self.epoch_transitions_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
     pub fn add_uploaded(&self, n: u64) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().bytes_uploaded.inc_by(n);
+        self.bytes_uploaded.fetch_add(n, Ordering::Relaxed);
     }
 
-    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
     pub fn add_downloaded(&self, n: u64) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().bytes_downloaded.inc_by(n);
+        self.bytes_downloaded.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn add_sync_fetched(&self, n: u64) {
-        self.add_spool("sync", "fetched", n);
+        self.sync_bytes_fetched.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn add_sync_persisted(&self, n: u64) {
-        self.add_spool("sync", "persisted", n);
+        self.sync_bytes_persisted.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn add_repair_fetched(&self, n: u64) {
-        self.add_spool("repair", "fetched", n);
+        self.repair_bytes_fetched.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn add_repair_persisted(&self, n: u64) {
-        self.add_spool("repair", "persisted", n);
-    }
-
-    pub fn add_recover_fetched(&self, n: u64) {
-        self.add_spool("recover", "fetched", n);
-    }
-
-    pub fn add_recover_persisted(&self, n: u64) {
-        self.add_spool("recover", "persisted", n);
+        self.repair_bytes_persisted.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn inc_repair_escalations(&self) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().repair_escalations_total.inc();
+        self.repair_escalations.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
-    fn add_spool(&self, op: &str, stage: &str, n: u64) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics()
-            .spool_bytes_total
-            .with_label_values(&[op, stage])
-            .inc_by(n);
+    pub fn add_recover_fetched(&self, n: u64) {
+        self.recover_bytes_fetched.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn add_recover_persisted(&self, n: u64) {
+        self.recover_bytes_persisted.fetch_add(n, Ordering::Relaxed);
     }
 }
 
-#[cfg(all(test, feature = "metrics"))]
+#[cfg(test)]
 mod tests {
-    use super::NodeMetrics;
+    use super::{NodeMetrics, NodeMetricsSnapshot};
 
-    // The metric set is a process-global singleton, so this asserts the facade
-    // maps each call onto the right series via before/after deltas rather than
-    // absolute values.
     #[test]
-    fn facade_maps_to_snapshot_fields() {
-        let m = NodeMetrics;
-        let before = m.snapshot();
+    fn snapshots() {
+        let metrics = NodeMetrics::default();
+        metrics.inc_requests_total();
+        metrics.add_events(3);
+        metrics.inc_blocks_processed();
+        metrics.inc_epoch_transitions();
+        metrics.add_uploaded(5);
+        metrics.add_downloaded(7);
+        metrics.add_sync_fetched(11);
+        metrics.add_sync_persisted(13);
+        metrics.add_repair_fetched(17);
+        metrics.add_repair_persisted(19);
+        metrics.inc_repair_escalations();
+        metrics.add_recover_fetched(23);
+        metrics.add_recover_persisted(29);
 
-        m.inc_requests_total();
-        m.add_events(3);
-        m.inc_blocks_processed();
-        m.inc_epoch_transitions();
-        m.add_uploaded(5);
-        m.add_downloaded(7);
-        m.add_sync_fetched(11);
-        m.add_sync_persisted(13);
-        m.add_repair_fetched(17);
-        m.add_repair_persisted(19);
-        m.inc_repair_escalations();
-        m.add_recover_fetched(23);
-        m.add_recover_persisted(29);
-
-        let after = m.snapshot();
-        assert_eq!(after.requests_total - before.requests_total, 1);
-        assert_eq!(after.events_total - before.events_total, 3);
-        assert_eq!(after.blocks_processed_total - before.blocks_processed_total, 1);
-        assert_eq!(after.epoch_transitions_total - before.epoch_transitions_total, 1);
-        assert_eq!(after.bytes_uploaded - before.bytes_uploaded, 5);
-        assert_eq!(after.bytes_downloaded - before.bytes_downloaded, 7);
-        assert_eq!(after.sync_bytes_fetched - before.sync_bytes_fetched, 11);
-        assert_eq!(after.sync_bytes_persisted - before.sync_bytes_persisted, 13);
-        assert_eq!(after.repair_bytes_fetched - before.repair_bytes_fetched, 17);
-        assert_eq!(after.repair_bytes_persisted - before.repair_bytes_persisted, 19);
-        assert_eq!(after.repair_escalations - before.repair_escalations, 1);
-        assert_eq!(after.recover_bytes_fetched - before.recover_bytes_fetched, 23);
-        assert_eq!(after.recover_bytes_persisted - before.recover_bytes_persisted, 29);
+        assert_eq!(
+            metrics.snapshot(),
+            NodeMetricsSnapshot {
+                requests_total: 1,
+                events_total: 3,
+                blocks_processed_total: 1,
+                epoch_transitions_total: 1,
+                bytes_uploaded: 5,
+                bytes_downloaded: 7,
+                sync_bytes_fetched: 11,
+                sync_bytes_persisted: 13,
+                repair_bytes_fetched: 17,
+                repair_bytes_persisted: 19,
+                repair_escalations: 1,
+                recover_bytes_fetched: 23,
+                recover_bytes_persisted: 29,
+            }
+        );
     }
 }

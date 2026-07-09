@@ -300,8 +300,8 @@ mod tests {
             .map(|cf| cf.name().to_string())
             .collect();
 
-        // The two volumes partition all 18 column families with no overlap.
-        assert_eq!(meta.len() + bulk.len(), 18);
+        // The two volumes partition every column family with no overlap.
+        assert_eq!(meta.len() + bulk.len(), create_tape_store_configs().len());
         assert_eq!(bulk, vec!["track_data", "slice", "snapshot_artifact"]);
         assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
     }

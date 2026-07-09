@@ -14,8 +14,6 @@ use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::{fetch::fetch_state, Api};
 use tape_retry::{retry_if, RetryConfig};
-#[cfg(feature = "metrics")]
-use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -73,18 +71,6 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         self.context.set_state(state)?;
         if epoch > previous_epoch {
             self.context.metrics.inc_epoch_transitions();
-            #[cfg(feature = "metrics")]
-            {
-                // The rolled counters cover the epoch that just ended, not the
-                // one starting now.
-                crate::observe::roll_epoch(epoch.0.saturating_sub(1));
-                if let Ok(bytes) = serde_json::to_vec(&crate::observe::last_epoch()) {
-                    let _ = self.context.store.set_observe_last_epoch(&bytes);
-                }
-                if let Ok(bytes) = serde_json::to_vec(&crate::observe::lifetime()) {
-                    let _ = self.context.store.set_observe_lifetime(&bytes);
-                }
-            }
         }
 
         if let Err(error) = self.context.refresh_peers().await {

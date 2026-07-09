@@ -95,77 +95,30 @@ pub struct VolumeStats {
 /// Response from the node stats endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeStats {
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
     pub last_processed_slot: u64,
-    #[serde(default)]
     pub blocks_processed: u64,
-    #[serde(default)]
     pub epoch_transitions: u64,
-    #[serde(default)]
     pub current_epoch: u64,
-    #[serde(default)]
     pub owned_spools: u64,
-    #[serde(default)]
     pub tracks_stored: u64,
-    #[serde(default)]
     pub slice_payload_bytes: u64,
-    #[serde(default)]
     pub store_disk_bytes: u64,
-    #[serde(default)]
     pub free_disk_bytes: Option<u64>,
-    #[serde(default)]
     pub disk_volumes: Vec<VolumeStats>,
-    #[serde(default)]
     pub reclaim_pending: bool,
-    #[serde(default)]
     pub slices_stored: u64,
-    #[serde(default)]
     pub bytes_uploaded: u64,
-    #[serde(default)]
     pub bytes_downloaded: u64,
-    #[serde(default)]
     pub requests_total: u64,
-    #[serde(default)]
     pub ingest_state: String,
-    #[serde(default)]
     pub ingest_lag_slots: u64,
-    #[serde(default)]
     pub ingest_tip_slot: u64,
-    #[serde(default)]
+    pub ingest_fetch_slot: u64,
+    pub ingest_queue_len: u64,
     pub bootstrap_done: bool,
-    #[serde(default)]
     pub bootstrap_phase: String,
-    #[serde(default)]
     pub bootstrap_current_slot: u64,
-    #[serde(default)]
-    pub bootstrap_target_slot: u64,}
-
-/// Project the wire stats onto the dashboard's per-node stats.
-impl From<&NodeStats> for tape_observe_api::NodeStats {
-    fn from(s: &NodeStats) -> Self {
-        Self {
-            version: s.version.clone(),
-            owned_spools: s.owned_spools,
-            tracks_stored: s.tracks_stored,
-            slices_stored: s.slices_stored,
-            slice_payload_bytes: s.slice_payload_bytes,
-            store_disk_bytes: s.store_disk_bytes,
-            free_disk_bytes: s.free_disk_bytes.unwrap_or(0),
-            current_epoch: s.current_epoch,
-            ingest_state: s.ingest_state.clone(),
-            ingest_lag_slots: s.ingest_lag_slots,
-            reclaim_pending: s.reclaim_pending,
-            blocks_processed: s.blocks_processed,
-            bootstrap_ready: s.bootstrap_done,
-            bootstrap_behind_slots: if s.bootstrap_done {
-                0
-            } else {
-                s.bootstrap_target_slot.saturating_sub(s.bootstrap_current_slot)
-            },
-        }
-    }
+    pub bootstrap_target_slot: u64,
 }
 
 /// Payload for slice upload requests.

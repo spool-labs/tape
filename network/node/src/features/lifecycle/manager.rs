@@ -93,7 +93,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rpc::Rpc;
 use store::Store;
@@ -238,8 +238,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         let state = self.context.state();
         let node = self.context.node_address();
+        let now = unix_now();
 
-        let Some(action) = next_action(&state, node, done) else {
+        let Some(action) = next_action(&state, node, done, now) else {
             return;
         };
 
@@ -308,11 +309,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
 /// Determine the next epoch action based on current state.
 ///
-/// Returns None if no action is needed (waiting for phase change or next epoch).
+/// The now argument is wall-clock unix seconds, used to gate CommitEpoch on the
+/// elapsed epoch duration. Returns None if no action is needed (waiting for a
+/// phase change, the commit window, or the next epoch).
 pub fn next_action(
     state: &ProtocolState,
     node: Address,
     done: &HashSet<Action>,
+    now: i64,
 ) -> Option<Action> {
 
     let in_current = state.find_member(node).is_some();
@@ -357,13 +361,22 @@ pub fn next_action(
                 return None;
             }
 
-            // JoinCommittee: gated by time, checked by the task itself.
-            if !in_next && !done.contains(&Action::JoinCommittee) {
+            // JoinCommittee: gated to the last tenth of the epoch. Joining early
+            // only starts the commit-eligibility clock sooner and races other
+            // members for the same window, so hold until 90% elapsed. The
+            // program does not reject an early join, so this gate is local.
+            if !in_next
+                && !done.contains(&Action::JoinCommittee)
+                && join_window_open(state, now)
+            {
                 return Some(Action::JoinCommittee);
             }
 
             // CommitEpoch: captures the next-epoch nonce and enters Closing.
-            if !done.contains(&Action::CommitEpoch) {
+            // Gated on the elapsed epoch duration so we never spawn a task that
+            // would only submit TooSoon-rejected transactions until the window
+            // opens; the 1s heartbeat re-evaluates cheaply.
+            if !done.contains(&Action::CommitEpoch) && commit_window_open(state, now) {
                 return Some(Action::CommitEpoch);
             }
 
@@ -385,6 +398,61 @@ pub fn next_action(
             None
         }
     }
+}
+
+/// Wall-clock instant (unix seconds) at which the active epoch's CommitEpoch is
+/// accepted on chain; before it the program rejects the tx as too soon. Reads
+/// the per-epoch stamped duration, so it is recomputed per epoch, never cached.
+pub fn commit_at(state: &ProtocolState) -> i64 {
+    let epoch = &state.current.epoch;
+    epoch
+        .start_time
+        .saturating_add(epoch.preferences.epoch_duration.0 as i64)
+}
+
+/// True once the active epoch's committed duration has elapsed against `now`.
+fn commit_window_open(state: &ProtocolState, now: i64) -> bool {
+    now >= commit_at(state)
+}
+
+/// Fraction of the epoch (nine tenths) that must elapse before a node joins the
+/// next committee. Joining earlier only starts the commit clock sooner and
+/// contends for the same slots.
+const JOIN_GATE_NUM: i64 = 9;
+const JOIN_GATE_DENOM: i64 = 10;
+
+/// Wall-clock instant (unix seconds) at which JoinCommittee is planned: 90% of
+/// the way through the current epoch's stamped duration.
+pub fn join_at(state: &ProtocolState) -> i64 {
+    let epoch = &state.current.epoch;
+    let elapsed = (epoch.preferences.epoch_duration.0 as i64)
+        .saturating_mul(JOIN_GATE_NUM)
+        / JOIN_GATE_DENOM;
+    epoch.start_time.saturating_add(elapsed)
+}
+
+/// True once the epoch is at least 90% elapsed against `now`.
+fn join_window_open(state: &ProtocolState, now: i64) -> bool {
+    now >= join_at(state)
+}
+
+/// Current wall-clock time in unix seconds. Clamped to 0 before the unix epoch.
+pub fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// This node's 0-based position in the current committee, used to stagger
+/// contended submissions. Falls back to 0 (submit first) when not found.
+pub fn committee_rank(state: &ProtocolState, node: Address) -> usize {
+    state
+        .current
+        .committee
+        .iter()
+        .position(|m| m.node == node)
+        .unwrap_or(0)
 }
 
 fn assignment_ready(state: &ProtocolState) -> bool {
@@ -426,12 +494,15 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{EpochPhase, Member};
     use tape_core::types::coin::TAPE;
-    use tape_core::types::{EpochNumber, StorageUnits};
+    use tape_core::types::{EpochDuration, EpochNumber, StorageUnits};
     use tape_crypto::{Address, Hash};
     use tape_protocol::{EpochBundle, ProtocolState};
 
-    use super::next_action;
+    use super::{commit_at, join_at, next_action};
     use crate::features::lifecycle::types::Action;
+
+    // A wall-clock instant well past any zeroed epoch's commit window.
+    const NOW: i64 = 1_000_000_000;
 
     fn member(node: Address) -> Member {
         Member {
@@ -496,7 +567,7 @@ mod tests {
         let state = state_with_previous_spool(node, EpochPhase::Snapshot);
         let done = HashSet::new();
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, Some(Action::AdvancePool));
     }
@@ -508,7 +579,7 @@ mod tests {
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, None);
     }
@@ -520,7 +591,7 @@ mod tests {
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, None);
     }
@@ -539,7 +610,7 @@ mod tests {
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, Some(Action::CommitEpoch));
     }
@@ -551,7 +622,7 @@ mod tests {
         let mut done = HashSet::new();
         done.insert(Action::PrepareNextEpoch);
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, None);
     }
@@ -563,7 +634,7 @@ mod tests {
         let mut done = HashSet::new();
         done.insert(Action::PrepareNextEpoch);
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, None);
     }
@@ -575,7 +646,7 @@ mod tests {
         let mut done = HashSet::new();
         done.insert(Action::PrepareNextEpoch);
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, Some(Action::AdvanceEpoch));
     }
@@ -586,8 +657,83 @@ mod tests {
         let state = state_with_next_assignment(EpochPhase::Closing, Hash::from([7; 32]), 8, 8);
         let done = HashSet::new();
 
-        let action = next_action(&state, node, &done);
+        let action = next_action(&state, node, &done, NOW);
 
         assert_eq!(action, Some(Action::PrepareNextEpoch));
+    }
+
+    // An Active-phase, next-epoch-ready state where the local node is already in
+    // the next committee, so the only remaining action is CommitEpoch.
+    fn commit_ready_state(node: Address, start_time: i64, duration: u64) -> ProtocolState {
+        let mut state = state_with_phase(EpochPhase::Active);
+        state.current.epoch.start_time = start_time;
+        state.current.epoch.preferences.epoch_duration = EpochDuration(duration);
+        state.next_epoch = Some(Epoch {
+            id: state.epoch().next(),
+            ..Epoch::zeroed()
+        });
+        state.next_committee = Some(vec![member(node)]);
+        state.next_committee_capacity = Some(state.system.committee_size);
+        state.peer_capacity = state.system.committee_size.saturating_mul(3);
+        state
+    }
+
+    // CommitEpoch is withheld until the stamped epoch duration has elapsed.
+    #[test]
+    fn commit_gated_before_window() {
+        let node = Address::new_unique();
+        let state = commit_ready_state(node, 500, 100);
+        let mut done = HashSet::new();
+        done.insert(Action::AdvancePool);
+
+        assert_eq!(commit_at(&state), 600);
+        assert_eq!(next_action(&state, node, &done, 599), None);
+    }
+
+    // CommitEpoch is planned the moment the window opens.
+    #[test]
+    fn commit_after_window() {
+        let node = Address::new_unique();
+        let state = commit_ready_state(node, 500, 100);
+        let mut done = HashSet::new();
+        done.insert(Action::AdvancePool);
+
+        assert_eq!(
+            next_action(&state, node, &done, 600),
+            Some(Action::CommitEpoch)
+        );
+    }
+
+    // Setup-ready Active state where this node is NOT yet in the next committee,
+    // so JoinCommittee is the pending action once the join window opens.
+    fn join_ready_state(start_time: i64, duration: u64) -> ProtocolState {
+        let mut state = state_with_phase(EpochPhase::Active);
+        state.current.epoch.start_time = start_time;
+        state.current.epoch.preferences.epoch_duration = EpochDuration(duration);
+        state.next_epoch = Some(Epoch {
+            id: state.epoch().next(),
+            ..Epoch::zeroed()
+        });
+        // Next committee is full, but with a different node, so this one must join.
+        state.next_committee = Some(vec![member(Address::new_unique())]);
+        state.next_committee_capacity = Some(state.system.committee_size);
+        state.peer_capacity = state.system.committee_size.saturating_mul(3);
+        state
+    }
+
+    // JoinCommittee is withheld until 90% of the epoch has elapsed, then planned.
+    #[test]
+    fn join_gated_to_last_tenth() {
+        let node = Address::new_unique();
+        let state = join_ready_state(500, 100); // join window opens at 590
+        let mut done = HashSet::new();
+        done.insert(Action::AdvancePool);
+
+        assert_eq!(join_at(&state), 590);
+        assert_eq!(next_action(&state, node, &done, 589), None);
+        assert_eq!(
+            next_action(&state, node, &done, 590),
+            Some(Action::JoinCommittee)
+        );
     }
 }

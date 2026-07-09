@@ -34,6 +34,28 @@ pub struct DiskVolume {
     pub free_bytes: Option<u64>,
 }
 
+/// Best-effort on-disk usage for one column family, tagged with its volume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfDiskUsage {
+    /// Column family name.
+    pub cf: String,
+    /// Physical volume the column lives on.
+    pub volume: StoreVolume,
+    /// Bytes held in SST files.
+    pub sst_bytes: u64,
+    /// Bytes held in blob files, zero for columns that store values inline.
+    pub blob_bytes: u64,
+    /// Estimated live key count.
+    pub num_keys: u64,
+}
+
+impl CfDiskUsage {
+    /// Total on-disk bytes for the column family (SST plus blob files).
+    pub fn total_bytes(&self) -> u64 {
+        self.sst_bytes.saturating_add(self.blob_bytes)
+    }
+}
+
 /// Trait for key-value storage with column family support
 ///
 /// All implementations must be thread-safe (Send + Sync).
@@ -106,16 +128,14 @@ pub trait Store: Send + Sync {
         Ok(None)
     }
 
-    /// Cheap on-disk footprint of persisted live data, safe to poll on every
-    /// scrape. Must not walk the filesystem; backends that cannot answer
-    /// cheaply return nothing. Required so delegating stores cannot silently
-    /// inherit a no-answer default.
-    fn live_data_size_bytes(&self) -> Result<Option<u64>>;
-
-    /// Cheap approximate key count for a named column family, safe to poll.
-    /// Backends that cannot estimate cheaply return nothing. Required for the
-    /// same reason.
-    fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>>;
+    /// Best-effort on-disk usage per column family.
+    ///
+    /// Persistent backends report SST and blob-file bytes and an estimated key
+    /// count for each column family, tagged with its volume. Backends that
+    /// cannot introspect cheaply return an empty vec.
+    fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
+        Ok(Vec::new())
+    }
 
     /// Best-effort background space reclamation.
     ///

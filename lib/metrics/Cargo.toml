@@ -10,6 +10,3 @@ metrics = ["prometheus"]
 
 [dependencies]
 prometheus = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-prometheus = { workspace = true, optional = true, features = ["process"] }

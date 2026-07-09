@@ -9,7 +9,9 @@ use rocksdb::{
     WriteBatch as RocksWriteBatch,
 };
 
-use store::{BatchOp, Direction, Error, Result, Store, StoreIter, WriteBatch};
+use store::{
+    BatchOp, CfDiskUsage, Direction, Error, Result, Store, StoreIter, StoreVolume, WriteBatch,
+};
 
 #[cfg(feature = "metrics")]
 use store::get_metrics;
@@ -810,36 +812,29 @@ impl Store for RocksStore {
             .map_err(Error::Io)
     }
 
-    fn live_data_size_bytes(&self) -> Result<Option<u64>> {
-        // SST plus blob files, since the bulk store keeps slice payloads in BlobDB.
-        let mut total = 0u64;
-        for cf in self
-            .column_families
-            .iter()
-            .map(String::as_str)
-            .chain(std::iter::once("default"))
-        {
+    fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
+        let mut usage = Vec::with_capacity(self.column_families.len());
+        for cf in self.column_families.iter().map(String::as_str) {
             let Some(handle) = self.db.cf_handle(cf) else {
                 continue;
             };
-            for prop in ["rocksdb.total-sst-files-size", "rocksdb.total-blob-file-size"] {
-                if let Ok(Some(bytes)) = self.db.property_int_value_cf(&handle, prop) {
-                    total = total.saturating_add(bytes);
-                }
-            }
+            let read = |property: &str| {
+                self.db
+                    .property_int_value_cf(&handle, property)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0)
+            };
+            usage.push(CfDiskUsage {
+                cf: cf.to_string(),
+                // A single instance is one volume; the split store overrides this per half.
+                volume: StoreVolume::Primary,
+                sst_bytes: read("rocksdb.total-sst-files-size"),
+                blob_bytes: read("rocksdb.total-blob-file-size"),
+                num_keys: read("rocksdb.estimate-num-keys"),
+            });
         }
-        Ok(Some(total))
-    }
-
-    fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
-        let Some(handle) = self.db.cf_handle(cf) else {
-            return Ok(None);
-        };
-        Ok(self
-            .db
-            .property_int_value_cf(&handle, "rocksdb.estimate-num-keys")
-            .ok()
-            .flatten())
+        Ok(usage)
     }
 
     fn reclaim_space(&self) -> Result<()> {

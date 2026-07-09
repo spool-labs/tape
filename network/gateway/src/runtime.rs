@@ -67,12 +67,6 @@ where
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
 
-    #[cfg(feature = "metrics")]
-    if context.config.metrics.enabled {
-        tape_node::observe::mark_gateway_boards();
-        tape_node::observe::register_block_channels(&senders, &store_tx);
-    }
-
     supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));
 
     supervisor.spawn(

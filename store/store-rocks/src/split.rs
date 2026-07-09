@@ -9,7 +9,9 @@
 //! Pointing both instances at the same device gives the old single-device
 //! layout, so a one-drive box needs no special handling.
 
-use store::{BatchOp, DiskVolume, Direction, Result, Store, StoreIter, StoreVolume, WriteBatch};
+use store::{
+    BatchOp, CfDiskUsage, DiskVolume, Direction, Result, Store, StoreIter, StoreVolume, WriteBatch,
+};
 
 use crate::RocksStore;
 
@@ -170,16 +172,6 @@ impl Store for SplitStore {
         Ok([meta, bulk].into_iter().flatten().min())
     }
 
-    fn live_data_size_bytes(&self) -> Result<Option<u64>> {
-        let meta = self.meta.live_data_size_bytes()?;
-        let bulk = self.bulk.live_data_size_bytes()?;
-        Ok([meta, bulk].into_iter().flatten().reduce(u64::saturating_add))
-    }
-
-    fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
-        self.route(cf).key_count_estimate(cf)
-    }
-
     fn reclaim_space(&self) -> Result<()> {
         self.meta.reclaim_space()?;
         self.bulk.reclaim_space()
@@ -198,6 +190,21 @@ impl Store for SplitStore {
                 free_bytes: self.bulk.available_disk_bytes()?,
             },
         ])
+    }
+
+    fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
+        // A leaf instance cannot know its role, so tag each half here rather
+        // than trusting the leaf's default volume.
+        let mut usage = Vec::new();
+        for mut entry in self.meta.cf_disk_usage()? {
+            entry.volume = StoreVolume::Primary;
+            usage.push(entry);
+        }
+        for mut entry in self.bulk.cf_disk_usage()? {
+            entry.volume = StoreVolume::Bulk;
+            usage.push(entry);
+        }
+        Ok(usage)
     }
 }
 
@@ -263,23 +270,6 @@ mod tests {
         assert_eq!(store.get("slice", b"b").unwrap(), Some(b"2".to_vec()));
         // The bulk batch did not leak into the metadata volume.
         assert_eq!(store.meta().get("meta", b"b").unwrap(), None);
-    }
-
-    // key count estimates route to the column family's owning instance
-    #[test]
-    fn key_count_estimate_routes() {
-        let dir = tempdir().unwrap();
-        let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
-
-        for i in 0..50u8 {
-            store.put("meta", &[i], b"m").unwrap();
-            store.put("slice", &[i], b"s").unwrap();
-        }
-        store.flush().unwrap();
-
-        assert!(store.key_count_estimate("meta").unwrap().unwrap_or(0) > 0);
-        assert!(store.key_count_estimate("slice").unwrap().unwrap_or(0) > 0);
-        assert!(store.live_data_size_bytes().unwrap().unwrap_or(0) > 0);
     }
 
     // disk usage is reported as a primary and a bulk volume

@@ -10,9 +10,6 @@ pub const NODE_HEALTH_PATH: &str = "/v1/health";
 pub const NODE_INFO_PATH: &str = "/v1/info";
 pub const NODE_METRICS_PATH: &str = "/v1/metrics";
 pub const NODE_STATS_PATH: &str = "/v1/stats";
-pub const OBSERVE_BOARD_PATH: &str = tape_observe_api::BOARD_PATH;
-pub const OBSERVE_NETWORK_PATH: &str = tape_observe_api::NETWORK_PATH;
-pub const OBSERVE_PEER_PATH: &str = tape_observe_api::PEER_BOARD_PATH;
 
 pub const VOTE_PATH: &str = "/v1/votes";
 
