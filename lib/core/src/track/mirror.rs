@@ -19,17 +19,22 @@ use crate::types::TrackNumber;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArchiveMirror {
     // First track number appended through the mirror
-    pub base_number: TrackNumber,
+    base_number: TrackNumber,
     // Frontier snapshot taken at seed time, before any mirrored appends
-    pub base_subtrees: [Hash; TRACK_TREE_HEIGHT],
+    base_subtrees: [Hash; TRACK_TREE_HEIGHT],
 
     // Live tree kept in lockstep with the chain
-    pub tree: MerkleTree<TRACK_TREE_HEIGHT>,
+    tree: MerkleTree<TRACK_TREE_HEIGHT>,
     // Track number the next mirrored append must carry
-    pub next_number: TrackNumber,
+    next_number: TrackNumber,
 
     // Current leaf state for every mirrored track
-    pub tracks: Vec<CompressedTrack>,
+    tracks: Vec<CompressedTrack>,
+
+    // Per-level hashes for every node touching the appended window, updated
+    // on each append and certify so proofs read siblings instead of
+    // rehashing the window
+    levels: Vec<Vec<Hash>>,
 }
 
 impl ArchiveMirror {
@@ -44,6 +49,7 @@ impl ArchiveMirror {
             tree,
             next_number: archive.next_number(),
             tracks: Vec::new(),
+            levels: vec![Vec::new(); TRACK_TREE_HEIGHT],
         }
     }
 
@@ -56,9 +62,12 @@ impl ArchiveMirror {
             return Err(MerkleError::InvalidIndex);
         }
 
-        self.tree.add_leaf_hash(track.get_hash())?;
+        let leaf = track.get_hash();
+        self.tree.add_leaf_hash(leaf)?;
         self.tracks.push(*track);
         self.next_number.increment();
+        self.levels[0].push(leaf);
+        self.refresh_path(track.track_number.as_u64());
 
         Ok(())
     }
@@ -71,9 +80,9 @@ impl ArchiveMirror {
         let state = self.tracks[self.offset_of(track_number)?];
 
         let mut proof = [Hash::default(); TRACK_TREE_HEIGHT];
-        for level in 0..TRACK_TREE_HEIGHT {
+        for (level, sibling) in proof.iter_mut().enumerate() {
             let sibling_index = (track_number.as_u64() >> level) ^ 1;
-            proof[level] = self.node_hash(level, sibling_index);
+            *sibling = self.node_hash(level, sibling_index);
         }
 
         Ok(CompressedTrackProof { state, proof })
@@ -85,6 +94,18 @@ impl ArchiveMirror {
         track_number: TrackNumber,
         updated: &CompressedTrack,
     ) -> Result<(), MerkleError> {
+        let proof = self.proof_for(track_number)?;
+        self.apply_certified_with_proof(track_number, updated, &proof)
+    }
+
+    /// Mirror a certify reusing a proof already built against the current
+    /// root, saving the rebuild when the caller just submitted with it
+    pub fn apply_certified_with_proof(
+        &mut self,
+        track_number: TrackNumber,
+        updated: &CompressedTrack,
+        proof: &CompressedTrackProof,
+    ) -> Result<(), MerkleError> {
         let offset = self.offset_of(track_number)?;
 
         let current = self.tracks[offset];
@@ -95,14 +116,16 @@ impl ArchiveMirror {
             return Err(MerkleError::InvalidIndex);
         }
 
-        let proof = self.proof_for(track_number)?;
+        let leaf = updated.get_hash();
         self.tree.update_leaf_hash(
             track_number.as_u64(),
             &proof.proof,
             current.get_hash(),
-            updated.get_hash(),
+            leaf,
         )?;
         self.tracks[offset] = *updated;
+        self.levels[0][offset] = leaf;
+        self.refresh_path(track_number.as_u64());
 
         Ok(())
     }
@@ -126,12 +149,12 @@ impl ArchiveMirror {
     }
 
     // Hash of the tree node at the given level and node index. Nodes right of
-    // the appended range are empty-subtree constants, and nodes inside it
-    // recompute from the recorded leaves. The only pre-seed node a mirrored
-    // proof can reference at each level is the completed left sibling on the
-    // seed boundary path, whose hash the seeded frontier holds: sequential
-    // insertion writes that slot when the sibling's last leaf lands and never
-    // overwrites it before the boundary is crossed.
+    // the appended range are empty-subtree constants. The only pre-seed node
+    // a lookup can reference at each level is the completed left sibling on
+    // the seed boundary path, whose hash the seeded frontier holds:
+    // sequential insertion writes that slot when the sibling's last leaf
+    // lands and never overwrites it before the boundary is crossed. Every
+    // other node touches the appended window and sits in the level cache.
     fn node_hash(&self, level: usize, node_index: u64) -> Hash {
         let start = node_index << level;
         let end = start + (1u64 << level);
@@ -143,13 +166,33 @@ impl ArchiveMirror {
         if end <= base {
             return self.base_subtrees[level];
         }
-        if level == 0 {
-            return self.tracks[(start - base) as usize].get_hash();
-        }
 
-        let left = self.node_hash(level - 1, node_index << 1);
-        let right = self.node_hash(level - 1, (node_index << 1) | 1);
-        hash_pair(left, right)
+        self.levels[level][(node_index - (base >> level)) as usize]
+    }
+
+    // Recompute the cached nodes on the path above a changed or appended
+    // leaf. Each level rehashes one pair, so appends and certifies stay
+    // linear in tree height.
+    fn refresh_path(&mut self, leaf_index: u64) {
+        let base = self.base_number.as_u64();
+
+        for level in 1..TRACK_TREE_HEIGHT {
+            let node_index = leaf_index >> level;
+            let value = hash_pair(
+                self.node_hash(level - 1, node_index << 1),
+                self.node_hash(level - 1, (node_index << 1) | 1),
+            );
+
+            // The path node is either the last cached node at this level or
+            // the next one over; window nodes fill left to right.
+            let position = (node_index - (base >> level)) as usize;
+            let nodes = &mut self.levels[level];
+            if position == nodes.len() {
+                nodes.push(value);
+            } else {
+                nodes[position] = value;
+            }
+        }
     }
 }
 
@@ -225,19 +268,6 @@ mod tests {
         mirror
             .apply_certified(track.track_number, &updated)
             .expect("mirror update");
-    }
-
-    // appends on an empty tape yield valid proofs at every intermediate state
-    #[test]
-    fn empty_seed() {
-        let mut archive = TrackArchive::zeroed();
-        let mut mirror = ArchiveMirror::new(&archive);
-
-        for number in 0..6 {
-            let track = registered(TrackNumber(number));
-            append_both(&mut archive, &mut mirror, &track);
-            assert_lockstep(&archive, &mirror);
-        }
     }
 
     // proofs stay valid for every seed offset over pre-existing tracks

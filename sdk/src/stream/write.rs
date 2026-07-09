@@ -4,19 +4,21 @@ use std::time::Duration;
 
 use futures::stream::{self, FuturesOrdered, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
 
-use rpc::Rpc;
+use rpc::{CommitmentLevel, Rpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Tape;
 use tape_core::prelude::CompressedTrack;
 use tape_core::track::mirror::ArchiveMirror;
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 use tape_protocol::Api;
+use tape_retry::{retry_if, RetryConfig};
 
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
@@ -26,7 +28,7 @@ use crate::track::write::{
     certified_track, certify_submit_with_retry, certify_with_retry, collect_certification,
     encode_blob, inline_write_fits, register_blob_processed, resolve_sent_blob,
     should_retry_certification, submit_blob_with_logical_size, submit_certification_with_proof,
-    submit_raw_with_logical_size, upload_with_retry, wait_for_certified_track, CertifySend,
+    submit_raw_with_logical_size, upload_with_retry, wait_for_certified_track,
     UploadPlan, WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
 };
 use crate::transfer::certify::CollectedSignatures;
@@ -58,13 +60,6 @@ const MAX_ENCODE_WORKERS: usize = 4;
 /// Events need confirmed level, so this hides that wait while the registers
 /// themselves only pay a processed-level wait each.
 const RESOLVE_CONCURRENCY: usize = 3;
-
-/// Attempts for the end-of-stream root comparison; the confirmed root can
-/// briefly trail the last processed certify.
-const ROOT_CHECK_ATTEMPTS: usize = 10;
-
-/// Delay between root comparison attempts.
-const ROOT_CHECK_INTERVAL: Duration = Duration::from_millis(400);
 
 /// Stored chunks whose signatures are collected ahead of the serial certify
 /// submits. Collections hold no slice data, so lookahead is cheap.
@@ -219,10 +214,13 @@ pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
     data: &[u8],
 ) -> Result<StreamReceipt, TapedriveError> {
     let size = StorageUnits::from_bytes(data.len() as u64);
-    let chunk_count = prepare_write(client, tape_key, name, size).await?;
-    let chunk_sources = stream::iter(data.chunks(MAX_TRACK_SIZE).map(Ok::<_, TapedriveError>));
+    let (tape, chunk_count) = prepare_write(client, tape_key, name, size).await?;
+    let chunk_sources = stream::iter(
+        data.chunks(MAX_TRACK_SIZE)
+            .map(|chunk| Ok::<_, TapedriveError>(chunk.to_vec())),
+    );
     let pending_chunks =
-        pipeline_chunks(client, tape_key, size, chunk_count, chunk_sources).await?;
+        pipeline_chunks(client, tape_key, &tape, size, chunk_count, chunk_sources).await?;
 
     finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
 }
@@ -236,7 +234,7 @@ pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unp
     size: StorageUnits,
     mut reader: Reader,
 ) -> Result<StreamReceipt, TapedriveError> {
-    let chunk_count = prepare_write(client, tape_key, name, size).await?;
+    let (tape, chunk_count) = prepare_write(client, tape_key, name, size).await?;
     let chunk_sources = stream::unfold(
         (&mut reader, 0usize),
         move |(reader, chunk_index)| async move {
@@ -248,19 +246,21 @@ pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unp
         },
     );
     let pending_chunks =
-        pipeline_chunks(client, tape_key, size, chunk_count, chunk_sources).await?;
+        pipeline_chunks(client, tape_key, &tape, size, chunk_count, chunk_sources).await?;
 
     verify_stream_drained(&mut reader).await?;
     finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
 }
 
-/// Validate the write upfront and return the chunk count.
+/// Validate the write upfront, returning the fetched tape and the chunk
+/// count. The tape carries the pre-stream track tree the pipeline seeds its
+/// mirror from, so the pipeline does not refetch it.
 async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     size: StorageUnits,
-) -> Result<TrackNumber, TapedriveError> {
+) -> Result<(Tape, TrackNumber), TapedriveError> {
     let timer = client
         .timer(Operation::WriteStream, Phase::Preflight)
         .bytes(size.to_bytes());
@@ -281,7 +281,7 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
 
         let tape = client.get_tape(&tape_key.address()).await?;
         preflight(&tape, total_size, tracks_needed)?;
-        Ok(chunk_count)
+        Ok((tape, chunk_count))
     }
     .await;
     timer.finish_result(&result);
@@ -295,9 +295,10 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
 /// track tree supplies certify proofs without per-chunk refetches. Stage
 /// errors cancel the whole pipeline; incomplete tracks are left for the
 /// recovery worker.
-async fn pipeline_chunks<Blockchain, Cluster, Bytes, Chunks>(
+async fn pipeline_chunks<Blockchain, Cluster, Chunks>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
+    tape: &Tape,
     size: StorageUnits,
     chunk_count: TrackNumber,
     chunk_sources: Chunks,
@@ -305,13 +306,11 @@ async fn pipeline_chunks<Blockchain, Cluster, Bytes, Chunks>(
 where
     Blockchain: Rpc,
     Cluster: Api,
-    Bytes: AsRef<[u8]>,
-    Chunks: Stream<Item = Result<Bytes, TapedriveError>>,
+    Chunks: Stream<Item = Result<Vec<u8>, TapedriveError>>,
 {
     // The mirror seeds from the pre-stream track tree; the resolve stage
     // appends every registered track and the certify stage proves against
     // and updates the same tree, so both share it behind a mutex.
-    let tape = client.get_tape(&tape_key.address()).await?;
     let mirror = Mutex::new(ArchiveMirror::new(&tape.tracks));
     let mirror = &mirror;
 
@@ -322,11 +321,10 @@ where
 
     // Registers and certifies rewrite the same track tree, so a certify
     // proof built while a register is still in flight is guaranteed stale.
-    // The resolve stage publishes how many registers it has mirrored and the
-    // register stage publishes its total on completion; the certify stage
-    // holds its first submit until the two agree.
-    let (appended_sender, mut appended_receiver) = watch::channel(0usize);
-    let (register_total_sender, register_total_receiver) = oneshot::channel();
+    // The resolve stage fires this once its loop completes, which is the
+    // moment every register is mirrored; the certify stage holds its first
+    // submit until then.
+    let (registers_mirrored_sender, registers_mirrored_receiver) = oneshot::channel::<()>();
 
     // Encoding is CPU-bound and single-threaded per chunk; encode several
     // chunks on blocking threads at once so idle cores shorten the encode
@@ -346,7 +344,7 @@ where
                     return Ok(());
                 }
             }
-            let data = chunk_data?.as_ref().to_vec();
+            let data = chunk_data?;
             let index = chunk_index;
             in_flight.push_back(async move {
                 encode_blob(client, data, Operation::WriteStream)
@@ -367,7 +365,6 @@ where
     // keep track numbers assigned in stream order, and the confirmed-level
     // event wait moves into the resolve stage.
     let register_stage = async move {
-        let mut sent_count = 0usize;
         while let Some((chunk_index, plan)) = encoded_receiver.recv().await {
             let logical_size = plan.storage_units;
             let sent = register_blob_processed(
@@ -383,9 +380,7 @@ where
             if sent_sender.send((chunk_index, sent)).await.is_err() {
                 break;
             }
-            sent_count += 1;
         }
-        let _ = register_total_sender.send(sent_count);
         Ok::<_, TapedriveError>(())
     };
 
@@ -417,7 +412,6 @@ where
                     let Some(resolved) = resolved else { continue };
                     let (chunk_index, (written, plan)) = resolved?;
                     append_to_mirror(mirror, &written).await?;
-                    appended_sender.send_modify(|appended| *appended += 1);
                     let registered = RegisteredChunk {
                         entry: ChunkEntry {
                             track_number: written.track.track_number,
@@ -434,6 +428,9 @@ where
                 }
             }
         }
+        // The loop only completes once every register sent has been
+        // mirrored; error exits drop the sender without firing.
+        let _ = registers_mirrored_sender.send(());
         Ok::<_, TapedriveError>(())
     };
 
@@ -488,7 +485,11 @@ where
         // so mirror proofs cannot be staled by this stream's own registers.
         // Collections keep running ahead; only proof generation and the
         // submits wait.
-        wait_for_registers_mirrored(register_total_receiver, &mut appended_receiver).await?;
+        registers_mirrored_receiver.await.map_err(|_| {
+            stream_error(StreamError::Chunk(
+                "resolve stage ended before mirroring every register".into(),
+            ))
+        })?;
 
         let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
         while let Some((pending, collected)) = collected_receiver.recv().await {
@@ -526,33 +527,6 @@ where
         certify_stage
     )?;
     Ok(pending_chunks)
-}
-
-/// Block certifies until the register stage has finished and the resolve
-/// stage has mirrored every register it sent. Past this point the track
-/// tree gains no new leaves until the manifest write, so certify proofs
-/// cannot conflict with this stream's own registers. The senders only drop
-/// without reporting when their stage failed, which cancels the pipeline.
-async fn wait_for_registers_mirrored(
-    register_total: oneshot::Receiver<usize>,
-    appended: &mut watch::Receiver<usize>,
-) -> Result<(), TapedriveError> {
-    let total = register_total.await.map_err(|_| {
-        stream_error(StreamError::Chunk(
-            "register stage ended without reporting its chunk total".into(),
-        ))
-    })?;
-
-    appended
-        .wait_for(|appended| *appended >= total)
-        .await
-        .map_err(|_| {
-            stream_error(StreamError::Chunk(
-                "resolve stage ended before mirroring every register".into(),
-            ))
-        })?;
-
-    Ok(())
 }
 
 /// Mirror a resolved register. A mirror reseeded from chain state mid-stream
@@ -599,12 +573,15 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
             tape_key,
             proof,
             collected,
-            CertifySend::Processed,
+            CommitmentLevel::Processed,
             Operation::WriteStream,
         )
         .await;
         match submitted {
-            Ok(()) => return apply_certified_to_mirror(client, tape_key, mirror, &certified).await,
+            Ok(()) => {
+                return apply_certified_to_mirror(client, tape_key, mirror, &certified, Some(&proof))
+                    .await
+            }
             // The signatures sign the leaf hash and stay valid across root
             // changes, so an interfering transaction only stales the proof;
             // retry with regenerated proofs before the peer path, which also
@@ -623,7 +600,7 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
     }
 
     certify_submit_with_retry(client, tape_key, written, Operation::WriteStream).await?;
-    apply_certified_to_mirror(client, tape_key, mirror, &certified).await
+    apply_certified_to_mirror(client, tape_key, mirror, &certified, None).await
 }
 
 /// Retry a conflicted mirror certify against refetched chain state, reusing
@@ -644,13 +621,11 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
         // confirmed view time to include it before refetching.
         sleep(CERTIFY_CONFLICT_DELAY).await;
 
-        // Hold the lock across the fetch so no append lands between the
-        // fetch and the reseed.
+        let reseeded = reseed_mirror(client, tape_key).await?;
         let proof = {
             let mut mirror = mirror.lock().await;
-            let tape = client.get_tape(&tape_key.address()).await?;
-            if tape.tracks.next_number() != mirror.next_number() {
-                *mirror = ArchiveMirror::new(&tape.tracks);
+            if reseeded.next_number() != mirror.next_number() {
+                *mirror = reseeded;
                 return Ok(false);
             }
             mirror.proof_for(certified.track_number)
@@ -664,13 +639,14 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
             tape_key,
             proof,
             collected,
-            CertifySend::Processed,
+            CommitmentLevel::Processed,
             Operation::WriteStream,
         )
         .await;
         match submitted {
             Ok(()) => {
-                apply_certified_to_mirror(client, tape_key, mirror, certified).await?;
+                apply_certified_to_mirror(client, tape_key, mirror, certified, Some(&proof))
+                    .await?;
                 return Ok(true);
             }
             Err(err) if should_retry_certification(&err) => {}
@@ -681,30 +657,62 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
     Ok(false)
 }
 
+/// Build a replacement mirror from refetched chain state. The certify stage
+/// is the only mirror user once certifies begin (every register is mirrored
+/// before the first proof), so the fetch runs before the caller takes the
+/// mirror lock and no append can land in between; no lock is held across
+/// the network await.
+async fn reseed_mirror<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+) -> Result<ArchiveMirror, TapedriveError> {
+    let tape = client.get_tape(&tape_key.address()).await?;
+    Ok(ArchiveMirror::new(&tape.tracks))
+}
+
 /// Replay a landed certify on the mirror; the chain wrote this exact leaf.
-/// If the mirror cannot apply it the mirror has diverged, so reseed it from
-/// chain state and let later certifies fall back until it covers them again.
+/// The fast path reuses the proof the certify was submitted with. If the
+/// mirror cannot apply the leaf it has diverged, so reseed it from chain
+/// state and let later certifies fall back until it covers them again.
 async fn apply_certified_to_mirror<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
     certified: &CompressedTrack,
+    proof: Option<&CompressedTrackProof>,
 ) -> Result<(), TapedriveError> {
-    let mut mirror = mirror.lock().await;
-    if mirror.apply_certified(certified.track_number, certified).is_ok() {
+    let applied = {
+        let mut mirror = mirror.lock().await;
+        match proof {
+            Some(proof) => {
+                mirror.apply_certified_with_proof(certified.track_number, certified, proof)
+            }
+            None => mirror.apply_certified(certified.track_number, certified),
+        }
+    };
+    if applied.is_ok() {
         return Ok(());
     }
 
-    // Hold the lock across the fetch so no append lands between the fetch
-    // and the reseed.
-    let tape = client.get_tape(&tape_key.address()).await?;
-    *mirror = ArchiveMirror::new(&tape.tracks);
+    let reseeded = reseed_mirror(client, tape_key).await?;
+    *mirror.lock().await = reseeded;
     Ok(())
 }
 
-/// Compare the mirrored root with the on-chain root. The confirmed root can
-/// briefly trail the last processed certify, so retry the comparison before
-/// declaring divergence.
+/// Flat short poll for the end-of-stream root comparison; the confirmed
+/// root can briefly trail the last processed certify, and a backoff would
+/// oversleep its arrival.
+fn root_poll_config() -> RetryConfig {
+    RetryConfig {
+        base_delay: Duration::from_millis(400),
+        max_delay: Duration::from_millis(400),
+        max_retries: Some(10),
+    }
+}
+
+/// Compare the mirrored root with the on-chain root, retrying the comparison
+/// before declaring divergence. A lasting mismatch means an external writer
+/// touched the tape mid-stream.
 async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -712,21 +720,25 @@ async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<(), TapedriveError> {
     let expected = mirror.lock().await.root();
 
-    let mut observed = Hash::default();
-    for attempt in 0..ROOT_CHECK_ATTEMPTS {
-        if attempt > 0 {
-            sleep(ROOT_CHECK_INTERVAL).await;
-        }
-        let tape = client.get_tape(&tape_key.address()).await?;
-        observed = tape.tracks.tree.root();
-        if observed == expected {
-            return Ok(());
-        }
-    }
+    retry_if(
+        root_poll_config(),
+        None,
+        || async {
+            let tape = client.get_tape(&tape_key.address()).await?;
+            let observed = tape.tracks.tree.root();
+            if observed == expected {
+                return Ok(());
+            }
 
-    Err(stream_error(StreamError::Integrity(format!(
-        "tape track tree diverged from the stream mirror: mirror root {expected}, chain root {observed}"
-    ))))
+            Err(stream_error(StreamError::Integrity(format!(
+                "tape track tree diverged from the stream mirror: mirror root {expected}, chain root {observed}"
+            ))))
+        },
+        // Only the mismatch itself is worth re-polling; fetch errors fail
+        // the stream as they always did.
+        |err| matches!(err, TapedriveError::Stream(_)),
+    )
+    .await
 }
 
 /// Read one chunk's bytes from the source reader.

@@ -3,7 +3,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc};
+use rpc::{CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
@@ -417,11 +417,13 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
+        .send_instructions_with_signers_and_compute_unit_limit(
             payer,
             TRACK_WRITE_CU,
             vec![write_ix],
             &[tape_signer],
+            client.rpc().rpc().commitment(),
+            true,
         )
         .await?;
 
@@ -579,11 +581,13 @@ pub(crate) async fn register_blob_processed<Blockchain: Rpc, Cluster: Api>(
         .chunks(1);
     let result = client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit_processed(
+        .send_instructions_with_signers_and_compute_unit_limit(
             payer,
             TRACK_WRITE_CU,
             vec![write_ix],
             &[tape_signer],
+            CommitmentLevel::Processed,
+            true,
         )
         .await;
     register_timer.finish_result(&result);
@@ -607,11 +611,13 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
+        .send_instructions_with_signers_and_compute_unit_limit(
             payer,
             TRACK_WRITE_CU,
             vec![write_ix],
             &[tape_signer],
+            client.rpc().rpc().commitment(),
+            true,
         )
         .await?;
 
@@ -818,13 +824,6 @@ pub(crate) async fn collect_certification<Blockchain: Rpc, Cluster: Api>(
     result
 }
 
-/// Commitment level a certify transaction waits for after send.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CertifySend {
-    Confirmed,
-    Processed,
-}
-
 /// The track leaf the on-chain certify handler writes: certification flips
 /// the state to certified and changes nothing else.
 pub(crate) fn certified_track(track: &CompressedTrack) -> CompressedTrack {
@@ -853,21 +852,24 @@ pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
         tape_key,
         proof,
         collected,
-        CertifySend::Confirmed,
+        client.rpc().rpc().commitment(),
         operation,
     )
     .await
 }
 
-/// Submit the certify transaction for a prebuilt proof. The proof must be
-/// built against the tape root left by the previous certify, so calls on one
-/// tape must stay ordered regardless of send mode.
+/// Submit the certify transaction for a prebuilt proof, waiting for the given
+/// commitment. The proof is only valid against the tape root left by the
+/// previous certify, so calls on one tape must stay ordered regardless of
+/// commitment. Certifies always skip preflight: they sit on the
+/// latency-sensitive write path and rejections are not expected in steady
+/// state.
 pub(crate) async fn submit_certification_with_proof<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     proof: CompressedTrackProof,
     collected: &CollectedSignatures,
-    send: CertifySend,
+    commitment: CommitmentLevel,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     let payer = client.payer()?;
@@ -883,30 +885,17 @@ pub(crate) async fn submit_certification_with_proof<Blockchain: Rpc, Cluster: Ap
     );
 
     let submit = client.timer(operation, Phase::CertifySubmit);
-    let sent = match send {
-        CertifySend::Confirmed => {
-            client
-                .rpc()
-                .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
-                    payer,
-                    CERTIFY_TRACK_CU,
-                    vec![certify_ix],
-                    &[tape_signer],
-                )
-                .await
-        }
-        CertifySend::Processed => {
-            client
-                .rpc()
-                .send_instructions_with_signers_and_compute_unit_limit_processed(
-                    payer,
-                    CERTIFY_TRACK_CU,
-                    vec![certify_ix],
-                    &[tape_signer],
-                )
-                .await
-        }
-    };
+    let sent = client
+        .rpc()
+        .send_instructions_with_signers_and_compute_unit_limit(
+            payer,
+            CERTIFY_TRACK_CU,
+            vec![certify_ix],
+            &[tape_signer],
+            commitment,
+            true,
+        )
+        .await;
     let result = match sent {
         Ok(_) => Ok(()),
         Err(err) => match parse_tape_error(&err) {
