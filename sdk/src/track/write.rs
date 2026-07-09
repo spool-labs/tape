@@ -20,17 +20,15 @@ use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo, Track
 use tape_core::types::ContentType;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
-use futures::stream::StreamExt;
 use tape_protocol::Api;
-use tape_protocol::api::{GetTrackByNumberReq, GetTrackDataReq};
-use tape_retry::{retry, retry_if, RetryConfig, Retryable};
+use tape_protocol::api::GetTrackDataReq;
+use tape_retry::{retry, retry_if, Backoff, RetryConfig, Retryable};
 use tape_slicer::{num_stripes, pick_stripe_size};
 use tokio::time::sleep;
 
 use crate::codec::encoder::BlobEncoder;
 use crate::error::UploadError;
 use crate::error::TapedriveError;
-use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
@@ -38,20 +36,10 @@ use crate::track::{bootstrap_network_state, query};
 use crate::transfer::certify::CertificationCollector;
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 
-// The program accepts up to 10 KiB for raw TrackWrite payloads.
+// The program accepts up to 10 KiB for raw TrackWrite payloads, but an SDK end-user write must fit
+// inside a single Solana transaction packet. This can be adjusted in the future if 4k transactions
+// become widely supported.
 pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
-
-/// Poll cadence for visibility and certification waits.
-const POLL_INTERVAL_MS: u64 = 400;
-
-/// Visibility poll attempts before giving up.
-const VISIBILITY_POLL_LIMIT: usize = 30;
-
-/// Completion poll attempts before giving up, about 16s at the poll cadence.
-const COMPLETION_POLL_LIMIT: u32 = 40;
-
-/// Warn every Nth visibility poll while still waiting.
-const VISIBILITY_WARN_EVERY: usize = 5;
 
 pub const UNNAMED_TRACK: &[u8] = b"";
 pub const UNTYPED_TRACK: ContentType = ContentType::Unknown;
@@ -111,24 +99,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         data: &[u8],
     ) -> Result<CompressedTrack, TapedriveError> {
-        self.write_named_track_as(tape_key, name, content_type, data)
-            .await
-    }
-
-    /// Write a named track to an existing tape as the given operator.
-    pub async fn write_named_track_as(
-        &self,
-        operator: &impl TapeOperator,
-        name: impl AsRef<[u8]>,
-        content_type: ContentType,
-        data: &[u8],
-    ) -> Result<CompressedTrack, TapedriveError> {
         write_track(
-            self,
-            operator,
-            name.as_ref(),
+            self, 
+            tape_key, 
+            name.as_ref(), 
             content_type,
-            data,
+            data
         )
         .await
     }
@@ -317,7 +293,7 @@ pub(crate) fn inline_write_fits(name: &[u8], payload_len: usize) -> bool {
 
 async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
     raw: &[u8],
@@ -337,7 +313,7 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn submit_raw_with_logical_size<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -357,7 +333,7 @@ pub(crate) async fn submit_raw_with_logical_size<Blockchain: Rpc, Cluster: Api>(
 
 async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -414,7 +390,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
@@ -434,7 +410,7 @@ pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -470,7 +446,7 @@ pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>
 
 async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -563,7 +539,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
         .chunks(chunks);
 
     let result = uploader
-        .upload_all(client.api.clone())
+        .upload_all(client.api.as_ref())
         .await
         .map_err(TapedriveError::Upload);
 
@@ -612,37 +588,32 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     let required = min_correct(state.group_member_count(group) as u64) as usize;
 
     let mut seen = HashSet::new();
-    let peers: Vec<_> = group_peers
+    let target = group_peers
         .iter()
         .filter(|(_, node_id)| seen.insert(*node_id))
-        .map(|(_, node_id)| *node_id)
-        .collect();
-    let target = peers.len();
+        .count();
 
-    let mut attempt = 0usize;
+    let mut backoff = Backoff::new(visibility_retry_config());
 
     loop {
-        // Probe every peer concurrently: a round costs one round-trip
-        // instead of one per peer.
-        let probes = peers.iter().map(|node_id| async move {
+        let mut visible = 0usize;
+        let mut seen = HashSet::new();
+
+        for (_, node_id) in &group_peers {
+            if !seen.insert(*node_id) {
+                continue;
+            }
+
             let req = GetTrackDataReq { track: track_address };
             match client.api.get_track_data(*node_id, &req).await {
-                Ok(_) => true,
-                Err(error) => {
-                    debug!(
-                        node = %node_id,
-                        error = %error,
-                        "track metadata not yet visible on node"
-                    );
-                    false
-                }
+                Ok(_) => visible += 1,
+                Err(error) => debug!(
+                    node = %node_id,
+                    error = %error,
+                    "track metadata not yet visible on node"
+                ),
             }
-        });
-        let visible = futures::future::join_all(probes)
-            .await
-            .into_iter()
-            .filter(|visible| *visible)
-            .count();
+        }
 
         if visible >= required {
             if visible < target {
@@ -656,24 +627,22 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             return Ok(());
         }
 
-        attempt += 1;
-        if attempt > VISIBILITY_POLL_LIMIT {
+        let Some(delay) = backoff.next_delay() else {
             return Err(TapedriveError::Upload(UploadError::Network(format!(
                 "track metadata visible on {visible}/{target} nodes, need {required}"
             ))));
-        }
+        };
 
-        if attempt % VISIBILITY_WARN_EVERY == 0 {
-            warn!(
-                attempt,
-                visible,
-                target,
-                required,
-                "track metadata not yet visible on required nodes"
-            );
-        }
+        warn!(
+            attempt = backoff.attempt(),
+            delay_ms = delay.as_millis() as u64,
+            visible,
+            target,
+            required,
+            "track metadata not yet visible on required nodes"
+        );
 
-        sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        sleep(delay).await;
     }
 }
 
@@ -718,7 +687,7 @@ fn should_retry_track_completion(err: &TrackCompletionError) -> bool {
 
 async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     written: &WrittenTrack,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
@@ -781,33 +750,16 @@ async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     track_number: TrackNumber,
 ) -> Result<CompressedTrack, TapedriveError> {
     let result = retry_if(
-        completion_poll_config(),
+        write_retry_config(),
         None,
         || async {
-            // Race every peer and accept the first response that is already
-            // certified: the fastest responder may lag the certify tx, so a
-            // fresh answer from any node wins over a quick stale one.
-            let peers = query::queryable_peers(client)
+            let track = query::query_track_by_number(client, tape, track_number)
                 .await
                 .map_err(TrackCompletionError::from)?;
-            let mut requests = query::race_peers(peers, |node| {
-                let req = GetTrackByNumberReq { tape: *tape, track_number };
-                async move { client.api.get_track_by_number(node, &req).await }
-            });
-
-            let mut uncertified = None;
-            while let Some(result) = requests.next().await {
-                if let Ok(res) = result {
-                    if res.track.is_certified() {
-                        return Ok(res.track);
-                    }
-                    uncertified = Some(res.track);
-                }
-            }
-
-            match uncertified {
-                Some(_) => Err(TrackCompletionError::NotCertifiedYet),
-                None => Err(TrackCompletionError::Client(TapedriveError::NotFound)),
+            if track.is_certified() {
+                Ok(track)
+            } else {
+                Err(TrackCompletionError::NotCertifiedYet)
             }
         },
         should_retry_track_completion,
@@ -825,7 +777,7 @@ async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
 
 pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
@@ -880,7 +832,7 @@ pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+    tape_key: &TapeKey,
     written: &WrittenTrack,
     operation: Operation,
 ) -> Result<CompressedTrack, TapedriveError> {
@@ -921,13 +873,11 @@ fn write_retry_config() -> RetryConfig {
     }
 }
 
-/// Flat short poll for states that land within seconds; a backoff would
-/// oversleep the arrival.
-fn completion_poll_config() -> RetryConfig {
+fn visibility_retry_config() -> RetryConfig {
     RetryConfig {
-        base_delay: Duration::from_millis(POLL_INTERVAL_MS),
-        max_delay: Duration::from_millis(POLL_INTERVAL_MS),
-        max_retries: Some(COMPLETION_POLL_LIMIT),
+        base_delay: Duration::from_millis(500),
+        max_delay: Duration::from_secs(5),
+        max_retries: Some(6),
     }
 }
 

@@ -1,4 +1,3 @@
-use futures::stream::{FuturesUnordered, StreamExt};
 use rpc::Rpc;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;
@@ -79,19 +78,6 @@ pub(crate) async fn queryable_peers<Blockchain: Rpc, Cluster: Api>(
     Ok(peers)
 }
 
-/// Race one request per peer, yielding results in completion order. The
-/// caller returns on the first useful response; dropping the stream cancels
-/// the rest.
-pub(crate) fn race_peers<PeerFuture>(
-    peers: Vec<Address>,
-    call: impl Fn(Address) -> PeerFuture,
-) -> FuturesUnordered<PeerFuture>
-where
-    PeerFuture: std::future::Future,
-{
-    peers.into_iter().map(call).collect()
-}
-
 fn finish_peer_query(last_error: Option<ApiError>, saw_not_found: bool) -> TapedriveError {
     if let Some(error) = last_error {
         TapedriveError::Peer(error)
@@ -112,12 +98,9 @@ pub async fn query_track<Blockchain: Rpc, Cluster: Api>(
     let mut saw_not_found = false;
     let mut last_error = None;
 
-    let mut requests = race_peers(peers, |node| {
+    for node in peers {
         let req = GetTrackReq { track: *track };
-        async move { client.api.get_track(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
+        match client.api.get_track(node, &req).await {
             Ok(res) => return Ok(res.track),
             Err(ApiError::NotFound) => saw_not_found = true,
             Err(error) => last_error = Some(error),
@@ -136,12 +119,9 @@ pub async fn query_track_by_number<Blockchain: Rpc, Cluster: Api>(
     let mut saw_not_found = false;
     let mut last_error = None;
 
-    let mut requests = race_peers(peers, |node| {
+    for node in peers {
         let req = GetTrackByNumberReq { tape: *tape, track_number };
-        async move { client.api.get_track_by_number(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
+        match client.api.get_track_by_number(node, &req).await {
             Ok(res) => return Ok(res.track),
             Err(ApiError::NotFound) => saw_not_found = true,
             Err(error) => last_error = Some(error),
@@ -161,16 +141,13 @@ pub async fn query_find_track<Blockchain: Rpc, Cluster: Api>(
     let mut saw_not_found = false;
     let mut last_error = None;
 
-    let mut requests = race_peers(peers, |node| {
+    for node in peers {
         let req = FindTrackReq {
             tape: *tape,
             key,
             version: version.clone(),
         };
-        async move { client.api.find_track(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
+        match client.api.find_track(node, &req).await {
             Ok(res) => return Ok(res.track),
             Err(ApiError::NotFound) => saw_not_found = true,
             Err(error) => last_error = Some(error),
@@ -189,16 +166,13 @@ pub async fn query_tracks_by_tape<Blockchain: Rpc, Cluster: Api>(
     let peers = queryable_peers(client).await?;
     let mut last_error = None;
 
-    let mut requests = race_peers(peers, |node| {
+    for node in peers {
         let req = ListTracksByTapeReq {
             tape: *tape,
             cursor,
             limit,
         };
-        async move { client.api.list_tracks_by_tape(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
+        match client.api.list_tracks_by_tape(node, &req).await {
             Ok(res) => return Ok((res.tracks, res.next_cursor)),
             Err(error) => last_error = Some(error),
         }
@@ -215,12 +189,9 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
     let mut saw_not_found = false;
     let mut last_error = None;
 
-    let mut requests = race_peers(peers, |node| {
+    for node in peers {
         let req = GetTrackProofReq { track: *track };
-        async move { client.api.get_track_proof(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
+        match client.api.get_track_proof(node, &req).await {
             Ok(res) => {
                 let tape_address: Address = res.proof.state.tape.into();
                 let tape = client

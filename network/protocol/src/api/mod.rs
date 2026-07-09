@@ -21,7 +21,7 @@ pub const JSON_CONTENT: &str = "application/json";
 
 
 #[async_trait]
-pub trait Api: Send + Sync + 'static {
+pub trait Api: Send + Sync {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError>;
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError>;
     async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError>;
