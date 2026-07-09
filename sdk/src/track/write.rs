@@ -358,7 +358,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit(
+        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
             payer,
             TRACK_WRITE_CU,
             vec![write_ix],
@@ -479,7 +479,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
 
     let signature = client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit(
+        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
             payer,
             TRACK_WRITE_CU,
             vec![write_ix],
@@ -726,7 +726,7 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     let submit = client.timer(operation, Phase::CertifySubmit);
     let result = match client
         .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit(
+        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
             payer,
             CERTIFY_TRACK_CU,
             vec![certify_ix],

@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use solana_account::Account;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcTransactionConfig};
+use solana_client::rpc_config::{
+    RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcTransactionConfig,
+};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -246,6 +248,69 @@ impl SolanaRpc {
     async fn reset_failover(&self) {
         let mut failover = self.failover.write().await;
         failover.reset();
+    }
+
+    /// Shared send-and-confirm loop for both preflighted and skipping paths.
+    async fn send_and_confirm_inner(
+        &self,
+        transaction: &Transaction,
+        skip_preflight: bool,
+    ) -> Result<Txid, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let transaction = transaction.clone();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                let send = async {
+                    if skip_preflight {
+                        client
+                            .send_and_confirm_transaction_with_spinner_and_config(
+                                &transaction,
+                                client.commitment(),
+                                RpcSendTransactionConfig {
+                                    skip_preflight: true,
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                    } else {
+                        client.send_and_confirm_transaction(&transaction).await
+                    }
+                };
+                tokio::time::timeout(self.config.timeout, send).await
+            };
+
+            match result {
+                Ok(Ok(sig)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "sendAndConfirmTransaction",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(sig.into());
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff)
+                        .await?;
+                }
+            }
+        }
     }
 
     /// Convert a ClientError to RpcError.
@@ -795,11 +860,8 @@ impl Rpc for SolanaRpc {
         loop {
             let result = {
                 let client = self.client.read().await;
-                tokio::time::timeout(
-                    self.config.timeout,
-                    client.send_transaction(&transaction),
-                )
-                .await
+                tokio::time::timeout(self.config.timeout, client.send_transaction(&transaction))
+                    .await
             };
 
             match result {
@@ -829,49 +891,14 @@ impl Rpc for SolanaRpc {
         &self,
         transaction: &Transaction,
     ) -> Result<Txid, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = tape_metrics::OperationTimer::new();
+        self.send_and_confirm_inner(transaction, false).await
+    }
 
-        let transaction = transaction.clone();
-        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
-
-        loop {
-            let result = {
-                let client = self.client.read().await;
-                tokio::time::timeout(
-                    self.config.timeout,
-                    client.send_and_confirm_transaction(&transaction),
-                )
-                .await
-            };
-
-            match result {
-                Ok(Ok(sig)) => {
-                    self.reset_failover().await;
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(metrics) = &self.metrics {
-                        metrics.record_request(
-                            "sendAndConfirmTransaction",
-                            "success",
-                            timer.elapsed_secs(),
-                        );
-                    }
-
-                    return Ok(sig.into());
-                }
-                Ok(Err(e)) => {
-                    let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff)
-                        .await?;
-                }
-                Err(_elapsed) => {
-                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff)
-                        .await?;
-                }
-            }
-        }
+    async fn send_and_confirm_transaction_skip_preflight(
+        &self,
+        transaction: &Transaction,
+    ) -> Result<Txid, RpcError> {
+        self.send_and_confirm_inner(transaction, true).await
     }
 
     async fn get_signature_status(
@@ -928,11 +955,29 @@ fn flatten_error(err: &(dyn std::error::Error + 'static)) -> String {
     let mut out = err.to_string();
     let mut source = err.source();
     while let Some(inner) = source {
-        out.push_str(": ");
-        out.push_str(&inner.to_string());
-        source = inner.source();
+        let inner = inner.to_string();
+        // The solana RPC error renders its full text at multiple levels of the
+        // chain, so skip a source already contained in the message.
+        if !out.contains(inner.as_str()) {
+            out.push_str(": ");
+            out.push_str(&inner);
+        }
+        source = source.and_then(|err| err.source());
     }
-    redact_url_query(&out)
+    redact_url_query(&drop_program_log_dump(&out))
+}
+
+/// Drop the solana program-execution log dump ("; N log messages: ...") the RPC
+/// error appends. The classified instruction error is enough on its own; the
+/// dump is duplicated across the error chain and only adds noise to node logs.
+fn drop_program_log_dump(msg: &str) -> String {
+    match msg.find("log messages:") {
+        Some(pos) => msg[..pos]
+            .trim_end()
+            .trim_end_matches(|c: char| c.is_ascii_digit() || c == ';' || c == ' ')
+            .to_string(),
+        None => msg.to_string(),
+    }
 }
 
 /// Strip query strings from URLs embedded in error text; they carry

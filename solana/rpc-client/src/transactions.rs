@@ -137,21 +137,32 @@ impl<R: Rpc> RpcClient<R> {
         instructions: Vec<Instruction>,
         signers: &[&dyn TapeSigner],
     ) -> Result<Txid, RpcError> {
+        self.send_instructions_with_signers_inner(payer, instructions, signers, false)
+            .await
+    }
+
+    /// Build, sign, and send-and-confirm, optionally skipping preflight. Shared
+    /// by the preflighted path and the hot-write-path skip variant so both keep
+    /// the same metrics.
+    async fn send_instructions_with_signers_inner(
+        &self,
+        payer: &dyn TapeSigner,
+        instructions: Vec<Instruction>,
+        signers: &[&dyn TapeSigner],
+        skip_preflight: bool,
+    ) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
-            // Fetch the latest blockhash
             let blockhash = self.rpc().get_latest_blockhash().await?;
             let payer_pubkey: SolanaPubkey = payer.pubkey().into();
 
-            // Combine payer with additional signers
             let mut all_signers: Vec<SolanaSignerAdapter<'_>> =
                 Vec::with_capacity(signers.len() + 1);
             all_signers.push(SolanaSignerAdapter(payer));
             all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
 
-            // Build and sign the transaction
             let transaction = Transaction::new_signed_with_payer(
                 &instructions,
                 Some(&payer_pubkey),
@@ -159,8 +170,13 @@ impl<R: Rpc> RpcClient<R> {
                 blockhash,
             );
 
-            // Send and confirm the transaction
-            self.rpc().send_and_confirm_transaction(&transaction).await
+            if skip_preflight {
+                self.rpc()
+                    .send_and_confirm_transaction_skip_preflight(&transaction)
+                    .await
+            } else {
+                self.rpc().send_and_confirm_transaction(&transaction).await
+            }
         }
         .await;
 
@@ -198,6 +214,26 @@ impl<R: Rpc> RpcClient<R> {
             payer,
             with_compute_unit_limit(compute_unit_limit, instructions),
             signers,
+        )
+        .await
+    }
+
+    /// Like the preflighted compute-unit-limit variant, but skips preflight
+    /// simulation. For the latency-sensitive hot write path only; a rejection
+    /// here lands on chain (paid) rather than failing simulation, so callers must
+    /// be paths where rejections are not expected in steady state.
+    pub async fn send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
+        &self,
+        payer: &dyn TapeSigner,
+        compute_unit_limit: u32,
+        instructions: Vec<Instruction>,
+        signers: &[&dyn TapeSigner],
+    ) -> Result<Txid, RpcError> {
+        self.send_instructions_with_signers_inner(
+            payer,
+            with_compute_unit_limit(compute_unit_limit, instructions),
+            signers,
+            true,
         )
         .await
     }
