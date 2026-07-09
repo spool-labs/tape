@@ -55,6 +55,7 @@ fn config(endpoints: Vec<String>) -> RpcConfig {
             max_backoff: Duration::from_millis(50),
             jitter: false,
             max_endpoint_attempts: 3,
+            endpoint_cooldown: Duration::from_millis(200),
         },
         ..RpcConfig::default()
     }
@@ -92,4 +93,55 @@ async fn primary_serves_without_failover() {
     let slot = rpc.get_slot().await.expect("slot from primary");
 
     assert_eq!(slot, SLOT);
+}
+
+const PRIMARY_SLOT: u64 = 111;
+const FALLBACK_SLOT: u64 = 222;
+
+/// Serve 502 until `heals_after`, then answer with `PRIMARY_SLOT`.
+async fn recovering_endpoint(heals_after: Duration) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let started = std::time::Instant::now();
+
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let healthy = started.elapsed() >= heals_after;
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let (status, body) = if healthy {
+                    ("200 OK", format!(r#"{{"jsonrpc":"2.0","result":{PRIMARY_SLOT},"id":1}}"#))
+                } else {
+                    ("502 Bad Gateway", "Bad Gateway".to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+
+    format!("http://{addr}")
+}
+
+// a recovered primary is picked back up once its cooldown lapses
+#[tokio::test]
+async fn returns_to_primary_after_cooldown() {
+    let primary = recovering_endpoint(Duration::from_millis(400)).await;
+    let fallback = serve("200 OK", r#"{"jsonrpc":"2.0","result":222,"id":1}"#).await;
+
+    let rpc = SolanaRpc::new(config(vec![primary, fallback])).expect("build client");
+
+    // The primary is down, so this is served by the fallback.
+    assert_eq!(rpc.get_slot().await.expect("fallback slot"), FALLBACK_SLOT);
+
+    // Let the primary heal and its cooldown lapse.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    // Traffic must come home rather than stay on the fallback forever.
+    assert_eq!(rpc.get_slot().await.expect("primary slot"), PRIMARY_SLOT);
 }

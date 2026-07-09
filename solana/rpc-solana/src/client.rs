@@ -80,6 +80,7 @@ impl SolanaRpc {
         let failover = EndpointFailover::new(
             config.endpoints.clone(),
             config.retry.max_endpoint_attempts,
+            config.retry.endpoint_cooldown,
         );
 
         #[cfg(feature = "metrics")]
@@ -245,9 +246,32 @@ impl SolanaRpc {
     }
 
     /// Reset failover state for a fresh operation.
+    ///
+    /// A failed endpoint is only held down for its cooldown, so this is where a
+    /// recovered primary is picked back up. The client points at whatever
+    /// endpoint the failover selected, so it has to be rebuilt when that moves.
     async fn reset_failover(&self) {
-        let mut failover = self.failover.write().await;
-        failover.reset();
+        let restored = {
+            let mut failover = self.failover.write().await;
+            if failover.reset() {
+                Some(failover.current_endpoint().to_string())
+            } else {
+                None
+            }
+        };
+
+        let Some(endpoint) = restored else {
+            return;
+        };
+
+        #[cfg(feature = "metrics")]
+        tracing::info!(endpoint = %redact_url_query(&endpoint), "Restoring RPC endpoint");
+
+        let commitment = CommitmentConfig {
+            commitment: self.config.commitment,
+        };
+        let mut client = self.client.write().await;
+        *client = RpcClient::new_with_commitment(endpoint, commitment);
     }
 
     /// Convert a ClientError to RpcError.

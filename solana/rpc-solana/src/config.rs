@@ -55,6 +55,14 @@ pub struct RpcRetryConfig {
     /// Max endpoints to try before giving up (default: 3)
     #[serde(default = "default_max_endpoint_attempts")]
     pub max_endpoint_attempts: u32,
+
+    /// How long a failed endpoint is skipped before it is preferred again (default: 30s)
+    #[serde(
+        default = "default_endpoint_cooldown",
+        serialize_with = "serialize_duration",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub endpoint_cooldown: Duration,
 }
 
 impl Default for RpcConfig {
@@ -87,6 +95,7 @@ impl Default for RpcRetryConfig {
             max_backoff: default_max_backoff(),
             jitter: default_jitter(),
             max_endpoint_attempts: default_max_endpoint_attempts(),
+            endpoint_cooldown: default_endpoint_cooldown(),
         }
     }
 }
@@ -118,6 +127,10 @@ fn default_jitter() -> bool {
 
 fn default_max_endpoint_attempts() -> u32 {
     3
+}
+
+fn default_endpoint_cooldown() -> Duration {
+    Duration::from_secs(30)
 }
 
 // Custom serialization/deserialization for Duration
@@ -161,6 +174,7 @@ mod tests {
                 max_backoff: Duration::from_secs(5),
                 jitter: false,
                 max_endpoint_attempts: 2,
+                endpoint_cooldown: Duration::from_secs(30),
             },
         };
 
