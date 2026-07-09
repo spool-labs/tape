@@ -2,14 +2,12 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use rpc::Rpc;
-use store::{Column, DiskVolume, Direction, Store, StoreVolume};
+use store::{DiskVolume, Store, StoreVolume};
 use tape_node::features::http::handlers::health::{HealthResponse, HealthStatus};
 use tape_protocol::Api;
 use tape_protocol::api::{NodeStats, VolumeStats};
 use tape_store::TapeStore;
-use tape_store::columns::SliceCol;
-use tape_store::ops::{MetaOps, TrackOps};
-use tape_store::types::SliceValue;
+use tape_store::ops::{MetaOps, SliceOps, TrackOps};
 
 use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
@@ -126,20 +124,6 @@ pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 fn cached_slice_stats<Db: Store>(store: &TapeStore<Db>) -> Result<(u64, u64), RouteError> {
-    let iter = store
-        .inner()
-        .inner()
-        .iter_from(SliceCol::CF_NAME, &[], Direction::Asc)
-        .map_err(store_error)?;
-    let mut slices_stored = 0u64;
-    let mut slice_payload_bytes = 0u64;
-
-    for (_key, value_bytes) in iter {
-        let data: SliceValue = wincode::deserialize(&value_bytes)
-            .map_err(|error| RouteError::Internal(format!("slice value: {error}")))?;
-        slices_stored = slices_stored.saturating_add(1);
-        slice_payload_bytes = slice_payload_bytes.saturating_add(data.0.len() as u64);
-    }
-
-    Ok((slices_stored, slice_payload_bytes))
+    let (slices_stored, slice_payload_bytes) = store.slice_totals().map_err(store_error)?;
+    Ok((slices_stored, slice_payload_bytes.as_u64()))
 }
