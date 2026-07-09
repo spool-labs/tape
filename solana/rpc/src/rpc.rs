@@ -124,17 +124,6 @@ pub trait Rpc: Send + Sync {
         transaction: &Transaction,
     ) -> Result<Txid, RpcError>;
 
-    /// Send and confirm a transaction, skipping preflight simulation.
-    ///
-    /// For the latency-sensitive hot write path only; other paths keep
-    /// preflight. Backends that cannot skip fall back to the preflighted send.
-    async fn send_and_confirm_transaction_skip_preflight(
-        &self,
-        transaction: &Transaction,
-    ) -> Result<Txid, RpcError> {
-        self.send_and_confirm_transaction(transaction).await
-    }
-
     /// Check the status of a transaction signature
     ///
     /// Returns:

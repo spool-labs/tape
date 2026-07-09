@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -7,22 +6,14 @@ use tape_api::errors::TapeError;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_retry::{Backoff, RetryConfig};
+use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_commit_epoch;
 use crate::context::NodeContext;
-use crate::core::chain_tx::{
-    stagger_by_rank, submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind,
-};
-use crate::features::lifecycle::manager::{commit_at, committee_rank, unix_now};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::features::lifecycle::types::{Action, TaskDone};
-
-/// Fixed retry cadence once the local clock is past the commit window but the
-/// validator's Clock sysvar has not yet caught up. Bounded so a small skew does
-/// not turn into a paid-failure loop.
-const TOOSOON_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 // Purpose: Submit a CommitEpoch transaction after the active epoch duration
 //          has elapsed. This captures the next epoch nonce and moves the
@@ -33,15 +24,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    let rank = committee_rank(&ctx.state(), ctx.node_address());
-    let mut state_rx = ctx.subscribe_state();
     let mut backoff = Backoff::new(RetryConfig::infinite());
-
-    // Lower ranks commit first; if one lands during the stagger the phase check
-    // below returns Done, so higher ranks never race for a commit no longer needed.
-    if stagger_by_rank(rank, &cancel).await {
-        return TaskDone::Cancelled(Action::CommitEpoch, epoch);
-    }
 
     loop {
         if ctx.state().epoch() != epoch {
@@ -62,8 +45,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         info!(epoch = epoch.0, "commit_epoch: submitting");
-        let outcome = submit_if_at_tip(&ctx.ingest, "commit_epoch", submit_commit_epoch(&ctx)).await;
-        let pace = outcome.retry_pace();
+        let outcome = submit_if_at_tip(&ctx.ingest, submit_commit_epoch(&ctx)).await;
 
         match outcome {
             TxOutcome::Confirmed(sig) => {
@@ -75,17 +57,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 ..
             } => {
                 debug!(epoch = epoch.0, "commit_epoch: phase already changed, waiting for state update");
-            }
-            TxOutcome::Rejected {
-                kind: TxRejectionKind::Program(TapeError::TooSoon),
-                ..
-            } => {
-                // Local wall clock ran ahead of the on-chain clock; wait for the
-                // window rather than the generic backoff, then retry.
-                if wait_for_commit_window(&ctx, epoch, &cancel).await {
-                    break;
-                }
-                continue;
             }
             TxOutcome::Rejected {
                 kind: TxRejectionKind::Program(err),
@@ -123,33 +94,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         }
 
-        // Program rejections (phase, committee fullness) flip on state; transient
-        // rejections back off. Pace accordingly.
-        if wait_by_pace(pace, &mut backoff, &mut state_rx, &cancel).await {
+        if backoff_or_cancel(&mut backoff, &cancel).await {
             break;
         }
     }
 
     TaskDone::Cancelled(Action::CommitEpoch, epoch)
-}
-
-/// Wait until the active epoch's commit window opens, or a short fixed cadence
-/// past it for clock skew, cancellable. Returns true if cancelled.
-async fn wait_for_commit_window<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    epoch: EpochNumber,
-    cancel: &CancellationToken,
-) -> bool {
-    let remaining = commit_at(&ctx.state()).saturating_sub(unix_now());
-    let wait = if remaining > 0 {
-        Duration::from_secs(remaining as u64)
-    } else {
-        TOOSOON_RETRY_INTERVAL
-    };
-    debug!(epoch = epoch.0, wait_secs = wait.as_secs(), "commit_epoch: too soon, waiting for window");
-    // Both branches are cancellation-safe.
-    tokio::select! {
-        _ = tokio::time::sleep(wait) => false,
-        _ = cancel.cancelled() => true,
-    }
 }

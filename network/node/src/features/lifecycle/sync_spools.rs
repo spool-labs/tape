@@ -9,12 +9,12 @@ use tape_core::types::BitmapRead;
 use tape_core::types::EpochNumber;
 use tape_core::types::SpoolIndex;
 use tape_protocol::Api;
-use tape_retry::{Backoff, RetryConfig};
+use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_sync_spool;
-use crate::core::chain_tx::{submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::wait_spool_ready::{Readiness, check_readiness};
@@ -50,7 +50,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Ok(Readiness::Ready) => {}
     }
 
-    let mut state_rx = ctx.subscribe_state();
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
@@ -70,15 +69,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         };
 
         info!(epoch = epoch.0, %spool, "sync_spools: submitting");
-        let outcome =
-            submit_if_at_tip(&ctx.ingest, "sync_spool", submit_sync_spool(&ctx, epoch, spool)).await;
-        let pace = outcome.retry_pace();
+        let outcome = submit_if_at_tip(&ctx.ingest, submit_sync_spool(&ctx, epoch, spool)).await;
 
         match outcome {
             TxOutcome::Confirmed(sig) => {
                 info!(epoch = epoch.0, %spool, %sig, "sync_spools: confirmed");
                 completed.insert(spool);
-                continue;
             }
             TxOutcome::Rejected {
                 kind: TxRejectionKind::Program(TapeError::AlreadySynced),
@@ -86,7 +82,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             } => {
                 info!(epoch = epoch.0, %spool, "sync_spools: already synced");
                 completed.insert(spool);
-                continue;
             }
             TxOutcome::Rejected {
                 kind: TxRejectionKind::Program(TapeError::BadEpochState),
@@ -143,12 +138,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         }
 
-        if wait_by_pace(pace, &mut backoff, &mut state_rx, &cancel).await {
-            break;
+        if backoff_or_cancel(&mut backoff, &cancel).await {
+           break;
         }
     }
 
-    TaskDone::Cancelled(Action::SyncSpools, epoch)
+    return TaskDone::Cancelled(Action::SyncSpools, epoch);
 }
 
 fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(

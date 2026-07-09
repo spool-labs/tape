@@ -6,6 +6,7 @@ use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::{Api, ProtocolState};
+use tape_retry::{backoff_or_cancel, Backoff, RetryConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -13,10 +14,7 @@ use crate::chain::{
     submit_create_committee, submit_create_epoch, submit_resize_committee, submit_resize_peer_set,
 };
 use crate::context::NodeContext;
-use crate::core::chain_tx::{
-    stagger_by_rank, submit_if_at_tip, wait_for_state_change, TxOutcome, TxRejectionKind,
-};
-use crate::features::lifecycle::manager::committee_rank;
+use crate::core::chain_tx::{submit_if_at_tip, TxOutcome, TxRejectionKind};
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -39,9 +37,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> TaskDone {
     let next_epoch = epoch.next();
     let candidate_epoch = epoch.saturating_add(EpochNumber(2));
-    let node = ctx.node_address();
-    let rank = committee_rank(&ctx.state(), node);
-    let mut state_rx = ctx.subscribe_state();
+    let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
         let state = ctx.state();
@@ -93,24 +89,13 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
             }
             step => {
-                // Stagger by rank so lower ranks submit first. Re-staggered per
-                // step because each setup account is a separate race; after the
-                // delay, re-check in case a lower rank already advanced this step.
-                if stagger_by_rank(rank, &cancel).await {
-                    break;
-                }
-                if next_setup_step(&ctx.state(), next_epoch, candidate_epoch) != step {
-                    continue;
-                }
                 if submit_setup_step(&ctx, epoch, candidate_epoch, step).await {
                     return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
                 }
             }
         }
 
-        // The setup preconditions (accounts existing, capacity) only flip when a
-        // new block lands, so wait for a state change rather than a clock backoff.
-        if wait_for_state_change(&mut state_rx, &cancel).await {
+        if backoff_or_cancel(&mut backoff, &cancel).await {
             break;
         }
     }
@@ -220,12 +205,7 @@ where
         candidate_epoch = candidate_epoch.0,
         "prepare_next_epoch: creating epoch account"
     );
-    let outcome = submit_if_at_tip(
-        &ctx.ingest,
-        "create_epoch",
-        submit_create_epoch(ctx, candidate_epoch),
-    )
-    .await;
+    let outcome = submit_if_at_tip(&ctx.ingest, submit_create_epoch(ctx, candidate_epoch)).await;
     log_setup_outcome("create_epoch", epoch, candidate_epoch, outcome)
 }
 
@@ -244,12 +224,7 @@ where
         candidate_epoch = candidate_epoch.0,
         "prepare_next_epoch: creating committee account"
     );
-    let outcome = submit_if_at_tip(
-        &ctx.ingest,
-        "create_committee",
-        submit_create_committee(ctx, candidate_epoch),
-    )
-    .await;
+    let outcome = submit_if_at_tip(&ctx.ingest, submit_create_committee(ctx, candidate_epoch)).await;
     log_setup_outcome("create_committee", epoch, candidate_epoch, outcome)
 }
 
@@ -268,8 +243,7 @@ where
         candidate_epoch = candidate_epoch.0,
         "prepare_next_epoch: resizing committee account"
     );
-    let outcome =
-        submit_if_at_tip(&ctx.ingest, "resize_committee", submit_resize_committee(ctx)).await;
+    let outcome = submit_if_at_tip(&ctx.ingest, submit_resize_committee(ctx)).await;
     log_setup_outcome("resize_committee", epoch, candidate_epoch, outcome)
 }
 
@@ -290,8 +264,7 @@ where
         "prepare_next_epoch: resizing peer set account"
     );
 
-    let outcome =
-        submit_if_at_tip(&ctx.ingest, "resize_peer_set", submit_resize_peer_set(ctx)).await;
+    let outcome = submit_if_at_tip(&ctx.ingest, submit_resize_peer_set(ctx)).await;
 
     log_setup_outcome("resize_peer_set", epoch, candidate_epoch, outcome)
 }

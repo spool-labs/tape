@@ -1,7 +1,6 @@
 //! Submit assignment candidate, group votes, and group finalization transactions.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
@@ -9,8 +8,7 @@ use tape_api::errors::TapeError;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::system::EpochPhase;
-use tape_core::types::{EpochNumber, SpoolBitmap};
+use tape_core::types::SpoolBitmap;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::VoteOps;
 use tokio_util::sync::CancellationToken;
@@ -18,18 +16,16 @@ use tracing::{debug, info};
 
 use crate::chain::{submit_finalize_group, submit_propose_assignment, submit_vote_assignment};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{stagger_by_rank, submit_if_at_tip, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::core::error::NodeError;
 use crate::features::assignment::build::AssignmentCandidate;
 use crate::features::assignment::vote::vote_candidate;
-use crate::features::lifecycle::manager::committee_rank;
 use crate::features::vote::{bitmap_index_in_group, member_groups};
 
 pub async fn submit_assignment_proposal<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     candidate: &AssignmentCandidate,
     cancel: &CancellationToken,
-    proposed: &Mutex<HashSet<EpochNumber>>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -40,37 +36,8 @@ where
         return Ok(());
     }
 
-    let me = ctx.node_address();
-    let state = ctx.state();
-    if state.find_member(me).is_none() {
-        return Ok(());
-    }
-
-    if stagger_by_rank(committee_rank(&state, me), cancel).await {
-        return Ok(());
-    }
-
-    // Re-read after the stagger: skip proposing if another member's proposal for
-    // this voting epoch already landed, or the round already reached a canonical
-    // assignment hash, while this node waited its turn.
-    if proposed
-        .lock()
-        .is_ok_and(|seen| seen.contains(&candidate.voting_epoch))
-    {
-        return Ok(());
-    }
-    let state = ctx.state();
-    if state
-        .next_epoch
-        .as_ref()
-        .is_some_and(|next| next.id == candidate.target_epoch && next.has_assignment_hash())
-    {
-        return Ok(());
-    }
-
     let outcome = submit_if_at_tip(
         &ctx.ingest,
-        "propose_assignment",
         submit_propose_assignment(ctx, candidate.voting_epoch, candidate.hash),
     )
     .await;
@@ -161,15 +128,6 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let me = ctx.node_address();
-    if state.find_member(me).is_none() {
-        return Ok(());
-    }
-
-    if stagger_by_rank(committee_rank(state, me), cancel).await {
-        return Ok(());
-    }
-
     match cancel
         .run_until_cancelled(submit_ready_assignment_votes_inner(ctx, state, candidate))
         .await
@@ -190,6 +148,10 @@ where
     Blockchain: Rpc + 'static,
 {
     let me = ctx.node_address();
+    if state.find_member(me).is_none() {
+        return Ok(());
+    }
+
     let vote = vote_candidate(candidate);
     for group in member_groups(&state.member_spools(me)) {
         let sigs = ctx
@@ -218,7 +180,6 @@ where
 
         let outcome = submit_if_at_tip(
             &ctx.ingest,
-            "vote_assignment",
             submit_vote_assignment(
                 ctx,
                 candidate.voting_epoch,
@@ -337,32 +298,6 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let me = ctx.node_address();
-    let state = ctx.state();
-    if state.find_member(me).is_none() {
-        return Ok(());
-    }
-
-    if stagger_by_rank(committee_rank(&state, me), cancel).await {
-        return Ok(());
-    }
-
-    // Re-read after the stagger: bail if the round left Closing, or every group
-    // is already finalized. Groups can finalize out of order, so they are not
-    // skipped by index; a re-submit of a finalized group is cheaply rejected.
-    let state = ctx.state();
-    if state.epoch() != candidate.voting_epoch || state.phase() != EpochPhase::Closing {
-        return Ok(());
-    }
-    let finalized_groups = state
-        .next_epoch
-        .as_ref()
-        .map(|next| next.total_groups)
-        .unwrap_or(0);
-    if finalized_groups >= candidate.groups.len() as u64 {
-        return Ok(());
-    }
-
     for group in &candidate.groups {
         if cancel.is_cancelled() {
             return Ok(());
@@ -370,7 +305,6 @@ where
 
         let outcome = submit_if_at_tip(
             &ctx.ingest,
-            "finalize_group",
             submit_finalize_group(ctx, candidate.target_epoch, group.payload, group.proof),
         )
         .await;

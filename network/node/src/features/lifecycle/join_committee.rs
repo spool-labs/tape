@@ -3,15 +3,14 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_api::errors::TapeError;
-use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_retry::{Backoff, RetryConfig};
+use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_join_committee;
-use crate::core::chain_tx::{submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
@@ -25,7 +24,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     cancel: CancellationToken,
 ) -> TaskDone {
 
-    let mut state_rx = ctx.subscribe_state();
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
@@ -41,18 +39,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             return TaskDone::Done(Action::JoinCommittee, epoch);
         }
 
-        // Join is only accepted while the epoch is Active; once it closes the
-        // program rejects it as BadEpochState, so stop rather than resubmit.
-        if !matches!(ctx.phase(), EpochPhase::Active) {
-            info!(epoch = epoch.0, phase = ?ctx.phase(), "join_committee: window closed");
-            return TaskDone::Rejected(Action::JoinCommittee, epoch);
-        }
-
         info!(epoch = epoch.0, "join_committee: submitting");
 
-        let outcome =
-            submit_if_at_tip(&ctx.ingest, "join_committee", submit_join_committee(&ctx)).await;
-        let pace = outcome.retry_pace();
+        let outcome = submit_if_at_tip(&ctx.ingest, submit_join_committee(&ctx)).await;
 
         match outcome {
             TxOutcome::Confirmed(sig) => {
@@ -102,10 +91,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         }
 
-        if wait_by_pace(pace, &mut backoff, &mut state_rx, &cancel).await {
-            break;
+        if backoff_or_cancel(&mut backoff, &cancel).await {
+           break;
         }
     }
 
-    TaskDone::Cancelled(Action::JoinCommittee, epoch)
+    return TaskDone::Cancelled(Action::JoinCommittee, epoch);
 }
