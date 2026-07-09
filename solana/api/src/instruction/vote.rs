@@ -11,7 +11,7 @@ use tape_crypto::Hash;
 
 use crate::program::tapedrive;
 use crate::program::tapedrive::{
-    assignment_vote_pda, committee_pda, epoch_pda, eviction_vote_pda, group_pda, peer_set_pda,
+    assignment_vote_pda, committee_pda, epoch_pda, group_pda, peer_set_pda,
     snapshot_tape_pda, snapshot_vote_pda, system_pda,
 };
 use crate::state::Tape;
@@ -59,21 +59,6 @@ pub struct FinalizeGroup {
     pub epoch: EpochNumber,
     pub payload: AssignmentGroupPayload,
     pub proof: [Hash; ASSIGNMENT_TREE_HEIGHT],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ProposeEviction {
-    pub node: Address,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct VoteEviction {
-    pub node: Address,
-    pub group: GroupIndex,
-    pub bitmap: SpoolBitmap,
-    pub signature: BlsSignature,
 }
 
 pub fn build_propose_snapshot_ix(
@@ -253,69 +238,6 @@ pub fn build_finalize_group_ix(
             epoch,
             payload,
             proof,
-        }
-        .to_bytes(),
-    }
-}
-
-pub fn build_propose_eviction_ix(
-    fee_payer: Address,
-    current_epoch: EpochNumber,
-    node: Address,
-) -> Instruction {
-    let target_epoch = current_epoch.next();
-    let (system_address, _) = system_pda();
-    let (curr_epoch_address, _) = epoch_pda(current_epoch);
-    let (target_epoch_address, _) = epoch_pda(target_epoch);
-    let (vote_address, _) = eviction_vote_pda(current_epoch, target_epoch, node);
-
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new_readonly(curr_epoch_address.into(), false),
-            AccountMeta::new_readonly(target_epoch_address.into(), false),
-            AccountMeta::new(vote_address.into(), false),
-            AccountMeta::new_readonly(system_program::ID, false),
-        ],
-        data: ProposeEviction { node }.to_bytes(),
-    }
-}
-
-pub fn build_vote_eviction_ix(
-    fee_payer: Address,
-    current_epoch: EpochNumber,
-    node: Address,
-    group: GroupIndex,
-    bitmap: SpoolBitmap,
-    signature: BlsSignature,
-) -> Instruction {
-    let target_epoch = current_epoch.next();
-    let (system_address, _) = system_pda();
-    let (curr_epoch_address, _) = epoch_pda(current_epoch);
-    let (target_epoch_address, _) = epoch_pda(target_epoch);
-    let (curr_group_address, _) = group_pda(current_epoch, group);
-    let (vote_address, _) = eviction_vote_pda(current_epoch, target_epoch, node);
-    let (committee_address, _) = committee_pda(target_epoch);
-
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(system_address.into(), false),
-            AccountMeta::new_readonly(curr_epoch_address.into(), false),
-            AccountMeta::new_readonly(target_epoch_address.into(), false),
-            AccountMeta::new_readonly(curr_group_address.into(), false),
-            AccountMeta::new(vote_address.into(), false),
-            AccountMeta::new(node.into(), false),
-            AccountMeta::new(committee_address.into(), false),
-        ],
-        data: VoteEviction {
-            node,
-            group,
-            bitmap,
-            signature,
         }
         .to_bytes(),
     }

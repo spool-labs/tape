@@ -25,7 +25,6 @@ use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap;
 use crate::features::assignment::manager::AssignmentManager;
-use crate::features::eviction::manager::EvictionManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::lifecycle::manager::LifecycleManager;
@@ -341,16 +340,6 @@ where
         AssignmentManager::new(
             context.clone(),
             receivers.assignment,
-            cancel.clone(),
-        )
-        .run(),
-    );
-
-    supervisor.spawn(
-        ServiceName::EvictionManager,
-        EvictionManager::new(
-            context.clone(),
-            receivers.eviction,
             cancel.clone(),
         )
         .run(),

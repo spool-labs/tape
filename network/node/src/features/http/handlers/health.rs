@@ -153,6 +153,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .collect();
 
     let stats = NodeStats {
+        version: crate::VERSION.to_string(),
         last_processed_slot,
         blocks_processed: metrics.blocks_processed_total,
         epoch_transitions: metrics.epoch_transitions_total,
@@ -200,7 +201,7 @@ mod tests {
     use axum::extract::State;
     use axum::http::StatusCode;
 
-    use super::{health, HealthStatus};
+    use super::{health, stats, HealthStatus};
     use crate::features::http::state::AppState;
     use crate::harness::{NodeHarness, TestContext};
 
@@ -240,5 +241,14 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(matches!(body.0.status, HealthStatus::Ready));
         assert!(body.0.bootstrap.is_none());
+    }
+
+    #[tokio::test]
+    async fn stats_reports_build_version() {
+        let ctx = test_context().await;
+
+        let body = stats(State(AppState { context: ctx })).await.expect("stats");
+
+        assert_eq!(body.0.version, crate::VERSION);
     }
 }

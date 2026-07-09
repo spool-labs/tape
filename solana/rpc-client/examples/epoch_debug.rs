@@ -16,12 +16,11 @@ async fn main() -> anyhow::Result<()> {
 
     let system = client.get_system().await?;
     println!(
-        "system: current_epoch={} committee_size={} target_groups={} live_groups={} min_version={}",
+        "system: current_epoch={} committee_size={} target_groups={} live_groups={}",
         system.current_epoch.0,
         system.committee_size,
         system.target_group_count,
         system.live_group_count,
-        system.min_version.0,
     );
 
     let nodes = client.get_all_nodes().await?;

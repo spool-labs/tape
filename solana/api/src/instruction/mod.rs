@@ -99,7 +99,6 @@ pub enum TapeInstruction {
     SetAccessThreshold,
     SetCommitteeSize,
     SetSpoolGroups,
-    SetMinVersion,
     SetEpochDuration,
     ClaimCommission,
 
@@ -137,8 +136,6 @@ pub enum TapeInstruction {
     ProposeAssignment,
     VoteAssignment,
     FinalizeGroup,
-    ProposeEviction,
-    VoteEviction,
 }
 
 
@@ -195,7 +192,6 @@ tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
 tape_solana::instruction!(TapeInstruction, SetAccessThreshold);
 tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
 tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
-tape_solana::instruction!(TapeInstruction, SetMinVersion);
 tape_solana::instruction!(TapeInstruction, SetEpochDuration);
 
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
@@ -220,5 +216,3 @@ tape_solana::instruction!(TapeInstruction, FinalizeSnapshot);
 tape_solana::instruction!(TapeInstruction, ProposeAssignment);
 tape_solana::instruction!(TapeInstruction, VoteAssignment);
 tape_solana::instruction!(TapeInstruction, FinalizeGroup);
-tape_solana::instruction!(TapeInstruction, ProposeEviction);
-tape_solana::instruction!(TapeInstruction, VoteEviction);

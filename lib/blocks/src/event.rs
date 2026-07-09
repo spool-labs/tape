@@ -2,7 +2,7 @@
 
 use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
-    EpochCreated, EventType, CommissionClaimed, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
+    EpochCreated, EventType, CommissionClaimed, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
     StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeReserved, TrackCertified,
     TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
@@ -35,7 +35,6 @@ pub enum TapedriveEvent {
     TapeDestroyed(TapeDestroyed),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
-    NodeEvicted(NodeEvicted),
     SpoolSynced(SpoolSynced),
     PoolAdvanced(PoolAdvanced),
     StakeDeposited(StakeDeposited),
@@ -158,11 +157,6 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::NodeJoinedCommittee(*event)))
         }
-        EventType::NodeEvicted => {
-            let event = bytemuck::try_from_bytes::<NodeEvicted>(event_data)
-                .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::NodeEvicted(*event)))
-        }
         EventType::SpoolSynced => {
             let event = bytemuck::try_from_bytes::<SpoolSynced>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
@@ -204,7 +198,7 @@ mod tests {
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{NodePreferences, VoteKind};
-    use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber, VersionId};
+    use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -250,7 +244,6 @@ mod tests {
                 storage_price: TAPE(0),
                 committee_size: 0,
                 spool_groups: 0,
-                min_version: VersionId(0),
                 burn_fee_bps: BasisPoints(0),
                 subsidy_decay_bps: BasisPoints(0),
                 access_threshold: TAPE(0),

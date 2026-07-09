@@ -45,7 +45,6 @@ use crate::node::{
     process_set_committee_size,
     process_set_epoch_duration,
     process_set_access_threshold,
-    process_set_min_version,
     process_set_name,
     process_set_network_address,
     process_set_network_tls,
@@ -82,10 +81,8 @@ use crate::vote::{
     process_finalize_group,
     process_finalize_snapshot,
     process_propose_assignment,
-    process_propose_eviction,
     process_propose_snapshot,
     process_vote_assignment,
-    process_vote_eviction,
     process_vote_snapshot,
 };
 
@@ -142,7 +139,6 @@ pub fn process_instruction(
         TapeInstruction::SetAccessThreshold => process_set_access_threshold(accounts, data)?,
         TapeInstruction::SetCommitteeSize => process_set_committee_size(accounts, data)?,
         TapeInstruction::SetSpoolGroups => process_set_spool_groups(accounts, data)?,
-        TapeInstruction::SetMinVersion => process_set_min_version(accounts, data)?,
         TapeInstruction::SetEpochDuration => process_set_epoch_duration(accounts, data)?,
         TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
         TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
@@ -178,8 +174,6 @@ pub fn process_instruction(
         TapeInstruction::ProposeAssignment => process_propose_assignment(accounts, data)?,
         TapeInstruction::VoteAssignment => process_vote_assignment(accounts, data)?,
         TapeInstruction::FinalizeGroup => process_finalize_group(accounts, data)?,
-        TapeInstruction::ProposeEviction => process_propose_eviction(accounts, data)?,
-        TapeInstruction::VoteEviction => process_vote_eviction(accounts, data)?,
     }
 
     Ok(())

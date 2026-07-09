@@ -310,7 +310,6 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
     );
 
     let expected = NodePreferences {
-        min_version: system.min_version,
         committee_size: GROUP_SIZE as u64,
         spool_groups: TARGET_GROUPS,
         burn_fee_bps: BURN_FEE_BPS,

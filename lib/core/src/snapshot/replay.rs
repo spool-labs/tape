@@ -115,12 +115,6 @@ pub enum ReplayableEvent {
         activation_epoch: EpochNumber,
     },
 
-    /// Node was evicted from the next-epoch committee.
-    NodeEvicted {
-        node: Address,
-        target_epoch: EpochNumber,
-    },
-
     /// Canonical epoch snapshot tape was created.
     SnapshotFinalized {
         epoch: EpochNumber,

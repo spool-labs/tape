@@ -49,9 +49,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 return TaskDone::Done(Action::JoinCommittee, epoch);
             }
             TxOutcome::Rejected {
-                kind: TxRejectionKind::Program(
-                    err @ (TapeError::NodeStale | TapeError::NotStaked | TapeError::NodeSuspended),
-                ),
+                kind: TxRejectionKind::Program(err @ (TapeError::NodeStale | TapeError::NotStaked)),
                 ..
             } => {
                 warn!(epoch = epoch.0, ?err, "join_committee: rejected, node prerequisites not met");

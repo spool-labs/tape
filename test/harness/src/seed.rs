@@ -29,7 +29,7 @@ use tape_core::system::{
     NodePreferences, Peer, Spool,
 };
 use tape_core::types::coin::TAPE;
-use tape_core::types::{BasisPoints, EpochNumber, NodeId, ShareAmount, StorageUnits, Tail, VersionId};
+use tape_core::types::{BasisPoints, EpochNumber, NodeId, ShareAmount, StorageUnits, Tail};
 use tape_crypto::{Address, Hash};
 use tape_protocol::{EpochBundle, ProtocolState};
 
@@ -117,7 +117,6 @@ pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
 
     let system = System {
         current_epoch: spec.epoch,
-        min_version: VersionId(1),
         total_nodes: spec.nodes.len() as u64,
         committee_size: committee_capacity,
         target_group_count: spec.current_group_count,
@@ -462,7 +461,6 @@ fn committed_preferences(
         storage_price: TAPE(MIN_STORAGE_PRICE as u64),
         committee_size: MIN_COMMITTEE_SIZE as u64,
         spool_groups: spec.current_group_count,
-        min_version: VersionId(1),
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
@@ -483,7 +481,6 @@ fn node_preferences(
         storage_price: spec.storage_price,
         committee_size,
         spool_groups,
-        min_version: VersionId(1),
         burn_fee_bps: spec.burn_fee_bps,
         subsidy_decay_bps: spec.subsidy_decay_bps,
         access_threshold: TAPE(0),

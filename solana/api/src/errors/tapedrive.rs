@@ -64,8 +64,6 @@ pub enum TapeError {
     AlreadySynced = 0x51,
     #[error("already advanced")]
     AlreadyAdvanced = 0x52,
-    #[error("node suspended")]
-    NodeSuspended = 0x53,
     #[error("rewards overflow")]
     RewardsOverflow = 0x54,
     #[error("no commission")]
@@ -182,7 +180,6 @@ impl TapeError {
             Self::InsufficientCommittee => "Not enough committee members",
             Self::ResizeWouldOrphan => "Cannot shrink: account holds more entries than the target capacity",
             Self::NodeStale => "Node is behind - run advance-pool first",
-            Self::NodeSuspended => "Node is suspended from the committee for this epoch",
             Self::AlreadySynced => "Node has already synced",
             Self::AssignmentIncomplete => "Next epoch assignment is incomplete",
             Self::AlreadyAdvanced => "Already advanced",
