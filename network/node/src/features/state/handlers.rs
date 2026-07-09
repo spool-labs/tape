@@ -5,7 +5,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
-    NodeJoinedCommittee, PeerSetResized, SnapshotFinalized, SpoolSynced, VoteRecorded,
+    NodeEvicted, NodeJoinedCommittee, PeerSetResized, SnapshotFinalized, SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
 use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::state::events::apply_join_committee_event;
+use crate::features::state::events::{apply_eviction_event, apply_join_committee_event};
 use crate::features::vote::all_vote_groups_signed;
 
 pub struct ProtocolStateHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -332,6 +332,27 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         Ok(())
     }
 
+    pub async fn handle_evict(&self, event: NodeEvicted) -> Result<(), NodeError> {
+        debug!(node = %event.node, target_epoch = event.target_epoch.0, "received node eviction");
+
+        let mut state = (*self.context.state()).clone();
+        let expected_target = state.epoch().next();
+        if event.target_epoch != expected_target {
+            debug!(
+                node = %event.node,
+                current_epoch = state.epoch().0,
+                target_epoch = event.target_epoch.0,
+                "ignoring eviction for stale epoch"
+            );
+            return Ok(());
+        }
+
+        apply_eviction_event(&mut state, event);
+        self.context.set_state(state)?;
+
+        Ok(())
+    }
+
     pub async fn handle_snapshot_vote(&self, event: VoteRecorded) -> Result<(), NodeError> {
         if event.kind != VoteKind::Snapshot as u64 || !all_vote_groups_signed(&event) {
             return Ok(());
@@ -439,7 +460,7 @@ fn apply_event_phase(state: &mut tape_protocol::ProtocolState, phase: u64) {
 
 #[cfg(test)]
 mod tests {
-    use tape_api::event::SpoolSynced;
+    use tape_api::event::{NodeEvicted, SpoolSynced};
     use tape_core::system::EpochPhase;
     use tape_core::types::{BitmapRead, EpochNumber};
     use tokio_util::sync::CancellationToken;
@@ -526,6 +547,73 @@ mod tests {
             .await
             .expect("handle advance pool");
         assert_eq!(ctx.state().phase(), EpochPhase::Snapshot);
+    }
+
+    #[tokio::test]
+    async fn evict_drops_next_committee_member() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Closing)
+            .next_committee_size(20)
+            .advance_ready()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
+
+        let target = ctx
+            .state()
+            .next_committee
+            .as_ref()
+            .and_then(|committee| committee.first())
+            .map(|member| member.node)
+            .expect("next committee member");
+        assert!(ctx.state().find_member_next(target).is_some());
+
+        handlers
+            .handle_evict(NodeEvicted {
+                node: target,
+                target_epoch: EPOCH.next(),
+            })
+            .await
+            .expect("handle evict");
+
+        assert!(ctx.state().find_member_next(target).is_none());
+    }
+
+    #[tokio::test]
+    async fn evict_ignores_stale_target_epoch() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Closing)
+            .next_committee_size(20)
+            .advance_ready()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
+
+        let target = ctx
+            .state()
+            .next_committee
+            .as_ref()
+            .and_then(|committee| committee.first())
+            .map(|member| member.node)
+            .expect("next committee member");
+
+        handlers
+            .handle_evict(NodeEvicted {
+                node: target,
+                target_epoch: EPOCH,
+            })
+            .await
+            .expect("handle evict");
+
+        assert!(ctx.state().find_member_next(target).is_some());
     }
 
     #[tokio::test]

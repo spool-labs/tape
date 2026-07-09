@@ -14,6 +14,7 @@ const REPLAY_BATCH_CHANNEL_CAPACITY: usize = 256;
 pub struct DownstreamSenders {
     pub state: mpsc::Sender<Arc<ParsedBlock>>,
     pub assignment: mpsc::Sender<Arc<ParsedBlock>>,
+    pub eviction: mpsc::Sender<Arc<ParsedBlock>>,
     pub replay: mpsc::Sender<Arc<ParsedBlock>>,
     pub snapshot: mpsc::Sender<Arc<ParsedBlock>>,
 }
@@ -21,6 +22,7 @@ pub struct DownstreamSenders {
 pub struct DownstreamReceivers {
     pub state: mpsc::Receiver<Arc<ParsedBlock>>,
     pub assignment: mpsc::Receiver<Arc<ParsedBlock>>,
+    pub eviction: mpsc::Receiver<Arc<ParsedBlock>>,
     pub replay: mpsc::Receiver<Arc<ParsedBlock>>,
     pub snapshot: mpsc::Receiver<Arc<ParsedBlock>>,
 }
@@ -28,6 +30,7 @@ pub struct DownstreamReceivers {
 pub fn downstream_channels() -> (DownstreamSenders, DownstreamReceivers) {
     let (state_tx, state_rx) = mpsc::channel(PARSED_BLOCK_CHANNEL_CAPACITY);
     let (assignment_tx, assignment_rx) = mpsc::channel(PARSED_BLOCK_CHANNEL_CAPACITY);
+    let (eviction_tx, eviction_rx) = mpsc::channel(PARSED_BLOCK_CHANNEL_CAPACITY);
     let (replay_tx, replay_rx) = mpsc::channel(PARSED_BLOCK_CHANNEL_CAPACITY);
     let (snapshot_tx, snapshot_rx) = mpsc::channel(PARSED_BLOCK_CHANNEL_CAPACITY);
 
@@ -35,12 +38,14 @@ pub fn downstream_channels() -> (DownstreamSenders, DownstreamReceivers) {
         DownstreamSenders {
             state: state_tx,
             assignment: assignment_tx,
+            eviction: eviction_tx,
             replay: replay_tx,
             snapshot: snapshot_tx,
         },
         DownstreamReceivers {
             state: state_rx,
             assignment: assignment_rx,
+            eviction: eviction_rx,
             replay: replay_rx,
             snapshot: snapshot_rx,
         },

@@ -1,7 +1,7 @@
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
-    EpochAdvanced, EpochCommitted, EpochCreated, NodeJoinedCommittee, NodeRegistered,
+    EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
     StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeReserved, TrackCertified,
     TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
@@ -69,6 +69,8 @@ pub enum RawInstruction {
         epoch: EpochNumber,
         group: GroupIndex,
     },
+    ProposeEviction,
+    VoteEviction,
     AdvancePool {
         node: Address,
     },
@@ -274,6 +276,12 @@ pub enum ParsedInstruction {
         node: Address,
         event: NodeJoinedCommittee,
     },
+    // A node dropped from the next committee once its eviction vote reached
+    // supermajority. Synthesized from the standalone removal event, since the
+    // landing vote is not itself a node-facing instruction.
+    NodeEvicted {
+        event: NodeEvicted,
+    },
     AddToBlacklist {
         node: Address,
         entry: BlacklistEntry,
@@ -363,6 +371,12 @@ pub fn parse_raw_instruction(
         TapeInstruction::CommitEpoch => Ok(Some(RawInstruction::CommitEpoch)),
 
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
+
+        // Eviction proposals and votes carry no accounts the node needs; they
+        // are surfaced only so their vote events get consumed while pairing
+        // events to instructions, where a landing vote also signals a removal.
+        TapeInstruction::ProposeEviction => Ok(Some(RawInstruction::ProposeEviction)),
+        TapeInstruction::VoteEviction => Ok(Some(RawInstruction::VoteEviction)),
 
         TapeInstruction::StartNetwork => Ok(Some(RawInstruction::StartNetwork)),
 

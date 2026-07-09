@@ -137,6 +137,8 @@ pub enum TapeInstruction {
     ProposeAssignment,
     VoteAssignment,
     FinalizeGroup,
+    ProposeEviction,
+    VoteEviction,
 }
 
 
@@ -218,3 +220,5 @@ tape_solana::instruction!(TapeInstruction, FinalizeSnapshot);
 tape_solana::instruction!(TapeInstruction, ProposeAssignment);
 tape_solana::instruction!(TapeInstruction, VoteAssignment);
 tape_solana::instruction!(TapeInstruction, FinalizeGroup);
+tape_solana::instruction!(TapeInstruction, ProposeEviction);
+tape_solana::instruction!(TapeInstruction, VoteEviction);

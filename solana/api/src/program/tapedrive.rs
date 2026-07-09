@@ -47,6 +47,7 @@ pub const STAKE_AUTHORITY:    &[u8] = b"stake_authority";
 pub const VOTE:               &[u8] = b"vote";
 pub const VOTE_SNAPSHOT:      &[u8] = b"snapshot";
 pub const VOTE_ASSIGNMENT:    &[u8] = b"assignment";
+pub const VOTE_EVICTION:      &[u8] = b"eviction";
 pub const SNAPSHOT_TAPE:      &[u8] = b"snapshot_tape";
 pub const EVENT:              &[u8] = b"event";
 
@@ -289,6 +290,11 @@ pub fn snapshot_vote_pda(voting: EpochNumber, target: EpochNumber, hash: Hash) -
 #[inline(always)]
 pub fn assignment_vote_pda(voting: EpochNumber, target: EpochNumber, hash: Hash) -> (Address, u8) {
     Address::find_program_address(&[VOTE, VOTE_ASSIGNMENT, &voting.pack(), &target.pack(), hash.as_ref()], id())
+}
+
+#[inline(always)]
+pub fn eviction_vote_pda(voting: EpochNumber, target: EpochNumber, node: Address) -> (Address, u8) {
+    Address::find_program_address(&[VOTE, VOTE_EVICTION, &voting.pack(), &target.pack(), node.as_ref()], id())
 }
 
 #[cfg(test)]

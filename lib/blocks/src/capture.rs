@@ -316,6 +316,18 @@ fn capture_instruction(
             ),
             raw_track: None,
         },
+        ParsedInstruction::NodeEvicted { event } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::NodeEvicted {
+                    node: event.node,
+                    target_epoch: event.target_epoch,
+                },
+            ),
+            raw_track: None,
+        },
         ParsedInstruction::AddToBlacklist { entry, event, .. } => capture_track(
             *current_epoch,
             tx_id,
@@ -514,6 +526,7 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::ResizePeerSet { .. }
         | ParsedInstruction::CommitEpoch { .. }
         | ParsedInstruction::AdvanceEpoch { .. }
+        | ParsedInstruction::NodeEvicted { .. }
         | ParsedInstruction::FinalizeSnapshot { .. }
         | ParsedInstruction::FinalizeGroup { .. }
         | ParsedInstruction::CertifyTrack { .. }

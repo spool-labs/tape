@@ -136,6 +136,7 @@ pub fn apply_event<Db: Store>(
         ReplayableEvent::AdvanceEpoch { .. }
         | ReplayableEvent::SyncSpool { .. }
         | ReplayableEvent::JoinCommittee { .. }
+        | ReplayableEvent::NodeEvicted { .. }
         | ReplayableEvent::AssignmentFinalized { .. }
         | ReplayableEvent::StakeDeposited { .. }
         | ReplayableEvent::StakeUnlockRequested { .. }

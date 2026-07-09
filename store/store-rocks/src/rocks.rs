@@ -532,9 +532,7 @@ impl Store for RocksStore {
         #[cfg(feature = "metrics")]
         let batch_len = batch.len();
 
-        // Size the batch buffer up front. Appending a small op after a large
-        // payload would otherwise grow the buffer and recopy the whole payload.
-        let mut rocks_batch = RocksWriteBatch::with_capacity_bytes(batch_capacity_bytes(&batch));
+        let mut rocks_batch = RocksWriteBatch::default();
 
         #[cfg(feature = "metrics")]
         let mut bytes_written = 0u64;
@@ -849,27 +847,6 @@ impl Store for RocksStore {
 
         Ok(())
     }
-}
-
-/// Bytes to reserve for a batch's serialized form
-///
-/// RocksDB frames each record with a type tag, a column family id, and varint
-/// lengths, ahead of a fixed header. The per-record allowance is a generous
-/// upper bound: overshooting wastes a little memory, undershooting forces the
-/// buffer to grow and recopy every payload already staged.
-fn batch_capacity_bytes(batch: &WriteBatch) -> usize {
-    const HEADER_BYTES: usize = 12;
-    const PER_RECORD_BYTES: usize = 24;
-
-    let mut total = HEADER_BYTES;
-    for op in batch.iter() {
-        total += PER_RECORD_BYTES;
-        total += match op {
-            BatchOp::Put { key, value, .. } => key.len() + value.len(),
-            BatchOp::Delete { key, .. } => key.len(),
-        };
-    }
-    total
 }
 
 fn directory_size_bytes(path: &Path) -> Result<u64> {

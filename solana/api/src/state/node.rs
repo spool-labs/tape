@@ -37,6 +37,9 @@ pub struct Node {
 
     /// First epoch covered by the current open pool rate span.
     pub rate_span_start: EpochNumber,
+
+    /// Epoch through which this node is barred from joining a committee.
+    pub suspended_until: EpochNumber,
 }
 
 impl Node {

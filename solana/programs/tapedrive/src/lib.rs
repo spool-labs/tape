@@ -82,8 +82,10 @@ use crate::vote::{
     process_finalize_group,
     process_finalize_snapshot,
     process_propose_assignment,
+    process_propose_eviction,
     process_propose_snapshot,
     process_vote_assignment,
+    process_vote_eviction,
     process_vote_snapshot,
 };
 
@@ -176,6 +178,8 @@ pub fn process_instruction(
         TapeInstruction::ProposeAssignment => process_propose_assignment(accounts, data)?,
         TapeInstruction::VoteAssignment => process_vote_assignment(accounts, data)?,
         TapeInstruction::FinalizeGroup => process_finalize_group(accounts, data)?,
+        TapeInstruction::ProposeEviction => process_propose_eviction(accounts, data)?,
+        TapeInstruction::VoteEviction => process_vote_eviction(accounts, data)?,
     }
 
     Ok(())

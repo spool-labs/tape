@@ -2,7 +2,7 @@
 
 use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
-    EpochCreated, EventType, CommissionClaimed, NodeJoinedCommittee, NodeRegistered,
+    EpochCreated, EventType, CommissionClaimed, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
     StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeReserved, TrackCertified,
     TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
@@ -35,6 +35,7 @@ pub enum TapedriveEvent {
     TapeDestroyed(TapeDestroyed),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
+    NodeEvicted(NodeEvicted),
     SpoolSynced(SpoolSynced),
     PoolAdvanced(PoolAdvanced),
     StakeDeposited(StakeDeposited),
@@ -156,6 +157,11 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
             let event = bytemuck::try_from_bytes::<NodeJoinedCommittee>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::NodeJoinedCommittee(*event)))
+        }
+        EventType::NodeEvicted => {
+            let event = bytemuck::try_from_bytes::<NodeEvicted>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::NodeEvicted(*event)))
         }
         EventType::SpoolSynced => {
             let event = bytemuck::try_from_bytes::<SpoolSynced>(event_data)
