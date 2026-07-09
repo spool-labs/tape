@@ -172,7 +172,7 @@ fn gateway_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
     let mut config = NodeConfig::default();
     config.node.node_keypair = PathBuf::from("/dev/null");
     config.node.bls_keypair = PathBuf::from("/dev/null");
-    config.solana.rpc = "http://127.0.0.1:8899".into();
+    config.solana.rpc = vec!["http://127.0.0.1:8899".into()];
     config.solana.start_slot = None;
     config.http.listen = bind_addr;
     config.https.listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);

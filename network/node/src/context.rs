@@ -351,7 +351,7 @@ mod tests {
         let mut config = NodeConfig::default();
         config.node.node_keypair = PathBuf::from("/dev/null");
         config.node.bls_keypair = PathBuf::from("/dev/null");
-        config.solana.rpc = "http://localhost:8899".into();
+        config.solana.rpc = vec!["http://localhost:8899".into()];
         config.solana.start_slot = Some(SlotNumber(0));
         config.store.path = PathBuf::from("/tmp");
         config

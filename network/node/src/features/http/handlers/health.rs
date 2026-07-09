@@ -126,11 +126,11 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut slice_payload_bytes = 0u64;
 
     for (spool_id, _) in &owned_spools {
-        let (count, bytes) = store
-            .slice_totals_by_spool(*spool_id)
+        let slices = store
+            .iter_slices_by_spool(*spool_id)
             .map_err(store_error)?;
-        slices_stored += count;
-        slice_payload_bytes += bytes.as_u64();
+        slices_stored += slices.len() as u64;
+        slice_payload_bytes += slices.iter().map(|(_, data)| data.len() as u64).sum::<u64>();
     }
 
     let store_disk_bytes = store

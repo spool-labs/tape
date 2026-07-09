@@ -30,7 +30,7 @@ fn main() -> ExitCode {
     };
 
     if let Some(rpc_url) = cli.rpc_url {
-        config.solana.rpc = rpc_url;
+        config.solana.rpc = vec![rpc_url];
     }
 
     if let Err(error) = init_tracing(&config.logging) {
@@ -38,8 +38,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Query part carries the RPC api key; never log it.
-    let rpc_display = config.solana.rpc.split('?').next().unwrap_or("");
+    let rpc_display = config.solana.rpc_display();
 
     info!(
         node_name = %config.node.name,
