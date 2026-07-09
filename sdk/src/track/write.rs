@@ -31,6 +31,7 @@ use tokio::time::sleep;
 use crate::codec::encoder::BlobEncoder;
 use crate::error::UploadError;
 use crate::error::TapedriveError;
+use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
@@ -38,9 +39,7 @@ use crate::track::{bootstrap_network_state, query};
 use crate::transfer::certify::CertificationCollector;
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 
-// The program accepts up to 10 KiB for raw TrackWrite payloads, but an SDK end-user write must fit
-// inside a single Solana transaction packet. This can be adjusted in the future if 4k transactions
-// become widely supported.
+// The program accepts up to 10 KiB for raw TrackWrite payloads.
 pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
 
 /// Poll cadence for visibility and certification waits.
@@ -107,12 +106,24 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         data: &[u8],
     ) -> Result<CompressedTrack, TapedriveError> {
+        self.write_named_track_as(tape_key, name, content_type, data)
+            .await
+    }
+
+    /// Write a named track to an existing tape,.
+    pub async fn write_named_track_as(
+        &self,
+        operator: &impl TapeOperator,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
+        data: &[u8],
+    ) -> Result<CompressedTrack, TapedriveError> {
         write_track(
-            self, 
-            tape_key, 
-            name.as_ref(), 
+            self,
+            operator,
+            name.as_ref(),
             content_type,
-            data
+            data,
         )
         .await
     }
@@ -301,7 +312,7 @@ pub(crate) fn inline_write_fits(name: &[u8], payload_len: usize) -> bool {
 
 async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     raw: &[u8],
@@ -321,7 +332,7 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn submit_raw_with_logical_size<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -341,7 +352,7 @@ pub(crate) async fn submit_raw_with_logical_size<Blockchain: Rpc, Cluster: Api>(
 
 async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -398,7 +409,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
@@ -418,7 +429,7 @@ pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -454,7 +465,7 @@ pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>
 
 async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -702,7 +713,7 @@ fn should_retry_track_completion(err: &TrackCompletionError) -> bool {
 
 async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     written: &WrittenTrack,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
@@ -809,7 +820,7 @@ async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
 
 pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
@@ -864,7 +875,7 @@ pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     written: &WrittenTrack,
     operation: Operation,
 ) -> Result<CompressedTrack, TapedriveError> {

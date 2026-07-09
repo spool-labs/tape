@@ -1,6 +1,7 @@
 //! Stream receipt returned by stream write operations.
 
 use tape_crypto::address::Address;
+use tape_crypto::Hash;
 
 use tape_core::types::TrackNumber;
 
@@ -13,4 +14,6 @@ pub struct StreamReceipt {
     pub manifest: Address,
     /// Track number of the manifest on the tape.
     pub manifest_track_number: TrackNumber,
+    /// Value hash of the manifest track, used as the stream's content ETag.
+    pub manifest_value_hash: Hash,
 }
