@@ -9,14 +9,16 @@ use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
 use tape_api::instruction::{build_certify_track_ix, build_track_write_ix, track_write_ix_len};
+use solana_instruction::Instruction;
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{
     BlobEncoding, CompressedTrack, EncodingProfile, EpochNumber, GroupIndex, StorageUnits,
-    StripeCount, TrackNumber,
+    StripeCount, TrackNumber, TrackState,
 };
 use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo, TrackObjectInfo};
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
@@ -478,16 +480,23 @@ pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>
     register_blob(client, tape_key, name, content_type, logical_size, plan, operation).await
 }
 
-async fn send_blob<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
+/// A registered blob whose transaction has been sent but whose TrackWritten
+/// event has not been resolved yet.
+pub(crate) struct SentBlob {
+    signature: Txid,
+    blob: BlobEncoding,
+    key: Hash,
+    plan: UploadPlan,
+}
+
+fn build_blob_write(
+    payer: Address,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
-    plan: UploadPlan,
-) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
-    let payer = client.payer()?;
-    let tape_signer = tape_key.keypair();
+    plan: &UploadPlan,
+) -> Result<(Instruction, BlobEncoding, Hash), TapedriveError> {
     let blob = BlobEncoding {
         size: plan.storage_units,
         commitment: plan.commitment_hash,
@@ -500,7 +509,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     let key = track_key(name, &BlobDataSlice::Coded(blob));
     let object = track_object(name, content_type, logical_size);
     let write_ix = build_track_write_ix(
-        payer.pubkey().into(),
+        payer,
         tape_key.pubkey().into(),
         tape_key.address(),
         BlobInfo {
@@ -510,25 +519,25 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
-    let signature = client
-        .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
-            payer,
-            TRACK_WRITE_CU,
-            vec![write_ix],
-            &[tape_signer],
-        )
-        .await?;
+    Ok((write_ix, blob, key))
+}
 
-    let written = fetch_track_written_event(client, &signature).await?;
+/// Resolve a sent register transaction into its written track. Waits until
+/// the transaction is queryable, so this carries the confirmed-level wait for
+/// registers sent at processed level.
+pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    sent: SentBlob,
+) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+    let written = fetch_track_written_event(client, &sent.signature).await?;
     let track_address: Address = written.track.into();
-    let meta = BlobDataSlice::Coded(blob).meta()
+    let meta = BlobDataSlice::Coded(sent.blob).meta()
         .ok_or(TapedriveError::InvalidArgument("invalid blob commitment".into()))?;
 
     let track = CompressedTrack {
         tape: written.tape,
         track_number: written.track_number,
-        key,
+        key: sent.key,
         kind: meta.kind as u64,
         state: meta.state as u64,
         size: meta.size,
@@ -543,8 +552,70 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
             address: track_address,
             track,
         },
-        plan,
+        sent.plan,
     ))
+}
+
+/// Send an encoded blob's register transaction, returning once it is
+/// processed on the current fork. The next register can be sent immediately;
+/// resolve_sent_blob carries the confirmed-level wait.
+pub(crate) async fn register_blob_processed<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    content_type: ContentType,
+    logical_size: StorageUnits,
+    plan: UploadPlan,
+    operation: Operation,
+) -> Result<SentBlob, TapedriveError> {
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let (write_ix, blob, key) =
+        build_blob_write(payer.pubkey().into(), tape_key, name, content_type, logical_size, &plan)?;
+
+    let register_timer = client
+        .timer(operation, Phase::Register)
+        .bytes(plan.storage_units.to_bytes())
+        .chunks(1);
+    let result = client
+        .rpc()
+        .send_instructions_with_signers_and_compute_unit_limit_processed(
+            payer,
+            TRACK_WRITE_CU,
+            vec![write_ix],
+            &[tape_signer],
+        )
+        .await;
+    register_timer.finish_result(&result);
+    let signature = result?;
+
+    Ok(SentBlob { signature, blob, key, plan })
+}
+
+async fn send_blob<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    content_type: ContentType,
+    logical_size: StorageUnits,
+    plan: UploadPlan,
+) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let (write_ix, blob, key) =
+        build_blob_write(payer.pubkey().into(), tape_key, name, content_type, logical_size, &plan)?;
+
+    let signature = client
+        .rpc()
+        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
+            payer,
+            TRACK_WRITE_CU,
+            vec![write_ix],
+            &[tape_signer],
+        )
+        .await?;
+
+    resolve_sent_blob(client, SentBlob { signature, blob, key, plan }).await
 }
 
 async fn upload_once<Blockchain: Rpc, Cluster: Api>(
@@ -747,7 +818,22 @@ pub(crate) async fn collect_certification<Blockchain: Rpc, Cluster: Api>(
     result
 }
 
-/// Build the proof and submit the certify transaction using signatures that
+/// Commitment level a certify transaction waits for after send.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CertifySend {
+    Confirmed,
+    Processed,
+}
+
+/// The track leaf the on-chain certify handler writes: certification flips
+/// the state to certified and changes nothing else.
+pub(crate) fn certified_track(track: &CompressedTrack) -> CompressedTrack {
+    let mut updated = *track;
+    updated.state = TrackState::Certified.into();
+    updated
+}
+
+/// Fetch the proof and submit the certify transaction using signatures that
 /// were already collected. The proof is only valid against the tape root left
 /// by the previous certify, so calls on one tape must stay ordered.
 pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
@@ -757,14 +843,35 @@ pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
     collected: &CollectedSignatures,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
-    let track_address = written.address;
-    let payer = client.payer()?;
-    let tape_signer = tape_key.keypair();
-
     let proof_timer = client.timer(operation, Phase::CertifyProof);
-    let proof = query::query_track_proof(client, &track_address).await;
+    let proof = query::query_track_proof(client, &written.address).await;
     proof_timer.finish_result(&proof);
     let proof = proof?;
+
+    submit_certification_with_proof(
+        client,
+        tape_key,
+        proof,
+        collected,
+        CertifySend::Confirmed,
+        operation,
+    )
+    .await
+}
+
+/// Submit the certify transaction for a prebuilt proof. The proof must be
+/// built against the tape root left by the previous certify, so calls on one
+/// tape must stay ordered regardless of send mode.
+pub(crate) async fn submit_certification_with_proof<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    proof: CompressedTrackProof,
+    collected: &CollectedSignatures,
+    send: CertifySend,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
 
     let certify_ix = build_certify_track_ix(
         payer.pubkey().into(),
@@ -776,16 +883,31 @@ pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
     );
 
     let submit = client.timer(operation, Phase::CertifySubmit);
-    let result = match client
-        .rpc()
-        .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
-            payer,
-            CERTIFY_TRACK_CU,
-            vec![certify_ix],
-            &[tape_signer],
-        )
-        .await
-    {
+    let sent = match send {
+        CertifySend::Confirmed => {
+            client
+                .rpc()
+                .send_instructions_with_signers_and_compute_unit_limit_skip_preflight(
+                    payer,
+                    CERTIFY_TRACK_CU,
+                    vec![certify_ix],
+                    &[tape_signer],
+                )
+                .await
+        }
+        CertifySend::Processed => {
+            client
+                .rpc()
+                .send_instructions_with_signers_and_compute_unit_limit_processed(
+                    payer,
+                    CERTIFY_TRACK_CU,
+                    vec![certify_ix],
+                    &[tape_signer],
+                )
+                .await
+        }
+    };
+    let result = match sent {
         Ok(_) => Ok(()),
         Err(err) => match parse_tape_error(&err) {
             Some(TapeError::AlreadyCertified) => Ok(()),
