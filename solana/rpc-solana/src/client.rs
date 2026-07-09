@@ -122,12 +122,14 @@ impl SolanaRpc {
         #[cfg(feature = "metrics")]
         let current_index = failover.current_index();
 
+        // Endpoint urls carry an api key in the query string, and the metrics
+        // endpoint is served publicly.
         #[cfg(feature = "metrics")]
-        tracing::info!(endpoint = %new_endpoint_str, "Switching RPC endpoint");
+        tracing::info!(endpoint = %redact_url_query(&new_endpoint_str), "Switching RPC endpoint");
 
         #[cfg(feature = "metrics")]
         if let Some(metrics) = &self.metrics {
-            metrics.record_failover(&old_endpoint, "endpoint_error");
+            metrics.record_failover(&redact_url_query(&old_endpoint), "endpoint_error");
             metrics.set_current_endpoint(current_index);
         }
 
@@ -1023,6 +1025,19 @@ mod tests {
 
         let plain = "was the slot skipped? maybe";
         assert_eq!(redact_url_query(plain), plain);
+    }
+
+    // a bare endpoint url is redacted before it reaches a log or a metric label
+    #[test]
+    fn redacts_bare_endpoint_url() {
+        let endpoint = "https://devnet.helius-rpc.com/?api-key=3109787a-400a-407d";
+        assert_eq!(
+            redact_url_query(endpoint),
+            "https://devnet.helius-rpc.com/?<redacted>"
+        );
+
+        let keyless = "http://127.0.0.1:8899";
+        assert_eq!(redact_url_query(keyless), keyless);
     }
 
     #[test]
