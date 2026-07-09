@@ -49,6 +49,11 @@ const STORE_CONCURRENCY: usize = 4;
 /// (seconds of CPU per chunk) overlaps register confirmations.
 const ENCODE_AHEAD: usize = 2;
 
+/// Concurrent chunk encodes, bounded by available cores. Each in-flight
+/// encode holds its input and coded slices (~3x the chunk), so four workers
+/// add up to ~768 MiB peak on top of the store stage.
+const MAX_ENCODE_WORKERS: usize = 4;
+
 /// Track-written event fetches kept in flight behind the register submits.
 /// Events need confirmed level, so this hides that wait while the registers
 /// themselves only pay a processed-level wait each.
@@ -323,22 +328,37 @@ where
     let (appended_sender, mut appended_receiver) = watch::channel(0usize);
     let (register_total_sender, register_total_receiver) = oneshot::channel();
 
-    // Encoding is CPU-bound; running it ahead keeps register confirmations
-    // from serializing with it.
+    // Encoding is CPU-bound and single-threaded per chunk; encode several
+    // chunks on blocking threads at once so idle cores shorten the encode
+    // chain. Plans still reach the register stage in stream order.
     let encode_stage = async move {
+        let workers = std::thread::available_parallelism()
+            .map(|cores| cores.get())
+            .unwrap_or(1)
+            .min(MAX_ENCODE_WORKERS);
+        let mut in_flight = FuturesOrdered::new();
         let mut chunk_sources = std::pin::pin!(chunk_sources);
         let mut chunk_index = 0usize;
         while let Some(chunk_data) = chunk_sources.next().await {
-            let plan = encode_blob(
-                client,
-                chunk_data?.as_ref().to_vec(),
-                Operation::WriteStream,
-            )
-            .await?;
-            if encoded_sender.send((chunk_index, plan)).await.is_err() {
+            if in_flight.len() >= workers {
+                let Some(encoded) = in_flight.next().await else { break };
+                if encoded_sender.send(encoded?).await.is_err() {
+                    return Ok(());
+                }
+            }
+            let data = chunk_data?.as_ref().to_vec();
+            let index = chunk_index;
+            in_flight.push_back(async move {
+                encode_blob(client, data, Operation::WriteStream)
+                    .await
+                    .map(|plan| (index, plan))
+            });
+            chunk_index += 1;
+        }
+        while let Some(encoded) = in_flight.next().await {
+            if encoded_sender.send(encoded?).await.is_err() {
                 break;
             }
-            chunk_index += 1;
         }
         Ok::<_, TapedriveError>(())
     };
