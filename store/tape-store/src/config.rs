@@ -137,6 +137,14 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_prefix_extractor(2)
             .build(),
 
+        // Slice size - 34-byte SliceKey, 8-byte payload lengths
+        // 2-byte spool prefix for iteration by spool
+        // Never blob-backed: summing the index must not fault in slice payloads
+        ColumnFamilyConfig::new("slice_size")
+            .with_block_based()
+            .with_prefix_extractor(2)
+            .build(),
+
         // Spool sync progress - 2-byte SpoolIndexKey
         ColumnFamilyConfig::new("spool_sync_cursor")
             .with_block_based()
@@ -173,8 +181,10 @@ pub const BULK_SUBDIR: &str = "bulk";
 ///
 /// The slice and snapshot families use key-value separation; track data is
 /// stored inline but can be large. Everything else is small metadata that
-/// stays on the fast volume.
-pub const BULK_COLUMN_FAMILIES: &[&str] = &["track_data", "slice", "snapshot_artifact"];
+/// stays on the fast volume. The slice size index is small, but it rides along
+/// on the bulk volume because a write batch cannot span the two databases.
+pub const BULK_COLUMN_FAMILIES: &[&str] =
+    &["track_data", "slice", "slice_size", "snapshot_artifact"];
 
 /// Column family configurations for the metadata (fast volume) store
 pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {
@@ -250,7 +260,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 18);
+        assert_eq!(configs.len(), 19);
     }
 
     #[test]
@@ -273,6 +283,7 @@ mod tests {
             "spool_pending_repair",
             "spool_pending_recovery",
             "slice",
+            "slice_size",
             "spool_sync_cursor",
             "event_log",
             "vote_sig",
@@ -302,7 +313,7 @@ mod tests {
 
         // The two volumes partition every column family with no overlap.
         assert_eq!(meta.len() + bulk.len(), create_tape_store_configs().len());
-        assert_eq!(bulk, vec!["track_data", "slice", "snapshot_artifact"]);
+        assert_eq!(bulk, vec!["track_data", "slice", "slice_size", "snapshot_artifact"]);
         assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
     }
 }
