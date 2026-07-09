@@ -56,9 +56,6 @@ pub struct SolanaRpc {
     config: RpcConfig,
     failover: Arc<RwLock<EndpointFailover>>,
     client: Arc<RwLock<RpcClient>>,
-    /// Recently fetched blockhash reused across the transactions of one
-    /// logical operation; hashes stay valid far longer than this window.
-    blockhash_cache: Arc<RwLock<Option<(Hash, std::time::Instant)>>>,
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
 }
@@ -102,7 +99,6 @@ impl SolanaRpc {
         Ok(Self {
             config,
             failover: Arc::new(RwLock::new(failover)),
-            blockhash_cache: Arc::new(RwLock::new(None)),
             client: Arc::new(RwLock::new(client)),
             #[cfg(feature = "metrics")]
             metrics,
@@ -470,14 +466,6 @@ impl Rpc for SolanaRpc {
     }
 
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
-        const BLOCKHASH_REUSE: std::time::Duration = std::time::Duration::from_secs(10);
-
-        if let Some((hash, fetched_at)) = *self.blockhash_cache.read().await {
-            if fetched_at.elapsed() < BLOCKHASH_REUSE {
-                return Ok(hash);
-            }
-        }
-
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -499,7 +487,6 @@ impl Rpc for SolanaRpc {
                         metrics.record_request("getLatestBlockhash", "success", timer.elapsed_secs());
                     }
 
-                    *self.blockhash_cache.write().await = Some((hash, std::time::Instant::now()));
                     return Ok(hash);
                 }
                 Ok(Err(e)) => {
