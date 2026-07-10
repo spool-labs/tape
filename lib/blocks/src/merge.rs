@@ -4,6 +4,7 @@ use crate::error::ParseError;
 use crate::event::TapedriveEvent;
 use crate::instruction::{ParsedInstruction, RawInstruction};
 use std::collections::VecDeque;
+use tape_core::cert::eviction_vote_hash;
 use tape_core::system::VoteKind;
 
 /// Merge raw instructions with their corresponding events.
@@ -166,27 +167,26 @@ pub fn merge(
                 ParsedInstruction::FinalizeGroup { epoch, group, event }
             }
 
-            // A proposal only records that a vote opened, so drain that event
-            // without producing a parsed instruction.
-            RawInstruction::ProposeEviction => {
+            RawInstruction::ProposeEviction { node, proposer } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::VoteProposed(e)) => e,
                     _ => return Err(ParseError::EventMismatch("expected VoteProposed event")),
                 };
-                if event.kind != VoteKind::Eviction as u64 {
+                if event.kind != VoteKind::Eviction as u64
+                    || event.hash != eviction_vote_hash(node)
+                {
                     return Err(ParseError::EventMismatch("unexpected VoteProposed event"));
                 }
-                continue;
+                ParsedInstruction::ProposeEviction { node, proposer, event }
             }
 
             // A vote reaching supermajority logs the removal before the vote
             // record. Emit the removal so the committee drop replays, then drain
             // the vote record.
             RawInstruction::VoteEviction => {
-                if matches!(events.front(), Some(TapedriveEvent::NodeEvicted(_))) {
-                    if let Some(TapedriveEvent::NodeEvicted(evicted)) = events.pop_front() {
-                        result.push(ParsedInstruction::NodeEvicted { event: evicted });
-                    }
+                if let Some(TapedriveEvent::NodeEvicted(evicted)) = events.front() {
+                    result.push(ParsedInstruction::NodeEvicted { event: *evicted });
+                    events.pop_front();
                 }
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::VoteRecorded(e)) => e,
@@ -605,8 +605,9 @@ mod tests {
     }
 
     #[test]
-    fn merge_eviction_proposal_consumes_vote_proposed() {
+    fn merge_eviction_proposal_surfaces_target() {
         let node = Address::new_unique();
+        let proposer = Address::new_unique();
         let proposed = VoteProposed {
             kind: VoteKind::Eviction as u64,
             vote: Address::new_unique(),
@@ -617,12 +618,40 @@ mod tests {
         };
 
         let merged = merge(
-            vec![RawInstruction::ProposeEviction],
+            vec![RawInstruction::ProposeEviction { node, proposer }],
             vec![TapedriveEvent::VoteProposed(proposed)],
         )
         .unwrap();
 
-        assert!(merged.is_empty());
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::ProposeEviction { node: target, proposer: by, event } => {
+                assert_eq!(*target, node);
+                assert_eq!(*by, proposer);
+                assert_eq!(event.target_epoch, EpochNumber(9));
+            }
+            other => panic!("expected ProposeEviction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_eviction_proposal_rejects_wrong_target() {
+        let node = Address::new_unique();
+        let proposed = VoteProposed {
+            kind: VoteKind::Eviction as u64,
+            vote: Address::new_unique(),
+            voting_epoch: EpochNumber(8),
+            target_epoch: EpochNumber(9),
+            hash: Hash(Address::new_unique().to_bytes()),
+            total_groups: 1,
+        };
+
+        let merged = merge(
+            vec![RawInstruction::ProposeEviction { node, proposer: Address::new_unique() }],
+            vec![TapedriveEvent::VoteProposed(proposed)],
+        );
+
+        assert!(merged.is_err());
     }
 
     #[test]

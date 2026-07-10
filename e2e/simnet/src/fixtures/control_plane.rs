@@ -4,8 +4,9 @@ use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
-    build_add_to_blacklist_ix, build_advance_pool_ix, build_set_committee_size_ix,
-    build_set_access_threshold_ix, build_set_spool_groups_ix, build_stake_with_pool_ix,
+    build_add_to_blacklist_ix, build_advance_pool_ix, build_propose_eviction_ix,
+    build_set_committee_size_ix, build_set_access_threshold_ix, build_set_spool_groups_ix,
+    build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
 use tape_core::system::{BlacklistEntry, NodeStatus};
@@ -154,6 +155,34 @@ impl SimnetScenario<'_> {
             .with_context(|| format!("advance pool for node {node_index}"))?;
 
         trace!(node_index, "advance_pool completed");
+        Ok(())
+    }
+
+    /// Open an eviction vote against the node. The proposal is permissionless;
+    /// committee nodes observe it, probe the target, and vote independently.
+    pub async fn propose_eviction(&self, node_index: usize) -> Result<()> {
+        trace!(node_index, "submitting propose_eviction instruction");
+        let payer = self.harness.admin();
+        let current_epoch = self.read_system().await?.current_epoch;
+        let node_address = self.node_address(node_index).into();
+        let ix = build_propose_eviction_ix(
+            payer.pubkey().into(),
+            current_epoch,
+            node_address,
+        );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
+
+        self.harness
+            .chain()
+            .send_instructions_and_advance(
+                payer,
+                vec![cu_ix, ix],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("propose eviction of node {node_index}"))?;
+
+        trace!(node_index, "propose_eviction completed");
         Ok(())
     }
 

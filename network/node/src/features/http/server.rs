@@ -103,10 +103,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         admission::probe_admission::<Db, Cluster, Blockchain>,
                     ),
                 ),
-            )
-            .route(
-                handlers::admin::ADMIN_EVICT_PATH,
-                post(handlers::admin::evict_node::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]

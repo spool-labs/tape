@@ -1,8 +1,9 @@
-//! Admin-seeded set of nodes this node should vote to evict.
+//! Set of nodes with an open eviction vote this node may join.
 //!
-//! The eviction manager reads it each round and drops a target once the node
-//! leaves the next committee (the eviction landed or the epoch advanced past
-//! it). The queue is the trigger surface for the admin HTTP endpoint.
+//! Targets are added when an on-chain eviction proposal is observed. The
+//! eviction manager probes each target itself and only votes while its own
+//! probe fails; a target is dropped once the eviction lands or the target
+//! probes healthy again.
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -15,10 +16,6 @@ pub struct EvictionQueue {
 }
 
 impl EvictionQueue {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn insert(&self, node: Address) {
         self.lock().insert(node);
     }

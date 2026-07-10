@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use rpc_client::RpcClient;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::NodeStatus;
@@ -35,7 +34,6 @@ async fn eviction_inner() {
 
     let all: Vec<usize> = (0..NODE_COUNT).collect();
     let committee: Vec<usize> = (0..COMMITTEE_NODES).collect();
-    let voters: Vec<usize> = (0..NODE_COUNT).filter(|&i| i != EVICT_NODE).collect();
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
@@ -84,14 +82,18 @@ async fn eviction_inner() {
 
     let target = Address::from(harness.scenario().node_address(EVICT_NODE));
 
-    // The vote lands once a supermajority of every group signs within one voting
-    // epoch. Landing sets suspended_until and removes the target from the next
-    // committee. The poll persistently re-seeds every voter because the eviction
-    // manager drops a target the moment it is not in the next committee, which is
-    // most of each epoch, so a single seed does not survive to a voting round.
-    let target_epoch = wait_eviction_landed(&harness, &voters, target, evict_timeout).await;
+    // Stop the target so every voter's own probe fails, then open the vote
+    // with a single permissionless proposal. Committee nodes observe the
+    // proposal on-chain, probe the target themselves, and sign only because
+    // the probe fails. Landing takes a supermajority of groups and sets
+    // suspended_until while removing the target from the next committee.
+    harness
+        .stop_nodes(&[EVICT_NODE])
+        .await
+        .expect("stop target node");
+    let target_epoch = wait_eviction_landed(&harness, evict_timeout).await;
 
-    // Step 3: the target is absent from the committee the vote targeted.
+    // The target is absent from the committee the vote targeted.
     let next_members = harness
         .scenario()
         .read_committee(target_epoch)
@@ -103,8 +105,19 @@ async fn eviction_inner() {
         target_epoch.0
     );
 
-    // Step 4: advance into the target epoch and confirm the node dropped out of
-    // the active committee. The spare backfills the freed seat.
+    // Bring the target back so it can observe its suspension and later rejoin.
+    harness
+        .start_nodes_with_retry(&[EVICT_NODE], 3, Duration::from_millis(200))
+        .await
+        .expect("restart evicted node");
+    harness
+        .scenario()
+        .wait_node_healthy(EVICT_NODE, health_timeout)
+        .await
+        .expect("evicted node healthy after restart");
+
+    // Advance into the target epoch and confirm the node dropped out of the
+    // active committee. The spare backfills the freed seat.
     advance_to_epoch(&harness, target_epoch, epoch_timeout).await;
     assert_eq!(
         harness.scenario().node_status(EVICT_NODE),
@@ -126,8 +139,8 @@ async fn eviction_inner() {
         "committee should stay full after the spare backfills"
     );
 
-    // Step 5: after the one-epoch cooldown suspended_until passes and the node
-    // reclaims a seat by out-staking the spare.
+    // After the one-epoch cooldown suspended_until passes and the node reclaims
+    // a seat by out-staking the spare.
     let rejoin_epoch = target_epoch.next();
     advance_to_epoch(&harness, rejoin_epoch, epoch_timeout).await;
     harness
@@ -163,26 +176,21 @@ async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber, epoch_ti
     }
 }
 
-// Re-seed the target on every voter and poll the target node account until its
-// suspension lands, returning the epoch it is suspended through.
-async fn wait_eviction_landed(
-    harness: &SimnetHarness,
-    voters: &[usize],
-    target: Address,
-    timeout: Duration,
-) -> EpochNumber {
+// Propose the eviction and poll the target node account until its suspension
+// lands, returning the epoch it is suspended through. A proposal expires with
+// its voting epoch, so the poll re-proposes each round; a duplicate proposal
+// is the same PDA and is rejected, which the poll ignores.
+async fn wait_eviction_landed(harness: &SimnetHarness, timeout: Duration) -> EpochNumber {
     let start = Instant::now();
     loop {
-        for &i in voters {
-            harness
-                .node(i)
-                .expect("voter node exists")
-                .context()
-                .eviction_queue
-                .insert(target);
-        }
+        let _ = harness.scenario().propose_eviction(EVICT_NODE).await;
 
-        let suspended = read_suspended_until(harness, target).await;
+        let suspended = harness
+            .scenario()
+            .read_node(EVICT_NODE)
+            .await
+            .expect("read target node")
+            .suspended_until;
         if suspended != EpochNumber(0) {
             return suspended;
         }
@@ -192,13 +200,4 @@ async fn wait_eviction_landed(
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-}
-
-async fn read_suspended_until(harness: &SimnetHarness, target: Address) -> EpochNumber {
-    let client = RpcClient::from_rpc(harness.chain().rpc().clone());
-    client
-        .get_node_by_address(&target)
-        .await
-        .expect("read target node")
-        .suspended_until
 }

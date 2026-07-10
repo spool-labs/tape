@@ -69,7 +69,10 @@ pub enum RawInstruction {
         epoch: EpochNumber,
         group: GroupIndex,
     },
-    ProposeEviction,
+    ProposeEviction {
+        node: Address,
+        proposer: Address,
+    },
     VoteEviction,
     AdvancePool {
         node: Address,
@@ -276,6 +279,13 @@ pub enum ParsedInstruction {
         node: Address,
         event: NodeJoinedCommittee,
     },
+    // An eviction vote opened against a node. Voters react by probing the
+    // target and joining the vote when their own probe fails.
+    ProposeEviction {
+        node: Address,
+        proposer: Address,
+        event: VoteProposed,
+    },
     // A node dropped from the next committee once its eviction vote reached
     // supermajority. Synthesized from the standalone removal event, since the
     // landing vote is not itself a node-facing instruction.
@@ -372,10 +382,17 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
 
-        // Eviction proposals and votes carry no accounts the node needs; they
-        // are surfaced only so their vote events get consumed while pairing
-        // events to instructions, where a landing vote also signals a removal.
-        TapeInstruction::ProposeEviction => Ok(Some(RawInstruction::ProposeEviction)),
+        TapeInstruction::ProposeEviction => {
+            let args = ix::ProposeEviction::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("propose_eviction: {e:?}")))?;
+            // Account layout from build_propose_eviction_ix: [fee_payer, ...].
+            let proposer = get_account(0)?;
+            Ok(Some(RawInstruction::ProposeEviction { node: args.node, proposer }))
+        }
+
+        // Eviction votes are surfaced only so their events get consumed while
+        // pairing events to instructions, where a landing vote also signals a
+        // removal.
         TapeInstruction::VoteEviction => Ok(Some(RawInstruction::VoteEviction)),
 
         TapeInstruction::StartNetwork => Ok(Some(RawInstruction::StartNetwork)),

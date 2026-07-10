@@ -203,7 +203,8 @@ fn capture_instruction(
             raw_track: None,
         },
         ParsedInstruction::ProposeSnapshot { event, .. }
-        | ParsedInstruction::ProposeAssignment { event, .. } => Captured {
+        | ParsedInstruction::ProposeAssignment { event, .. }
+        | ParsedInstruction::ProposeEviction { event, .. } => Captured {
             event: captured_event(
                 *current_epoch,
                 tx_id,
@@ -515,7 +516,8 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::DestroyTape { owner, .. } => Some((*owner).into()),
 
         ParsedInstruction::ProposeSnapshot { proposer, .. }
-        | ParsedInstruction::ProposeAssignment { proposer, .. } => Some(*proposer),
+        | ParsedInstruction::ProposeAssignment { proposer, .. }
+        | ParsedInstruction::ProposeEviction { proposer, .. } => Some(*proposer),
 
         ParsedInstruction::VoteSnapshot { submitter, .. }
         | ParsedInstruction::VoteAssignment { submitter, .. } => Some(*submitter),

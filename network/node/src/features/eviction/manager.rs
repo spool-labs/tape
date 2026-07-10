@@ -1,13 +1,17 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
 use tape_blocks::ParsedInstruction;
+use tape_core::types::EpochNumber;
+use tape_crypto::Address;
+use tape_protocol::api::{GetHealthReq, GetHealthRes};
 use tape_protocol::{Api, ProtocolState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -24,6 +28,9 @@ pub struct EvictionManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
+    // Voting epoch of the last failed probe per target. A target is re-probed
+    // once per epoch so a recovered node stops collecting votes.
+    probe_failed: HashMap<Address, EpochNumber>,
 }
 
 impl<Db, Cluster, Blockchain> EvictionManager<Db, Cluster, Blockchain>
@@ -41,6 +48,7 @@ where
             context,
             block_rx,
             cancel,
+            probe_failed: HashMap::new(),
         }
     }
 
@@ -67,26 +75,38 @@ where
         }
     }
 
-    /// Clear landed evictions, then drive a voting round off every block.
+    /// Track open eviction votes, then drive a voting round off every block.
     ///
-    /// The voting window runs from when the next epoch is set up until the
-    /// epoch enters its closing phase. The heartbeat alone fires per node on
-    /// its own clock, so voters seldom align on the same voting epoch and the
-    /// per-group supermajority never assembles. Reacting to each ingested block
-    /// keeps the committee voting in step across the window, which is what lets
-    /// the partial signatures accumulate into a landed eviction.
-    async fn on_block(&self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
+    /// An observed proposal only marks the target as having an open vote; the
+    /// decision to sign is made per epoch by this node's own probe. The voting
+    /// window runs from when the next epoch is set up until the epoch enters
+    /// its closing phase. The heartbeat alone fires per node on its own clock,
+    /// so voters seldom align on the same voting epoch and the per-group
+    /// supermajority never assembles. Reacting to each ingested block keeps
+    /// the committee voting in step across the window, which is what lets the
+    /// partial signatures accumulate into a landed eviction.
+    async fn on_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         for ix in &block.instructions {
-            if let ParsedInstruction::NodeEvicted { event } = ix {
-                self.context.eviction_queue.remove(&event.node);
-                info!(node = %event.node, "eviction: landed, cleared target");
+            match ix {
+                ParsedInstruction::ProposeEviction { node, .. } => {
+                    if *node != self.context.node_address() {
+                        info!(node = %node, "eviction: vote opened, judging target");
+                        self.context.eviction_queue.insert(*node);
+                    }
+                }
+                ParsedInstruction::NodeEvicted { event } => {
+                    self.context.eviction_queue.remove(&event.node);
+                    self.probe_failed.remove(&event.node);
+                    info!(node = %event.node, "eviction: landed, cleared target");
+                }
+                _ => {}
             }
         }
 
         self.try_progress().await
     }
 
-    async fn try_progress(&self) -> Result<(), NodeError> {
+    async fn try_progress(&mut self) -> Result<(), NodeError> {
         if self.context.eviction_queue.is_empty() {
             return Ok(());
         }
@@ -102,6 +122,10 @@ where
         }
 
         for node in self.context.eviction_queue.snapshot() {
+            if !self.judge_target(node, state.epoch()).await {
+                continue;
+            }
+
             let Some(candidate) = build_eviction(&state, node) else {
                 // The voting window is closed for now (the epoch has entered its
                 // closing phase or the next epoch is not set up yet). Keep the
@@ -116,15 +140,42 @@ where
         Ok(())
     }
 
+    /// Judge the target with this node's own probe, at most once per voting
+    /// epoch. A proposal alone never recruits a signature: only a target this
+    /// node observes failing stays queued, and a recovered target is dropped.
+    async fn judge_target(&mut self, node: Address, epoch: EpochNumber) -> bool {
+        if self.probe_failed.get(&node) == Some(&epoch) {
+            return true;
+        }
+
+        let healthy = matches!(
+            self.context.api.get_health(node, &GetHealthReq).await,
+            Ok(GetHealthRes { ok: true })
+        );
+        if healthy {
+            debug!(node = %node, "eviction: target probed healthy, dropping");
+            self.context.eviction_queue.remove(&node);
+            self.probe_failed.remove(&node);
+            return false;
+        }
+
+        info!(node = %node, epoch = epoch.0, "eviction: target probe failed, voting to evict");
+        self.probe_failed.insert(node, epoch);
+        true
+    }
+
     async fn run_round(
         &self,
         state: &ProtocolState,
         candidate: &EvictionCandidate,
     ) -> Result<(), NodeError> {
-        submit_eviction_proposal(&self.context, candidate, &self.cancel).await?;
-        create_eviction_votes(&self.context, state, candidate, &self.cancel).await?;
-        fanout_eviction_votes(&self.context, state, candidate, &self.cancel).await?;
-        submit_ready_eviction_votes(&self.context, state, candidate, &self.cancel).await?;
-        Ok(())
+        let round = async {
+            submit_eviction_proposal(&self.context, candidate).await?;
+            create_eviction_votes(&self.context, state, candidate).await?;
+            fanout_eviction_votes(&self.context, state, candidate).await?;
+            submit_ready_eviction_votes(&self.context, state, candidate).await
+        };
+
+        self.cancel.run_until_cancelled(round).await.unwrap_or(Ok(()))
     }
 }
