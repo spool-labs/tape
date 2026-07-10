@@ -23,8 +23,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 TRACK_WRITE_CU,
                 vec![ix],
                 &[tape_signer],
-                self.rpc().rpc().commitment(),
-                false,
             )
             .await?;
 

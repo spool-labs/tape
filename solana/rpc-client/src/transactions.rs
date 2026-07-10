@@ -1,6 +1,6 @@
 use crate::client::RpcClient;
 use crate::compute::with_compute_unit_limit;
-use rpc::{CommitmentLevel, Rpc, RpcError};
+use rpc::{Rpc, RpcError};
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey as SolanaPubkey;
 use solana_signature::Signature as SolanaSignature;
@@ -70,9 +70,7 @@ impl<R: Rpc> RpcClient<R> {
             );
 
             // Send and confirm the transaction
-            self.rpc()
-                .send_and_confirm_transaction(&transaction, self.rpc().commitment(), false)
-                .await
+            self.rpc().send_and_confirm_transaction(&transaction).await
         }
         .await;
 
@@ -139,38 +137,21 @@ impl<R: Rpc> RpcClient<R> {
         instructions: Vec<Instruction>,
         signers: &[&dyn TapeSigner],
     ) -> Result<Txid, RpcError> {
-        self.send_instructions_with_signers_inner(
-            payer,
-            instructions,
-            signers,
-            self.rpc().commitment(),
-            false,
-        )
-        .await
-    }
-
-    /// Build, sign, and send-and-confirm, shared by every signer-carrying
-    /// send so all keep the same metrics.
-    async fn send_instructions_with_signers_inner(
-        &self,
-        payer: &dyn TapeSigner,
-        instructions: Vec<Instruction>,
-        signers: &[&dyn TapeSigner],
-        commitment: CommitmentLevel,
-        skip_preflight: bool,
-    ) -> Result<Txid, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
+            // Fetch the latest blockhash
             let blockhash = self.rpc().get_latest_blockhash().await?;
             let payer_pubkey: SolanaPubkey = payer.pubkey().into();
 
+            // Combine payer with additional signers
             let mut all_signers: Vec<SolanaSignerAdapter<'_>> =
                 Vec::with_capacity(signers.len() + 1);
             all_signers.push(SolanaSignerAdapter(payer));
             all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
 
+            // Build and sign the transaction
             let transaction = Transaction::new_signed_with_payer(
                 &instructions,
                 Some(&payer_pubkey),
@@ -178,9 +159,8 @@ impl<R: Rpc> RpcClient<R> {
                 blockhash,
             );
 
-            self.rpc()
-                .send_and_confirm_transaction(&transaction, commitment, skip_preflight)
-                .await
+            // Send and confirm the transaction
+            self.rpc().send_and_confirm_transaction(&transaction).await
         }
         .await;
 
@@ -207,31 +187,17 @@ impl<R: Rpc> RpcClient<R> {
         result
     }
 
-    /// Send instructions with signers under a compute unit limit, waiting for
-    /// the given commitment.
-    ///
-    /// A processed-level wait only orders a dependent transaction behind this
-    /// one on the current fork; callers must follow with a confirmed-level
-    /// barrier before treating the transaction as final. `skip_preflight`
-    /// skips preflight simulation for latency-sensitive hot write paths; a
-    /// rejection then lands on chain (paid) rather than failing simulation,
-    /// so callers must be paths where rejections are not expected in steady
-    /// state.
     pub async fn send_instructions_with_signers_and_compute_unit_limit(
         &self,
         payer: &dyn TapeSigner,
         compute_unit_limit: u32,
         instructions: Vec<Instruction>,
         signers: &[&dyn TapeSigner],
-        commitment: CommitmentLevel,
-        skip_preflight: bool,
     ) -> Result<Txid, RpcError> {
-        self.send_instructions_with_signers_inner(
+        self.send_instructions_with_signers(
             payer,
             with_compute_unit_limit(compute_unit_limit, instructions),
             signers,
-            commitment,
-            skip_preflight,
         )
         .await
     }

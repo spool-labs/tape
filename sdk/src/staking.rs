@@ -63,8 +63,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 STAKE_WITH_POOL_CU,
                 ixs,
                 &[stake_signer],
-                self.rpc().rpc().commitment(),
-                false,
             )
             .await?;
 
@@ -115,8 +113,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         REQUEST_STAKE_UNLOCK_CU,
                         vec![ix],
                         &[stake_signer],
-                        self.rpc().rpc().commitment(),
-                        false,
                     )
                     .await
                     .map_err(TapedriveError::Rpc)?;
@@ -160,8 +156,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         UNSTAKE_FROM_POOL_CU,
                         vec![ix],
                         &[stake_signer],
-                        self.rpc().rpc().commitment(),
-                        false,
                     )
                     .await
                     .map_err(TapedriveError::Rpc)?;

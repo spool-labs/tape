@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use futures::stream::{self, Stream, StreamExt};
-use rpc::Rpc;
+use rpc::{Rpc, UiConfirmedBlock};
 use store::Store;
 use tape_blocks::parse_and_merge_with_sources;
 use tape_core::types::SlotNumber;
@@ -96,12 +96,26 @@ where
         }
     };
 
+    let parsed = Arc::new(parse_block(slot, &block)?);
+
+    debug!(
+        slot = parsed.slot.0,
+        extracted = parsed.instructions.len(),
+        "parsed block"
+    );
+
+    Ok(Some(parsed))
+}
+
+/// Convert a fetched block into the replay input shared by live ingest and
+/// offline tooling
+pub fn parse_block(slot: SlotNumber, block: &UiConfirmedBlock) -> Result<ParsedBlock, NodeError> {
     let parent_slot = SlotNumber(block.parent_slot);
     let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
     let previous_blockhash =
         parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
 
-    let sourced = match parse_and_merge_with_sources(&block) {
+    let sourced = match parse_and_merge_with_sources(block) {
         Ok(instructions) => instructions,
         Err(error) => {
             error!(
@@ -120,7 +134,7 @@ where
         instructions.push(sourced.instruction);
     }
 
-    let parsed = Arc::new(ParsedBlock {
+    Ok(ParsedBlock {
         slot,
         parent_slot,
         blockhash,
@@ -128,15 +142,7 @@ where
         block_time: block.block_time,
         instructions,
         instruction_tx_ids,
-    });
-
-    debug!(
-        slot = parsed.slot.0,
-        extracted = parsed.instructions.len(),
-        "parsed block"
-    );
-
-    Ok(Some(parsed))
+    })
 }
 
 fn parse_chain_hash(slot: SlotNumber, label: &str, encoded: &str) -> Result<Hash, NodeError> {

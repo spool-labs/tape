@@ -8736,6 +8736,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-recover-assignment"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "futures",
+ "rpc",
+ "rpc-client",
+ "rpc-solana",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-commitment-config",
+ "solana-pubkey 4.1.0",
+ "solana-signature",
+ "store",
+ "store-rocks",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "tape-node",
+ "tape-protocol",
+ "tape-retry",
+ "tape-sdk",
+ "tape-store",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "tape-retry"
 version = "0.3.0"
 dependencies = [

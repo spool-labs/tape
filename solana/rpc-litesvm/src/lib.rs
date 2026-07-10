@@ -593,11 +593,8 @@ impl Rpc for LiteSvmRpc {
     async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
-        _commitment: CommitmentLevel,
-        _skip_preflight: bool,
     ) -> Result<Txid, RpcError> {
-        // LiteSVM executes immediately, so send == send_and_confirm at any
-        // commitment, and there is no preflight simulation to skip.
+        // LiteSVM executes immediately, so send == send_and_confirm.
         self.send_transaction(transaction).await
     }
 
