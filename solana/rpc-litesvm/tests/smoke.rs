@@ -45,7 +45,7 @@ async fn send_transfer_records_block_and_status() {
     );
 
     let sig = rpc
-        .send_and_confirm_transaction(&tx)
+        .send_and_confirm_transaction(&tx, rpc.commitment(), false)
         .await
         .expect("transfer should succeed");
 

@@ -118,10 +118,21 @@ pub trait Rpc: Send + Sync {
     /// Send a transaction without waiting for confirmation
     async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError>;
 
-    /// Send a transaction and wait for confirmation
+    /// Send a transaction and wait until it reaches the given commitment.
+    ///
+    /// A processed-level wait means executed by the leader on the current
+    /// fork, which is enough to order a dependent transaction behind it; it
+    /// is not durable, so callers must follow with a confirmed-level barrier
+    /// before treating the result as final.
+    ///
+    /// `skip_preflight` skips the preflight simulation. For latency-sensitive
+    /// hot write paths only; a rejection then lands on chain (paid) rather
+    /// than failing simulation.
     async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
+        commitment: CommitmentLevel,
+        skip_preflight: bool,
     ) -> Result<Txid, RpcError>;
 
     /// Check the status of a transaction signature

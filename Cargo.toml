@@ -42,7 +42,6 @@ members = [
   "tools/tape-network",
   "tools/tape",
   "tools/tape-cli-common",
-  "tools/tape-recover-assignment",
   "tools/tape-store-cli",
 ]
 
@@ -79,7 +78,6 @@ default-members = [
   "tools/tape-network",
   "tools/tape",
   "tools/tape-cli-common",
-  "tools/tape-recover-assignment",
   "tools/tape-store-cli",
 ]
 

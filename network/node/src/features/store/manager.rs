@@ -61,29 +61,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluster, Blockch
     }
 }
 
-/// Which raw track payloads to keep when persisting a replay batch
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RawTrackPolicy {
-    /// Keep payloads for groups this node owns spools in
-    OwnedGroups,
-    /// Keep every payload, for stores rebuilt outside a running node
-    All,
-}
-
 pub(crate) fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, batch, RawTrackPolicy::OwnedGroups)
-}
-
-pub fn persist_batch_with<Db: Store>(
-    store: &TapeStore<Db>,
-    batch: &ReplayBatch,
-    policy: RawTrackPolicy,
-) -> Result<(), NodeError> {
     apply_records(store, batch.slot, batch.block_time, &batch.records)?;
-    persist_raw_tracks(store, &batch.raw_tracks, policy)?;
+    persist_raw_tracks(store, &batch.raw_tracks)?;
 
     store
         .set_sync_cursor(batch.slot)
@@ -103,10 +86,9 @@ fn apply_records<Db: Store>(
 fn persist_raw_tracks<Db: Store>(
     store: &TapeStore<Db>,
     raw_tracks: &[RawTrack],
-    policy: RawTrackPolicy,
 ) -> Result<(), NodeError> {
     for raw_track in raw_tracks {
-        if policy == RawTrackPolicy::OwnedGroups && !is_responsible_for_group(store, raw_track.group)? {
+        if !is_responsible_for_group(store, raw_track.group)? {
             continue;
         }
 

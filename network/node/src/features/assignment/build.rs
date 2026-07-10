@@ -65,7 +65,7 @@ where
 }
 
 // Assemble the candidate once the next epoch and committee are known.
-pub fn build_assignment_blocking<Db: Store>(
+fn build_assignment_blocking<Db: Store>(
     store: &TapeStore<Db>,
     state: &ProtocolState,
 ) -> Result<Option<AssignmentCandidate>, NodeError> {

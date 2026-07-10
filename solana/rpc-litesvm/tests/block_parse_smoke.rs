@@ -29,7 +29,7 @@ async fn fetched_block_is_parseable_by_tape_blocks() {
         blockhash,
     );
 
-    rpc.send_and_confirm_transaction(&tx)
+    rpc.send_and_confirm_transaction(&tx, rpc.commitment(), false)
         .await
         .expect("transfer should succeed");
 
