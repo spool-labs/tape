@@ -1,7 +1,7 @@
 use rpc::Rpc;
-use tape_core::tape::{remaining_tape_epochs, tape_reservation_cost};
+use tape_core::tape::tape_reservation_cost;
 use tape_core::types::coin::{Coin, TAPE};
-use tape_core::types::{EpochNumber, StorageUnits};
+use tape_core::types::StorageUnits;
 use tape_protocol::Api;
 
 use crate::error::TapedriveError;
@@ -29,14 +29,4 @@ pub fn reservation_cost(
         .ok_or_else(|| TapedriveError::InvalidArgument("tape reservation cost overflow".to_string()))
 }
 
-/// Calculate the remaining epochs until a tape expires, given the current epoch, tape activation
-/// epoch, and tape expiry epoch.
-pub fn remaining_epochs(
-    current: EpochNumber,
-    active: EpochNumber,
-    expiry: EpochNumber,
-) -> Result<u64, TapedriveError> {
-    remaining_tape_epochs(current, active, expiry)
-        .ok_or_else(|| TapedriveError::InvalidArgument("tape is expired".to_string()))
-}
 

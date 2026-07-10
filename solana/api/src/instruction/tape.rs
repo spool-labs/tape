@@ -20,19 +20,15 @@ pub struct DestroyTape {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SplitTapeByEpoch {
-    pub epoch: EpochNumber,
+pub struct ExtendTapeCapacity {
+    pub units: StorageUnits,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SplitTapeBySize {
-    pub size: StorageUnits,
+pub struct ExtendTapeExpiry {
+    pub new_expiry_epoch: EpochNumber,
 }
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct MergeTape {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -85,84 +81,56 @@ pub fn build_reserve_tape_ix(
     }
 }
 
-pub fn build_split_tape_by_size_ix(
+pub fn build_extend_tape_capacity_ix(
     fee_payer: Address,
-    authority: Address,
-    recipient: Address,
-    size: StorageUnits,
+    payer: Address,
+    tape: Address,
+    units: StorageUnits,
 ) -> Instruction {
-    let (source_tape_address, _) = tape_pda(authority);
-    let (dest_tape_address, _) = tape_pda(recipient);
-    let (archive_address, _) = archive_pda();
-
     Instruction {
         program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(authority.into(), true),
-            AccountMeta::new(recipient.into(), true),
-
-            AccountMeta::new(source_tape_address.into(), false),
-            AccountMeta::new(dest_tape_address.into(), false),
-            AccountMeta::new(archive_address.into(), false),
-
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
-        ],
-        data: SplitTapeBySize { size }.to_bytes(),
+        accounts: extend_tape_accounts(fee_payer, payer, tape),
+        data: ExtendTapeCapacity { units }.to_bytes(),
     }
 }
 
-pub fn build_split_tape_by_epoch_ix(
+pub fn build_extend_tape_expiry_ix(
     fee_payer: Address,
-    authority: Address,
-    recipient: Address,
-    split_epoch: EpochNumber,
+    payer: Address,
+    tape: Address,
+    new_expiry_epoch: EpochNumber,
 ) -> Instruction {
-    let (source_tape_address, _) = tape_pda(authority);
-    let (dest_tape_address, _) = tape_pda(recipient);
-    let (archive_address, _) = archive_pda();
-
     Instruction {
         program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(authority.into(), true),
-            AccountMeta::new(recipient.into(), true),
-
-            AccountMeta::new(source_tape_address.into(), false),
-            AccountMeta::new(dest_tape_address.into(), false),
-            AccountMeta::new(archive_address.into(), false),
-
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
-        ],
-        data: SplitTapeByEpoch { epoch: split_epoch }.to_bytes(),
+        accounts: extend_tape_accounts(fee_payer, payer, tape),
+        data: ExtendTapeExpiry { new_expiry_epoch }.to_bytes(),
     }
 }
 
-pub fn build_merge_tape_ix(
+fn extend_tape_accounts(
     fee_payer: Address,
-    authority: Address,
-    recipient: Address,
-) -> Instruction {
-    let (source_tape_address, _) = tape_pda(authority);
-    let (dest_tape_address, _) = tape_pda(recipient);
+    payer: Address,
+    tape: Address,
+) -> Vec<AccountMeta> {
+    let payer_ata = ata(&payer);
+    let (system_address, _) = system_pda();
+    let (archive_address, _) = archive_pda();
+    let (archive_ata, _) = archive_ata();
+    let (mint_address, _) = mint_pda();
 
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(authority.into(), true),
-            AccountMeta::new(recipient.into(), true),
+    vec![
+        AccountMeta::new(fee_payer.into(), true),
+        AccountMeta::new_readonly(payer.into(), true),
+        AccountMeta::new(payer_ata.into(), false),
 
-            AccountMeta::new(source_tape_address.into(), false),
-            AccountMeta::new(dest_tape_address.into(), false),
+        AccountMeta::new(tape.into(), false),
+        AccountMeta::new_readonly(system_address.into(), false),
+        AccountMeta::new(archive_address.into(), false),
+        AccountMeta::new(archive_ata.into(), false),
+        AccountMeta::new(mint_address.into(), false),
 
-            AccountMeta::new_readonly(system_program::ID, false),
-        ],
-        data: MergeTape {}.to_bytes(),
-    }
+        AccountMeta::new_readonly(spl_token::ID, false),
+    ]
 }
 
 pub fn build_destroy_tape_ix(

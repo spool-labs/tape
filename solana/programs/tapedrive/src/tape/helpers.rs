@@ -16,6 +16,11 @@ pub struct TapeSpec {
 pub struct TapeReservation {
     pub spec: TapeSpec,
     pub id: TapeNumber,
+    pub payment: SchedulePayment,
+}
+
+#[derive(Clone, Copy)]
+pub struct SchedulePayment {
     pub cost: Coin<TAPE>,
     pub burned: Coin<TAPE>,
     pub scheduled: Coin<TAPE>,
@@ -29,16 +34,45 @@ pub fn reserve_archive(
     if spec.active_epoch < current_epoch(system) {
         return Err(ProgramError::InvalidArgument);
     }
-    if spec.expiry_epoch <= spec.active_epoch {
+
+    let payment = schedule_capacity(
+        system,
+        archive,
+        spec.capacity,
+        spec.active_epoch,
+        spec.expiry_epoch,
+    )?;
+
+    let next_count = archive
+        .tape_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let tape_id = user_tape_number(next_count)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+
+    archive.tape_count = next_count;
+
+    Ok(TapeReservation { spec, id: tape_id, payment })
+}
+
+pub fn schedule_capacity(
+    system: &System,
+    archive: &mut Archive,
+    units: StorageUnits,
+    start_epoch: EpochNumber,
+    end_epoch: EpochNumber,
+) -> Result<SchedulePayment, ProgramError> {
+    // A zero unit or empty window reservation would be free; free
+    // reservations pad the schedule and block rent reclamation.
+    if units.is_zero() || end_epoch <= start_epoch {
         return Err(ProgramError::InvalidArgument);
     }
 
-    let epoch_count = spec
-        .expiry_epoch
-        .checked_sub(spec.active_epoch)
+    let epoch_count = end_epoch
+        .checked_sub(start_epoch)
         .ok_or(ProgramError::InvalidArgument)?;
 
-    let cost = tape_reservation_cost(archive.storage_price, spec.capacity, epoch_count.as_u64())
+    let cost = tape_reservation_cost(archive.storage_price, units, epoch_count.as_u64())
         .ok_or(ProgramError::InvalidArgument)?;
     let policy_burn = bps_amount(cost, archive.burn_fee_bps)?;
     let rewards = cost
@@ -57,35 +91,56 @@ pub fn reserve_archive(
         .checked_add(dust)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    let current_epoch = current_epoch(system);
-    if archive.schedule.current_epoch() != current_epoch {
+    if archive.schedule.current_epoch() != current_epoch(system) {
         return Err(TapeError::UnexpectedState.into());
     }
 
     if !archive.schedule.has_capacity_for(
-        spec.capacity,
+        units,
         archive.storage_capacity,
-        spec.active_epoch,
-        spec.expiry_epoch,
+        start_epoch,
+        end_epoch,
     ) {
         return Err(TapeError::NoCapacity.into());
     }
 
     archive
         .schedule
-        .reserve_capacity(spec.capacity, reward_per_epoch, spec.active_epoch, spec.expiry_epoch)
+        .reserve_capacity(units, reward_per_epoch, start_epoch, end_epoch)
         .map_err(|_| TapeError::UnexpectedState)?;
 
-    let next_count = archive
-        .tape_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-    let tape_id = user_tape_number(next_count)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    Ok(SchedulePayment { cost, burned, scheduled })
+}
 
-    archive.tape_count = next_count;
+pub fn collect_payment<'account_info>(
+    payer_info: &AccountInfo<'account_info>,
+    payer_ata_info: &AccountInfo<'account_info>,
+    archive_ata_info: &AccountInfo<'account_info>,
+    mint_info: &AccountInfo<'account_info>,
+    token_program_info: &AccountInfo<'account_info>,
+    payment: SchedulePayment,
+) -> ProgramResult {
+    if !payment.burned.is_zero() {
+        burn(
+            payer_ata_info,
+            mint_info,
+            payer_info,
+            token_program_info,
+            payment.burned.as_u64(),
+        )?;
+    }
 
-    Ok(TapeReservation { spec, id: tape_id, cost, burned, scheduled })
+    if !payment.scheduled.is_zero() {
+        transfer(
+            payer_info,
+            payer_ata_info,
+            archive_ata_info,
+            token_program_info,
+            payment.scheduled.as_u64(),
+        )?;
+    }
+
+    Ok(())
 }
 
 fn bps_amount(amount: Coin<TAPE>, bps: BasisPoints) -> Result<Coin<TAPE>, ProgramError> {
@@ -138,9 +193,9 @@ pub fn create_tape_account<'account_info>(
         capacity: reservation.spec.capacity,
         active_epoch: reservation.spec.active_epoch,
         expiry_epoch: reservation.spec.expiry_epoch,
-        cost: reservation.cost,
-        burned: reservation.burned,
-        scheduled: reservation.scheduled,
+        cost: reservation.payment.cost,
+        burned: reservation.payment.burned,
+        scheduled: reservation.payment.scheduled,
     }
     .log();
 

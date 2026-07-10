@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_core::types::{EpochDuration, EpochNumber, VersionId};
+use tape_core::types::{EpochDuration, EpochNumber};
 use super::AccountType;
 
 #[repr(C)]
@@ -7,9 +7,6 @@ use super::AccountType;
 pub struct System {
     /// Current epoch number.
     pub current_epoch: EpochNumber,
-
-    /// Minimum protocol version.
-    pub min_version: VersionId,
 
     /// Total registered storage nodes.
     pub total_nodes: u64,

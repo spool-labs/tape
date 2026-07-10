@@ -293,6 +293,25 @@ pub fn merge(
                 }
             }
 
+            RawInstruction::ExtendTape { payer, tape } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeExtended(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TapeExtended event",
+                        ))
+                    }
+                };
+                if event.tape != tape {
+                    return Err(ParseError::EventMismatch("unexpected TapeExtended event"));
+                }
+                ParsedInstruction::ExtendTape {
+                    payer,
+                    tape,
+                    event,
+                }
+            }
+
             RawInstruction::RegisterNode { authority, node } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::NodeRegistered(e)) => e,
@@ -468,8 +487,8 @@ mod tests {
     use tape_api::event::{
         AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeEvicted, NodeJoinedCommittee,
         NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeDestroyed,
-        TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
-        VoteProposed, VoteRecorded,
+        TapeExtended, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
+        TrackWritten, VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::GROUP_SIZE;
@@ -1090,6 +1109,76 @@ mod tests {
             let result = merge(vec![raw], vec![required_event_mismatch_case()]);
             assert!(matches!(result, Err(ParseError::EventMismatch(_))));
         }
+    }
+
+    fn tape_extended_event(payer: Address, tape: Address) -> TapeExtended {
+        TapeExtended {
+            tape,
+            payer,
+            capacity: StorageUnits::mb(20),
+            active_epoch: EpochNumber(1),
+            expiry_epoch: EpochNumber(15),
+            cost: TAPE(11),
+            burned: TAPE(1),
+            scheduled: TAPE(10),
+        }
+    }
+
+    // Pairing an extend with its event keeps the payer, tape and event fields.
+    #[test]
+    fn merge_extend_tape() {
+        let payer = Address::new_unique();
+        let tape = Address::new_unique();
+        let event = tape_extended_event(payer, tape);
+
+        let merged = merge(
+            vec![RawInstruction::ExtendTape { payer, tape }],
+            vec![TapedriveEvent::TapeExtended(event)],
+        )
+        .expect("merge succeeds");
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::ExtendTape { payer: p, tape: t, event } => {
+                assert_eq!(*p, payer);
+                assert_eq!(*t, tape);
+                assert_eq!(event.payer, payer);
+                assert_eq!(event.capacity, StorageUnits::mb(20));
+                assert_eq!(event.expiry_epoch, EpochNumber(15));
+            }
+            _ => panic!("Expected ExtendTape"),
+        }
+    }
+
+    // Pairing an extend with a different event type fails.
+    #[test]
+    fn merge_extend_wrong_event() {
+        let result = merge(
+            vec![RawInstruction::ExtendTape {
+                payer: Address::new_unique(),
+                tape: Address::new_unique(),
+            }],
+            vec![required_event_mismatch_case()],
+        );
+
+        assert!(matches!(result, Err(ParseError::EventMismatch(_))));
+    }
+
+    // Pairing an extend with an event naming another tape fails.
+    #[test]
+    fn merge_extend_tape_mismatch() {
+        let payer = Address::new_unique();
+        let event = tape_extended_event(payer, Address::new_unique());
+
+        let result = merge(
+            vec![RawInstruction::ExtendTape {
+                payer,
+                tape: Address::new_unique(),
+            }],
+            vec![TapedriveEvent::TapeExtended(event)],
+        );
+
+        assert!(matches!(result, Err(ParseError::EventMismatch(_))));
     }
 
     #[test]

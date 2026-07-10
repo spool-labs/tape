@@ -27,8 +27,6 @@ pub enum TapeError {
     NotExpired = 0x23,
     #[error("not empty")]
     NotEmpty = 0x24,
-    #[error("cannot merge")]
-    CannotMerge = 0x25,
 
     // Epoch
     #[error("bad epoch state")]
@@ -168,7 +166,6 @@ impl TapeError {
             Self::TapeExpired => "Tape has expired",
             Self::NotExpired => "Tape has not expired yet",
             Self::NotEmpty => "Tape is not empty",
-            Self::CannotMerge => "Tapes cannot be merged",
             Self::BadEpochState => "Epoch is not in the expected phase",
             Self::TooSoon => "Please wait - epoch duration has not elapsed",
             Self::BadSchedule => "Invalid schedule",

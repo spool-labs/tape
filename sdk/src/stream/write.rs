@@ -1,10 +1,8 @@
 //! Stream write implementation.
-//!
-//! Byte streams are split into chunk tracks, each chunk is registered and
-//! uploaded, chunk certifications are serialized per tape, and the manifest
-//! track is written last.
 
+use futures::stream::{self, FuturesOrdered, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::sync::mpsc;
 
 use rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
@@ -16,12 +14,13 @@ use tape_crypto::Hash;
 use tape_protocol::Api;
 
 use crate::error::TapedriveError;
-use crate::keys::tape_key::TapeKey;
+use crate::keys::operator::TapeOperator;
 use crate::tapedrive::Tapedrive;
 use crate::metrics::{Operation, Phase};
 use crate::track::write::{
     certify_with_retry, inline_write_fits, submit_blob, submit_blob_with_logical_size,
-    submit_raw_with_logical_size, upload_with_retry, WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
+    submit_raw_with_logical_size, upload_with_retry, UploadPlan, WrittenTrack, UNNAMED_TRACK,
+    UNTYPED_TRACK,
 };
 
 use super::error::StreamError;
@@ -33,11 +32,21 @@ use super::receipt::StreamReceipt;
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 
-// Chunks are internal fragments addressed by track number, never by name. The
-// object's name and content type live on the manifest track.
+/// Slice uploads kept in flight per chunk; two saturate a typical uplink.
+/// Higher raises peak memory, since each holds its encoded slices.
+const STORE_CONCURRENCY: usize = 2;
+
+// Chunks are internal fragments addressed by track number, never by name.
 struct PendingChunk {
     pub entry: ChunkEntry,
     pub written: WrittenTrack,
+}
+
+// A registered chunk whose encoded slices still need to be stored.
+struct RegisteredChunk {
+    entry: ChunkEntry,
+    written: WrittenTrack,
+    plan: UploadPlan,
 }
 
 /// Validate stream-level input before any track writes begin.
@@ -162,21 +171,16 @@ fn preflight(
 /// Write in-memory bytes as a multi-track stream.
 pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
 ) -> Result<StreamReceipt, TapedriveError> {
     let size = StorageUnits::from_bytes(data.len() as u64);
     let chunk_count = prepare_write(client, tape_key, name, size).await?;
-    let pending_chunks = register_and_upload_bytes_chunks(
-        client,
-        tape_key,
-        data,
-        size,
-        chunk_count,
-    )
-    .await?;
+    let chunk_sources = stream::iter(data.chunks(MAX_TRACK_SIZE).map(Ok::<_, TapedriveError>));
+    let pending_chunks =
+        pipeline_chunks(client, tape_key, size, chunk_count, chunk_sources).await?;
 
     finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
 }
@@ -184,21 +188,25 @@ pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
 /// Write bytes from an async reader as a multi-track stream.
 pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     size: StorageUnits,
     mut reader: Reader,
 ) -> Result<StreamReceipt, TapedriveError> {
     let chunk_count = prepare_write(client, tape_key, name, size).await?;
-    let pending_chunks = register_and_upload_stream_chunks(
-        client,
-        tape_key,
-        size,
-        chunk_count,
-        &mut reader,
-    )
-    .await?;
+    let chunk_sources = stream::unfold(
+        (&mut reader, 0usize),
+        move |(reader, chunk_index)| async move {
+            if chunk_index >= chunk_count.as_usize() {
+                return None;
+            }
+            let result = read_chunk(reader, chunk_index, chunk_count, size).await;
+            Some((result, (reader, chunk_index + 1)))
+        },
+    );
+    let pending_chunks =
+        pipeline_chunks(client, tape_key, size, chunk_count, chunk_sources).await?;
 
     verify_stream_drained(&mut reader).await?;
     finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
@@ -207,7 +215,7 @@ pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unp
 /// Validate the write upfront and return the chunk count.
 async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     size: StorageUnits,
 ) -> Result<TrackNumber, TapedriveError> {
@@ -238,44 +246,94 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     result
 }
 
-/// Register and upload all in-memory chunks sequentially.
-async fn register_and_upload_bytes_chunks<Blockchain: Rpc, Cluster: Api>(
+/// Run chunk writes as a three-stage pipeline: register one at a time, keep a
+/// bounded number of slice uploads in flight, and certify in track order behind
+/// them. A stage error cancels the pipeline; incomplete tracks go to recovery.
+async fn pipeline_chunks<Blockchain, Cluster, Bytes, Chunks>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
-    data: &[u8],
+    tape_key: &impl TapeOperator,
     size: StorageUnits,
     chunk_count: TrackNumber,
-) -> Result<Vec<PendingChunk>, TapedriveError> {
-    let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
+    chunk_sources: Chunks,
+) -> Result<Vec<PendingChunk>, TapedriveError>
+where
+    Blockchain: Rpc,
+    Cluster: Api,
+    Bytes: AsRef<[u8]>,
+    Chunks: Stream<Item = Result<Bytes, TapedriveError>>,
+{
+    let (registered_sender, mut registered_receiver) = mpsc::channel(1);
+    let (stored_sender, mut stored_receiver) = mpsc::channel(chunk_count.as_usize().max(1));
 
-    for (chunk_index, chunk_data) in data.chunks(MAX_TRACK_SIZE).enumerate() {
-        pending_chunks
-            .push(process_chunk(client, tape_key, chunk_index, chunk_count, size, chunk_data).await?);
-    }
+    let register_stage = async move {
+        let mut chunk_sources = std::pin::pin!(chunk_sources);
+        let mut chunk_index = 0usize;
+        while let Some(chunk_data) = chunk_sources.next().await {
+            let registered =
+                register_chunk(client, tape_key, chunk_index, chunk_count, size, chunk_data?)
+                    .await?;
+            chunk_index += 1;
+            if registered_sender.send(registered).await.is_err() {
+                break;
+            }
+        }
+        Ok::<_, TapedriveError>(())
+    };
 
+    let store_stage = async move {
+        let mut in_flight = FuturesOrdered::new();
+        let mut is_registering = true;
+        while is_registering || !in_flight.is_empty() {
+            tokio::select! {
+                // Safe: a chunk only leaves the channel once this branch completes.
+                registered = registered_receiver.recv(),
+                    if is_registering && in_flight.len() < STORE_CONCURRENCY =>
+                {
+                    match registered {
+                        Some(registered) => in_flight.push_back(store_chunk(client, registered)),
+                        None => is_registering = false,
+                    }
+                }
+                // Safe: a cancelled poll drops no upload; each leaves only once it completes.
+                stored = in_flight.next(), if !in_flight.is_empty() => {
+                    let Some(stored) = stored else { continue };
+                    if stored_sender.send(stored?).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok::<_, TapedriveError>(())
+    };
+
+    // Each certify mutates the tape's track tree, so a proof is only valid
+    // against the root left by the previous certify; the proof is re-fetched
+    // per chunk. Do not parallelize.
+    let certify_stage = async move {
+        let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
+        while let Some(pending) = stored_receiver.recv().await {
+            certify_with_retry(client, tape_key, &pending.written, Operation::WriteStream).await?;
+            pending_chunks.push(pending);
+        }
+        Ok::<_, TapedriveError>(pending_chunks)
+    };
+
+    let ((), (), pending_chunks) = tokio::try_join!(register_stage, store_stage, certify_stage)?;
     Ok(pending_chunks)
 }
 
-/// Register and upload streamed chunks sequentially with bounded memory.
-async fn register_and_upload_stream_chunks<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
-    size: StorageUnits,
-    chunk_count: TrackNumber,
+/// Read one chunk's bytes from the source reader.
+async fn read_chunk<Reader: AsyncRead + Unpin>(
     reader: &mut Reader,
-) -> Result<Vec<PendingChunk>, TapedriveError> {
-    let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
-
-    for chunk_index in 0..chunk_count.as_usize() {
-        let expected_chunk_size = chunk_size(chunk_index, chunk_count, size).map_err(stream_error)?;
-        let mut chunk_data = vec![0u8; expected_chunk_size.as_usize()];
-        read_chunk_exact(reader, &mut chunk_data).await?;
-
-        pending_chunks
-            .push(process_chunk(client, tape_key, chunk_index, chunk_count, size, chunk_data).await?);
-    }
-
-    Ok(pending_chunks)
+    chunk_index: usize,
+    chunk_count: TrackNumber,
+    total_size: StorageUnits,
+) -> Result<Vec<u8>, TapedriveError> {
+    let expected_chunk_size =
+        chunk_size(chunk_index, chunk_count, total_size).map_err(stream_error)?;
+    let mut chunk_data = vec![0u8; expected_chunk_size.as_usize()];
+    read_chunk_exact(reader, &mut chunk_data).await?;
+    Ok(chunk_data)
 }
 
 /// Read exactly one chunk from the source reader.
@@ -306,15 +364,15 @@ async fn verify_stream_drained<Reader: AsyncRead + Unpin>(
     Ok(())
 }
 
-/// Register one chunk track and upload its slices.
-async fn process_chunk<Blockchain: Rpc, Cluster: Api, Bytes: AsRef<[u8]>>(
+/// Register one chunk track on-chain and return it with its upload plan.
+async fn register_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     chunk_index: usize,
     chunk_count: TrackNumber,
     size: StorageUnits,
-    chunk_data: Bytes,
-) -> Result<PendingChunk, TapedriveError> {
+    chunk_data: impl AsRef<[u8]>,
+) -> Result<RegisteredChunk, TapedriveError> {
     let (written, plan) = submit_blob(
         client,
         tape_key,
@@ -325,40 +383,34 @@ async fn process_chunk<Blockchain: Rpc, Cluster: Api, Bytes: AsRef<[u8]>>(
     )
     .await?;
 
-    upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-
-    Ok(PendingChunk {
+    Ok(RegisteredChunk {
         entry: ChunkEntry {
             track_number: written.track.track_number,
             offset: chunk_offset(chunk_index).map_err(stream_error)?,
             size: chunk_size(chunk_index, chunk_count, size).map_err(stream_error)?,
         },
         written,
+        plan,
     })
 }
 
-/// Certify chunk tracks one at a time. Each certify mutates the tape's track
-/// tree, so a proof is only valid against the root left by the previous
-/// certify; the proof is re-fetched per chunk. Do not parallelize.
-async fn certify_chunks<Blockchain: Rpc, Cluster: Api>(
+/// Upload a registered chunk's slices, dropping them once stored.
+async fn store_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
-    pending_chunks: &[PendingChunk],
-) -> Result<(), TapedriveError> {
-    let mut chunk_order: Vec<&PendingChunk> = pending_chunks.iter().collect();
-    chunk_order.sort_by_key(|pending_chunk| pending_chunk.written.track.track_number.0);
+    registered: RegisteredChunk,
+) -> Result<PendingChunk, TapedriveError> {
+    upload_with_retry(
+        client,
+        &registered.written,
+        &registered.plan,
+        Operation::WriteStream,
+    )
+    .await?;
 
-    for pending_chunk in chunk_order {
-        certify_with_retry(
-            client,
-            tape_key,
-            &pending_chunk.written,
-            Operation::WriteStream,
-        )
-        .await?;
-    }
-
-    Ok(())
+    Ok(PendingChunk {
+        entry: registered.entry,
+        written: registered.written,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -378,7 +430,7 @@ fn manifest_write_mode(name: &[u8], manifest_bytes: &[u8]) -> ManifestWriteMode 
 /// Write the manifest inline when the transaction stays small; otherwise write it as a blob.
 async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
@@ -415,17 +467,15 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     })
 }
 
-/// Finalize the stream after chunk registration/upload completes.
+/// Finalize the stream after every chunk is stored and certified.
 async fn finalize_write<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
+    tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     size: StorageUnits,
     pending_chunks: Vec<PendingChunk>,
 ) -> Result<StreamReceipt, TapedriveError> {
-    certify_chunks(client, tape_key, &pending_chunks).await?;
-
     let entries = pending_chunks
         .into_iter()
         .map(|pending_chunk| pending_chunk.entry)
@@ -440,6 +490,7 @@ async fn finalize_write<Blockchain: Rpc, Cluster: Api>(
         tape: manifest_track.track.tape,
         manifest: manifest_address,
         manifest_track_number: manifest_track.track.track_number,
+        manifest_value_hash: manifest_track.track.value_hash,
     })
 }
 

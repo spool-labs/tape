@@ -40,7 +40,7 @@ pub async fn sweep_epoch<Db: Store>(
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
 
-    stats += sweep_expired_tapes(store, config, current_epoch).await?;
+    stats += sweep_expired_tapes(store, config, current_epoch, at_tip).await?;
     stats += sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip).await?;
     stats += sweep_orphan_tracks(store, config, at_tip).await?;
     stats += sweep_orphan_slices(store, config, pending, at_tip).await?;
@@ -54,8 +54,16 @@ async fn sweep_expired_tapes<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,
+    at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
+
+    // Local expiry is only trustworthy when our catalog is current. A node
+    // that is behind may not have applied an ExtendTape event yet.
+    if !at_tip {
+        return Ok(stats);
+    }
+
     let tapes = store.iter_all_tapes().map_err(store_error)?;
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
         if info.end_epoch <= current_epoch {
@@ -447,6 +455,38 @@ mod tests {
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
+    }
+
+    // expired tape survives a sweep behind the tip and dies once caught up
+    #[tokio::test]
+    async fn expiry_needs_tip() {
+        let store = test_store();
+        let config = test_config();
+        let tape = Address::new_unique();
+
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
+                    end_epoch: EpochNumber(2),
+                    next_track_number: TrackNumber(0),
+                },
+            )
+            .expect("put tape");
+
+        sweep_epoch(&store, &config, EpochNumber(3), &owned_spools(&[]), &PendingTracks::new(), false)
+            .await
+            .expect("sweep behind tip");
+
+        assert!(store.get_tape(tape).expect("get tape").is_some());
+
+        sweep_epoch(&store, &config, EpochNumber(3), &owned_spools(&[]), &PendingTracks::new(), true)
+            .await
+            .expect("sweep at tip");
+
+        assert!(store.get_tape(tape).expect("get tape").is_none());
     }
 
     #[tokio::test]

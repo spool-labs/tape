@@ -1,5 +1,5 @@
 use tape_core::spooler::GroupIndex;
-use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits, VersionId};
+use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_solana::*;
 use tape_crypto::address::Address;
@@ -18,7 +18,6 @@ use crate::utils::ata;
 pub struct CreateSystem {
     pub committee_size: u64,
     pub spool_groups: u64,
-    pub min_version: VersionId,
     pub min_epoch_duration: EpochDuration,
     pub max_epoch_duration: EpochDuration,
 }
@@ -67,7 +66,6 @@ pub fn build_create_system_ix(
         data: CreateSystem {
             committee_size: config.committee_size,
             spool_groups: config.spool_groups,
-            min_version: config.min_version,
             min_epoch_duration: config.min_epoch_duration,
             max_epoch_duration: config.max_epoch_duration,
         }.to_bytes(),

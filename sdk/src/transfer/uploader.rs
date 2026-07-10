@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::stream::{self, StreamExt};
+use futures::future::join_all;
 use tape_core::bft::{max_faulty, min_correct};
 use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::GroupIndex;
@@ -19,21 +19,24 @@ use tape_crypto::Hash;
 use tape_protocol::api::{Api, ApiError, SlicePayload, PutSliceReq};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
 
-/// Default concurrency limit for uploads.
-const DEFAULT_CONCURRENCY: usize = 8;
+/// Default concurrency limit for uploads: one in-flight slice per group member.
+const DEFAULT_CONCURRENCY: usize = GROUP_SIZE;
 
 /// A slice with its merkle proof, ready for upload.
+///
+/// Slice bytes are shared so cloning a slice into per-node upload tasks and
+/// retry attempts never copies the payload.
 #[derive(Clone)]
 pub struct SliceWithProof {
     pub index: SpoolIndex,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
     pub leaf_hash: Hash,
     pub merkle_proof: SliceMerkleProof,
 }
@@ -41,12 +44,12 @@ pub struct SliceWithProof {
 impl SliceWithProof {
     /// Create a new slice with proof.
     pub fn new(index: SpoolIndex, data: Vec<u8>, leaf_hash: Hash, merkle_proof: SliceMerkleProof) -> Self {
-        Self { index, data, leaf_hash, merkle_proof }
+        Self { index, data: Arc::new(data), leaf_hash, merkle_proof }
     }
 
     /// Convert to SlicePayload for network transmission.
     pub fn to_payload(&self) -> SlicePayload {
-        SlicePayload::new(self.data.clone(), self.leaf_hash, self.merkle_proof.to_vec())
+        SlicePayload::new(self.data.as_ref().clone(), self.leaf_hash, self.merkle_proof.to_vec())
     }
 }
 
@@ -107,9 +110,10 @@ impl DistributedUploader {
     /// Upload all slices to the network via the Api trait.
     ///
     /// Sends each slice to the correct spool owner based on the committee's
-    /// spool assignment. Returns when all nodes have been attempted.
-    /// Failed uploads are left for the recovery worker to handle.
-    pub async fn upload_all<P: Api>(&self, peer_client: &P) -> Result<(), UploadError> {
+    /// spool assignment. Returns as soon as a certification quorum of members
+    /// and slices has landed; the remaining uploads keep running as detached
+    /// tasks and any that fail are left for the recovery worker to handle.
+    pub async fn upload_all<P: Api>(&self, peer_client: Arc<P>) -> Result<(), UploadError> {
         if self.group_peers.is_empty() {
             return Err(UploadError::NoNodesAvailable);
         }
@@ -134,69 +138,40 @@ impl DistributedUploader {
         let required_slices = min_correct(GROUP_SIZE as u64) as usize;
         let quorum_reached = Arc::new(AtomicBool::new(false));
 
-        // Upload to each node in parallel. Before quorum, slice uploads use the
-        // full retry budget; after quorum, remaining uploads get one attempt.
-        let upload_futures: Vec<_> = node_groups
-            .into_iter()
-            .map(|(node, spools)| {
-                let track = self.track;
-                let permit = self.concurrency_limit.clone();
-                let quorum_reached = quorum_reached.clone();
+        // Upload to each node in a detached task so a quorum can complete the
+        // call while stragglers keep going. Before quorum, slice uploads use
+        // the full retry budget; after quorum, remaining uploads get one
+        // attempt.
+        let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
+        for (node, spools) in node_groups {
+            let track = self.track;
+            let concurrency_limit = self.concurrency_limit.clone();
+            let quorum_reached = quorum_reached.clone();
+            let peer_client = peer_client.clone();
+            let result_sender = result_sender.clone();
 
-                // Collect slices for this node
-                let slices: Vec<(SpoolIndex, SliceWithProof)> = spools
-                    .iter()
-                    .filter_map(|spool| slice_map.get(spool).map(|s| (*spool, (*s).clone())))
-                    .collect();
+            // Collect slices for this node
+            let slices: Vec<(SpoolIndex, SliceWithProof)> = spools
+                .iter()
+                .filter_map(|spool| slice_map.get(spool).map(|s| (*spool, (*s).clone())))
+                .collect();
 
-                async move {
-                    let _permit = permit
-                        .acquire()
-                        .await
-                        .map_err(|_| UploadError::Semaphore)?;
-
-                    let mut stored = Vec::new();
-                    let mut failed = Vec::new();
-                    let mut not_responsible = Vec::new();
-
-                    for (global_spool, slice) in slices {
-                        let payload = slice.to_payload();
-                        let payload_bytes = payload.data.len();
-                        let req = PutSliceReq {
-                            track: track.into(),
-                            spool: global_spool,
-                            payload,
-                        };
-
-                        if let Err(e) = upload_slice_with_retry(
-                            peer_client,
-                            node,
-                            track,
-                            req,
-                            payload_bytes,
-                            quorum_reached.as_ref(),
-                        ).await {
-                            warn!(
-                                track = %track,
-                                slice = %global_spool,
-                                node = %node,
-                                error = %e,
-                                "Slice upload failed, left for recovery"
-                            );
-                            if matches!(e, ApiError::NotResponsible) {
-                                not_responsible.push(global_spool);
-                            } else {
-                                failed.push(global_spool);
-                            }
-                        } else {
-                            stored.push(global_spool);
-                        }
-                    }
-
-                    Ok::<_, UploadError>(NodeUploadResult { stored, failed, not_responsible })
-                }
-            })
-            .collect();
+            // Detached: stragglers finish after quorum returns, and anything they
+            // fail to land is picked up by the recovery worker.
+            tokio::spawn(async move {
+                let result = upload_node_slices(
+                    peer_client.as_ref(),
+                    node,
+                    track,
+                    slices,
+                    quorum_reached.as_ref(),
+                    concurrency_limit,
+                )
+                .await;
+                let _ = result_sender.send(result);
+            });
+        }
+        drop(result_sender);
 
         // Count members that stored all assigned slices and total landed slices.
         let mut total_failed_slices = 0;
@@ -205,8 +180,7 @@ impl DistributedUploader {
         let mut fully_successful_members = 0;
         let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
 
-        let mut results = stream::iter(upload_futures).buffer_unordered(DEFAULT_CONCURRENCY);
-        while let Some(result) = results.next().await {
+        while let Some(result) = result_receiver.recv().await {
             match result {
                 Ok(node) => {
                     total_failed_slices += node.failed.len();
@@ -222,19 +196,25 @@ impl DistributedUploader {
                 }
             }
 
-            if !quorum_reached.load(Ordering::Relaxed)
-                && fully_successful_members >= required_members
+            if fully_successful_members >= required_members
                 && stored_slices.len() >= required_slices
             {
                 quorum_reached.store(true, Ordering::Relaxed);
+                if total_failed_slices > 0 {
+                    warn!(
+                        failed_slices = total_failed_slices,
+                        "Some slices failed to upload, left for recovery worker"
+                    );
+                }
                 info!(
                     track = %self.track,
                     members = fully_successful_members,
                     required_members,
                     slices = stored_slices.len(),
                     required_slices,
-                    "slice upload quorum reached, remaining uploads will not retry"
+                    "slice upload quorum reached, draining remaining uploads in the background"
                 );
+                return Ok(());
             }
         }
 
@@ -247,7 +227,7 @@ impl DistributedUploader {
             });
         }
 
-        // Check quorum - need 2f+1 fully successful group members and 2f+1 landed slices.
+        // Quorum was never reached - report whichever bound fell short.
         let successful_members = self.group_member_count - member_failures;
 
         if successful_members < required_members || fully_successful_members < required_members {
@@ -257,28 +237,78 @@ impl DistributedUploader {
             });
         }
 
-        if stored_slices.len() < required_slices {
-            return Err(UploadError::InsufficientSlices {
-                got: stored_slices.len(),
-                need: required_slices,
-            });
-        }
-
-        // Log if there were any slice-level failures (but we still succeeded overall)
-        if total_failed_slices > 0 {
-            warn!(
-                failed_slices = total_failed_slices,
-                "Some slices failed to upload, left for recovery worker"
-            );
-        }
-
-        Ok(())
+        Err(UploadError::InsufficientSlices {
+            got: stored_slices.len(),
+            need: required_slices,
+        })
     }
 
     /// Get the number of slices.
     pub fn slice_count(&self) -> usize {
         self.slices.len()
     }
+}
+
+/// Upload one node's slices concurrently under a single member permit.
+async fn upload_node_slices<P: Api>(
+    peer_client: &P,
+    node: Address,
+    track: Address,
+    slices: Vec<(SpoolIndex, SliceWithProof)>,
+    quorum_reached: &AtomicBool,
+    concurrency_limit: Arc<Semaphore>,
+) -> Result<NodeUploadResult, UploadError> {
+    let _permit = concurrency_limit
+        .acquire()
+        .await
+        .map_err(|_| UploadError::Semaphore)?;
+
+    let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
+        let payload = slice.to_payload();
+        let payload_bytes = payload.data.len();
+        let req = PutSliceReq {
+            track: track.into(),
+            spool: global_spool,
+            payload,
+        };
+
+        let result = upload_slice_with_retry(
+            peer_client,
+            node,
+            track,
+            req,
+            payload_bytes,
+            quorum_reached,
+        )
+        .await;
+        (global_spool, result)
+    });
+
+    let mut stored = Vec::new();
+    let mut failed = Vec::new();
+    let mut not_responsible = Vec::new();
+
+    for (global_spool, result) in join_all(uploads).await {
+        match result {
+            Ok(()) => stored.push(global_spool),
+            Err(e) => {
+                warn!(
+                    track = %track,
+                    slice = %global_spool,
+                    node = %node,
+                    error = %e,
+                    "Slice upload failed, left for recovery"
+                );
+                if matches!(e, ApiError::NotResponsible) {
+                    not_responsible.push(global_spool);
+                } else {
+                    failed.push(global_spool);
+                }
+            }
+        }
+    }
+
+    Ok(NodeUploadResult { stored, failed, not_responsible })
 }
 
 async fn upload_slice_with_retry<P: Api>(
@@ -380,11 +410,13 @@ mod tests {
 
     fn make_test_slices(count: usize) -> Vec<SliceWithProof> {
         (0..count)
-            .map(|i| SliceWithProof {
-                index: SpoolIndex::from(i as u64),
-                data: vec![i as u8; 100],
-                leaf_hash: Hash::default(),
-                merkle_proof: [Hash::default(); SLICE_TREE_HEIGHT],
+            .map(|i| {
+                SliceWithProof::new(
+                    SpoolIndex::from(i as u64),
+                    vec![i as u8; 100],
+                    Hash::default(),
+                    [Hash::default(); SLICE_TREE_HEIGHT],
+                )
             })
             .collect()
     }
@@ -433,16 +465,16 @@ mod tests {
 
     #[test]
     fn slice_with_proof_to_payload() {
-        let slice = SliceWithProof {
-            index: SpoolIndex::from(42),
-            data: vec![0xAB; 500],
-            leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); SLICE_TREE_HEIGHT],
-        };
+        let slice = SliceWithProof::new(
+            SpoolIndex::from(42),
+            vec![0xAB; 500],
+            Hash::default(),
+            [Hash::default(); SLICE_TREE_HEIGHT],
+        );
 
         let payload = slice.to_payload();
 
-        assert_eq!(payload.data, slice.data);
+        assert_eq!(payload.data, *slice.data);
         assert_eq!(payload.leaf_hash, slice.leaf_hash);
         assert_eq!(payload.merkle_proof, slice.merkle_proof);
     }

@@ -99,6 +99,16 @@ pub enum ReplayableEvent {
         epoch: EpochNumber,
     },
 
+    /// Tape capacity or expiry was extended.
+    ExtendTape {
+        tape: Address,
+        capacity: StorageUnits,
+        expiry_epoch: EpochNumber,
+        cost: Coin<TAPE>,
+        burned: Coin<TAPE>,
+        scheduled: Coin<TAPE>,
+    },
+
     /// Node was registered.
     RegisterNode {
         authority: Address,

@@ -3,8 +3,8 @@ use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
     EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeReserved, TrackCertified,
-    TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
+    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeExtended, TapeReserved,
+    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
@@ -119,6 +119,10 @@ pub enum RawInstruction {
     },
     DestroyTape {
         owner: Address,
+        tape: Address,
+    },
+    ExtendTape {
+        payer: Address,
         tape: Address,
     },
     RegisterNode {
@@ -267,6 +271,11 @@ pub enum ParsedInstruction {
         owner: Address,
         tape: Address,
         event: TapeDestroyed,
+    },
+    ExtendTape {
+        payer: Address,
+        tape: Address,
+        event: TapeExtended,
     },
 
     // Node management
@@ -516,6 +525,12 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::DestroyTape { owner, tape }))
         }
 
+        TapeInstruction::ExtendTapeCapacity | TapeInstruction::ExtendTapeExpiry => {
+            let payer = get_account(1)?;
+            let tape = get_account(3)?;
+            Ok(Some(RawInstruction::ExtendTape { payer, tape }))
+        }
+
         TapeInstruction::RegisterNode => {
             let authority = get_account(1)?;
             let node = get_account(5)?;
@@ -609,13 +624,9 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetAccessThreshold
         | TapeInstruction::SetCommitteeSize
         | TapeInstruction::SetSpoolGroups
-        | TapeInstruction::SetMinVersion
         | TapeInstruction::SetEpochDuration
         | TapeInstruction::SplitPoolStake
         | TapeInstruction::MergePoolStake
-        | TapeInstruction::SplitTapeByEpoch
-        | TapeInstruction::SplitTapeBySize
-        | TapeInstruction::MergeTape
         | TapeInstruction::SetTapeDelegate
         | TapeInstruction::RevokeTapeDelegate => Ok(None),
     }

@@ -1,7 +1,7 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
 
-use crate::tape::helpers::{TapeSpec, create_tape_account, reserve_archive};
+use crate::tape::helpers::{TapeSpec, collect_payment, create_tape_account, reserve_archive};
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ReserveTape::try_from_bytes(data)?;
@@ -80,25 +80,14 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let reservation = reserve_archive(system, archive, spec)?;
     let seeds = [CASSETTE, authority_info.key.as_ref()];
 
-    if !reservation.burned.is_zero() {
-        burn(
-            authority_ata_info,
-            mint_info,
-            authority_info,
-            token_program_info,
-            reservation.burned.as_u64(),
-        )?;
-    }
-
-    if !reservation.scheduled.is_zero() {
-        transfer(
-            authority_info,
-            authority_ata_info,
-            archive_ata_info,
-            token_program_info,
-            reservation.scheduled.as_u64(),
-        )?;
-    }
+    collect_payment(
+        authority_info,
+        authority_ata_info,
+        archive_ata_info,
+        mint_info,
+        token_program_info,
+        reservation.payment,
+    )?;
 
     create_tape_account(
         tape_info,

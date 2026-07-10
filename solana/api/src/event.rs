@@ -25,6 +25,7 @@ pub enum EventType {
     // Tape
     TapeReserved = 0x20,
     TapeDestroyed = 0x21,
+    TapeExtended = 0x22,
 
     // Node
     NodeRegistered = 0x30,
@@ -185,6 +186,37 @@ pub struct TapeDestroyed {
 }
 
 tape_solana::event!(EventType, TapeDestroyed);
+
+/// Emitted when a tape's capacity or expiry is extended.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TapeExtended {
+    /// Tape account address
+    pub tape: Address,
+
+    /// Token source owner who paid
+    pub payer: Address,
+
+    /// Reserved capacity after the extend
+    pub capacity: StorageUnits,
+
+    /// First active epoch
+    pub active_epoch: EpochNumber,
+
+    /// Expiration epoch after the extend
+    pub expiry_epoch: EpochNumber,
+
+    /// TAPE flux units paid
+    pub cost: Coin<TAPE>,
+
+    /// TAPE flux units burned immediately
+    pub burned: Coin<TAPE>,
+
+    /// TAPE flux units scheduled into epoch rewards
+    pub scheduled: Coin<TAPE>,
+}
+
+tape_solana::event!(EventType, TapeExtended);
 
 /// Emitted when a storage node registers.
 #[repr(C)]
@@ -573,6 +605,7 @@ mod tests {
     fn test_event_type_values() {
         assert_eq!(EventType::TrackCertified as u8, 0x13);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
+        assert_eq!(EventType::TapeExtended as u8, 0x22);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
         assert_eq!(EventType::EpochCommitted as u8, 0x40);
         assert_eq!(EventType::EpochAdvanced as u8, 0x41);
@@ -590,6 +623,7 @@ mod tests {
         assert!(TrackCertified::size_of() < 1024);
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
+        assert!(TapeExtended::size_of() < 1024);
         assert!(EpochCommitted::size_of() < 1024);
         assert!(EpochAdvanced::size_of() < 1024);
         assert!(SpoolSynced::size_of() < 1024);

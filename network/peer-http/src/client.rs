@@ -731,7 +731,7 @@ mod tests {
     use tape_core::system::VoteKind;
     use tape_core::system::NodePreferences;
     use tape_core::types::coin::TAPE;
-    use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits, VersionId};
+    use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits};
     use tape_crypto::address::Address;
     use tape_crypto::ed25519::Keypair as EdKeypair;
     use tape_crypto::Hash;
@@ -749,7 +749,6 @@ mod tests {
             storage_price: TAPE(0),
             committee_size: 0,
             spool_groups: 0,
-            min_version: VersionId(0),
             burn_fee_bps: BasisPoints(0),
             subsidy_decay_bps: BasisPoints(0),
             epoch_duration: EpochDuration(0),

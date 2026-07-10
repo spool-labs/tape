@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use solana_account::Account;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcTransactionConfig};
+use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcTransactionConfig};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -295,6 +295,42 @@ impl SolanaRpc {
         message.contains("invalid type: null") && message.contains("UiConfirmedBlock")
     }
 
+}
+
+/// Send a transaction and poll its signature status at a short fixed cadence.
+/// The library confirm loop polls every 500ms, which adds up to half a slot of
+/// pure sleep per transaction on top of confirmation itself.
+async fn send_and_poll(
+    client: &RpcClient,
+    transaction: &Transaction,
+    commitment: CommitmentLevel,
+) -> Result<Signature, ClientError> {
+    const CONFIRM_POLL_MS: u64 = 200;
+
+    let commitment = CommitmentConfig { commitment };
+    let signature = client
+        .send_transaction_with_config(
+            transaction,
+            RpcSendTransactionConfig {
+                // The write paths construct well-formed transactions and read
+                // failures from signature status, so the preflight simulation
+                // only adds a round-trip.
+                skip_preflight: true,
+                ..RpcSendTransactionConfig::default()
+            },
+        )
+        .await?;
+
+    loop {
+        if let Some(status) = client
+            .get_signature_status_with_commitment(&signature, commitment)
+            .await?
+        {
+            status?;
+            return Ok(signature);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(CONFIRM_POLL_MS)).await;
+    }
 }
 
 // ============================================================================
@@ -841,7 +877,7 @@ impl Rpc for SolanaRpc {
                 let client = self.client.read().await;
                 tokio::time::timeout(
                     self.config.timeout,
-                    client.send_and_confirm_transaction(&transaction),
+                    send_and_poll(&client, &transaction, self.config.commitment),
                 )
                 .await
             };

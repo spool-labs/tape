@@ -18,6 +18,7 @@ use tape_store::ops::{
 };
 use tape_store::types::{ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
+use tracing::warn;
 
 use crate::core::error::NodeError;
 use crate::features::store::cleanup::{
@@ -79,6 +80,27 @@ pub fn apply_event<Db: Store>(
         }
         ReplayableEvent::DestroyTape { tape, .. } => {
             delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
+        }
+        ReplayableEvent::ExtendTape {
+            tape,
+            expiry_epoch,
+            ..
+        } => {
+            // The event carries the post-extend expiry; a capacity-only
+            // extend leaves it unchanged and needs no write.
+            let existing = store.get_tape(*tape).map_err(store_error)?;
+            match existing {
+                Some(mut info) if info.end_epoch != *expiry_epoch => {
+                    info.end_epoch = *expiry_epoch;
+                    store.put_tape(*tape, info).map_err(store_error)?;
+                }
+                Some(_) => {}
+                // A lagging node may have swept the tape before applying the
+                // extend; there is nothing left to keep alive.
+                None => {
+                    warn!(tape = %tape, "extend for unknown tape, skipping");
+                }
+            }
         }
         ReplayableEvent::RegisterNode { node, id, .. } => {
             let (history, _) = history_pda(*node);
@@ -910,6 +932,73 @@ mod tests {
         assert!(store.get_tape(other_tape).unwrap().is_some());
         assert!(store.get_track(track_other).unwrap().is_some());
         assert!(store.get_object_info(track_other).unwrap().is_some());
+    }
+
+    // extend updates the expiry while keeping id, flags and track cursor
+    #[test]
+    fn extends_tape() {
+        let store = test_store();
+        let tape = Address::new_unique();
+
+        let events = vec![
+            ReplayableEvent::ReserveTape {
+                tape,
+                id: TapeNumber(3),
+                flags: 0,
+                authority: Address::new_unique(),
+                capacity: StorageUnits::mb(10),
+                active_epoch: EpochNumber(6),
+                expiry_epoch: EpochNumber(12),
+                cost: TAPE(0),
+                burned: TAPE(0),
+                scheduled: TAPE(0),
+            },
+            make_blob_track(tape, TrackNumber(4), EpochNumber(6)),
+            ReplayableEvent::ExtendTape {
+                tape,
+                capacity: StorageUnits::mb(20),
+                expiry_epoch: EpochNumber(30),
+                cost: TAPE(0),
+                burned: TAPE(0),
+                scheduled: TAPE(0),
+            },
+        ];
+
+        apply_slot(&store, SlotNumber(60), None, &events).expect("apply events");
+
+        assert_eq!(
+            store.get_tape(tape).expect("get tape"),
+            Some(TapeInfo {
+                id: TapeNumber(3),
+                flags: 0,
+                end_epoch: EpochNumber(30),
+                next_track_number: TrackNumber(5),
+            })
+        );
+    }
+
+    // extend for a tape this node never stored is skipped without error
+    #[test]
+    fn extend_unknown_tape() {
+        let store = test_store();
+        let tape = Address::new_unique();
+
+        let result = apply_slot(
+            &store,
+            SlotNumber(61),
+            None,
+            &[ReplayableEvent::ExtendTape {
+                tape,
+                capacity: StorageUnits::mb(10),
+                expiry_epoch: EpochNumber(30),
+                cost: TAPE(0),
+                burned: TAPE(0),
+                scheduled: TAPE(0),
+            }],
+        );
+
+        assert!(result.is_ok());
+        assert!(store.get_tape(tape).expect("get tape").is_none());
     }
 
     #[test]

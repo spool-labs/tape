@@ -360,6 +360,32 @@ mod tests {
     }
 
     #[test]
+    fn counts_tracks_after_extend() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let size = StorageUnits::from_bytes(64);
+
+        store.put_tape(tape, tape_info(EpochNumber(11))).unwrap();
+        store.put_track(track, raw_track(tape, GroupIndex(1), size)).unwrap();
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .unwrap();
+
+        // Expiring at the target epoch excludes the tape from sizing.
+        let sizes = group_sizes(&store, EpochNumber(10), EpochNumber(11), 2).unwrap();
+        assert_eq!(sizes[1], StorageUnits::zero());
+
+        // An applied extend moves the expiry out and the tracks count again.
+        let mut info = store.get_tape(tape).unwrap().expect("tape stored");
+        info.end_epoch = EpochNumber(30);
+        store.put_tape(tape, info).unwrap();
+
+        let sizes = group_sizes(&store, EpochNumber(10), EpochNumber(11), 2).unwrap();
+        assert_eq!(sizes[1], size);
+    }
+
+    #[test]
     fn excludes_snapshot_tracks_without_object_info() {
         let store = test_store();
         let user_tape = Address::new_unique();

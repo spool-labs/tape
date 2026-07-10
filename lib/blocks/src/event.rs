@@ -4,8 +4,8 @@ use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
     EpochCreated, EventType, CommissionClaimed, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeReserved, TrackCertified,
-    TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
+    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeExtended, TapeReserved,
+    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 
 use crate::error::ParseError;
@@ -33,6 +33,7 @@ pub enum TapedriveEvent {
     TrackWritten(TrackWritten),
     TapeReserved(TapeReserved),
     TapeDestroyed(TapeDestroyed),
+    TapeExtended(TapeExtended),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
     NodeEvicted(NodeEvicted),
@@ -148,6 +149,11 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::TapeDestroyed(*event)))
         }
+        EventType::TapeExtended => {
+            let event = bytemuck::try_from_bytes::<TapeExtended>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::TapeExtended(*event)))
+        }
         EventType::NodeRegistered => {
             let event = bytemuck::try_from_bytes::<NodeRegistered>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
@@ -204,7 +210,7 @@ mod tests {
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{NodePreferences, VoteKind};
-    use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber, VersionId};
+    use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -250,7 +256,6 @@ mod tests {
                 storage_price: TAPE(0),
                 committee_size: 0,
                 spool_groups: 0,
-                min_version: VersionId(0),
                 burn_fee_bps: BasisPoints(0),
                 subsidy_decay_bps: BasisPoints(0),
                 access_threshold: TAPE(0),
@@ -455,6 +460,38 @@ mod tests {
                 assert_eq!(e.capacity, StorageUnits::mb(1000));
             }
             _ => panic!("Expected TapeReserved event"),
+        }
+    }
+
+    // A tape extended event decodes from an encoded program data log line.
+    #[test]
+    fn parse_tape_extended_event() {
+        let tape = Address::new_unique();
+        let payer = Address::new_unique();
+        let event = TapeExtended {
+            tape,
+            payer,
+            capacity: StorageUnits::mb(2000),
+            active_epoch: EpochNumber(1),
+            expiry_epoch: EpochNumber(20),
+            cost: TAPE(100),
+            burned: TAPE(10),
+            scheduled: TAPE(90),
+        };
+
+        let log = encode_event(EventType::TapeExtended, &event);
+        let parsed = parse_event_data(&log)
+            .expect("parse succeeds")
+            .expect("event present");
+
+        match parsed {
+            TapedriveEvent::TapeExtended(e) => {
+                assert_eq!(e.tape, tape);
+                assert_eq!(e.payer, payer);
+                assert_eq!(e.capacity, StorageUnits::mb(2000));
+                assert_eq!(e.expiry_epoch, EpochNumber(20));
+            }
+            _ => panic!("Expected TapeExtended event"),
         }
     }
 

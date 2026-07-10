@@ -2,11 +2,13 @@ use std::time::{Duration, Instant};
 
 use rpc::Rpc;
 use rpc_client::RpcClient;
+use solana_keypair::Keypair;
 use solana_program_pack::Pack;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use spl_token::instruction::transfer_checked;
 use tape_chain_harness::{TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION};
+use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::program::tapedrive::{
     ARCHIVE_ATA, DEFAULT_SUBSIDY_DECAY_BPS, SUBSIDY_ATA, track_pda,
 };
@@ -15,7 +17,7 @@ use tape_api::utils::ata;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences};
-use tape_core::tape::tape_reservation_cost;
+use tape_core::tape::{remaining_tape_epochs, tape_reservation_cost};
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
 use tape_crypto::Address;
@@ -36,6 +38,8 @@ const CLAIM_EPOCH: EpochNumber = EpochNumber(5);
 const RESERVE_CAPACITY: StorageUnits = StorageUnits(3 * StorageUnits::MB);
 const RESERVE_EPOCHS: u64 = 4;
 const SUBSIDY_TOPUP: TAPE = TAPE(10_000);
+const EXTEND_EPOCHS: u64 = 3;
+const EXTEND_CAPACITY: StorageUnits = StorageUnits(3 * StorageUnits::MB / 2);
 
 #[derive(Clone, Copy, Debug)]
 struct ReservationEconomics {
@@ -289,6 +293,126 @@ async fn run() {
     harness.stop_all().await.expect("stop harness");
 }
 
+// a third party can pay to extend another authority's tape
+#[test]
+fn extend_third_party() {
+    run_simnet_test(run_extend_third_party);
+}
+
+async fn run_extend_third_party() {
+    let mut harness = SimnetBuilder::new()
+        .node_count(NODE_COUNT)
+        .runtime_mode(NodeRuntimeMode::Disabled)
+        .base_port(0)
+        .build()
+        .expect("build harness");
+
+    {
+        let scenario = harness.scenario();
+        scenario.init_system().await.expect("init system");
+        scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .expect("register nodes");
+        scenario.stake_all(1_000).await.expect("stake nodes");
+        scenario.start_network().await.expect("start network");
+    }
+
+    let scenario = harness.scenario();
+    let tape_key = TapeKey::generate();
+    let reserved = scenario
+        .sdk(harness.admin())
+        .reserve(&tape_key, RESERVE_CAPACITY, RESERVE_EPOCHS)
+        .await
+        .expect("reserve tape");
+
+    let owner = Address::from(tape_key.pubkey());
+    let owner_before = owner_token_balance(&harness, owner).await;
+
+    let archive = scenario.read_archive().await.expect("read archive");
+    let system = scenario.read_system().await.expect("read system");
+    let new_expiry = reserved.expiry_epoch + EpochNumber(EXTEND_EPOCHS);
+    let remaining = remaining_tape_epochs(
+        system.current_epoch,
+        reserved.active_epoch,
+        new_expiry,
+    )
+    .expect("extended tape should have remaining epochs");
+
+    let expiry_cost =
+        tape_reservation_cost(archive.storage_price, reserved.capacity, EXTEND_EPOCHS)
+            .expect("expiry cost should fit");
+    let capacity_cost =
+        tape_reservation_cost(archive.storage_price, EXTEND_CAPACITY, remaining)
+            .expect("capacity cost should fit");
+    let expected_debit = expiry_cost.saturating_add(capacity_cost);
+
+    let payer = Keypair::new();
+    harness
+        .chain()
+        .airdrop(&payer.pubkey(), 10_000_000_000)
+        .expect("airdrop payer");
+
+    let funding = expected_debit.saturating_mul(TAPE(2));
+    let fund_ixs = build_authority_with_tokens_ix(
+        harness.admin().pubkey().into(),
+        payer.pubkey().into(),
+        funding,
+    )
+    .expect("build payer funding");
+    harness
+        .chain()
+        .send_instructions_and_advance(
+            harness.admin(),
+            fund_ixs,
+            harness.config().slot_advance_per_tx,
+        )
+        .await
+        .expect("fund payer");
+
+    let payer_address = Address::from(payer.pubkey());
+    let payer_before = owner_token_balance(&harness, payer_address).await;
+    let sdk = scenario.sdk(&payer);
+    let tape_address = tape_key.address();
+
+    let tape = sdk
+        .extend_expiry(&tape_address, EXTEND_EPOCHS)
+        .await
+        .expect("extend expiry");
+    assert_eq!(
+        tape.expiry_epoch, new_expiry,
+        "expiry should move by the added epochs"
+    );
+
+    let tape = sdk
+        .extend_capacity(&tape_address, EXTEND_CAPACITY)
+        .await
+        .expect("extend capacity");
+    assert_eq!(
+        tape.capacity,
+        RESERVE_CAPACITY + EXTEND_CAPACITY,
+        "capacity should grow by the added units"
+    );
+    assert_eq!(
+        tape.expiry_epoch, new_expiry,
+        "capacity extension should not move the expiry"
+    );
+
+    let payer_after = owner_token_balance(&harness, payer_address).await;
+    assert_eq!(
+        payer_before.saturating_sub(payer_after),
+        expected_debit,
+        "payer should be debited both extension window costs"
+    );
+    assert_eq!(
+        owner_token_balance(&harness, owner).await,
+        owner_before,
+        "tape owner balance should be unchanged"
+    );
+
+    harness.stop_all().await.expect("stop harness");
+}
+
 async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumber) {
     let scenario = harness.scenario();
     let system = scenario.read_system().await.expect("read system");
@@ -310,7 +434,6 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
     );
 
     let expected = NodePreferences {
-        min_version: system.min_version,
         committee_size: GROUP_SIZE as u64,
         spool_groups: TARGET_GROUPS,
         burn_fee_bps: BURN_FEE_BPS,

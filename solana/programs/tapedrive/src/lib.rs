@@ -45,7 +45,6 @@ use crate::node::{
     process_set_committee_size,
     process_set_epoch_duration,
     process_set_access_threshold,
-    process_set_min_version,
     process_set_name,
     process_set_network_address,
     process_set_network_tls,
@@ -65,12 +64,11 @@ use crate::pool::{
 };
 use crate::tape::{
     process_destroy_tape,
-    process_merge_tape,
+    process_extend_tape_capacity,
+    process_extend_tape_expiry,
     process_revoke_tape_delegate,
     process_reserve_tape,
     process_set_tape_delegate,
-    process_split_tape_by_epoch,
-    process_split_tape_by_size,
 };
 use crate::track::{
     process_certify_track,
@@ -142,7 +140,6 @@ pub fn process_instruction(
         TapeInstruction::SetAccessThreshold => process_set_access_threshold(accounts, data)?,
         TapeInstruction::SetCommitteeSize => process_set_committee_size(accounts, data)?,
         TapeInstruction::SetSpoolGroups => process_set_spool_groups(accounts, data)?,
-        TapeInstruction::SetMinVersion => process_set_min_version(accounts, data)?,
         TapeInstruction::SetEpochDuration => process_set_epoch_duration(accounts, data)?,
         TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
         TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
@@ -159,9 +156,8 @@ pub fn process_instruction(
         // Tape
         TapeInstruction::ReserveTape => process_reserve_tape(accounts, data)?,
         TapeInstruction::DestroyTape => process_destroy_tape(accounts, data)?,
-        TapeInstruction::SplitTapeByEpoch => process_split_tape_by_epoch(accounts, data)?,
-        TapeInstruction::SplitTapeBySize => process_split_tape_by_size(accounts, data)?,
-        TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
+        TapeInstruction::ExtendTapeCapacity => process_extend_tape_capacity(accounts, data)?,
+        TapeInstruction::ExtendTapeExpiry => process_extend_tape_expiry(accounts, data)?,
         TapeInstruction::SetTapeDelegate => process_set_tape_delegate(accounts, data)?,
         TapeInstruction::RevokeTapeDelegate => process_revoke_tape_delegate(accounts, data)?,
 

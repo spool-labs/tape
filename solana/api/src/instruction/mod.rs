@@ -99,7 +99,6 @@ pub enum TapeInstruction {
     SetAccessThreshold,
     SetCommitteeSize,
     SetSpoolGroups,
-    SetMinVersion,
     SetEpochDuration,
     ClaimCommission,
 
@@ -118,9 +117,8 @@ pub enum TapeInstruction {
     // Tape
     ReserveTape = 0xA0,
     DestroyTape,
-    SplitTapeByEpoch,
-    SplitTapeBySize,
-    MergeTape,
+    ExtendTapeCapacity,
+    ExtendTapeExpiry,
     SetTapeDelegate,
     RevokeTapeDelegate,
 
@@ -195,7 +193,6 @@ tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
 tape_solana::instruction!(TapeInstruction, SetAccessThreshold);
 tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
 tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
-tape_solana::instruction!(TapeInstruction, SetMinVersion);
 tape_solana::instruction!(TapeInstruction, SetEpochDuration);
 
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
@@ -203,9 +200,8 @@ tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);
 
 tape_solana::instruction!(TapeInstruction, ReserveTape);
 tape_solana::instruction!(TapeInstruction, DestroyTape);
-tape_solana::instruction!(TapeInstruction, SplitTapeByEpoch);
-tape_solana::instruction!(TapeInstruction, SplitTapeBySize);
-tape_solana::instruction!(TapeInstruction, MergeTape);
+tape_solana::instruction!(TapeInstruction, ExtendTapeCapacity);
+tape_solana::instruction!(TapeInstruction, ExtendTapeExpiry);
 tape_solana::instruction!(TapeInstruction, SetTapeDelegate);
 tape_solana::instruction!(TapeInstruction, RevokeTapeDelegate);
 

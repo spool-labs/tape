@@ -1,7 +1,7 @@
 //! Capture parsed Tapedrive instructions into replayable events.
 
 use bytemuck::bytes_of;
-use tape_api::event::{TapeDestroyed, TapeReserved, TrackDeleted, TrackWritten};
+use tape_api::event::{TapeDestroyed, TapeExtended, TapeReserved, TrackDeleted, TrackWritten};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
@@ -289,6 +289,9 @@ fn capture_instruction(
         ParsedInstruction::DestroyTape { event, .. } => {
             capture_destroy(*current_epoch, tx_id, actor, event)
         }
+        ParsedInstruction::ExtendTape { event, .. } => {
+            capture_extend(*current_epoch, tx_id, actor, event)
+        }
         ParsedInstruction::RegisterNode { authority, event, .. } => Captured {
             event: captured_event(
                 *current_epoch,
@@ -496,6 +499,30 @@ fn capture_destroy(
     }
 }
 
+fn capture_extend(
+    epoch: EpochNumber,
+    tx_id: Txid,
+    actor: Option<Address>,
+    event: &TapeExtended,
+) -> Captured {
+    Captured {
+        event: captured_event(
+            epoch,
+            tx_id,
+            actor,
+            ReplayableEvent::ExtendTape {
+                tape: event.tape,
+                capacity: event.capacity,
+                expiry_epoch: event.expiry_epoch,
+                cost: event.cost,
+                burned: event.burned,
+                scheduled: event.scheduled,
+            },
+        ),
+        raw_track: None,
+    }
+}
+
 fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
     match instruction {
         ParsedInstruction::SyncSpool { node, .. }
@@ -514,6 +541,8 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         ParsedInstruction::DeleteTrack { owner, .. }
         | ParsedInstruction::ReserveTape { owner, .. }
         | ParsedInstruction::DestroyTape { owner, .. } => Some((*owner).into()),
+
+        ParsedInstruction::ExtendTape { payer, .. } => Some((*payer).into()),
 
         ParsedInstruction::ProposeSnapshot { proposer, .. }
         | ParsedInstruction::ProposeAssignment { proposer, .. }
@@ -541,7 +570,8 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
 mod tests {
     use bytemuck::{bytes_of, Zeroable};
     use tape_api::event::{
-        EpochAdvanced, SnapshotFinalized, TapeReserved, TrackCertified, TrackWritten,
+        EpochAdvanced, SnapshotFinalized, TapeExtended, TapeReserved, TrackCertified,
+        TrackWritten,
     };
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::encoding::EncodingProfile;
@@ -692,6 +722,23 @@ mod tests {
                 authority: Address::new_unique(),
                 capacity: StorageUnits::mb(10),
                 active_epoch,
+                expiry_epoch,
+                cost: TAPE(11),
+                burned: TAPE(1),
+                scheduled: TAPE(10),
+            },
+        }
+    }
+
+    fn extend_tape_instruction(payer: Address, tape: Address, expiry_epoch: EpochNumber) -> ParsedInstruction {
+        ParsedInstruction::ExtendTape {
+            payer,
+            tape,
+            event: TapeExtended {
+                tape,
+                payer,
+                capacity: StorageUnits::mb(20),
+                active_epoch: EpochNumber(7),
                 expiry_epoch,
                 cost: TAPE(11),
                 burned: TAPE(1),
@@ -881,6 +928,41 @@ mod tests {
         assert_eq!(captured.raw_tracks[0].track, track);
         assert_eq!(u64::from(captured.raw_tracks[0].group), 6);
         assert_eq!(captured.raw_tracks[0].data, bytes_of(&entry).to_vec());
+    }
+
+    // An extend captures the replay fields and records the payer as actor.
+    #[test]
+    fn captures_extend_tape() {
+        let payer = Address::new_unique();
+        let tape = Address::new_unique();
+
+        let captured = capture(
+            EpochNumber(7),
+            SlotNumber(42),
+            vec![extend_tape_instruction(payer, tape, EpochNumber(15))],
+        );
+
+        assert_eq!(captured.events.len(), 1);
+        assert!(captured.raw_tracks.is_empty());
+        assert_eq!(captured.events[0].record.actor, Some(payer));
+        match &captured.events[0].record.event {
+            ReplayableEvent::ExtendTape {
+                tape: event_tape,
+                capacity,
+                expiry_epoch,
+                cost,
+                burned,
+                scheduled,
+            } => {
+                assert_eq!(*event_tape, tape);
+                assert_eq!(*capacity, StorageUnits::mb(20));
+                assert_eq!(*expiry_epoch, EpochNumber(15));
+                assert_eq!(*cost, TAPE(11));
+                assert_eq!(*burned, TAPE(1));
+                assert_eq!(*scheduled, TAPE(10));
+            }
+            other => panic!("expected ExtendTape, got {other:?}"),
+        }
     }
 
     #[test]
