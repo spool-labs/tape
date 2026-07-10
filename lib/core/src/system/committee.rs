@@ -119,6 +119,28 @@ pub fn apply_member_join_slice(
     Ok(result)
 }
 
+/// Remove a member by node address, shifting the tail left to keep the
+/// stake-sorted order. A missing node is not an error (eviction may land
+/// before the node joins).
+pub fn apply_member_remove_slice(
+    members: &mut [Member],
+    count: &mut u64,
+    node: Address,
+) -> Result<(), CommitteeError> {
+    let count_usize = *count as usize;
+    if count_usize > members.len() {
+        return Err(CommitteeError::Full);
+    }
+
+    let Some(idx) = members[..count_usize].iter().position(|m| m.node == node) else {
+        return Ok(());
+    };
+
+    members.copy_within(idx + 1..count_usize, idx);
+    *count -= 1;
+    Ok(())
+}
+
 pub fn sort_members_for_committee(members: &mut [Member]) {
     members.sort_by(|a, b| {
         b.stake

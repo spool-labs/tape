@@ -95,8 +95,6 @@ pub struct VolumeStats {
 /// Response from the node stats endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeStats {
-    #[serde(default)]
-    pub version: String,
     pub last_processed_slot: u64,
     pub blocks_processed: u64,
     pub epoch_transitions: u64,

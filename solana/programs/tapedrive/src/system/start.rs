@@ -84,6 +84,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         storage_price: archive.storage_price,
         committee_size,
         spool_groups,
+        min_version: system.min_version,
         burn_fee_bps: archive.burn_fee_bps,
         subsidy_decay_bps: archive.subsidy_decay_bps,
         access_threshold: TAPE(0),

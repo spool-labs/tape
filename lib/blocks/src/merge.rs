@@ -166,6 +166,38 @@ pub fn merge(
                 ParsedInstruction::FinalizeGroup { epoch, group, event }
             }
 
+            // A proposal only records that a vote opened, so drain that event
+            // without producing a parsed instruction.
+            RawInstruction::ProposeEviction => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::VoteProposed(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected VoteProposed event")),
+                };
+                if event.kind != VoteKind::Eviction as u64 {
+                    return Err(ParseError::EventMismatch("unexpected VoteProposed event"));
+                }
+                continue;
+            }
+
+            // A vote reaching supermajority logs the removal before the vote
+            // record. Emit the removal so the committee drop replays, then drain
+            // the vote record.
+            RawInstruction::VoteEviction => {
+                if matches!(events.front(), Some(TapedriveEvent::NodeEvicted(_))) {
+                    if let Some(TapedriveEvent::NodeEvicted(evicted)) = events.pop_front() {
+                        result.push(ParsedInstruction::NodeEvicted { event: evicted });
+                    }
+                }
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::VoteRecorded(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected VoteRecorded event")),
+                };
+                if event.kind != VoteKind::Eviction as u64 {
+                    return Err(ParseError::EventMismatch("unexpected VoteRecorded event"));
+                }
+                continue;
+            }
+
             RawInstruction::TrackWrite {
                 authority,
                 key,
@@ -434,7 +466,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_api::event::{
-        AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeJoinedCommittee,
+        AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeEvicted, NodeJoinedCommittee,
         NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeDestroyed,
         TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten,
         VoteProposed, VoteRecorded,
@@ -555,6 +587,82 @@ mod tests {
             }
             _ => panic!("Expected VoteSnapshot"),
         }
+    }
+
+    fn eviction_vote_recorded(node: Address, signed_groups: u64, total_groups: u64) -> VoteRecorded {
+        VoteRecorded {
+            kind: VoteKind::Eviction as u64,
+            vote: Address::new_unique(),
+            voting_epoch: EpochNumber(8),
+            target_epoch: EpochNumber(9),
+            hash: Hash(node.to_bytes()),
+            group: GroupIndex(0),
+            signer_count: 14,
+            signed_groups,
+            total_groups,
+            bitmap: SpoolBitmap::from_indices(&[0, 1, 2]),
+        }
+    }
+
+    #[test]
+    fn merge_eviction_proposal_consumes_vote_proposed() {
+        let node = Address::new_unique();
+        let proposed = VoteProposed {
+            kind: VoteKind::Eviction as u64,
+            vote: Address::new_unique(),
+            voting_epoch: EpochNumber(8),
+            target_epoch: EpochNumber(9),
+            hash: Hash(node.to_bytes()),
+            total_groups: 1,
+        };
+
+        let merged = merge(
+            vec![RawInstruction::ProposeEviction],
+            vec![TapedriveEvent::VoteProposed(proposed)],
+        )
+        .unwrap();
+
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn merge_eviction_landing_emits_node_evicted() {
+        let node = Address::new_unique();
+        let evicted = NodeEvicted {
+            node,
+            target_epoch: EpochNumber(9),
+        };
+
+        let merged = merge(
+            vec![RawInstruction::VoteEviction],
+            vec![
+                TapedriveEvent::NodeEvicted(evicted),
+                TapedriveEvent::VoteRecorded(eviction_vote_recorded(node, 1, 1)),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::NodeEvicted { event } => {
+                assert_eq!(event.node, node);
+                assert_eq!(event.target_epoch, EpochNumber(9));
+            }
+            other => panic!("expected NodeEvicted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merge_eviction_non_landing_vote_produces_nothing() {
+        let node = Address::new_unique();
+
+        let merged = merge(
+            vec![RawInstruction::VoteEviction],
+            vec![TapedriveEvent::VoteRecorded(eviction_vote_recorded(node, 1, 2))],
+        )
+        .unwrap();
+
+        assert!(merged.is_empty());
     }
 
     #[test]

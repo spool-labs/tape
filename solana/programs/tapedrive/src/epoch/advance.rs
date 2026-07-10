@@ -205,6 +205,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.committee_size = preferences.committee_size;
     system.target_group_count = preferences.spool_groups;
     system.live_group_count = next_epoch.total_groups;
+    system.min_version = preferences.min_version;
 
     EpochAdvanced {
         old_epoch: curr,
@@ -231,6 +232,9 @@ fn validate_preferences(system: &System, preferences: NodePreferences) -> Progra
         return Err(TapeError::InsufficientCommittee.into());
     }
     if preferences.spool_groups < system.target_group_count {
+        return Err(TapeError::UnexpectedState.into());
+    }
+    if preferences.min_version.0 < system.min_version.0 {
         return Err(TapeError::UnexpectedState.into());
     }
     if !preferences.burn_fee_bps.is_valid() {
@@ -270,12 +274,13 @@ mod tests {
 
     const COMMITTEE_SIZE: u64 = 128;
 
-    fn pref(capacity_mb: u64, price: u64, committee: u64, spool_groups: u64) -> NodePreferences {
+    fn pref(capacity_mb: u64, price: u64, committee: u64, spool_groups: u64, version: u64) -> NodePreferences {
         NodePreferences {
             storage_capacity: StorageUnits::mb(capacity_mb),
             storage_price: TAPE(price),
             committee_size: committee,
             spool_groups,
+            min_version: VersionId(version),
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
@@ -307,7 +312,7 @@ mod tests {
         let now = env.now();
         let slot = env.slot();
 
-        let prefs = pref(2_048, 950, 256, 75);
+        let prefs = pref(2_048, 950, 256, 75, 3);
         let next_members: Vec<Member> = (0..20)
             .map(|i| {
                 let mut bytes = [0u8; 32];
@@ -402,6 +407,7 @@ mod tests {
             committee_size: 256,
             target_group_count: 75,
             live_group_count: 50,
+            min_version: VersionId(3),
             ..system
         };
 
@@ -481,7 +487,7 @@ mod tests {
         let (subsidy_address, _) = subsidy_pda();
         let (subsidy_ata_address, _) = subsidy_ata();
 
-        let prefs = pref(2_048, 950, /*committee*/ 64, /*spool_groups*/ 75);
+        let prefs = pref(2_048, 950, /*committee*/ 64, /*spool_groups*/ 75, /*min_version*/ 5);
         let next_members: Vec<Member> = (0..20)
             .map(|i| {
                 let mut bytes = [0u8; 32];
@@ -506,6 +512,7 @@ mod tests {
             committee_size: 256,
             target_group_count: 75,
             live_group_count: 75,
+            min_version: VersionId(5),
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
             ..System::zeroed()
@@ -578,6 +585,7 @@ mod tests {
             committee_size: 64,
             target_group_count: 75,
             live_group_count: next_epoch_data.total_groups,
+            min_version: VersionId(5),
             ..system
         };
 

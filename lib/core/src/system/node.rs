@@ -31,6 +31,9 @@ pub struct NodeMetadata {
 #[derive(Clone, Copy, PartialEq, Eq, Zeroable, Pod, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct NodePreferences {
+    /// The preferred minimum protocol version.
+    pub min_version: VersionId,
+
     /// The preferred capacity of new committees.
     pub committee_size: u64,
 
@@ -69,6 +72,7 @@ pub fn aggregate_node_preferences(
     bounds: NodePreferences,
 ) -> Result<NodePreferences, NodePreferenceAggregationError> {
     let mut total_weight: u64 = 0;
+    let mut min_versions: Vec<(u64, u64)> = Vec::new();
     let mut committee_sizes: Vec<(u64, u64)> = Vec::new();
     let mut spool_group_counts: Vec<(u64, u64)> = Vec::new();
     let mut burn_fee_bps: Vec<(u64, u64)> = Vec::new();
@@ -85,6 +89,7 @@ pub fn aggregate_node_preferences(
             .ok_or(NodePreferenceAggregationError::MissingPeer { node: member.node })?;
         let weight = member.spools;
 
+        min_versions.push((peer.preferences.min_version.0, weight));
         committee_sizes.push((peer.preferences.committee_size, weight));
         spool_group_counts.push((peer.preferences.spool_groups, weight));
         burn_fee_bps.push((peer.preferences.burn_fee_bps.0, weight));
@@ -102,6 +107,10 @@ pub fn aggregate_node_preferences(
     }
 
     Ok(NodePreferences {
+        min_version: VersionId(
+            quorum_above(&min_versions, total_weight)
+                .max(bounds.min_version.0),
+        ),
         committee_size: quorum_above(&committee_sizes, total_weight)
             .max(bounds.committee_size),
         spool_groups: quorum_above(&spool_group_counts, total_weight)

@@ -10,7 +10,7 @@ use tape_core::types::{GroupIndex, SpoolIndex};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::system::NodePreferences;
-use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits};
+use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits, VersionId};
 use tape_core::types::coin::{Coin, TAPE};
 
 #[repr(C)]
@@ -116,6 +116,12 @@ pub struct SetCommitteeSize {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetSpoolGroups {
     pub spool_groups: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetMinVersion {
+    pub min_version: VersionId,
 }
 
 #[repr(C)]
@@ -531,6 +537,25 @@ pub fn build_set_spool_groups_ix(
         ],
         data: SetSpoolGroups {
             spool_groups,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_min_version_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    min_version: VersionId,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetMinVersion {
+            min_version,
         }.to_bytes(),
     }
 }

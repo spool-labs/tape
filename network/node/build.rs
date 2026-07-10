@@ -8,13 +8,11 @@
 use std::process::Command;
 
 fn main() {
-    // Watch the HEAD reflog, not just HEAD: a pull moves the ref without
-    // touching the symref. The dirty flag only refreshes on rebuild.
+    // Trigger rebuild when HEAD moves. For dirty-flag accuracy we'd want to
+    // watch every tracked file, which is impractical — operators that care
+    // about the dirty flag should `cargo clean` before stamping.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=build.rs");
-    if let Some(git_dir) = run_git(&["rev-parse", "--absolute-git-dir"]) {
-        println!("cargo:rerun-if-changed={git_dir}/HEAD");
-        println!("cargo:rerun-if-changed={git_dir}/logs/HEAD");
-    }
 
     let sha = run_git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let dirty = match Command::new("git")

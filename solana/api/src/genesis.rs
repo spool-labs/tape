@@ -1,6 +1,6 @@
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::NodePreferences;
-use tape_core::types::{BasisPoints, EpochDuration, StorageUnits};
+use tape_core::types::{BasisPoints, EpochDuration, StorageUnits, VersionId};
 use tape_core::types::coin::{Coin, TAPE};
 
 use crate::program::token::ONE_TAPE;
@@ -14,6 +14,7 @@ use crate::program::tapedrive::{
 pub struct GenesisConfig {
     pub committee_size: u64,
     pub spool_groups: u64,
+    pub min_version: VersionId,
     pub min_epoch_duration: EpochDuration,
     pub max_epoch_duration: EpochDuration,
     pub epoch_duration: EpochDuration,
@@ -53,6 +54,7 @@ impl GenesisConfig {
 const MAINNET: GenesisConfig = GenesisConfig {
     committee_size: GROUP_SIZE as u64,
     spool_groups: 1,
+    min_version: VersionId(0),
     min_epoch_duration: EpochDuration(86_400),     // 1 day
     max_epoch_duration: EpochDuration(1_209_600),  // 2 weeks
     epoch_duration: EpochDuration(604_800),        // 1 week
@@ -91,6 +93,7 @@ impl From<&GenesisConfig> for NodePreferences {
             storage_price: config.storage_price,
             committee_size: config.committee_size,
             spool_groups: config.spool_groups,
+            min_version: config.min_version,
             burn_fee_bps: config.burn_fee_bps,
             subsidy_decay_bps: config.subsidy_decay_bps,
             epoch_duration: config.epoch_duration,

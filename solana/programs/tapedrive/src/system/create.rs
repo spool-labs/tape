@@ -33,6 +33,7 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let committee_size = args.committee_size;
     let spool_groups = args.spool_groups;
+    let min_version = args.min_version;
     let min_epoch_duration = args.min_epoch_duration;
     let max_epoch_duration = args.max_epoch_duration;
 
@@ -56,6 +57,7 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
     system.current_epoch = EpochNumber(0);
+    system.min_version = min_version;
     system.total_nodes = 0;
     system.committee_size = committee_size;
     system.target_group_count = spool_groups;
@@ -105,6 +107,7 @@ mod tests {
                     .data(System {
                         committee_size: config.committee_size,
                         target_group_count: config.spool_groups,
+                        min_version: config.min_version,
                         min_epoch_duration: config.min_epoch_duration,
                         max_epoch_duration: config.max_epoch_duration,
                         ..System::zeroed()

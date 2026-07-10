@@ -3,11 +3,20 @@ mod keygen;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use tape_node::VERSION;
 use tape_node::config::node::{NodeConfig, default_config_path};
 use tape_node::core::limits::check_fd_limit;
 use tape_node::runtime::{build_runtime, init_tracing, run_application};
 use tracing::info;
+
+/// Identifies this build in logs and via `tape-node version`. Built from
+/// the Cargo version plus a short git sha stamped at compile time by
+/// `build.rs` (`-dirty` if the working tree had uncommitted changes).
+const BOOT_MARKER: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("TAPE_BUILD_SHA"),
+    env!("TAPE_BUILD_SUFFIX"),
+);
 
 #[derive(Parser)]
 #[command(name = "tape-node", about = "Tapedrive storage node runtime v2")]
@@ -43,7 +52,7 @@ fn main() -> ExitCode {
             }
         },
         Some(Command::Version) => {
-            println!("{VERSION}");
+            println!("{BOOT_MARKER}");
             ExitCode::SUCCESS
         }
         None => run_node(&cli.config, cli.rpc_url),
@@ -80,7 +89,7 @@ fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
             host = %host,
             port = config.network.port,
             rpc = rpc_display,
-            boot_marker = VERSION,
+            boot_marker = BOOT_MARKER,
             "starting node"
         );
     } else {
@@ -88,7 +97,7 @@ fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
             node_name = %config.node.name,
             listen = %config.http.listen,
             rpc = rpc_display,
-            boot_marker = VERSION,
+            boot_marker = BOOT_MARKER,
             "starting node"
         );
     }
