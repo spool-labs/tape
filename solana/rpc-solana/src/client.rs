@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use solana_account::Account;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcTransactionConfig};
+use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig, RpcTransactionConfig};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -18,7 +18,7 @@ use solana_transaction_status::{
 };
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
-use rpc::{Rpc, RpcError};
+use rpc::{Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
 
@@ -616,6 +616,40 @@ impl Rpc for SolanaRpc {
             .await?;
 
         Ok(signature.into())
+    }
+
+    async fn simulate_transaction(
+        &self,
+        transaction: &Transaction,
+    ) -> Result<SimulationResult, RpcError> {
+        let transaction = Arc::new(transaction.clone());
+        let config = RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: true,
+            commitment: Some(CommitmentConfig {
+                commitment: self.config.commitment,
+            }),
+            ..RpcSimulateTransactionConfig::default()
+        };
+
+        self.with_retry("simulateTransaction", move |client| {
+            let transaction = transaction.clone();
+            let config = config.clone();
+            async move {
+                let response = client
+                    .simulate_transaction_with_config(&transaction, config)
+                    .await
+                    .map_err(|error| Self::convert_error(error, None))?;
+
+                let value = response.value;
+                Ok(SimulationResult {
+                    err: value.err.map(|error| error.to_string()),
+                    units_consumed: value.units_consumed,
+                    logs: value.logs.unwrap_or_default(),
+                })
+            }
+        })
+        .await
     }
 
     async fn send_and_confirm_transaction(

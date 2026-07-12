@@ -46,8 +46,8 @@ anyhow.workspace = true
 # Serialization
 bytemuck.workspace = true
 
-# Logging (optional)
-tracing = { version = "0.1", optional = true }
+# Logging
+tracing = "0.1"
 
 [features]
 default = []

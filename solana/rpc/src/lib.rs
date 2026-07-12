@@ -30,7 +30,7 @@ mod rpc;
 
 // Core exports
 pub use error::RpcError;
-pub use rpc::Rpc;
+pub use rpc::{Rpc, SimulationResult};
 
 // Re-export async_trait for implementors
 pub use async_trait::async_trait;

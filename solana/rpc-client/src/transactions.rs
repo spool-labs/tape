@@ -9,6 +9,19 @@ use solana_transaction::Transaction;
 use tape_crypto::signer::Signer as TapeSigner;
 use tape_crypto::tx::Txid;
 
+/// Hard runtime ceiling on compute units for a single transaction.
+const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
+
+/// True when a transaction failed because it ran out of compute units,
+/// whether reported by preflight simulation or by on-chain execution.
+fn is_compute_budget_exceeded(err: &RpcError) -> bool {
+    let RpcError::Transaction(message) = err else {
+        return false;
+    };
+    message.contains("Computational budget exceeded")
+        || message.contains("ComputationalBudgetExceeded")
+}
+
 struct SolanaSignerAdapter<'a>(&'a dyn TapeSigner);
 
 impl SolanaSigner for SolanaSignerAdapter<'_> {
@@ -97,19 +110,73 @@ impl<R: Rpc> RpcClient<R> {
         result
     }
 
+    /// Send instructions under a fixed compute unit limit, and if the program
+    /// exceeds it, measure the real cost by simulation and resend once with
+    /// the measured limit plus margin.
+    ///
+    /// Static limits can fall short at runtime: on-chain address derivation
+    /// costs vary with the bump each account happens to need, so an epoch can
+    /// draw an address that makes an instruction deterministically exceed a
+    /// budget that held for every prior epoch.
     pub async fn send_instructions_with_compute_unit_limit(
         &self,
         payer: &dyn TapeSigner,
         compute_unit_limit: u32,
         instructions: Vec<Instruction>,
     ) -> Result<Txid, RpcError> {
-        let ix = with_compute_unit_limit(
-            compute_unit_limit, 
-            instructions
+        let capped = with_compute_unit_limit(compute_unit_limit, instructions.clone());
+        let result = self.send_instructions(payer, capped).await;
+
+        let Err(err) = &result else {
+            return result;
+        };
+        if !is_compute_budget_exceeded(err) {
+            return result;
+        }
+
+        let Some(measured) = self.measured_compute_unit_limit(payer, &instructions).await else {
+            return result;
+        };
+
+        tracing::warn!(
+            requested = compute_unit_limit,
+            measured,
+            "compute budget exceeded, resending with measured limit"
         );
 
-        self.send_instructions(payer, ix)
-            .await
+        let raised = with_compute_unit_limit(measured, instructions);
+        self.send_instructions(payer, raised).await
+    }
+
+    /// Simulate the instructions at the runtime ceiling and return the
+    /// consumed units plus headroom, or None if simulation cannot produce a
+    /// usable measurement.
+    async fn measured_compute_unit_limit(
+        &self,
+        payer: &dyn TapeSigner,
+        instructions: &[Instruction],
+    ) -> Option<u32> {
+        let probe = with_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT, instructions.to_vec());
+        let blockhash = self.rpc().get_latest_blockhash().await.ok()?;
+        let payer_pubkey: SolanaPubkey = payer.pubkey().into();
+        let signers = [SolanaSignerAdapter(payer)];
+        let transaction = Transaction::new_signed_with_payer(
+            &probe,
+            Some(&payer_pubkey),
+            &signers,
+            blockhash,
+        );
+
+        let simulation = self.rpc().simulate_transaction(&transaction).await.ok()?;
+        if simulation.err.is_some() {
+            return None;
+        }
+
+        let consumed = simulation.units_consumed?;
+        let limit = consumed
+            .saturating_add(consumed / 4)
+            .min(MAX_COMPUTE_UNIT_LIMIT as u64);
+        Some(limit as u32)
     }
 
     /// Send a transaction with custom signers
@@ -344,6 +411,27 @@ mod tests {
     use solana_pubkey::Pubkey;
     use solana_system_interface::instruction as system_instruction;
     use tape_crypto::ed25519::Keypair;
+
+    #[test]
+    fn detects_budget_exhaustion_from_both_error_shapes() {
+        let preflight = RpcError::Transaction(
+            "RPC response error -32002: Transaction simulation failed: \
+             Error processing Instruction 1: Computational budget exceeded"
+                .into(),
+        );
+        let status = RpcError::Transaction(
+            "Error processing Instruction 1: Computational budget exceeded".into(),
+        );
+        let debug_shape =
+            RpcError::Transaction("InstructionError(1, ComputationalBudgetExceeded)".into());
+        let program_error = RpcError::Transaction("custom program error: 0x10".into());
+
+        assert!(is_compute_budget_exceeded(&preflight));
+        assert!(is_compute_budget_exceeded(&status));
+        assert!(is_compute_budget_exceeded(&debug_shape));
+        assert!(!is_compute_budget_exceeded(&program_error));
+        assert!(!is_compute_budget_exceeded(&RpcError::BlockhashExpired));
+    }
 
     #[tokio::test]
     #[ignore] // Requires actual RPC endpoint
