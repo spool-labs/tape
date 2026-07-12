@@ -612,12 +612,10 @@ impl Rpc for LiteSvmRpc {
             Ok(info) => Ok(SimulationResult {
                 err: None,
                 units_consumed: Some(info.meta.compute_units_consumed),
-                logs: info.meta.logs,
             }),
             Err(failed) => Ok(SimulationResult {
                 err: Some(failed.err),
                 units_consumed: Some(failed.meta.compute_units_consumed),
-                logs: failed.meta.logs,
             }),
         }
     }

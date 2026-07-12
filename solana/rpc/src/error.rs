@@ -125,10 +125,18 @@ impl RpcError {
         }
     }
 
+    /// Instruction-level error, when an instruction in the transaction failed.
+    pub fn instruction_error(&self) -> Option<&InstructionError> {
+        match self.transaction_error()? {
+            TransactionError::InstructionError(_, err) => Some(err),
+            _ => None,
+        }
+    }
+
     /// Custom program error code, when an instruction failed with one.
     pub fn custom_program_error(&self) -> Option<u32> {
-        match self.transaction_error()? {
-            TransactionError::InstructionError(_, InstructionError::Custom(code)) => Some(*code),
+        match self.instruction_error()? {
+            InstructionError::Custom(code) => Some(*code),
             _ => None,
         }
     }
@@ -137,11 +145,8 @@ impl RpcError {
     /// preflight simulation or by on-chain execution.
     pub fn is_compute_budget_exceeded(&self) -> bool {
         matches!(
-            self.transaction_error(),
-            Some(TransactionError::InstructionError(
-                _,
-                InstructionError::ComputationalBudgetExceeded,
-            ))
+            self.instruction_error(),
+            Some(InstructionError::ComputationalBudgetExceeded)
         )
     }
 

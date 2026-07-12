@@ -1,3 +1,6 @@
+/// Hard runtime ceiling on compute units for a single transaction.
+pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
+
 // BLS aggregate verify is the load. ~250k CU observed in SBF tests.
 pub const CERTIFY_TRACK_CU:    u32 = 400_000;
 pub const INVALIDATE_TRACK_CU: u32 = 400_000;

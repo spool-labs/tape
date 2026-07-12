@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use rpc::{InstructionError, RpcError, TransactionError};
+use rpc::{InstructionError, RpcError};
 use rpc_client::parse_tape_error;
 use tape_api::errors::{TapeError, is_account_state_pending_error};
 use tape_crypto::tx::Txid;
@@ -78,11 +78,7 @@ pub fn classify_rejection(err: &RpcError) -> TxRejectionKind {
 /// Message matching below stays as the fallback for proxies that flatten
 /// errors into text, and for conditions only visible in program logs.
 fn classify_instruction_error(err: &RpcError) -> Option<TxRejectionKind> {
-    let TransactionError::InstructionError(_, ix_err) = err.transaction_error()? else {
-        return None;
-    };
-
-    match ix_err {
+    match err.instruction_error()? {
         InstructionError::AccountAlreadyInitialized => Some(TxRejectionKind::KnownContention),
         InstructionError::UninitializedAccount
         | InstructionError::InvalidAccountData
@@ -140,6 +136,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rpc::TransactionError;
     use solana_signature::Signature;
     use std::time::Duration;
 

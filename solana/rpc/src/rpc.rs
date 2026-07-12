@@ -25,9 +25,6 @@ pub struct SimulationResult {
 
     /// Compute units the transaction consumed.
     pub units_consumed: Option<u64>,
-
-    /// Program logs emitted during simulation.
-    pub logs: Vec<String>,
 }
 
 /// Core RPC trait for Solana operations

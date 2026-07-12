@@ -1,16 +1,15 @@
 use crate::client::RpcClient;
 use crate::compute::with_compute_unit_limit;
 use rpc::{Rpc, RpcError};
+use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey as SolanaPubkey;
 use solana_signature::Signature as SolanaSignature;
 use solana_signer::{Signer as SolanaSigner, SignerError as SolanaSignerError};
 use solana_transaction::Transaction;
+use tape_api::compute::MAX_COMPUTE_UNIT_LIMIT;
 use tape_crypto::signer::Signer as TapeSigner;
 use tape_crypto::tx::Txid;
-
-/// Hard runtime ceiling on compute units for a single transaction.
-const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
 
 struct SolanaSignerAdapter<'a>(&'a dyn TapeSigner);
 
@@ -55,49 +54,8 @@ impl<R: Rpc> RpcClient<R> {
         payer: &dyn TapeSigner,
         instructions: Vec<Instruction>,
     ) -> Result<Txid, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = self.metrics.as_ref().map(|m| m.start_operation());
-
-        let result = async {
-            // Fetch the latest blockhash
-            let blockhash = self.rpc().get_latest_blockhash().await?;
-            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
-            let signers = [SolanaSignerAdapter(payer)];
-
-            // Build and sign the transaction
-            let transaction = Transaction::new_signed_with_payer(
-                &instructions,
-                Some(&payer_pubkey),
-                &signers,
-                blockhash,
-            );
-
-            // Send and confirm the transaction
-            self.rpc().send_and_confirm_transaction(&transaction).await
-        }
-        .await;
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = &self.metrics {
-            match &result {
-                Ok(_) => {
-                    metrics.record_transaction_success();
-                    if let Some(timer) = &timer {
-                        metrics.record_transaction_confirmation("confirmed", timer);
-                        metrics.record_operation("send_instructions", "success", timer);
-                    }
-                }
-                Err(_) => {
-                    metrics.record_transaction_error();
-                    if let Some(timer) = &timer {
-                        metrics.record_transaction_confirmation("error", timer);
-                        metrics.record_operation("send_instructions", "error", timer);
-                    }
-                }
-            }
-        }
-
-        result
+        self.submit(payer, &[], &instructions, true, "send_instructions")
+            .await
     }
 
     /// Send instructions under a fixed compute unit limit, and if the program
@@ -114,59 +72,14 @@ impl<R: Rpc> RpcClient<R> {
         compute_unit_limit: u32,
         instructions: Vec<Instruction>,
     ) -> Result<Txid, RpcError> {
-        let capped = with_compute_unit_limit(compute_unit_limit, instructions.clone());
-        let result = self.send_instructions(payer, capped).await;
-
-        let Err(err) = &result else {
-            return result;
-        };
-        if !err.is_compute_budget_exceeded() {
-            return result;
-        }
-
-        let Some(measured) = self.measured_compute_unit_limit(payer, &instructions).await else {
-            return result;
-        };
-
-        tracing::warn!(
-            requested = compute_unit_limit,
-            measured,
-            "compute budget exceeded, resending with measured limit"
-        );
-
-        let raised = with_compute_unit_limit(measured, instructions);
-        self.send_instructions(payer, raised).await
-    }
-
-    /// Simulate the instructions at the runtime ceiling and return the
-    /// consumed units plus headroom, or None if simulation cannot produce a
-    /// usable measurement.
-    async fn measured_compute_unit_limit(
-        &self,
-        payer: &dyn TapeSigner,
-        instructions: &[Instruction],
-    ) -> Option<u32> {
-        let probe = with_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT, instructions.to_vec());
-        let blockhash = self.rpc().get_latest_blockhash().await.ok()?;
-        let payer_pubkey: SolanaPubkey = payer.pubkey().into();
-        let signers = [SolanaSignerAdapter(payer)];
-        let transaction = Transaction::new_signed_with_payer(
-            &probe,
-            Some(&payer_pubkey),
-            &signers,
-            blockhash,
-        );
-
-        let simulation = self.rpc().simulate_transaction(&transaction).await.ok()?;
-        if simulation.err.is_some() {
-            return None;
-        }
-
-        let consumed = simulation.units_consumed?;
-        let limit = consumed
-            .saturating_add(consumed / 4)
-            .min(MAX_COMPUTE_UNIT_LIMIT as u64);
-        Some(limit as u32)
+        self.send_capped(
+            payer,
+            &[],
+            compute_unit_limit,
+            instructions,
+            "send_instructions",
+        )
+        .await
     }
 
     /// Send a transaction with custom signers
@@ -194,54 +107,14 @@ impl<R: Rpc> RpcClient<R> {
         instructions: Vec<Instruction>,
         signers: &[&dyn TapeSigner],
     ) -> Result<Txid, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = self.metrics.as_ref().map(|m| m.start_operation());
-
-        let result = async {
-            // Fetch the latest blockhash
-            let blockhash = self.rpc().get_latest_blockhash().await?;
-            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
-
-            // Combine payer with additional signers
-            let mut all_signers: Vec<SolanaSignerAdapter<'_>> =
-                Vec::with_capacity(signers.len() + 1);
-            all_signers.push(SolanaSignerAdapter(payer));
-            all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
-
-            // Build and sign the transaction
-            let transaction = Transaction::new_signed_with_payer(
-                &instructions,
-                Some(&payer_pubkey),
-                &all_signers,
-                blockhash,
-            );
-
-            // Send and confirm the transaction
-            self.rpc().send_and_confirm_transaction(&transaction).await
-        }
-        .await;
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = &self.metrics {
-            match &result {
-                Ok(_) => {
-                    metrics.record_transaction_success();
-                    if let Some(timer) = &timer {
-                        metrics.record_transaction_confirmation("confirmed", timer);
-                        metrics.record_operation("send_instructions_with_signers", "success", timer);
-                    }
-                }
-                Err(_) => {
-                    metrics.record_transaction_error();
-                    if let Some(timer) = &timer {
-                        metrics.record_transaction_confirmation("error", timer);
-                        metrics.record_operation("send_instructions_with_signers", "error", timer);
-                    }
-                }
-            }
-        }
-
-        result
+        self.submit(
+            payer,
+            signers,
+            &instructions,
+            true,
+            "send_instructions_with_signers",
+        )
+        .await
     }
 
     pub async fn send_instructions_with_signers_and_compute_unit_limit(
@@ -251,10 +124,12 @@ impl<R: Rpc> RpcClient<R> {
         instructions: Vec<Instruction>,
         signers: &[&dyn TapeSigner],
     ) -> Result<Txid, RpcError> {
-        self.send_instructions_with_signers(
+        self.send_capped(
             payer,
-            with_compute_unit_limit(compute_unit_limit, instructions),
             signers,
+            compute_unit_limit,
+            instructions,
+            "send_instructions_with_signers",
         )
         .await
     }
@@ -281,47 +156,8 @@ impl<R: Rpc> RpcClient<R> {
         payer: &dyn TapeSigner,
         instructions: Vec<Instruction>,
     ) -> Result<Txid, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = self.metrics.as_ref().map(|m| m.start_operation());
-
-        let result = async {
-            // Fetch the latest blockhash
-            let blockhash = self.rpc().get_latest_blockhash().await?;
-            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
-            let signers = [SolanaSignerAdapter(payer)];
-
-            // Build and sign the transaction
-            let transaction = Transaction::new_signed_with_payer(
-                &instructions,
-                Some(&payer_pubkey),
-                &signers,
-                blockhash,
-            );
-
-            // Send without waiting for confirmation
-            self.rpc().send_transaction(&transaction).await
-        }
-        .await;
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = &self.metrics {
-            match &result {
-                Ok(_) => {
-                    metrics.record_transaction_success();
-                    if let Some(timer) = &timer {
-                        metrics.record_operation("send_instructions_async", "success", timer);
-                    }
-                }
-                Err(_) => {
-                    metrics.record_transaction_error();
-                    if let Some(timer) = &timer {
-                        metrics.record_operation("send_instructions_async", "error", timer);
-                    }
-                }
-            }
-        }
-
-        result
+        self.submit(payer, &[], &instructions, false, "send_instructions_async")
+            .await
     }
 
     /// Send a transaction with custom signers without waiting for confirmation
@@ -344,30 +180,106 @@ impl<R: Rpc> RpcClient<R> {
         instructions: Vec<Instruction>,
         signers: &[&dyn TapeSigner],
     ) -> Result<Txid, RpcError> {
+        self.submit(
+            payer,
+            signers,
+            &instructions,
+            false,
+            "send_instructions_with_signers_async",
+        )
+        .await
+    }
+
+    /// Cap the batch with a compute budget instruction and send it, and on
+    /// budget exhaustion measure the real cost by simulation and resend once.
+    async fn send_capped(
+        &self,
+        payer: &dyn TapeSigner,
+        signers: &[&dyn TapeSigner],
+        compute_unit_limit: u32,
+        instructions: Vec<Instruction>,
+        operation: &'static str,
+    ) -> Result<Txid, RpcError> {
+        let mut capped = with_compute_unit_limit(compute_unit_limit, instructions);
+        let result = self.submit(payer, signers, &capped, true, operation).await;
+
+        let Err(err) = &result else {
+            return result;
+        };
+        if !err.is_compute_budget_exceeded() {
+            return result;
+        }
+
+        // Reuse the batch for the probe and the resend by swapping out the
+        // budget instruction that with_compute_unit_limit put at the front.
+        capped[0] = ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT);
+        let Some(measured) = self.measured_compute_unit_limit(payer, signers, &capped).await
+        else {
+            return result;
+        };
+
+        tracing::warn!(
+            requested = compute_unit_limit,
+            measured,
+            "compute budget exceeded, resending with measured limit"
+        );
+
+        capped[0] = ComputeBudgetInstruction::set_compute_unit_limit(measured);
+        self.submit(payer, signers, &capped, true, operation).await
+    }
+
+    /// Simulate a probe batch already capped at the runtime ceiling and return
+    /// the consumed units plus headroom, or None if simulation cannot produce
+    /// a usable measurement.
+    async fn measured_compute_unit_limit(
+        &self,
+        payer: &dyn TapeSigner,
+        signers: &[&dyn TapeSigner],
+        probe: &[Instruction],
+    ) -> Option<u32> {
+        let transaction = self
+            .build_signed_transaction(payer, signers, probe)
+            .await
+            .ok()?;
+
+        let simulation = self.rpc().simulate_transaction(&transaction).await.ok()?;
+        if simulation.err.is_some() {
+            return None;
+        }
+
+        let consumed = simulation.units_consumed?;
+        let limit = consumed
+            .saturating_add(consumed / 4)
+            .min(MAX_COMPUTE_UNIT_LIMIT as u64);
+        Some(limit as u32)
+    }
+
+    /// Build, sign, and send one transaction, recording metrics under the
+    /// given operation label. Confirmed sends wait for the signature status;
+    /// async sends return as soon as the transaction is accepted.
+    async fn submit(
+        &self,
+        payer: &dyn TapeSigner,
+        signers: &[&dyn TapeSigner],
+        instructions: &[Instruction],
+        confirm: bool,
+        operation: &'static str,
+    ) -> Result<Txid, RpcError> {
+        #[cfg(not(feature = "metrics"))]
+        let _ = operation;
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
-            // Fetch the latest blockhash
-            let blockhash = self.rpc().get_latest_blockhash().await?;
-            let payer_pubkey: SolanaPubkey = payer.pubkey().into();
+            let transaction = self
+                .build_signed_transaction(payer, signers, instructions)
+                .await?;
 
-            // Combine payer with additional signers
-            let mut all_signers: Vec<SolanaSignerAdapter<'_>> =
-                Vec::with_capacity(signers.len() + 1);
-            all_signers.push(SolanaSignerAdapter(payer));
-            all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
-
-            // Build and sign the transaction
-            let transaction = Transaction::new_signed_with_payer(
-                &instructions,
-                Some(&payer_pubkey),
-                &all_signers,
-                blockhash,
-            );
-
-            // Send without waiting for confirmation
-            self.rpc().send_transaction(&transaction).await
+            if confirm {
+                self.rpc().send_and_confirm_transaction(&transaction).await
+            } else {
+                self.rpc().send_transaction(&transaction).await
+            }
         }
         .await;
 
@@ -377,19 +289,48 @@ impl<R: Rpc> RpcClient<R> {
                 Ok(_) => {
                     metrics.record_transaction_success();
                     if let Some(timer) = &timer {
-                        metrics.record_operation("send_instructions_with_signers_async", "success", timer);
+                        if confirm {
+                            metrics.record_transaction_confirmation("confirmed", timer);
+                        }
+                        metrics.record_operation(operation, "success", timer);
                     }
                 }
                 Err(_) => {
                     metrics.record_transaction_error();
                     if let Some(timer) = &timer {
-                        metrics.record_operation("send_instructions_with_signers_async", "error", timer);
+                        if confirm {
+                            metrics.record_transaction_confirmation("error", timer);
+                        }
+                        metrics.record_operation(operation, "error", timer);
                     }
                 }
             }
         }
 
         result
+    }
+
+    /// Sign instructions into a transaction against the latest blockhash,
+    /// with the payer as the first signer.
+    async fn build_signed_transaction(
+        &self,
+        payer: &dyn TapeSigner,
+        signers: &[&dyn TapeSigner],
+        instructions: &[Instruction],
+    ) -> Result<Transaction, RpcError> {
+        let blockhash = self.rpc().get_latest_blockhash().await?;
+        let payer_pubkey: SolanaPubkey = payer.pubkey().into();
+
+        let mut all_signers: Vec<SolanaSignerAdapter<'_>> = Vec::with_capacity(signers.len() + 1);
+        all_signers.push(SolanaSignerAdapter(payer));
+        all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
+
+        Ok(Transaction::new_signed_with_payer(
+            instructions,
+            Some(&payer_pubkey),
+            &all_signers,
+            blockhash,
+        ))
     }
 }
 

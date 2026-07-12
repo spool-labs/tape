@@ -653,7 +653,6 @@ impl Rpc for SolanaRpc {
                 Ok(SimulationResult {
                     err: value.err.map(Into::into),
                     units_consumed: value.units_consumed,
-                    logs: value.logs.unwrap_or_default(),
                 })
             }
         })
