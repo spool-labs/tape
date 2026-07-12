@@ -21,7 +21,7 @@ use crate::error::RpcError;
 #[derive(Debug, Clone)]
 pub struct SimulationResult {
     /// Execution error, if the simulated transaction failed.
-    pub err: Option<String>,
+    pub err: Option<TransactionError>,
 
     /// Compute units the transaction consumed.
     pub units_consumed: Option<u64>,

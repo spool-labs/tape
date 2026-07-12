@@ -12,16 +12,6 @@ use tape_crypto::tx::Txid;
 /// Hard runtime ceiling on compute units for a single transaction.
 const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
 
-/// True when a transaction failed because it ran out of compute units,
-/// whether reported by preflight simulation or by on-chain execution.
-fn is_compute_budget_exceeded(err: &RpcError) -> bool {
-    let RpcError::Transaction(message) = err else {
-        return false;
-    };
-    message.contains("Computational budget exceeded")
-        || message.contains("ComputationalBudgetExceeded")
-}
-
 struct SolanaSignerAdapter<'a>(&'a dyn TapeSigner);
 
 impl SolanaSigner for SolanaSignerAdapter<'_> {
@@ -130,7 +120,7 @@ impl<R: Rpc> RpcClient<R> {
         let Err(err) = &result else {
             return result;
         };
-        if !is_compute_budget_exceeded(err) {
+        if !err.is_compute_budget_exceeded() {
             return result;
         }
 
@@ -411,27 +401,6 @@ mod tests {
     use solana_pubkey::Pubkey;
     use solana_system_interface::instruction as system_instruction;
     use tape_crypto::ed25519::Keypair;
-
-    #[test]
-    fn detects_budget_exhaustion_from_both_error_shapes() {
-        let preflight = RpcError::Transaction(
-            "RPC response error -32002: Transaction simulation failed: \
-             Error processing Instruction 1: Computational budget exceeded"
-                .into(),
-        );
-        let status = RpcError::Transaction(
-            "Error processing Instruction 1: Computational budget exceeded".into(),
-        );
-        let debug_shape =
-            RpcError::Transaction("InstructionError(1, ComputationalBudgetExceeded)".into());
-        let program_error = RpcError::Transaction("custom program error: 0x10".into());
-
-        assert!(is_compute_budget_exceeded(&preflight));
-        assert!(is_compute_budget_exceeded(&status));
-        assert!(is_compute_budget_exceeded(&debug_shape));
-        assert!(!is_compute_budget_exceeded(&program_error));
-        assert!(!is_compute_budget_exceeded(&RpcError::BlockhashExpired));
-    }
 
     #[tokio::test]
     #[ignore] // Requires actual RPC endpoint

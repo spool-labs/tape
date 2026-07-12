@@ -338,15 +338,23 @@ impl SolanaRpc {
         }
 
         if let Some(tx_error) = err.get_transaction_error() {
-            let tx_error = tx_error.to_string();
-            if err_str.contains(&tx_error) {
-                return RpcError::Transaction(err_str);
-            }
-            return RpcError::Transaction(format!("{tx_error}; {err_str}"));
+            let display = tx_error.to_string();
+            let message = if err_str.contains(&display) {
+                err_str
+            } else {
+                format!("{display}; {err_str}")
+            };
+            return RpcError::Transaction {
+                err: Some(tx_error),
+                message,
+            };
         }
 
         if err_str.contains("Transaction simulation failed") {
-            return RpcError::Transaction(err_str);
+            return RpcError::Transaction {
+                err: None,
+                message: err_str,
+            };
         }
 
         // Default to Request error with the error message
@@ -643,7 +651,7 @@ impl Rpc for SolanaRpc {
 
                 let value = response.value;
                 Ok(SimulationResult {
-                    err: value.err.map(|error| error.to_string()),
+                    err: value.err.map(Into::into),
                     units_consumed: value.units_consumed,
                     logs: value.logs.unwrap_or_default(),
                 })
@@ -822,7 +830,14 @@ mod tests {
         let converted = SolanaRpc::convert_error(error, None);
 
         match converted {
-            RpcError::Transaction(message) => {
+            RpcError::Transaction { err, message } => {
+                assert_eq!(
+                    err,
+                    Some(TransactionError::InstructionError(
+                        1,
+                        InstructionError::Custom(0x12),
+                    ))
+                );
                 assert!(message.contains("Error processing Instruction 1"));
                 assert!(message.contains("custom program error: 0x12"));
             }

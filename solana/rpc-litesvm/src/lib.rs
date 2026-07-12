@@ -583,10 +583,10 @@ impl Rpc for LiteSvmRpc {
 
         match result {
             Ok(meta) => Ok(Txid::from(meta.signature)),
-            Err(failed) => Err(RpcError::Transaction(transaction_error(
-                &failed.err,
-                &failed.meta.logs,
-            ))),
+            Err(failed) => Err(RpcError::Transaction {
+                message: transaction_error(&failed.err, &failed.meta.logs),
+                err: Some(failed.err),
+            }),
         }
     }
 
@@ -615,7 +615,7 @@ impl Rpc for LiteSvmRpc {
                 logs: info.meta.logs,
             }),
             Err(failed) => Ok(SimulationResult {
-                err: Some(failed.err.to_string()),
+                err: Some(failed.err),
                 units_consumed: Some(failed.meta.compute_units_consumed),
                 logs: failed.meta.logs,
             }),
