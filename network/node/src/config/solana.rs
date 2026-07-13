@@ -1,3 +1,4 @@
+use rpc_solana::EndpointStrategy;
 use serde::Deserialize;
 use tape_core::types::SlotNumber;
 
@@ -10,6 +11,14 @@ pub struct SolanaConfig {
     /// than stalling the ingestor until its retry budget runs out.
     #[serde(default = "default_rpc")]
     pub rpc: Vec<String>,
+
+    /// How a fresh operation picks the endpoint it starts on.
+    ///
+    /// prefer-primary suits a paid primary with cheaper fallbacks,
+    /// failover-sticky stays wherever the last failover landed, and
+    /// round-robin spreads operations across equivalent endpoints.
+    #[serde(default)]
+    pub rpc_strategy: EndpointStrategy,
 
     /// Optional override for the first slot the ingestor should process.
     /// When absent the bootstrap phase derives the start slot from
@@ -36,6 +45,7 @@ impl Default for SolanaConfig {
     fn default() -> Self {
         Self {
             rpc: default_rpc(),
+            rpc_strategy: EndpointStrategy::default(),
             start_slot: None,
         }
     }
@@ -60,12 +70,24 @@ mod tests {
         assert_eq!(config.rpc[0], "http://cache:8899");
     }
 
+    // a strategy name parses and an absent one falls back to prefer-primary
+    #[test]
+    fn parses_strategy() {
+        let yaml = "rpc:\n  - \"http://cache:8899\"\nrpc_strategy: round-robin\n";
+        let config: SolanaConfig = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(config.rpc_strategy, EndpointStrategy::RoundRobin);
+
+        let yaml = "rpc:\n  - \"http://cache:8899\"\n";
+        let config: SolanaConfig = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(config.rpc_strategy, EndpointStrategy::PreferPrimary);
+    }
+
     // the logged endpoint never carries the api key
     #[test]
     fn display_hides_api_key() {
         let config = SolanaConfig {
             rpc: vec!["https://devnet.helius-rpc.com/?api-key=secret".to_string()],
-            start_slot: None,
+            ..SolanaConfig::default()
         };
 
         assert_eq!(config.rpc_display(), "https://devnet.helius-rpc.com/");
@@ -74,7 +96,10 @@ mod tests {
     // an endpoint list is required
     #[test]
     fn display_tolerates_empty() {
-        let config = SolanaConfig { rpc: Vec::new(), start_slot: None };
+        let config = SolanaConfig {
+            rpc: Vec::new(),
+            ..SolanaConfig::default()
+        };
 
         assert_eq!(config.rpc_display(), "");
     }

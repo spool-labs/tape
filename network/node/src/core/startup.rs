@@ -75,6 +75,7 @@ fn on_same_device(_meta_dir: &Path, _bulk_dir: &Path) -> Option<bool> {
 fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
     let rpc_config = RpcConfig {
         endpoints: config.solana.rpc.clone(),
+        strategy: config.solana.rpc_strategy,
         ..RpcConfig::default()
     };
 
