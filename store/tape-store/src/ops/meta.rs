@@ -23,6 +23,8 @@ const CLUSTER_HASH_KEY: &str = "cluster_hash";
 const NODE_ADDRESS_KEY: &str = "node_address";
 const NODE_ID_KEY: &str = "node_id";
 const SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY: &str = "snapshot_bootstrap_target_epoch";
+const OBSERVE_LAST_EPOCH_KEY: &str = "observe_last_epoch";
+const OBSERVE_LIFETIME_KEY: &str = "observe_lifetime";
 
 // GC keys
 const GC_STARTED_KEY: &str = "started";
@@ -49,6 +51,14 @@ pub trait MetaOps {
     // Snapshot bootstrap marker
     fn get_bootstrap_target_epoch(&self) -> Result<Option<EpochNumber>>;
     fn set_bootstrap_target_epoch(&self, epoch: EpochNumber) -> Result<()>;
+
+    // Last completed epoch dashboard deltas, so they survive a restart
+    fn get_observe_last_epoch(&self) -> Result<Option<Vec<u8>>>;
+    fn set_observe_last_epoch(&self, bytes: &[u8]) -> Result<()>;
+
+    // Observe lifetime totals, accumulated across restarts
+    fn get_observe_lifetime(&self) -> Result<Option<Vec<u8>>>;
+    fn set_observe_lifetime(&self, bytes: &[u8]) -> Result<()>;
 
     // GC epochs
     fn get_gc_started_epoch(&self) -> Result<Option<EpochNumber>>;
@@ -171,6 +181,24 @@ impl<S: Store> MetaOps for TapeStore<S> {
     fn set_bootstrap_target_epoch(&self, epoch: EpochNumber) -> Result<()> {
         let key = SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY.to_string();
         self.put::<MetaCol>(&key, &epoch.as_u64().to_le_bytes().to_vec())?;
+        Ok(())
+    }
+
+    fn get_observe_last_epoch(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self.get::<MetaCol>(&OBSERVE_LAST_EPOCH_KEY.to_string())?)
+    }
+
+    fn set_observe_last_epoch(&self, bytes: &[u8]) -> Result<()> {
+        self.put::<MetaCol>(&OBSERVE_LAST_EPOCH_KEY.to_string(), &bytes.to_vec())?;
+        Ok(())
+    }
+
+    fn get_observe_lifetime(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self.get::<MetaCol>(&OBSERVE_LIFETIME_KEY.to_string())?)
+    }
+
+    fn set_observe_lifetime(&self, bytes: &[u8]) -> Result<()> {
+        self.put::<MetaCol>(&OBSERVE_LIFETIME_KEY.to_string(), &bytes.to_vec())?;
         Ok(())
     }
 

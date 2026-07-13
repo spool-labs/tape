@@ -44,3 +44,39 @@ async fn rpc_client_can_use_litesvm_backend_for_basic_transfer() {
         .expect("recipient account");
     assert_eq!(recipient_account.lamports, 1_000_000);
 }
+
+#[tokio::test]
+async fn undersized_compute_unit_limit_resends_with_measured_budget() {
+    let rpc = LiteSvmRpc::new();
+    let client = RpcClient::from_rpc(rpc.clone());
+
+    let payer = Keypair::new();
+    let recipient = Pubkey::new_unique();
+
+    rpc.airdrop(&payer.pubkey(), 10_000_000)
+        .expect("airdrop payer");
+
+    let signer = TapeKeypair::from_solana_keypair(&payer).expect("derive tape keypair");
+
+    // A 200 unit budget covers the compute budget instruction but not the two
+    // transfers, so the first attempt fails on chain and the client must
+    // measure the real cost by simulation and resend.
+    let instructions = vec![
+        system_instruction::transfer(&payer.pubkey(), &recipient, 1_000_000),
+        system_instruction::transfer(&payer.pubkey(), &recipient, 1_000_000),
+    ];
+    client
+        .send_instructions_with_compute_unit_limit(&signer, 200, instructions)
+        .await
+        .expect("resend with measured budget should succeed");
+
+    // Exactly one successful landing: the failed attempt moved nothing and
+    // the resend moved both transfers once.
+    let recipient_addr: Address = recipient.into();
+    let recipient_account = client
+        .rpc()
+        .get_account(&recipient_addr)
+        .await
+        .expect("recipient account");
+    assert_eq!(recipient_account.lamports, 2_000_000);
+}

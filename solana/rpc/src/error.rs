@@ -5,6 +5,8 @@
 //! convert their internal errors into these types.
 
 use std::time::Duration;
+use solana_instruction_error::InstructionError;
+use solana_transaction_error::TransactionError;
 use thiserror::Error;
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
@@ -44,8 +46,14 @@ pub enum RpcError {
     Deserialization(String),
 
     /// Transaction execution failed
-    #[error("Transaction failed: {0}")]
-    Transaction(String),
+    #[error("Transaction failed: {message}")]
+    Transaction {
+        /// Structured runtime error when the RPC reported one.
+        err: Option<TransactionError>,
+
+        /// Full error text, including logs when available.
+        message: String,
+    },
 
     /// Blockhash has expired (transaction too old)
     #[error("Blockhash expired")]
@@ -70,7 +78,7 @@ impl RpcError {
             RpcError::AccountNotFound(_) => false,
             RpcError::TransactionNotFound(_) => false,
             RpcError::Deserialization(_) => false,
-            RpcError::Transaction(_) => false,
+            RpcError::Transaction { .. } => false,
             RpcError::AllEndpointsFailed { .. } => false,
             RpcError::Internal(_) => false,
         }
@@ -85,7 +93,7 @@ impl RpcError {
             RpcError::AccountNotFound(_) => false,
             RpcError::TransactionNotFound(_) => false,
             RpcError::Deserialization(_) => false,
-            RpcError::Transaction(_) => false,
+            RpcError::Transaction { .. } => false,
             RpcError::BlockhashExpired => false,
             RpcError::AllEndpointsFailed { .. } => false,
             RpcError::Internal(_) => false,
@@ -101,11 +109,45 @@ impl RpcError {
             RpcError::AccountNotFound(_) => "not_found",
             RpcError::TransactionNotFound(_) => "not_found",
             RpcError::Deserialization(_) => "deser_error",
-            RpcError::Transaction(_) => "tx_error",
+            RpcError::Transaction { .. } => "tx_error",
             RpcError::BlockhashExpired => "blockhash_expired",
             RpcError::AllEndpointsFailed { .. } => "exhausted",
             RpcError::Internal(_) => "internal",
         }
+    }
+
+    /// Structured runtime error, when the failure came from transaction
+    /// execution and the RPC reported one.
+    pub fn transaction_error(&self) -> Option<&TransactionError> {
+        match self {
+            RpcError::Transaction { err, .. } => err.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Instruction-level error, when an instruction in the transaction failed.
+    pub fn instruction_error(&self) -> Option<&InstructionError> {
+        match self.transaction_error()? {
+            TransactionError::InstructionError(_, err) => Some(err),
+            _ => None,
+        }
+    }
+
+    /// Custom program error code, when an instruction failed with one.
+    pub fn custom_program_error(&self) -> Option<u32> {
+        match self.instruction_error()? {
+            InstructionError::Custom(code) => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// True when a transaction ran out of compute units, whether reported by
+    /// preflight simulation or by on-chain execution.
+    pub fn is_compute_budget_exceeded(&self) -> bool {
+        matches!(
+            self.instruction_error(),
+            Some(InstructionError::ComputationalBudgetExceeded)
+        )
     }
 
     /// Check if this error indicates a skipped slot.
@@ -117,7 +159,7 @@ impl RpcError {
             RpcError::AccountNotFound(_) => false,
             RpcError::TransactionNotFound(_) => false,
             RpcError::Deserialization(_) => false,
-            RpcError::Transaction(_) => false,
+            RpcError::Transaction { .. } => false,
             RpcError::BlockhashExpired => false,
             RpcError::AllEndpointsFailed { .. } => false,
             RpcError::Internal(_) => false,
@@ -165,6 +207,14 @@ fn is_endpoint_error_message(msg: &str) -> bool {
 fn is_skipped_slot_message(msg: &str) -> bool {
     let msg = msg.to_lowercase();
     msg.contains("slotskipped") || msg.contains("slot was skipped")
+}
+
+/// True when a flattened error message reads like a transaction execution
+/// failure rather than a transport or RPC-layer problem.
+pub fn looks_like_transaction_error(msg: &str) -> bool {
+    msg.contains("Error processing Instruction")
+        || msg.contains("InstructionError")
+        || msg.contains("custom program error")
 }
 
 #[cfg(test)]
@@ -242,6 +292,38 @@ mod tests {
             RpcError::Request("compute budget exceeded".into()).is_retriable(),
             "exceeded limits must be retriable"
         );
+    }
+
+    #[test]
+    fn structured_transaction_error_accessors() {
+        let budget = RpcError::Transaction {
+            err: Some(TransactionError::InstructionError(
+                1,
+                InstructionError::ComputationalBudgetExceeded,
+            )),
+            message: "Error processing Instruction 1: Computational budget exceeded".to_string(),
+        };
+        assert!(budget.is_compute_budget_exceeded());
+        assert_eq!(budget.custom_program_error(), None);
+
+        let program = RpcError::Transaction {
+            err: Some(TransactionError::InstructionError(
+                0,
+                InstructionError::Custom(0x10),
+            )),
+            message: "Error processing Instruction 0: custom program error: 0x10".to_string(),
+        };
+        assert!(!program.is_compute_budget_exceeded());
+        assert_eq!(program.custom_program_error(), Some(0x10));
+
+        let unstructured = RpcError::Transaction {
+            err: None,
+            message: "Transaction simulation failed".to_string(),
+        };
+        assert!(!unstructured.is_compute_budget_exceeded());
+        assert_eq!(unstructured.transaction_error(), None);
+
+        assert!(!RpcError::BlockhashExpired.is_compute_budget_exceeded());
     }
 
     #[test]

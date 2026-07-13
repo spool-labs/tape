@@ -13,6 +13,8 @@ pub mod config;
 pub mod context;
 pub mod core;
 pub mod features;
+#[cfg(feature = "metrics")]
+pub mod observe;
 pub mod runtime;
 pub mod supervisor;
 

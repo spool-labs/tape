@@ -1,11 +1,69 @@
 use std::future::Future;
+use std::time::Duration;
 
-use rpc::RpcError;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use rpc::{InstructionError, RpcError, looks_like_transaction_error};
 use rpc_client::parse_tape_error;
 use tape_api::errors::{TapeError, is_account_state_pending_error};
 use tape_crypto::tx::Txid;
+use tape_retry::{Backoff, backoff_or_cancel};
 
 use crate::core::ingest::IngestBus;
+
+/// Per-rank delay before a committee member submits a contended any-member
+/// transaction, so lower ranks submit first and higher ranks observe the result.
+const STAGGER_STEP: Duration = Duration::from_millis(400);
+
+/// Rank cap on the stagger, so a large committee cannot push high ranks past the
+/// whole submission window.
+const STAGGER_MAX_RANK: usize = 8;
+
+/// Block until the next state update or cancellation, for retries whose
+/// precondition only flips when a new block is ingested. Returns true when the
+/// task should stop (cancelled, or the state channel closed).
+pub async fn wait_for_state_change<State>(
+    state_rx: &mut watch::Receiver<State>,
+    cancel: &CancellationToken,
+) -> bool {
+    // Both branches are cancellation-safe: neither leaves partial state behind.
+    tokio::select! {
+        _ = cancel.cancelled() => true,
+        changed = state_rx.changed() => changed.is_err(),
+    }
+}
+
+/// Wait out this node's rank-ordered stagger before submitting a contended
+/// transaction. Rank 0 returns immediately. Returns true when the task should
+/// stop (cancelled).
+pub async fn stagger_by_rank(rank: usize, cancel: &CancellationToken) -> bool {
+    if rank == 0 {
+        return false;
+    }
+    let delay = STAGGER_STEP * rank.min(STAGGER_MAX_RANK) as u32;
+    // Both branches are cancellation-safe.
+    tokio::select! {
+        _ = cancel.cancelled() => true,
+        _ = tokio::time::sleep(delay) => false,
+    }
+}
+
+/// Spawn a detached consensus submit into the given slot, unless a submit of
+/// that kind is still in flight. A finished handle is left in place and the next
+/// call overwrites it, so a failed submit is naturally re-driven on the next
+/// block or heartbeat. This keeps the stagger sleep inside the submit off the
+/// manager event loop while still deduping the per-block and per-heartbeat re-fire.
+pub fn spawn_guarded<F>(slot: &mut Option<JoinHandle<()>>, task: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
+        return;
+    }
+    *slot = Some(tokio::spawn(task));
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxRejectionKind {
@@ -55,6 +113,10 @@ pub fn classify_rejection(err: &RpcError) -> TxRejectionKind {
         return TxRejectionKind::Program(tape_err);
     }
 
+    if let Some(kind) = classify_instruction_error(err) {
+        return kind;
+    }
+
     let Some(msg) = transaction_error_message(err) else {
         return TxRejectionKind::Transport;
     };
@@ -70,18 +132,25 @@ pub fn classify_rejection(err: &RpcError) -> TxRejectionKind {
     TxRejectionKind::UnknownExecution
 }
 
-fn transaction_error_message(err: &RpcError) -> Option<&str> {
-    match err {
-        RpcError::Transaction(msg) => Some(msg),
-        RpcError::Request(msg) if looks_like_transaction_error(msg) => Some(msg),
+/// Classify from the structured runtime error when the RPC reported one.
+/// Message matching below stays as the fallback for proxies that flatten
+/// errors into text, and for conditions only visible in program logs.
+fn classify_instruction_error(err: &RpcError) -> Option<TxRejectionKind> {
+    match err.instruction_error()? {
+        InstructionError::AccountAlreadyInitialized => Some(TxRejectionKind::KnownContention),
+        InstructionError::UninitializedAccount
+        | InstructionError::InvalidAccountData
+        | InstructionError::InvalidAccountOwner => Some(TxRejectionKind::KnownStaleState),
         _ => None,
     }
 }
 
-fn looks_like_transaction_error(msg: &str) -> bool {
-    msg.contains("Error processing Instruction")
-        || msg.contains("InstructionError")
-        || msg.contains("custom program error")
+fn transaction_error_message(err: &RpcError) -> Option<&str> {
+    match err {
+        RpcError::Transaction { message, .. } => Some(message),
+        RpcError::Request(msg) if looks_like_transaction_error(msg) => Some(msg),
+        _ => None,
+    }
 }
 
 fn is_known_contention_error(msg: &str) -> bool {
@@ -102,28 +171,131 @@ fn is_known_stale_state_error(msg: &str) -> bool {
 
 /// Funnel every protocol-changing transaction through here. If the
 /// ingestor is not caught up to the finalized dispatch edge, the submit
-/// future is dropped without being polled and `SkippedStale` is returned.
-/// Otherwise the future is awaited and its result classified via
-/// `classify_tx`.
-pub async fn submit_if_at_tip<F>(ingest: &IngestBus, submit: F) -> TxOutcome
+/// future is dropped without being polled and the outcome is skipped-stale.
+/// Otherwise the future is awaited and its result classified. The action label
+/// makes the burn observable per submitter and outcome.
+pub async fn submit_if_at_tip<F>(ingest: &IngestBus, action: &'static str, submit: F) -> TxOutcome
 where
     F: Future<Output = Result<Txid, RpcError>>,
 {
-    if !ingest.is_at_tip() {
-        return TxOutcome::SkippedStale;
+    let outcome = if ingest.is_at_tip() {
+        classify_tx(submit.await)
+    } else {
+        TxOutcome::SkippedStale
+    };
+    record_lifecycle_tx(action, outcome.metric_label());
+    outcome
+}
+
+/// How a looping task should pace its next retry after a rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryPace {
+    /// The precondition flips on a specific new block; wait for the next state change.
+    StateChange,
+    /// A transient condition (stale view, contention, transport) that clears over
+    /// several blocks with no single observable signal; back off rather than fire
+    /// on every block.
+    Backoff,
+}
+
+impl TxOutcome {
+    /// Prometheus outcome label for this submission result.
+    fn metric_label(&self) -> &'static str {
+        match self {
+            TxOutcome::Confirmed(_) => "confirmed",
+            TxOutcome::SkippedStale => "skipped_stale",
+            TxOutcome::Rejected { kind, .. } => match kind {
+                TxRejectionKind::KnownContention => "contention",
+                TxRejectionKind::KnownStaleState => "stale",
+                TxRejectionKind::Program(_) => "program_error",
+                TxRejectionKind::UnknownExecution => "unknown",
+                TxRejectionKind::Transport => "transport",
+            },
+        }
     }
-    classify_tx(submit.await)
+
+    /// Retry pacing for this outcome. A program error flips on a specific,
+    /// observable state change, so it waits on state; every other rejection is a
+    /// transient view/contention condition that clears over several blocks, so it
+    /// backs off instead of resubmitting on every block.
+    pub fn retry_pace(&self) -> RetryPace {
+        match self {
+            TxOutcome::Rejected {
+                kind: TxRejectionKind::Program(_),
+                ..
+            } => RetryPace::StateChange,
+            _ => RetryPace::Backoff,
+        }
+    }
+}
+
+/// Wait for the next retry according to the chosen pace, or cancellation.
+/// Returns true when the task should stop (cancelled, or the state channel closed).
+pub async fn wait_by_pace<State>(
+    pace: RetryPace,
+    backoff: &mut Backoff,
+    state_rx: &mut watch::Receiver<State>,
+    cancel: &CancellationToken,
+) -> bool {
+    match pace {
+        RetryPace::StateChange => wait_for_state_change(state_rx, cancel).await,
+        RetryPace::Backoff => backoff_or_cancel(backoff, cancel).await,
+    }
+}
+
+/// Count one lifecycle or consensus transaction submission by action and outcome.
+#[cfg(feature = "metrics")]
+fn record_lifecycle_tx(action: &str, outcome: &str) {
+    if let Some(counter) = lifecycle_tx_counter() {
+        counter.with_label_values(&[action, outcome]).inc();
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+fn record_lifecycle_tx(_action: &str, _outcome: &str) {}
+
+/// Lazily build and register the lifecycle transaction counter in the default
+/// registry. None if a counter of the same name is already registered, in which
+/// case that registration is authoritative.
+#[cfg(feature = "metrics")]
+fn lifecycle_tx_counter() -> Option<&'static tape_metrics::IntCounterVec> {
+    use std::sync::OnceLock;
+    static COUNTER: OnceLock<Option<tape_metrics::IntCounterVec>> = OnceLock::new();
+    COUNTER
+        .get_or_init(|| {
+            let counter = tape_metrics::IntCounterVec::new(
+                tape_metrics::prometheus::Opts::new(
+                    "tape_node_lifecycle_tx_total",
+                    "Lifecycle and consensus transaction submissions by action and outcome",
+                ),
+                &["action", "outcome"],
+            )
+            .ok()?;
+            tape_metrics::prometheus::default_registry()
+                .register(Box::new(counter.clone()))
+                .ok()?;
+            Some(counter)
+        })
+        .as_ref()
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rpc::TransactionError;
     use solana_signature::Signature;
     use std::time::Duration;
 
     fn test_txid(byte: u8) -> Txid {
         Signature::from([byte; 64]).into()
+    }
+
+    fn text_error(message: &str) -> RpcError {
+        RpcError::Transaction {
+            err: None,
+            message: message.to_string(),
+        }
     }
 
     #[test]
@@ -135,7 +307,7 @@ mod tests {
 
     #[test]
     fn program_error() {
-        let err = RpcError::Transaction("custom program error: 0x51".to_string());
+        let err = text_error("custom program error: 0x51");
         let outcome = classify_tx(Err(err));
         assert!(matches!(
             outcome,
@@ -148,7 +320,7 @@ mod tests {
 
     #[test]
     fn pool_accounting_failed_program_error() {
-        let err = RpcError::Transaction("custom program error: 0x67".to_string());
+        let err = text_error("custom program error: 0x67");
         let outcome = classify_tx(Err(err));
         assert!(matches!(
             outcome,
@@ -174,7 +346,7 @@ mod tests {
 
     #[test]
     fn unparseable_tx_error() {
-        let err = RpcError::Transaction("unknown error 999".to_string());
+        let err = text_error("unknown error 999");
         let outcome = classify_tx(Err(err));
         assert!(matches!(
             outcome,
@@ -187,9 +359,8 @@ mod tests {
 
     #[test]
     fn account_already_initialized_is_contention() {
-        let err = RpcError::Transaction(
-            "Error processing Instruction 1: instruction requires an uninitialized account"
-                .to_string(),
+        let err = text_error(
+            "Error processing Instruction 1: instruction requires an uninitialized account",
         );
         let outcome = classify_tx(Err(err));
         assert!(matches!(
@@ -202,9 +373,50 @@ mod tests {
     }
 
     #[test]
+    fn structured_contention_and_stale_state() {
+        let contention = RpcError::Transaction {
+            err: Some(TransactionError::InstructionError(
+                1,
+                InstructionError::AccountAlreadyInitialized,
+            )),
+            message: "Error processing Instruction 1: instruction requires an uninitialized account"
+                .to_string(),
+        };
+        assert!(matches!(
+            classify_rejection(&contention),
+            TxRejectionKind::KnownContention
+        ));
+
+        let stale = RpcError::Transaction {
+            err: Some(TransactionError::InstructionError(
+                1,
+                InstructionError::InvalidAccountData,
+            )),
+            message: "Error processing Instruction 1: invalid account data for instruction"
+                .to_string(),
+        };
+        assert!(matches!(
+            classify_rejection(&stale),
+            TxRejectionKind::KnownStaleState
+        ));
+
+        let budget = RpcError::Transaction {
+            err: Some(TransactionError::InstructionError(
+                1,
+                InstructionError::ComputationalBudgetExceeded,
+            )),
+            message: "Error processing Instruction 1: Computational budget exceeded".to_string(),
+        };
+        assert!(matches!(
+            classify_rejection(&budget),
+            TxRejectionKind::UnknownExecution
+        ));
+    }
+
+    #[test]
     fn invalid_account_data_is_stale_state() {
-        let err = RpcError::Transaction(
-            "Error processing Instruction 1: invalid account data for instruction".to_string(),
+        let err = text_error(
+            "Error processing Instruction 1: invalid account data for instruction",
         );
         let outcome = classify_tx(Err(err));
         assert!(matches!(
@@ -221,7 +433,7 @@ mod tests {
         let bus = IngestBus::new();
         let polled = std::sync::atomic::AtomicBool::new(false);
 
-        let outcome = submit_if_at_tip(&bus, async {
+        let outcome = submit_if_at_tip(&bus, "test", async {
             polled.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(test_txid(2))
         })
@@ -237,7 +449,7 @@ mod tests {
         bus.publish(crate::core::ingest::IngestState::AtTip);
 
         let sig = test_txid(3);
-        let outcome = submit_if_at_tip(&bus, async move { Ok(sig) }).await;
+        let outcome = submit_if_at_tip(&bus, "test", async move { Ok(sig) }).await;
 
         assert!(matches!(outcome, TxOutcome::Confirmed(_)));
     }
@@ -247,8 +459,8 @@ mod tests {
         let bus = IngestBus::new();
         bus.publish(crate::core::ingest::IngestState::AtTip);
 
-        let outcome = submit_if_at_tip(&bus, async {
-            Err(RpcError::Transaction("custom program error: 0x51".to_string()))
+        let outcome = submit_if_at_tip(&bus, "test", async {
+            Err(text_error("custom program error: 0x51"))
         })
         .await;
 

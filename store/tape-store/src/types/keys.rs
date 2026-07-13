@@ -547,9 +547,261 @@ impl<'de> SchemaRead<'de> for ObjectListKey {
     }
 }
 
+/// Key for the append-only write-authorization audit log (16 bytes).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct AuditKey {
+    /// Unsigned unix timestamp (seconds) the authorization decision was logged at.
+    pub timestamp: u64,
+    /// Process-monotonic sequence number; makes every key unique and orders
+    /// decisions logged in the same instant by the order they were recorded.
+    pub sequence: u64,
+}
+
+impl AuditKey {
+    /// Encoded size of the key in bytes.
+    pub const SIZE: usize = 16;
+
+    /// Create an audit key for `timestamp` and monotonic `sequence`.
+    pub fn new(timestamp: u64, sequence: u64) -> Self {
+        Self { timestamp, sequence }
+    }
+
+    /// Prefix bytes for scanning all entries logged at `timestamp` (8 bytes).
+    pub fn timestamp_prefix(timestamp: u64) -> [u8; 8] {
+        timestamp.to_be_bytes()
+    }
+}
+
+impl SchemaWrite for AuditKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.timestamp.to_be_bytes())?;
+        writer.write_exact(&src.sequence.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for AuditKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<AuditKey>) -> ReadResult<()> {
+        // SAFETY: get_t reads a fixed 8-byte array for the Pod timestamp field; the key is a
+        // known fixed width, so the source buffer is guaranteed to hold these bytes.
+        let timestamp_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        // SAFETY: get_t reads a fixed 8-byte array for the Pod sequence field; the remaining
+        // buffer is a known fixed width.
+        let sequence_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(AuditKey {
+            timestamp: u64::from_be_bytes(timestamp_bytes),
+            sequence: u64::from_be_bytes(sequence_bytes),
+        });
+        Ok(())
+    }
+}
+
+/// Key for the ordered write-authorization policy ruleset (12 bytes).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct PolicyRuleKey {
+    /// Evaluation priority; a lower value sorts (and is listed) first.
+    pub priority: u32,
+    /// Stable rule identifier disambiguating rules that share a priority.
+    pub id: u64,
+}
+
+impl PolicyRuleKey {
+    /// Encoded size of the key in bytes.
+    pub const SIZE: usize = 12;
+
+    /// Create a policy-rule key for `priority` and rule `id`.
+    pub fn new(priority: u32, id: u64) -> Self {
+        Self { priority, id }
+    }
+}
+
+impl SchemaWrite for PolicyRuleKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.priority.to_be_bytes())?;
+        writer.write_exact(&src.id.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for PolicyRuleKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<PolicyRuleKey>) -> ReadResult<()> {
+        // SAFETY: get_t reads a fixed 4-byte array for the Pod priority field; the key is a
+        // known fixed width, so the source buffer is guaranteed to hold these bytes.
+        let priority_bytes: [u8; 4] = unsafe { reader.get_t()? };
+        // SAFETY: get_t reads a fixed 8-byte array for the Pod id field; the remaining buffer
+        // is a known fixed width.
+        let id_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(PolicyRuleKey {
+            priority: u32::from_be_bytes(priority_bytes),
+            id: u64::from_be_bytes(id_bytes),
+        });
+        Ok(())
+    }
+}
+
+/// Key for an outstanding accounting-ledger reservation (48 bytes).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct LedgerReservationKey {
+    /// Unix time (seconds) the reservation was created; orders the TTL sweep.
+    pub created_at: i64,
+    /// Principal that owns the reservation.
+    pub principal: Address,
+    /// Per-principal sequence number disambiguating reservations created in the same second.
+    pub sequence: u64,
+}
+
+impl LedgerReservationKey {
+    /// Encoded size of the key in bytes.
+    pub const SIZE: usize = 48;
+
+    /// Create a reservation key for `created_at`, `principal`, and per-principal `sequence`.
+    pub fn new(created_at: i64, principal: Address, sequence: u64) -> Self {
+        Self {
+            created_at,
+            principal,
+            sequence,
+        }
+    }
+}
+
+impl SchemaWrite for LedgerReservationKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        // Clamp defensively so a stray non-positive timestamp still encodes to an
+        // ordered (non-wrapping) key.
+        writer.write_exact(&(src.created_at.max(0) as u64).to_be_bytes())?;
+        writer.write_exact(src.principal.as_ref())?;
+        writer.write_exact(&src.sequence.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for LedgerReservationKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<LedgerReservationKey>) -> ReadResult<()> {
+        // SAFETY: get_t reads a fixed 8-byte array for the Pod created_at field; the key is a
+        // known fixed width, so the source buffer is guaranteed to hold these bytes.
+        let created_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        // SAFETY: get_t reads a fixed 32-byte array for the Pod principal address; the
+        // remaining buffer is a known fixed width.
+        let principal: [u8; 32] = unsafe { reader.get_t()? };
+        // SAFETY: get_t reads a fixed 8-byte array for the Pod sequence field; the remaining
+        // buffer is a known fixed width.
+        let sequence_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(LedgerReservationKey {
+            created_at: u64::from_be_bytes(created_bytes) as i64,
+            principal: Address::from(principal),
+            sequence: u64::from_be_bytes(sequence_bytes),
+        });
+        Ok(())
+    }
+}
+
+/// Key for a buffered multipart part (36 bytes).
+///
+/// Format: `[upload 32 bytes][part_number BE 4 bytes]`. The upload digest is a
+/// fixed 32-byte prefix, so one upload's parts scan together in part-number
+/// order without touching any other upload's parts.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct MultipartPartKey {
+    /// Digest of the opaque upload id this part belongs to.
+    pub upload: Hash,
+    /// Part number (1..=10000) within the upload.
+    pub part_number: u32,
+}
+
+impl MultipartPartKey {
+    /// Encoded size of the key in bytes.
+    pub const SIZE: usize = 36;
+
+    /// Create a part key for `upload` and `part_number`.
+    pub fn new(upload: Hash, part_number: u32) -> Self {
+        Self { upload, part_number }
+    }
+
+    /// Prefix bytes for scanning every part of one upload (32 bytes).
+    pub fn upload_prefix(upload: Hash) -> [u8; 32] {
+        upload.0
+    }
+}
+
+impl SchemaWrite for MultipartPartKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.upload.0)?;
+        writer.write_exact(&src.part_number.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for MultipartPartKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<MultipartPartKey>) -> ReadResult<()> {
+        // SAFETY: get_t reads a fixed 32-byte array for the Pod upload digest; the key is a
+        // known fixed width, so the source buffer is guaranteed to hold these bytes.
+        let upload: [u8; 32] = unsafe { reader.get_t()? };
+        // SAFETY: get_t reads a fixed 4-byte array for the Pod part_number field; the remaining
+        // buffer is a known fixed width.
+        let part_number_bytes: [u8; 4] = unsafe { reader.get_t()? };
+        dst.write(MultipartPartKey {
+            upload: Hash(upload),
+            part_number: u32::from_be_bytes(part_number_bytes),
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a reservation key round-trips at its fixed size
+    #[test]
+    fn reservation_encoding() {
+        let key = LedgerReservationKey::new(1_700_000_123, Address::new([7u8; 32]), 9);
+        let bytes = wincode::serialize(&key).expect("serialize");
+        assert_eq!(bytes.len(), LedgerReservationKey::SIZE);
+        let decoded: LedgerReservationKey = wincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(key, decoded);
+    }
+
+    // reservation keys sort oldest-first by created_at
+    #[test]
+    fn oldest_first() {
+        let early = LedgerReservationKey::new(100, Address::new([0xFFu8; 32]), u64::MAX);
+        let late = LedgerReservationKey::new(200, Address::new([0u8; 32]), 0);
+        let early_bytes = wincode::serialize(&early).expect("serialize");
+        let late_bytes = wincode::serialize(&late).expect("serialize");
+        assert!(early_bytes < late_bytes, "older reservations sort first");
+    }
 
     #[test]
     fn test_epoch_key_size() {
@@ -696,5 +948,88 @@ mod tests {
             wincode::serialize(&ObjectListKey::new(Address::new([0x12; 32]), b"a".to_vec()))
                 .unwrap();
         assert!(b < other);
+    }
+
+    // the audit key serializes to its fixed size
+    #[test]
+    fn audit_length() {
+        let key = AuditKey::new(1_700_000_000, 3);
+        let bytes = wincode::serialize(&key).expect("serialize");
+        assert_eq!(bytes.len(), AuditKey::SIZE);
+    }
+
+    // an audit key round-trips through serialization
+    #[test]
+    fn audit_encoding() {
+        let key = AuditKey::new(1_700_000_123, 42);
+        let bytes = wincode::serialize(&key).expect("serialize");
+        let decoded: AuditKey = wincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(key, decoded);
+    }
+
+    // audit keys sort by timestamp then sequence
+    #[test]
+    fn audit_chronological() {
+        // Timestamp is the primary sort key.
+        let a = wincode::serialize(&AuditKey::new(1, u64::MAX)).expect("serialize");
+        let b = wincode::serialize(&AuditKey::new(256, 0)).expect("serialize");
+        assert!(a < b, "timestamp should be the primary sort key");
+
+        // Within a timestamp, sequence orders the entries.
+        let s0 = wincode::serialize(&AuditKey::new(100, 0)).expect("serialize");
+        let s1 = wincode::serialize(&AuditKey::new(100, 1)).expect("serialize");
+        assert!(s0 < s1);
+
+        // The timestamp prefix is the leading 8 bytes of the key.
+        assert_eq!(&s0[..8], &AuditKey::timestamp_prefix(100));
+    }
+
+    // a policy-rule key round-trips at its fixed size
+    #[test]
+    fn policy_encoding() {
+        let key = PolicyRuleKey::new(5, 42);
+        let bytes = wincode::serialize(&key).expect("serialize");
+        assert_eq!(bytes.len(), PolicyRuleKey::SIZE);
+        let decoded: PolicyRuleKey = wincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(key, decoded);
+    }
+
+    // policy-rule keys sort by priority then id
+    #[test]
+    fn policy_priority() {
+        // Priority is the primary sort key.
+        let a = wincode::serialize(&PolicyRuleKey::new(1, u64::MAX)).expect("serialize");
+        let b = wincode::serialize(&PolicyRuleKey::new(2, 0)).expect("serialize");
+        assert!(a < b, "priority should be the primary sort key");
+
+        // Within a priority, id orders the rules.
+        let p0 = wincode::serialize(&PolicyRuleKey::new(10, 0)).expect("serialize");
+        let p1 = wincode::serialize(&PolicyRuleKey::new(10, 1)).expect("serialize");
+        assert!(p0 < p1);
+    }
+
+    // a part key round-trips at its fixed size
+    #[test]
+    fn part_encoding() {
+        let key = MultipartPartKey::new(Hash([0x33; 32]), 7);
+        let bytes = wincode::serialize(&key).expect("serialize");
+        assert_eq!(bytes.len(), MultipartPartKey::SIZE);
+        let decoded: MultipartPartKey = wincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(key, decoded);
+    }
+
+    // part keys group by upload then order by part number
+    #[test]
+    fn part_scoping() {
+        let upload = Hash([0x33; 32]);
+        let other = Hash([0x34; 32]);
+
+        // The 32-byte upload digest is the leading prefix of every part key.
+        let p1 = wincode::serialize(&MultipartPartKey::new(upload, 1)).expect("serialize");
+        let p2 = wincode::serialize(&MultipartPartKey::new(upload, 2)).expect("serialize");
+        let foreign = wincode::serialize(&MultipartPartKey::new(other, 1)).expect("serialize");
+        assert_eq!(&p1[..32], &MultipartPartKey::upload_prefix(upload));
+        assert!(p1 < p2, "parts sort by part number within an upload");
+        assert!(p2 < foreign, "a different upload sorts past this one");
     }
 }

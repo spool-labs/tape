@@ -25,6 +25,7 @@ use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap;
 use crate::features::assignment::manager::AssignmentManager;
+use crate::features::eviction::manager::EvictionManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::lifecycle::manager::LifecycleManager;
@@ -287,6 +288,24 @@ where
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
 
+    #[cfg(feature = "metrics")]
+    if config.metrics.enabled {
+        crate::observe::register_block_channels(&senders, &store_tx);
+    }
+
+    #[cfg(feature = "metrics")]
+    if config.metrics.enabled && config.metrics.aggregate_peers {
+        supervisor.spawn(
+            ServiceName::PeerAggregator,
+            crate::observe::PeerAggregator::new(
+                context.clone(),
+                config.metrics.aggregate_interval_secs,
+                cancel.clone(),
+            )
+            .run(),
+        );
+    }
+
     supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));
 
     supervisor.spawn(
@@ -340,6 +359,16 @@ where
         AssignmentManager::new(
             context.clone(),
             receivers.assignment,
+            cancel.clone(),
+        )
+        .run(),
+    );
+
+    supervisor.spawn(
+        ServiceName::EvictionManager,
+        EvictionManager::new(
+            context.clone(),
+            receivers.eviction,
             cancel.clone(),
         )
         .run(),

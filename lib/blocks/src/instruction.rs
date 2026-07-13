@@ -1,7 +1,7 @@
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
-    EpochAdvanced, EpochCommitted, EpochCreated, NodeJoinedCommittee, NodeRegistered,
+    EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
     StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeExtended, TapeReserved,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
@@ -69,6 +69,11 @@ pub enum RawInstruction {
         epoch: EpochNumber,
         group: GroupIndex,
     },
+    ProposeEviction {
+        node: Address,
+        proposer: Address,
+    },
+    VoteEviction,
     AdvancePool {
         node: Address,
     },
@@ -283,6 +288,19 @@ pub enum ParsedInstruction {
         node: Address,
         event: NodeJoinedCommittee,
     },
+    // An eviction vote opened against a node. Voters react by probing the
+    // target and joining the vote when their own probe fails.
+    ProposeEviction {
+        node: Address,
+        proposer: Address,
+        event: VoteProposed,
+    },
+    // A node dropped from the next committee once its eviction vote reached
+    // supermajority. Synthesized from the standalone removal event, since the
+    // landing vote is not itself a node-facing instruction.
+    NodeEvicted {
+        event: NodeEvicted,
+    },
     AddToBlacklist {
         node: Address,
         entry: BlacklistEntry,
@@ -372,6 +390,19 @@ pub fn parse_raw_instruction(
         TapeInstruction::CommitEpoch => Ok(Some(RawInstruction::CommitEpoch)),
 
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
+
+        TapeInstruction::ProposeEviction => {
+            let args = ix::ProposeEviction::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("propose_eviction: {e:?}")))?;
+            // Account layout from build_propose_eviction_ix: [fee_payer, ...].
+            let proposer = get_account(0)?;
+            Ok(Some(RawInstruction::ProposeEviction { node: args.node, proposer }))
+        }
+
+        // Eviction votes are surfaced only so their events get consumed while
+        // pairing events to instructions, where a landing vote also signals a
+        // removal.
+        TapeInstruction::VoteEviction => Ok(Some(RawInstruction::VoteEviction)),
 
         TapeInstruction::StartNetwork => Ok(Some(RawInstruction::StartNetwork)),
 

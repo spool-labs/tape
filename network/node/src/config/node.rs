@@ -154,8 +154,10 @@ impl NodeConfig {
             )));
         }
 
-        if self.solana.rpc.trim().is_empty() {
-            return Err(ConfigError::Invalid("solana.rpc is required".into()));
+        if self.solana.rpc.is_empty() || self.solana.rpc.iter().any(|url| url.trim().is_empty()) {
+            return Err(ConfigError::Invalid(
+                "solana.rpc must list at least one endpoint".into(),
+            ));
         }
 
         if !self.node.commission.is_valid() {
@@ -171,28 +173,42 @@ impl NodeConfig {
             ));
         }
 
-        if self.gateway.metering.object_read_per_sec == 0 {
-            return Err(ConfigError::Invalid(
-                "gateway.metering.object_read_per_sec must be greater than zero".into(),
-            ));
+        for (name, grade) in &self.gateway.metering.grades {
+            if grade.read_per_sec == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "gateway.metering.grades.{name}.read_per_sec must be greater than zero"
+                )));
+            }
+            if grade.read_burst == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "gateway.metering.grades.{name}.read_burst must be greater than zero"
+                )));
+            }
+            if grade.read_bytes_per_sec == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "gateway.metering.grades.{name}.read_bytes_per_sec must be greater than zero"
+                )));
+            }
+            if grade.read_byte_burst == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "gateway.metering.grades.{name}.read_byte_burst must be greater than zero"
+                )));
+            }
         }
 
-        if self.gateway.metering.object_read_burst == 0 {
-            return Err(ConfigError::Invalid(
-                "gateway.metering.object_read_burst must be greater than zero".into(),
-            ));
+        let metering = &self.gateway.metering;
+        if !metering.grades.contains_key(&metering.anonymous_grade) {
+            return Err(ConfigError::Invalid(format!(
+                "gateway.metering.anonymous_grade `{}` is not a defined grade",
+                metering.anonymous_grade
+            )));
         }
 
-        if self.gateway.metering.object_read_bytes_per_sec == 0 {
-            return Err(ConfigError::Invalid(
-                "gateway.metering.object_read_bytes_per_sec must be greater than zero".into(),
-            ));
-        }
-
-        if self.gateway.metering.object_read_byte_burst == 0 {
-            return Err(ConfigError::Invalid(
-                "gateway.metering.object_read_byte_burst must be greater than zero".into(),
-            ));
+        if !metering.grades.contains_key(&metering.default_grade) {
+            return Err(ConfigError::Invalid(format!(
+                "gateway.metering.default_grade `{}` is not a defined grade",
+                metering.default_grade
+            )));
         }
 
         if self.gateway.metering.over_budget_penalty_secs == 0 {
@@ -372,6 +388,7 @@ fn default_commission() -> BasisPoints {
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
     use std::path::PathBuf;
 
     use tape_core::types::{BasisPoints, SlotNumber};
@@ -386,7 +403,8 @@ node:
   bls_keypair: "/etc/tape/bls.key"
   commission: 0
 solana:
-  rpc: "http://127.0.0.1:8899"
+  rpc:
+    - "http://127.0.0.1:8899"
   start_slot: 12
 network:
   host: "10.0.0.1"
@@ -427,12 +445,22 @@ gateway:
     eviction_batch: 16
     reclaim_after_deleted_slices: 64
   metering:
-    object_read_per_sec: 12
-    object_read_burst: 24
-    object_read_bytes_per_sec: 1048576
-    object_read_byte_burst: 2097152
+    grades:
+      anonymous:
+        read_per_sec: 12
+        read_burst: 24
+        read_bytes_per_sec: 1048576
+        read_byte_burst: 2097152
+      standard:
+        read_per_sec: 25
+        read_burst: 50
+        read_bytes_per_sec: 2097152
+        read_byte_burst: 4194304
+    anonymous_grade: anonymous
+    default_grade: standard
     over_budget_penalty_secs: 8
     stale_entry_secs: 120
+    trusted_proxies: ["203.0.113.7"]
 recovery:
   max_workers: 42
   sync_batch: 99
@@ -454,7 +482,7 @@ metrics:
         assert_eq!(config.node.node_keypair, PathBuf::from("/etc/tape/node.json"));
         assert_eq!(config.node.bls_keypair, PathBuf::from("/etc/tape/bls.key"));
         assert_eq!(config.node.commission, BasisPoints(0));
-        assert_eq!(config.solana.rpc, "http://127.0.0.1:8899");
+        assert_eq!(config.solana.rpc, vec!["http://127.0.0.1:8899"]);
         assert_eq!(config.solana.start_slot, Some(SlotNumber(12)));
         assert_eq!(config.network.host.as_deref(), Some("10.0.0.1"));
         assert_eq!(config.network.port, 3430);
@@ -486,12 +514,24 @@ metrics:
         assert_eq!(config.gateway.cache.max_bytes, 1024 * 1024 * 1024);
         assert_eq!(config.gateway.cache.eviction_batch, 16);
         assert_eq!(config.gateway.cache.reclaim_after_deleted_slices, 64);
-        assert_eq!(config.gateway.metering.object_read_per_sec, 12);
-        assert_eq!(config.gateway.metering.object_read_burst, 24);
-        assert_eq!(config.gateway.metering.object_read_bytes_per_sec, 1024 * 1024);
-        assert_eq!(config.gateway.metering.object_read_byte_burst, 2 * 1024 * 1024);
+        let anonymous = &config.gateway.metering.grades["anonymous"];
+        assert_eq!(anonymous.read_per_sec, 12);
+        assert_eq!(anonymous.read_burst, 24);
+        assert_eq!(anonymous.read_bytes_per_sec, 1024 * 1024);
+        assert_eq!(anonymous.read_byte_burst, 2 * 1024 * 1024);
+        let standard = &config.gateway.metering.grades["standard"];
+        assert_eq!(standard.read_per_sec, 25);
+        assert_eq!(standard.read_burst, 50);
+        assert_eq!(standard.read_bytes_per_sec, 2 * 1024 * 1024);
+        assert_eq!(standard.read_byte_burst, 4 * 1024 * 1024);
+        assert_eq!(config.gateway.metering.anonymous_grade, "anonymous");
+        assert_eq!(config.gateway.metering.default_grade, "standard");
         assert_eq!(config.gateway.metering.over_budget_penalty_secs, 8);
         assert_eq!(config.gateway.metering.stale_entry_secs, 120);
+        assert_eq!(
+            config.gateway.metering.trusted_proxies,
+            vec!["203.0.113.7".parse::<IpAddr>().unwrap()]
+        );
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.sync_batch, 99);
         assert_eq!(config.recovery.scan_batch, 77);
@@ -532,6 +572,19 @@ https:
             r#"
 http:
   listen: "not-an-address"
+"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    // an empty endpoint list leaves the ingestor with nowhere to read from
+    #[test]
+    fn rejects_empty_rpc_list() {
+        let result = NodeConfig::from_yaml_str(
+            r#"
+solana:
+  rpc: []
 "#,
         );
 

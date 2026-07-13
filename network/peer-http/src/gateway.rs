@@ -288,6 +288,10 @@ impl Api for GatewayApi {
             .map_err(|e| ApiError::Serialization(format!("json: {e}")))?;
         Ok(GetStatsRes { stats })
     }
+
+    async fn get_observe_board(&self, _node: Address) -> Result<Vec<u8>, ApiError> {
+        self.get_bytes(OBSERVE_BOARD_PATH.to_string()).await
+    }
 }
 
 fn normalize_base_url(mut base_url: String) -> Result<String, ApiError> {

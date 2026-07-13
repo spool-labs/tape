@@ -431,6 +431,14 @@ impl Store for MemoryStore {
         Ok(None)
     }
 
+    fn live_data_size_bytes(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    fn key_count_estimate(&self, _cf: &str) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
     fn reclaim_space(&self) -> Result<()> {
         Ok(())
     }

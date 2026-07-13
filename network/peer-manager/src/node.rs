@@ -13,6 +13,7 @@ pub struct PeerNode {
     pub network_address: NetworkAddress,
     pub preferences: NodePreferences,
     pub stake: Coin<TAPE>,
+    pub name: [u8; 32],
 }
 
 impl PeerNode {
@@ -24,6 +25,7 @@ impl PeerNode {
             network_address: peer.network_address,
             preferences: peer.preferences,
             stake: TAPE(0),
+            name: [0u8; 32],
         })
     }
 

@@ -96,9 +96,35 @@ impl Store for SplitStore {
             return Ok(());
         }
 
+        let mut any_bulk = false;
+        let mut any_meta = false;
+        for op in batch.iter() {
+            if self.is_bulk(op.cf()) {
+                any_bulk = true;
+            } else {
+                any_meta = true;
+            }
+        }
+
+        // Nothing writes a batch spanning both volumes, and two instances cannot
+        // commit one atomically; catch such a regression in debug builds.
+        debug_assert!(
+            !(any_bulk && any_meta),
+            "write_batch spans both store volumes; cross-volume batches are not atomic"
+        );
+
+        // The common case owns a single volume, so hand the batch straight over
+        // rather than copying every payload into a per-volume batch.
+        if !(any_bulk && any_meta) {
+            return if any_bulk {
+                self.bulk.write_batch(batch)
+            } else {
+                self.meta.write_batch(batch)
+            };
+        }
+
         let mut meta_batch = WriteBatch::new();
         let mut bulk_batch = WriteBatch::new();
-
         for op in batch.iter() {
             match op {
                 BatchOp::Put { cf, key, value } => {
@@ -117,20 +143,8 @@ impl Store for SplitStore {
                 }
             }
         }
-
-        // Nothing writes a batch spanning both volumes, and two instances cannot
-        // commit one atomically; catch such a regression in debug builds.
-        debug_assert!(
-            meta_batch.is_empty() || bulk_batch.is_empty(),
-            "write_batch spans both store volumes; cross-volume batches are not atomic"
-        );
-
-        if !meta_batch.is_empty() {
-            self.meta.write_batch(meta_batch)?;
-        }
-        if !bulk_batch.is_empty() {
-            self.bulk.write_batch(bulk_batch)?;
-        }
+        self.meta.write_batch(meta_batch)?;
+        self.bulk.write_batch(bulk_batch)?;
         Ok(())
     }
 
@@ -170,6 +184,16 @@ impl Store for SplitStore {
         let bulk = self.bulk.available_disk_bytes()?;
         // The tighter of the two volumes; ignores a volume that reports no figure.
         Ok([meta, bulk].into_iter().flatten().min())
+    }
+
+    fn live_data_size_bytes(&self) -> Result<Option<u64>> {
+        let meta = self.meta.live_data_size_bytes()?;
+        let bulk = self.bulk.live_data_size_bytes()?;
+        Ok([meta, bulk].into_iter().flatten().reduce(u64::saturating_add))
+    }
+
+    fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
+        self.route(cf).key_count_estimate(cf)
     }
 
     fn reclaim_space(&self) -> Result<()> {
@@ -270,6 +294,23 @@ mod tests {
         assert_eq!(store.get("slice", b"b").unwrap(), Some(b"2".to_vec()));
         // The bulk batch did not leak into the metadata volume.
         assert_eq!(store.meta().get("meta", b"b").unwrap(), None);
+    }
+
+    // key count estimates route to the column family's owning instance
+    #[test]
+    fn key_count_estimate_routes() {
+        let dir = tempdir().unwrap();
+        let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
+
+        for i in 0..50u8 {
+            store.put("meta", &[i], b"m").unwrap();
+            store.put("slice", &[i], b"s").unwrap();
+        }
+        store.flush().unwrap();
+
+        assert!(store.key_count_estimate("meta").unwrap().unwrap_or(0) > 0);
+        assert!(store.key_count_estimate("slice").unwrap().unwrap_or(0) > 0);
+        assert!(store.live_data_size_bytes().unwrap().unwrap_or(0) > 0);
     }
 
     // disk usage is reported as a primary and a bulk volume

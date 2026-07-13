@@ -1,9 +1,5 @@
-//! Stamp build-time env vars the binary can use for a boot marker.
-//!
-//! Exposes two env vars to the source:
-//! - `TAPE_BUILD_SHA` — short git sha, or `"unknown"` if git is unavailable
-//! - `TAPE_BUILD_SUFFIX` — `"-dirty"` if the working tree has uncommitted
-//!   changes at build time, otherwise empty
+//! Stamp the short git sha and a dirty flag into build-time env vars so the
+//! binary can report the exact build it was made from.
 
 use std::process::Command;
 

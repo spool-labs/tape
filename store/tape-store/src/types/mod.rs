@@ -9,15 +9,20 @@ pub mod keys;
 mod values;
 
 // Re-export enum types
-pub use enums::{ObjectInfo, SystemObjectKind};
+pub use enums::{
+    AuditDecision, AuditOp, CredentialScope, CredentialStatus, ObjectInfo, PolicyAction,
+    PolicyEffect, SystemObjectKind,
+};
 
 // Re-export key types
 pub use keys::{
-    EpochKey, EventLogKey, ObjectListKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey,
-    TrackLookupKey, UnitKey, VoteSigKey,
+    AuditKey, EpochKey, EventLogKey, LedgerReservationKey, MultipartPartKey, ObjectListKey,
+    PolicyRuleKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey, TrackLookupKey, UnitKey, VoteSigKey,
 };
 
 // Re-export value types
 pub use values::{
-    InvalidationProof, ObjectListEntry, ObjectMetadata, SliceValue, SnapshotArtifact, TapeInfo,
+    AuditEntry, AuthState, BudgetLimits, Credential, CredentialCaps, InvalidationProof,
+    LedgerEntry, LedgerReservation, MultipartPart, MultipartPartData, MultipartUpload,
+    ObjectListEntry, ObjectMetadata, PolicyRule, SliceValue, SnapshotArtifact, TapeInfo,
 };

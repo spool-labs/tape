@@ -101,6 +101,17 @@ impl IngestProgress {
         self.last_known_tip.load(Ordering::Relaxed)
     }
 
+    /// Tip, dispatched slot, and lag, treating the unset tip sentinel as zero.
+    pub fn tip_and_lag(&self) -> (u64, u64, u64) {
+        let tip = self.last_known_tip();
+        let dispatched = self.last_dispatched_slot();
+        if tip == u64::MAX {
+            (0, dispatched, 0)
+        } else {
+            (tip, dispatched, tip.saturating_sub(dispatched))
+        }
+    }
+
     pub fn last_fetch_slot(&self) -> u64 {
         self.last_fetch_slot.load(Ordering::Relaxed)
     }

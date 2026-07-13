@@ -301,6 +301,7 @@ fn make_peer(node: Address, port: u16) -> PeerNode {
         network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
         preferences: NodePreferences::zeroed(),
         stake: TAPE(0),
+        name: [0u8; 32],
     }
 }
 

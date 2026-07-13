@@ -107,14 +107,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .unwrap_or(0);
 
     let ingest_progress = state.context.ingest.progress();
-    let ingest_tip_raw = ingest_progress.last_known_tip();
-    let ingest_dispatched = ingest_progress.last_dispatched_slot();
-    let ingest_tip_slot = if ingest_tip_raw == u64::MAX { 0 } else { ingest_tip_raw };
-    let ingest_lag_slots = if ingest_tip_raw == u64::MAX {
-        0
-    } else {
-        ingest_tip_raw.saturating_sub(ingest_dispatched)
-    };
+    let (ingest_tip_slot, _, ingest_lag_slots) = ingest_progress.tip_and_lag();
     let ingest_state = state.context.ingest_state().label().to_string();
     let bootstrap = state.context.bootstrap.snapshot();
 
@@ -126,11 +119,11 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut slice_payload_bytes = 0u64;
 
     for (spool_id, _) in &owned_spools {
-        let slices = store
-            .iter_slices_by_spool(*spool_id)
+        let (count, bytes) = store
+            .slice_totals_by_spool(*spool_id)
             .map_err(store_error)?;
-        slices_stored += slices.len() as u64;
-        slice_payload_bytes += slices.iter().map(|(_, data)| data.len() as u64).sum::<u64>();
+        slices_stored += count;
+        slice_payload_bytes += bytes.as_u64();
     }
 
     let store_disk_bytes = store

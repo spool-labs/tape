@@ -5,6 +5,8 @@ use tape_protocol::api::NodeStats;
 pub struct ClusterView {
     pub epoch: u64,
     pub phase: String,
+    /// On-chain `EpochPhase` discriminant backing `phase` (see `phase_name`).
+    pub phase_index: u8,
     pub phase_weight: Option<u64>,
     pub slot: u64,
     pub live_group_count: u64,

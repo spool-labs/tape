@@ -131,8 +131,6 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::GROUP_SIZE;
-    use tape_core::system::Spool;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
@@ -141,28 +139,6 @@ mod tests {
     use tape_test::*;
 
     /// Build a Group whose 20 spools are owned by 20 distinct BLS keys.
-    fn make_group(epoch: EpochNumber, group_id: GroupIndex) -> (Vec<BlsPrivateKey>, Group) {
-        let mut group = Group::zeroed();
-        group.epoch = epoch;
-        group.id = group_id;
-        group.size = StorageUnits::mb(50);
-
-        let mut sks = Vec::with_capacity(GROUP_SIZE);
-        for i in 0..GROUP_SIZE {
-            let sk = BlsPrivateKey::from_random();
-            let pk = sk.public_key().expect("pubkey");
-            let mut bytes = [0u8; 32];
-            bytes[0] = (i as u8) + 1;
-            let addr = Address::new(bytes);
-
-            group.spools[i] = Spool {
-                node: addr,
-                bls_pubkey: pk,
-            };
-            sks.push(sk);
-        }
-        (sks, group)
-    }
 
     // happy-path BLS-aggregate certification of a track
     #[test]

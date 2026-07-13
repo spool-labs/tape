@@ -2,9 +2,12 @@
 pub enum ServiceName {
     Unknown,
     HttpServer,
+    S3Server,
+    S3AdminServer,
     BlockIngestor,
     IngestMonitor,
     AssignmentManager,
+    EvictionManager,
     LifecycleManager,
     SpoolManager,
     SnapshotManager,
@@ -12,6 +15,7 @@ pub enum ServiceName {
     StoreManager,
     StateManager,
     GcManager,
+    PeerAggregator,
 }
 
 impl ServiceName {
@@ -19,9 +23,12 @@ impl ServiceName {
         match self {
             Self::Unknown => "Unknown",
             Self::HttpServer => "HttpServer",
+            Self::S3Server => "S3Server",
+            Self::S3AdminServer => "S3AdminServer",
             Self::BlockIngestor => "BlockIngestor",
             Self::IngestMonitor => "IngestMonitor",
             Self::AssignmentManager => "AssignmentManager",
+            Self::EvictionManager => "EvictionManager",
             Self::LifecycleManager => "LifecycleManager",
             Self::SpoolManager => "SpoolManager",
             Self::SnapshotManager => "SnapshotManager",
@@ -29,6 +36,7 @@ impl ServiceName {
             Self::StoreManager => "StoreManager",
             Self::StateManager => "StateManager",
             Self::GcManager => "GcManager",
+            Self::PeerAggregator => "PeerAggregator",
         }
     }
 }
@@ -37,6 +45,7 @@ impl ServiceName {
 pub enum ChannelName {
     StateManager,
     AssignmentManager,
+    EvictionManager,
     SpoolManager,
     SnapshotManager,
     ReplayManager,

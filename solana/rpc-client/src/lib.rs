@@ -88,18 +88,24 @@
 
 mod accounts;
 mod client;
-pub mod compute;
 mod snapshot;
 mod transactions;
 
-use rpc::RpcError;
+use rpc::{RpcError, looks_like_transaction_error};
 use tape_api::errors::{ProgramError, TapeError};
 
 /// Try to decode a typed `TapeError` from an RPC transaction error.
+///
+/// Reads the structured error when the RPC reported one, and falls back to
+/// message parsing for proxies that flatten errors into text.
 pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
+    if let Some(code) = err.custom_program_error() {
+        return TapeError::from_code(code);
+    }
+
     let msg = match err {
-        RpcError::Transaction(msg) => msg,
-        RpcError::Request(msg) if looks_like_program_error(msg) => msg,
+        RpcError::Transaction { err: None, message } => message,
+        RpcError::Request(msg) if looks_like_transaction_error(msg) => msg,
         _ => return None,
     };
 
@@ -107,12 +113,6 @@ pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
         Some(ProgramError::Tape(e)) => Some(e),
         _ => None,
     }
-}
-
-fn looks_like_program_error(msg: &str) -> bool {
-    msg.contains("custom program error")
-        || msg.contains("Error processing Instruction")
-        || msg.contains("InstructionError")
 }
 
 #[cfg(feature = "metrics")]
@@ -124,31 +124,48 @@ pub use client::RpcClient;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rpc::RpcError;
+    use rpc::{InstructionError, RpcError, TransactionError};
     use tape_api::errors::TapeError;
 
+    fn program_error(code: u32) -> RpcError {
+        RpcError::Transaction {
+            err: Some(TransactionError::InstructionError(
+                0,
+                InstructionError::Custom(code),
+            )),
+            message: format!("custom program error: {code:#x}"),
+        }
+    }
+
     #[test]
-    fn parse_hex() {
-        let err = RpcError::Transaction("custom program error: 0x52".to_string());
+    fn parse_structured() {
+        assert_eq!(
+            parse_tape_error(&program_error(0x52)),
+            Some(TapeError::AlreadyAdvanced)
+        );
+        assert_eq!(
+            parse_tape_error(&program_error(0x74)),
+            Some(TapeError::AlreadyCertified)
+        );
+        assert_eq!(parse_tape_error(&program_error(0x999)), None);
+    }
+
+    #[test]
+    fn parse_flattened_hex() {
+        let err = RpcError::Transaction {
+            err: None,
+            message: "custom program error: 0x52".to_string(),
+        };
         assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadyAdvanced));
     }
 
     #[test]
-    fn parse_decimal() {
-        let err = RpcError::Transaction("TransactionError::InstructionError(0, Custom(81))".to_string());
+    fn parse_flattened_decimal() {
+        let err = RpcError::Transaction {
+            err: None,
+            message: "TransactionError::InstructionError(0, Custom(81))".to_string(),
+        };
         assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadySynced));
-    }
-
-    #[test]
-    fn parse_already_certified() {
-        let err = RpcError::Transaction("custom program error: 0x74".to_string());
-        assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadyCertified));
-    }
-
-    #[test]
-    fn parse_already_invalidated() {
-        let err = RpcError::Transaction("custom program error: 0x73".to_string());
-        assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadyInvalidated));
     }
 
     #[test]

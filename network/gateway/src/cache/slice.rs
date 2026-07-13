@@ -40,6 +40,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
         };
         let evicted = cache.evict_to_budget()?;
         if evicted > 0 {
+            crate::metrics::inc_cache_evicted(evicted as u64);
             debug!(evicted, "gateway cache evicted startup entries");
         }
         Ok(cache)
@@ -68,9 +69,11 @@ impl<Db: Store> GatewaySliceCache<Db> {
     {
         let key = SliceCacheKey::new(spool_id, track_address);
         let mut fetch = Some(fetch);
+        let mut waited = false;
 
         loop {
             if let Some(data) = self.get_cached(key).map_err(E::from)? {
+                crate::metrics::inc_cache(if waited { "coalesced" } else { "hit" });
                 return Ok(CacheRead {
                     data,
                     source: CacheSource::Hit,
@@ -78,6 +81,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
             }
 
             if let Some(wait) = self.inflight.join_or_start_fetch(key).map_err(E::from)? {
+                waited = true;
                 wait.notified().await;
                 continue;
             }
@@ -100,6 +104,9 @@ impl<Db: Store> GatewaySliceCache<Db> {
             };
 
             self.inflight.finish_fetch(key);
+            if result.is_ok() {
+                crate::metrics::inc_cache("miss");
+            }
             return result;
         }
     }
@@ -166,6 +173,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
 
         let evicted = self.evict_to_budget()?;
         if evicted > 0 {
+            crate::metrics::inc_cache_evicted(evicted as u64);
             debug!(evicted, "gateway cache evicted entries after fill");
         }
 

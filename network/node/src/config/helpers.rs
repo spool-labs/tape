@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer};
@@ -27,11 +28,21 @@ where
     Ok(expand_path(path))
 }
 
+/// Deserialize an optional filesystem path, expanding a leading `~` to the home directory
 pub fn deserialize_option_pathbuf<'de, D>(deserializer: D) -> Result<Option<PathBuf>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let path = Option::<String>::deserialize(deserializer)?;
     Ok(path.map(expand_path))
+}
+
+/// Deserialize a socket address from its string representation
+pub fn deserialize_socket_addr<'de, D>(deserializer: D) -> Result<SocketAddr, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    value.parse().map_err(serde::de::Error::custom)
 }
 

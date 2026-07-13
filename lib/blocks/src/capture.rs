@@ -203,7 +203,8 @@ fn capture_instruction(
             raw_track: None,
         },
         ParsedInstruction::ProposeSnapshot { event, .. }
-        | ParsedInstruction::ProposeAssignment { event, .. } => Captured {
+        | ParsedInstruction::ProposeAssignment { event, .. }
+        | ParsedInstruction::ProposeEviction { event, .. } => Captured {
             event: captured_event(
                 *current_epoch,
                 tx_id,
@@ -315,6 +316,18 @@ fn capture_instruction(
                     key: event.key,
                     preferences: event.preferences,
                     activation_epoch: event.activation_epoch,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::NodeEvicted { event } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::NodeEvicted {
+                    node: event.node,
+                    target_epoch: event.target_epoch,
                 },
             ),
             raw_track: None,
@@ -532,7 +545,8 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         ParsedInstruction::ExtendTape { payer, .. } => Some((*payer).into()),
 
         ParsedInstruction::ProposeSnapshot { proposer, .. }
-        | ParsedInstruction::ProposeAssignment { proposer, .. } => Some(*proposer),
+        | ParsedInstruction::ProposeAssignment { proposer, .. }
+        | ParsedInstruction::ProposeEviction { proposer, .. } => Some(*proposer),
 
         ParsedInstruction::VoteSnapshot { submitter, .. }
         | ParsedInstruction::VoteAssignment { submitter, .. } => Some(*submitter),
@@ -543,6 +557,7 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::ResizePeerSet { .. }
         | ParsedInstruction::CommitEpoch { .. }
         | ParsedInstruction::AdvanceEpoch { .. }
+        | ParsedInstruction::NodeEvicted { .. }
         | ParsedInstruction::FinalizeSnapshot { .. }
         | ParsedInstruction::FinalizeGroup { .. }
         | ParsedInstruction::CertifyTrack { .. }

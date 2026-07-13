@@ -32,6 +32,7 @@ pub enum EventType {
     NodeJoinedCommittee = 0x31,
     SpoolSynced = 0x32,
     PoolAdvanced = 0x33,
+    NodeEvicted = 0x34,
 
     // Epoch
     EpochCommitted = 0x40,
@@ -257,6 +258,19 @@ pub struct NodeJoinedCommittee {
 }
 
 tape_solana::event!(EventType, NodeJoinedCommittee);
+
+/// Emitted when a committee quorum evicts a node from an epoch's committee.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct NodeEvicted {
+    /// Node account address being evicted
+    pub node: Address,
+
+    /// Epoch the node is evicted from (and suspended through)
+    pub target_epoch: EpochNumber,
+}
+
+tape_solana::event!(EventType, NodeEvicted);
 
 /// Emitted when a single spool's owner attests data sync.
 #[repr(C)]

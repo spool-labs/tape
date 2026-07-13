@@ -4,12 +4,12 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
+use tape_retry::{Backoff, RetryConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_advance_epoch;
-use crate::core::chain_tx::{TxOutcome, TxRejectionKind, submit_if_at_tip};
+use crate::core::chain_tx::{submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind};
 use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
@@ -22,6 +22,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     cancel: CancellationToken,
 ) -> TaskDone {
 
+    // AdvanceEpoch waits on state for the quorum precondition (BadEpochState),
+    // but a stale account reference clears over several blocks with no single
+    // signal, so those retries back off instead of resubmitting every block.
+    let mut state_rx = ctx.subscribe_state();
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
@@ -31,7 +35,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         info!(epoch = epoch.0, "advance_epoch: submitting");
-        let outcome = submit_if_at_tip(&ctx.ingest, submit_advance_epoch(&ctx)).await;
+        let outcome =
+            submit_if_at_tip(&ctx.ingest, "advance_epoch", submit_advance_epoch(&ctx)).await;
+        let pace = outcome.retry_pace();
 
         match outcome {
             TxOutcome::Confirmed(sig) => {
@@ -74,10 +80,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         }
 
-        if backoff_or_cancel(&mut backoff, &cancel).await {
-           break;
+        if wait_by_pace(pace, &mut backoff, &mut state_rx, &cancel).await {
+            break;
         }
     }
 
-    return TaskDone::Cancelled(Action::AdvanceEpoch, epoch);
+    TaskDone::Cancelled(Action::AdvanceEpoch, epoch)
 }

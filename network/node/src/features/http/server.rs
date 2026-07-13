@@ -5,6 +5,8 @@ use std::time::Duration;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Request, State};
+#[cfg(feature = "metrics")]
+use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -41,7 +43,6 @@ pub struct HttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     http_config: HttpConfig,
     https_config: HttpsConfig,
-    #[cfg_attr(not(feature = "metrics"), allow(dead_code))]
     metrics_enabled: bool,
     cancel: CancellationToken,
 }
@@ -88,33 +89,35 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let mut status_router = Router::new()
             .route(
                 api_routes::NODE_HEALTH_PATH,
-                get(handlers::health::health::<Db, Cluster, Blockchain>).layer(
-                    from_fn_with_state(
-                        state.clone(),
-                        admission::probe_admission::<Db, Cluster, Blockchain>,
-                    ),
-                ),
+                get(handlers::health::health::<Db, Cluster, Blockchain>),
             )
             .route(
                 api_routes::NODE_STATS_PATH,
-                get(handlers::health::stats::<Db, Cluster, Blockchain>).layer(
-                    from_fn_with_state(
-                        state.clone(),
-                        admission::probe_admission::<Db, Cluster, Blockchain>,
-                    ),
-                ),
+                get(handlers::health::stats::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]
         if self.metrics_enabled {
-            status_router = status_router.route(
-                api_routes::NODE_METRICS_PATH,
-                get(handlers::metrics::metrics).layer(from_fn_with_state(
-                    state.clone(),
-                    admission::probe_admission::<Db, Cluster, Blockchain>,
-                )),
-            );
+            status_router = status_router
+                .route(api_routes::NODE_METRICS_PATH, get(crate::observe::http::metrics))
+                .route(
+                    api_routes::OBSERVE_BOARD_PATH,
+                    get(observe_board::<Db, Cluster, Blockchain>),
+                )
+                .route(
+                    api_routes::OBSERVE_NETWORK_PATH,
+                    get(observe_network::<Db, Cluster, Blockchain>),
+                )
+                .route(
+                    api_routes::OBSERVE_PEER_PATH,
+                    get(observe_peer::<Db, Cluster, Blockchain>),
+                );
         }
+
+        let status_router = status_router.route_layer(from_fn_with_state(
+            state.clone(),
+            admission::probe_admission::<Db, Cluster, Blockchain>,
+        ));
 
         let service_router = Router::new()
             // Open metadata GETs used by SDK write flows. Payload-bearing
@@ -387,11 +390,65 @@ async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     next.run(req).await
 }
 
+#[cfg(feature = "metrics")]
+async fn observe_board<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        crate::observe::cached_board(&state.context),
+    )
+}
+
+#[cfg(feature = "metrics")]
+async fn observe_network<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        crate::observe::cached_network(&state.context),
+    )
+}
+
+/// Proxy a registered node's board over the peer link, falling back to a lite
+/// board from the aggregator's cached public stats when it doesn't serve
+/// observe. Restricting to registered nodes keeps this from being an open proxy.
+#[cfg(feature = "metrics")]
+async fn observe_peer<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    Path(addr): Path<String>,
+) -> Response {
+    let Ok(target) = addr.parse() else {
+        return (StatusCode::BAD_REQUEST, "invalid peer address").into_response();
+    };
+    if state.context.peer_manager.get(target).is_none() {
+        return (StatusCode::NOT_FOUND, "unknown node").into_response();
+    }
+    let json = [(axum::http::header::CONTENT_TYPE, "application/json")];
+    if let Ok(body) = state.context.api.get_observe_board(target).await {
+        return (json, body).into_response();
+    }
+    if let Some((_, _, Some(stats))) = crate::observe::peer_liveness(target) {
+        let board = crate::observe::board::lite_board(target.to_string(), &stats);
+        if let Ok(body) = serde_json::to_vec(&board) {
+            return (json, body).into_response();
+        }
+    }
+    (StatusCode::BAD_GATEWAY, "peer board unavailable").into_response()
+}
+
 async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     req: Request,
     next: Next,
 ) -> Response {
     state.context.metrics.inc_requests_total();
+
+    #[cfg(feature = "metrics")]
+    {
+        crate::observe::http::instrument(req, next).await
+    }
+
+    #[cfg(not(feature = "metrics"))]
     next.run(req).await
 }

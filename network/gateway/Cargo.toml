@@ -16,22 +16,38 @@ tape-node = { workspace = true }
 tape-protocol = { workspace = true }
 tape-sdk = { workspace = true }
 tape-store = { workspace = true }
+tape-metrics = { workspace = true, optional = true }
 rpc = { workspace = true }
 store = { workspace = true }
 
+async-trait = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
+# Snapshot the shared protocol state into the SDK write client (delegate writes)
+arc-swap = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 wincode = { workspace = true }
+
+# S3 SigV4 verification
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+# Wipe the in-memory delegate signing key on drop
+zeroize = { workspace = true }
+# S3 listing continuation tokens (opaque base64 of the raw-name cursor)
+base64 = { workspace = true }
+# S3 write-authorization admin control plane (JSON request/response bodies)
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 store-memory = { workspace = true }
 
 [features]
 default = []
-metrics = ["tape-node/metrics"]
+metrics = ["tape-node/metrics", "tape-metrics/metrics"]

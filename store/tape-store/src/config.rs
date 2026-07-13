@@ -53,6 +53,10 @@ use rocksdb;
 ///
 /// ## Snapshot Coordination Columns
 /// - `snapshot_artifact` - 24-byte key with 16-byte group prefix (BlobDB)
+///
+/// ## S3 Write-Authorization Columns
+/// - `credential` - String access-key-id keys, Credential values (BlockBased)
+/// - `audit_log` - 12-byte AuditKey, total-order (BlockBased, no prefix extractor)
 pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
     vec![
         // Meta - variable-size keys and values, infrequent access
@@ -137,6 +141,14 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_prefix_extractor(2)
             .build(),
 
+        // Slice size - 34-byte SliceKey, 8-byte payload lengths
+        // 2-byte spool prefix for iteration by spool
+        // Never blob-backed: summing the index must not fault in slice payloads
+        ColumnFamilyConfig::new("slice_size")
+            .with_block_based()
+            .with_prefix_extractor(2)
+            .build(),
+
         // Spool sync progress - 2-byte SpoolIndexKey
         ColumnFamilyConfig::new("spool_sync_cursor")
             .with_block_based()
@@ -160,6 +172,58 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_blob_db(256 * 1024)
             .with_prefix_extractor(16)
             .build(),
+
+        // Credential - S3 write credentials keyed by access key id (String).
+        // Point lookups by access key id; total-order iteration for admin listing.
+        ColumnFamilyConfig::new("credential")
+            .with_block_based()
+            .build(),
+
+        // Policy rules - ordered write-authorization ruleset ([priority 4B][id 8B]).
+        ColumnFamilyConfig::new("policy_rule")
+            .with_block_based()
+            .build(),
+
+        // Auth state - singleton write-authorization control state (kill switch,
+        // policy version, default-budget override). 0-byte key.
+        ColumnFamilyConfig::new("auth_state")
+            .with_block_based()
+            .build(),
+
+        // Audit log - append-only authorize decisions ([timestamp 8B][seq 4B]).
+        ColumnFamilyConfig::new("audit_log")
+            .with_block_based()
+            .build(),
+
+        // Ledger - per-principal accounting row keyed by 32-byte owner Address.
+        ColumnFamilyConfig::new("ledger")
+            .with_block_based()
+            .build(),
+
+        // Ledger reservations - outstanding budget holds
+        // ([created_at 8B][principal 32B][seq 8B]).
+        ColumnFamilyConfig::new("ledger_reservation")
+            .with_block_based()
+            .build(),
+
+        // S3 multipart upload metadata keyed by upload id (String).
+        ColumnFamilyConfig::new("s3_multipart_upload")
+            .with_block_based()
+            .build(),
+
+        // S3 multipart part metadata keyed by ([upload 32B][part_number 4B]).
+        // 32-byte upload prefix for scoped per-upload scans; small values.
+        ColumnFamilyConfig::new("s3_multipart_part")
+            .with_block_based()
+            .with_prefix_extractor(32)
+            .build(),
+
+        // S3 multipart part payloads keyed identically to their metadata; large
+        // values held only until completion/abort.
+        ColumnFamilyConfig::new("s3_multipart_part_data")
+            .with_blob_db(256 * 1024)
+            .with_prefix_extractor(32)
+            .build(),
     ]
 }
 
@@ -173,8 +237,10 @@ pub const BULK_SUBDIR: &str = "bulk";
 ///
 /// The slice and snapshot families use key-value separation; track data is
 /// stored inline but can be large. Everything else is small metadata that
-/// stays on the fast volume.
-pub const BULK_COLUMN_FAMILIES: &[&str] = &["track_data", "slice", "snapshot_artifact"];
+/// stays on the fast volume. The slice size index is small, but it rides along
+/// on the bulk volume because a write batch cannot span the two databases.
+pub const BULK_COLUMN_FAMILIES: &[&str] =
+    &["track_data", "slice", "slice_size", "snapshot_artifact"];
 
 /// Column family configurations for the metadata (fast volume) store
 pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {
@@ -250,7 +316,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 18);
+        assert_eq!(configs.len(), 28);
     }
 
     #[test]
@@ -273,10 +339,20 @@ mod tests {
             "spool_pending_repair",
             "spool_pending_recovery",
             "slice",
+            "slice_size",
             "spool_sync_cursor",
             "event_log",
             "vote_sig",
             "snapshot_artifact",
+            "credential",
+            "policy_rule",
+            "auth_state",
+            "audit_log",
+            "ledger",
+            "ledger_reservation",
+            "s3_multipart_upload",
+            "s3_multipart_part",
+            "s3_multipart_part_data",
         ];
 
         assert_eq!(names, expected);
@@ -302,7 +378,7 @@ mod tests {
 
         // The two volumes partition every column family with no overlap.
         assert_eq!(meta.len() + bulk.len(), create_tape_store_configs().len());
-        assert_eq!(bulk, vec!["track_data", "slice", "snapshot_artifact"]);
+        assert_eq!(bulk, vec!["track_data", "slice", "slice_size", "snapshot_artifact"]);
         assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
     }
 }

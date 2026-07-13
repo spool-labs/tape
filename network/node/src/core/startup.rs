@@ -1,6 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
@@ -29,6 +30,11 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, 
     let meta_dir = config.store.meta_dir();
     let bulk_dir = config.store.bulk_dir();
 
+    // The first open after an upgrade rebuilds the slice size index, scanning
+    // every stored slice, so the gap between these two lines can run minutes.
+    info!(meta = %meta_dir.display(), bulk = %bulk_dir.display(), "opening store");
+    let opened_at = Instant::now();
+
     let store = TapeStore::open_primary_split(
         &meta_dir,
         &bulk_dir,
@@ -41,6 +47,8 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, 
             bulk_dir.display()
         ))
     })?;
+
+    info!(elapsed_ms = opened_at.elapsed().as_millis() as u64, "store opened");
 
     // A configured bulk path on the same device as the metadata store usually
     // means the bulk drive is not mounted, so bulk data would land on the fast
@@ -74,7 +82,8 @@ fn on_same_device(_meta_dir: &Path, _bulk_dir: &Path) -> Option<bool> {
 
 fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
     let rpc_config = RpcConfig {
-        endpoints: vec![config.solana.rpc.clone()],
+        endpoints: config.solana.rpc.clone(),
+        strategy: config.solana.rpc_strategy,
         ..RpcConfig::default()
     };
 
@@ -367,7 +376,7 @@ mod tests {
         config.node.name = "test-node".into();
         config.node.node_keypair = PathBuf::from("/dev/null");
         config.node.bls_keypair = PathBuf::from("/dev/null");
-        config.solana.rpc = "http://localhost:8899".into();
+        config.solana.rpc = vec!["http://localhost:8899".into()];
         config.solana.start_slot = Some(SlotNumber(0));
         config.store.path = PathBuf::from("/tmp");
         config.network.host = Some(format!(

@@ -1,5 +1,6 @@
 use tape_api::program::prelude::*;
 use tape_api::program;
+use tape_core::system::Spool;
 use mollusk_svm::{
     program::{keyed_account_for_system_program, loader_keys::{LOADER_V2, LOADER_V3}},
     result::Config as CheckConfig,
@@ -90,6 +91,32 @@ pub fn empty(key: impl Into<Pubkey>) -> (Pubkey, Account) {
     let key = key.into();
 
     (key, Account::default())
+}
+
+/// Build a full group of spools with fresh BLS keys, returning the private
+/// keys alongside the group so tests can sign group vote messages.
+pub fn make_group(epoch: EpochNumber, group_id: GroupIndex) -> (Vec<BlsPrivateKey>, Group) {
+    let mut group = Group::zeroed();
+    group.epoch = epoch;
+    group.id = group_id;
+    group.size = StorageUnits::mb(50);
+
+    let mut sks = Vec::with_capacity(GROUP_SIZE);
+    for i in 0..GROUP_SIZE {
+        let sk = BlsPrivateKey::from_random();
+        let pk = sk.public_key().expect("pubkey");
+        let mut bytes = [0u8; 32];
+        bytes[0] = (i as u8) + 1;
+        let addr = Address::new(bytes);
+
+        group.spools[i] = Spool {
+            node: addr,
+            bls_pubkey: pk,
+        };
+        sks.push(sk);
+    }
+
+    (sks, group)
 }
 
 pub fn ata_address(owner: &Pubkey) -> Pubkey {

@@ -23,6 +23,7 @@
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data (SliceKey -> Vec<u8>)
+//! - `slice_size`: Slice payload lengths (SliceKey -> u64)
 //!
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
@@ -32,15 +33,33 @@
 //!
 //! ## Snapshot Coordination Columns
 //! - `snapshot_artifact`: Local build artifacts retained until snapshot finalization
+//!
+//! ## S3 Write-Authorization Columns
+//! - `credential`: S3 write credentials keyed by access key id (String -> Credential)
+//! - `policy_rule`: Ordered write-authorization policy rules (PolicyRuleKey -> PolicyRule)
+//! - `auth_state`: Write-authorization control state singleton (UnitKey -> AuthState)
+//! - `audit_log`: Append-only authorize-decision log (AuditKey -> AuditEntry)
+//! - `ledger`: Per-principal accounting ledger (Address -> LedgerEntry)
+//! - `ledger_reservation`: Outstanding budget reservations (LedgerReservationKey -> LedgerReservation)
+//! - `s3_multipart_upload`: In-flight multipart upload metadata (String -> MultipartUpload)
+//! - `s3_multipart_part`: Buffered multipart part metadata (MultipartPartKey -> MultipartPart)
+//! - `s3_multipart_part_data`: Buffered multipart part payloads (MultipartPartKey -> MultipartPartData)
 
+pub mod audit_log;
+pub mod auth_state;
+pub mod credential;
 pub mod event_log;
 pub mod gc;
+pub mod ledger;
 pub mod meta;
 pub mod object_info;
 pub mod object_list;
 pub mod object_metadata;
+pub mod policy;
+pub mod s3_multipart;
 pub mod snapshot;
 pub mod slice;
+pub mod slice_size;
 pub mod spool;
 pub mod sync_cursor;
 pub mod tape;
@@ -50,14 +69,21 @@ pub mod track_lookup;
 pub mod vote;
 
 // Re-export all column types
+pub use audit_log::AuditLogCol;
+pub use auth_state::AuthStateCol;
+pub use credential::CredentialCol;
 pub use event_log::EventLogCol;
 pub use gc::GcCol;
+pub use ledger::{LedgerCol, LedgerReservationCol};
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
 pub use object_list::ObjectListCol;
 pub use object_metadata::ObjectMetadataCol;
+pub use policy::PolicyRuleCol;
+pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
+pub use slice_size::SliceSizeCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
@@ -84,8 +110,18 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "spool_pending_repair",
     "spool_pending_recovery",
     "slice",
+    "slice_size",
     "spool_sync_cursor",
     "event_log",
     "vote_sig",
     "snapshot_artifact",
+    "credential",
+    "policy_rule",
+    "auth_state",
+    "audit_log",
+    "ledger",
+    "ledger_reservation",
+    "s3_multipart_upload",
+    "s3_multipart_part",
+    "s3_multipart_part_data",
 ];

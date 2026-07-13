@@ -14,6 +14,7 @@ use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::TapedriveError;
+use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Metrics, Noop, Operation, Outcome, Phase, Timer};
 use crate::stream::{
@@ -198,10 +199,22 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         data: &[u8],
     ) -> Result<StreamReceipt, TapedriveError> {
+        self.write_named_bytes_as(tape_key, name, content_type, data)
+            .await
+    }
+
+    /// Write named in-memory bytes as a stream.
+    pub async fn write_named_bytes_as(
+        &self,
+        operator: &impl TapeOperator,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
+        data: &[u8],
+    ) -> Result<StreamReceipt, TapedriveError> {
         let timer = self
             .timer(Operation::WriteStream, Phase::Total)
             .bytes(data.len() as u64);
-        let result = write_stream_bytes(self, tape_key, name.as_ref(), content_type, data).await;
+        let result = write_stream_bytes(self, operator, name.as_ref(), content_type, data).await;
         timer.finish_result(&result);
         result
     }
@@ -238,11 +251,24 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         size: StorageUnits,
         reader: Reader,
     ) -> Result<StreamReceipt, TapedriveError> {
+        self.write_named_stream_as(tape_key, name, content_type, size, reader)
+            .await
+    }
+
+    /// Write a named byte stream from an async reader.
+    pub async fn write_named_stream_as<Reader: AsyncRead + Unpin>(
+        &self,
+        operator: &impl TapeOperator,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
+        size: StorageUnits,
+        reader: Reader,
+    ) -> Result<StreamReceipt, TapedriveError> {
         let timer = self
             .timer(Operation::WriteStream, Phase::Total)
             .bytes(size.to_bytes());
         let result =
-            write_reader_stream(self, tape_key, name.as_ref(), content_type, size, reader).await;
+            write_reader_stream(self, operator, name.as_ref(), content_type, size, reader).await;
         timer.finish_result(&result);
         result
     }

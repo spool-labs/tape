@@ -54,9 +54,17 @@ pub fn hash_leaf(data: &[u8]) -> Hash {
     hashv(&[LEAF_LABEL, data])
 }
 
+/// Hash a pair of child nodes into their parent node.
+/// Uses domain separation with "LEFT" and "RIGHT" prefixes.
 #[inline]
-fn hash_pair(left: Hash, right: Hash) -> Hash {
+pub fn hash_pair(left: Hash, right: Hash) -> Hash {
     hashv(&[LEFT_LABEL, left.as_ref(), RIGHT_LABEL, right.as_ref()])
+}
+
+/// Root of a fully-empty subtree of the given height
+#[inline]
+pub fn empty_subtree_root(height: usize) -> Hash {
+    EMPTY_ROOTS[height].into()
 }
 
 #[repr(C)]

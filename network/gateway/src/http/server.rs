@@ -11,6 +11,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use rpc::Rpc;
 use store::Store;
+use tape_node::config::gateway::S3Config;
 use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
@@ -23,8 +24,16 @@ use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
+use crate::http::handlers::s3::{
+    accounting::{Accounting, reservation_sweep_loop},
+    admin::{AdminState, admin_router},
+    routes::router,
+    sigv4::verifier_from_config,
+    write::S3WriteContext,
+};
 use crate::http::handlers::{health, object, track};
 use crate::meter::GatewayMeter;
 
@@ -42,24 +51,23 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
+    /// Build the native read listener over a slice cache and meter shared with
+    /// the S3 listener, so the disk-cache budget and read rate limits are each
+    /// enforced once across both listeners rather than twice.
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+        slice_cache: Arc<GatewaySliceCache<Db>>,
+        meter: Arc<GatewayMeter>,
         http_config: HttpConfig,
         cancel: CancellationToken,
-    ) -> Result<Self, NodeError> {
-        let slice_cache = Arc::new(
-            GatewaySliceCache::new(context.store.clone(), context.config.gateway.cache.clone())
-                .map_err(|error| NodeError::Store(error.to_string()))?,
-        );
-        let meter = Arc::new(GatewayMeter::new(context.config.gateway.metering.clone()));
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             context,
             slice_cache,
             meter,
             http_config,
             cancel,
-        })
+        }
     }
 
     fn build_router(&self) -> Router {
@@ -67,6 +75,12 @@ where
             context: self.context.clone(),
             slice_cache: self.slice_cache.clone(),
             meter: self.meter.clone(),
+            // The native read listener never writes, so it carries no delegate
+            // signing context and its accounting and admission state are never
+            // exercised.
+            write_ctx: None,
+            accounting: Arc::new(Accounting::new()),
+            admission: Arc::new(AdmitAll),
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
@@ -81,6 +95,21 @@ where
                 tape_protocol::api::NODE_STATS_PATH,
                 get(health::stats::<Db, Cluster, Blockchain>),
             );
+
+        #[cfg(feature = "metrics")]
+        let status_router = if self.context.config.metrics.enabled {
+            status_router
+                .route(
+                    tape_protocol::api::NODE_METRICS_PATH,
+                    get(tape_node::observe::http::metrics),
+                )
+                .route(
+                    tape_protocol::api::OBSERVE_BOARD_PATH,
+                    get(observe_board::<Db, Cluster, Blockchain>),
+                )
+        } else {
+            status_router
+        };
 
         let service_router = Router::new()
             .route(
@@ -176,6 +205,185 @@ where
     }
 }
 
+/// S3-compatible gateway listener
+pub struct GatewayS3Server<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    slice_cache: Arc<GatewaySliceCache<Db>>,
+    meter: Arc<GatewayMeter>,
+    write_ctx: Option<Arc<S3WriteContext>>,
+    accounting: Arc<Accounting>,
+    admission: Arc<dyn Admission>,
+    s3_config: S3Config,
+    cancel: CancellationToken,
+}
+
+impl<Db, Cluster, Blockchain> GatewayS3Server<Db, Cluster, Blockchain>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    /// Build the S3 listener over a slice cache and meter shared with the native
+    /// read listener and an `Accounting` shared with the admin control plane (so
+    /// their ledger mutations serialize against one lock).
+    pub fn new(
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+        slice_cache: Arc<GatewaySliceCache<Db>>,
+        meter: Arc<GatewayMeter>,
+        accounting: Arc<Accounting>,
+        admission: Arc<dyn Admission>,
+        s3_config: S3Config,
+        cancel: CancellationToken,
+    ) -> Self {
+        // Load the delegate keypair that signs S3 writes, when configured. With
+        // no key — or a key that fails to load — the listener still serves reads
+        // and only writes are unavailable, rather than taking the node down.
+        let write_ctx = match s3_config.delegate_key.as_deref() {
+            Some(path) => match S3WriteContext::load(path) {
+                Ok(ctx) => {
+                    info!(delegate = %ctx.delegate_address(), "s3 delegate signer loaded");
+                    Some(Arc::new(ctx))
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "s3 delegate key failed to load; writes disabled, reads still served"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        Self {
+            context,
+            slice_cache,
+            meter,
+            write_ctx,
+            accounting,
+            admission,
+            s3_config,
+            cancel,
+        }
+    }
+
+    fn build_router(&self) -> Router {
+        let state = AppState {
+            context: self.context.clone(),
+            slice_cache: self.slice_cache.clone(),
+            meter: self.meter.clone(),
+            write_ctx: self.write_ctx.clone(),
+            accounting: self.accounting.clone(),
+            admission: self.admission.clone(),
+        };
+
+        let verifier = verifier_from_config(&self.s3_config);
+
+        let body_limit = DefaultBodyLimit::max(self.s3_config.max_buffered_bytes);
+
+        router(state, verifier).layer(body_limit).layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_http_error))
+                .layer(TraceLayer::new_for_http())
+                .layer(LoadShedLayer::new()),
+        )
+    }
+
+    pub async fn run(self) -> Result<(), NodeError> {
+        let listen = self.s3_config.listen;
+        let router = self.build_router();
+        let listener = tokio::net::TcpListener::bind(listen)
+            .await
+            .map_err(NodeError::Io)?;
+
+        info!(listen = %listen, "gateway s3 listener bound");
+
+        let sweep_handle = self.write_ctx.is_some().then(|| {
+            tokio::spawn(reservation_sweep_loop(
+                self.accounting.clone(),
+                self.context.store.clone(),
+                self.cancel.clone(),
+            ))
+        });
+
+        let cancel = self.cancel.clone();
+        let serve_result =
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+                .with_graceful_shutdown(async move {
+                    cancel.cancelled().await;
+                })
+                .await
+                .map_err(NodeError::Io);
+
+        if let Some(handle) = sweep_handle {
+            if let Err(error) = handle.await {
+                tracing::warn!(%error, "s3 reservation sweep task did not exit cleanly");
+            }
+        }
+
+        serve_result
+    }
+}
+
+/// S3 write-authorization admin control-plane listener.
+pub struct GatewayS3AdminServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    accounting: Arc<Accounting>,
+    listen: SocketAddr,
+    cancel: CancellationToken,
+}
+
+impl<Db, Cluster, Blockchain> GatewayS3AdminServer<Db, Cluster, Blockchain>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    pub fn new(
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+        accounting: Arc<Accounting>,
+        s3_config: &S3Config,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            context,
+            accounting,
+            listen: s3_config.write.admin.listen,
+            cancel,
+        }
+    }
+
+    fn build_router(&self) -> Router {
+        let state = AdminState {
+            context: self.context.clone(),
+            accounting: self.accounting.clone(),
+        };
+        admin_router(state).layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_http_error))
+                .layer(TraceLayer::new_for_http())
+                .layer(LoadShedLayer::new()),
+        )
+    }
+
+    pub async fn run(self) -> Result<(), NodeError> {
+        let listen = self.listen;
+        let router = self.build_router();
+        let listener = tokio::net::TcpListener::bind(listen)
+            .await
+            .map_err(NodeError::Io)?;
+
+        info!(listen = %listen, "gateway s3 admin control-plane listener bound");
+
+        axum::serve(listener, router.into_make_service())
+            .with_graceful_shutdown(async move {
+                self.cancel.cancelled().await;
+            })
+            .await
+            .map_err(NodeError::Io)
+    }
+}
+
 async fn handle_http_error(error: axum::BoxError) -> StatusCode {
     if error.is::<tower::timeout::error::Elapsed>() {
         StatusCode::REQUEST_TIMEOUT
@@ -197,11 +405,28 @@ async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     next.run(req).await
 }
 
+#[cfg(feature = "metrics")]
+async fn observe_board<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        tape_node::observe::cached_board(&state.context),
+    )
+}
+
 async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     req: Request,
     next: Next,
 ) -> Response {
     state.context.metrics.inc_requests_total();
+
+    #[cfg(feature = "metrics")]
+    {
+        tape_node::observe::http::instrument(req, next).await
+    }
+
+    #[cfg(not(feature = "metrics"))]
     next.run(req).await
 }

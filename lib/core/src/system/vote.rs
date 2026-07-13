@@ -21,6 +21,7 @@ pub enum VoteKind {
     Unknown = 0,
     Snapshot,
     Assignment,
+    Eviction,
 }
 
 /// Durable identity for a candidate vote account.

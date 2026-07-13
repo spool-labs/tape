@@ -532,7 +532,9 @@ impl Store for RocksStore {
         #[cfg(feature = "metrics")]
         let batch_len = batch.len();
 
-        let mut rocks_batch = RocksWriteBatch::default();
+        // Size the batch buffer up front. Appending a small op after a large
+        // payload would otherwise grow the buffer and recopy the whole payload.
+        let mut rocks_batch = RocksWriteBatch::with_capacity_bytes(batch_capacity_bytes(&batch));
 
         #[cfg(feature = "metrics")]
         let mut bytes_written = 0u64;
@@ -812,6 +814,38 @@ impl Store for RocksStore {
             .map_err(Error::Io)
     }
 
+    fn live_data_size_bytes(&self) -> Result<Option<u64>> {
+        // SST plus blob files, since the bulk store keeps slice payloads in BlobDB.
+        let mut total = 0u64;
+        for cf in self
+            .column_families
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once("default"))
+        {
+            let Some(handle) = self.db.cf_handle(cf) else {
+                continue;
+            };
+            for prop in ["rocksdb.total-sst-files-size", "rocksdb.total-blob-file-size"] {
+                if let Ok(Some(bytes)) = self.db.property_int_value_cf(&handle, prop) {
+                    total = total.saturating_add(bytes);
+                }
+            }
+        }
+        Ok(Some(total))
+    }
+
+    fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
+        let Some(handle) = self.db.cf_handle(cf) else {
+            return Ok(None);
+        };
+        Ok(self
+            .db
+            .property_int_value_cf(&handle, "rocksdb.estimate-num-keys")
+            .ok()
+            .flatten())
+    }
+
     fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
         let mut usage = Vec::with_capacity(self.column_families.len());
         for cf in self.column_families.iter().map(String::as_str) {
@@ -847,6 +881,27 @@ impl Store for RocksStore {
 
         Ok(())
     }
+}
+
+/// Bytes to reserve for a batch's serialized form
+///
+/// RocksDB frames each record with a type tag, a column family id, and varint
+/// lengths, ahead of a fixed header. The per-record allowance is a generous
+/// upper bound: overshooting wastes a little memory, undershooting forces the
+/// buffer to grow and recopy every payload already staged.
+fn batch_capacity_bytes(batch: &WriteBatch) -> usize {
+    const HEADER_BYTES: usize = 12;
+    const PER_RECORD_BYTES: usize = 24;
+
+    let mut total = HEADER_BYTES;
+    for op in batch.iter() {
+        total += PER_RECORD_BYTES;
+        total += match op {
+            BatchOp::Put { key, value, .. } => key.len() + value.len(),
+            BatchOp::Delete { key, .. } => key.len(),
+        };
+    }
+    total
 }
 
 fn directory_size_bytes(path: &Path) -> Result<u64> {

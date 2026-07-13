@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use rpc::Rpc;
-use rpc_client::RpcClient;
 use solana_program_pack::Pack;
 use solana_signer::Signer;
 use tape_api::helpers::build_authority_with_tokens_ix;
@@ -476,10 +475,9 @@ async fn read_node(
     harness: &SimnetHarness,
     node_index: usize,
 ) -> tape_api::state::Node {
-    let client = RpcClient::from_rpc(harness.chain().rpc().clone());
-    let node = Address::from(harness.scenario().node_address(node_index));
-    client
-        .get_node_by_address(&node)
+    harness
+        .scenario()
+        .read_node(node_index)
         .await
         .expect("read node")
 }

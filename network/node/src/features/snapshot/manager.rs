@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rpc::Rpc;
@@ -11,10 +12,12 @@ use tape_crypto::Hash;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::{EventLogOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps, VoteOps};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::context::NodeContext;
+use crate::core::chain_tx::spawn_guarded;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
@@ -35,6 +38,9 @@ pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
+    vote_round: Option<JoinHandle<()>>,
+    finalize: Option<JoinHandle<()>>,
+    proposed: Arc<Mutex<HashSet<EpochNumber>>>,
 }
 
 impl<Db, Cluster, Blockchain> SnapshotManager<Db, Cluster, Blockchain>
@@ -52,6 +58,9 @@ where
             context,
             block_rx,
             cancel,
+            vote_round: None,
+            finalize: None,
+            proposed: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -60,7 +69,15 @@ where
 
         loop {
             tokio::select! {
-                _ = self.cancel.cancelled() => return Ok(()),
+                _ = self.cancel.cancelled() => {
+                    if let Some(handle) = self.vote_round.take() {
+                        handle.abort();
+                    }
+                    if let Some(handle) = self.finalize.take() {
+                        handle.abort();
+                    }
+                    return Ok(());
+                }
                 received = self.block_rx.recv() => {
                     let Some(block) = received else {
                         return if self.cancel.is_cancelled() {
@@ -144,6 +161,11 @@ where
                 ParsedInstruction::FinalizeGroup { .. } => {
                     self.try_progress_snapshot().await?;
                 }
+                ParsedInstruction::ProposeSnapshot { event, .. } => {
+                    if let Ok(mut seen) = self.proposed.lock() {
+                        seen.insert(event.voting_epoch);
+                    }
+                }
                 _ => {}
             }
         }
@@ -165,11 +187,15 @@ where
             .delete_vote_epochs_except(new)
             .map_err(|e| NodeError::Store(format!("delete_vote_epochs_except: {e}")))?;
 
+        if let Ok(mut seen) = self.proposed.lock() {
+            seen.retain(|&epoch| epoch >= new);
+        }
+
         Ok(())
     }
 
     async fn on_snapshot_canonical(
-        &self,
+        &mut self,
         state: Arc<ProtocolState>,
         epoch: EpochNumber,
         hash: Hash,
@@ -188,7 +214,15 @@ where
             return Ok(());
         }
 
-        submit_snapshot_finalization(&self.context, &candidate, &self.cancel).await
+        // Detach the finalize so its rank stagger never blocks the block loop.
+        let ctx = self.context.clone();
+        let cancel = self.cancel.clone();
+        spawn_guarded(&mut self.finalize, async move {
+            if let Err(error) = submit_snapshot_finalization(&ctx, &candidate, &cancel).await {
+                warn!(%error, epoch = epoch.0, "snapshot: finalization task failed");
+            }
+        });
+        Ok(())
     }
 
     async fn on_snapshot_finalized(
@@ -240,7 +274,7 @@ where
         Ok(())
     }
 
-    async fn try_progress_snapshot(&self) -> Result<(), NodeError> {
+    async fn try_progress_snapshot(&mut self) -> Result<(), NodeError> {
         let state = self.context.state();
 
         if state.epoch().is_zero() {
@@ -288,7 +322,22 @@ where
             return Ok(());
         };
 
-        self.run_vote_round(state, &candidate).await
+        self.spawn_vote_round(state, candidate);
+        Ok(())
+    }
+
+    // Detach the proposal and vote submits so their rank staggers never block the
+    // block loop. The in-flight guard drops the per-block and per-heartbeat
+    // re-fire while a round is still running.
+    fn spawn_vote_round(&mut self, state: Arc<ProtocolState>, candidate: SnapshotCandidate) {
+        let ctx = self.context.clone();
+        let cancel = self.cancel.clone();
+        let proposed = self.proposed.clone();
+        spawn_guarded(&mut self.vote_round, async move {
+            if let Err(error) = run_vote_round(ctx, state, candidate, cancel, proposed).await {
+                warn!(%error, "snapshot: vote round task failed");
+            }
+        });
     }
 
     async fn build_candidate(
@@ -354,19 +403,29 @@ where
         Ok(true)
     }
 
-    async fn run_vote_round(
-        &self,
-        state: Arc<ProtocolState>,
-        candidate: &SnapshotCandidate,
-    ) -> Result<(), NodeError> {
+}
 
-        submit_snapshot_proposal(&self.context, candidate, &self.cancel).await?;
-        create_snapshot_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
-        fanout_snapshot_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
-        submit_ready_snapshot_votes(&self.context, state.as_ref(), candidate, &self.cancel).await?;
+// Drive one snapshot vote round to completion: propose, sign local votes, fan
+// them out to peers, then submit the aggregated group votes. Each on-chain
+// submit staggers by committee rank internally, so this runs detached.
+async fn run_vote_round<Db, Cluster, Blockchain>(
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: Arc<ProtocolState>,
+    candidate: SnapshotCandidate,
+    cancel: CancellationToken,
+    proposed: Arc<Mutex<HashSet<EpochNumber>>>,
+) -> Result<(), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    submit_snapshot_proposal(&ctx, &candidate, &cancel, &proposed).await?;
+    create_snapshot_votes(&ctx, state.as_ref(), &candidate, &cancel).await?;
+    fanout_snapshot_votes(&ctx, state.as_ref(), &candidate, &cancel).await?;
+    submit_ready_snapshot_votes(&ctx, state.as_ref(), &candidate, &cancel).await?;
 
-        Ok(())
-    }
+    Ok(())
 }
 
 fn canonical_snapshot_hash(
