@@ -952,7 +952,7 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
 /// rejection.
 fn is_operator_auth_failure(error: &TapedriveError) -> bool {
     match error {
-        TapedriveError::Rpc(RpcError::Transaction(message)) => {
+        TapedriveError::Rpc(RpcError::Transaction { message, .. }) => {
             message.to_ascii_lowercase().contains("invalid account data")
         }
         TapedriveError::Rpc(_)
@@ -1492,17 +1492,20 @@ mod tests {
         // message carries the program's `InvalidAccountData`; it maps to
         // AccessDenied (403), not InternalError.
         assert!(matches!(
-            s3_write_error(TapedriveError::Rpc(RpcError::Transaction(
-                "Error processing Instruction 0: invalid account data for instruction".into()
-            ))),
+            s3_write_error(TapedriveError::Rpc(RpcError::Transaction {
+                err: None,
+                message: "Error processing Instruction 0: invalid account data for instruction"
+                    .into(),
+            })),
             S3Error::AccessDenied(_)
         ));
         // A genuine transaction failure that is *not* the operator-auth signal
         // stays an InternalError — only the recognized signal is re-mapped.
         assert!(matches!(
-            s3_write_error(TapedriveError::Rpc(RpcError::Transaction(
-                "blockhash expired".into()
-            ))),
+            s3_write_error(TapedriveError::Rpc(RpcError::Transaction {
+                err: None,
+                message: "blockhash expired".into(),
+            })),
             S3Error::Internal(_)
         ));
         // Everything else collapses to InternalError.

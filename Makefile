@@ -22,6 +22,10 @@
 #   make tape         - Build tape (end-user) CLI release binary
 #   make node-linux   - Build tape-node for x86_64 Linux (native on Linux; on
 #                       macOS builds inside a linux container via docker)
+#   make cache-linux  - Same, for rpc-cache
+#   make gateway-linux - Same, for tape-gateway
+#   make explorer-linux - Same, for tapedrive-explorer
+#   make linux-binaries - All four Linux deploy binaries
 #   make deploy-tools - All of the above plus the Solana programs
 #   make install      - `cargo install` tape-node, tape-admin, tape-network, and
 #                       tape into ~/.cargo/bin
@@ -62,7 +66,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux deploy-tools install uninstall
+.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux cache-linux gateway-linux explorer-linux linux-binaries deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -72,8 +76,8 @@ node:
 
 # Separate workspace (own Cargo.lock); build and test from within explorer/.
 explorer:
-	cd explorer && cargo build
-	cd explorer && cargo test
+	cargo build -p tapedrive-explorer
+	cargo test -p tapedrive-explorer
 
 cache:
 	cargo build --release -p rpc-cache --bin rpc-cache
@@ -157,33 +161,59 @@ network:
 tape:
 	cargo build --release -p tape
 
-# Build tape-node for x86_64 Linux. Native on Linux; on macOS it builds in a
-# linux container, since RocksDB and vendored openssl choke under a host
-# cross-compiler. No docker? Use the DO builder: `tape-network build-linux`.
+# Build the deploy binaries for x86_64 Linux. Native on Linux; on macOS they
+# build in a linux container, since RocksDB and vendored openssl choke under a
+# host cross-compiler. Artifacts land where the deploy tooling and ansible
+# trees expect them: target/x86_64-unknown-linux-gnu/release/.
+# No docker? Use the DO builder: `tape-network build-linux`.
+LINUX_TRIPLE := x86_64-unknown-linux-gnu
+
 ifeq ($(UNAME_S),Linux)
-node-linux:
-	cargo build --release --target x86_64-unknown-linux-gnu --features metrics -p tape-node
+# $(call linux-cargo,workspace-dir,cargo-args,bin-name)
+define linux-cargo
+cd $(1) && cargo build --release --target $(LINUX_TRIPLE) $(2)
+@echo "binary: $(1)/target/$(LINUX_TRIPLE)/release/$(3)"
+endef
 else
 # Compile in a native-arch container so rustc doesn't segfault under amd64
 # emulation, then cross-compile to x86_64 from there. Pin the platform: some
 # docker backends otherwise grab the amd64 image on arm hosts. The registry
-# volume and target/linux cache keep repeat builds cheap.
+# volume and target/linux caches keep repeat builds cheap; the trailing cp
+# stashes the artifact on the path the deploy tooling reads.
 DOCKER_PLATFORM := linux/$(shell uname -m | sed 's/x86_64/amd64/')
-node-linux:
-	docker build -q --platform $(DOCKER_PLATFORM) -t tape-linux-builder -f deploy/Dockerfile.linux-builder deploy
-	docker run --rm --platform $(DOCKER_PLATFORM) \
-		-v $(CURDIR):/src -w /src \
-		-v tape-cargo-registry:/usr/local/cargo/registry \
-		-e CARGO_TARGET_DIR=/src/target/linux \
-		-e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
-		-e CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
-		-e CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
-		tape-linux-builder \
-		cargo build --release --target x86_64-unknown-linux-gnu --features metrics -p tape-node
-	@echo "binary: target/linux/x86_64-unknown-linux-gnu/release/tape-node"
+# $(call linux-cargo,workspace-dir,cargo-args,bin-name)
+define linux-cargo
+docker build -q --platform $(DOCKER_PLATFORM) -t tape-linux-builder -f deploy/Dockerfile.linux-builder deploy
+docker run --rm --platform $(DOCKER_PLATFORM) \
+	-v $(CURDIR):/src -w /src/$(1) \
+	-v tape-cargo-registry:/usr/local/cargo/registry \
+	-e CARGO_TARGET_DIR=/src/$(1)/target/linux \
+	-e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+	-e CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
+	-e CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
+	tape-linux-builder \
+	cargo build --release --target $(LINUX_TRIPLE) $(2)
+@mkdir -p $(1)/target/$(LINUX_TRIPLE)/release
+cp $(1)/target/linux/$(LINUX_TRIPLE)/release/$(3) $(1)/target/$(LINUX_TRIPLE)/release/$(3)
+@echo "binary: $(1)/target/$(LINUX_TRIPLE)/release/$(3)"
+endef
 endif
 
-deploy-tools: programs admin network tape node-linux
+node-linux:
+	$(call linux-cargo,.,--features metrics -p tape-node,tape-node)
+
+cache-linux:
+	$(call linux-cargo,.,-p rpc-cache,rpc-cache)
+
+gateway-linux:
+	$(call linux-cargo,.,-p tape-gateway,tape-gateway)
+
+explorer-linux:
+	$(call linux-cargo,.,-p tapedrive-explorer,tapedrive-explorer)
+
+linux-binaries: node-linux cache-linux gateway-linux explorer-linux
+
+deploy-tools: programs admin network tape linux-binaries
 
 install:
 	cargo install --locked --force --features metrics --path network/node

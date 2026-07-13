@@ -28,6 +28,9 @@ clap = { version = "4", features = ["derive", "env"] }
 humantime = "2"
 humantime-serde = "1"
 moka = { version = "0.12", features = ["future"] }
+# Force vendored openssl so the x86_64-linux cross-compile doesn't need a
+# system libssl (indirect dep via reqwest's native-tls).
+openssl = { version = "0.10", features = ["vendored"] }
 regex = "1"
 reqwest = { workspace = true }
 serde = { workspace = true }

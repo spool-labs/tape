@@ -783,6 +783,7 @@ mod tests {
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
             preferences: test_preferences(),
             stake: TAPE(0),
+            name: [0u8; 32],
         }
     }
 

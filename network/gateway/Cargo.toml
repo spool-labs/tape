@@ -44,6 +44,9 @@ base64 = { workspace = true }
 # S3 write-authorization admin control plane (JSON request/response bodies)
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Force vendored openssl so the x86_64-linux cross-compile doesn't need a
+# system libssl (indirect dep via reqwest's native-tls).
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 store-memory = { workspace = true }
