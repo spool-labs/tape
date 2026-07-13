@@ -29,7 +29,7 @@ mod error;
 mod rpc;
 
 // Core exports
-pub use error::RpcError;
+pub use error::{RpcError, looks_like_transaction_error};
 pub use rpc::{Rpc, SimulationResult};
 
 // Re-export async_trait for implementors

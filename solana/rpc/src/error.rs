@@ -209,6 +209,14 @@ fn is_skipped_slot_message(msg: &str) -> bool {
     msg.contains("slotskipped") || msg.contains("slot was skipped")
 }
 
+/// True when a flattened error message reads like a transaction execution
+/// failure rather than a transport or RPC-layer problem.
+pub fn looks_like_transaction_error(msg: &str) -> bool {
+    msg.contains("Error processing Instruction")
+        || msg.contains("InstructionError")
+        || msg.contains("custom program error")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

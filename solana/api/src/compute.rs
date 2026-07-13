@@ -1,6 +1,10 @@
 /// Hard runtime ceiling on compute units for a single transaction.
 pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
 
+/// Headroom added on top of a simulation-measured compute unit consumption
+/// before resending, as a percentage of the measured value.
+pub const MEASURED_CU_HEADROOM_PERCENT: u64 = 25;
+
 // BLS aggregate verify is the load. ~250k CU observed in SBF tests.
 pub const CERTIFY_TRACK_CU:    u32 = 400_000;
 pub const INVALIDATE_TRACK_CU: u32 = 400_000;

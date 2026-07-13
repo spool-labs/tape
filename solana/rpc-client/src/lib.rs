@@ -88,11 +88,10 @@
 
 mod accounts;
 mod client;
-pub mod compute;
 mod snapshot;
 mod transactions;
 
-use rpc::RpcError;
+use rpc::{RpcError, looks_like_transaction_error};
 use tape_api::errors::{ProgramError, TapeError};
 
 /// Try to decode a typed `TapeError` from an RPC transaction error.
@@ -106,7 +105,7 @@ pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
 
     let msg = match err {
         RpcError::Transaction { err: None, message } => message,
-        RpcError::Request(msg) if looks_like_program_error(msg) => msg,
+        RpcError::Request(msg) if looks_like_transaction_error(msg) => msg,
         _ => return None,
     };
 
@@ -114,12 +113,6 @@ pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
         Some(ProgramError::Tape(e)) => Some(e),
         _ => None,
     }
-}
-
-fn looks_like_program_error(msg: &str) -> bool {
-    msg.contains("custom program error")
-        || msg.contains("Error processing Instruction")
-        || msg.contains("InstructionError")
 }
 
 #[cfg(feature = "metrics")]

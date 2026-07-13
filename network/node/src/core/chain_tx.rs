@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use rpc::{InstructionError, RpcError};
+use rpc::{InstructionError, RpcError, looks_like_transaction_error};
 use rpc_client::parse_tape_error;
 use tape_api::errors::{TapeError, is_account_state_pending_error};
 use tape_crypto::tx::Txid;
@@ -93,12 +93,6 @@ fn transaction_error_message(err: &RpcError) -> Option<&str> {
         RpcError::Request(msg) if looks_like_transaction_error(msg) => Some(msg),
         _ => None,
     }
-}
-
-fn looks_like_transaction_error(msg: &str) -> bool {
-    msg.contains("Error processing Instruction")
-        || msg.contains("InstructionError")
-        || msg.contains("custom program error")
 }
 
 fn is_known_contention_error(msg: &str) -> bool {

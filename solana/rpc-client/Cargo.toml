@@ -24,6 +24,7 @@ solana-client.workspace = true
 solana-account-decoder.workspace = true
 solana-commitment-config.workspace = true
 solana-compute-budget-interface.workspace = true
+solana-hash.workspace = true
 solana-instruction.workspace = true
 solana-keypair.workspace = true
 solana-pubkey.workspace = true

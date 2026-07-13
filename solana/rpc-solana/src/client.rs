@@ -645,7 +645,7 @@ impl Rpc for SolanaRpc {
             let config = config.clone();
             async move {
                 let response = client
-                    .simulate_transaction_with_config(&transaction, config)
+                    .simulate_transaction_with_config(transaction.as_ref(), config)
                     .await
                     .map_err(|error| Self::convert_error(error, None))?;
 

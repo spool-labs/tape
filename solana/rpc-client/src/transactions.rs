@@ -1,13 +1,13 @@
 use crate::client::RpcClient;
-use crate::compute::with_compute_unit_limit;
 use rpc::{Rpc, RpcError};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
+use solana_hash::Hash;
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey as SolanaPubkey;
 use solana_signature::Signature as SolanaSignature;
 use solana_signer::{Signer as SolanaSigner, SignerError as SolanaSignerError};
 use solana_transaction::Transaction;
-use tape_api::compute::MAX_COMPUTE_UNIT_LIMIT;
+use tape_api::compute::{MAX_COMPUTE_UNIT_LIMIT, MEASURED_CU_HEADROOM_PERCENT};
 use tape_crypto::signer::Signer as TapeSigner;
 use tape_crypto::tx::Txid;
 
@@ -200,7 +200,11 @@ impl<R: Rpc> RpcClient<R> {
         instructions: Vec<Instruction>,
         operation: &'static str,
     ) -> Result<Txid, RpcError> {
-        let mut capped = with_compute_unit_limit(compute_unit_limit, instructions);
+        let mut capped = instructions;
+        capped.insert(
+            0,
+            ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit),
+        );
         let result = self.submit(payer, signers, &capped, true, operation).await;
 
         let Err(err) = &result else {
@@ -211,7 +215,7 @@ impl<R: Rpc> RpcClient<R> {
         }
 
         // Reuse the batch for the probe and the resend by swapping out the
-        // budget instruction that with_compute_unit_limit put at the front.
+        // budget instruction at the front.
         capped[0] = ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT);
         let Some(measured) = self.measured_compute_unit_limit(payer, signers, &capped).await
         else {
@@ -237,10 +241,9 @@ impl<R: Rpc> RpcClient<R> {
         signers: &[&dyn TapeSigner],
         probe: &[Instruction],
     ) -> Option<u32> {
-        let transaction = self
-            .build_signed_transaction(payer, signers, probe)
-            .await
-            .ok()?;
+        // Simulation replaces or ignores the blockhash, so the probe signs
+        // against the default one instead of fetching a fresh one.
+        let transaction = Self::sign_transaction(payer, signers, probe, Hash::default());
 
         let simulation = self.rpc().simulate_transaction(&transaction).await.ok()?;
         if simulation.err.is_some() {
@@ -249,7 +252,7 @@ impl<R: Rpc> RpcClient<R> {
 
         let consumed = simulation.units_consumed?;
         let limit = consumed
-            .saturating_add(consumed / 4)
+            .saturating_add(consumed * MEASURED_CU_HEADROOM_PERCENT / 100)
             .min(MAX_COMPUTE_UNIT_LIMIT as u64);
         Some(limit as u32)
     }
@@ -319,18 +322,28 @@ impl<R: Rpc> RpcClient<R> {
         instructions: &[Instruction],
     ) -> Result<Transaction, RpcError> {
         let blockhash = self.rpc().get_latest_blockhash().await?;
+        Ok(Self::sign_transaction(payer, signers, instructions, blockhash))
+    }
+
+    /// Sign instructions into a transaction with the payer as the first signer.
+    fn sign_transaction(
+        payer: &dyn TapeSigner,
+        signers: &[&dyn TapeSigner],
+        instructions: &[Instruction],
+        blockhash: Hash,
+    ) -> Transaction {
         let payer_pubkey: SolanaPubkey = payer.pubkey().into();
 
         let mut all_signers: Vec<SolanaSignerAdapter<'_>> = Vec::with_capacity(signers.len() + 1);
         all_signers.push(SolanaSignerAdapter(payer));
         all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
 
-        Ok(Transaction::new_signed_with_payer(
+        Transaction::new_signed_with_payer(
             instructions,
             Some(&payer_pubkey),
             &all_signers,
             blockhash,
-        ))
+        )
     }
 }
 
