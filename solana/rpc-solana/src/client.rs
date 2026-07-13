@@ -1,7 +1,9 @@
 //! Production Solana RPC client with retry and failover capabilities.
 
 use crate::config::RpcConfig;
-use crate::failover::EndpointFailover;
+#[cfg(feature = "metrics")]
+use crate::selector::EndpointStrategy;
+use crate::selector::{EndpointCursor, EndpointSelector};
 use async_trait::async_trait;
 use solana_account::Account;
 use solana_client::client_error::ClientError;
@@ -16,11 +18,12 @@ use solana_transaction_status::{
     EncodedConfirmedTransactionWithStatusMeta, TransactionDetails, UiConfirmedBlock,
     UiTransactionEncoding,
 };
+#[cfg(feature = "metrics")]
 use std::sync::Arc;
 use rpc::{Rpc, RpcError};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 
 const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
     encoding: Some(UiTransactionEncoding::Json),
@@ -53,9 +56,14 @@ const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
 /// let slot = rpc.get_slot().await?;
 /// ```
 pub struct SolanaRpc {
+    /// Endpoint, retry, and strategy settings this client was built with
     config: RpcConfig,
-    failover: Arc<RwLock<EndpointFailover>>,
-    client: Arc<RwLock<RpcClient>>,
+    /// Decides which endpoint each operation runs on
+    selector: Mutex<EndpointSelector>,
+    /// One client per configured endpoint, so switching endpoints never
+    /// rebuilds a client or drops its connection pool
+    clients: Vec<RpcClient>,
+    /// Prometheus counters, absent when no registry is installed
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
 }
@@ -74,11 +82,15 @@ impl SolanaRpc {
             commitment: config.commitment,
         };
 
-        let first_endpoint = config.endpoints[0].clone();
-        let client = RpcClient::new_with_commitment(first_endpoint, commitment);
+        let clients = config
+            .endpoints
+            .iter()
+            .map(|endpoint| RpcClient::new_with_commitment(endpoint.clone(), commitment))
+            .collect();
 
-        let failover = EndpointFailover::new(
+        let selector = EndpointSelector::new(
             config.endpoints.clone(),
+            config.strategy,
             config.retry.max_endpoint_attempts,
             config.retry.endpoint_cooldown,
         );
@@ -99,8 +111,8 @@ impl SolanaRpc {
 
         Ok(Self {
             config,
-            failover: Arc::new(RwLock::new(failover)),
-            client: Arc::new(RwLock::new(client)),
+            selector: Mutex::new(selector),
+            clients,
             #[cfg(feature = "metrics")]
             metrics,
         })
@@ -111,39 +123,55 @@ impl SolanaRpc {
         &self.config
     }
 
-    /// Attempt to failover to the next endpoint.
-    async fn try_failover(&self) -> Result<(), RpcError> {
-        let mut failover = self.failover.write().await;
+    /// Pick the endpoint a fresh operation starts on
+    async fn start_operation(&self) -> EndpointCursor {
+        let (cursor, _is_moved) = self.selector.lock().await.start_operation();
 
         #[cfg(feature = "metrics")]
-        let old_endpoint = failover.current_endpoint().to_string();
+        if _is_moved {
+            // Round-robin moves every operation; only a recovered primary is
+            // worth a log line.
+            if matches!(self.config.strategy, EndpointStrategy::PreferPrimary) {
+                tracing::info!(
+                    endpoint = %redact_url_query(&self.config.endpoints[cursor.index()]),
+                    "Restoring RPC endpoint"
+                );
+            }
+            if let Some(metrics) = &self.metrics {
+                metrics.set_current_endpoint(cursor.index());
+            }
+        }
 
-        let new_endpoint = failover.next_endpoint()?;
-        let new_endpoint_str = new_endpoint.to_string();
+        cursor
+    }
+
+    /// Rotate a failing operation to the next untried endpoint
+    ///
+    /// Best-effort: when the rotation is exhausted the operation keeps
+    /// retrying where it is via backoff.
+    async fn fail_over(&self, cursor: &mut EndpointCursor) {
+        let mut selector = self.selector.lock().await;
+
         #[cfg(feature = "metrics")]
-        let current_index = failover.current_index();
+        let old_endpoint = redact_url_query(selector.endpoint(cursor.index()));
+
+        if selector.fail_over(cursor).is_err() {
+            return;
+        }
 
         // Endpoint urls carry an api key in the query string, and the metrics
         // endpoint is served publicly.
         #[cfg(feature = "metrics")]
-        tracing::info!(endpoint = %redact_url_query(&new_endpoint_str), "Switching RPC endpoint");
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = &self.metrics {
-            metrics.record_failover(&redact_url_query(&old_endpoint), "endpoint_error");
-            metrics.set_current_endpoint(current_index);
+        {
+            tracing::info!(
+                endpoint = %redact_url_query(selector.endpoint(cursor.index())),
+                "Switching RPC endpoint"
+            );
+            if let Some(metrics) = &self.metrics {
+                metrics.record_failover(&old_endpoint, "endpoint_error");
+                metrics.set_current_endpoint(cursor.index());
+            }
         }
-
-        let commitment = CommitmentConfig {
-            commitment: self.config.commitment,
-        };
-
-        let new_client = RpcClient::new_with_commitment(new_endpoint_str, commitment);
-
-        let mut client = self.client.write().await;
-        *client = new_client;
-
-        Ok(())
     }
 
     /// Handle error and determine if retry should continue.
@@ -156,6 +184,7 @@ impl SolanaRpc {
         _method: &str,
         err: RpcError,
         backoff: &mut tape_retry::Backoff,
+        cursor: &mut EndpointCursor,
     ) -> Result<(), RpcError> {
         #[cfg(feature = "metrics")]
         tracing::warn!(
@@ -183,7 +212,7 @@ impl SolanaRpc {
         // Try failover if appropriate (best-effort, if exhausted, we still
         // retry on the current endpoint via backoff below)
         if err.should_failover() {
-            let _ = self.try_failover().await;
+            self.fail_over(cursor).await;
         }
 
         // Backoff controls when to stop retrying
@@ -211,6 +240,7 @@ impl SolanaRpc {
         &self,
         _method: &str,
         backoff: &mut tape_retry::Backoff,
+        cursor: &mut EndpointCursor,
     ) -> Result<(), RpcError> {
         let timeout_err = RpcError::Timeout(self.config.timeout);
 
@@ -227,7 +257,7 @@ impl SolanaRpc {
         }
 
         // Try failover on timeout (best-effort)
-        let _ = self.try_failover().await;
+        self.fail_over(cursor).await;
 
         // Backoff controls when to stop retrying
         if let Some(delay) = backoff.next_delay() {
@@ -243,35 +273,6 @@ impl SolanaRpc {
         } else {
             Err(timeout_err)
         }
-    }
-
-    /// Reset failover state for a fresh operation.
-    ///
-    /// A failed endpoint is only held down for its cooldown, so this is where a
-    /// recovered primary is picked back up. The client points at whatever
-    /// endpoint the failover selected, so it has to be rebuilt when that moves.
-    async fn reset_failover(&self) {
-        let restored = {
-            let mut failover = self.failover.write().await;
-            if failover.reset() {
-                Some(failover.current_endpoint().to_string())
-            } else {
-                None
-            }
-        };
-
-        let Some(endpoint) = restored else {
-            return;
-        };
-
-        #[cfg(feature = "metrics")]
-        tracing::info!(endpoint = %redact_url_query(&endpoint), "Restoring RPC endpoint");
-
-        let commitment = CommitmentConfig {
-            commitment: self.config.commitment,
-        };
-        let mut client = self.client.write().await;
-        *client = RpcClient::new_with_commitment(endpoint, commitment);
     }
 
     /// Convert a ClientError to RpcError.
@@ -374,18 +375,16 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(self.config.timeout, client.get_slot()).await
             };
 
             match result {
                 Ok(Ok(slot)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request("getSlot", "success", timer.elapsed_secs());
@@ -395,10 +394,10 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getSlot", rpc_err, &mut backoff).await?;
+                    self.handle_error("getSlot", rpc_err, &mut backoff, &mut cursor).await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getSlot", &mut backoff).await?;
+                    self.handle_timeout("getSlot", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -409,13 +408,13 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         let commitment = CommitmentConfig::finalized();
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_slot_with_commitment(commitment),
@@ -425,8 +424,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(slot)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics
@@ -437,11 +434,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getSlot:finalized", rpc_err, &mut backoff)
+                    self.handle_error("getSlot:finalized", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getSlot:finalized", &mut backoff).await?;
+                    self.handle_timeout("getSlot:finalized", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -452,11 +449,11 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_first_available_block(),
@@ -466,8 +463,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(slot)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request(
@@ -481,11 +476,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getFirstAvailableBlock", rpc_err, &mut backoff)
+                    self.handle_error("getFirstAvailableBlock", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getFirstAvailableBlock", &mut backoff).await?;
+                    self.handle_timeout("getFirstAvailableBlock", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -496,18 +491,16 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(self.config.timeout, client.get_latest_blockhash()).await
             };
 
             match result {
                 Ok(Ok(hash)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request("getLatestBlockhash", "success", timer.elapsed_secs());
@@ -517,11 +510,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getLatestBlockhash", rpc_err, &mut backoff)
+                    self.handle_error("getLatestBlockhash", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getLatestBlockhash", &mut backoff)
+                    self.handle_timeout("getLatestBlockhash", &mut backoff, &mut cursor)
                         .await?;
                 }
             }
@@ -533,11 +526,11 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_block_with_config(slot, BLOCK_CONFIG),
@@ -547,8 +540,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(block)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request("getBlock", "success", timer.elapsed_secs());
@@ -558,10 +549,10 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_error = Self::normalize_get_block_error(Self::convert_error(e, None));
-                    self.handle_error("getBlock", rpc_error, &mut backoff).await?;
+                    self.handle_error("getBlock", rpc_error, &mut backoff, &mut cursor).await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getBlock", &mut backoff).await?;
+                    self.handle_timeout("getBlock", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -577,7 +568,7 @@ impl Rpc for SolanaRpc {
         let txid = *txid;
         let signature: Signature = txid.into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
         let commitment = self.config.commitment;
 
         loop {
@@ -588,7 +579,7 @@ impl Rpc for SolanaRpc {
             };
 
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_transaction_with_config(&signature, config),
@@ -598,8 +589,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(transaction)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request(
@@ -620,11 +609,11 @@ impl Rpc for SolanaRpc {
                     } else {
                         Self::convert_error(e, None)
                     };
-                    self.handle_error("getTransaction", rpc_err, &mut backoff)
+                    self.handle_error("getTransaction", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getTransaction", &mut backoff).await?;
+                    self.handle_timeout("getTransaction", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -635,18 +624,16 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(self.config.timeout, client.get_block_height()).await
             };
 
             match result {
                 Ok(Ok(height)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request("getBlockHeight", "success", timer.elapsed_secs());
@@ -656,11 +643,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getBlockHeight", rpc_err, &mut backoff)
+                    self.handle_error("getBlockHeight", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getBlockHeight", &mut backoff).await?;
+                    self.handle_timeout("getBlockHeight", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -682,12 +669,12 @@ impl Rpc for SolanaRpc {
         let pubkey = *pubkey;
         let solana_pubkey: Pubkey = pubkey.into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
         let commitment = CommitmentConfig { commitment };
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_account_with_commitment(&solana_pubkey, commitment),
@@ -701,8 +688,6 @@ impl Rpc for SolanaRpc {
                         return Err(RpcError::AccountNotFound(pubkey));
                     };
 
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request("getAccount", "success", timer.elapsed_secs());
@@ -712,11 +697,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, Some(pubkey));
-                    self.handle_error("getAccount", rpc_err, &mut backoff)
+                    self.handle_error("getAccount", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getAccount", &mut backoff).await?;
+                    self.handle_timeout("getAccount", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -741,12 +726,12 @@ impl Rpc for SolanaRpc {
         let pubkeys = pubkeys.to_vec();
         let solana_pubkeys: Vec<Pubkey> = pubkeys.iter().copied().map(Into::into).collect();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
         let commitment = CommitmentConfig { commitment };
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_multiple_accounts_with_commitment(&solana_pubkeys, commitment),
@@ -756,8 +741,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(accounts)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request(
@@ -771,11 +754,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getMultipleAccounts", rpc_err, &mut backoff)
+                    self.handle_error("getMultipleAccounts", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getMultipleAccounts", &mut backoff)
+                    self.handle_timeout("getMultipleAccounts", &mut backoff, &mut cursor)
                         .await?;
                 }
             }
@@ -793,12 +776,12 @@ impl Rpc for SolanaRpc {
         let program_id = *program_id;
         let solana_program_id: Pubkey = program_id.into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let config_clone = config.clone();
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_program_ui_accounts_with_config(&solana_program_id, config_clone),
@@ -808,8 +791,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(accounts)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request(
@@ -835,11 +816,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getProgramAccounts", rpc_err, &mut backoff)
+                    self.handle_error("getProgramAccounts", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getProgramAccounts", &mut backoff)
+                    self.handle_timeout("getProgramAccounts", &mut backoff, &mut cursor)
                         .await?;
                 }
             }
@@ -852,11 +833,11 @@ impl Rpc for SolanaRpc {
 
         let transaction = transaction.clone();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.send_transaction(&transaction),
@@ -866,8 +847,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(sig)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request("sendTransaction", "success", timer.elapsed_secs());
@@ -877,11 +856,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("sendTransaction", rpc_err, &mut backoff)
+                    self.handle_error("sendTransaction", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("sendTransaction", &mut backoff).await?;
+                    self.handle_timeout("sendTransaction", &mut backoff, &mut cursor).await?;
                 }
             }
         }
@@ -896,22 +875,20 @@ impl Rpc for SolanaRpc {
 
         let transaction = transaction.clone();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
-                    send_and_poll(&client, &transaction, self.config.commitment),
+                    send_and_poll(client, &transaction, self.config.commitment),
                 )
                 .await
             };
 
             match result {
                 Ok(Ok(sig)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request(
@@ -925,11 +902,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff)
+                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff)
+                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff, &mut cursor)
                         .await?;
                 }
             }
@@ -945,11 +922,11 @@ impl Rpc for SolanaRpc {
 
         let signature: Signature = (*txid).into();
         let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
+        let mut cursor = self.start_operation().await;
 
         loop {
             let result = {
-                let client = self.client.read().await;
+                let client = &self.clients[cursor.index()];
                 tokio::time::timeout(
                     self.config.timeout,
                     client.get_signature_status(&signature),
@@ -959,8 +936,6 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(status)) => {
-                    self.reset_failover().await;
-
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
                         metrics.record_request(
@@ -974,11 +949,11 @@ impl Rpc for SolanaRpc {
                 }
                 Ok(Err(e)) => {
                     let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("getSignatureStatus", rpc_err, &mut backoff)
+                    self.handle_error("getSignatureStatus", rpc_err, &mut backoff, &mut cursor)
                         .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getSignatureStatus", &mut backoff)
+                    self.handle_timeout("getSignatureStatus", &mut backoff, &mut cursor)
                         .await?;
                 }
             }

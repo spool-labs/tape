@@ -2,11 +2,17 @@ use serde::{Deserialize, Serialize};
 use solana_commitment_config::CommitmentLevel;
 use std::time::Duration;
 
+use crate::selector::EndpointStrategy;
+
 /// RPC client configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RpcConfig {
     /// Primary and fallback RPC endpoints
     pub endpoints: Vec<String>,
+
+    /// How a fresh operation picks the endpoint it starts on
+    #[serde(default)]
+    pub strategy: EndpointStrategy,
 
     /// Commitment level for queries
     #[serde(default = "default_commitment")]
@@ -69,6 +75,7 @@ impl Default for RpcConfig {
     fn default() -> Self {
         Self {
             endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],
+            strategy: EndpointStrategy::default(),
             commitment: default_commitment(),
             timeout: default_timeout(),
             retry: RpcRetryConfig::default(),
@@ -166,6 +173,7 @@ mod tests {
     fn test_serialize_deserialize() {
         let config = RpcConfig {
             endpoints: vec!["https://test.com".to_string()],
+            strategy: EndpointStrategy::RoundRobin,
             commitment: CommitmentLevel::Finalized,
             timeout: Duration::from_secs(10),
             retry: RpcRetryConfig {
@@ -182,9 +190,35 @@ mod tests {
         let deserialized: RpcConfig = serde_json::from_str(&json).unwrap();
 
         assert_eq!(config.endpoints, deserialized.endpoints);
+        assert_eq!(config.strategy, deserialized.strategy);
         assert_eq!(config.commitment, deserialized.commitment);
         assert_eq!(config.timeout, deserialized.timeout);
         assert_eq!(config.retry.max_retries, deserialized.retry.max_retries);
+    }
+
+    // every strategy name parses from its kebab-case form
+    #[test]
+    fn strategy_names() {
+        let cases = [
+            ("\"prefer-primary\"", EndpointStrategy::PreferPrimary),
+            ("\"failover-sticky\"", EndpointStrategy::FailoverSticky),
+            ("\"round-robin\"", EndpointStrategy::RoundRobin),
+        ];
+
+        for (json, expected) in cases {
+            let parsed: EndpointStrategy = serde_json::from_str(json).expect("parse");
+            assert_eq!(parsed, expected);
+        }
+    }
+
+    // a config without a strategy field falls back to prefer-primary
+    #[test]
+    fn strategy_default() {
+        let json = r#"{"endpoints":["https://test.com"]}"#;
+
+        let config: RpcConfig = serde_json::from_str(json).expect("parse");
+
+        assert_eq!(config.strategy, EndpointStrategy::PreferPrimary);
     }
 
     #[test]

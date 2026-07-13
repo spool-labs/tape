@@ -1,14 +1,14 @@
-//! End-to-end failover: a 502 on the primary endpoint must hand off to the next
-//! one rather than exhausting the retry budget against a dead server.
+//! End-to-end endpoint selection: a 502 on the primary endpoint must hand off
+//! to the next one rather than exhausting the retry budget against a dead
+//! server, and each strategy must pick the endpoint its config promises.
 //!
-//! Callers used to build the client with a single endpoint, so the rotation in
-//! `failover.rs` could never fire in production. These tests drive the client
-//! through real sockets to hold that behaviour down.
+//! These tests drive the client through real sockets to hold that behaviour
+//! down.
 
 use std::time::Duration;
 
 use rpc::Rpc;
-use rpc_solana::{RpcConfig, RpcRetryConfig, SolanaRpc};
+use rpc_solana::{EndpointStrategy, RpcConfig, RpcRetryConfig, SolanaRpc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -126,6 +126,47 @@ async fn recovering_endpoint(heals_after: Duration) -> String {
     });
 
     format!("http://{addr}")
+}
+
+fn config_with_strategy(endpoints: Vec<String>, strategy: EndpointStrategy) -> RpcConfig {
+    RpcConfig {
+        strategy,
+        ..config(endpoints)
+    }
+}
+
+// round-robin spreads consecutive operations across healthy endpoints
+#[tokio::test]
+async fn round_robin_rotates() {
+    let first = serve("200 OK", r#"{"jsonrpc":"2.0","result":111,"id":1}"#).await;
+    let second = serve("200 OK", r#"{"jsonrpc":"2.0","result":222,"id":1}"#).await;
+
+    let config = config_with_strategy(vec![first, second], EndpointStrategy::RoundRobin);
+    let rpc = SolanaRpc::new(config).expect("build client");
+
+    // Rotation starts after the first endpoint, then wraps.
+    assert_eq!(rpc.get_slot().await.expect("first pick"), 222);
+    assert_eq!(rpc.get_slot().await.expect("second pick"), 111);
+    assert_eq!(rpc.get_slot().await.expect("third pick"), 222);
+}
+
+// failover-sticky stays on the fallback even after the primary recovers
+#[tokio::test]
+async fn sticky_stays() {
+    let primary = recovering_endpoint(Duration::from_millis(400)).await;
+    let fallback = serve("200 OK", r#"{"jsonrpc":"2.0","result":222,"id":1}"#).await;
+
+    let config = config_with_strategy(vec![primary, fallback], EndpointStrategy::FailoverSticky);
+    let rpc = SolanaRpc::new(config).expect("build client");
+
+    // The primary is down, so this is served by the fallback.
+    assert_eq!(rpc.get_slot().await.expect("fallback slot"), FALLBACK_SLOT);
+
+    // Let the primary heal and its cooldown lapse.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    // Sticky never walks back on its own.
+    assert_eq!(rpc.get_slot().await.expect("still fallback"), FALLBACK_SLOT);
 }
 
 // a recovered primary is picked back up once its cooldown lapses
