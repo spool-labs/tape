@@ -248,58 +248,6 @@ impl SolanaRpc {
         failover.reset();
     }
 
-    /// Send-and-confirm loop with retry, failover, and timeout handling.
-    async fn send_and_confirm_inner(
-        &self,
-        transaction: &Transaction,
-        commitment: CommitmentLevel,
-        skip_preflight: bool,
-    ) -> Result<Txid, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = tape_metrics::OperationTimer::new();
-
-        let transaction = transaction.clone();
-        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        self.reset_failover().await;
-
-        loop {
-            let result = {
-                let client = self.client.read().await;
-                tokio::time::timeout(
-                    self.config.timeout,
-                    send_and_poll(&client, &transaction, commitment, skip_preflight),
-                )
-                .await
-            };
-
-            match result {
-                Ok(Ok(sig)) => {
-                    self.reset_failover().await;
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(metrics) = &self.metrics {
-                        metrics.record_request(
-                            "sendAndConfirmTransaction",
-                            "success",
-                            timer.elapsed_secs(),
-                        );
-                    }
-
-                    return Ok(sig.into());
-                }
-                Ok(Err(e)) => {
-                    let rpc_err = Self::convert_error(e, None);
-                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff)
-                        .await?;
-                }
-                Err(_elapsed) => {
-                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff)
-                        .await?;
-                }
-            }
-        }
-    }
-
     /// Convert a ClientError to RpcError.
     fn convert_error(err: ClientError, pubkey: Option<Address>) -> RpcError {
         let err_str = flatten_error(&err);
@@ -356,7 +304,6 @@ async fn send_and_poll(
     client: &RpcClient,
     transaction: &Transaction,
     commitment: CommitmentLevel,
-    skip_preflight: bool,
 ) -> Result<Signature, ClientError> {
     const CONFIRM_POLL_MS: u64 = 200;
 
@@ -365,11 +312,10 @@ async fn send_and_poll(
         .send_transaction_with_config(
             transaction,
             RpcSendTransactionConfig {
-                // Skipped only for the hot write path, whose transactions are
-                // well-formed and whose failures surface from signature status.
-                // Lifecycle keeps preflight so a rejection fails simulation for
-                // free instead of landing on chain.
-                skip_preflight,
+                // The write paths construct well-formed transactions and read
+                // failures from signature status, so the preflight simulation
+                // only adds a round-trip.
+                skip_preflight: true,
                 ..RpcSendTransactionConfig::default()
             },
         )
@@ -918,11 +864,50 @@ impl Rpc for SolanaRpc {
     async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
-        commitment: CommitmentLevel,
-        skip_preflight: bool,
     ) -> Result<Txid, RpcError> {
-        self.send_and_confirm_inner(transaction, commitment, skip_preflight)
-            .await
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let transaction = transaction.clone();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    send_and_poll(&client, &transaction, self.config.commitment),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(sig)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "sendAndConfirmTransaction",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(sig.into());
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff)
+                        .await?;
+                }
+            }
+        }
     }
 
     async fn get_signature_status(

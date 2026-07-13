@@ -23,6 +23,7 @@
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data (SliceKey -> Vec<u8>)
+//! - `slice_size`: Slice payload lengths (SliceKey -> u64)
 //!
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
@@ -41,6 +42,7 @@ pub mod object_list;
 pub mod object_metadata;
 pub mod snapshot;
 pub mod slice;
+pub mod slice_size;
 pub mod spool;
 pub mod sync_cursor;
 pub mod tape;
@@ -58,6 +60,7 @@ pub use object_list::ObjectListCol;
 pub use object_metadata::ObjectMetadataCol;
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
+pub use slice_size::SliceSizeCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
@@ -84,6 +87,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "spool_pending_repair",
     "spool_pending_recovery",
     "slice",
+    "slice_size",
     "spool_sync_cursor",
     "event_log",
     "vote_sig",

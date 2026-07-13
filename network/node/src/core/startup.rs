@@ -1,6 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
@@ -29,6 +30,11 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, 
     let meta_dir = config.store.meta_dir();
     let bulk_dir = config.store.bulk_dir();
 
+    // The first open after an upgrade rebuilds the slice size index, scanning
+    // every stored slice, so the gap between these two lines can run minutes.
+    info!(meta = %meta_dir.display(), bulk = %bulk_dir.display(), "opening store");
+    let opened_at = Instant::now();
+
     let store = TapeStore::open_primary_split(
         &meta_dir,
         &bulk_dir,
@@ -41,6 +47,8 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, 
             bulk_dir.display()
         ))
     })?;
+
+    info!(elapsed_ms = opened_at.elapsed().as_millis() as u64, "store opened");
 
     // A configured bulk path on the same device as the metadata store usually
     // means the bulk drive is not mounted, so bulk data would land on the fast
