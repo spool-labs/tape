@@ -13,7 +13,7 @@ use block::{RecordedTransaction, SlotData};
 use convert::{tx_result_to_status_result, tx_result_to_transaction_status};
 use litesvm::types::TransactionResult;
 use litesvm::LiteSVM;
-use rpc::{Rpc, RpcError, SimulationResult};
+use rpc::{Rpc, RpcError};
 use solana_account::{Account, ReadableAccount as SvmReadableAccount};
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::RpcFilterType;
@@ -583,10 +583,10 @@ impl Rpc for LiteSvmRpc {
 
         match result {
             Ok(meta) => Ok(Txid::from(meta.signature)),
-            Err(failed) => Err(RpcError::Transaction {
-                message: transaction_error(&failed.err, &failed.meta.logs),
-                err: Some(failed.err),
-            }),
+            Err(failed) => Err(RpcError::Transaction(transaction_error(
+                &failed.err,
+                &failed.meta.logs,
+            ))),
         }
     }
 
@@ -596,28 +596,6 @@ impl Rpc for LiteSvmRpc {
     ) -> Result<Txid, RpcError> {
         // LiteSVM executes immediately, so send == send_and_confirm.
         self.send_transaction(transaction).await
-    }
-
-    async fn simulate_transaction(
-        &self,
-        transaction: &Transaction,
-    ) -> Result<SimulationResult, RpcError> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-
-        let vtx: VersionedTransaction = transaction.clone().into();
-        match inner.svm.simulate_transaction(vtx) {
-            Ok(info) => Ok(SimulationResult {
-                err: None,
-                units_consumed: Some(info.meta.compute_units_consumed),
-            }),
-            Err(failed) => Ok(SimulationResult {
-                err: Some(failed.err),
-                units_consumed: Some(failed.meta.compute_units_consumed),
-            }),
-        }
     }
 
     async fn get_signature_status(

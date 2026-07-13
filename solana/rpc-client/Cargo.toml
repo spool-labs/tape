@@ -24,7 +24,6 @@ solana-client.workspace = true
 solana-account-decoder.workspace = true
 solana-commitment-config.workspace = true
 solana-compute-budget-interface.workspace = true
-solana-hash.workspace = true
 solana-instruction.workspace = true
 solana-keypair.workspace = true
 solana-pubkey.workspace = true
@@ -47,8 +46,8 @@ anyhow.workspace = true
 # Serialization
 bytemuck.workspace = true
 
-# Logging
-tracing = "0.1"
+# Logging (optional)
+tracing = { version = "0.1", optional = true }
 
 [features]
 default = []

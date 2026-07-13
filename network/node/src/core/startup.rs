@@ -74,8 +74,7 @@ fn on_same_device(_meta_dir: &Path, _bulk_dir: &Path) -> Option<bool> {
 
 fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
     let rpc_config = RpcConfig {
-        endpoints: config.solana.rpc.clone(),
-        strategy: config.solana.rpc_strategy,
+        endpoints: vec![config.solana.rpc.clone()],
         ..RpcConfig::default()
     };
 
@@ -368,7 +367,7 @@ mod tests {
         config.node.name = "test-node".into();
         config.node.node_keypair = PathBuf::from("/dev/null");
         config.node.bls_keypair = PathBuf::from("/dev/null");
-        config.solana.rpc = vec!["http://localhost:8899".into()];
+        config.solana.rpc = "http://localhost:8899".into();
         config.solana.start_slot = Some(SlotNumber(0));
         config.store.path = PathBuf::from("/tmp");
         config.network.host = Some(format!(

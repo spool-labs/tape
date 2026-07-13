@@ -49,14 +49,13 @@
 
 mod client;
 mod config;
-mod selector;
+mod failover;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
 
 // Primary export
-pub use client::{redact_url_query, SolanaRpc};
+pub use client::SolanaRpc;
 
 // Configuration exports
 pub use config::{RpcRetryConfig, RpcConfig};
-pub use selector::EndpointStrategy;

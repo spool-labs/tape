@@ -29,8 +29,8 @@ mod error;
 mod rpc;
 
 // Core exports
-pub use error::{RpcError, looks_like_transaction_error};
-pub use rpc::{Rpc, SimulationResult};
+pub use error::RpcError;
+pub use rpc::Rpc;
 
 // Re-export async_trait for implementors
 pub use async_trait::async_trait;
@@ -38,8 +38,6 @@ pub use async_trait::async_trait;
 // Re-export commonly used Solana types for convenience
 pub use solana_client::rpc_config::RpcProgramAccountsConfig;
 pub use solana_commitment_config::CommitmentLevel;
-pub use solana_instruction_error::InstructionError;
-pub use solana_transaction_error::TransactionError;
 pub use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock};
 
 /// Prelude module for convenient imports

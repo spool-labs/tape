@@ -1,12 +1,12 @@
 //! Production Solana RPC client with retry and failover capabilities.
 
 use crate::config::RpcConfig;
-use crate::selector::{EndpointCursor, EndpointSelector};
+use crate::failover::EndpointFailover;
 use async_trait::async_trait;
 use solana_account::Account;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig, RpcTransactionConfig};
+use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcTransactionConfig};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -16,11 +16,11 @@ use solana_transaction_status::{
     EncodedConfirmedTransactionWithStatusMeta, TransactionDetails, UiConfirmedBlock,
     UiTransactionEncoding,
 };
-use std::future::Future;
-use std::sync::{Arc, Mutex, PoisonError};
-use rpc::{Rpc, RpcError, SimulationResult};
+use std::sync::Arc;
+use rpc::{Rpc, RpcError};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
+use tokio::sync::RwLock;
 
 const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
     encoding: Some(UiTransactionEncoding::Json),
@@ -53,14 +53,9 @@ const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
 /// let slot = rpc.get_slot().await?;
 /// ```
 pub struct SolanaRpc {
-    /// Endpoint, retry, and strategy settings this client was built with
     config: RpcConfig,
-    /// Decides which endpoint each operation runs on
-    selector: Mutex<EndpointSelector>,
-    /// One client per configured endpoint, so switching endpoints never
-    /// rebuilds a client or drops its connection pool
-    clients: Vec<Arc<RpcClient>>,
-    /// Prometheus counters, absent when no registry is installed
+    failover: Arc<RwLock<EndpointFailover>>,
+    client: Arc<RwLock<RpcClient>>,
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
 }
@@ -79,17 +74,12 @@ impl SolanaRpc {
             commitment: config.commitment,
         };
 
-        let clients = config
-            .endpoints
-            .iter()
-            .map(|endpoint| Arc::new(RpcClient::new_with_commitment(endpoint.clone(), commitment)))
-            .collect();
+        let first_endpoint = config.endpoints[0].clone();
+        let client = RpcClient::new_with_commitment(first_endpoint, commitment);
 
-        let selector = EndpointSelector::new(
-            config.endpoints.len(),
-            config.strategy,
+        let failover = EndpointFailover::new(
+            config.endpoints.clone(),
             config.retry.max_endpoint_attempts,
-            config.retry.endpoint_cooldown,
         );
 
         #[cfg(feature = "metrics")]
@@ -108,8 +98,8 @@ impl SolanaRpc {
 
         Ok(Self {
             config,
-            selector: Mutex::new(selector),
-            clients,
+            failover: Arc::new(RwLock::new(failover)),
+            client: Arc::new(RwLock::new(client)),
             #[cfg(feature = "metrics")]
             metrics,
         })
@@ -120,105 +110,37 @@ impl SolanaRpc {
         &self.config
     }
 
-    /// Pick the endpoint a fresh operation starts on
-    fn start_operation(&self) -> EndpointCursor {
-        let (cursor, _is_restored) = self
-            .selector
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .start_operation();
+    /// Attempt to failover to the next endpoint.
+    async fn try_failover(&self) -> Result<(), RpcError> {
+        let mut failover = self.failover.write().await;
 
-        // Endpoint urls carry an api key in the query string, and the metrics
-        // endpoint is served publicly.
         #[cfg(feature = "metrics")]
-        if _is_restored {
-            tracing::info!(
-                endpoint = %redact_url_query(&self.config.endpoints[cursor.index()]),
-                "Restoring RPC endpoint"
-            );
-            if let Some(metrics) = &self.metrics {
-                metrics.set_current_endpoint(cursor.index());
-            }
+        let old_endpoint = failover.current_endpoint().to_string();
+
+        let new_endpoint = failover.next_endpoint()?;
+        let new_endpoint_str = new_endpoint.to_string();
+        #[cfg(feature = "metrics")]
+        let current_index = failover.current_index();
+
+        #[cfg(feature = "metrics")]
+        tracing::info!(endpoint = %new_endpoint_str, "Switching RPC endpoint");
+
+        #[cfg(feature = "metrics")]
+        if let Some(metrics) = &self.metrics {
+            metrics.record_failover(&old_endpoint, "endpoint_error");
+            metrics.set_current_endpoint(current_index);
         }
 
-        cursor
-    }
+        let commitment = CommitmentConfig {
+            commitment: self.config.commitment,
+        };
 
-    /// Rotate a failing operation to the next endpoint
-    ///
-    /// Best-effort: when the rotation is exhausted the operation keeps
-    /// retrying where it is via backoff.
-    fn fail_over(&self, cursor: &mut EndpointCursor) {
-        #[cfg(feature = "metrics")]
-        let old_index = cursor.index();
+        let new_client = RpcClient::new_with_commitment(new_endpoint_str, commitment);
 
-        let is_rotated = self
-            .selector
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .fail_over(cursor);
-        if !is_rotated {
-            return;
-        }
+        let mut client = self.client.write().await;
+        *client = new_client;
 
-        // Endpoint urls carry an api key in the query string, and the metrics
-        // endpoint is served publicly.
-        #[cfg(feature = "metrics")]
-        {
-            tracing::info!(
-                endpoint = %redact_url_query(&self.config.endpoints[cursor.index()]),
-                "Switching RPC endpoint"
-            );
-            if let Some(metrics) = &self.metrics {
-                metrics.record_failover(
-                    &redact_url_query(&self.config.endpoints[old_index]),
-                    "endpoint_error",
-                );
-                metrics.set_current_endpoint(cursor.index());
-            }
-        }
-    }
-
-    /// Drive one RPC operation: pick an endpoint, run the call with a
-    /// timeout, and retry with backoff and failover until it succeeds or the
-    /// retry budget runs out
-    async fn with_retry<Value, Call, CallFuture>(
-        &self,
-        method: &str,
-        call: Call,
-    ) -> Result<Value, RpcError>
-    where
-        Call: Fn(Arc<RpcClient>) -> CallFuture,
-        CallFuture: Future<Output = Result<Value, RpcError>>,
-    {
-        #[cfg(feature = "metrics")]
-        let timer = tape_metrics::OperationTimer::new();
-
-        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
-        let mut cursor = self.start_operation();
-
-        loop {
-            let client = self.clients[cursor.index()].clone();
-
-            match tokio::time::timeout(self.config.timeout, call(client)).await {
-                Ok(Ok(value)) => {
-                    #[cfg(feature = "metrics")]
-                    if let Some(metrics) = &self.metrics {
-                        metrics.record_request(method, "success", timer.elapsed_secs());
-                    }
-
-                    return Ok(value);
-                }
-                Ok(Err(error)) => {
-                    self.handle_error(method, error, &mut backoff, &mut cursor)
-                        .await?;
-                }
-                Err(_elapsed) => {
-                    self.handle_timeout(method, &mut backoff, &mut cursor)
-                        .await?;
-                }
-            }
-        }
+        Ok(())
     }
 
     /// Handle error and determine if retry should continue.
@@ -231,7 +153,6 @@ impl SolanaRpc {
         _method: &str,
         err: RpcError,
         backoff: &mut tape_retry::Backoff,
-        cursor: &mut EndpointCursor,
     ) -> Result<(), RpcError> {
         #[cfg(feature = "metrics")]
         tracing::warn!(
@@ -259,7 +180,7 @@ impl SolanaRpc {
         // Try failover if appropriate (best-effort, if exhausted, we still
         // retry on the current endpoint via backoff below)
         if err.should_failover() {
-            self.fail_over(cursor);
+            let _ = self.try_failover().await;
         }
 
         // Backoff controls when to stop retrying
@@ -287,7 +208,6 @@ impl SolanaRpc {
         &self,
         _method: &str,
         backoff: &mut tape_retry::Backoff,
-        cursor: &mut EndpointCursor,
     ) -> Result<(), RpcError> {
         let timeout_err = RpcError::Timeout(self.config.timeout);
 
@@ -304,7 +224,7 @@ impl SolanaRpc {
         }
 
         // Try failover on timeout (best-effort)
-        self.fail_over(cursor);
+        let _ = self.try_failover().await;
 
         // Backoff controls when to stop retrying
         if let Some(delay) = backoff.next_delay() {
@@ -320,6 +240,12 @@ impl SolanaRpc {
         } else {
             Err(timeout_err)
         }
+    }
+
+    /// Reset failover state for a fresh operation.
+    async fn reset_failover(&self) {
+        let mut failover = self.failover.write().await;
+        failover.reset();
     }
 
     /// Convert a ClientError to RpcError.
@@ -338,39 +264,19 @@ impl SolanaRpc {
         }
 
         if let Some(tx_error) = err.get_transaction_error() {
-            let display = tx_error.to_string();
-            let message = if err_str.contains(&display) {
-                err_str
-            } else {
-                format!("{display}; {err_str}")
-            };
-            return RpcError::Transaction {
-                err: Some(tx_error),
-                message,
-            };
+            let tx_error = tx_error.to_string();
+            if err_str.contains(&tx_error) {
+                return RpcError::Transaction(err_str);
+            }
+            return RpcError::Transaction(format!("{tx_error}; {err_str}"));
         }
 
         if err_str.contains("Transaction simulation failed") {
-            return RpcError::Transaction {
-                err: None,
-                message: err_str,
-            };
+            return RpcError::Transaction(err_str);
         }
 
         // Default to Request error with the error message
         RpcError::Request(err_str)
-    }
-
-    /// Convert a getTransaction ClientError, mapping lookup misses to
-    /// TransactionNotFound.
-    fn convert_transaction_error(err: ClientError, txid: Txid) -> RpcError {
-        let err_str = err.to_string();
-        if err_str.contains("not found") || err_str.contains("Transaction version not supported")
-        {
-            return RpcError::TransactionNotFound(txid);
-        }
-
-        Self::convert_error(err, None)
     }
 
     fn normalize_get_block_error(error: RpcError) -> RpcError {
@@ -388,6 +294,7 @@ impl SolanaRpc {
     fn is_block_not_available_message(message: &str) -> bool {
         message.contains("invalid type: null") && message.contains("UiConfirmedBlock")
     }
+
 }
 
 /// Send a transaction and poll its signature status at a short fixed cadence.
@@ -437,88 +344,300 @@ impl Rpc for SolanaRpc {
     }
 
     async fn get_slot(&self) -> Result<u64, RpcError> {
-        self.with_retry("getSlot", |client| async move {
-            client
-                .get_slot()
-                .await
-                .map_err(|error| Self::convert_error(error, None))
-        })
-        .await
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(self.config.timeout, client.get_slot()).await
+            };
+
+            match result {
+                Ok(Ok(slot)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request("getSlot", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(slot);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getSlot", rpc_err, &mut backoff).await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getSlot", &mut backoff).await?;
+                }
+            }
+        }
     }
 
     async fn get_finalized_slot(&self) -> Result<u64, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
         let commitment = CommitmentConfig::finalized();
 
-        self.with_retry("getSlot:finalized", move |client| async move {
-            client
-                .get_slot_with_commitment(commitment)
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_slot_with_commitment(commitment),
+                )
                 .await
-                .map_err(|error| Self::convert_error(error, None))
-        })
-        .await
+            };
+
+            match result {
+                Ok(Ok(slot)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics
+                            .record_request("getSlot:finalized", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(slot);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getSlot:finalized", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getSlot:finalized", &mut backoff).await?;
+                }
+            }
+        }
     }
 
     async fn get_first_available_block(&self) -> Result<u64, RpcError> {
-        self.with_retry("getFirstAvailableBlock", |client| async move {
-            client
-                .get_first_available_block()
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_first_available_block(),
+                )
                 .await
-                .map_err(|error| Self::convert_error(error, None))
-        })
-        .await
+            };
+
+            match result {
+                Ok(Ok(slot)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getFirstAvailableBlock",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(slot);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getFirstAvailableBlock", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getFirstAvailableBlock", &mut backoff).await?;
+                }
+            }
+        }
     }
 
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
-        self.with_retry("getLatestBlockhash", |client| async move {
-            client
-                .get_latest_blockhash()
-                .await
-                .map_err(|error| Self::convert_error(error, None))
-        })
-        .await
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(self.config.timeout, client.get_latest_blockhash()).await
+            };
+
+            match result {
+                Ok(Ok(hash)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request("getLatestBlockhash", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(hash);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getLatestBlockhash", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getLatestBlockhash", &mut backoff)
+                        .await?;
+                }
+            }
+        }
     }
 
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
-        self.with_retry("getBlock", move |client| async move {
-            client
-                .get_block_with_config(slot, BLOCK_CONFIG)
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_block_with_config(slot, BLOCK_CONFIG),
+                )
                 .await
-                .map_err(|error| Self::normalize_get_block_error(Self::convert_error(error, None)))
-        })
-        .await
+            };
+
+            match result {
+                Ok(Ok(block)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request("getBlock", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(block);
+                }
+                Ok(Err(e)) => {
+                    let rpc_error = Self::normalize_get_block_error(Self::convert_error(e, None));
+                    self.handle_error("getBlock", rpc_error, &mut backoff).await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getBlock", &mut backoff).await?;
+                }
+            }
+        }
     }
 
     async fn get_transaction(
         &self,
         txid: &Txid,
     ) -> Result<EncodedConfirmedTransactionWithStatusMeta, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
         let txid = *txid;
         let signature: Signature = txid.into();
-        let config = RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::Json),
-            commitment: Some(CommitmentConfig {
-                commitment: self.config.commitment,
-            }),
-            max_supported_transaction_version: Some(0),
-        };
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+        let commitment = self.config.commitment;
 
-        self.with_retry("getTransaction", move |client| async move {
-            client
-                .get_transaction_with_config(&signature, config)
+        loop {
+            let config = RpcTransactionConfig {
+                encoding: Some(UiTransactionEncoding::Json),
+                commitment: Some(CommitmentConfig { commitment }),
+                max_supported_transaction_version: Some(0),
+            };
+
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_transaction_with_config(&signature, config),
+                )
                 .await
-                .map_err(|error| Self::convert_transaction_error(error, txid))
-        })
-        .await
+            };
+
+            match result {
+                Ok(Ok(transaction)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getTransaction",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(transaction);
+                }
+                Ok(Err(e)) => {
+                    let err_str = e.to_string();
+                    let rpc_err = if err_str.contains("not found")
+                        || err_str.contains("Transaction version not supported")
+                    {
+                        RpcError::TransactionNotFound(txid)
+                    } else {
+                        Self::convert_error(e, None)
+                    };
+                    self.handle_error("getTransaction", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getTransaction", &mut backoff).await?;
+                }
+            }
+        }
     }
 
     async fn get_block_height(&self) -> Result<u64, RpcError> {
-        self.with_retry("getBlockHeight", |client| async move {
-            client
-                .get_block_height()
-                .await
-                .map_err(|error| Self::convert_error(error, None))
-        })
-        .await
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(self.config.timeout, client.get_block_height()).await
+            };
+
+            match result {
+                Ok(Ok(height)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request("getBlockHeight", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(height);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getBlockHeight", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getBlockHeight", &mut backoff).await?;
+                }
+            }
+        }
     }
 
     async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError> {
@@ -531,20 +650,50 @@ impl Rpc for SolanaRpc {
         pubkey: &Address,
         commitment: CommitmentLevel,
     ) -> Result<Account, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
         let pubkey = *pubkey;
         let solana_pubkey: Pubkey = pubkey.into();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
         let commitment = CommitmentConfig { commitment };
 
-        let response = self
-            .with_retry("getAccount", move |client| async move {
-                client
-                    .get_account_with_commitment(&solana_pubkey, commitment)
-                    .await
-                    .map_err(|error| Self::convert_error(error, Some(pubkey)))
-            })
-            .await?;
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_account_with_commitment(&solana_pubkey, commitment),
+                )
+                .await
+            };
 
-        response.value.ok_or(RpcError::AccountNotFound(pubkey))
+            match result {
+                Ok(Ok(response)) => {
+                    let Some(account) = response.value else {
+                        return Err(RpcError::AccountNotFound(pubkey));
+                    };
+
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request("getAccount", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(account);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, Some(pubkey));
+                    self.handle_error("getAccount", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getAccount", &mut backoff).await?;
+                }
+            }
+        }
     }
 
     async fn get_multiple_accounts(
@@ -560,22 +709,51 @@ impl Rpc for SolanaRpc {
         pubkeys: &[Address],
         commitment: CommitmentLevel,
     ) -> Result<Vec<Option<Account>>, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let pubkeys = pubkeys.to_vec();
         let solana_pubkeys: Vec<Pubkey> = pubkeys.iter().copied().map(Into::into).collect();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
         let commitment = CommitmentConfig { commitment };
 
-        let response = self
-            .with_retry("getMultipleAccounts", move |client| {
-                let pubkeys = solana_pubkeys.clone();
-                async move {
-                    client
-                        .get_multiple_accounts_with_commitment(&pubkeys, commitment)
-                        .await
-                        .map_err(|error| Self::convert_error(error, None))
-                }
-            })
-            .await?;
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_multiple_accounts_with_commitment(&solana_pubkeys, commitment),
+                )
+                .await
+            };
 
-        Ok(response.value)
+            match result {
+                Ok(Ok(accounts)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getMultipleAccounts",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(accounts.value);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getMultipleAccounts", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getMultipleAccounts", &mut backoff)
+                        .await?;
+                }
+            }
+        }
     }
 
     async fn get_program_accounts(
@@ -583,116 +761,202 @@ impl Rpc for SolanaRpc {
         program_id: &Address,
         config: RpcProgramAccountsConfig,
     ) -> Result<Vec<(Address, Account)>, RpcError> {
-        let solana_program_id: Pubkey = (*program_id).into();
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
 
-        let accounts = self
-            .with_retry("getProgramAccounts", move |client| {
-                let config = config.clone();
-                async move {
-                    client
-                        .get_program_ui_accounts_with_config(&solana_program_id, config)
-                        .await
-                        .map_err(|error| Self::convert_error(error, None))
+        let program_id = *program_id;
+        let solana_program_id: Pubkey = program_id.into();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let config_clone = config.clone();
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_program_ui_accounts_with_config(&solana_program_id, config_clone),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(accounts)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getProgramAccounts",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(accounts
+                        .into_iter()
+                        .map(|(address, account)| {
+                            account
+                                .to_account()
+                                .map(|account| (address.into(), account))
+                                .ok_or_else(|| {
+                                    RpcError::Deserialization(
+                                        "program account was not binary-decodable".to_string(),
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?);
                 }
-            })
-            .await?;
-
-        let mut out = Vec::with_capacity(accounts.len());
-        for (address, account) in accounts {
-            let account = account.to_account().ok_or_else(|| {
-                RpcError::Deserialization("program account was not binary-decodable".to_string())
-            })?;
-            out.push((address.into(), account));
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getProgramAccounts", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getProgramAccounts", &mut backoff)
+                        .await?;
+                }
+            }
         }
-
-        Ok(out)
     }
 
     async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError> {
-        let transaction = Arc::new(transaction.clone());
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
 
-        let signature = self
-            .with_retry("sendTransaction", move |client| {
-                let transaction = transaction.clone();
-                async move {
-                    client
-                        .send_transaction(transaction.as_ref())
-                        .await
-                        .map_err(|error| Self::convert_error(error, None))
+        let transaction = transaction.clone();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.send_transaction(&transaction),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(sig)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request("sendTransaction", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(sig.into());
                 }
-            })
-            .await?;
-
-        Ok(signature.into())
-    }
-
-    async fn simulate_transaction(
-        &self,
-        transaction: &Transaction,
-    ) -> Result<SimulationResult, RpcError> {
-        let transaction = Arc::new(transaction.clone());
-        let config = RpcSimulateTransactionConfig {
-            sig_verify: false,
-            replace_recent_blockhash: true,
-            commitment: Some(CommitmentConfig {
-                commitment: self.config.commitment,
-            }),
-            ..RpcSimulateTransactionConfig::default()
-        };
-
-        self.with_retry("simulateTransaction", move |client| {
-            let transaction = transaction.clone();
-            let config = config.clone();
-            async move {
-                let response = client
-                    .simulate_transaction_with_config(transaction.as_ref(), config)
-                    .await
-                    .map_err(|error| Self::convert_error(error, None))?;
-
-                let value = response.value;
-                Ok(SimulationResult {
-                    err: value.err.map(Into::into),
-                    units_consumed: value.units_consumed,
-                })
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("sendTransaction", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("sendTransaction", &mut backoff).await?;
+                }
             }
-        })
-        .await
+        }
     }
 
     async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
     ) -> Result<Txid, RpcError> {
-        let transaction = Arc::new(transaction.clone());
-        let commitment = self.config.commitment;
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
 
-        let signature = self
-            .with_retry("sendAndConfirmTransaction", move |client| {
-                let transaction = transaction.clone();
-                async move {
-                    send_and_poll(&client, &transaction, commitment)
-                        .await
-                        .map_err(|error| Self::convert_error(error, None))
+        let transaction = transaction.clone();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    send_and_poll(&client, &transaction, self.config.commitment),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(sig)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "sendAndConfirmTransaction",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(sig.into());
                 }
-            })
-            .await?;
-
-        Ok(signature.into())
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff)
+                        .await?;
+                }
+            }
+        }
     }
 
     async fn get_signature_status(
         &self,
         txid: &Txid,
     ) -> Result<Option<Result<(), TransactionError>>, RpcError> {
-        let signature: Signature = (*txid).into();
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
 
-        self.with_retry("getSignatureStatus", move |client| async move {
-            client
-                .get_signature_status(&signature)
+        let signature: Signature = (*txid).into();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
+        self.reset_failover().await;
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_signature_status(&signature),
+                )
                 .await
-                .map_err(|error| Self::convert_error(error, None))
-        })
-        .await
+            };
+
+            match result {
+                Ok(Ok(status)) => {
+                    self.reset_failover().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getSignatureStatus",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(status);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getSignatureStatus", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getSignatureStatus", &mut backoff)
+                        .await?;
+                }
+            }
+        }
     }
 }
 
@@ -707,9 +971,9 @@ fn flatten_error(err: &(dyn std::error::Error + 'static)) -> String {
     redact_url_query(&out)
 }
 
-/// Strip query strings from URLs embedded in text; they carry credentials
-/// (`?api=<key>`) and end up in logs.
-pub fn redact_url_query(msg: &str) -> String {
+/// Strip query strings from URLs embedded in error text; they carry
+/// credentials (`?api=<key>`) and end up in logs.
+fn redact_url_query(msg: &str) -> String {
     let mut out = String::with_capacity(msg.len());
     let mut rest = msg;
     while let Some(pos) = rest.find('?') {
@@ -759,19 +1023,6 @@ mod tests {
 
         let plain = "was the slot skipped? maybe";
         assert_eq!(redact_url_query(plain), plain);
-    }
-
-    // a bare endpoint url is redacted before it reaches a log or a metric label
-    #[test]
-    fn redacts_bare_endpoint_url() {
-        let endpoint = "https://devnet.helius-rpc.com/?api-key=3109787a-400a-407d";
-        assert_eq!(
-            redact_url_query(endpoint),
-            "https://devnet.helius-rpc.com/?<redacted>"
-        );
-
-        let keyless = "http://127.0.0.1:8899";
-        assert_eq!(redact_url_query(keyless), keyless);
     }
 
     #[test]
@@ -829,14 +1080,7 @@ mod tests {
         let converted = SolanaRpc::convert_error(error, None);
 
         match converted {
-            RpcError::Transaction { err, message } => {
-                assert_eq!(
-                    err,
-                    Some(TransactionError::InstructionError(
-                        1,
-                        InstructionError::Custom(0x12),
-                    ))
-                );
+            RpcError::Transaction(message) => {
                 assert!(message.contains("Error processing Instruction 1"));
                 assert!(message.contains("custom program error: 0x12"));
             }

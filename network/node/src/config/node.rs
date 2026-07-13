@@ -154,10 +154,8 @@ impl NodeConfig {
             )));
         }
 
-        if self.solana.rpc.is_empty() || self.solana.rpc.iter().any(|url| url.trim().is_empty()) {
-            return Err(ConfigError::Invalid(
-                "solana.rpc must list at least one endpoint".into(),
-            ));
+        if self.solana.rpc.trim().is_empty() {
+            return Err(ConfigError::Invalid("solana.rpc is required".into()));
         }
 
         if !self.node.commission.is_valid() {
@@ -388,8 +386,7 @@ node:
   bls_keypair: "/etc/tape/bls.key"
   commission: 0
 solana:
-  rpc:
-    - "http://127.0.0.1:8899"
+  rpc: "http://127.0.0.1:8899"
   start_slot: 12
 network:
   host: "10.0.0.1"
@@ -457,7 +454,7 @@ metrics:
         assert_eq!(config.node.node_keypair, PathBuf::from("/etc/tape/node.json"));
         assert_eq!(config.node.bls_keypair, PathBuf::from("/etc/tape/bls.key"));
         assert_eq!(config.node.commission, BasisPoints(0));
-        assert_eq!(config.solana.rpc, vec!["http://127.0.0.1:8899"]);
+        assert_eq!(config.solana.rpc, "http://127.0.0.1:8899");
         assert_eq!(config.solana.start_slot, Some(SlotNumber(12)));
         assert_eq!(config.network.host.as_deref(), Some("10.0.0.1"));
         assert_eq!(config.network.port, 3430);
@@ -535,19 +532,6 @@ https:
             r#"
 http:
   listen: "not-an-address"
-"#,
-        );
-
-        assert!(result.is_err());
-    }
-
-    // an empty endpoint list leaves the ingestor with nowhere to read from
-    #[test]
-    fn rejects_empty_rpc_list() {
-        let result = NodeConfig::from_yaml_str(
-            r#"
-solana:
-  rpc: []
 "#,
         );
 

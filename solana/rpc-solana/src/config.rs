@@ -2,17 +2,11 @@ use serde::{Deserialize, Serialize};
 use solana_commitment_config::CommitmentLevel;
 use std::time::Duration;
 
-use crate::selector::EndpointStrategy;
-
 /// RPC client configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RpcConfig {
     /// Primary and fallback RPC endpoints
     pub endpoints: Vec<String>,
-
-    /// How a fresh operation picks the endpoint it starts on
-    #[serde(default)]
-    pub strategy: EndpointStrategy,
 
     /// Commitment level for queries
     #[serde(default = "default_commitment")]
@@ -61,21 +55,12 @@ pub struct RpcRetryConfig {
     /// Max endpoints to try before giving up (default: 3)
     #[serde(default = "default_max_endpoint_attempts")]
     pub max_endpoint_attempts: u32,
-
-    /// How long a failed endpoint is skipped before it is preferred again (default: 30s)
-    #[serde(
-        default = "default_endpoint_cooldown",
-        serialize_with = "serialize_duration",
-        deserialize_with = "deserialize_duration"
-    )]
-    pub endpoint_cooldown: Duration,
 }
 
 impl Default for RpcConfig {
     fn default() -> Self {
         Self {
             endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],
-            strategy: EndpointStrategy::default(),
             commitment: default_commitment(),
             timeout: default_timeout(),
             retry: RpcRetryConfig::default(),
@@ -102,7 +87,6 @@ impl Default for RpcRetryConfig {
             max_backoff: default_max_backoff(),
             jitter: default_jitter(),
             max_endpoint_attempts: default_max_endpoint_attempts(),
-            endpoint_cooldown: default_endpoint_cooldown(),
         }
     }
 }
@@ -134,10 +118,6 @@ fn default_jitter() -> bool {
 
 fn default_max_endpoint_attempts() -> u32 {
     3
-}
-
-fn default_endpoint_cooldown() -> Duration {
-    Duration::from_secs(30)
 }
 
 // Custom serialization/deserialization for Duration
@@ -173,7 +153,6 @@ mod tests {
     fn test_serialize_deserialize() {
         let config = RpcConfig {
             endpoints: vec!["https://test.com".to_string()],
-            strategy: EndpointStrategy::RoundRobin,
             commitment: CommitmentLevel::Finalized,
             timeout: Duration::from_secs(10),
             retry: RpcRetryConfig {
@@ -182,7 +161,6 @@ mod tests {
                 max_backoff: Duration::from_secs(5),
                 jitter: false,
                 max_endpoint_attempts: 2,
-                endpoint_cooldown: Duration::from_secs(30),
             },
         };
 
@@ -190,35 +168,9 @@ mod tests {
         let deserialized: RpcConfig = serde_json::from_str(&json).unwrap();
 
         assert_eq!(config.endpoints, deserialized.endpoints);
-        assert_eq!(config.strategy, deserialized.strategy);
         assert_eq!(config.commitment, deserialized.commitment);
         assert_eq!(config.timeout, deserialized.timeout);
         assert_eq!(config.retry.max_retries, deserialized.retry.max_retries);
-    }
-
-    // every strategy name parses from its kebab-case form
-    #[test]
-    fn strategy_names() {
-        let cases = [
-            ("\"prefer-primary\"", EndpointStrategy::PreferPrimary),
-            ("\"failover-sticky\"", EndpointStrategy::FailoverSticky),
-            ("\"round-robin\"", EndpointStrategy::RoundRobin),
-        ];
-
-        for (json, expected) in cases {
-            let parsed: EndpointStrategy = serde_json::from_str(json).expect("parse");
-            assert_eq!(parsed, expected);
-        }
-    }
-
-    // a config without a strategy field falls back to prefer-primary
-    #[test]
-    fn strategy_default() {
-        let json = r#"{"endpoints":["https://test.com"]}"#;
-
-        let config: RpcConfig = serde_json::from_str(json).expect("parse");
-
-        assert_eq!(config.strategy, EndpointStrategy::PreferPrimary);
     }
 
     #[test]

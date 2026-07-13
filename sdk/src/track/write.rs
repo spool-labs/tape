@@ -1001,10 +1001,9 @@ mod tests {
     // certify_with_retry must recollect from peers, not just resubmit.
     #[test]
     fn certification_retries_epoch_changed() {
-        let err = TapedriveError::Rpc(rpc::RpcError::Transaction {
-            err: None,
-            message: "custom program error: 0x34".to_string(),
-        });
+        let err = TapedriveError::Rpc(rpc::RpcError::Transaction(
+            "custom program error: 0x34".to_string(),
+        ));
         assert!(should_retry_certification(&err));
     }
 }

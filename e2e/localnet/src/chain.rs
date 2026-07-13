@@ -11,7 +11,6 @@ use solana_instruction::Instruction;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use tape_api::compute::MAX_COMPUTE_UNIT_LIMIT;
 use tape_api::errors::{ProgramError, TapeError};
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
@@ -30,6 +29,7 @@ use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tracing::info;
 
+const CU_HIGH: u32 = 1_400_000;
 const CU_MED: u32 = 400_000;
 const BOOTSTRAP_EPOCHS: [EpochNumber; 3] = [EpochNumber(0), EpochNumber(1), EpochNumber(2)];
 
@@ -202,7 +202,7 @@ impl ChainManager {
         let authority_signer = CryptoKeypair::from_solana_keypair(authority_keypair)
             .context("convert authority keypair")?;
 
-        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT)];
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(CU_HIGH)];
 
         let payer_is_authority = self.admin.pubkey() == authority;
         if !payer_is_authority {

@@ -17,16 +17,6 @@ use tape_crypto::tx::Txid;
 
 use crate::error::RpcError;
 
-/// Outcome of simulating a transaction without submitting it.
-#[derive(Debug, Clone)]
-pub struct SimulationResult {
-    /// Execution error, if the simulated transaction failed.
-    pub err: Option<TransactionError>,
-
-    /// Compute units the transaction consumed.
-    pub units_consumed: Option<u64>,
-}
-
 /// Core RPC trait for Solana operations
 ///
 /// This trait mirrors the Store pattern from `tapedrive/archive/store/`.
@@ -127,13 +117,6 @@ pub trait Rpc: Send + Sync {
 
     /// Send a transaction without waiting for confirmation
     async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError>;
-
-    /// Simulate a transaction without submitting it, returning the execution
-    /// outcome and compute units consumed
-    async fn simulate_transaction(
-        &self,
-        transaction: &Transaction,
-    ) -> Result<SimulationResult, RpcError>;
 
     /// Send a transaction and wait for confirmation
     async fn send_and_confirm_transaction(

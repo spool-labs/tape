@@ -20,8 +20,8 @@
 #   make admin        - Build tape-admin release binary
 #   make network      - Build tape-network release binary
 #   make tape         - Build tape (end-user) CLI release binary
-#   make node-linux   - Build tape-node for x86_64 Linux (native, Linux only; from
-#                       macOS use `tape-network build-linux` — the DO builder droplet)
+#   make node-linux   - Build tape-node for x86_64 Linux (native on Linux; on
+#                       macOS builds inside a linux container via docker)
 #   make deploy-tools - All of the above plus the Solana programs
 #   make install      - `cargo install` tape-node, tape-admin, tape-network, and
 #                       tape into ~/.cargo/bin
@@ -157,18 +157,30 @@ network:
 tape:
 	cargo build --release -p tape
 
-# Build tape-node for x86_64 Linux. Cross-compiling from macOS does not work (RocksDB +
-# vendored openssl choke under a cross cc wrapper), so from macOS use the DigitalOcean
-# builder — `tape-network build-linux` — which builds natively on an ephemeral droplet.
-# This target is that native build; it runs on the droplet and on Linux dev boxes.
+# Build tape-node for x86_64 Linux. Native on Linux; on macOS it builds in a
+# linux container, since RocksDB and vendored openssl choke under a host
+# cross-compiler. No docker? Use the DO builder: `tape-network build-linux`.
 ifeq ($(UNAME_S),Linux)
 node-linux:
 	cargo build --release --target x86_64-unknown-linux-gnu --features metrics -p tape-node
 else
+# Compile in a native-arch container so rustc doesn't segfault under amd64
+# emulation, then cross-compile to x86_64 from there. Pin the platform: some
+# docker backends otherwise grab the amd64 image on arm hosts. The registry
+# volume and target/linux cache keep repeat builds cheap.
+DOCKER_PLATFORM := linux/$(shell uname -m | sed 's/x86_64/amd64/')
 node-linux:
-	@echo "local cross-compile is unsupported (RocksDB). Build on Linux instead:" >&2
-	@echo "  tape-network build-linux   # provisions an ephemeral DO builder droplet" >&2
-	@exit 1
+	docker build -q --platform $(DOCKER_PLATFORM) -t tape-linux-builder -f deploy/Dockerfile.linux-builder deploy
+	docker run --rm --platform $(DOCKER_PLATFORM) \
+		-v $(CURDIR):/src -w /src \
+		-v tape-cargo-registry:/usr/local/cargo/registry \
+		-e CARGO_TARGET_DIR=/src/target/linux \
+		-e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+		-e CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
+		-e CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
+		tape-linux-builder \
+		cargo build --release --target x86_64-unknown-linux-gnu --features metrics -p tape-node
+	@echo "binary: target/linux/x86_64-unknown-linux-gnu/release/tape-node"
 endif
 
 deploy-tools: programs admin network tape node-linux

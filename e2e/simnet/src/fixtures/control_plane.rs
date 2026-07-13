@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use tape_api::compute::MAX_COMPUTE_UNIT_LIMIT;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_add_to_blacklist_ix, build_advance_pool_ix, build_set_committee_size_ix,
@@ -19,6 +18,7 @@ use crate::log::append_log;
 use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
+    const CU_HIGH: u32 = 1_400_000;
     const CU_MED: u32 = 400_000;
 
     pub fn node_address(&self, index: usize) -> Pubkey {
@@ -51,7 +51,7 @@ impl SimnetScenario<'_> {
         let amount = TAPE::parse(&amount_tape.to_string())
             .map_err(|_| anyhow::anyhow!("invalid stake amount"))?;
 
-        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT)];
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_HIGH)];
         let payer_is_authority = payer.pubkey() == authority;
         if !payer_is_authority {
             ixs.extend(build_authority_with_tokens_ix(
@@ -102,7 +102,7 @@ impl SimnetScenario<'_> {
         let amount = TAPE::parse(&amount_tape.to_string())
             .map_err(|_| anyhow::anyhow!("invalid stake amount"))?;
 
-        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT)];
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_HIGH)];
         ixs.extend(build_authority_with_tokens_ix(
             payer.pubkey().into(),
             authority.into(),

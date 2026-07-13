@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use rpc::{InstructionError, RpcError, looks_like_transaction_error};
+use rpc::RpcError;
 use rpc_client::parse_tape_error;
 use tape_api::errors::{TapeError, is_account_state_pending_error};
 use tape_crypto::tx::Txid;
@@ -55,10 +55,6 @@ pub fn classify_rejection(err: &RpcError) -> TxRejectionKind {
         return TxRejectionKind::Program(tape_err);
     }
 
-    if let Some(kind) = classify_instruction_error(err) {
-        return kind;
-    }
-
     let Some(msg) = transaction_error_message(err) else {
         return TxRejectionKind::Transport;
     };
@@ -74,25 +70,18 @@ pub fn classify_rejection(err: &RpcError) -> TxRejectionKind {
     TxRejectionKind::UnknownExecution
 }
 
-/// Classify from the structured runtime error when the RPC reported one.
-/// Message matching below stays as the fallback for proxies that flatten
-/// errors into text, and for conditions only visible in program logs.
-fn classify_instruction_error(err: &RpcError) -> Option<TxRejectionKind> {
-    match err.instruction_error()? {
-        InstructionError::AccountAlreadyInitialized => Some(TxRejectionKind::KnownContention),
-        InstructionError::UninitializedAccount
-        | InstructionError::InvalidAccountData
-        | InstructionError::InvalidAccountOwner => Some(TxRejectionKind::KnownStaleState),
+fn transaction_error_message(err: &RpcError) -> Option<&str> {
+    match err {
+        RpcError::Transaction(msg) => Some(msg),
+        RpcError::Request(msg) if looks_like_transaction_error(msg) => Some(msg),
         _ => None,
     }
 }
 
-fn transaction_error_message(err: &RpcError) -> Option<&str> {
-    match err {
-        RpcError::Transaction { message, .. } => Some(message),
-        RpcError::Request(msg) if looks_like_transaction_error(msg) => Some(msg),
-        _ => None,
-    }
+fn looks_like_transaction_error(msg: &str) -> bool {
+    msg.contains("Error processing Instruction")
+        || msg.contains("InstructionError")
+        || msg.contains("custom program error")
 }
 
 fn is_known_contention_error(msg: &str) -> bool {
@@ -130,19 +119,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rpc::TransactionError;
     use solana_signature::Signature;
     use std::time::Duration;
 
     fn test_txid(byte: u8) -> Txid {
         Signature::from([byte; 64]).into()
-    }
-
-    fn text_error(message: &str) -> RpcError {
-        RpcError::Transaction {
-            err: None,
-            message: message.to_string(),
-        }
     }
 
     #[test]
@@ -154,7 +135,7 @@ mod tests {
 
     #[test]
     fn program_error() {
-        let err = text_error("custom program error: 0x51");
+        let err = RpcError::Transaction("custom program error: 0x51".to_string());
         let outcome = classify_tx(Err(err));
         assert!(matches!(
             outcome,
@@ -167,7 +148,7 @@ mod tests {
 
     #[test]
     fn pool_accounting_failed_program_error() {
-        let err = text_error("custom program error: 0x67");
+        let err = RpcError::Transaction("custom program error: 0x67".to_string());
         let outcome = classify_tx(Err(err));
         assert!(matches!(
             outcome,
@@ -193,7 +174,7 @@ mod tests {
 
     #[test]
     fn unparseable_tx_error() {
-        let err = text_error("unknown error 999");
+        let err = RpcError::Transaction("unknown error 999".to_string());
         let outcome = classify_tx(Err(err));
         assert!(matches!(
             outcome,
@@ -206,8 +187,9 @@ mod tests {
 
     #[test]
     fn account_already_initialized_is_contention() {
-        let err = text_error(
-            "Error processing Instruction 1: instruction requires an uninitialized account",
+        let err = RpcError::Transaction(
+            "Error processing Instruction 1: instruction requires an uninitialized account"
+                .to_string(),
         );
         let outcome = classify_tx(Err(err));
         assert!(matches!(
@@ -220,50 +202,9 @@ mod tests {
     }
 
     #[test]
-    fn structured_contention_and_stale_state() {
-        let contention = RpcError::Transaction {
-            err: Some(TransactionError::InstructionError(
-                1,
-                InstructionError::AccountAlreadyInitialized,
-            )),
-            message: "Error processing Instruction 1: instruction requires an uninitialized account"
-                .to_string(),
-        };
-        assert!(matches!(
-            classify_rejection(&contention),
-            TxRejectionKind::KnownContention
-        ));
-
-        let stale = RpcError::Transaction {
-            err: Some(TransactionError::InstructionError(
-                1,
-                InstructionError::InvalidAccountData,
-            )),
-            message: "Error processing Instruction 1: invalid account data for instruction"
-                .to_string(),
-        };
-        assert!(matches!(
-            classify_rejection(&stale),
-            TxRejectionKind::KnownStaleState
-        ));
-
-        let budget = RpcError::Transaction {
-            err: Some(TransactionError::InstructionError(
-                1,
-                InstructionError::ComputationalBudgetExceeded,
-            )),
-            message: "Error processing Instruction 1: Computational budget exceeded".to_string(),
-        };
-        assert!(matches!(
-            classify_rejection(&budget),
-            TxRejectionKind::UnknownExecution
-        ));
-    }
-
-    #[test]
     fn invalid_account_data_is_stale_state() {
-        let err = text_error(
-            "Error processing Instruction 1: invalid account data for instruction",
+        let err = RpcError::Transaction(
+            "Error processing Instruction 1: invalid account data for instruction".to_string(),
         );
         let outcome = classify_tx(Err(err));
         assert!(matches!(
@@ -307,7 +248,7 @@ mod tests {
         bus.publish(crate::core::ingest::IngestState::AtTip);
 
         let outcome = submit_if_at_tip(&bus, async {
-            Err(text_error("custom program error: 0x51"))
+            Err(RpcError::Transaction("custom program error: 0x51".to_string()))
         })
         .await;
 
