@@ -55,7 +55,7 @@ mod selector;
 pub mod metrics;
 
 // Primary export
-pub use client::SolanaRpc;
+pub use client::{redact_url_query, SolanaRpc};
 
 // Configuration exports
 pub use config::{RpcRetryConfig, RpcConfig};

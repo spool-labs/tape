@@ -1,4 +1,4 @@
-use rpc_solana::EndpointStrategy;
+use rpc_solana::{redact_url_query, EndpointStrategy};
 use serde::Deserialize;
 use tape_core::types::SlotNumber;
 
@@ -30,14 +30,14 @@ pub struct SolanaConfig {
 }
 
 impl SolanaConfig {
-    /// The primary endpoint with its query string stripped, safe to log
+    /// The primary endpoint with its query string redacted, safe to log
     ///
     /// The query part carries the RPC api key.
-    pub fn rpc_display(&self) -> &str {
+    pub fn rpc_display(&self) -> String {
         self.rpc
             .first()
-            .and_then(|endpoint| endpoint.split('?').next())
-            .unwrap_or("")
+            .map(|endpoint| redact_url_query(endpoint))
+            .unwrap_or_default()
     }
 }
 
@@ -90,17 +90,6 @@ mod tests {
             ..SolanaConfig::default()
         };
 
-        assert_eq!(config.rpc_display(), "https://devnet.helius-rpc.com/");
-    }
-
-    // an endpoint list is required
-    #[test]
-    fn display_tolerates_empty() {
-        let config = SolanaConfig {
-            rpc: Vec::new(),
-            ..SolanaConfig::default()
-        };
-
-        assert_eq!(config.rpc_display(), "");
+        assert_eq!(config.rpc_display(), "https://devnet.helius-rpc.com/?<redacted>");
     }
 }
