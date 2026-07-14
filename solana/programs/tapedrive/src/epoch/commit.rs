@@ -84,7 +84,7 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     if next_committee.epoch != next {
         return Err(TapeError::BadEpochId.into());
     }
-    if next_committee.members.count < next_committee.members.capacity {
+    if (next_committee.members.count as usize) < GROUP_SIZE {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -312,6 +312,82 @@ mod tests {
                     .data(expected_next.pack().as_ref())
                     .build(),
             ],
+        );
+    }
+
+    fn committee_with(epoch: EpochNumber, capacity: u64, count: usize) -> Vec<u8> {
+        let members: Vec<Member> = members().into_iter().take(count).collect();
+        Committee { epoch, members: Tail::new(capacity, members.len() as u64) }
+            .pack_with(&members)
+    }
+
+    fn commit_next_committee_case(next_committee: Vec<u8>, check: Check) {
+        let fee_payer = Pubkey::new_unique();
+        let curr = EpochNumber(10);
+        let next = EpochNumber(11);
+        let prev = curr.prev();
+
+        let env = test_env();
+        let now = env.now();
+
+        let system = System {
+            current_epoch: curr,
+            target_group_count: SPOOL_GROUPS,
+            live_group_count: SPOOL_GROUPS,
+            committee_size: COMMITTEE_SIZE,
+            min_epoch_duration: TEST_MIN_EPOCH_DURATION,
+            max_epoch_duration: TEST_MAX_EPOCH_DURATION,
+            ..System::zeroed()
+        };
+        let curr_epoch = Epoch {
+            id: curr,
+            start_time: now - TEST_EPOCH_DURATION.0 as i64,
+            preferences: test_preferences(),
+            state: EpochState {
+                phase: EpochPhase::Active as u64,
+                ..EpochState::zeroed()
+            },
+            ..Epoch::zeroed()
+        };
+        let next_epoch = Epoch {
+            id: next,
+            total_groups: SPOOL_GROUPS,
+            state: EpochState::zeroed(),
+            ..Epoch::zeroed()
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(system_pda().0, system.pack(), tapedrive::ID),
+            pda(epoch_pda(curr).0, curr_epoch.pack(), tapedrive::ID),
+            pda(epoch_pda(next).0, next_epoch.pack(), tapedrive::ID),
+            pda(committee_pda(curr).0, populated_committee(curr), tapedrive::ID),
+            pda(committee_pda(next).0, next_committee, tapedrive::ID),
+            pda(peer_set_pda().0, peer_set(), tapedrive::ID),
+            pda(snapshot_tape_pda(prev).0, Tape::snapshot(prev).pack(), tapedrive::ID),
+            slot_hashes_account(),
+        ];
+
+        let instruction = build_commit_epoch_ix(fee_payer.into(), curr);
+        env.process_instruction(&instruction, &accounts, &[check]);
+    }
+
+    // Capacity above the seated count must not block the commit: joiners'
+    // stake activates over epochs, so a raised committee size is expected to
+    // run under-filled until they become eligible.
+    #[test]
+    fn partial_committee_commits() {
+        commit_next_committee_case(
+            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, GROUP_SIZE),
+            Check::success(),
+        );
+    }
+
+    #[test]
+    fn undersized_committee_blocks() {
+        commit_next_committee_case(
+            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, GROUP_SIZE - 1),
+            Check::err(TapeError::InsufficientCommittee.into()),
         );
     }
 
