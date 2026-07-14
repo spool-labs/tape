@@ -6,7 +6,7 @@ use tape_core::types::SlotNumber;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{AppContext, NodeContext};
 use tape_node::core::startup::build_context;
-use tape_node::core::channels::{downstream_channels, store_channel};
+use tape_node::core::channels::{downstream_channels, store_channel, DownstreamReceivers};
 use tape_node::core::error::NodeError;
 use tape_node::core::types::{ChannelName, ServiceName};
 use tape_node::features::block::ingest_monitor;
@@ -72,7 +72,10 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let (senders, receivers) = downstream_channels();
+    // Destructure exhaustively: every downstream channel must be consumed or
+    // drained, or the ingestor's fan-out fills its buffer and deadlocks.
+    let (senders, DownstreamReceivers { state, assignment, eviction, replay, snapshot }) =
+        downstream_channels();
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
 
@@ -138,12 +141,12 @@ where
 
     supervisor.spawn(
         ServiceName::StateManager,
-        StateManager::new(context.clone(), receivers.state, cancel.clone()).run(),
+        StateManager::new(context.clone(), state, cancel.clone()).run(),
     );
 
     supervisor.spawn(
         ServiceName::ReplayManager,
-        ReplayManager::new(context.clone(), receivers.replay, store_tx, cancel.clone()).run(),
+        ReplayManager::new(context.clone(), replay, store_tx, cancel.clone()).run(),
     );
 
     supervisor.spawn(
@@ -153,12 +156,17 @@ where
 
     supervisor.spawn(
         ServiceName::AssignmentManager,
-        drain_block_channel(receivers.assignment, cancel.clone(), ChannelName::AssignmentManager),
+        drain_block_channel(assignment, cancel.clone(), ChannelName::AssignmentManager),
+    );
+
+    supervisor.spawn(
+        ServiceName::EvictionManager,
+        drain_block_channel(eviction, cancel.clone(), ChannelName::EvictionManager),
     );
 
     supervisor.spawn(
         ServiceName::SnapshotManager,
-        drain_block_channel(receivers.snapshot, cancel.clone(), ChannelName::SnapshotManager),
+        drain_block_channel(snapshot, cancel.clone(), ChannelName::SnapshotManager),
     );
 
     supervisor.supervise().await
