@@ -206,7 +206,9 @@ fn is_endpoint_error_message(msg: &str) -> bool {
 
 fn is_skipped_slot_message(msg: &str) -> bool {
     let msg = msg.to_lowercase();
-    msg.contains("slotskipped") || msg.contains("slot was skipped")
+    // Providers render the standard message with the slot number inline:
+    // "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot"
+    msg.contains("slotskipped") || (msg.contains("slot") && msg.contains("was skipped"))
 }
 
 /// True when a flattened error message reads like a transaction execution
@@ -330,6 +332,10 @@ mod tests {
     fn test_skipped_slot() {
         assert!(RpcError::Request("SlotSkipped: slot 10 was skipped or not produced".to_string()).is_skipped_slot());
         assert!(RpcError::Request("slot was skipped".to_string()).is_skipped_slot());
+        assert!(RpcError::Request(
+            "RPC response error -32007: Slot 476152068 was skipped, or missing due to ledger jump to recent snapshot".to_string()
+        )
+        .is_skipped_slot());
         assert!(!RpcError::BlockNotAvailable.is_skipped_slot());
         assert!(!RpcError::Request("connection reset".to_string()).is_skipped_slot());
         assert!(!RpcError::Timeout(Duration::from_secs(1)).is_skipped_slot());
