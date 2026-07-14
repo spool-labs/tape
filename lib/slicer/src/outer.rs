@@ -75,8 +75,8 @@ impl OuterCoder {
         let chunk_bytes = if data.is_empty() {
             64
         } else {
-            let raw = data.len().div_ceil(k);
-            raw.div_ceil(64) * 64
+            let raw = (data.len() + k - 1) / k;
+            ((raw + 63) / 64) * 64
         };
 
         if chunk_bytes > MAX_CHUNK_BYTES {

@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn uneven_stake() {
-        let s = SainteLagueSpooler;
+        let s = SainteLagueSpooler::default();
         let stake = vec![TAPE(50_000), TAPE(30_000), TAPE(15_000), TAPE(5_000)];
 
         let res = s.allocate(&stake, SpoolCount(4)).unwrap();
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn zero_spools_or_zero_stake() {
-        let s = SainteLagueSpooler;
+        let s = SainteLagueSpooler::default();
         let stake = vec![TAPE(100), TAPE(90), TAPE(80)];
         assert_eq!(s.allocate(&stake, SpoolCount(0)).unwrap(), counts(&[0, 0, 0]));
 
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn equal_stake_even_distribution() {
         let stake = vec![TAPE(10_000), TAPE(10_000), TAPE(10_000), TAPE(10_000)];
-        let s = SainteLagueSpooler;
+        let s = SainteLagueSpooler::default();
 
         assert_eq!(s.allocate(&stake, SpoolCount(1)).unwrap(), counts(&[1, 0, 0, 0]));
         assert_eq!(s.allocate(&stake, SpoolCount(2)).unwrap(), counts(&[1, 1, 0, 0]));
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn large_equal_distribution() {
         let stake = vec![TAPE(1), TAPE(1), TAPE(1), TAPE(1), TAPE(1)];
-        let s = SainteLagueSpooler;
+        let s = SainteLagueSpooler::default();
         let out = s.allocate(&stake, SpoolCount(1000)).unwrap();
         assert_eq!(out, counts(&[200, 200, 200, 200, 200]));
     }
@@ -134,7 +134,7 @@ mod tests {
             stake.push(TAPE(1));
         }
 
-        let s = SainteLagueSpooler;
+        let s = SainteLagueSpooler::default();
         let out = s.allocate(&stake, SpoolCount(100)).unwrap();
         assert_eq!(out.iter().map(|c| c.as_u64()).sum::<u64>(), 100);
         assert_eq!(out[0], SpoolCount(5));

@@ -48,12 +48,12 @@ pub fn render_braille_sparkline(
         let left_level = if is_future_pair {
             FUTURE_POINT_SENTINEL_LEVEL
         } else {
-            lv.div_ceil(BRAILLE_COLOR_STEPS).min(BRAILLE_SPARK_HEIGHT)
+            ((lv + BRAILLE_COLOR_STEPS - 1) / BRAILLE_COLOR_STEPS).min(BRAILLE_SPARK_HEIGHT)
         };
         let right_level = if is_future_pair {
             FUTURE_POINT_SENTINEL_LEVEL
         } else {
-            rv.div_ceil(BRAILLE_COLOR_STEPS).min(BRAILLE_SPARK_HEIGHT)
+            ((rv + BRAILLE_COLOR_STEPS - 1) / BRAILLE_COLOR_STEPS).min(BRAILLE_SPARK_HEIGHT)
         };
 
         let ch = match (left_level, right_level) {
@@ -111,7 +111,7 @@ pub fn render_node_sparkline(data: &[u64], width: usize, scale_max: u64) -> Vec<
     }
 
     let visible = &data[data.len().saturating_sub(width)..];
-    let glyph_width = width.div_ceil(2);
+    let glyph_width = (width + 1) / 2;
 
     render_braille_sparkline(visible, glyph_width, Some(scale_max))
 }

@@ -9650,8 +9650,6 @@ dependencies = [
  "serial_test",
  "solana-instruction",
  "solana-keypair",
- "solana-program",
- "spl-token",
  "store-memory",
  "tape-api",
  "tape-blocks",

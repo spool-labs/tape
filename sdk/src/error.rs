@@ -1,7 +1,5 @@
 //! Error types for SDK operations.
 
-use std::time::Duration;
-
 use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_protocol::ApiError;
 use thiserror::Error;
@@ -116,10 +114,7 @@ pub enum TapedriveError {
     Network(#[from] PeerManagerError),
 
     #[error("peer error: {0}")]
-    Peer(ApiError),
-
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<Duration> },
+    Peer(#[from] ApiError),
 
     #[error("encoding error: {0}")]
     Encoding(String),
@@ -144,34 +139,4 @@ pub enum TapedriveError {
 
     #[error("stream error: {0}")]
     Stream(String),
-}
-
-/// Rate limiting gets its own variant so callers can back off without string matching.
-impl From<ApiError> for TapedriveError {
-    fn from(error: ApiError) -> Self {
-        match error {
-            ApiError::RateLimited { retry_after } => Self::RateLimited { retry_after },
-            other => Self::Peer(other),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // rate limited api errors map to the dedicated variant
-    #[test]
-    fn rate_limited() {
-        let error = TapedriveError::from(ApiError::RateLimited {
-            retry_after: Some(Duration::from_secs(3)),
-        });
-        assert!(matches!(
-            error,
-            TapedriveError::RateLimited { retry_after: Some(retry) } if retry.as_secs() == 3
-        ));
-
-        let error = TapedriveError::from(ApiError::NotFound);
-        assert!(matches!(error, TapedriveError::Peer(ApiError::NotFound)));
-    }
 }

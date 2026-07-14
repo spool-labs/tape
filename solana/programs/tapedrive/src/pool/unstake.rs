@@ -248,7 +248,7 @@ mod tests {
         let (archive_ata, _) = archive_ata();
         let (system_address, _) = system_pda();
         let (pool_address, _)  = node_pda(pool_owner.into());
-        let (history_address, _) = history_pda(pool_address);
+        let (history_address, _) = history_pda(pool_address.into());
         let (stake_address, _) = stake_pda(authority.into());
         let (vault_address, _) = vault_pda(stake_address);
         let (stake_authority_address, _) = stake_authority_pda();
@@ -262,13 +262,13 @@ mod tests {
 
         // Closed span covering [e0, e4) holds the withdraw settlement rate.
         let span = RateSpan {
-            node: pool_address,
+            node: pool_address.into(),
             start_epoch: e0,
             end_epoch: e4,
             rate: withdraw_rate,
         };
         let (history_tape, pool_rate) =
-            make_closed_span(NodeId(7), history_address, span);
+            make_closed_span(NodeId(7), history_address.into(), span);
 
         let instruction = build_unstake_from_pool_ix(
             fee_payer.into(),
@@ -304,7 +304,7 @@ mod tests {
 
         let stake = Stake {
             authority: authority.into(),
-            pool: pool_address,
+            pool: pool_address.into(),
             inner: StakedTape {
                 amount: TAPE(principal),
                 activation_epoch: e0,
@@ -342,10 +342,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&fee_payer)
+                Check::account(&Pubkey::from(fee_payer))
                     .lamports(1_000_000_000 + rent(Stake::get_size()))
                     .build(),
-                Check::account(&authority)
+                Check::account(&Pubkey::from(authority))
                     .lamports(rent_token())
                     .build(),
                 Check::account(&Pubkey::from(stake_address))
@@ -359,7 +359,7 @@ mod tests {
                 Check::account(&Pubkey::from(archive_ata)).data(
                     token(archive_ata, archive_address, 0).1.data.as_ref()
                 ).build(),
-                Check::account(&authority_ata).data(
+                Check::account(&Pubkey::from(authority_ata)).data(
                     token(authority_ata, authority, principal + reward).1.data.as_ref()
                 ).build(),
                 Check::account(&Pubkey::from(pool_address)).data(

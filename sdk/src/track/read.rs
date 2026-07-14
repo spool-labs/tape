@@ -181,7 +181,7 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     encode.finish_result(&result);
     let (_, root) = result?;
 
-    let computed: Hash = root;
+    let computed: Hash = root.into();
     Ok(computed == blob.commitment)
 }
 
@@ -212,7 +212,7 @@ async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     }
 
     if let Some(error) = last_error {
-        Err(TapedriveError::from(error))
+        Err(TapedriveError::Peer(error))
     } else if saw_not_found {
         Err(TapedriveError::NotFound)
     } else {

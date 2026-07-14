@@ -40,7 +40,7 @@ pub fn quorum_above(pairs: &[ValueAndWeight], total: u64) -> u64 {
 
     let mut sum: u64 = 0;
     for (value, weight) in items {
-        sum = sum.saturating_add(weight);
+        sum = sum.saturating_add(weight as u64);
         if is_supermajority(sum, total) {
             return value;
         }
@@ -61,7 +61,7 @@ pub fn quorum_below(pairs: &[ValueAndWeight], total: u64) -> u64 {
 
     let mut sum: u64 = total;
     for (value, weight) in items {
-        sum = sum.saturating_sub(weight);
+        sum = sum.saturating_sub(weight as u64);
         if !is_supermajority(sum, total) {
             return value;
         }
@@ -81,8 +81,8 @@ mod tests {
 
             assert_eq!(f, (n - 1) / 3);
             assert_eq!(m, n - f);
-            assert!(3 * f < n);
-            assert!(m > 2 * f);
+            assert!(3 * f <= n - 1);
+            assert!(m >= 2 * f + 1);
             assert_eq!(m + f, n);
             assert!(m > 0);
         }
@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn supermajority_edges() {
         for n in 1..=50u64 {
-            let thr = (2 * n + 1).div_ceil(3);
+            let thr = (2 * n + 1 + 2) / 3;
             if thr > 0 {
                 assert!(!is_supermajority(thr - 1, n));
             }

@@ -35,7 +35,7 @@ mod tests {
     };
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::data::{track_key, BlobDataSlice};
+    use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
@@ -47,7 +47,7 @@ mod tests {
     use tape_crypto::Hash;
     use tape_snapshot::{assemble_snapshot_log, decode_chunk_payload, encode_snapshot, K_INNER};
     use tape_store::ops::{
-        ObjectInfoOps, ObjectListOps, ObjectMetadataOps, TapeOps, TrackOps,
+        ObjectInfoOps, ObjectListOps, ObjectMetadataOps, TapeOps, TrackDataOps, TrackOps,
     };
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
@@ -125,6 +125,37 @@ mod tests {
                 name,
                 content_type,
                 logical_size: blob.size,
+            }),
+        })
+    }
+
+    fn inline_track_event(
+        tape: Address,
+        track_number: TrackNumber,
+        epoch: EpochNumber,
+        name: Vec<u8>,
+        content_type: ContentType,
+        bytes: &[u8],
+    ) -> ReplayableEvent {
+        let data = BlobDataSlice::Inline(bytes);
+        let meta = data.meta().unwrap();
+        ReplayableEvent::Track(ReplayTrack {
+            state: CompressedTrack {
+                tape,
+                key: track_key(&name, &data),
+                track_number,
+                kind: meta.kind as u64,
+                state: meta.state as u64,
+                size: meta.size,
+                group: GroupIndex::from(4),
+                value_hash: meta.value_hash,
+            },
+            epoch,
+            blob: None,
+            object: Some(ReplayTrackObject {
+                name,
+                content_type,
+                logical_size: meta.size,
             }),
         })
     }
@@ -405,6 +436,83 @@ mod tests {
             .unwrap();
         assert_eq!(page.objects.len(), 1);
         assert_eq!(page.objects[0].0, name);
+    }
+
+    // a snapshot round-trip keeps an inline track's record and object entry
+    // while its bytes stay out of the snapshot for the sync flow to backfill
+    #[test]
+    fn inline_record_roundtrip() {
+        let epoch = EpochNumber(9);
+        let slot = SlotNumber(120);
+        let tape = Address::new_unique();
+
+        let inline_number = TrackNumber(7);
+        let inline_name = b"loadgen/obj-42".to_vec();
+        let inline_bytes = vec![0xAB; 51];
+        let inline_track = track_pda(tape, inline_number).0;
+
+        let sliced_number = TrackNumber(8);
+        let sliced_name = b"loadgen/obj-41".to_vec();
+        let sliced_blob = blob();
+        let sliced_track = track_pda(tape, sliced_number).0;
+
+        let log = log_with_entries(
+            epoch,
+            slot,
+            slot,
+            vec![SnapshotEntry {
+                slot,
+                block_time: Some(1_700_000_120),
+                records: vec![
+                    record(ReplayableEvent::ReserveTape {
+                        tape,
+                        id: TapeNumber(4),
+                        flags: 0,
+                        authority: Address::new_unique(),
+                        capacity: StorageUnits::mb(10),
+                        active_epoch: epoch,
+                        expiry_epoch: EpochNumber(20),
+                        cost: TAPE(0),
+                        burned: TAPE(0),
+                        scheduled: TAPE(0),
+                    }),
+                    record(inline_track_event(
+                        tape,
+                        inline_number,
+                        epoch,
+                        inline_name.clone(),
+                        ContentType::TextPlain,
+                        &inline_bytes,
+                    )),
+                    record(named_track_event(
+                        tape,
+                        sliced_number,
+                        epoch,
+                        sliced_blob,
+                        sliced_name.clone(),
+                        ContentType::Unknown,
+                    )),
+                ],
+            }],
+        );
+
+        let decoded = decode_encoded_log(Address::new_unique(), &log);
+        let store = test_store();
+        apply_snapshot_log(&store, &decoded).unwrap();
+
+        let inline_info = store.get_track(inline_track).unwrap().unwrap();
+        assert_eq!(inline_info.kind, TrackKind::Inline as u64);
+        assert!(store.get_object_entry(tape, &inline_name).unwrap().is_some());
+
+        // content is deliberately absent, only the record rides the snapshot
+        assert_eq!(store.get_track_data(inline_track).unwrap(), None);
+
+        // the sliced neighbor keeps its record and blob metadata, as a control
+        assert!(store.get_track(sliced_track).unwrap().is_some());
+        assert!(matches!(
+            store.get_track_data(sliced_track).unwrap(),
+            Some(BlobData::Coded(_))
+        ));
     }
 
     #[test]

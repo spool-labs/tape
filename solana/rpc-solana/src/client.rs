@@ -158,6 +158,7 @@ impl SolanaRpc {
             .unwrap_or_else(PoisonError::into_inner)
             .fail_over(cursor);
         if !is_rotated {
+            return;
         }
 
         // Endpoint urls carry an api key in the query string, and the metrics

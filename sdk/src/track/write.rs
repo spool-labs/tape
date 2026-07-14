@@ -161,7 +161,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ) -> Result<CompressedTrack, TapedriveError> {
         let name = name.as_ref();
         if !inline_write_fits(name, raw.len()) {
-            return Err(TapedriveError::InvalidArgument("raw inline write exceeds SDK transaction limit; use write_track() or write_blob()".to_string()));
+            return Err(TapedriveError::InvalidArgument(format!(
+                "raw inline write exceeds SDK transaction limit; use write_track() or write_blob()"
+            )));
         }
 
         let timer = self
@@ -278,7 +280,7 @@ fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
 
     Ok(UploadPlan {
         slices,
-        commitment_hash: merkle_root,
+        commitment_hash: merkle_root.into(),
         storage_units: StorageUnits::from_bytes(data_len as u64),
         profile,
         stripe_size: pick_stripe_size(data_len),
@@ -430,7 +432,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
         .await?;
 
     let written = fetch_track_written_event(client, &signature).await?;
-    let track_address: Address = written.track;
+    let track_address: Address = written.track.into();
     let meta = data.meta().unwrap();
     let track = CompressedTrack {
         tape: written.tape,
@@ -534,7 +536,7 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
     sent: SentBlob,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let written = fetch_track_written_event(client, &sent.signature).await?;
-    let track_address: Address = written.track;
+    let track_address: Address = written.track.into();
     let meta = BlobDataSlice::Coded(sent.blob).meta()
         .ok_or(TapedriveError::InvalidArgument("invalid blob commitment".into()))?;
 
@@ -642,14 +644,8 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
 
     let state = state?;
 
-    let uploader = DistributedUploader::new(
-        track_address,
-        group,
-        slices,
-        &state,
-        client.write_options.slice_concurrency,
-    )
-    .map_err(TapedriveError::Upload)?;
+    let uploader = DistributedUploader::new(track_address, group, slices, &state)
+        .map_err(TapedriveError::Upload)?;
 
     let store = client
         .timer(operation, Phase::Store)
@@ -778,7 +774,7 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             ))));
         }
 
-        if attempt.is_multiple_of(5) {
+        if attempt % 5 == 0 {
             warn!(
                 attempt,
                 visible,
@@ -811,7 +807,6 @@ pub(crate) fn should_retry_certification(err: &TapedriveError) -> bool {
         TapedriveError::NotFound => true,
         TapedriveError::Certification(_) => true,
         TapedriveError::Peer(err) => err.is_retryable(),
-        TapedriveError::RateLimited { .. } => true,
         TapedriveError::Rpc(rpc) => {
             matches!(
                 parse_tape_error(rpc),

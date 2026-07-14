@@ -639,8 +639,8 @@ impl Rpc for LiteSvmRpc {
 
         let status = match inner.svm.get_transaction(&svm_signature) {
             Some(result) => {
-                let _ = tx_result_to_transaction_status(result, *slot);
-                tx_result_to_status_result(result)
+                let _ = tx_result_to_transaction_status(&result, *slot);
+                tx_result_to_status_result(&result)
             }
             None => return Ok(None),
         };

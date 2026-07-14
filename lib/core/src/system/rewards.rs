@@ -41,7 +41,9 @@ pub fn calc_rewards(
 
     // rewards = floor(reward_pool * pool_score / total_score)
     let rewards = reward_pool
-        .as_u128().saturating_mul(pool_score)
+        .as_u128()
+        .checked_mul(pool_score)
+        .unwrap_or(u128::MAX)
         .checked_div(total_score)
         .unwrap_or(0);
 

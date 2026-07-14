@@ -201,7 +201,7 @@ async fn fetch_and_decode_track<A: Api>(
     cancel: CancellationToken,
 ) -> Result<Decoded, SnapshotReaderError> {
     let group = track.group;
-    let track_address = track_pda(track.tape, track.track_number).0;
+    let track_address = Address::from(track_pda(track.tape, track.track_number).0);
 
     let blob = fetch_blob(api.as_ref(), &peers, track_address).await?;
     if blob.get_hash() != track.value_hash {

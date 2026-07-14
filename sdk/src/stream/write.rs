@@ -42,6 +42,11 @@ use super::receipt::StreamReceipt;
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 
+/// Slice uploads kept in flight per chunk; each holds its encoded slices
+/// (~2x the chunk, so ~512 MiB for four 64 MiB chunks), which bounds peak
+/// memory together with ENCODE_AHEAD.
+const STORE_CONCURRENCY: usize = 4;
+
 /// Encoded chunks buffered ahead of the serial register submits, so encoding
 /// (seconds of CPU per chunk) overlaps register confirmations.
 const ENCODE_AHEAD: usize = 2;
@@ -285,8 +290,8 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
 
 /// Run chunk writes as a pipeline: register chunks one at a time at processed
 /// level, resolve their track numbers concurrently in track order, keep up to
-/// the configured store depth of slice uploads in flight, and certify stored
-/// chunks strictly in track order behind the uploads. A local mirror of the tape's
+/// STORE_CONCURRENCY slice uploads in flight, and certify stored chunks
+/// strictly in track order behind the uploads. A local mirror of the tape's
 /// track tree supplies certify proofs without per-chunk refetches. Stage
 /// errors cancel the whole pipeline; incomplete tracks are left for the
 /// recovery worker.
@@ -430,9 +435,6 @@ where
     };
 
     let store_stage = async move {
-        // Each in-flight chunk holds ~2x its bytes encoded, so the depth also
-        // bounds peak memory.
-        let store_depth = client.write_options.store_depth.max(1);
         let mut in_flight = FuturesOrdered::new();
         let mut is_registering = true;
         while is_registering || !in_flight.is_empty() {
@@ -440,7 +442,7 @@ where
                 // Safe: recv is cancellation-safe and a chunk only leaves the
                 // channel when this branch completes.
                 registered = registered_receiver.recv(),
-                    if is_registering && in_flight.len() < store_depth =>
+                    if is_registering && in_flight.len() < STORE_CONCURRENCY =>
                 {
                     match registered {
                         Some(registered) => in_flight.push_back(store_chunk(client, registered)),

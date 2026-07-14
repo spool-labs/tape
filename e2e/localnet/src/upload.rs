@@ -61,7 +61,7 @@ impl UploadManager {
 
     pub fn start_random_upload(&self) -> Result<UploadView> {
         let upload_number = self.upload_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let force_raw = upload_number.is_multiple_of(5);
+        let force_raw = upload_number % 5 == 0;
         let data = random_blob(force_raw);
         let tape_key = TapeKey::generate();
         let tape_address = tape_key.address().to_string();

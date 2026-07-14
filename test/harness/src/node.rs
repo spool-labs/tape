@@ -19,7 +19,7 @@ pub struct HarnessNode {
 }
 
 impl HarnessNode {
-    pub fn new(
+    pub(crate) fn new(
         index: usize,
         node_id: NodeId,
         authority: Pubkey,

@@ -319,7 +319,7 @@ mod tests {
         let cost = PRICE * capacity.to_mb() * 2;
         let fee_per_epoch = TAPE(PRICE * capacity.to_mb());
 
-        let mut expected_archive = archive;
+        let mut expected_archive = archive.clone();
         expected_archive
             .schedule
             .reserve_capacity(capacity, fee_per_epoch, EpochNumber(45), new_expiry)
@@ -354,7 +354,7 @@ mod tests {
                     .data(expected_tape.pack().as_ref()).build(),
                 Check::account(&Pubkey::from(archive_address))
                     .data(expected_archive.pack().as_ref()).build(),
-                Check::account(&payer_ata)
+                Check::account(&Pubkey::from(payer_ata))
                     .data(token(payer_ata, payer, 0).1.data.as_ref()).build(),
                 Check::account(&Pubkey::from(archive_ata_address))
                     .data(token(archive_ata_address, archive_address, cost).1.data.as_ref()).build(),
@@ -388,7 +388,7 @@ mod tests {
         let cost = PRICE * units.to_mb() * 8;
         let fee_per_epoch = TAPE(PRICE * units.to_mb());
 
-        let mut expected_archive = archive;
+        let mut expected_archive = archive.clone();
         expected_archive
             .schedule
             .reserve_capacity(units, fee_per_epoch, current, EpochNumber(50))
@@ -423,7 +423,7 @@ mod tests {
                     .data(expected_tape.pack().as_ref()).build(),
                 Check::account(&Pubkey::from(archive_address))
                     .data(expected_archive.pack().as_ref()).build(),
-                Check::account(&payer_ata)
+                Check::account(&Pubkey::from(payer_ata))
                     .data(token(payer_ata, payer, 0).1.data.as_ref()).build(),
                 Check::account(&Pubkey::from(archive_ata_address))
                     .data(token(archive_ata_address, archive_address, cost).1.data.as_ref()).build(),
@@ -457,7 +457,7 @@ mod tests {
         let cost = PRICE * units.to_mb() * 2;
         let fee_per_epoch = TAPE(PRICE * units.to_mb());
 
-        let mut expected_archive = archive;
+        let mut expected_archive = archive.clone();
         expected_archive
             .schedule
             .reserve_capacity(units, fee_per_epoch, EpochNumber(43), EpochNumber(45))
