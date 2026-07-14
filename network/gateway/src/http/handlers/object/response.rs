@@ -42,21 +42,24 @@ pub(crate) fn object_response_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>
     })
 }
 
+pub(in crate::http::handlers::object) fn object_response(
+    bytes: Vec<u8>,
+    metadata: &ObjectResponseMetadata,
+    etag: Hash,
+) -> Result<Response, RouteError> {
+    let headers = object_headers(bytes.len() as u64, metadata, etag)?;
+    Ok((StatusCode::OK, headers, bytes).into_response())
+}
+
 /// A resolved half-open byte range `[start, end)` for a `Range` request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::http::handlers) struct ByteRange {
+pub(in crate::http::handlers::object) struct ByteRange {
     pub start: u64,
     pub end: u64,
 }
 
-impl ByteRange {
-    pub(in crate::http::handlers) fn len(&self) -> u64 {
-        self.end - self.start
-    }
-}
-
 /// Outcome of resolving a `Range` header against an object of `total` bytes.
-pub(in crate::http::handlers) enum RangeOutcome {
+pub(in crate::http::handlers::object) enum RangeOutcome {
     /// No usable range (absent, multi-range, or malformed) — serve the full object.
     Full,
     /// A single satisfiable range.
@@ -68,7 +71,7 @@ pub(in crate::http::handlers) enum RangeOutcome {
 /// Resolve a `Range` header value (`bytes=...`) against `total` object bytes. Only
 /// a single byte range is honored; multi-range or malformed specs fall back to
 /// `Full` (serve the whole object, which HTTP permits).
-pub(in crate::http::handlers) fn parse_range(header: &str, total: u64) -> RangeOutcome {
+pub(in crate::http::handlers::object) fn parse_range(header: &str, total: u64) -> RangeOutcome {
     let Some(spec) = header.trim().strip_prefix("bytes=") else {
         return RangeOutcome::Full;
     };
@@ -119,38 +122,6 @@ pub(in crate::http::handlers) fn parse_range(header: &str, total: u64) -> RangeO
     RangeOutcome::Satisfiable(ByteRange { start, end })
 }
 
-/// Resolve a raw `Range` header against `total` object bytes: `None` to serve
-/// the whole object, a single satisfiable range, or the `416` error.
-pub(in crate::http::handlers) fn resolve_range(
-    header: Option<&str>,
-    total: u64,
-) -> Result<Option<ByteRange>, RouteError> {
-    match header.map_or(RangeOutcome::Full, |header| parse_range(header, total)) {
-        RangeOutcome::Full => Ok(None),
-        RangeOutcome::Satisfiable(range) => Ok(Some(range)),
-        RangeOutcome::Unsatisfiable => Err(RouteError::RangeNotSatisfiable(total)),
-    }
-}
-
-/// The status line and headers for an optionally-ranged object response:
-/// `200` with the full length, or `206` with the ranged length and
-/// `Content-Range`.
-pub(in crate::http::handlers) fn ranged_object_headers(
-    range: Option<ByteRange>,
-    total: u64,
-    metadata: &ObjectResponseMetadata,
-    etag: Hash,
-) -> Result<(StatusCode, HeaderMap), RouteError> {
-    match range {
-        None => Ok((StatusCode::OK, object_headers(total, metadata, etag)?)),
-        Some(range) => {
-            let mut headers = object_headers(range.len(), metadata, etag)?;
-            headers.insert(header::CONTENT_RANGE, content_range_header(range, total)?);
-            Ok((StatusCode::PARTIAL_CONTENT, headers))
-        }
-    }
-}
-
 /// Build the read response for fully-decoded object `bytes`, honoring a single
 /// `Range` (slice + `206 Partial Content`), serving the whole object (`200`), or
 /// rejecting an unsatisfiable range (`416`). Single-track objects only — the
@@ -162,29 +133,36 @@ pub(in crate::http::handlers::object) fn object_response_ranged(
     range_header: Option<&str>,
 ) -> Result<Response, RouteError> {
     let total = bytes.len() as u64;
-    let range = resolve_range(range_header, total)?;
-    let (status, headers) = ranged_object_headers(range, total, metadata, etag)?;
-    let body = match range {
-        // Zero-copy slice: `Bytes::from` takes ownership and `slice` is a refcount.
-        Some(range) => Bytes::from(bytes).slice(range.start as usize..range.end as usize),
-        None => Bytes::from(bytes),
-    };
-    Ok((status, headers, body).into_response())
-}
-
-/// The raw `Range` header value, when present and readable.
-pub(in crate::http::handlers) fn range_header(headers: &HeaderMap) -> Option<&str> {
-    headers.get(header::RANGE).and_then(|value| value.to_str().ok())
-}
-
-/// The `Content-Range` header for a satisfied range: `bytes start-end/total`
-/// with HTTP's inclusive end.
-pub(in crate::http::handlers) fn content_range_header(
-    range: ByteRange,
-    total: u64,
-) -> Result<HeaderValue, RouteError> {
-    HeaderValue::from_str(&format!("bytes {}-{}/{total}", range.start, range.end - 1))
-        .map_err(|error| RouteError::Internal(format!("content range header: {error}")))
+    let outcome = range_header.map_or(RangeOutcome::Full, |header| parse_range(header, total));
+    match outcome {
+        RangeOutcome::Full => {
+            let mut headers = object_headers(total, metadata, etag)?;
+            headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            Ok((StatusCode::OK, headers, bytes).into_response())
+        }
+        RangeOutcome::Satisfiable(range) => {
+            // Zero-copy slice: `Bytes::from` takes ownership and `slice` is a refcount.
+            let length = range.end - range.start;
+            let slice = Bytes::from(bytes).slice(range.start as usize..range.end as usize);
+            let mut headers = object_headers(length, metadata, etag)?;
+            headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            headers.insert(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes {}-{}/{total}", range.start, range.end - 1))
+                    .map_err(|error| RouteError::Internal(format!("content range header: {error}")))?,
+            );
+            Ok((StatusCode::PARTIAL_CONTENT, headers, slice).into_response())
+        }
+        RangeOutcome::Unsatisfiable => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes */{total}"))
+                    .map_err(|error| RouteError::Internal(format!("content range header: {error}")))?,
+            );
+            Ok((StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response())
+        }
+    }
 }
 
 pub(crate) fn object_headers(
@@ -211,7 +189,6 @@ pub(crate) fn object_headers(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
-    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     if let Some(filename) = metadata.filename.as_deref() {
         headers.insert(
             header::CONTENT_DISPOSITION,

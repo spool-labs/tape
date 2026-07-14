@@ -30,7 +30,7 @@ use tape_sdk::error::TapedriveError;
 use tape_store::ops::{CredentialOps, ObjectListOps, TapeOps};
 use tape_store::types::CredentialScope;
 
-use crate::http::handlers::object::{ObjectResponseMetadata, range_header, read_object_response};
+use crate::http::handlers::object::{ObjectResponseMetadata, read_object_response};
 use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
@@ -560,7 +560,10 @@ where
     if has_query_param(query.as_deref(), "uploadId", None) {
         return list_parts(&state, &auth, bucket, key, query.as_deref());
     }
-    let range = range_header(&headers).map(str::to_string);
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let caller = meter_caller(&state, &headers, remote, &auth);
     get_object_impl(state, caller, bucket, key, range).await
 }
@@ -588,9 +591,9 @@ where
     };
     let block_time = resolved.block_time;
 
-    // `Range` is honored for every object: single-track objects slice the
-    // decoded bytes, multi-track streams decode only the chunks the range
-    // touches; see docs/s3-gateway-status.md (Range).
+    // `Range` is honored for single-track objects (sliced to `206 Partial Content`
+    // in `read_object_response`); larger multi-track streams ignore it and serve the
+    // whole object — see docs/s3-gateway-status.md (Range).
     let mut response = read_object_response(
         state,
         resolved.track_address,
@@ -610,9 +613,8 @@ where
 /// `HEAD /{bucket}/{key}` -> HeadObject
 ///
 /// Returns the same headers as GetObject (Content-Type, Content-Length, quoted
-/// ETag, Cache-Control, Last-Modified) with no body, including the ranged
-/// headers for a `Range` request. Metadata comes straight from the object-list
-/// index entry, so HEAD never decodes the object body.
+/// ETag, Cache-Control, Last-Modified) with no body. Metadata comes straight
+/// from the object-list index entry, so HEAD never decodes the object body.
 async fn head_object<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(auth): Extension<Auth>,
@@ -626,7 +628,7 @@ where
     Blockchain: Rpc + 'static,
 {
     let caller = meter_caller(&state, &headers, remote, &auth);
-    head_object_impl(&state, &caller, &bucket, &key, range_header(&headers))
+    head_object_impl(&state, &caller, &bucket, &key)
 }
 
 fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -634,11 +636,10 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     caller: &MeterCaller,
     bucket: &str,
     key: &str,
-    range: Option<&str>,
 ) -> Result<Response, S3Error> {
     check_request_rate(state, caller)?;
     let (resolved, _track) = resolve_readable(state, bucket, key)?;
-    head_response(&resolved, range)
+    head_response(&resolved)
 }
 
 /// The metering identity for an S3 read: the resolved caller IP, plus the

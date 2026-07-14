@@ -1,6 +1,5 @@
 //! Gateway-backed read client.
 
-use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -12,7 +11,7 @@ use rpc_client::RpcClient;
 use tape_api::program::tapedrive::track_pda;
 use tape_crypto::hash::hash;
 use tape_crypto::prelude::Address;
-use tape_protocol::api::{ApiError, FindTrackVersion};
+use tape_protocol::api::FindTrackVersion;
 use tape_protocol::ProtocolState;
 
 use crate::error::TapedriveError;
@@ -54,21 +53,13 @@ impl<Blockchain: Rpc> Gateway<Blockchain> {
 
     /// Read exact decoded bytes for one track through the gateway.
     pub async fn read_track(&self, track: &Address) -> Result<Vec<u8>, TapedriveError> {
-        self.timed_bytes(Operation::ReadTrack, self.inner.api.get_track_bytes(*track))
+        let timer = self.inner.timer(Operation::ReadTrack, Phase::Total);
+        let result = self
+            .inner
+            .api
+            .get_track_bytes(*track)
             .await
-    }
-
-    /// Time a gateway byte fetch, recording the byte count on success.
-    async fn timed_bytes<Request>(
-        &self,
-        operation: Operation,
-        request: Request,
-    ) -> Result<Vec<u8>, TapedriveError>
-    where
-        Request: Future<Output = Result<Vec<u8>, ApiError>>,
-    {
-        let timer = self.inner.timer(operation, Phase::Total);
-        let result = request.await.map_err(TapedriveError::Peer);
+            .map_err(TapedriveError::Peer);
         let timer = match &result {
             Ok(bytes) => timer.bytes(bytes.len() as u64),
             Err(_) => timer,
@@ -82,31 +73,24 @@ impl<Blockchain: Rpc> Gateway<Blockchain> {
     /// If the track is a stream manifest, the gateway follows its chunk tracks
     /// and returns the full object.
     pub async fn read_object_by_track(&self, track: &Address) -> Result<Vec<u8>, TapedriveError> {
-        self.timed_bytes(Operation::ReadStream, self.inner.api.get_object_bytes(*track))
+        let timer = self.inner.timer(Operation::ReadStream, Phase::Total);
+        let result = self
+            .inner
+            .api
+            .get_object_bytes(*track)
             .await
+            .map_err(TapedriveError::Peer);
+        let timer = match &result {
+            Ok(bytes) => timer.bytes(bytes.len() as u64),
+            Err(_) => timer,
+        };
+        timer.finish_result(&result);
+        result
     }
 
     /// Read a stored stream by its manifest track address through the gateway.
     pub async fn read_bytes(&self, manifest: &Address) -> Result<Vec<u8>, TapedriveError> {
         self.read_object_by_track(manifest).await
-    }
-
-    /// Read a byte window of a logical object through the gateway: `len` bytes
-    /// starting at `start`. A window whose end runs past the object is
-    /// clamped, so the result can be shorter than `len`; a `start` at or past
-    /// the object end is an error. A stream manifest decodes only the chunks
-    /// the window touches.
-    pub async fn read_range(
-        &self,
-        track: &Address,
-        start: u64,
-        len: u64,
-    ) -> Result<Vec<u8>, TapedriveError> {
-        self.timed_bytes(
-            Operation::ReadStream,
-            self.inner.api.get_object_bytes_range(*track, start, len),
-        )
-        .await
     }
 
     /// Read a named object from a bucket through the gateway.
