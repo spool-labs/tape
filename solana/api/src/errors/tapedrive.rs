@@ -210,7 +210,7 @@ pub enum RequiredAction {
 }
 
 #[cfg(not(target_os = "solana"))]
-pub(crate) fn parse_error_code(s: &str) -> Option<u32> {
+pub fn parse_error_code(s: &str) -> Option<u32> {
     // Try hex format: "0x30" or "Custom(0x30)"
     if let Some(start) = s.find("0x") {
         let hex: String = s[start + 2..]

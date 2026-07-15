@@ -22,10 +22,10 @@ use crate::http::handlers::track::{parse_address, track_with_pending};
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller, rate_limited_response};
 
-pub(crate) const OBJECT_PATH: &str = "/object/{track_id}";
-pub(crate) const TRACK_BYTES_PATH: &str = "/track/{track_id}";
+pub const OBJECT_PATH: &str = "/object/{track_id}";
+pub const TRACK_BYTES_PATH: &str = "/track/{track_id}";
 
-pub(crate) async fn get_object<
+pub async fn get_object<
     Db: Store + 'static,
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
@@ -61,7 +61,7 @@ pub(crate) async fn get_object<
 /// slice the decoded bytes in memory; multi-track streams decode only the
 /// chunks the range touches. Either way a satisfied range answers `206` and an
 /// unsatisfiable one `416`.
-pub(crate) async fn read_object_response<
+pub async fn read_object_response<
     Db: Store + 'static,
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
@@ -126,7 +126,7 @@ pub(crate) async fn read_object_response<
     )
 }
 
-pub(crate) async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(caller): Extension<MeterCaller>,
     Path(track_id): Path<String>,

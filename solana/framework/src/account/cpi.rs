@@ -197,7 +197,7 @@ pub fn allocate_account_with_bump_signed_by<'a, 'info>(
 }
 
 #[inline(always)]
-pub(crate) fn allocate_account_with_bump_unchecked<'a, 'info>(
+pub fn allocate_account_with_bump_unchecked<'a, 'info>(
     target_account: &'a AccountInfo<'info>,
     system_program: &'a AccountInfo<'info>,
     payer: &'a AccountInfo<'info>,

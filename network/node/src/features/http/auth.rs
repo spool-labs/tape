@@ -163,7 +163,7 @@ where
     next.run(req).await
 }
 
-pub(crate) fn local_access_threshold<Db, Cluster, Blockchain>(
+pub fn local_access_threshold<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
 ) -> Coin<TAPE>
 where

@@ -17,7 +17,7 @@ use crate::cache::{CacheRead, CacheSource};
 use crate::http::error::RouteError;
 use crate::http::state::AppState;
 
-pub(crate) async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -32,7 +32,7 @@ pub(crate) async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], data))
 }
 
-pub(crate) async fn read_cached_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn read_cached_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
     spool_id: SpoolIndex,

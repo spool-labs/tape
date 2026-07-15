@@ -20,12 +20,12 @@ use crate::http::handlers::track::slice::read_cached_slice;
 use crate::http::handlers::track::track_data_with_pending;
 use crate::http::state::AppState;
 
-pub(in crate::http::handlers::object) struct DecodedObject {
-    pub(in crate::http::handlers::object) bytes: Vec<u8>,
-    pub(in crate::http::handlers::object) etag: Hash,
+pub struct DecodedObject {
+    pub bytes: Vec<u8>,
+    pub etag: Hash,
 }
 
-pub(in crate::http::handlers::object) async fn decode_track_bytes<
+pub async fn decode_track_bytes<
     Db: Store,
     Cluster: Api,
     Blockchain: Rpc,

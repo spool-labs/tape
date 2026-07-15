@@ -61,7 +61,7 @@ fn failure_to_status_meta(
     meta
 }
 
-pub(crate) fn tx_result_to_status_meta(
+pub fn tx_result_to_status_meta(
     result: &TransactionResult,
     pre_balances: Vec<u64>,
     post_balances: Vec<u64>,
@@ -72,7 +72,7 @@ pub(crate) fn tx_result_to_status_meta(
     }
 }
 
-pub(crate) fn tx_result_to_transaction_status(
+pub fn tx_result_to_transaction_status(
     result: &TransactionResult,
     slot: u64,
 ) -> TransactionStatus {
@@ -94,7 +94,7 @@ pub(crate) fn tx_result_to_transaction_status(
     }
 }
 
-pub(crate) fn tx_result_to_status_result(
+pub fn tx_result_to_status_result(
     result: &TransactionResult,
 ) -> Result<(), TransactionError> {
     match result {

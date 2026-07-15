@@ -11,7 +11,7 @@ pub(crate) mod object;
 pub(crate) mod s3;
 pub(crate) mod track;
 
-pub(crate) fn binary_response<T: wincode::SchemaWrite<Src = T>>(
+pub fn binary_response<T: wincode::SchemaWrite<Src = T>>(
     value: &T,
 ) -> Result<impl IntoResponse, RouteError> {
     let body = wincode::serialize(value)
@@ -19,6 +19,6 @@ pub(crate) fn binary_response<T: wincode::SchemaWrite<Src = T>>(
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, BINARY_CONTENT)], body))
 }
 
-pub(crate) fn store_error(error: impl Display) -> RouteError {
+pub fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
 }

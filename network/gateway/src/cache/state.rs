@@ -45,15 +45,15 @@ pub struct CacheStats {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct CacheEntry {
-    pub(super) size: u64,
-    pub(super) last_access: u64,
+pub struct CacheEntry {
+    pub size: u64,
+    pub last_access: u64,
 }
 
 #[derive(Debug, Default)]
-pub(super) struct CacheState {
-    pub(super) entries: HashMap<SliceCacheKey, CacheEntry>,
-    pub(super) total_bytes: u64,
+pub struct CacheState {
+    pub entries: HashMap<SliceCacheKey, CacheEntry>,
+    pub total_bytes: u64,
     clock: u64,
 }
 
@@ -63,7 +63,7 @@ impl CacheState {
         self.clock
     }
 
-    pub(super) fn upsert(&mut self, key: SliceCacheKey, size: u64) {
+    pub fn upsert(&mut self, key: SliceCacheKey, size: u64) {
         let last_access = self.next_access();
         if let Some(previous) = self.entries.insert(key, CacheEntry { size, last_access }) {
             self.total_bytes = self.total_bytes.saturating_sub(previous.size);
@@ -71,7 +71,7 @@ impl CacheState {
         self.total_bytes = self.total_bytes.saturating_add(size);
     }
 
-    pub(super) fn touch(&mut self, key: SliceCacheKey, size: u64) {
+    pub fn touch(&mut self, key: SliceCacheKey, size: u64) {
         let last_access = self.next_access();
         match self.entries.get_mut(&key) {
             Some(entry) => {
@@ -89,7 +89,7 @@ impl CacheState {
         }
     }
 
-    pub(super) fn remove(&mut self, key: SliceCacheKey) -> Option<CacheEntry> {
+    pub fn remove(&mut self, key: SliceCacheKey) -> Option<CacheEntry> {
         let removed = self.entries.remove(&key)?;
         self.total_bytes = self.total_bytes.saturating_sub(removed.size);
         Some(removed)

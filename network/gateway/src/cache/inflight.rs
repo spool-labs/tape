@@ -7,16 +7,16 @@ use super::error::GatewayCacheError;
 use super::state::SliceCacheKey;
 
 #[derive(Debug, Default)]
-pub(super) struct InflightFetches {
+pub struct InflightFetches {
     entries: Mutex<HashMap<SliceCacheKey, Arc<Notify>>>,
 }
 
 impl InflightFetches {
-    pub(super) fn len(&self) -> Result<usize, GatewayCacheError> {
+    pub fn len(&self) -> Result<usize, GatewayCacheError> {
         Ok(self.lock()?.len())
     }
 
-    pub(super) fn join_or_start_fetch(
+    pub fn join_or_start_fetch(
         &self,
         key: SliceCacheKey,
     ) -> Result<Option<Arc<Notify>>, GatewayCacheError> {
@@ -29,7 +29,7 @@ impl InflightFetches {
         Ok(None)
     }
 
-    pub(super) fn finish_fetch(&self, key: SliceCacheKey) {
+    pub fn finish_fetch(&self, key: SliceCacheKey) {
         let notify = self.lock().ok().and_then(|mut entries| entries.remove(&key));
 
         if let Some(notify) = notify {

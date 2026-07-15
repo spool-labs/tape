@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use crate::cache::GatewayCacheError;
 
 #[derive(Debug)]
-pub(crate) enum RouteError {
+pub enum RouteError {
     NotFound,
     BadRequest(String),
     /// A syntactically valid Range that cannot be satisfied; carries the

@@ -14,12 +14,12 @@ use crate::http::handlers::store_error;
 use crate::http::state::AppState;
 
 #[derive(Clone, Debug)]
-pub(crate) struct ObjectResponseMetadata {
+pub struct ObjectResponseMetadata {
     pub content_type: ContentType,
     pub filename: Option<Vec<u8>>,
 }
 
-pub(crate) fn object_response_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub fn object_response_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
 ) -> Result<ObjectResponseMetadata, RouteError> {
@@ -44,19 +44,19 @@ pub(crate) fn object_response_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>
 
 /// A resolved half-open byte range `[start, end)` for a `Range` request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::http::handlers) struct ByteRange {
+pub struct ByteRange {
     pub start: u64,
     pub end: u64,
 }
 
 impl ByteRange {
-    pub(in crate::http::handlers) fn len(&self) -> u64 {
+    pub fn len(&self) -> u64 {
         self.end - self.start
     }
 }
 
 /// Outcome of resolving a `Range` header against an object of `total` bytes.
-pub(in crate::http::handlers) enum RangeOutcome {
+pub enum RangeOutcome {
     /// No usable range (absent, multi-range, or malformed) — serve the full object.
     Full,
     /// A single satisfiable range.
@@ -68,7 +68,7 @@ pub(in crate::http::handlers) enum RangeOutcome {
 /// Resolve a `Range` header value (`bytes=...`) against `total` object bytes. Only
 /// a single byte range is honored; multi-range or malformed specs fall back to
 /// `Full` (serve the whole object, which HTTP permits).
-pub(in crate::http::handlers) fn parse_range(header: &str, total: u64) -> RangeOutcome {
+pub fn parse_range(header: &str, total: u64) -> RangeOutcome {
     let Some(spec) = header.trim().strip_prefix("bytes=") else {
         return RangeOutcome::Full;
     };
@@ -121,7 +121,7 @@ pub(in crate::http::handlers) fn parse_range(header: &str, total: u64) -> RangeO
 
 /// Resolve a raw `Range` header against `total` object bytes: `None` to serve
 /// the whole object, a single satisfiable range, or the `416` error.
-pub(in crate::http::handlers) fn resolve_range(
+pub fn resolve_range(
     header: Option<&str>,
     total: u64,
 ) -> Result<Option<ByteRange>, RouteError> {
@@ -135,7 +135,7 @@ pub(in crate::http::handlers) fn resolve_range(
 /// The status line and headers for an optionally-ranged object response:
 /// `200` with the full length, or `206` with the ranged length and
 /// `Content-Range`.
-pub(in crate::http::handlers) fn ranged_object_headers(
+pub fn ranged_object_headers(
     range: Option<ByteRange>,
     total: u64,
     metadata: &ObjectResponseMetadata,
@@ -155,7 +155,7 @@ pub(in crate::http::handlers) fn ranged_object_headers(
 /// `Range` (slice + `206 Partial Content`), serving the whole object (`200`), or
 /// rejecting an unsatisfiable range (`416`). Single-track objects only — the
 /// bytes are already in memory, so the slice is free.
-pub(in crate::http::handlers::object) fn object_response_ranged(
+pub fn object_response_ranged(
     bytes: Vec<u8>,
     metadata: &ObjectResponseMetadata,
     etag: Hash,
@@ -173,13 +173,13 @@ pub(in crate::http::handlers::object) fn object_response_ranged(
 }
 
 /// The raw `Range` header value, when present and readable.
-pub(in crate::http::handlers) fn range_header(headers: &HeaderMap) -> Option<&str> {
+pub fn range_header(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::RANGE).and_then(|value| value.to_str().ok())
 }
 
 /// The `Content-Range` header for a satisfied range: `bytes start-end/total`
 /// with HTTP's inclusive end.
-pub(in crate::http::handlers) fn content_range_header(
+pub fn content_range_header(
     range: ByteRange,
     total: u64,
 ) -> Result<HeaderValue, RouteError> {
@@ -187,7 +187,7 @@ pub(in crate::http::handlers) fn content_range_header(
         .map_err(|error| RouteError::Internal(format!("content range header: {error}")))
 }
 
-pub(crate) fn object_headers(
+pub fn object_headers(
     content_length: u64,
     metadata: &ObjectResponseMetadata,
     etag: Hash,

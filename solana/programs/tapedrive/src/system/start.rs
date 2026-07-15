@@ -264,7 +264,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     Ok(())
 }
 
-pub(super) fn ensure_committee_capacity<'info>(
+pub fn ensure_committee_capacity<'info>(
     committee_info: &AccountInfo<'info>,
     system_program_info: &AccountInfo<'info>,
     fee_payer_info: &AccountInfo<'info>,

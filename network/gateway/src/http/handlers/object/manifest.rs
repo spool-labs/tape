@@ -21,7 +21,7 @@ use crate::http::state::AppState;
 /// chunk whole; a ranged read skips the head of the first chunk and trims the
 /// tail of the last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::http::handlers::object) struct PlannedChunk {
+pub struct PlannedChunk {
     pub index: usize,
     pub decoded_size: u64,
     pub skip: u64,
@@ -32,7 +32,7 @@ pub(in crate::http::handlers::object) struct PlannedChunk {
 /// half-open window touches, in order. Chunks are contiguous and ordered, so
 /// the result is a consecutive run with at most the first and last entries
 /// trimmed. Pure manifest arithmetic; no store access.
-pub(in crate::http::handlers::object) fn chunk_range_plan(
+pub fn chunk_range_plan(
     manifest: &ChunkManifest,
     range: ByteRange,
 ) -> Vec<PlannedChunk> {
@@ -58,7 +58,7 @@ pub(in crate::http::handlers::object) fn chunk_range_plan(
 /// One chunk of the response body: the resolved track to decode plus its
 /// planned byte window.
 #[derive(Clone, Copy)]
-struct StreamPiece {
+struct StreamChunk {
     index: usize,
     track_addr: Address,
     track: CompressedTrack,
@@ -74,8 +74,8 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tape: Address,
     manifest: &ChunkManifest,
     plan: &[PlannedChunk],
-) -> Result<Vec<StreamPiece>, RouteError> {
-    let mut pieces = Vec::with_capacity(plan.len());
+) -> Result<Vec<StreamChunk>, RouteError> {
+    let mut chunks = Vec::with_capacity(plan.len());
     for planned in plan {
         let entry = &manifest.chunks[planned.index];
         let chunk_addr = track_pda(tape, entry.track_number).0.into();
@@ -87,7 +87,7 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
             )));
         }
 
-        pieces.push(StreamPiece {
+        chunks.push(StreamChunk {
             index: planned.index,
             track_addr: chunk_addr,
             track: chunk,
@@ -97,10 +97,10 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
         });
     }
 
-    Ok(pieces)
+    Ok(chunks)
 }
 
-pub(in crate::http::handlers::object) fn object_stream_response<Db, Cluster, Blockchain>(
+pub fn object_stream_response<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
     tape: Address,
     manifest: &ChunkManifest,
@@ -115,15 +115,15 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let pieces = resolve_planned_chunks(&state, tape, manifest, plan)?;
+    let chunks = resolve_planned_chunks(&state, tape, manifest, plan)?;
     let (status, headers) = ranged_object_headers(range, total_size, &metadata, etag)?;
-    let body = Body::from_stream(manifest_chunk_stream(state, pieces));
+    let body = Body::from_stream(manifest_chunk_stream(state, chunks));
     Ok((status, headers, body).into_response())
 }
 
 fn manifest_chunk_stream<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
-    pieces: Vec<StreamPiece>,
+    chunks: Vec<StreamChunk>,
 ) -> impl Stream<Item = Result<Bytes, RouteError>> + Send + 'static
 where
     Db: Store + 'static,
@@ -133,11 +133,11 @@ where
     futures::stream::try_unfold(
         ObjectStreamState {
             state,
-            pieces,
+            chunks,
             next: 0,
         },
         |mut stream| async move {
-            let Some(piece) = stream.pieces.get(stream.next).copied() else {
+            let Some(chunk) = stream.chunks.get(stream.next).copied() else {
                 return Ok(None);
             };
             stream.next += 1;
@@ -145,11 +145,11 @@ where
             // The whole chunk decodes and verifies against the manifest size
             // before any slicing; a ranged read changes what is sent, never
             // what is checked.
-            let decoded = decode_track_bytes(&stream.state, piece.track_addr, piece.track).await?;
-            if decoded.bytes.len() as u64 != piece.expected_size {
+            let decoded = decode_track_bytes(&stream.state, chunk.track_addr, chunk.track).await?;
+            if decoded.bytes.len() as u64 != chunk.expected_size {
                 return Err(RouteError::BadGateway(format!(
                     "manifest chunk {} size mismatch",
-                    piece.index
+                    chunk.index
                 )));
             }
 
@@ -160,7 +160,7 @@ where
                 .add_downloaded(decoded.bytes.len() as u64);
 
             let bytes = Bytes::from(decoded.bytes)
-                .slice(piece.skip as usize..(piece.skip + piece.take) as usize);
+                .slice(chunk.skip as usize..(chunk.skip + chunk.take) as usize);
             Ok(Some((bytes, stream)))
         },
     )
@@ -168,7 +168,7 @@ where
 
 struct ObjectStreamState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     state: AppState<Db, Cluster, Blockchain>,
-    pieces: Vec<StreamPiece>,
+    chunks: Vec<StreamChunk>,
     next: usize,
 }
 
