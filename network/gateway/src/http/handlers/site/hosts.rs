@@ -31,6 +31,11 @@ const BINDING_TTL: Duration = Duration::from_secs(60);
 /// Bound on remembered hosts; Host headers are caller-controlled.
 const MAX_CACHED_HOSTS: u64 = 10_000;
 
+/// Per-query resolver budget. An attacker-chosen host with a slow or
+/// deliberately stalling authoritative server must not hold a request slot
+/// for the resolver's multi-second default.
+const RESOLVER_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Resolver plus a bounded, request-coalescing cache of proven bindings.
 pub struct SiteHostBindings {
     resolver: TokioResolver,
@@ -49,6 +54,7 @@ impl SiteHostBindings {
         let resolver = TokioResolver::builder_tokio().and_then(|mut builder| {
             let options = builder.options_mut();
             options.validate = true;
+            options.timeout = RESOLVER_TIMEOUT;
             options.positive_min_ttl = Some(MIN_RECORD_TTL);
             options.positive_max_ttl = Some(MAX_RECORD_TTL);
             options.negative_min_ttl = Some(MIN_RECORD_TTL);

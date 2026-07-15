@@ -156,13 +156,14 @@ async fn serve_site<
     let is_spa = policy.spa_fallback.unwrap_or(config.spa_fallback);
     let max_age_secs = policy.max_age_secs.unwrap_or(DEFAULT_SITE_MAX_AGE_SECS);
 
-    let (resolved, status) = match lookup(&state, tape, &name)? {
-        Some(resolved) => (resolved, StatusCode::OK),
-        None => match lookup_miss(&state, tape, &name, is_spa)? {
-            Some(fallback) => fallback,
-            None => return Err(RouteError::NotFound),
-        },
-    };
+    let (resolved, status, served_name): (ResolvedObject, StatusCode, &str) =
+        match lookup(&state, tape, &name)? {
+            Some(resolved) => (resolved, StatusCode::OK, name.as_str()),
+            None => match lookup_miss(&state, tape, &name, is_spa)? {
+                Some((resolved, status, served)) => (resolved, status, served),
+                None => return Err(RouteError::NotFound),
+            },
+        };
 
     // A revalidation hit answers before any decode work happens; the etag is
     // formatted once for both the comparison and the 304 headers.
@@ -178,7 +179,9 @@ async fn serve_site<
         return Err(RouteError::NotFound);
     }
 
-    let metadata = site_metadata(&resolved, &name, download, max_age_secs);
+    // Fallback pages take their type and download name from the object served,
+    // not the requested path, so a missing /route never mislabels index.html.
+    let metadata = site_metadata(&resolved, served_name, download, max_age_secs);
     read_object_response(
         state,
         resolved.track_address,
@@ -245,15 +248,15 @@ fn lookup_miss<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tape: Address,
     name: &str,
     is_spa: bool,
-) -> Result<Option<(ResolvedObject, StatusCode)>, RouteError> {
+) -> Result<Option<(ResolvedObject, StatusCode, &'static str)>, RouteError> {
     // When the index itself was the miss, asking the store again cannot help.
     if is_spa && name != INDEX_OBJECT {
         if let Some(resolved) = lookup(state, tape, INDEX_OBJECT)? {
-            return Ok(Some((resolved, StatusCode::OK)));
+            return Ok(Some((resolved, StatusCode::OK, INDEX_OBJECT)));
         }
     }
     if let Some(resolved) = lookup(state, tape, NOT_FOUND_OBJECT)? {
-        return Ok(Some((resolved, StatusCode::NOT_FOUND)));
+        return Ok(Some((resolved, StatusCode::NOT_FOUND, NOT_FOUND_OBJECT)));
     }
     Ok(None)
 }
@@ -354,6 +357,7 @@ where
 
     let cors_list = policy.cors_origins.as_deref().unwrap_or(&site.cors_origins);
     let cors = cors_origin(cors_list, req.headers());
+    let vary_on_origin = varies_on_origin(cors_list);
     let connect_list = policy
         .connect_origins
         .as_deref()
@@ -371,7 +375,22 @@ where
     headers.insert(header::CONTENT_SECURITY_POLICY, content_policy);
     if let Some(origin) = cors {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    }
+    // A selective allow list answers some origins and not others, so a shared
+    // cache must key on Origin whether or not this request matched one.
+    if vary_on_origin {
         headers.insert(header::VARY, HeaderValue::from_static("origin"));
+    }
+    // Text responses declare utf-8 so browsers do not guess the encoding;
+    // with nosniff set, a wrong or missing charset is never recovered.
+    if let Some(typed) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(text_charset)
+    {
+        if let Ok(value) = HeaderValue::from_str(&typed) {
+            headers.insert(header::CONTENT_TYPE, value);
+        }
     }
     response
 }
@@ -411,6 +430,26 @@ fn cors_origin(allowed: &[String], headers: &HeaderMap) -> Option<HeaderValue> {
         return HeaderValue::from_str(origin).ok();
     }
     None
+}
+
+/// Whether the allow list makes a response depend on the request Origin. A
+/// specific list answers some origins and not others, so shared caches must
+/// key on Origin; a wildcard or empty list answers everyone alike.
+fn varies_on_origin(allowed: &[String]) -> bool {
+    !allowed.is_empty() && !allowed.iter().any(|origin| origin == "*")
+}
+
+/// The content type with utf-8 appended, when it is a text-family type that
+/// carries no charset yet. Returns None to leave the header untouched.
+fn text_charset(content_type: &str) -> Option<String> {
+    if content_type.to_ascii_lowercase().contains("charset") {
+        return None;
+    }
+    let media = content_type.split(';').next().unwrap_or("").trim();
+    let textual = media.starts_with("text/")
+        || media.eq_ignore_ascii_case("image/svg+xml")
+        || media.eq_ignore_ascii_case("application/xml");
+    textual.then(|| format!("{content_type}; charset=utf-8"))
 }
 
 
@@ -565,5 +604,36 @@ mod tests {
 
         headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"other\""));
         assert!(!matches_etag(&headers, &etag));
+    }
+
+    // a selective allow list varies on origin even when nothing matched; a
+    // wildcard or empty list answers everyone alike and does not
+    #[test]
+    fn vary_on_selective_allowlist() {
+        assert!(varies_on_origin(&["https://app.example".to_string()]));
+        assert!(!varies_on_origin(&["*".to_string()]));
+        assert!(!varies_on_origin(&[]));
+    }
+
+    // text types gain a utf-8 charset; binary types, json, and already-tagged
+    // values are left untouched
+    #[test]
+    fn text_types_declare_charset() {
+        assert_eq!(text_charset("text/html").as_deref(), Some("text/html; charset=utf-8"));
+        assert_eq!(
+            text_charset("image/svg+xml").as_deref(),
+            Some("image/svg+xml; charset=utf-8")
+        );
+        assert!(text_charset("image/png").is_none());
+        assert!(text_charset("application/json").is_none());
+        assert!(text_charset("text/html; charset=utf-8").is_none());
+    }
+
+    // a fallback page is typed from the object served, not the requested route:
+    // an untyped index.html for an extensionless spa path still renders as html
+    #[test]
+    fn fallback_typed_from_served_object() {
+        let meta = site_metadata(&resolved(Hash::default()), INDEX_OBJECT, None, 60);
+        assert_eq!(meta.content_type, ContentType::TextHtml);
     }
 }

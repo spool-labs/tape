@@ -215,7 +215,7 @@ async fn site_serving_inner() {
         .await
         .expect("request site index");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(header(&response, "content-type"), "text/html");
+    assert_eq!(header(&response, "content-type"), "text/html; charset=utf-8");
     assert_eq!(
         header(&response, "cache-control"),
         "public, max-age=5, must-revalidate",
@@ -260,7 +260,7 @@ async fn site_serving_inner() {
         .await
         .expect("request stylesheet");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(header(&response, "content-type"), "text/css");
+    assert_eq!(header(&response, "content-type"), "text/css; charset=utf-8");
     let body = response.bytes().await.expect("read stylesheet body");
     assert_eq!(body.as_ref(), STYLE_BODY);
     eprintln!("gateway_site: stylesheet inferred and served");
@@ -298,7 +298,7 @@ async fn site_serving_inner() {
         .await
         .expect("request custom domain root");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(header(&response, "content-type"), "text/html");
+    assert_eq!(header(&response, "content-type"), "text/html; charset=utf-8");
     assert_eq!(header(&response, "x-content-type-options"), "nosniff");
     let body = response.bytes().await.expect("read domain index");
     assert_eq!(body.as_ref(), INDEX_BODY);
@@ -311,7 +311,7 @@ async fn site_serving_inner() {
         .await
         .expect("request custom domain asset");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(header(&response, "content-type"), "text/css");
+    assert_eq!(header(&response, "content-type"), "text/css; charset=utf-8");
     eprintln!("gateway_site: custom domain asset served");
 
     // The tape's subdomain label serves the same site under the suffix.
@@ -344,6 +344,11 @@ async fn site_serving_inner() {
         .await
         .expect("request with unlisted origin");
     assert!(response.headers().get("access-control-allow-origin").is_none());
+    assert_eq!(
+        header(&response, "vary"),
+        "origin",
+        "a selective allow list varies on origin even without a match"
+    );
     eprintln!("gateway_site: cors headers ok");
 
     // An unmapped host still reaches the normal routes.
