@@ -211,6 +211,13 @@ impl NodeConfig {
             )));
         }
 
+        if !metering.grades.contains_key(&metering.site_grade) {
+            return Err(ConfigError::Invalid(format!(
+                "gateway.metering.site_grade `{}` is not a defined grade",
+                metering.site_grade
+            )));
+        }
+
         if self.gateway.metering.over_budget_penalty_secs == 0 {
             return Err(ConfigError::Invalid(
                 "gateway.metering.over_budget_penalty_secs must be greater than zero".into(),
@@ -388,12 +395,12 @@ fn default_commission() -> BasisPoints {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
     use std::path::PathBuf;
 
     use tape_core::types::{BasisPoints, SlotNumber};
 
     use super::{NodeConfig, default_config_path};
+    use crate::config::cidr::CidrBlock;
     use crate::config::logs::LoggingFormat;
 
     const EXAMPLE_CONFIG: &str = r#"
@@ -456,11 +463,17 @@ gateway:
         read_burst: 50
         read_bytes_per_sec: 2097152
         read_byte_burst: 4194304
+      site:
+        read_per_sec: 40
+        read_burst: 160
+        read_bytes_per_sec: 2097152
+        read_byte_burst: 4194304
     anonymous_grade: anonymous
     default_grade: standard
+    site_grade: site
     over_budget_penalty_secs: 8
     stale_entry_secs: 120
-    trusted_proxies: ["203.0.113.7"]
+    trusted_proxies: ["203.0.113.7", "173.245.48.0/20"]
 recovery:
   max_workers: 42
   sync_batch: 99
@@ -528,9 +541,13 @@ metrics:
         assert_eq!(config.gateway.metering.default_grade, "standard");
         assert_eq!(config.gateway.metering.over_budget_penalty_secs, 8);
         assert_eq!(config.gateway.metering.stale_entry_secs, 120);
+        assert_eq!(config.gateway.metering.site_grade, "site");
         assert_eq!(
             config.gateway.metering.trusted_proxies,
-            vec!["203.0.113.7".parse::<IpAddr>().unwrap()]
+            vec![
+                "203.0.113.7".parse::<CidrBlock>().unwrap(),
+                "173.245.48.0/20".parse::<CidrBlock>().unwrap(),
+            ]
         );
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.sync_batch, 99);

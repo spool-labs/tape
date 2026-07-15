@@ -5,7 +5,7 @@ use std::time::Duration;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
-use axum::middleware::{Next, from_fn, from_fn_with_state};
+use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -169,9 +169,20 @@ where
                 require_ready::<Db, Cluster, Blockchain>,
             ));
 
-        status_router
+        // Routing happens before route-attached middleware runs, so the
+        // host rewrite must sit outside the routing decision: the real
+        // router becomes the fallback of a thin outer router, and the
+        // rewrite layer runs before that fallback routes anything.
+        let routes = status_router
             .merge(service_router)
-            .with_state(state.clone())
+            .with_state(state.clone());
+
+        Router::new()
+            .fallback_service(routes)
+            .layer(from_fn_with_state(
+                state.clone(),
+                site::host_site_serving::<Db, Cluster, Blockchain>,
+            ))
             .layer(from_fn_with_state(
                 state,
                 count_requests::<Db, Cluster, Blockchain>,
@@ -407,11 +418,14 @@ where
         .route(
             site::SITE_PATH,
             get(site::get_site_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
-                state,
+                state.clone(),
                 crate::meter::site_read_metering::<Db, Cluster, Blockchain>,
             )),
         )
-        .route_layer(from_fn(site::site_security_headers))
+        .route_layer(from_fn_with_state(
+            state,
+            site::site_response_headers::<Db, Cluster, Blockchain>,
+        ))
 }
 
 async fn handle_http_error(error: axum::BoxError) -> StatusCode {

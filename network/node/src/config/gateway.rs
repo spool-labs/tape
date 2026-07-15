@@ -4,7 +4,13 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::helpers::{deserialize_option_pathbuf, deserialize_socket_addr};
+use tape_crypto::address::Address;
+
+use super::cidr::CidrBlock;
+use super::helpers::{
+    deserialize_domain_map, deserialize_option_pathbuf, deserialize_socket_addr,
+    deserialize_subdomain_suffix,
+};
 
 /// Gateway-only runtime settings.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -44,6 +50,21 @@ pub struct GatewaySiteConfig {
     /// the routing single-page apps expect.
     #[serde(default)]
     pub spa_fallback: bool,
+
+    /// Custom hostnames served as sites: a request whose Host matches a key
+    /// serves that tape from the domain root.
+    #[serde(default, deserialize_with = "deserialize_domain_map")]
+    pub domains: BTreeMap<String, Address>,
+
+    /// When set, any host of the form subdomain-label dot suffix serves that
+    /// tape from the domain root, one isolated origin per site.
+    #[serde(default, deserialize_with = "deserialize_subdomain_suffix")]
+    pub subdomain_suffix: Option<String>,
+
+    /// Origins allowed to fetch site content cross-origin; a single star
+    /// entry allows any origin.
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
 
 /// S3-compatible gateway listener controls.
@@ -369,10 +390,11 @@ pub struct GatewayMeteringConfig {
     #[serde(default = "default_stale_entry_secs")]
     pub stale_entry_secs: u64,
 
-    /// Proxy addresses whose X-Forwarded-For header is trusted when resolving
-    /// the caller IP. Empty means the socket peer is always the caller.
+    /// Proxy addresses or CIDR ranges whose X-Forwarded-For header is trusted
+    /// when resolving the caller IP. Empty means the socket peer is always
+    /// the caller.
     #[serde(default)]
-    pub trusted_proxies: Vec<IpAddr>,
+    pub trusted_proxies: Vec<CidrBlock>,
 }
 
 impl Default for GatewayMeteringConfig {

@@ -4,11 +4,14 @@
 //! in the tape's object index and the backing track is served inline so the
 //! browser renders it. Directory paths resolve the site's index page, misses
 //! fall back to its 404 page, and a download query switches back to
-//! attachment behavior.
+//! attachment behavior. A site is reachable under the path prefix, a
+//! configured custom hostname, or its own subdomain of the configured
+//! suffix, where each site gets an isolated browser origin.
 
 use axum::Extension;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::uri::PathAndQuery;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use rpc::Rpc;
@@ -16,6 +19,7 @@ use serde::Deserialize;
 use store::Store;
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
+use tape_node::config::gateway::GatewaySiteConfig;
 use tape_protocol::Api;
 
 use super::resolve::{ResolvedObject, resolve_object};
@@ -67,7 +71,8 @@ pub async fn get_site_index<
     Query(query): Query<SiteQuery>,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
-    serve_site(state, caller, &tape, "", query, headers).await
+    let tape = parse_address(&tape, "tape address")?;
+    serve_site(state, caller, tape, "", query.download.as_deref(), &headers).await
 }
 
 pub async fn get_site_object<
@@ -81,7 +86,48 @@ pub async fn get_site_object<
     Query(query): Query<SiteQuery>,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
-    serve_site(state, caller, &tape, &path, query, headers).await
+    let tape = parse_address(&tape, "tape address")?;
+    serve_site(state, caller, tape, &path, query.download.as_deref(), &headers).await
+}
+
+/// Rewrite site-host requests into the site route before routing: when the
+/// Host header maps to a tape, the whole request is that site's, from the
+/// domain root, and it flows through the same routed pipeline as the path
+/// form, readiness, metering, headers, and all.
+pub async fn host_site_serving<
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let site = &state.context.config.gateway.site;
+    if site.domains.is_empty() && site.subdomain_suffix.is_none() {
+        return next.run(req).await;
+    }
+
+    let tape = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|host| host_tape(site, host));
+    let Some(tape) = tape else {
+        return next.run(req).await;
+    };
+
+    match site_uri(tape, req.uri()) {
+        Some(uri) => *req.uri_mut() = uri,
+        None => return RouteError::BadRequest("unroutable site path".into()).into_response(),
+    }
+    next.run(req).await
+}
+
+/// The site-route form of a host-served request, query included.
+fn site_uri(tape: Address, uri: &Uri) -> Option<Uri> {
+    let path_and_query = uri.path_and_query().map_or("/", PathAndQuery::as_str);
+    format!("/site/{tape}{path_and_query}").parse().ok()
 }
 
 async fn serve_site<
@@ -91,12 +137,11 @@ async fn serve_site<
 >(
     state: AppState<Db, Cluster, Blockchain>,
     caller: MeterCaller,
-    tape: &str,
+    tape: Address,
     path: &str,
-    query: SiteQuery,
-    headers: HeaderMap,
+    download: Option<&str>,
+    headers: &HeaderMap,
 ) -> Result<Response, RouteError> {
-    let tape = parse_address(tape, "tape address")?;
     let name = resolve_site_name(path);
 
     let (resolved, status) = match lookup(&state, tape, &name)? {
@@ -111,7 +156,7 @@ async fn serve_site<
     // formatted once for both the comparison and the 304 headers.
     if status == StatusCode::OK {
         let etag = resolved.etag.to_string();
-        if matches_etag(&headers, &etag) {
+        if matches_etag(headers, &etag) {
             return not_modified(&etag);
         }
     }
@@ -121,7 +166,7 @@ async fn serve_site<
         return Err(RouteError::NotFound);
     }
 
-    let metadata = site_metadata(&resolved, &name, query.download.as_deref());
+    let metadata = site_metadata(&resolved, &name, download);
     read_object_response(
         state,
         resolved.track_address,
@@ -129,10 +174,36 @@ async fn serve_site<
         metadata,
         status,
         &caller,
-        range_header(&headers).map(str::to_string),
+        range_header(headers).map(str::to_string),
         rate_limited_response,
     )
     .await
+}
+
+/// The tape a Host header serves as a site: a configured custom domain, or a
+/// subdomain label under the configured suffix. Config keys and the suffix
+/// are canonicalized at load, so only an uppercase request host allocates.
+pub fn host_tape(config: &GatewaySiteConfig, host: &str) -> Option<Address> {
+    // A port suffix never survives into domain matching. IPv6 literal hosts
+    // mangle here, but they can never match a configured domain anyway.
+    let host = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return lookup_host(config, &host.to_ascii_lowercase());
+    }
+    lookup_host(config, host)
+}
+
+fn lookup_host(config: &GatewaySiteConfig, host: &str) -> Option<Address> {
+    if let Some(tape) = config.domains.get(host) {
+        return Some(*tape);
+    }
+
+    let suffix = config.subdomain_suffix.as_deref()?;
+    let label = host.strip_suffix(suffix)?.strip_suffix('.')?;
+    if label.contains('.') {
+        return None;
+    }
+    Address::try_from_subdomain_label(label)
 }
 
 /// Map a request path to an object name: directory paths get the index page.
@@ -241,11 +312,23 @@ fn not_modified(etag: &str) -> Result<Response, RouteError> {
     Ok((StatusCode::NOT_MODIFIED, headers).into_response())
 }
 
-/// Stamp the site security headers on every site-route response: no MIME
-/// sniffing, same-origin content policy. Path-based hosting does not isolate
-/// tenants from each other; that takes per-site subdomains.
-pub async fn site_security_headers(request: Request, next: Next) -> Response {
-    let mut response = next.run(request).await;
+/// Stamp the site headers on every site response: no MIME sniffing, the
+/// same-origin content policy, and the cross-origin allowance when one is
+/// configured. Path-based hosting does not isolate tenants from each other;
+/// host-based serving gives each site its own origin.
+pub async fn site_response_headers<Db, Cluster, Blockchain>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    req: Request,
+    next: Next,
+) -> Response
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let cors = cors_origin(&state.context.config.gateway.site, req.headers());
+    let mut response = next.run(req).await;
+
     let headers = response.headers_mut();
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -255,8 +338,31 @@ pub async fn site_security_headers(request: Request, next: Next) -> Response {
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY),
     );
+    if let Some(origin) = cors {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        headers.insert(header::VARY, HeaderValue::from_static("origin"));
+    }
     response
 }
+
+/// The Access-Control-Allow-Origin value a request earns, when cross-origin
+/// site reads are configured.
+fn cors_origin(config: &GatewaySiteConfig, headers: &HeaderMap) -> Option<HeaderValue> {
+    if config.cors_origins.iter().any(|origin| origin == "*") {
+        return Some(HeaderValue::from_static("*"));
+    }
+
+    let origin = headers.get(header::ORIGIN)?.to_str().ok()?;
+    if config
+        .cors_origins
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(origin))
+    {
+        return HeaderValue::from_str(origin).ok();
+    }
+    None
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -292,9 +398,70 @@ mod tests {
 
     // the download query switches to a named attachment
     #[test]
-    fn download_query() {
+    fn download_attachment() {
         let metadata = site_metadata(&resolved(Hash::default()), "docs/guide.html", Some("1"));
         assert_eq!(metadata.filename.as_deref(), Some(b"guide.html".as_slice()));
+    }
+
+    // configured domains and subdomain labels map hosts to tapes
+    #[test]
+    fn host_mapping() {
+        let tape = Address::new_unique();
+        let mut config = GatewaySiteConfig::default();
+        config.domains.insert("mysite.test".to_string(), tape);
+        config.subdomain_suffix = Some("sites.test".to_string());
+
+        assert_eq!(host_tape(&config, "mysite.test"), Some(tape));
+        assert_eq!(host_tape(&config, "MySite.Test:8080"), Some(tape));
+        assert_eq!(host_tape(&config, "other.test"), None);
+
+        let label = tape.to_subdomain_label();
+        assert_eq!(host_tape(&config, &format!("{label}.sites.test")), Some(tape));
+        assert_eq!(host_tape(&config, &format!("{label}.sites.test:443")), Some(tape));
+        assert_eq!(host_tape(&config, &format!("{label}.other.test")), None);
+        assert_eq!(host_tape(&config, &format!("a.{label}.sites.test")), None);
+        assert_eq!(host_tape(&config, "sites.test"), None);
+    }
+
+    // cors answers the wildcard or a listed origin, and nothing else
+    #[test]
+    fn cors_matching() {
+        let mut config = GatewaySiteConfig::default();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://app.example"));
+
+        assert!(cors_origin(&config, &headers).is_none());
+
+        config.cors_origins = vec!["https://app.example".to_string()];
+        assert_eq!(
+            cors_origin(&config, &headers),
+            Some(HeaderValue::from_static("https://app.example"))
+        );
+        assert!(cors_origin(&config, &HeaderMap::new()).is_none());
+
+        config.cors_origins = vec!["*".to_string()];
+        assert_eq!(
+            cors_origin(&config, &HeaderMap::new()),
+            Some(HeaderValue::from_static("*"))
+        );
+    }
+
+    // host requests rewrite into the site route with path and query intact
+    #[test]
+    fn host_rewrite() {
+        let tape = Address::new_unique();
+
+        let uri: Uri = "/assets/app.css?download=1".parse().expect("parse uri");
+        assert_eq!(
+            site_uri(tape, &uri).expect("rewrite uri").to_string(),
+            format!("/site/{tape}/assets/app.css?download=1")
+        );
+
+        let root: Uri = "/".parse().expect("parse root uri");
+        assert_eq!(
+            site_uri(tape, &root).expect("rewrite root").to_string(),
+            format!("/site/{tape}/")
+        );
     }
 
     // if-none-match matches strong, weak, quoted, and wildcard forms

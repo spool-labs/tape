@@ -7,6 +7,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rpc::Rpc;
 use store::Store;
+use tape_node::config::cidr::CidrBlock;
 use tape_protocol::Api;
 use tracing::debug;
 
@@ -20,7 +21,7 @@ impl MeterCaller {
     pub fn resolve(
         peer: IpAddr,
         headers: &HeaderMap,
-        trusted: &[IpAddr],
+        trusted: &[CidrBlock],
         ip_grade: String,
         access_key: Option<String>,
         grade: Option<String>,
@@ -102,8 +103,8 @@ fn peer_ip(req: &Request) -> IpAddr {
 /// trusted proxy, in which case the nearest X-Forwarded-For hop that is not
 /// itself a trusted proxy wins. Unparseable or fully-trusted chains fall back
 /// to the peer.
-fn resolve_caller_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAddr {
-    if !trusted.contains(&peer) {
+fn resolve_caller_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[CidrBlock]) -> IpAddr {
+    if !is_trusted(peer, trusted) {
         return peer;
     }
     headers
@@ -113,8 +114,12 @@ fn resolve_caller_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> I
         .flat_map(|value| value.split(','))
         .filter_map(|hop| hop.trim().parse().ok())
         .rev()
-        .find(|hop| !trusted.contains(hop))
+        .find(|hop| !is_trusted(*hop, trusted))
         .unwrap_or(peer)
+}
+
+fn is_trusted(address: IpAddr, trusted: &[CidrBlock]) -> bool {
+    trusted.iter().any(|block| block.contains(address))
 }
 
 pub fn rate_limited_response(retry_after: Duration) -> Response {
@@ -135,6 +140,10 @@ mod tests {
         value.parse().unwrap()
     }
 
+    fn block(value: &str) -> CidrBlock {
+        value.parse().expect("cidr block should parse")
+    }
+
     fn forwarded(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", value.parse().unwrap());
@@ -152,7 +161,7 @@ mod tests {
 
     #[test]
     fn trusted_peer_yields_the_forwarded_client() {
-        let trusted = [addr("10.0.0.1")];
+        let trusted = [block("10.0.0.1")];
         let headers = forwarded("198.51.100.9");
         assert_eq!(
             resolve_caller_ip(addr("10.0.0.1"), &headers, &trusted),
@@ -164,7 +173,7 @@ mod tests {
     // arbitrary IP by prepending entries to the chain.
     #[test]
     fn spoofed_prefix_hops_are_ignored() {
-        let trusted = [addr("10.0.0.1"), addr("10.0.0.2")];
+        let trusted = [block("10.0.0.1"), block("10.0.0.2")];
         let headers = forwarded("1.2.3.4, 198.51.100.9, 10.0.0.2");
         assert_eq!(
             resolve_caller_ip(addr("10.0.0.1"), &headers, &trusted),
@@ -172,9 +181,20 @@ mod tests {
         );
     }
 
+    // a trusted CIDR range covers every proxy inside it
+    #[test]
+    fn trusted_range() {
+        let trusted = [block("173.245.48.0/20")];
+        let headers = forwarded("198.51.100.9");
+        assert_eq!(
+            resolve_caller_ip(addr("173.245.52.10"), &headers, &trusted),
+            addr("198.51.100.9")
+        );
+    }
+
     #[test]
     fn garbage_forwarded_header_falls_back_to_peer() {
-        let trusted = [addr("10.0.0.1")];
+        let trusted = [block("10.0.0.1")];
         let headers = forwarded("not-an-ip");
         assert_eq!(
             resolve_caller_ip(addr("10.0.0.1"), &headers, &trusted),

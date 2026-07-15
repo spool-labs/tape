@@ -17,7 +17,7 @@ use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_node::config::gateway::WriteDefault;
+use tape_node::config::gateway::{GatewaySiteConfig, WriteDefault};
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::core::error::NodeError;
@@ -280,6 +280,11 @@ impl TestGateway {
 
     pub fn base_url(&self) -> String {
         format!("http://{}:{}", self.public_host, self.public_port)
+    }
+
+    /// Site serving knobs, settable before the runtime starts.
+    pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
+        &mut self.app_config.gateway.site
     }
 
     /// Poll the gateway's native health endpoint until it reports ready.

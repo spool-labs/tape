@@ -22,6 +22,10 @@ const INDEX_BODY: &[u8] = b"<html><body>site index</body></html>";
 const STYLE_BODY: &[u8] = b"body { color: #01a2f2; }";
 const MISSING_BODY: &[u8] = b"<html><body>lost tape</body></html>";
 
+const CUSTOM_DOMAIN: &str = "mysite.test";
+const SUBDOMAIN_SUFFIX: &str = "sites.test";
+const ALLOWED_ORIGIN: &str = "https://app.example";
+
 // the site route serves a named-object site by path with web semantics
 #[test]
 fn site_serving() {
@@ -122,6 +126,15 @@ async fn site_serving_inner() {
             .await
             .expect("put 404 page");
         eprintln!("gateway_site: site objects written");
+    }
+
+    // Host-based serving: one custom domain, the subdomain suffix, and a
+    // single allowed cross-origin reader.
+    {
+        let site = gateway.site_config_mut();
+        site.domains.insert(CUSTOM_DOMAIN.to_string(), tape);
+        site.subdomain_suffix = Some(SUBDOMAIN_SUFFIX.to_string());
+        site.cors_origins = vec![ALLOWED_ORIGIN.to_string()];
     }
 
     {
@@ -262,6 +275,73 @@ async fn site_serving_inner() {
         "attachment; filename*=UTF-8''index.html"
     );
     eprintln!("gateway_site: download query ok");
+
+    // A custom domain serves the site from the domain root.
+    let base = gateway.base_url();
+    let response = client
+        .get(format!("{base}/"))
+        .header("host", CUSTOM_DOMAIN)
+        .send()
+        .await
+        .expect("request custom domain root");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(header(&response, "content-type"), "text/html");
+    assert_eq!(header(&response, "x-content-type-options"), "nosniff");
+    let body = response.bytes().await.expect("read domain index");
+    assert_eq!(body.as_ref(), INDEX_BODY);
+    eprintln!("gateway_site: custom domain root served");
+
+    let response = client
+        .get(format!("{base}/assets/app.css"))
+        .header("host", CUSTOM_DOMAIN)
+        .send()
+        .await
+        .expect("request custom domain asset");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(header(&response, "content-type"), "text/css");
+    eprintln!("gateway_site: custom domain asset served");
+
+    // The tape's subdomain label serves the same site under the suffix.
+    let label = tape.to_subdomain_label();
+    let response = client
+        .get(format!("{base}/"))
+        .header("host", format!("{label}.{SUBDOMAIN_SUFFIX}"))
+        .send()
+        .await
+        .expect("request subdomain root");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.expect("read subdomain index");
+    assert_eq!(body.as_ref(), INDEX_BODY);
+    eprintln!("gateway_site: subdomain root served");
+
+    // The allowed origin earns the cross-origin header, others get nothing.
+    let response = client
+        .get(format!("{base}/"))
+        .header("host", CUSTOM_DOMAIN)
+        .header("origin", ALLOWED_ORIGIN)
+        .send()
+        .await
+        .expect("request with allowed origin");
+    assert_eq!(header(&response, "access-control-allow-origin"), ALLOWED_ORIGIN);
+    let response = client
+        .get(format!("{base}/"))
+        .header("host", CUSTOM_DOMAIN)
+        .header("origin", "https://other.example")
+        .send()
+        .await
+        .expect("request with unlisted origin");
+    assert!(response.headers().get("access-control-allow-origin").is_none());
+    eprintln!("gateway_site: cors headers ok");
+
+    // An unmapped host still reaches the normal routes.
+    let response = client
+        .get(format!("{base}/v1/health"))
+        .header("host", "unmapped.test")
+        .send()
+        .await
+        .expect("request health on unmapped host");
+    assert_eq!(response.status(), StatusCode::OK);
+    eprintln!("gateway_site: unmapped host falls through");
 
     gateway.stop().await.expect("stop gateway");
     harness.stop_all().await.expect("stop storage nodes");
