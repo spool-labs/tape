@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
@@ -34,7 +34,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TestGateway, run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, TestGateway, run_simnet_test,
 };
 use tape_gateway::admission::{Admission, AdmissionDeny, AdmissionRequest, WriteOp};
 use tape_sdk::keys::tape_key::TapeKey;
@@ -257,12 +257,14 @@ async fn funded_writes_inner() {
             .stake_gateway(&gateway, GATEWAY_STAKE)
             .await
             .expect("stake gateway");
-        wait_gateway_known_by_storage_nodes(&harness, &gateway, active_timeout)
+        harness
+            .wait_gateway_known(&gateway, active_timeout)
             .await
             .expect("storage nodes learned gateway peer");
 
         gateway.start().await.expect("start gateway");
-        wait_gateway_healthy(&gateway.base_url(), Duration::from_secs(180))
+        gateway
+            .wait_healthy(Duration::from_secs(180))
             .await
             .expect("gateway healthy");
         eprintln!("s3_admission: gateway runtime healthy");
@@ -757,60 +759,7 @@ async fn s3_abort_multipart(base: &str, host: &str, bucket: &str, key: &str, upl
     );
 }
 
-/// Wait until every running storage node's peer manager knows the gateway.
-async fn wait_gateway_known_by_storage_nodes(
-    harness: &SimnetHarness,
-    gateway: &TestGateway,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let start = Instant::now();
-    let tls_pubkey = gateway.tls_pubkey();
 
-    loop {
-        let mut running = 0usize;
-        let mut known = 0usize;
-        for node in harness.nodes().iter().filter(|node| node.is_running()) {
-            running += 1;
-            if node
-                .context()
-                .peer_manager
-                .peer_for_tls_pubkey(tls_pubkey)
-                .is_some()
-            {
-                known += 1;
-            }
-        }
-
-        if running > 0 && known == running {
-            return Ok(());
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "timed out waiting for storage nodes to learn gateway peer, known {known}/{running}"
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-/// Poll the gateway's native health endpoint until it reports `200 OK`.
-async fn wait_gateway_healthy(base: &str, timeout: Duration) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()?;
-    let start = Instant::now();
-    loop {
-        if let Ok(response) = client.get(format!("{base}/v1/health")).send().await {
-            if response.status() == StatusCode::OK {
-                return Ok(());
-            }
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!("timed out waiting for gateway health");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
 
 /// Deterministic pseudo-random bytes, matching gateway_read.rs.
 fn deterministic_bytes(len: usize) -> Vec<u8> {

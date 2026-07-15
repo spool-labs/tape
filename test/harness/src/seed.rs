@@ -39,12 +39,12 @@ use crate::{TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION, TEST_MIN_EPOCH_DURATIO
 
 const DEFAULT_GROUP_SIZE: StorageUnits = StorageUnits(StorageUnits::GB);
 
-pub(crate) struct SeedAccount {
+pub struct SeedAccount {
     pub address: Pubkey,
     pub data: Vec<u8>,
 }
 
-pub(crate) struct SeededWorld {
+pub struct SeededWorld {
     pub protocol_state: ProtocolState,
     pub system: SeedAccount,
     pub epochs: Vec<SeedAccount>,
@@ -62,7 +62,7 @@ pub(crate) struct SeededWorld {
     pub blacklist_accounts: Vec<SeedAccount>,
 }
 
-pub(crate) fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
+pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
     let identities = build_identities(spec.nodes.len());
 
     let committee_capacity = committee_capacity(spec);

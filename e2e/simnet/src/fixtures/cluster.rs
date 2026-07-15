@@ -1,9 +1,10 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use tape_core::types::BasisPoints;
 use tracing::trace;
 
+use crate::gateway::TestGateway;
 use crate::simnet::SimnetHarness;
 
 const START_TRIES: usize = 3;
@@ -68,5 +69,41 @@ impl SimnetHarness {
 
         trace!("bootstrap_nodes complete");
         Ok(())
+    }
+
+    /// Wait until every running storage node has the gateway as a known peer.
+    pub async fn wait_gateway_known(
+        &self,
+        gateway: &TestGateway,
+        timeout: Duration,
+    ) -> Result<()> {
+        let start = Instant::now();
+        let tls_pubkey = gateway.tls_pubkey();
+
+        loop {
+            let mut running = 0usize;
+            let mut known = 0usize;
+            for node in self.nodes().iter().filter(|node| node.is_running()) {
+                running += 1;
+                if node
+                    .context()
+                    .peer_manager
+                    .peer_for_tls_pubkey(tls_pubkey)
+                    .is_some()
+                {
+                    known += 1;
+                }
+            }
+
+            if running > 0 && known == running {
+                return Ok(());
+            }
+            if start.elapsed() >= timeout {
+                bail!(
+                    "timed out waiting for storage nodes to learn gateway peer, known {known}/{running}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 }

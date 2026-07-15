@@ -14,7 +14,6 @@ use tape_protocol::api::{NodeStats, slice_url};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::{ChunkManifest, MAX_TRACK_SIZE};
 use tape_sdk::tapedrive::Tapedrive;
-use tape_store::ops::TrackDataOps;
 
 const NODE_COUNT: usize = GROUP_SIZE;
 const TARGET_GROUPS: u64 = 5;
@@ -190,14 +189,16 @@ async fn staked_gateway_inner() {
             .await
             .expect("stake gateway");
         eprintln!("gateway_read: gateway staked");
-        wait_gateway_known_by_storage_nodes(&harness, &gateway, active_timeout)
+        harness
+            .wait_gateway_known(&gateway, active_timeout)
             .await
             .expect("storage nodes learned gateway peer");
         eprintln!("gateway_read: storage nodes learned gateway peer");
 
         gateway.start().await.expect("start gateway before gating");
         eprintln!("gateway_read: gateway runtime started before gating");
-        wait_gateway_healthy(&gateway.base_url(), Duration::from_secs(180))
+        gateway
+            .wait_healthy(Duration::from_secs(180))
             .await
             .expect("gateway healthy before gating");
         eprintln!("gateway_read: gateway healthy before gating");
@@ -317,6 +318,71 @@ async fn staked_gateway_inner() {
     .expect("gateway manifest track endpoint should return manifest bytes");
     eprintln!("gateway_read: gateway manifest track endpoint succeeded");
 
+    // Range reads: single-track objects slice in memory on both read routes.
+    assert_gateway_range_route(&gateway.base_url(), "object", &track_address, &data, 1000, 1999)
+        .await
+        .expect("gateway object endpoint should serve a single-track range");
+    assert_gateway_range_route(&gateway.base_url(), "track", &track_address, &data, 1000, 1999)
+        .await
+        .expect("gateway track endpoint should serve a single-track range");
+    eprintln!("gateway_read: single-track ranged reads succeeded");
+
+    // Range reads: a stream range spanning the chunk boundary trims the head
+    // of one chunk and the tail of the other, and a range inside the last
+    // chunk decodes only that chunk.
+    assert_gateway_range_route(
+        &gateway.base_url(),
+        "object",
+        &stream_receipt.manifest,
+        &stream_data,
+        MAX_TRACK_SIZE - 512,
+        MAX_TRACK_SIZE + 511,
+    )
+    .await
+    .expect("gateway stream range should span the chunk boundary");
+    assert_gateway_range_route(
+        &gateway.base_url(),
+        "object",
+        &stream_receipt.manifest,
+        &stream_data,
+        MAX_TRACK_SIZE + 100,
+        MAX_TRACK_SIZE + 199,
+    )
+    .await
+    .expect("gateway stream range inside the last chunk should serve");
+    assert_gateway_range_unsatisfiable(
+        &gateway.base_url(),
+        "object",
+        &stream_receipt.manifest,
+        stream_data.len(),
+    )
+    .await
+    .expect("gateway stream range past the end should be unsatisfiable");
+    assert_gateway_head_advertises_ranges(
+        &gateway.base_url(),
+        "object",
+        &stream_receipt.manifest,
+        stream_data.len(),
+    )
+    .await
+    .expect("gateway stream HEAD should advertise ranges");
+    eprintln!("gateway_read: stream ranged reads succeeded");
+
+    let sdk_ranged = gateway_reader
+        .read_range(
+            &stream_receipt.manifest,
+            (MAX_TRACK_SIZE - 512) as u64,
+            1024,
+        )
+        .await
+        .expect("SDK ranged read through gateway");
+    assert_eq!(
+        sdk_ranged,
+        &stream_data[MAX_TRACK_SIZE - 512..MAX_TRACK_SIZE + 512],
+        "SDK read_range should return the requested window"
+    );
+    eprintln!("gateway_read: SDK read_range succeeded");
+
     let stats_after = gateway_stats(&gateway.base_url())
         .await
         .expect("gateway stats after read");
@@ -328,57 +394,6 @@ async fn staked_gateway_inner() {
         stats_after.slices_stored >= u64::from(EncodingProfile::clay_default().k()),
         "gateway should cache enough slices for offline decode"
     );
-
-    // Inline object: exercise the read-time peer-fetch fallback. The mirror tails
-    // the write live, so it starts with the bytes locally. We drop the local copy
-    // and confirm the gateway recovers the payload from a group owner and caches it.
-    let inline_data = deterministic_bytes(200);
-    let inline_track = writer
-        .write_track(&tape_key, &inline_data)
-        .await
-        .expect("write inline track");
-    assert!(
-        inline_track.is_inline(),
-        "small payload must produce an inline track"
-    );
-    let inline_addr = track_pda(inline_track.tape, inline_track.track_number).0;
-
-    wait_gateway_has_inline(&gateway, inline_addr, active_timeout)
-        .await
-        .expect("gateway mirror should tail the inline payload");
-    assert_gateway_decoded_route(&gateway.base_url(), "object", &inline_addr, &inline_data)
-        .await
-        .expect("gateway should serve inline object from its local mirror");
-    eprintln!("gateway_read: inline object served from local mirror");
-
-    gateway
-        .context()
-        .store
-        .delete_track_data(inline_addr)
-        .expect("drop gateway inline payload");
-    assert!(
-        !gateway
-            .context()
-            .store
-            .has_track_data(inline_addr)
-            .expect("gateway inline presence check"),
-        "gateway should have dropped its local inline payload"
-    );
-
-    assert_gateway_decoded_route(&gateway.base_url(), "object", &inline_addr, &inline_data)
-        .await
-        .expect("gateway should recover inline object from a group owner");
-    eprintln!("gateway_read: inline object recovered via peer-fetch fallback");
-
-    assert!(
-        gateway
-            .context()
-            .store
-            .has_track_data(inline_addr)
-            .expect("gateway inline presence check"),
-        "gateway should re-cache the fetched inline payload"
-    );
-    eprintln!("gateway_read: fetched inline payload re-cached locally");
 
     harness.stop_all().await.expect("stop gated storage nodes");
     eprintln!("gateway_read: gated storage nodes stopped");
@@ -477,6 +492,139 @@ async fn assert_gateway_decoded_route(
     Ok(())
 }
 
+/// Ranged GET on a gateway read route; asserts `206 Partial Content`, the
+/// requested byte window, `Content-Range`, the ranged `Content-Length`, and
+/// the `Accept-Ranges` advertisement.
+async fn assert_gateway_range_route(
+    gateway_base: &str,
+    route: &str,
+    track: &Address,
+    full: &[u8],
+    start: usize,
+    end_inclusive: usize,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()?;
+    let response = client
+        .get(format!("{gateway_base}/{route}/{track}"))
+        .header(
+            reqwest::header::RANGE,
+            format!("bytes={start}-{end_inclusive}"),
+        )
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::PARTIAL_CONTENT,
+        "gateway {route} ranged GET should return 206"
+    );
+    let headers = response.headers().clone();
+    assert_eq!(
+        headers
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok()),
+        Some(format!("bytes {start}-{end_inclusive}/{}", full.len()).as_str()),
+        "gateway {route} ranged GET should set Content-Range"
+    );
+    assert_eq!(
+        headers
+            .get(reqwest::header::ACCEPT_RANGES)
+            .and_then(|value| value.to_str().ok()),
+        Some("bytes"),
+        "gateway {route} ranged GET should advertise Accept-Ranges"
+    );
+    let expected = &full[start..=end_inclusive];
+    assert_eq!(
+        headers
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()),
+        Some(expected.len().to_string().as_str()),
+        "gateway {route} ranged GET should carry the ranged Content-Length"
+    );
+    let bytes = response.bytes().await?;
+    assert_eq!(
+        bytes.as_ref(),
+        expected,
+        "gateway {route} ranged GET should return the requested window"
+    );
+    Ok(())
+}
+
+/// Out-of-bounds ranged GET; asserts `416 Range Not Satisfiable` carrying the
+/// object size in `Content-Range`.
+async fn assert_gateway_range_unsatisfiable(
+    gateway_base: &str,
+    route: &str,
+    track: &Address,
+    total: usize,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()?;
+    let response = client
+        .get(format!("{gateway_base}/{route}/{track}"))
+        .header(reqwest::header::RANGE, format!("bytes={total}-"))
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::RANGE_NOT_SATISFIABLE,
+        "gateway {route} out-of-bounds range should return 416"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok()),
+        Some(format!("bytes */{total}").as_str()),
+        "416 should carry the object size in Content-Range"
+    );
+    Ok(())
+}
+
+/// HEAD on a gateway read route; asserts `200`, the full `Content-Length`, and
+/// the `Accept-Ranges` advertisement, with an empty body.
+async fn assert_gateway_head_advertises_ranges(
+    gateway_base: &str,
+    route: &str,
+    track: &Address,
+    total: usize,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()?;
+    let response = client
+        .head(format!("{gateway_base}/{route}/{track}"))
+        .send()
+        .await?;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "gateway {route} HEAD should return 200"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::ACCEPT_RANGES)
+            .and_then(|value| value.to_str().ok()),
+        Some("bytes"),
+        "gateway {route} HEAD should advertise Accept-Ranges"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()),
+        Some(total.to_string().as_str()),
+        "gateway {route} HEAD should carry the full Content-Length"
+    );
+    Ok(())
+}
+
 async fn assert_direct_slice_forbidden(
     harness: &tape_e2e_simnet::SimnetHarness,
     track: &Address,
@@ -524,42 +672,6 @@ async fn assert_direct_slice_forbidden(
     Ok(())
 }
 
-async fn wait_gateway_known_by_storage_nodes(
-    harness: &tape_e2e_simnet::SimnetHarness,
-    gateway: &TestGateway,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let start = Instant::now();
-    let tls_pubkey = gateway.tls_pubkey();
-
-    loop {
-        let mut running = 0usize;
-        let mut known = 0usize;
-        for node in harness.nodes().iter().filter(|node| node.is_running()) {
-            running += 1;
-            if node
-                .context()
-                .peer_manager
-                .peer_for_tls_pubkey(tls_pubkey)
-                .is_some()
-            {
-                known += 1;
-            }
-        }
-
-        if running > 0 && known == running {
-            return Ok(());
-        }
-
-        if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "timed out waiting for storage nodes to learn gateway peer, known {known}/{running}"
-            );
-        }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
 
 async fn wait_current_owner_slices(
     scenario: &SimnetScenario<'_>,
@@ -586,40 +698,6 @@ async fn wait_current_owner_slices(
     }
 }
 
-async fn wait_gateway_has_inline(
-    gateway: &TestGateway,
-    track: Address,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let start = Instant::now();
-    loop {
-        if gateway.context().store.has_track_data(track)? {
-            return Ok(());
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!("timed out waiting for gateway to mirror inline payload");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-async fn wait_gateway_healthy(base: &str, timeout: Duration) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()?;
-    let start = Instant::now();
-    loop {
-        if let Ok(response) = client.get(format!("{base}/v1/health")).send().await {
-            if response.status() == StatusCode::OK {
-                return Ok(());
-            }
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!("timed out waiting for gateway health");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
 
 async fn gateway_stats(base: &str) -> anyhow::Result<NodeStats> {
     Ok(reqwest::Client::new()

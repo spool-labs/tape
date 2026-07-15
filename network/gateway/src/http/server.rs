@@ -5,7 +5,7 @@ use std::time::Duration;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
-use axum::middleware::{Next, from_fn_with_state};
+use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -34,7 +34,7 @@ use crate::http::handlers::s3::{
     sigv4::verifier_from_config,
     write::S3WriteContext,
 };
-use crate::http::handlers::{health, object, track};
+use crate::http::handlers::{health, object, site, track};
 use crate::meter::GatewayMeter;
 
 pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -128,6 +128,7 @@ where
                     ),
                 ),
             )
+            .merge(site_router(state.clone()))
             .route(
                 tape_protocol::api::TRACK_PATH,
                 get(track::catalog::get_track::<Db, Cluster, Blockchain>),
@@ -382,6 +383,35 @@ where
             .await
             .map_err(NodeError::Io)
     }
+}
+
+/// The three site routes, metered at the site grade and stamped with the
+/// site security headers in one place.
+fn site_router<Db, Cluster, Blockchain>(
+    state: AppState<Db, Cluster, Blockchain>,
+) -> Router<AppState<Db, Cluster, Blockchain>>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    Router::new()
+        .route(site::SITE_ROOT_PATH, get(site::get_site_root))
+        .route(
+            site::SITE_INDEX_PATH,
+            get(site::get_site_index::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                state.clone(),
+                crate::meter::site_read_metering::<Db, Cluster, Blockchain>,
+            )),
+        )
+        .route(
+            site::SITE_PATH,
+            get(site::get_site_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                state,
+                crate::meter::site_read_metering::<Db, Cluster, Blockchain>,
+            )),
+        )
+        .route_layer(from_fn(site::site_security_headers))
 }
 
 async fn handle_http_error(error: axum::BoxError) -> StatusCode {

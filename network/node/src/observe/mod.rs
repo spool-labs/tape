@@ -36,7 +36,7 @@ pub fn mark_gateway_boards() {
 }
 
 /// The role stamped on boards, defaulting to a storage node.
-pub(crate) fn board_kind() -> tape_observe_api::BoardKind {
+pub fn board_kind() -> tape_observe_api::BoardKind {
     BOARD_KIND.get().copied().unwrap_or_default()
 }
 

@@ -11,10 +11,10 @@ use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::handlers::s3::write::S3WriteContext;
 use crate::meter::GatewayMeter;
 
-pub(crate) struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
-    pub(crate) context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    pub(crate) slice_cache: Arc<GatewaySliceCache<Db>>,
-    pub(crate) meter: Arc<GatewayMeter>,
+pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    pub context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    pub slice_cache: Arc<GatewaySliceCache<Db>>,
+    pub meter: Arc<GatewayMeter>,
     /// Delegate signing context for the S3 write path. `None` on the native read
     /// listener and whenever `gateway.s3.delegate_key` is unset (writes
     /// unavailable). Shared (Arc) so it is cheap to clone with the state.

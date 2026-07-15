@@ -422,7 +422,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 }
 
 
-pub(crate) fn has_pending_work<Db: Store>(
+pub fn has_pending_work<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
 ) -> Result<(bool, bool), NodeError> {

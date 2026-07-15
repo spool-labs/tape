@@ -66,7 +66,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux cache-linux gateway-linux explorer-linux linux-binaries deploy-tools install uninstall
+.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux cache-linux gateway-linux explorer-linux linux-binaries dashboard-web deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -212,6 +212,12 @@ explorer-linux:
 	$(call linux-cargo,.,-p tapedrive-explorer,tapedrive-explorer)
 
 linux-binaries: node-linux cache-linux gateway-linux explorer-linux
+
+# Static wasm bundle for the observability dashboard (needs dioxus-cli: `dx`).
+# Deploy with `tape-network dashboard deploy`.
+dashboard-web:
+	cd monitoring/dashboard && dx build --package tape-dashboard --platform web --release
+	@echo "bundle: target/dx/tape-dashboard/release/web/public"
 
 deploy-tools: programs admin network tape linux-binaries
 

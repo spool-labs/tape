@@ -21,7 +21,7 @@ use solana_pubkey::Pubkey;
 use solana_rent::Rent;
 use solana_system_interface::program as system_program;
 
-pub(crate) const DEFAULT_LOADER_KEY: Pubkey = LOADER_V3;
+pub const DEFAULT_LOADER_KEY: Pubkey = LOADER_V3;
 use pretty_hex::*;
 use bincode;
 

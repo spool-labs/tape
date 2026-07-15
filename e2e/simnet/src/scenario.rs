@@ -23,7 +23,7 @@ use crate::gateway::TestGateway;
 use crate::simnet::SimnetHarness;
 
 pub struct SimnetScenario<'a> {
-    pub(crate) harness: &'a SimnetHarness,
+    pub harness: &'a SimnetHarness,
 }
 
 impl<'a> SimnetScenario<'a> {

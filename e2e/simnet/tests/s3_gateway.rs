@@ -256,13 +256,15 @@ async fn read_write_inner() {
             .stake_gateway(&gateway, GATEWAY_STAKE)
             .await
             .expect("stake gateway");
-        wait_gateway_known_by_storage_nodes(&harness, &gateway, active_timeout)
+        harness
+            .wait_gateway_known(&gateway, active_timeout)
             .await
             .expect("storage nodes learned gateway peer");
         eprintln!("s3_gateway: storage nodes learned gateway peer");
 
         gateway.start().await.expect("start gateway");
-        wait_gateway_healthy(&gateway.base_url(), Duration::from_secs(180))
+        gateway
+            .wait_healthy(Duration::from_secs(180))
             .await
             .expect("gateway healthy");
         eprintln!("s3_gateway: gateway runtime healthy");
@@ -395,7 +397,7 @@ async fn read_write_inner() {
     // HeadBucket returns 200 for the existing bucket tape; a single-track object
     // serves a `206 Partial Content` slice for an HTTP `Range` request.
     assert_s3_head_bucket(&s3_base, &bucket_label).await;
-    assert_s3_get_range(&s3_base, &bucket_label, PUT_KEY, &put_body).await;
+    assert_s3_get_range(&s3_base, &bucket_label, PUT_KEY, &put_body, 0, 3).await;
     eprintln!("s3_gateway: HeadBucket 200 + ranged GET 206 verified");
 
     // (2b) A streamed UNSIGNED-PAYLOAD PutObject takes the bounded-memory write
@@ -411,6 +413,10 @@ async fn read_write_inner() {
     let stream_read_etag =
         assert_s3_get_object(&s3_base, &bucket_label, stream_key, &stream_body, PUT_CONTENT_TYPE).await;
     eprintln!("s3_gateway: streamed object read back through gateway GET (etag {stream_read_etag})");
+    // A ranged GET of the manifest-backed object serves through the stream
+    // range path (chunk-subset decode) on the S3 listener.
+    assert_s3_get_range(&s3_base, &bucket_label, stream_key, &stream_body, 1000, 2023).await;
+    eprintln!("s3_gateway: streamed object ranged GET returned 206");
 
     // (2c) A store-backed (durable) multipart upload round-trips on-chain:
     // create -> upload one part -> complete -> read back through GET.
@@ -852,16 +858,27 @@ async fn assert_s3_head_bucket(base: &str, bucket: &str) {
     );
 }
 
-/// `GET /{bucket}/{key}` with `Range: bytes=0-3`; asserts `206 Partial Content`,
-/// the first four bytes, and a matching `Content-Range`.
-async fn assert_s3_get_range(base: &str, bucket: &str, key: &str, full: &[u8]) {
+/// `GET /{bucket}/{key}` with `Range: bytes={start}-{end_inclusive}`; asserts
+/// `206 Partial Content`, the requested byte window, and a matching
+/// `Content-Range`.
+async fn assert_s3_get_range(
+    base: &str,
+    bucket: &str,
+    key: &str,
+    full: &[u8],
+    start: usize,
+    end_inclusive: usize,
+) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
         .expect("build s3 client");
     let response = client
         .get(format!("{base}/{bucket}/{key}"))
-        .header(reqwest::header::RANGE, "bytes=0-3")
+        .header(
+            reqwest::header::RANGE,
+            format!("bytes={start}-{end_inclusive}"),
+        )
         .send()
         .await
         .expect("range get send");
@@ -877,10 +894,14 @@ async fn assert_s3_get_range(base: &str, bucket: &str, key: &str, full: &[u8]) {
         StatusCode::PARTIAL_CONTENT,
         "ranged GET should return 206"
     );
-    assert_eq!(&body[..], &full[..4], "ranged GET should return the first 4 bytes");
+    assert_eq!(
+        &body[..],
+        &full[start..=end_inclusive],
+        "ranged GET should return the requested window"
+    );
     assert_eq!(
         content_range.as_deref(),
-        Some(format!("bytes 0-3/{}", full.len()).as_str()),
+        Some(format!("bytes {start}-{end_inclusive}/{}", full.len()).as_str()),
         "ranged GET should set Content-Range"
     );
 }
@@ -1383,62 +1404,7 @@ async fn assert_s3_no_such_key(base: &str, bucket: &str, missing_key: &str) {
     );
 }
 
-/// Wait until every running storage node has discovered the gateway as a peer
-/// (by its pinned TLS pubkey). Mirrors the helper in `gateway_read.rs`.
-async fn wait_gateway_known_by_storage_nodes(
-    harness: &SimnetHarness,
-    gateway: &TestGateway,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let start = Instant::now();
-    let tls_pubkey = gateway.tls_pubkey();
 
-    loop {
-        let mut running = 0usize;
-        let mut known = 0usize;
-        for node in harness.nodes().iter().filter(|node| node.is_running()) {
-            running += 1;
-            if node
-                .context()
-                .peer_manager
-                .peer_for_tls_pubkey(tls_pubkey)
-                .is_some()
-            {
-                known += 1;
-            }
-        }
-
-        if running > 0 && known == running {
-            return Ok(());
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "timed out waiting for storage nodes to learn gateway peer, known {known}/{running}"
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-/// Poll the gateway's native `/v1/health` endpoint until it reports `200 OK`.
-/// Mirrors the helper in `gateway_read.rs`.
-async fn wait_gateway_healthy(base: &str, timeout: Duration) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()?;
-    let start = Instant::now();
-    loop {
-        if let Ok(response) = client.get(format!("{base}/v1/health")).send().await {
-            if response.status() == StatusCode::OK {
-                return Ok(());
-            }
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!("timed out waiting for gateway health");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
 
 /// Deterministic pseudo-random bytes, matching `gateway_read.rs`.
 fn deterministic_bytes(len: usize) -> Vec<u8> {

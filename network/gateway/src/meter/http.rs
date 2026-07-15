@@ -15,27 +15,60 @@ use crate::http::AppState;
 
 impl MeterCaller {
     /// Resolve the metered identity for a request: the trusted-proxy-resolved
-    /// caller IP, plus the verified access key and its assigned grade when the
-    /// request was signed.
-    pub(crate) fn resolve(
+    /// caller IP metered at the route's grade, plus the verified access key
+    /// and its assigned grade when the request was signed.
+    pub fn resolve(
         peer: IpAddr,
         headers: &HeaderMap,
         trusted: &[IpAddr],
+        ip_grade: String,
         access_key: Option<String>,
         grade: Option<String>,
     ) -> Self {
         Self {
             ip: resolve_caller_ip(peer, headers, trusted),
+            ip_grade,
             access_key,
             grade,
         }
     }
 }
 
-/// Meter native object reads by resolved caller IP and stash the caller in the
-/// request extensions so the handler charges the same identity for bytes.
-pub(crate) async fn object_read_metering<Db, Cluster, Blockchain>(
+/// Meter native object reads at the anonymous grade and stash the caller in
+/// the request extensions so the handler charges the same identity for bytes.
+pub async fn object_read_metering<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    req: Request,
+    next: Next,
+) -> Response
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let grade = state.context.config.gateway.metering.anonymous_grade.clone();
+    read_metering(state, grade, req, next).await
+}
+
+/// Meter site-route reads at the site grade, whose buckets are independent of
+/// plain object reads so a multi-asset page load has its own headroom.
+pub async fn site_read_metering<Db, Cluster, Blockchain>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    req: Request,
+    next: Next,
+) -> Response
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let grade = state.context.config.gateway.metering.site_grade.clone();
+    read_metering(state, grade, req, next).await
+}
+
+async fn read_metering<Db, Cluster, Blockchain>(
+    state: AppState<Db, Cluster, Blockchain>,
+    ip_grade: String,
     mut req: Request,
     next: Next,
 ) -> Response
@@ -45,14 +78,14 @@ where
     Blockchain: Rpc,
 {
     let trusted = &state.context.config.gateway.metering.trusted_proxies;
-    let caller = MeterCaller::resolve(peer_ip(&req), req.headers(), trusted, None, None);
+    let caller = MeterCaller::resolve(peer_ip(&req), req.headers(), trusted, ip_grade, None, None);
     match state.meter.check_object_request(&caller) {
         GatewayMeterDecision::Allowed => {
             req.extensions_mut().insert(caller);
             next.run(req).await
         }
         GatewayMeterDecision::RateLimited { retry_after } => {
-            debug!(ip = %caller.ip, retry_after_secs = retry_after.as_secs(), "gateway meter rejected object request");
+            debug!(ip = %caller.ip, grade = %caller.ip_grade, retry_after_secs = retry_after.as_secs(), "gateway meter rejected read");
             rate_limited_response(retry_after)
         }
     }
@@ -84,7 +117,7 @@ fn resolve_caller_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> I
         .unwrap_or(peer)
 }
 
-pub(crate) fn rate_limited_response(retry_after: Duration) -> Response {
+pub fn rate_limited_response(retry_after: Duration) -> Response {
     let retry_after_secs = retry_after.as_secs().max(1).to_string();
     (
         StatusCode::TOO_MANY_REQUESTS,

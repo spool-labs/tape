@@ -20,6 +20,10 @@ pub struct GatewayConfig {
     /// S3-compatible gateway listener. Disabled by default.
     #[serde(default)]
     pub s3: S3Config,
+
+    /// Static site serving over the native read listener.
+    #[serde(default)]
+    pub site: GatewaySiteConfig,
 }
 
 impl Default for GatewayConfig {
@@ -28,8 +32,18 @@ impl Default for GatewayConfig {
             cache: GatewayCacheConfig::default(),
             metering: GatewayMeteringConfig::default(),
             s3: S3Config::default(),
+            site: GatewaySiteConfig::default(),
         }
     }
+}
+
+/// Site route serving controls.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+pub struct GatewaySiteConfig {
+    /// Serve the site's index page for unknown paths instead of its 404 page,
+    /// the routing single-page apps expect.
+    #[serde(default)]
+    pub spa_fallback: bool,
 }
 
 /// S3-compatible gateway listener controls.
@@ -342,6 +356,11 @@ pub struct GatewayMeteringConfig {
     #[serde(default = "default_default_grade")]
     pub default_grade: String,
 
+    /// Grade charged per resolved caller IP on site-route reads, where one
+    /// page load fans out into many asset requests.
+    #[serde(default = "default_site_grade")]
+    pub site_grade: String,
+
     /// Short block window after a caller exceeds its bucket.
     #[serde(default = "default_over_budget_penalty_secs")]
     pub over_budget_penalty_secs: u64,
@@ -362,6 +381,7 @@ impl Default for GatewayMeteringConfig {
             grades: default_grades(),
             anonymous_grade: default_anonymous_grade(),
             default_grade: default_default_grade(),
+            site_grade: default_site_grade(),
             over_budget_penalty_secs: default_over_budget_penalty_secs(),
             stale_entry_secs: default_stale_entry_secs(),
             trusted_proxies: Vec::new(),
@@ -389,6 +409,17 @@ fn default_grades() -> BTreeMap<String, MeteringGrade> {
                 read_byte_burst: 256 * 1024 * 1024,
             },
         ),
+        (
+            // A single page load fans out into one request per asset, so site
+            // reads get more request headroom than plain object reads.
+            "site".to_string(),
+            MeteringGrade {
+                read_per_sec: 50,
+                read_burst: 200,
+                read_bytes_per_sec: 64 * 1024 * 1024,
+                read_byte_burst: 128 * 1024 * 1024,
+            },
+        ),
     ])
 }
 
@@ -398,6 +429,10 @@ fn default_anonymous_grade() -> String {
 
 fn default_default_grade() -> String {
     "standard".to_string()
+}
+
+fn default_site_grade() -> String {
+    "site".to_string()
 }
 
 fn default_over_budget_penalty_secs() -> u64 {

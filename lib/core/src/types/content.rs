@@ -64,6 +64,11 @@ pub enum ContentType {
     ApplicationRtf,
     ApplicationSql,
     ApplicationYaml,
+
+    // Web formats, appended for site serving.
+    ImageSvg,
+    ApplicationWasm,
+    ImageIcon,
 }
 
 impl ContentType {
@@ -133,6 +138,11 @@ impl ContentType {
                 Self::ApplicationYaml
             }
 
+            // Web formats.
+            ("image", "svg+xml") => Self::ImageSvg,
+            ("application", "wasm") => Self::ApplicationWasm,
+            ("image", "x-icon") | ("image", "vnd.microsoft.icon") => Self::ImageIcon,
+
             // Any other text-family type is generic text rather than unknown:
             // source code (text/x-python, text/x-rust, …) and emails
             // (message/rfc822) are all plain text.
@@ -199,6 +209,11 @@ impl ContentType {
             Self::ApplicationRtf => "application/rtf",
             Self::ApplicationSql => "application/sql",
             Self::ApplicationYaml => "application/x-yaml",
+
+            // Web formats.
+            Self::ImageSvg => "image/svg+xml",
+            Self::ApplicationWasm => "application/wasm",
+            Self::ImageIcon => "image/x-icon",
         }
     }
 
@@ -258,6 +273,76 @@ impl ContentType {
             Self::ApplicationRtf => "rtf",
             Self::ApplicationSql => "sql",
             Self::ApplicationYaml => "yaml",
+
+            // Web formats.
+            Self::ImageSvg => "svg",
+            Self::ApplicationWasm => "wasm",
+            Self::ImageIcon => "ico",
+        }
+    }
+
+    /// Infer a content type from a file extension, for stored objects whose
+    /// recorded type is unknown
+    pub fn from_extension(extension: &str) -> Self {
+        match extension.to_ascii_lowercase().as_str() {
+            // Image formats.
+            "png" => Self::ImagePng,
+            "jpg" | "jpeg" => Self::ImageJpeg,
+            "gif" => Self::ImageGif,
+            "webp" => Self::ImageWebp,
+            "bmp" => Self::ImageBmp,
+            "tiff" | "tif" => Self::ImageTiff,
+
+            // Document formats.
+            "pdf" => Self::ApplicationPdf,
+            "doc" => Self::ApplicationMsword,
+            "docx" => Self::ApplicationDocx,
+            "odt" => Self::ApplicationOdt,
+
+            // Text formats.
+            "txt" => Self::TextPlain,
+            "html" | "htm" => Self::TextHtml,
+            "css" => Self::TextCss,
+            "js" | "mjs" => Self::TextJavascript,
+            "csv" => Self::TextCsv,
+            "md" => Self::TextMarkdown,
+
+            // Audio formats.
+            "mp3" => Self::AudioMpeg,
+            "wav" => Self::AudioWav,
+            "ogg" => Self::AudioOgg,
+            "flac" => Self::AudioFlac,
+
+            // Video formats.
+            "mp4" => Self::VideoMp4,
+            "webm" => Self::VideoWebm,
+            "mpeg" | "mpg" => Self::VideoMpeg,
+            "avi" => Self::VideoAvi,
+
+            // Application formats.
+            "json" => Self::ApplicationJson,
+            "xml" => Self::ApplicationXml,
+            "zip" => Self::ApplicationZip,
+            "gz" => Self::ApplicationGzip,
+            "tar" => Self::ApplicationTar,
+
+            // Font formats.
+            "woff" => Self::FontWoff,
+            "woff2" => Self::FontWoff2,
+            "ttf" => Self::FontTtf,
+            "otf" => Self::FontOtf,
+
+            // Miscellaneous formats.
+            "rtf" => Self::ApplicationRtf,
+            "sql" => Self::ApplicationSql,
+            "yaml" | "yml" => Self::ApplicationYaml,
+
+            // Web formats.
+            "svg" => Self::ImageSvg,
+            "wasm" => Self::ApplicationWasm,
+            "ico" => Self::ImageIcon,
+
+            _ => Self::Unknown,
         }
     }
 }
@@ -325,5 +410,25 @@ mod tests {
         assert_eq!(ContentType::ImageJpeg.extension(), "jpg");
         assert_eq!(ContentType::ApplicationGzip.extension(), "gz");
         assert_eq!(ContentType::Unknown.extension(), "bin");
+    }
+
+    // file extensions infer back to typed values, unknown ones stay unknown
+    #[test]
+    fn from_extension() {
+        assert_eq!(ContentType::from_extension("html"), ContentType::TextHtml);
+        assert_eq!(ContentType::from_extension("HTM"), ContentType::TextHtml);
+        assert_eq!(ContentType::from_extension("svg"), ContentType::ImageSvg);
+        assert_eq!(ContentType::from_extension("wasm"), ContentType::ApplicationWasm);
+        assert_eq!(ContentType::from_extension("ico"), ContentType::ImageIcon);
+        assert_eq!(ContentType::from_extension("exe"), ContentType::Unknown);
+    }
+
+    // web mime strings round-trip through the appended variants
+    #[test]
+    fn web_types() {
+        assert_eq!(ContentType::from_str("image/svg+xml"), ContentType::ImageSvg);
+        assert_eq!(ContentType::from_str("application/wasm"), ContentType::ApplicationWasm);
+        assert_eq!(ContentType::from_str("image/x-icon"), ContentType::ImageIcon);
+        assert_eq!(ContentType::ImageSvg.to_str(), "image/svg+xml");
     }
 }

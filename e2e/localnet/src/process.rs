@@ -373,7 +373,7 @@ impl ProcessSupervisor {
     }
 }
 
-pub(crate) fn write_solana_keypair(path: &Path, keypair: &Keypair) -> Result<()> {
+pub fn write_solana_keypair(path: &Path, keypair: &Keypair) -> Result<()> {
     let bytes = keypair.to_bytes().to_vec();
     let json = serde_json::to_vec(&bytes).context("serialize keypair")?;
     std::fs::write(path, json).with_context(|| format!("write keypair: {}", path.display()))
