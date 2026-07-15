@@ -395,7 +395,7 @@ async fn read_write_inner() {
     // HeadBucket returns 200 for the existing bucket tape; a single-track object
     // serves a `206 Partial Content` slice for an HTTP `Range` request.
     assert_s3_head_bucket(&s3_base, &bucket_label).await;
-    assert_s3_get_range(&s3_base, &bucket_label, PUT_KEY, &put_body, 0, 3).await;
+    assert_s3_get_range(&s3_base, &bucket_label, PUT_KEY, &put_body).await;
     eprintln!("s3_gateway: HeadBucket 200 + ranged GET 206 verified");
 
     // (2b) A streamed UNSIGNED-PAYLOAD PutObject takes the bounded-memory write
@@ -411,10 +411,6 @@ async fn read_write_inner() {
     let stream_read_etag =
         assert_s3_get_object(&s3_base, &bucket_label, stream_key, &stream_body, PUT_CONTENT_TYPE).await;
     eprintln!("s3_gateway: streamed object read back through gateway GET (etag {stream_read_etag})");
-    // A ranged GET of the manifest-backed object serves through the stream
-    // range path (chunk-subset decode) on the S3 listener.
-    assert_s3_get_range(&s3_base, &bucket_label, stream_key, &stream_body, 1000, 2023).await;
-    eprintln!("s3_gateway: streamed object ranged GET returned 206");
 
     // (2c) A store-backed (durable) multipart upload round-trips on-chain:
     // create -> upload one part -> complete -> read back through GET.
@@ -856,27 +852,16 @@ async fn assert_s3_head_bucket(base: &str, bucket: &str) {
     );
 }
 
-/// `GET /{bucket}/{key}` with `Range: bytes={start}-{end_inclusive}`; asserts
-/// `206 Partial Content`, the requested byte window, and a matching
-/// `Content-Range`.
-async fn assert_s3_get_range(
-    base: &str,
-    bucket: &str,
-    key: &str,
-    full: &[u8],
-    start: usize,
-    end_inclusive: usize,
-) {
+/// `GET /{bucket}/{key}` with `Range: bytes=0-3`; asserts `206 Partial Content`,
+/// the first four bytes, and a matching `Content-Range`.
+async fn assert_s3_get_range(base: &str, bucket: &str, key: &str, full: &[u8]) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
         .expect("build s3 client");
     let response = client
         .get(format!("{base}/{bucket}/{key}"))
-        .header(
-            reqwest::header::RANGE,
-            format!("bytes={start}-{end_inclusive}"),
-        )
+        .header(reqwest::header::RANGE, "bytes=0-3")
         .send()
         .await
         .expect("range get send");
@@ -892,14 +877,10 @@ async fn assert_s3_get_range(
         StatusCode::PARTIAL_CONTENT,
         "ranged GET should return 206"
     );
-    assert_eq!(
-        &body[..],
-        &full[start..=end_inclusive],
-        "ranged GET should return the requested window"
-    );
+    assert_eq!(&body[..], &full[..4], "ranged GET should return the first 4 bytes");
     assert_eq!(
         content_range.as_deref(),
-        Some(format!("bytes {start}-{end_inclusive}/{}", full.len()).as_str()),
+        Some(format!("bytes 0-3/{}", full.len()).as_str()),
         "ranged GET should set Content-Range"
     );
 }

@@ -8,14 +8,14 @@ use solana_transaction_status::{
 
 use crate::convert::tx_result_to_status_meta;
 
-pub struct RecordedTransaction {
+pub(crate) struct RecordedTransaction {
     pub tx: VersionedTransaction,
     pub result: TransactionResult,
     pub pre_balances: Vec<u64>,
     pub post_balances: Vec<u64>,
 }
 
-pub struct SlotData {
+pub(crate) struct SlotData {
     pub blockhash: String,
     pub previous_blockhash: String,
     pub parent_slot: Slot,

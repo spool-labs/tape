@@ -222,6 +222,7 @@ fn should_retry_pool_rate(err: &TapedriveError) -> bool {
             matches!(parse_tape_error(err), Some(TapeError::RateMissing | TapeError::BadProof))
         }
         TapedriveError::Peer(err) => err.is_retryable(),
+        TapedriveError::RateLimited { .. } => true,
         _ => false,
     }
 }

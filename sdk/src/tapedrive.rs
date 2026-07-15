@@ -8,15 +8,18 @@ use peer_manager::PeerManager;
 use rpc::Rpc;
 use rpc_client::RpcClient;
 use tape_core::prelude::{CompressedTrack, StorageUnits};
+use tape_core::types::coin::{SOL, TAPE};
 use tape_core::types::ContentType;
 use tape_crypto::prelude::{Address, Keypair};
 use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::balance::{sol_balance_of, tape_balance_of};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Metrics, Noop, Operation, Outcome, Phase, Timer};
+use crate::write_options::WriteOptions;
 use crate::stream::{
     read::{read_bytes, read_into},
     receipt::StreamReceipt,
@@ -34,6 +37,7 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub rpc: Arc<RpcClient<Blockchain>>,
     pub payer: Option<Keypair>,
     pub metrics: Arc<dyn Metrics>,
+    pub write_options: WriteOptions,
 }
 
 /// Default constructor using `HttpApi`.
@@ -58,6 +62,7 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
             rpc: rpc_client,
             payer: None,
             metrics: Arc::new(Noop),
+            write_options: WriteOptions::default(),
         }
     }
 }
@@ -78,12 +83,19 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             rpc,
             payer,
             metrics: Arc::new(Noop),
+            write_options: WriteOptions::default(),
         }
     }
 
     /// Attach or replace the payer used for mutating operations.
     pub fn with_payer(mut self, payer: Keypair) -> Self {
         self.payer = Some(payer);
+        self
+    }
+
+    /// Replace the write concurrency knobs.
+    pub fn with_write_options(mut self, options: WriteOptions) -> Self {
+        self.write_options = options;
         self
     }
 
@@ -106,6 +118,16 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Return the payer keypair required for mutating operations.
     pub fn payer(&self) -> Result<&Keypair, TapedriveError> {
         self.payer.as_ref().ok_or(TapedriveError::MissingPayer)
+    }
+
+    /// The payer's SOL balance in lamports. A missing account reads as zero.
+    pub async fn sol_balance(&self) -> Result<SOL, TapedriveError> {
+        sol_balance_of(&self.rpc, &self.payer()?.address()).await
+    }
+
+    /// The payer's TAPE balance in flux. A missing token account reads as zero.
+    pub async fn tape_balance(&self) -> Result<TAPE, TapedriveError> {
+        tape_balance_of(&self.rpc, &self.payer()?.address()).await
     }
 
     pub(crate) fn timer(&self, operation: Operation, phase: Phase) -> Timer<'_> {
@@ -298,5 +320,32 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let result = read_into(self, manifest, writer).await;
         timer.finish_result(&result);
         result
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use rpc_litesvm::LiteSvmRpc;
+    use tape_crypto::prelude::Keypair;
+
+    use super::*;
+
+    // fresh accounts read zero and an airdrop shows up in the sol balance
+    #[tokio::test]
+    async fn balances() {
+        let rpc = LiteSvmRpc::new();
+        let payer = Keypair::new(&mut rand::thread_rng());
+        let address = payer.address();
+        let client = Tapedrive::new(rpc.clone(), payer);
+
+        assert_eq!(client.sol_balance().await.expect("sol balance"), SOL(0));
+        assert_eq!(client.tape_balance().await.expect("tape balance"), TAPE(0));
+
+        rpc.airdrop(&address.into(), 5_000_000_000).expect("airdrop");
+        assert_eq!(
+            client.sol_balance().await.expect("sol balance"),
+            SOL(5_000_000_000)
+        );
     }
 }

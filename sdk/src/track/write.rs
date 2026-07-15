@@ -644,8 +644,14 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
 
     let state = state?;
 
-    let uploader = DistributedUploader::new(track_address, group, slices, &state)
-        .map_err(TapedriveError::Upload)?;
+    let uploader = DistributedUploader::new(
+        track_address,
+        group,
+        slices,
+        &state,
+        client.write_options.slice_concurrency,
+    )
+    .map_err(TapedriveError::Upload)?;
 
     let store = client
         .timer(operation, Phase::Store)
@@ -807,6 +813,7 @@ pub(crate) fn should_retry_certification(err: &TapedriveError) -> bool {
         TapedriveError::NotFound => true,
         TapedriveError::Certification(_) => true,
         TapedriveError::Peer(err) => err.is_retryable(),
+        TapedriveError::RateLimited { .. } => true,
         TapedriveError::Rpc(rpc) => {
             matches!(
                 parse_tape_error(rpc),

@@ -212,7 +212,7 @@ async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     }
 
     if let Some(error) = last_error {
-        Err(TapedriveError::Peer(error))
+        Err(TapedriveError::from(error))
     } else if saw_not_found {
         Err(TapedriveError::NotFound)
     } else {

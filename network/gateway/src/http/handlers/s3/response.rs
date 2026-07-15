@@ -8,9 +8,7 @@ use tape_crypto::Hash;
 use super::error::S3Error;
 use super::resolve::ResolvedObject;
 use super::xml::civil_from_unix;
-use crate::http::handlers::object::{
-    ObjectResponseMetadata, ranged_object_headers, resolve_range,
-};
+use crate::http::handlers::object::{ObjectResponseMetadata, object_headers};
 
 use super::clock::SECONDS_PER_DAY;
 
@@ -46,22 +44,18 @@ pub fn set_last_modified(headers: &mut HeaderMap, block_time: Option<i64>) {
 
 /// Build the `HEAD /{bucket}/{key}` response: object headers (Content-Type,
 /// Content-Length, quoted ETag, Cache-Control) from the listing index entry plus
-/// `Last-Modified`, with an empty body. A `Range` request answers with the
-/// ranged Content-Length and `Content-Range`, exactly as the GET would.
-pub fn head_response(resolved: &ResolvedObject, range: Option<&str>) -> Result<Response, S3Error> {
+/// `Last-Modified`, with an empty body.
+pub fn head_response(resolved: &ResolvedObject) -> Result<Response, S3Error> {
     // S3 content type comes from the listing index; no filename (no
     // Content-Disposition) is set for S3 objects.
     let metadata = ObjectResponseMetadata {
         content_type: resolved.content_type,
         filename: None,
     };
-
-    let range = resolve_range(range, resolved.size).map_err(S3Error::from)?;
-    let (status, mut headers) =
-        ranged_object_headers(range, resolved.size, &metadata, resolved.etag)
-            .map_err(S3Error::from)?;
+    let mut headers =
+        object_headers(resolved.size, &metadata, resolved.etag).map_err(S3Error::from)?;
     set_last_modified(&mut headers, resolved.block_time);
-    Ok((status, headers).into_response())
+    Ok((StatusCode::OK, headers).into_response())
 }
 
 /// Build an ETag-only `200 OK` response: a quoted `ETag` header and empty body,

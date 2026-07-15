@@ -27,6 +27,8 @@ peer-http = { path = "../network/peer-http" }
 rpc.workspace = true
 rpc-solana.workspace = true
 rpc-client = { path = "../solana/rpc-client" }
+spl-token = { workspace = true }
+solana-program = { workspace = true }
 
 # Logging
 tracing = "0.1"
