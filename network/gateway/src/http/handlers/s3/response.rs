@@ -6,10 +6,10 @@ use axum::response::{IntoResponse, Response};
 use tape_crypto::Hash;
 
 use super::error::S3Error;
-use crate::http::handlers::resolve::ResolvedObject;
+use super::resolve::ResolvedObject;
 use super::xml::civil_from_unix;
 use crate::http::handlers::object::{
-    CachePolicy, ObjectResponseMetadata, ranged_object_headers, resolve_range,
+    ObjectResponseMetadata, ranged_object_headers, resolve_range,
 };
 
 use super::clock::SECONDS_PER_DAY;
@@ -54,12 +54,11 @@ pub fn head_response(resolved: &ResolvedObject, range: Option<&str>) -> Result<R
     let metadata = ObjectResponseMetadata {
         content_type: resolved.content_type,
         filename: None,
-        cache: CachePolicy::Immutable,
     };
 
     let range = resolve_range(range, resolved.size).map_err(S3Error::from)?;
     let (status, mut headers) =
-        ranged_object_headers(range, resolved.size, &metadata, resolved.etag, StatusCode::OK)
+        ranged_object_headers(range, resolved.size, &metadata, resolved.etag)
             .map_err(S3Error::from)?;
     set_last_modified(&mut headers, resolved.block_time);
     Ok((status, headers).into_response())

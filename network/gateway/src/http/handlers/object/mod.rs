@@ -3,8 +3,8 @@ mod manifest;
 mod response;
 mod routes;
 
+pub use response::ObjectResponseMetadata;
 pub use response::{
-    CachePolicy, DEFAULT_SITE_MAX_AGE_SECS, ObjectResponseMetadata, cache_control_header,
     range_header, ranged_object_headers, resolve_range,
 };
 pub use routes::{

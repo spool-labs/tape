@@ -22,9 +22,6 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::hash::Hash;
 
-const SUBDOMAIN_ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-const SUBDOMAIN_LABEL_LEN: usize = 52;
-
 #[repr(transparent)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
@@ -68,62 +65,6 @@ impl Address {
     {
         let program_id = program_id.into();
         SolanaPubkey::create_program_address(seeds, &program_id).map(Into::into)
-    }
-
-    /// Encode as a lowercase base32 DNS label, for one-subdomain-per-site
-    /// hosting where hostnames are case-insensitive
-    pub fn to_subdomain_label(self) -> String {
-        let mut label = String::with_capacity(SUBDOMAIN_LABEL_LEN);
-        let mut accumulator: u32 = 0;
-        let mut bits: u32 = 0;
-
-        for byte in self.0 {
-            accumulator = (accumulator << 8) | u32::from(byte);
-            bits += 8;
-            while bits >= 5 {
-                bits -= 5;
-                let index = (accumulator >> bits) & 0x1f;
-                label.push(SUBDOMAIN_ALPHABET[index as usize] as char);
-            }
-        }
-        if bits > 0 {
-            let index = (accumulator << (5 - bits)) & 0x1f;
-            label.push(SUBDOMAIN_ALPHABET[index as usize] as char);
-        }
-
-        label
-    }
-
-    /// Decode a DNS label produced by the subdomain encoding, in any case
-    pub fn try_from_subdomain_label(label: &str) -> Option<Self> {
-        if label.len() != SUBDOMAIN_LABEL_LEN {
-            return None;
-        }
-
-        let mut bytes = [0u8; Self::LEN];
-        let mut filled = 0usize;
-        let mut accumulator: u32 = 0;
-        let mut bits: u32 = 0;
-
-        for character in label.bytes() {
-            let lower = character.to_ascii_lowercase();
-            let value = SUBDOMAIN_ALPHABET
-                .iter()
-                .position(|letter| *letter == lower)? as u32;
-            accumulator = (accumulator << 5) | value;
-            bits += 5;
-            if bits >= 8 {
-                bits -= 8;
-                bytes[filled] = ((accumulator >> bits) & 0xff) as u8;
-                filled += 1;
-            }
-        }
-
-        // The label's trailing pad bits must be zero for a canonical encoding.
-        if filled != Self::LEN || accumulator & ((1 << bits) - 1) != 0 {
-            return None;
-        }
-        Some(Self(bytes))
     }
 }
 
@@ -264,28 +205,5 @@ mod tests {
         let (address, _) = Address::find_program_address(&[b"invalid-ed25519"], &program_id);
 
         assert!(Pubkey::try_from(address).is_err());
-    }
-
-    // subdomain labels round-trip and decode case-insensitively
-    #[test]
-    fn subdomain_label_roundtrip() {
-        let address = Address::new_unique();
-        let label = address.to_subdomain_label();
-
-        assert_eq!(label.len(), 52);
-        assert!(label.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
-        assert_eq!(Address::try_from_subdomain_label(&label), Some(address));
-        assert_eq!(
-            Address::try_from_subdomain_label(&label.to_ascii_uppercase()),
-            Some(address)
-        );
-    }
-
-    // malformed labels are rejected
-    #[test]
-    fn subdomain_label_rejects_junk() {
-        assert_eq!(Address::try_from_subdomain_label("short"), None);
-        assert_eq!(Address::try_from_subdomain_label(&"1".repeat(52)), None);
-        assert_eq!(Address::try_from_subdomain_label(&"a".repeat(53)), None);
     }
 }

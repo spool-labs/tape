@@ -15,13 +15,11 @@ enum MeterClass {
     ObjectBytes,
 }
 
-/// What a bucket is keyed on: the resolved caller IP and its route-assigned
-/// grade for the abuse layer, or the verified access key for the
-/// per-credential quota layer. Keying the IP layer by grade gives routes
-/// metered at different grades independent buckets.
+/// What a bucket is keyed on: the resolved caller IP for the abuse layer, or
+/// the verified access key for the per-credential quota layer.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum MeterScope {
-    Ip(IpAddr, String),
+    Ip(IpAddr),
     AccessKey(String),
 }
 
@@ -31,13 +29,11 @@ struct MeterKey {
     scope: MeterScope,
 }
 
-/// The identity a read is metered against: the resolved caller IP and the
-/// grade its route meters anonymous traffic at, plus the verified access key
-/// and its assigned grade when the request was signed.
+/// The identity a read is metered against: the resolved caller IP always, plus
+/// the verified access key and its assigned grade when the request was signed.
 #[derive(Clone, Debug)]
 pub struct MeterCaller {
     pub ip: IpAddr,
-    pub ip_grade: String,
     pub access_key: Option<String>,
     pub grade: Option<String>,
 }
@@ -97,14 +93,14 @@ impl GatewayMeter {
     /// Charge the caller's IP bucket, then the access-key bucket for signed
     /// callers; the first rejection wins. Both layers are charged under one
     /// lock, so the two-layer decision is atomic. The IP layer runs at the
-    /// caller's route-assigned grade; the key layer at the credential's grade.
+    /// anonymous grade; the key layer at the credential's grade.
     fn check_layered(
         &self,
         class: MeterClass,
         caller: &MeterCaller,
         cost: f64,
     ) -> GatewayMeterDecision {
-        let ip_rates = self.grade_rates(&caller.ip_grade, class);
+        let ip_rates = self.grade_rates(&self.config.anonymous_grade, class);
         let now = Instant::now();
         let mut buckets = match self.lock_buckets() {
             Some(buckets) => buckets,
@@ -118,7 +114,7 @@ impl GatewayMeter {
             now,
             MeterKey {
                 class,
-                scope: MeterScope::Ip(caller.ip, caller.ip_grade.clone()),
+                scope: MeterScope::Ip(caller.ip),
             },
             cost,
             ip_rates,
@@ -267,11 +263,9 @@ mod tests {
                 ("anonymous".to_string(), grade(1, 2, 10, 20)),
                 ("standard".to_string(), grade(1, 3, 10, 30)),
                 ("firehose".to_string(), grade(1, 6, 10, 60)),
-                ("site".to_string(), grade(1, 4, 10, 20)),
             ]),
             anonymous_grade: "anonymous".to_string(),
             default_grade: "standard".to_string(),
-            site_grade: "site".to_string(),
             over_budget_penalty_secs: 30,
             stale_entry_secs: 60,
             trusted_proxies: Vec::new(),
@@ -285,16 +279,6 @@ mod tests {
     fn anon(last: u8) -> MeterCaller {
         MeterCaller {
             ip: ip(last),
-            ip_grade: "anonymous".to_string(),
-            access_key: None,
-            grade: None,
-        }
-    }
-
-    fn site(last: u8) -> MeterCaller {
-        MeterCaller {
-            ip: ip(last),
-            ip_grade: "site".to_string(),
             access_key: None,
             grade: None,
         }
@@ -303,7 +287,6 @@ mod tests {
     fn signed(last: u8, access_key: &str) -> MeterCaller {
         MeterCaller {
             ip: ip(last),
-            ip_grade: "anonymous".to_string(),
             access_key: Some(access_key.to_string()),
             grade: None,
         }
@@ -312,7 +295,6 @@ mod tests {
     fn graded(last: u8, access_key: &str, grade: &str) -> MeterCaller {
         MeterCaller {
             ip: ip(last),
-            ip_grade: "anonymous".to_string(),
             access_key: Some(access_key.to_string()),
             grade: Some(grade.to_string()),
         }
@@ -462,58 +444,6 @@ mod tests {
             meter.check_object_bytes(&signed(2, "hot"), 18),
             GatewayMeterDecision::RateLimited { .. }
         ));
-    }
-
-    // One IP metered at different route grades gets independent buckets, so
-    // draining the object-read allowance leaves site serving unaffected.
-    #[test]
-    fn ip_grades_bucket_separately() {
-        let meter = GatewayMeter::new(test_config());
-
-        assert_eq!(
-            meter.check_object_request(&anon(1)),
-            GatewayMeterDecision::Allowed
-        );
-        assert_eq!(
-            meter.check_object_request(&anon(1)),
-            GatewayMeterDecision::Allowed
-        );
-        assert!(matches!(
-            meter.check_object_request(&anon(1)),
-            GatewayMeterDecision::RateLimited { .. }
-        ));
-
-        for _ in 0..4 {
-            assert_eq!(
-                meter.check_object_request(&site(1)),
-                GatewayMeterDecision::Allowed
-            );
-        }
-        assert!(matches!(
-            meter.check_object_request(&site(1)),
-            GatewayMeterDecision::RateLimited { .. }
-        ));
-    }
-
-    // Site byte reads drain the site grade's byte bucket, not the anonymous
-    // one, so the grade's byte knobs are live for the site route.
-    #[test]
-    fn site_bytes_use_site_grade() {
-        let meter = GatewayMeter::new(test_config());
-
-        assert_eq!(
-            meter.check_object_bytes(&anon(1), 20),
-            GatewayMeterDecision::Allowed
-        );
-        assert!(matches!(
-            meter.check_object_bytes(&anon(1), 1),
-            GatewayMeterDecision::RateLimited { .. }
-        ));
-
-        assert_eq!(
-            meter.check_object_bytes(&site(1), 20),
-            GatewayMeterDecision::Allowed
-        );
     }
 
     // An object larger than the byte burst must serve once and then block

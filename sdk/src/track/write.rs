@@ -21,7 +21,6 @@ use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo, Track
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
-use tape_crypto::hash::hash;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
@@ -269,17 +268,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         timer.finish_result(&result);
         result
     }
-}
-
-/// The etag content ends up with when written as a named object: the value
-/// hash for inline-sized payloads, the coded commitment otherwise. Encoding
-/// runs in full for coded sizes, so this trades CPU for detecting unchanged
-/// content before paying for a write.
-pub fn content_etag(data: &[u8]) -> Result<Hash, TapedriveError> {
-    if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
-        return Ok(hash(data));
-    }
-    Ok(prepare_plan(data.to_vec())?.commitment_hash)
 }
 
 fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {

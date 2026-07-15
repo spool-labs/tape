@@ -2,4 +2,4 @@ mod bucket;
 mod http;
 
 pub use bucket::{GatewayMeter, GatewayMeterDecision, MeterCaller};
-pub use http::{object_read_metering, rate_limited_response, site_read_metering};
+pub use http::{object_read_metering, rate_limited_response};
