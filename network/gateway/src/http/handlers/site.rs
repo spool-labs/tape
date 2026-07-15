@@ -326,7 +326,9 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let cors = cors_origin(&state.context.config.gateway.site, req.headers());
+    let site = &state.context.config.gateway.site;
+    let cors = cors_origin(site, req.headers());
+    let policy = site_content_security_policy(site);
     let mut response = next.run(req).await;
 
     let headers = response.headers_mut();
@@ -334,15 +336,27 @@ where
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY),
-    );
+    headers.insert(header::CONTENT_SECURITY_POLICY, policy);
     if let Some(origin) = cors {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
         headers.insert(header::VARY, HeaderValue::from_static("origin"));
     }
     response
+}
+
+/// The content security policy for site responses: same-origin plus the
+/// configured API origins hosted pages may call from the browser.
+fn site_content_security_policy(config: &GatewaySiteConfig) -> HeaderValue {
+    if config.connect_origins.is_empty() {
+        return HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY);
+    }
+
+    let origins = config.connect_origins.join(" ");
+    let policy = format!("{SITE_CONTENT_SECURITY_POLICY}; connect-src 'self' {origins}");
+    // Config validation keeps origins header-safe; fall back to the closed
+    // policy rather than fail the response if something slips through.
+    HeaderValue::from_str(&policy)
+        .unwrap_or_else(|_| HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY))
 }
 
 /// The Access-Control-Allow-Origin value a request earns, when cross-origin
@@ -421,6 +435,27 @@ mod tests {
         assert_eq!(host_tape(&config, &format!("{label}.other.test")), None);
         assert_eq!(host_tape(&config, &format!("a.{label}.sites.test")), None);
         assert_eq!(host_tape(&config, "sites.test"), None);
+    }
+
+    // connect origins extend the policy; an empty list keeps it closed
+    #[test]
+    fn connect_policy() {
+        let mut config = GatewaySiteConfig::default();
+        assert_eq!(
+            site_content_security_policy(&config),
+            HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY)
+        );
+
+        config.connect_origins = vec![
+            "https://api.devnet.solana.com".to_string(),
+            "wss://api.devnet.solana.com".to_string(),
+        ];
+        let policy = site_content_security_policy(&config);
+        let policy = policy.to_str().expect("policy is ascii");
+        assert!(policy.starts_with(SITE_CONTENT_SECURITY_POLICY));
+        assert!(policy.ends_with(
+            "connect-src 'self' https://api.devnet.solana.com wss://api.devnet.solana.com"
+        ));
     }
 
     // cors answers the wildcard or a listed origin, and nothing else

@@ -65,6 +65,12 @@ pub struct GatewaySiteConfig {
     /// entry allows any origin.
     #[serde(default)]
     pub cors_origins: Vec<String>,
+
+    /// API origins hosted pages may call from the browser, added to the
+    /// content security policy; a single star entry allows any. List both
+    /// the https and wss forms when an endpoint speaks websockets.
+    #[serde(default)]
+    pub connect_origins: Vec<String>,
 }
 
 /// S3-compatible gateway listener controls.

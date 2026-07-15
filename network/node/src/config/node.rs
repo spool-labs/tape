@@ -218,6 +218,20 @@ impl NodeConfig {
             )));
         }
 
+        for origin in &self.gateway.site.connect_origins {
+            let has_scheme = ["https://", "http://", "wss://", "ws://"]
+                .iter()
+                .any(|scheme| origin.starts_with(scheme));
+            let is_header_safe = origin
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && byte != b';' && byte != b',');
+            if origin != "*" && !(has_scheme && is_header_safe) {
+                return Err(ConfigError::Invalid(format!(
+                    "gateway.site.connect_origins entry `{origin}` is not a valid origin"
+                )));
+            }
+        }
+
         if self.gateway.metering.over_budget_penalty_secs == 0 {
             return Err(ConfigError::Invalid(
                 "gateway.metering.over_budget_penalty_secs must be greater than zero".into(),
