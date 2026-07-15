@@ -8,6 +8,7 @@ use super::helpers::{deserialize_option_pathbuf, deserialize_socket_addr};
 
 /// Gateway-only runtime settings.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Default)]
 pub struct GatewayConfig {
     /// Slice cache settings for the public read gateway.
     #[serde(default)]
@@ -22,15 +23,6 @@ pub struct GatewayConfig {
     pub s3: S3Config,
 }
 
-impl Default for GatewayConfig {
-    fn default() -> Self {
-        Self {
-            cache: GatewayCacheConfig::default(),
-            metering: GatewayMeteringConfig::default(),
-            s3: S3Config::default(),
-        }
-    }
-}
 
 /// S3-compatible gateway listener controls.
 #[derive(Clone, Deserialize, Eq, PartialEq)]
@@ -129,6 +121,7 @@ fn default_s3_max_buffered_bytes() -> usize {
 
 /// S3 write-authorization defaults and control-plane wiring.
 #[derive(Clone, Deserialize, Eq, PartialEq)]
+#[derive(Default)]
 pub struct S3WriteConfig {
     /// The default authorization decision for a write that no stored policy rule
     /// explicitly resolves.
@@ -149,16 +142,6 @@ pub struct S3WriteConfig {
     pub pepper: Option<String>,
 }
 
-impl Default for S3WriteConfig {
-    fn default() -> Self {
-        Self {
-            default: WriteDefault::default(),
-            admin: S3AdminConfig::default(),
-            budgets: S3WriteBudgets::default(),
-            pepper: None,
-        }
-    }
-}
 
 // Custom Debug so the credential-hashing pepper never lands in a log line.
 impl std::fmt::Debug for S3WriteConfig {

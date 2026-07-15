@@ -120,7 +120,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
 fn finish_object_peer_query(last_error: Option<ApiError>, saw_not_found: bool) -> TapedriveError {
     if let Some(error) = last_error {
-        TapedriveError::Peer(error)
+        TapedriveError::from(error)
     } else if saw_not_found {
         TapedriveError::NotFound
     } else {

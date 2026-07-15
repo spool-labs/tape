@@ -68,7 +68,7 @@ fn validate_name(name: &str) -> Result<(), KeygenError> {
     if name.trim().is_empty() {
         return Err(KeygenError::EmptyName);
     }
-    let len = name.as_bytes().len();
+    let len = name.len();
     if len > 32 {
         return Err(KeygenError::NameTooLong(len));
     }

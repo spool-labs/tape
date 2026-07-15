@@ -378,7 +378,7 @@ async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockcha
     token: &CancellationToken,
 ) -> Result<BlobData, ()> {
     for &node_id in peers {
-        let req = GetTrackDataReq { track: track.into() };
+        let req = GetTrackDataReq { track };
 
         match call_peer(
             &ctx.peer_manager,

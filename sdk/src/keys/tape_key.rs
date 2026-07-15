@@ -56,7 +56,7 @@ impl TapeKey {
         }
         let file = std::fs::File::create(path)?;
         serde_json::to_writer(file, &self.keypair.to_keypair_bytes().to_vec())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            .map_err(std::io::Error::other)
     }
 
     /// The on-chain address of the tape this key controls.

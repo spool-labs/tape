@@ -170,7 +170,7 @@ mod tests {
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
-            group: group,
+            group,
             value_hash: Hash::new_unique(),
         }
     }

@@ -261,7 +261,7 @@ mod tests {
             value_hash: Hash::new_unique(),
         };
 
-        store.put_track(address, info.clone()).unwrap();
+        store.put_track(address, info).unwrap();
         let retrieved = store.get_track(address).unwrap();
         assert_eq!(retrieved, Some(info));
     }
@@ -619,7 +619,7 @@ mod tests {
                 )
                 .unwrap();
             for (address, info) in tracks {
-                store.put_track(*address, info.clone()).unwrap();
+                store.put_track(*address, *info).unwrap();
             }
         }
 

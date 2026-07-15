@@ -247,7 +247,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             .map_err(|error| NodeError::Store(format!("set_node_id: {error}")))?;
 
         self.store
-            .set_node_address(node_address.into())
+            .set_node_address(node_address)
             .map_err(|error| NodeError::Store(format!("set_node_address: {error}")))?;
 
         Ok(Arc::new(NodeContext {
@@ -267,7 +267,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             api: self.api,
             admission,
             eviction_queue: Arc::new(EvictionQueue::default()),
-            metrics: NodeMetrics::default(),
+            metrics: NodeMetrics,
             reclaim_pending: AtomicBool::new(false),
         }))
     }
