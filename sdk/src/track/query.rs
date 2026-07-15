@@ -222,7 +222,7 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
     while let Some(result) = requests.next().await {
         match result {
             Ok(res) => {
-                let tape_address: Address = res.proof.state.tape.into();
+                let tape_address: Address = res.proof.state.tape;
                 let tape = client
                     .rpc()
                     .get_tape_by_address(&tape_address)

@@ -282,7 +282,7 @@ mod tests {
         };
 
         for _ in 0..20 {
-            let mut b = Backoff::new(config.clone());
+            let mut b = Backoff::new(config);
             let d = b.next_delay().unwrap(); // base=10s
             assert!(d >= Duration::from_secs(5));
             assert!(d <= Duration::from_secs(10));

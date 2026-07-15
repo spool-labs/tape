@@ -75,7 +75,7 @@ where
             signature,
         };
 
-        for peer in group_peers_without(&state, group, me) {
+        for peer in group_peers_without(state, group, me) {
             if let Err(error) = ctx.api.vote(peer, &request).await {
                 trace!(
                     ?error,

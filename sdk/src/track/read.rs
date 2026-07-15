@@ -181,7 +181,7 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     encode.finish_result(&result);
     let (_, root) = result?;
 
-    let computed: Hash = root.into();
+    let computed: Hash = root;
     Ok(computed == blob.commitment)
 }
 

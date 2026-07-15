@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn basic_even() {
         let stake = vec![TAPE(25_000), TAPE(25_000), TAPE(25_000), TAPE(25_000)];
-        let s = DhondtSpooler::default();
+        let s = DhondtSpooler;
         assert_eq!(s.allocate(&stake, SpoolCount(4)).unwrap(), counts(&[1, 1, 1, 1]));
 
         let res = s.allocate(&stake, SpoolCount(1000)).unwrap();
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn basic_uneven() {
         let stake = vec![TAPE(50_000), TAPE(30_000), TAPE(15_000), TAPE(5_000)];
-        let s = DhondtSpooler::default();
+        let s = DhondtSpooler;
 
         // With GROUP_SIZE=20, cap(4,4) = 1 -> each node gets at most 1.
         assert_eq!(s.allocate(&stake, SpoolCount(4)).unwrap(), counts(&[1, 1, 1, 1]));
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn ties() {
-        let s = DhondtSpooler::default();
+        let s = DhondtSpooler;
 
         let stake = vec![TAPE(25_000), TAPE(25_000), TAPE(25_000), TAPE(25_000)];
         assert_eq!(s.allocate(&stake, SpoolCount(7)).unwrap(), counts(&[2, 2, 2, 1]));
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn zero_stake_infeasible() {
-        let s = DhondtSpooler::default();
+        let s = DhondtSpooler;
         let stake = vec![TAPE(0), TAPE(0), TAPE(0)];
         assert_eq!(s.allocate(&stake, SpoolCount(5)).unwrap_err(), SpoolerError::Infeasible);
         assert_eq!(s.allocate(&stake, SpoolCount(0)).unwrap(), counts(&[0, 0, 0]));
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn edge_cases() {
-        let s = DhondtSpooler::default();
+        let s = DhondtSpooler;
 
         let stake = vec![TAPE(100), TAPE(90), TAPE(80)];
         assert_eq!(s.allocate(&stake, SpoolCount(0)).unwrap(), counts(&[0, 0, 0]));

@@ -140,7 +140,7 @@ mod tests {
 
         // Simulate reserve_capacity and add_rewards
 
-        let mut expected_archive = archive.clone();
+        let mut expected_archive = archive;
         expected_archive
             .schedule
             .reserve_capacity(storage_units, fee_per_epoch, start_epoch, end_epoch)
@@ -185,7 +185,7 @@ mod tests {
                 Check::account(&Pubkey::from(archive_address)).data(
                     expected_archive.pack().as_ref()
                 ).build(),
-                Check::account(&Pubkey::from(authority_ata)).data(
+                Check::account(&authority_ata).data(
                     token(authority_ata, authority, initial_token_balance - total_cost).1.data.as_ref()
                 ).build(),
                 Check::account(&Pubkey::from(archive_ata)).data(

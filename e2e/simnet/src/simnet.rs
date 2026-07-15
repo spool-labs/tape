@@ -230,7 +230,7 @@ impl SimnetHarness {
             .filter(|&i| {
                 self.nodes
                     .get(i)
-                    .map_or(true, |node| !node.is_running())
+                    .is_none_or(|node| !node.is_running())
             })
             .collect();
         bail!("failed to start runtime on nodes: {failed:?}");

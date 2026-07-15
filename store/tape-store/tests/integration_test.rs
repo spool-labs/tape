@@ -31,7 +31,7 @@ fn open_primary() {
     let track_address = Address::new_unique();
     let info = sample_track(Address::new_unique());
 
-    store.put_track(track_address, info.clone()).unwrap();
+    store.put_track(track_address, info).unwrap();
     let retrieved = store.get_track(track_address).unwrap();
     assert_eq!(retrieved, Some(info));
 }
@@ -189,7 +189,7 @@ fn track_operations() {
     let track = Address::new_unique();
 
     let info = sample_track(Address::new_unique());
-    store.put_track(track, info.clone()).unwrap();
+    store.put_track(track, info).unwrap();
 
     let retrieved = store.get_track(track).unwrap().unwrap();
     assert_eq!(retrieved, info);

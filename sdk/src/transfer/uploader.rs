@@ -262,7 +262,7 @@ async fn upload_node_slices<P: Api>(
         let payload = slice.to_payload();
         let payload_bytes = payload.data.len();
         let req = PutSliceReq {
-            track: track.into(),
+            track,
             spool: global_spool,
             payload,
         };

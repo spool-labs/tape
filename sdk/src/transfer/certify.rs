@@ -442,7 +442,7 @@ fn record_signature_response(
     bucket.positions.extend_from_slice(positions);
     bucket
         .signatures
-        .extend(std::iter::repeat(signature).take(positions.len()));
+        .extend(std::iter::repeat_n(signature, positions.len()));
 }
 
 fn can_reach_supermajority(

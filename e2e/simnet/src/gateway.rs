@@ -342,7 +342,7 @@ impl TestGateway {
         let context = NodeContextBuilder::<MemoryStore, HttpApi, LiteSvmRpc>::new(
             self.app_config.clone(),
             clone_keypair(&self.keypair),
-            self.bls_keypair.clone(),
+            self.bls_keypair,
             tls_identity,
             store,
             rpc,

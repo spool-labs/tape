@@ -205,7 +205,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             };
 
             let recovered =
-                match reconstruct(&mut slicer, SliceIndex::new(position as usize), &peer_slices) {
+                match reconstruct(&mut slicer, SliceIndex::new(position), &peer_slices) {
                     Ok(recovered) => recovered,
                     Err(error) => {
                         debug!(spool = %spool, track = %track_addr, %error, "reconstruct failed");
@@ -307,7 +307,7 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         let curr_id = peers.current.get(&helper_spool).copied();
         let candidates = [
             prev_id,
-            curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+            curr_id.filter(|id| prev_id != Some(*id)),
         ];
         let request = GetSliceReq { track, spool: helper_spool };
         join_set.spawn(
@@ -347,7 +347,7 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     let curr_id = peers.current.get(&helper_spool).copied();
                     let candidates = [
                         prev_id,
-                        curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+                        curr_id.filter(|id| prev_id != Some(*id)),
                     ];
                     let request = GetSliceReq { track, spool: helper_spool };
                     join_set.spawn(
@@ -376,7 +376,7 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     let curr_id = peers.current.get(&helper_spool).copied();
                     let candidates = [
                         prev_id,
-                        curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+                        curr_id.filter(|id| prev_id != Some(*id)),
                     ];
                     let request = GetSliceReq { track, spool: helper_spool };
                     join_set.spawn(
@@ -571,7 +571,7 @@ mod tests {
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let group = GroupIndex::containing(SPOOL);
-        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
+        let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
 
         let slices_for_api = slices.clone();
@@ -580,7 +580,7 @@ mod tests {
         let track_info = clay_track(1024, &slices);
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::GetSlice(ref r) => {
-                let pos = group.position_of(r.spool).unwrap() as usize;
+                let pos = group.position_of(r.spool).unwrap();
                 PeerRes::GetSlice(Ok(GetSliceRes {
                     data: slices_for_api[pos].clone(),
                 }))
@@ -593,7 +593,7 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
-        ctx.store.put_track_data(track, BlobData::Coded(track_blob.clone())).unwrap();
+        ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
@@ -681,7 +681,7 @@ mod tests {
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let group = GroupIndex::containing(SPOOL);
-        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
+        let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
 
         let slices_for_api = slices.clone();
@@ -691,7 +691,7 @@ mod tests {
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::GetSlice(ref r) => {
-                let pos = group.position_of(r.spool).unwrap() as usize;
+                let pos = group.position_of(r.spool).unwrap();
                 PeerRes::GetSlice(Ok(GetSliceRes {
                     data: slices_for_api[pos].clone(),
                 }))
@@ -766,7 +766,7 @@ mod tests {
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let group = GroupIndex::containing(SPOOL);
-        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
+        let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
 
         // Compute which helper positions will succeed (first k, excluding ours).
@@ -790,7 +790,7 @@ mod tests {
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::GetSlice(ref r) => {
                 if good_spools.contains(&r.spool) {
-                    let pos = group.position_of(r.spool).unwrap() as usize;
+                    let pos = group.position_of(r.spool).unwrap();
                     PeerRes::GetSlice(Ok(GetSliceRes {
                         data: slices_for_api[pos].clone(),
                     }))

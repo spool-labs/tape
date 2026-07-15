@@ -157,7 +157,7 @@ impl<'a> BitmapWrite for BitmapMut<'a> {
 
 /// Returns the number of bytes needed to store n bits.
 pub const fn bytes_for_members(n: usize) -> usize {
-    (n + 7) / 8
+    n.div_ceil(8)
 }
 
 /// Returns the number of bytes needed to store n bits, rounded up to alignment_bytes.
@@ -167,7 +167,7 @@ pub const fn aligned_bytes_for_members(n: usize, alignment_bytes: usize) -> usiz
         return byte_count;
     }
 
-    ((byte_count + alignment_bytes - 1) / alignment_bytes) * alignment_bytes
+    byte_count.div_ceil(alignment_bytes) * alignment_bytes
 }
 
 /// Returns the indices of set bits in the given bitmap up to n bits.
@@ -188,7 +188,7 @@ pub fn bitmap_indices(bitmap: &[u8], n: usize) -> Vec<usize> {
 
 /// Creates a bitmap from a list of indices for n bits.
 pub fn indices_to_bitmap(indices: &[usize], n: usize) -> Vec<u8> {
-    let byte_len = (n + 7) / 8;
+    let byte_len = n.div_ceil(8);
     let mut bitmap = vec![0u8; byte_len];
 
     for &i in indices {

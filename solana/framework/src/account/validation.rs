@@ -101,7 +101,7 @@ impl AccountInfoValidation for AccountInfo<'_> {
 
     #[track_caller]
     fn has_address(&self, address: &Pubkey) -> Result<&Self, ProgramError> {
-        if self.key.ne(&address) {
+        if self.key.ne(address) {
             return Err(trace(
                 format!("Account has invalid address {} != {}", self.key, address).as_str(),
                 ProgramError::InvalidAccountData,

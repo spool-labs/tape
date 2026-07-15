@@ -25,8 +25,8 @@ impl ClayCoder {
         assert!(n > k, "n must be > k");
         assert!(k > 0, "k must be > 0");
         let m = n - k;
-        assert!(d >= k + 1, "d must be >= k + 1");
-        assert!(d <= n - 1, "d must be <= n - 1");
+        assert!(d > k, "d must be >= k + 1");
+        assert!(d < n, "d must be <= n - 1");
 
         let clay = ClayCode::new(k, m, d).expect("Clay code init");
 
@@ -66,7 +66,7 @@ impl ClayCoder {
         let padded_len = if input_len == 0 {
             min_size
         } else {
-            let aligned = ((input_len + min_size - 1) / min_size) * min_size;
+            let aligned = input_len.div_ceil(min_size) * min_size;
             aligned.max(min_size)
         };
         padded_len / self.k
