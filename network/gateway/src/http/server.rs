@@ -27,6 +27,7 @@ use tracing::info;
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
+use crate::http::handlers::site::hosts::SiteHostBindings;
 use crate::http::handlers::s3::{
     accounting::{Accounting, reservation_sweep_loop},
     admin::{AdminState, admin_router},
@@ -81,6 +82,7 @@ where
             write_ctx: None,
             accounting: Arc::new(Accounting::new()),
             admission: Arc::new(AdmitAll),
+            site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
@@ -181,7 +183,7 @@ where
             .fallback_service(routes)
             .layer(from_fn_with_state(
                 state.clone(),
-                site::host_site_serving::<Db, Cluster, Blockchain>,
+                site::routes::host_site_serving::<Db, Cluster, Blockchain>,
             ))
             .layer(from_fn_with_state(
                 state,
@@ -287,6 +289,8 @@ where
             write_ctx: self.write_ctx.clone(),
             accounting: self.accounting.clone(),
             admission: self.admission.clone(),
+            // The S3 listener never serves site hosts.
+            site_hosts: None,
         };
 
         let verifier = verifier_from_config(&self.s3_config);
@@ -407,24 +411,24 @@ where
     Blockchain: Rpc + 'static,
 {
     Router::new()
-        .route(site::SITE_ROOT_PATH, get(site::get_site_root))
+        .route(site::routes::SITE_ROOT_PATH, get(site::routes::get_site_root))
         .route(
-            site::SITE_INDEX_PATH,
-            get(site::get_site_index::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+            site::routes::SITE_INDEX_PATH,
+            get(site::routes::get_site_index::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
                 state.clone(),
                 crate::meter::site_read_metering::<Db, Cluster, Blockchain>,
             )),
         )
         .route(
-            site::SITE_PATH,
-            get(site::get_site_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+            site::routes::SITE_PATH,
+            get(site::routes::get_site_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
                 state.clone(),
                 crate::meter::site_read_metering::<Db, Cluster, Blockchain>,
             )),
         )
         .route_layer(from_fn_with_state(
             state,
-            site::site_response_headers::<Db, Cluster, Blockchain>,
+            site::routes::site_response_headers::<Db, Cluster, Blockchain>,
         ))
 }
 

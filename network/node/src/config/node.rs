@@ -11,7 +11,7 @@ use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed2
 
 use crate::core::error::NodeError;
 use super::{
-    gateway::GatewayConfig,
+    gateway::{GatewayConfig, is_valid_origin},
     helpers::{deserialize_pathbuf, expand_path},
     http::{HttpConfig, NetworkConfig},
     https::HttpsConfig,
@@ -218,16 +218,16 @@ impl NodeConfig {
             )));
         }
 
-        for origin in &self.gateway.site.connect_origins {
-            let has_scheme = ["https://", "http://", "wss://", "ws://"]
-                .iter()
-                .any(|scheme| origin.starts_with(scheme));
-            let is_header_safe = origin
-                .bytes()
-                .all(|byte| byte.is_ascii_graphic() && byte != b';' && byte != b',');
-            if origin != "*" && !(has_scheme && is_header_safe) {
+        let site_origins = self
+            .gateway
+            .site
+            .connect_origins
+            .iter()
+            .chain(self.gateway.site.cors_origins.iter());
+        for origin in site_origins {
+            if !is_valid_origin(origin) {
                 return Err(ConfigError::Invalid(format!(
-                    "gateway.site.connect_origins entry `{origin}` is not a valid origin"
+                    "gateway.site origin `{origin}` is not a valid origin"
                 )));
             }
         }

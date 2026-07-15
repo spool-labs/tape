@@ -22,12 +22,13 @@ use tape_crypto::address::Address;
 use tape_node::config::gateway::GatewaySiteConfig;
 use tape_protocol::Api;
 
-use super::resolve::{ResolvedObject, resolve_object};
+use super::policy::{TapeSitePolicy, tape_site_policy};
 use crate::http::error::RouteError;
 use crate::http::handlers::object::{
-    CachePolicy, ObjectResponseMetadata, cache_control_header, range_header,
-    read_object_response,
+    CachePolicy, DEFAULT_SITE_MAX_AGE_SECS, ObjectResponseMetadata, cache_control_header,
+    range_header, read_object_response,
 };
+use crate::http::handlers::resolve::{ResolvedObject, resolve_object};
 use crate::http::handlers::store_error;
 use crate::http::handlers::track::{parse_address, track_with_pending};
 use crate::http::state::AppState;
@@ -67,12 +68,13 @@ pub async fn get_site_index<
 >(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(caller): Extension<MeterCaller>,
+    Extension(policy): Extension<TapeSitePolicy>,
     Path(tape): Path<String>,
     Query(query): Query<SiteQuery>,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let tape = parse_address(&tape, "tape address")?;
-    serve_site(state, caller, tape, "", query.download.as_deref(), &headers).await
+    serve_site(state, caller, &policy, tape, "", query.download.as_deref(), &headers).await
 }
 
 pub async fn get_site_object<
@@ -82,12 +84,13 @@ pub async fn get_site_object<
 >(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(caller): Extension<MeterCaller>,
+    Extension(policy): Extension<TapeSitePolicy>,
     Path((tape, path)): Path<(String, String)>,
     Query(query): Query<SiteQuery>,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let tape = parse_address(&tape, "tape address")?;
-    serve_site(state, caller, tape, &path, query.download.as_deref(), &headers).await
+    serve_site(state, caller, &policy, tape, &path, query.download.as_deref(), &headers).await
 }
 
 /// Rewrite site-host requests into the site route before routing: when the
@@ -104,15 +107,20 @@ pub async fn host_site_serving<
     next: Next,
 ) -> Response {
     let site = &state.context.config.gateway.site;
-    if site.domains.is_empty() && site.subdomain_suffix.is_none() {
+    if site.domains.is_empty() && site.subdomain_suffix.is_none() && state.site_hosts.is_none() {
         return next.run(req).await;
     }
 
-    let tape = req
+    let host = req
         .headers()
         .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|host| host_tape(site, host));
+        .and_then(|value| value.to_str().ok());
+    let mut tape = host.and_then(|host| host_tape(site, host));
+    if tape.is_none() {
+        if let (Some(host), Some(bindings)) = (host, &state.site_hosts) {
+            tape = bindings.tape_for_host(strip_port(host)).await;
+        }
+    }
     let Some(tape) = tape else {
         return next.run(req).await;
     };
@@ -137,16 +145,20 @@ async fn serve_site<
 >(
     state: AppState<Db, Cluster, Blockchain>,
     caller: MeterCaller,
+    policy: &TapeSitePolicy,
     tape: Address,
     path: &str,
     download: Option<&str>,
     headers: &HeaderMap,
 ) -> Result<Response, RouteError> {
     let name = resolve_site_name(path);
+    let config = &state.context.config.gateway.site;
+    let is_spa = policy.spa_fallback.unwrap_or(config.spa_fallback);
+    let max_age_secs = policy.max_age_secs.unwrap_or(DEFAULT_SITE_MAX_AGE_SECS);
 
     let (resolved, status) = match lookup(&state, tape, &name)? {
         Some(resolved) => (resolved, StatusCode::OK),
-        None => match lookup_miss(&state, tape, &name)? {
+        None => match lookup_miss(&state, tape, &name, is_spa)? {
             Some(fallback) => fallback,
             None => return Err(RouteError::NotFound),
         },
@@ -157,7 +169,7 @@ async fn serve_site<
     if status == StatusCode::OK {
         let etag = resolved.etag.to_string();
         if matches_etag(headers, &etag) {
-            return not_modified(&etag);
+            return not_modified(&etag, max_age_secs);
         }
     }
 
@@ -166,7 +178,7 @@ async fn serve_site<
         return Err(RouteError::NotFound);
     }
 
-    let metadata = site_metadata(&resolved, &name, download);
+    let metadata = site_metadata(&resolved, &name, download, max_age_secs);
     read_object_response(
         state,
         resolved.track_address,
@@ -184,13 +196,17 @@ async fn serve_site<
 /// subdomain label under the configured suffix. Config keys and the suffix
 /// are canonicalized at load, so only an uppercase request host allocates.
 pub fn host_tape(config: &GatewaySiteConfig, host: &str) -> Option<Address> {
-    // A port suffix never survives into domain matching. IPv6 literal hosts
-    // mangle here, but they can never match a configured domain anyway.
-    let host = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    let host = strip_port(host);
     if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return lookup_host(config, &host.to_ascii_lowercase());
     }
     lookup_host(config, host)
+}
+
+/// A port suffix never survives into domain matching. IPv6 literal hosts
+/// mangle here, but they can never match a configured domain anyway.
+fn strip_port(host: &str) -> &str {
+    host.rsplit_once(':').map_or(host, |(name, _)| name)
 }
 
 fn lookup_host(config: &GatewaySiteConfig, host: &str) -> Option<Address> {
@@ -228,9 +244,10 @@ fn lookup_miss<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     tape: Address,
     name: &str,
+    is_spa: bool,
 ) -> Result<Option<(ResolvedObject, StatusCode)>, RouteError> {
     // When the index itself was the miss, asking the store again cannot help.
-    if state.context.config.gateway.site.spa_fallback && name != INDEX_OBJECT {
+    if is_spa && name != INDEX_OBJECT {
         if let Some(resolved) = lookup(state, tape, INDEX_OBJECT)? {
             return Ok(Some((resolved, StatusCode::OK)));
         }
@@ -248,6 +265,7 @@ fn site_metadata(
     resolved: &ResolvedObject,
     name: &str,
     download: Option<&str>,
+    max_age_secs: u64,
 ) -> ObjectResponseMetadata {
     let content_type = match resolved.content_type {
         ContentType::Unknown => ContentType::from_extension(name_extension(name)),
@@ -258,7 +276,7 @@ fn site_metadata(
     ObjectResponseMetadata {
         content_type,
         filename: is_download.then(|| name_filename(name).as_bytes().to_vec()),
-        cache: CachePolicy::Revalidate,
+        cache: CachePolicy::Revalidate { max_age_secs },
     }
 }
 
@@ -298,7 +316,7 @@ fn matches_etag(headers: &HeaderMap, current: &str) -> bool {
     false
 }
 
-fn not_modified(etag: &str) -> Result<Response, RouteError> {
+fn not_modified(etag: &str, max_age_secs: u64) -> Result<Response, RouteError> {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::ETAG,
@@ -307,18 +325,20 @@ fn not_modified(etag: &str) -> Result<Response, RouteError> {
     );
     headers.insert(
         header::CACHE_CONTROL,
-        cache_control_header(CachePolicy::Revalidate),
+        cache_control_header(CachePolicy::Revalidate { max_age_secs }),
     );
     Ok((StatusCode::NOT_MODIFIED, headers).into_response())
 }
 
 /// Stamp the site headers on every site response: no MIME sniffing, the
-/// same-origin content policy, and the cross-origin allowance when one is
-/// configured. Path-based hosting does not isolate tenants from each other;
-/// host-based serving gives each site its own origin.
+/// content policy, and the cross-origin allowance when one applies. The
+/// tape's own policy is read here, once per request, and handed to the
+/// handler through the request extensions. Path-based hosting does not
+/// isolate tenants from each other; host-based serving gives each site its
+/// own origin.
 pub async fn site_response_headers<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response
 where
@@ -327,8 +347,20 @@ where
     Blockchain: Rpc,
 {
     let site = &state.context.config.gateway.site;
-    let cors = cors_origin(site, req.headers());
-    let policy = site_content_security_policy(site);
+    let policy = match path_tape(req.uri().path()) {
+        Some(tape) => tape_site_policy(&state, tape),
+        None => TapeSitePolicy::default(),
+    };
+
+    let cors_list = policy.cors_origins.as_deref().unwrap_or(&site.cors_origins);
+    let cors = cors_origin(cors_list, req.headers());
+    let connect_list = policy
+        .connect_origins
+        .as_deref()
+        .unwrap_or(&site.connect_origins);
+    let content_policy = site_content_security_policy(connect_list);
+
+    req.extensions_mut().insert(policy);
     let mut response = next.run(req).await;
 
     let headers = response.headers_mut();
@@ -336,7 +368,7 @@ where
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+    headers.insert(header::CONTENT_SECURITY_POLICY, content_policy);
     if let Some(origin) = cors {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
         headers.insert(header::VARY, HeaderValue::from_static("origin"));
@@ -344,34 +376,38 @@ where
     response
 }
 
+/// The tape a site-route path addresses, present on every site request
+/// because host serving rewrites into the same route shape.
+fn path_tape(path: &str) -> Option<Address> {
+    let rest = path.strip_prefix("/site/")?;
+    let label = rest.split('/').next()?;
+    label.parse().ok()
+}
+
 /// The content security policy for site responses: same-origin plus the
-/// configured API origins hosted pages may call from the browser.
-fn site_content_security_policy(config: &GatewaySiteConfig) -> HeaderValue {
-    if config.connect_origins.is_empty() {
+/// API origins the effective policy lets hosted pages call.
+fn site_content_security_policy(connect_origins: &[String]) -> HeaderValue {
+    if connect_origins.is_empty() {
         return HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY);
     }
 
-    let origins = config.connect_origins.join(" ");
+    let origins = connect_origins.join(" ");
     let policy = format!("{SITE_CONTENT_SECURITY_POLICY}; connect-src 'self' {origins}");
-    // Config validation keeps origins header-safe; fall back to the closed
-    // policy rather than fail the response if something slips through.
+    // Origins are validated at config load and sanitized when tenant
+    // supplied; fall back to the closed policy rather than fail a response.
     HeaderValue::from_str(&policy)
         .unwrap_or_else(|_| HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY))
 }
 
-/// The Access-Control-Allow-Origin value a request earns, when cross-origin
-/// site reads are configured.
-fn cors_origin(config: &GatewaySiteConfig, headers: &HeaderMap) -> Option<HeaderValue> {
-    if config.cors_origins.iter().any(|origin| origin == "*") {
+/// The Access-Control-Allow-Origin value a request earns from the
+/// effective allow list.
+fn cors_origin(allowed: &[String], headers: &HeaderMap) -> Option<HeaderValue> {
+    if allowed.iter().any(|origin| origin == "*") {
         return Some(HeaderValue::from_static("*"));
     }
 
     let origin = headers.get(header::ORIGIN)?.to_str().ok()?;
-    if config
-        .cors_origins
-        .iter()
-        .any(|allowed| allowed.eq_ignore_ascii_case(origin))
-    {
+    if allowed.iter().any(|entry| entry.eq_ignore_ascii_case(origin)) {
         return HeaderValue::from_str(origin).ok();
     }
     None
@@ -405,7 +441,7 @@ mod tests {
     // unknown stored types are inferred from the path extension
     #[test]
     fn extension_inference() {
-        let metadata = site_metadata(&resolved(Hash::default()), "assets/app.css", None);
+        let metadata = site_metadata(&resolved(Hash::default()), "assets/app.css", None, 60);
         assert_eq!(metadata.content_type, ContentType::TextCss);
         assert!(metadata.filename.is_none());
     }
@@ -413,7 +449,7 @@ mod tests {
     // the download query switches to a named attachment
     #[test]
     fn download_attachment() {
-        let metadata = site_metadata(&resolved(Hash::default()), "docs/guide.html", Some("1"));
+        let metadata = site_metadata(&resolved(Hash::default()), "docs/guide.html", Some("1"), 60);
         assert_eq!(metadata.filename.as_deref(), Some(b"guide.html".as_slice()));
     }
 
@@ -440,17 +476,16 @@ mod tests {
     // connect origins extend the policy; an empty list keeps it closed
     #[test]
     fn connect_policy() {
-        let mut config = GatewaySiteConfig::default();
         assert_eq!(
-            site_content_security_policy(&config),
+            site_content_security_policy(&[]),
             HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY)
         );
 
-        config.connect_origins = vec![
+        let origins = vec![
             "https://api.devnet.solana.com".to_string(),
             "wss://api.devnet.solana.com".to_string(),
         ];
-        let policy = site_content_security_policy(&config);
+        let policy = site_content_security_policy(&origins);
         let policy = policy.to_str().expect("policy is ascii");
         assert!(policy.starts_with(SITE_CONTENT_SECURITY_POLICY));
         assert!(policy.ends_with(
@@ -461,24 +496,32 @@ mod tests {
     // cors answers the wildcard or a listed origin, and nothing else
     #[test]
     fn cors_matching() {
-        let mut config = GatewaySiteConfig::default();
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, HeaderValue::from_static("https://app.example"));
 
-        assert!(cors_origin(&config, &headers).is_none());
+        assert!(cors_origin(&[], &headers).is_none());
 
-        config.cors_origins = vec!["https://app.example".to_string()];
+        let listed = vec!["https://app.example".to_string()];
         assert_eq!(
-            cors_origin(&config, &headers),
+            cors_origin(&listed, &headers),
             Some(HeaderValue::from_static("https://app.example"))
         );
-        assert!(cors_origin(&config, &HeaderMap::new()).is_none());
+        assert!(cors_origin(&listed, &HeaderMap::new()).is_none());
 
-        config.cors_origins = vec!["*".to_string()];
+        let any = vec!["*".to_string()];
         assert_eq!(
-            cors_origin(&config, &HeaderMap::new()),
+            cors_origin(&any, &HeaderMap::new()),
             Some(HeaderValue::from_static("*"))
         );
+    }
+
+    // the site path always names its tape, whichever way it was reached
+    #[test]
+    fn path_tape_extraction() {
+        let tape = Address::new_unique();
+        assert_eq!(path_tape(&format!("/site/{tape}/a/b.css")), Some(tape));
+        assert_eq!(path_tape(&format!("/site/{tape}")), Some(tape));
+        assert_eq!(path_tape("/object/xyz"), None);
     }
 
     // host requests rewrite into the site route with path and query intact

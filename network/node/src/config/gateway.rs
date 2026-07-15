@@ -44,12 +44,23 @@ impl Default for GatewayConfig {
 }
 
 /// Site route serving controls.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct GatewaySiteConfig {
     /// Serve the site's index page for unknown paths instead of its 404 page,
     /// the routing single-page apps expect.
     #[serde(default)]
     pub spa_fallback: bool,
+
+    /// Let tapes override serving policy with their own reserved site
+    /// policy object. Off means gateway-wide settings always apply.
+    #[serde(default = "default_true")]
+    pub tenant_overrides: bool,
+
+    /// Serve any hostname whose TXT record at the underscore tape label
+    /// proves a binding to a tape. Off means only configured domains and
+    /// the subdomain suffix serve.
+    #[serde(default)]
+    pub txt_domains: bool,
 
     /// Custom hostnames served as sites: a request whose Host matches a key
     /// serves that tape from the domain root.
@@ -71,6 +82,39 @@ pub struct GatewaySiteConfig {
     /// the https and wss forms when an endpoint speaks websockets.
     #[serde(default)]
     pub connect_origins: Vec<String>,
+}
+
+impl Default for GatewaySiteConfig {
+    fn default() -> Self {
+        Self {
+            spa_fallback: false,
+            tenant_overrides: true,
+            txt_domains: false,
+            domains: BTreeMap::new(),
+            subdomain_suffix: None,
+            cors_origins: Vec::new(),
+            connect_origins: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Whether a value can serve as an origin in a policy header: the wildcard,
+/// or a scheme-prefixed origin with no header-breaking bytes
+pub fn is_valid_origin(origin: &str) -> bool {
+    if origin == "*" {
+        return true;
+    }
+    let has_scheme = ["https://", "http://", "wss://", "ws://"]
+        .iter()
+        .any(|scheme| origin.starts_with(scheme));
+    let is_header_safe = origin
+        .bytes()
+        .all(|byte| byte.is_ascii_graphic() && byte != b';' && byte != b',');
+    has_scheme && is_header_safe
 }
 
 /// S3-compatible gateway listener controls.

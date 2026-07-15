@@ -22,6 +22,9 @@ const INDEX_BODY: &[u8] = b"<html><body>site index</body></html>";
 const STYLE_BODY: &[u8] = b"body { color: #01a2f2; }";
 const MISSING_BODY: &[u8] = b"<html><body>lost tape</body></html>";
 
+const SITE_POLICY: &[u8] =
+    br#"{"max_age_secs": 5, "connect_origins": ["https://rpc.test"]}"#;
+
 const CUSTOM_DOMAIN: &str = "mysite.test";
 const SUBDOMAIN_SUFFIX: &str = "sites.test";
 const ALLOWED_ORIGIN: &str = "https://app.example";
@@ -125,6 +128,10 @@ async fn site_serving_inner() {
             .put_object(&tape_key, "404.html", MISSING_BODY, Some("text/html"))
             .await
             .expect("put 404 page");
+        writer
+            .put_object(&tape_key, "_site.json", SITE_POLICY, Some("application/json"))
+            .await
+            .expect("put site policy");
         eprintln!("gateway_site: site objects written");
     }
 
@@ -211,7 +218,13 @@ async fn site_serving_inner() {
     assert_eq!(header(&response, "content-type"), "text/html");
     assert_eq!(
         header(&response, "cache-control"),
-        "public, max-age=60, must-revalidate"
+        "public, max-age=5, must-revalidate",
+        "tenant policy should shorten the revalidation window"
+    );
+    assert!(
+        header(&response, "content-security-policy")
+            .ends_with("connect-src 'self' https://rpc.test"),
+        "tenant policy should extend connect-src"
     );
     assert_eq!(header(&response, "x-content-type-options"), "nosniff");
     assert!(

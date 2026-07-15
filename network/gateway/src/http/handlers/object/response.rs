@@ -19,8 +19,12 @@ pub enum CachePolicy {
     /// Track-addressed content never changes under its URL
     Immutable,
     /// Name-addressed content can be rewritten, so revalidate often
-    Revalidate,
+    Revalidate { max_age_secs: u64 },
 }
+
+/// Default revalidation window for name-addressed responses; the string
+/// form below must spell the same number.
+pub const DEFAULT_SITE_MAX_AGE_SECS: u64 = 60;
 
 /// A named response downloads as an attachment; a nameless one renders
 /// inline, which is how the site route serves pages.
@@ -209,7 +213,7 @@ pub fn content_range_header(
 }
 
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-const REVALIDATE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
+const DEFAULT_REVALIDATE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 
 pub fn object_headers(
     content_length: u64,
@@ -251,7 +255,14 @@ pub fn etag_header(etag: Hash) -> Result<HeaderValue, RouteError> {
 pub fn cache_control_header(cache: CachePolicy) -> HeaderValue {
     match cache {
         CachePolicy::Immutable => HeaderValue::from_static(IMMUTABLE_CACHE_CONTROL),
-        CachePolicy::Revalidate => HeaderValue::from_static(REVALIDATE_CACHE_CONTROL),
+        // The default window is the common case; serve it without a format.
+        CachePolicy::Revalidate {
+            max_age_secs: DEFAULT_SITE_MAX_AGE_SECS,
+        } => HeaderValue::from_static(DEFAULT_REVALIDATE_CACHE_CONTROL),
+        CachePolicy::Revalidate { max_age_secs } => {
+            HeaderValue::from_str(&format!("public, max-age={max_age_secs}, must-revalidate"))
+                .unwrap_or_else(|_| HeaderValue::from_static(DEFAULT_REVALIDATE_CACHE_CONTROL))
+        }
     }
 }
 
@@ -322,7 +333,7 @@ mod tests {
         let metadata = ObjectResponseMetadata {
             content_type: ContentType::Unknown,
             filename: None,
-            cache: CachePolicy::Revalidate,
+            cache: CachePolicy::Revalidate { max_age_secs: 60 },
         };
 
         let headers = object_headers(42, &metadata, Hash::default()).unwrap();
