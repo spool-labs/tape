@@ -70,7 +70,7 @@ pub enum RawTrackPolicy {
     All,
 }
 
-pub(crate) fn persist_batch<Db: Store>(
+pub fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {

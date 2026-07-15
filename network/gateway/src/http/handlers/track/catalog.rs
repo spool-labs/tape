@@ -28,7 +28,7 @@ use crate::http::state::AppState;
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
 const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
 
-pub(crate) async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -40,7 +40,7 @@ pub(crate) async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     })
 }
 
-pub(crate) async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -52,7 +52,7 @@ pub(crate) async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     binary_response(&TrackDataResponse { data })
 }
 
-pub(crate) async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -112,7 +112,7 @@ pub(crate) async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     })
 }
 
-pub(crate) async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -125,7 +125,7 @@ pub(crate) async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc
     })
 }
 
-pub(crate) async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(tape_id): Path<String>,
     body: Bytes,
@@ -159,7 +159,7 @@ pub(crate) async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     })
 }
 
-pub(crate) async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(tape_id): Path<String>,
     body: Bytes,
@@ -199,7 +199,7 @@ pub(crate) async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc
     })
 }
 
-pub(crate) async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(tape_id): Path<String>,
     body: Bytes,

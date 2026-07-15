@@ -142,6 +142,10 @@ pub trait AsAccount {
         T: AccountDeserialize + Discriminator + Pod;
 
     /// Load account as mutable typed reference.
+    ///
+    /// Account infos are shared, so mutable data is handed out from a shared
+    /// reference on purpose; programs run single threaded.
+    #[allow(clippy::mut_from_ref)]
     fn as_account_mut<T>(&self, program_id: &Pubkey) -> Result<&mut T, ProgramError>
     where
         T: AccountDeserialize + Discriminator + Pod;
@@ -178,6 +182,7 @@ impl AsAccount for AccountInfo<'_> {
     }
 
     #[track_caller]
+    #[allow(clippy::mut_from_ref)]
     fn as_account_mut<T>(&self, program_id: &Pubkey) -> Result<&mut T, ProgramError>
     where
         T: AccountDeserialize + Discriminator + Pod,

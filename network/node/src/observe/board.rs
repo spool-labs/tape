@@ -30,7 +30,7 @@ pub fn init() {
 /// Fold one histogram's bucket counts into the running totals, seeding the
 /// bucket boundaries on the first call.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn accumulate_buckets(h: &Histogram, les: &mut Vec<f64>, sums: &mut Vec<u64>) {
+pub fn accumulate_buckets(h: &Histogram, les: &mut Vec<f64>, sums: &mut Vec<u64>) {
     let buckets = h.get_bucket();
     if sums.is_empty() {
         *les = buckets.iter().map(|b| b.get_upper_bound()).collect();
@@ -44,25 +44,25 @@ pub(super) fn accumulate_buckets(h: &Histogram, les: &mut Vec<f64>, sums: &mut V
 }
 
 /// Pair accumulated bucket boundaries with their cumulative counts.
-pub(super) fn to_buckets(les: &[f64], sums: &[u64]) -> Vec<Bucket> {
+pub fn to_buckets(les: &[f64], sums: &[u64]) -> Vec<Bucket> {
     les.iter().zip(sums).map(|(le, c)| Bucket { le_secs: *le, count: *c }).collect()
 }
 
 /// Sum of a counter family across all label combinations.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn counter_sum(family: &MetricFamily) -> u64 {
+pub fn counter_sum(family: &MetricFamily) -> u64 {
     family.get_metric().iter().map(|metric| metric.get_counter().value() as u64).sum()
 }
 
 /// Largest gauge value across a family's label combinations.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn gauge_max(family: &MetricFamily) -> u64 {
+pub fn gauge_max(family: &MetricFamily) -> u64 {
     family.get_metric().iter().map(|metric| metric.get_gauge().value() as u64).max().unwrap_or(0)
 }
 
 /// Split the rpc error family into general errors and transaction errors.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn split_rpc_errors(family: &MetricFamily) -> (u64, u64) {
+pub fn split_rpc_errors(family: &MetricFamily) -> (u64, u64) {
     let mut rpc = 0;
     let mut tx = 0;
     for metric in family.get_metric() {
@@ -82,7 +82,7 @@ pub(super) fn split_rpc_errors(family: &MetricFamily) -> (u64, u64) {
 
 /// One named histogram family folded into flat buckets and a sample count.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn histogram_snapshot(families: &[MetricFamily], name: &str) -> (Vec<Bucket>, u64) {
+pub fn histogram_snapshot(families: &[MetricFamily], name: &str) -> (Vec<Bucket>, u64) {
     let mut les: Vec<f64> = Vec::new();
     let mut sums: Vec<u64> = Vec::new();
     let mut total = 0;
@@ -98,13 +98,13 @@ pub(super) fn histogram_snapshot(families: &[MetricFamily], name: &str) -> (Vec<
 
 /// Sum of one named counter family, zero when absent.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn family_counter(families: &[MetricFamily], name: &str) -> u64 {
+pub fn family_counter(families: &[MetricFamily], name: &str) -> u64 {
     families.iter().filter(|family| family.get_name() == name).map(counter_sum).sum()
 }
 
 /// Largest gauge of one named family, zero when absent.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn family_gauge(families: &[MetricFamily], name: &str) -> u64 {
+pub fn family_gauge(families: &[MetricFamily], name: &str) -> u64 {
     families.iter().filter(|family| family.get_name() == name).map(gauge_max).max().unwrap_or(0)
 }
 

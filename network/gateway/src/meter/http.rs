@@ -17,7 +17,7 @@ impl MeterCaller {
     /// Resolve the metered identity for a request: the trusted-proxy-resolved
     /// caller IP, plus the verified access key and its assigned grade when the
     /// request was signed.
-    pub(crate) fn resolve(
+    pub fn resolve(
         peer: IpAddr,
         headers: &HeaderMap,
         trusted: &[IpAddr],
@@ -34,7 +34,7 @@ impl MeterCaller {
 
 /// Meter native object reads by resolved caller IP and stash the caller in the
 /// request extensions so the handler charges the same identity for bytes.
-pub(crate) async fn object_read_metering<Db, Cluster, Blockchain>(
+pub async fn object_read_metering<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     mut req: Request,
     next: Next,
@@ -84,7 +84,7 @@ fn resolve_caller_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> I
         .unwrap_or(peer)
 }
 
-pub(crate) fn rate_limited_response(retry_after: Duration) -> Response {
+pub fn rate_limited_response(retry_after: Duration) -> Response {
     let retry_after_secs = retry_after.as_secs().max(1).to_string();
     (
         StatusCode::TOO_MANY_REQUESTS,

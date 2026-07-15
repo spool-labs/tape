@@ -13,7 +13,7 @@ use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
 use crate::http::state::AppState;
 
-pub(crate) async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> (StatusCode, Json<HealthResponse>) {
     if state.context.bootstrap.is_ready() {
@@ -48,7 +48,7 @@ fn volume_stats(volume: DiskVolume) -> VolumeStats {
     }
 }
 
-pub(crate) async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> Result<Json<NodeStats>, RouteError> {
     let store = state.context.store.as_ref();

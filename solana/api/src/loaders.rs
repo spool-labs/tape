@@ -153,6 +153,9 @@ pub trait FromAccountSlice {
     where
         T: Discriminator + Pod;
 
+    /// Account infos are shared, so mutable data is handed out from a shared
+    /// reference on purpose; programs run single threaded.
+    #[allow(clippy::mut_from_ref)]
     fn from_slice_mut<T>(
         &self,
         program_id: &Pubkey,
@@ -171,6 +174,9 @@ pub trait FromAccountSlice {
     where
         B: Pod;
 
+    /// Account infos are shared, so mutable data is handed out from a shared
+    /// reference on purpose; programs run single threaded.
+    #[allow(clippy::mut_from_ref)]
     fn from_slice_array_mut<B>(
         &self,
         program_id: &Pubkey,
@@ -218,6 +224,7 @@ impl FromAccountSlice for AccountInfo<'_> {
     }
 
     #[track_caller]
+    #[allow(clippy::mut_from_ref)]
     fn from_slice_mut<T>(
         &self,
         program_id: &Pubkey,
@@ -283,6 +290,7 @@ impl FromAccountSlice for AccountInfo<'_> {
     }
 
     #[track_caller]
+    #[allow(clippy::mut_from_ref)]
     fn from_slice_array_mut<B>(
         &self,
         program_id: &Pubkey,
