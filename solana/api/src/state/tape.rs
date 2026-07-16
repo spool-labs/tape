@@ -4,7 +4,7 @@ use tape_core::tape::{
     blacklist_tape_number, history_tape_number, snapshot_tape_number, TapeFlags,
 };
 use tape_core::track::archive::TrackArchive;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackState};
 use tape_crypto::address::Address;
 
 use crate::errors::TapeError;
@@ -136,6 +136,25 @@ impl Tape {
     pub fn delete_track(&mut self, proof: &CompressedTrackProof) -> ProgramResult {
         self.tracks
             .remove(proof)
+            .map_err(|_| ProgramError::InvalidInstructionData)?;
+
+        // Invalidation already returned this track's capacity.
+        if !proof.state.is_invalidated() {
+            self.used = self
+                .used
+                .checked_sub(proof.state.size)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn invalidate_track(&mut self, proof: &CompressedTrackProof) -> ProgramResult {
+        let mut updated_track = proof.state;
+        updated_track.state = TrackState::Invalidated as u64;
+
+        self.tracks
+            .update(proof, &updated_track)
             .map_err(|_| ProgramError::InvalidInstructionData)?;
 
         self.used = self
