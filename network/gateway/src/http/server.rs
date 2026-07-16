@@ -5,7 +5,7 @@ use std::time::Duration;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
-use axum::middleware::{Next, from_fn, from_fn_with_state};
+use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -27,7 +27,6 @@ use tracing::info;
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
-use crate::http::request_id;
 use crate::http::handlers::s3::{
     accounting::{Accounting, reservation_sweep_loop},
     admin::{AdminState, admin_router},
@@ -179,15 +178,13 @@ where
             .layer(
                 ServiceBuilder::new()
                     .layer(HandleErrorLayer::new(handle_http_error))
-                    .layer(TraceLayer::new_for_http().make_span_with(request_id::request_span))
+                    .layer(TraceLayer::new_for_http())
                     .layer(LoadShedLayer::new())
                     .layer(ConcurrencyLimitLayer::new(self.http_config.concurrency))
                     .layer(TimeoutLayer::new(Duration::from_secs(
                         self.http_config.timeout_secs,
                     ))),
             )
-            // Outermost, so load-shed and timeout responses carry the id too.
-            .layer(from_fn(request_id::request_id))
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
@@ -284,15 +281,12 @@ where
 
         let body_limit = DefaultBodyLimit::max(self.s3_config.max_buffered_bytes);
 
-        router(state, verifier)
-            .layer(body_limit)
-            .layer(
-                ServiceBuilder::new()
-                    .layer(HandleErrorLayer::new(handle_http_error))
-                    .layer(TraceLayer::new_for_http().make_span_with(request_id::request_span))
-                    .layer(LoadShedLayer::new()),
-            )
-            .layer(from_fn(request_id::request_id))
+        router(state, verifier).layer(body_limit).layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_http_error))
+                .layer(TraceLayer::new_for_http())
+                .layer(LoadShedLayer::new()),
+        )
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
@@ -364,14 +358,12 @@ where
             context: self.context.clone(),
             accounting: self.accounting.clone(),
         };
-        admin_router(state)
-            .layer(
-                ServiceBuilder::new()
-                    .layer(HandleErrorLayer::new(handle_http_error))
-                    .layer(TraceLayer::new_for_http().make_span_with(request_id::request_span))
-                    .layer(LoadShedLayer::new()),
-            )
-            .layer(from_fn(request_id::request_id))
+        admin_router(state).layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(handle_http_error))
+                .layer(TraceLayer::new_for_http())
+                .layer(LoadShedLayer::new()),
+        )
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
