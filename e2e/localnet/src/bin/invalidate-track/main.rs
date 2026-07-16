@@ -8,10 +8,12 @@ use rpc_solana::RpcConfig;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
 use tape_api::program::tapedrive::track_pda;
-use tape_core::bls::{BlsPrivateKey, BlsSignature};
+use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::cert::track::TrackInvalidateMessage;
 use tape_core::erasure::GROUP_SIZE;
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{SpoolBitmap, StorageUnits};
+use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_sdk::keys::helpers::{load_bls_keypair, load_solana_keypair};
 use tape_sdk::keys::tape_key::TapeKey;
@@ -105,15 +107,22 @@ async fn main() -> Result<()> {
 
     let message = TrackInvalidateMessage::new(epoch, proof.state.get_hash()).to_bytes();
 
+    // Derive each node pubkey once; matching per spool is then byte equality.
+    let mut signer_keys: Vec<(BlsPubkey, &BlsPrivateKey)> = Vec::with_capacity(node_keys.len());
+    for secret in &node_keys {
+        let pubkey = secret
+            .public_key()
+            .map_err(|error| anyhow::anyhow!("derive bls pubkey: {error:?}"))?;
+        signer_keys.push((pubkey, secret));
+    }
+
     let mut indices = Vec::new();
     let mut partials = Vec::new();
     for (spool_index, spool) in group.spools.iter().enumerate() {
-        let Some(secret) = node_keys.iter().find(|secret| {
-            secret
-                .public_key()
-                .map(|pubkey| pubkey == spool.bls_pubkey)
-                .unwrap_or(false)
-        }) else {
+        let Some((_, secret)) = signer_keys
+            .iter()
+            .find(|(pubkey, _)| *pubkey == spool.bls_pubkey)
+        else {
             continue;
         };
 
@@ -180,9 +189,9 @@ async fn main() -> Result<()> {
 
 async fn wait_track_proof<Blockchain, Cluster>(
     sdk: &Tapedrive<Blockchain, Cluster>,
-    track: &tape_crypto::address::Address,
-    accept: impl Fn(&tape_core::track::types::CompressedTrackProof) -> bool,
-) -> Result<tape_core::track::types::CompressedTrackProof>
+    track: &Address,
+    accept: impl Fn(&CompressedTrackProof) -> bool,
+) -> Result<CompressedTrackProof>
 where
     Blockchain: rpc::Rpc,
     Cluster: tape_protocol::Api,

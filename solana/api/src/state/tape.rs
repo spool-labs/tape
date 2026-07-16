@@ -29,7 +29,7 @@ pub struct Tape {
     /// The amount of storage reserved.
     pub capacity: StorageUnits,
 
-    /// The amount of storage used.
+    /// The amount of storage used, summed over tracks that are not invalidated.
     pub used: StorageUnits,
 
     /// The epoch when this cassette is active.
@@ -153,9 +153,7 @@ impl Tape {
         let mut updated_track = proof.state;
         updated_track.state = TrackState::Invalidated as u64;
 
-        self.tracks
-            .update(proof, &updated_track)
-            .map_err(|_| ProgramError::InvalidInstructionData)?;
+        self.update_track(proof, &updated_track)?;
 
         self.used = self
             .used

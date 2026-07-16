@@ -435,3 +435,28 @@ logging:
         tls = tls_path.display(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_node::config::node::NodeConfig;
+
+    // the generated yaml must stay parseable by the node it configures
+    #[test]
+    fn generated_yaml_parses_as_node_config() {
+        let yaml = build_node_yaml(
+            3,
+            4003,
+            14003,
+            Path::new("/tmp/node-3/id.json"),
+            Path::new("/tmp/node-3/bls.key"),
+            Path::new("/tmp/node-3/tls.json"),
+            Path::new("/tmp/node-3/data"),
+            "http://127.0.0.1:8899",
+        );
+
+        let config = NodeConfig::from_yaml_str(&yaml).expect("generated yaml parses");
+        assert_eq!(config.node.name, "localnet-node-3");
+        assert_eq!(config.solana.rpc, vec!["http://127.0.0.1:8899"]);
+    }
+}

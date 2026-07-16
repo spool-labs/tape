@@ -16,6 +16,7 @@ use tape_core::types::{BasisPoints, SpoolBitmap, StorageUnits};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
+use tape_sdk::tapedrive::Tapedrive;
 
 const TARGET_GROUPS: u64 = 5;
 
@@ -110,16 +111,7 @@ async fn invalidate_track_inner() {
     let track_address = track_pda(track.tape, track.track_number).0;
 
     // Peers only serve the proof once they have ingested the finalized track.
-    let start = Instant::now();
-    let proof = loop {
-        if let Ok(proof) = sdk.get_track_proof(&track_address).await {
-            break proof;
-        }
-        if start.elapsed() >= active_timeout {
-            panic!("timed out waiting for a track proof");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
+    let proof = wait_track_proof(&sdk, &track_address, active_timeout, |_| true).await;
 
     let tape_before = sdk.get_tape(&tape_address).await.expect("tape before");
     assert_eq!(
@@ -144,18 +136,10 @@ async fn invalidate_track_inner() {
 
     // Nodes converge on the invalidated leaf once they ingest the event; the
     // proof only verifies against the updated on-chain root.
-    let start = Instant::now();
-    let invalidated_proof = loop {
-        if let Ok(proof) = sdk.get_track_proof(&track_address).await {
-            if proof.state.is_invalidated() {
-                break proof;
-            }
-        }
-        if start.elapsed() >= active_timeout {
-            panic!("timed out waiting for nodes to serve the invalidated track");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
+    let invalidated_proof = wait_track_proof(&sdk, &track_address, active_timeout, |proof| {
+        proof.state.is_invalidated()
+    })
+    .await;
 
     let result = submit_invalidate(&harness, &invalidated_proof).await;
     assert!(result.is_err(), "re-invalidation must be rejected");
@@ -199,18 +183,27 @@ async fn submit_invalidate(
 
     let message = TrackInvalidateMessage::new(epoch, proof.state.get_hash()).to_bytes();
 
+    // Derive each node pubkey once; matching per spool is then byte equality.
+    let node_keys: Vec<_> = harness
+        .nodes()
+        .iter()
+        .map(|node| {
+            let pubkey = node.bls_keypair().public_key().expect("derive bls pubkey");
+            (pubkey, node.bls_keypair())
+        })
+        .collect();
+
     let mut indices = Vec::new();
     let mut partials = Vec::new();
     for (spool_index, spool) in group.spools.iter().enumerate() {
-        let owner = harness.nodes().iter().find(|node| {
-            node.bls_keypair()
-                .public_key()
-                .map(|pubkey| pubkey == spool.bls_pubkey)
-                .unwrap_or(false)
-        });
-        let Some(owner) = owner else { continue };
+        let Some((_, secret)) = node_keys
+            .iter()
+            .find(|(pubkey, _)| *pubkey == spool.bls_pubkey)
+        else {
+            continue;
+        };
 
-        partials.push(owner.bls_keypair().sign(message).expect("sign invalidate"));
+        partials.push(secret.sign(message).expect("sign invalidate"));
         indices.push(spool_index);
     }
     assert_eq!(
@@ -236,6 +229,31 @@ async fn submit_invalidate(
         .await?;
 
     Ok(())
+}
+
+// Poll peers for the track proof until one passes the accept predicate.
+async fn wait_track_proof<Blockchain, Cluster>(
+    sdk: &Tapedrive<Blockchain, Cluster>,
+    track: &Address,
+    timeout: Duration,
+    accept: impl Fn(&CompressedTrackProof) -> bool,
+) -> CompressedTrackProof
+where
+    Blockchain: rpc::Rpc,
+    Cluster: tape_protocol::Api,
+{
+    let start = Instant::now();
+    loop {
+        if let Ok(proof) = sdk.get_track_proof(track).await {
+            if accept(&proof) {
+                return proof;
+            }
+        }
+        if start.elapsed() >= timeout {
+            panic!("timed out waiting for a track proof");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 fn random_bytes(rng: &mut StdRng, len: usize) -> Vec<u8> {
