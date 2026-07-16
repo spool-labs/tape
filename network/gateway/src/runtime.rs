@@ -91,7 +91,11 @@ where
     if context.atlas.enabled() {
         supervisor.spawn(
             ServiceName::AtlasObserve,
-            crate::http::observe::run(context.clone(), config.https.listen, cancel.clone()),
+            tape_node::features::http::atlas_listener::serve(
+                context.clone(),
+                config.https.listen,
+                cancel.clone(),
+            ),
         );
     }
 

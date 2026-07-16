@@ -1,9 +1,9 @@
-//! Optional mTLS listener exposing the atlas snapshot to configured
-//! observers. The gateway's public listeners sit behind proxies and never see
-//! client certificates, so the observer check gets its own small pinned-key
-//! server, the same dance nodes use between themselves.
+//! Dedicated pinned-mTLS listener serving the atlas snapshot to configured
+//! observers. The node folds the atlas route into its main peer listener;
+//! this standalone form exists for services whose public listeners sit behind
+//! proxies and never see client certificates, the gateway foremost.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,24 +14,24 @@ use axum::routing::get;
 use axum::{Json, Router};
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use axum_server::Handle;
-use peer_tls::build_server_config_with_peer_auth;
+use peer_tls::{build_server_config_with_peer_auth, cert_san_ips};
 use rpc::Rpc;
 use store::Store;
-use tokio_util::sync::CancellationToken;
-
-use tape_node::context::NodeContext;
-use tape_node::core::error::NodeError;
-use tape_node::features::http::auth::ObserverPeer;
-use tape_node::features::http::handlers::atlas::AtlasQuery;
-use tape_node::features::http::peer_identity::{PeerIdentity, PeerIdentityAcceptor};
 use tape_observe_api::AtlasRecent;
 use tape_protocol::api::OBSERVE_ATLAS_PATH;
 use tape_protocol::Api;
+use tokio_util::sync::CancellationToken;
+
+use crate::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::features::http::auth::{observer_capability, ObserverPeer};
+use crate::features::http::handlers::atlas::AtlasQuery;
+use crate::features::http::peer_identity::{PeerIdentity, PeerIdentityAcceptor};
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Serve the atlas snapshot over pinned mTLS until cancelled
-pub async fn run<Db, Cluster, Blockchain>(
+pub async fn serve<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     listen: SocketAddr,
     cancel: CancellationToken,
@@ -91,10 +91,8 @@ where
         .get::<PeerIdentity>()
         .copied()
         .unwrap_or_default();
-    if let Some(key) = identity.pubkey() {
-        if context.atlas.is_observer(key) {
-            req.extensions_mut().insert(ObserverPeer { tls_pubkey: key });
-        }
+    if let Some(observer) = observer_capability(&context.atlas, identity) {
+        req.extensions_mut().insert(observer);
     }
     next.run(req).await
 }
@@ -110,17 +108,4 @@ where
     Blockchain: Rpc,
 {
     Json(context.atlas.recent(query.after))
-}
-
-/// Include loopback in the certificate when listening on every interface, so
-/// a co-located collector can dial over localhost
-fn cert_san_ips(listen_ip: IpAddr) -> Vec<IpAddr> {
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
-    let mut sans = vec![listen_ip];
-    if listen_ip.is_unspecified() {
-        sans.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
-        sans.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
-    }
-    sans
 }

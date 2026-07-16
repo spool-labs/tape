@@ -275,10 +275,13 @@ where
     match decision {
         AdmissionDecision::Allowed => {
             // Feed the atlas display: anonymous data traffic only, so probes
-            // and peer calls never show up as user activity.
+            // and peer calls never show up as user activity. The upload bit
+            // follows how the route was mounted, not the method, so metered
+            // POST reads stay fetches.
             if matches!(mode, AdmissionMode::Metered | AdmissionMode::DirectWrite) {
                 if let AdmissionCaller::Anonymous(ip) = caller {
-                    state.context.atlas.push_ip(ip, req.method() != Method::GET);
+                    let is_write = matches!(mode, AdmissionMode::DirectWrite);
+                    state.context.atlas.push_ip(ip, is_write);
                 }
             }
             next.run(req).await
