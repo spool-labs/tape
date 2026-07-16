@@ -4,6 +4,7 @@
 //! HeadObject, PutObject, multipart upload, DeleteObject).
 
 use std::io;
+use std::time::Duration;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -26,7 +27,8 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
 use tape_protocol::Api;
-use tape_sdk::error::TapedriveError;
+use tape_protocol::api::ApiError;
+use tape_sdk::error::{TapedriveError, UploadError};
 use tape_store::ops::{CredentialOps, ObjectListOps, TapeOps};
 use tape_store::types::CredentialScope;
 
@@ -939,6 +941,12 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
     match error {
         TapedriveError::InvalidArgument(message) => S3Error::InvalidRequest(message),
         TapedriveError::NotFound => S3Error::NoSuchKey,
+        // A peer rate limit surfaces from the write pipeline wrapped in the
+        // upload error, and from reads as the dedicated variant.
+        TapedriveError::RateLimited { retry_after }
+        | TapedriveError::Upload(UploadError::Peer(ApiError::RateLimited { retry_after })) => {
+            S3Error::slow_down(retry_after.unwrap_or(Duration::from_secs(1)))
+        }
         other @ (TapedriveError::MissingPayer
         | TapedriveError::Rpc(_)
         | TapedriveError::Upload(_)
@@ -971,6 +979,7 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
         | TapedriveError::NotFound
+        | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::InvalidArgument(_)
         | TapedriveError::Io(_)

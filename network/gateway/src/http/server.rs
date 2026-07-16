@@ -154,12 +154,12 @@ where
             .route(
                 tape_protocol::api::TAPE_TRACK_FIND_PATH,
                 post(track::catalog::find_track::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit),
             )
             .route(
                 tape_protocol::api::TAPE_TRACK_LIST_PATH,
                 post(track::catalog::list_tracks_by_tape::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone()),
+                    .layer(peer_body_limit),
             )
             .route(
                 tape_protocol::api::TAPE_OBJECT_LIST_PATH,

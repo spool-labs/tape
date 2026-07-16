@@ -334,7 +334,7 @@ fn make_raw_track(
 ) -> (CompressedTrack, BlobData) {
     let bytes = raw.to_vec();
     let track = CompressedTrack {
-        tape: tape.into(),
+        tape: tape,
         key,
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,

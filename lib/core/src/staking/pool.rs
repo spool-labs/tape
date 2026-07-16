@@ -357,7 +357,7 @@ impl<const N: usize> StakingPool<N> {
                 .into();
             
             self.shares = self.shares.saturating_add(incoming_shares);
-            self.stake = self.stake.saturating_add(net_added.into());
+            self.stake = self.stake.saturating_add(net_added);
         }
 
         Ok(())
@@ -1132,14 +1132,14 @@ mod tests {
         assert_eq!(p.shares, shares(1000));
 
         let tokens_at_snapshot: Coin<TAPE> =
-            snapshot.convert_to_tape_amount(500u64.into()).into();
+            snapshot.convert_to_tape_amount(500u64).into();
         let owed = tokens_at_snapshot.saturating_sub(tape(500));
         assert_eq!(owed, tape(0), "withdrawer must settle at snapshot rate");
 
         // The buggy path would have used the post-mutation rate (1002/1000),
         // giving floor(500 * 1002 / 1000) - 500 = 1 flux of overpay.
         let post_rate = p.get_current_rate();
-        let buggy: Coin<TAPE> = post_rate.convert_to_tape_amount(500u64.into()).into();
+        let buggy: Coin<TAPE> = post_rate.convert_to_tape_amount(500u64).into();
         assert_eq!(buggy.saturating_sub(tape(500)), tape(1));
     }
 
@@ -1170,8 +1170,8 @@ mod tests {
         assert_eq!(p.shares, shares(700));
 
         // Each withdrawer's payout uses the same span rate
-        let tokens_100: Coin<TAPE> = span_rate.convert_to_tape_amount(100u64.into()).into();
-        let tokens_200: Coin<TAPE> = span_rate.convert_to_tape_amount(200u64.into()).into();
+        let tokens_100: Coin<TAPE> = span_rate.convert_to_tape_amount(100u64).into();
+        let tokens_200: Coin<TAPE> = span_rate.convert_to_tape_amount(200u64).into();
         assert_eq!(tokens_100, tape(105));
         assert_eq!(tokens_200, tape(210));
     }
@@ -1205,7 +1205,7 @@ mod tests {
 
         // Per-user payout at snapshot rate: floor(1 * 3/2) = 1 each
         let per_user_tokens: Coin<TAPE> =
-            snapshot.convert_to_tape_amount(1u64.into()).into();
+            snapshot.convert_to_tape_amount(1u64).into();
         assert_eq!(per_user_tokens, tape(1));
 
         // Sum of individuals (2) is strictly less than the aggregate (3),
@@ -1233,7 +1233,7 @@ mod tests {
         assert_eq!(p.shares, shares(1100));
 
         let bob_value: Coin<TAPE> = p.get_current_rate()
-            .convert_to_tape_amount(100u64.into())
+            .convert_to_tape_amount(100u64)
             .into();
         assert_eq!(bob_value, tape(109));
     }

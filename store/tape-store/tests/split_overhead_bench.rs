@@ -192,7 +192,7 @@ fn single_instance_vs_split() {
         let t = Instant::now();
         let store = TapeStore::new(
             RocksStore::open_with_cf_config(
-                &dir.path().join("db"),
+                dir.path().join("db"),
                 create_db_options(),
                 create_tape_store_configs(),
             )

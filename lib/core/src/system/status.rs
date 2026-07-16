@@ -12,8 +12,10 @@ use tape_crypto::Address;
 /// Node status in the network
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
+#[derive(Default)]
 pub enum NodeStatus {
     /// Node is registered but not in committee
+    #[default]
     Standby,
     /// Node is active in the committee
     Active,
@@ -30,11 +32,6 @@ pub enum NodeStatus {
     },
 }
 
-impl Default for NodeStatus {
-    fn default() -> Self {
-        Self::Standby
-    }
-}
 
 /// Pure lifecycle status for a spool, no associated data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

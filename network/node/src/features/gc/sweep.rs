@@ -185,7 +185,7 @@ async fn sweep_orphan_tracks<Db: Store>(
         }
 
         for (track, info) in &tracks {
-            if store.get_tape(info.tape.into()).map_err(store_error)?.is_none() {
+            if store.get_tape(info.tape).map_err(store_error)?.is_none() {
                 if !at_tip {
                     continue;
                 }
@@ -331,7 +331,7 @@ fn slice_batch(config: &GcConfig) -> usize {
 }
 
 fn should_yield(index: usize) -> bool {
-    index > 0 && index % 32 == 0
+    index > 0 && index.is_multiple_of(32)
 }
 
 fn store_error(error: impl std::fmt::Display) -> NodeError {

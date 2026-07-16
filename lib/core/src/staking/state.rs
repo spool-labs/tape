@@ -21,6 +21,12 @@ pub struct StakeState {
     pub unstake_epoch: EpochNumber,
 }
 
+impl Default for StakeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StakeState {
     pub const fn new() -> Self {
         Self {

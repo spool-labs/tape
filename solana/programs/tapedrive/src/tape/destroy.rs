@@ -97,7 +97,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&Pubkey::from(fee_payer))
+                Check::account(&fee_payer)
                     .lamports(1_000_000_000 + rent(Tape::get_size()))
                     .build(),
                 Check::account(&Pubkey::from(tape_address))

@@ -98,8 +98,7 @@ pub async fn get_site_object<
 /// Rewrite site-host requests into the site route before routing: when the
 /// Host header maps to a tape, the whole request is that site's, from the
 /// domain root, and it flows through the same routed pipeline as the path
-/// form, readiness, metering, headers, and all. Well-known paths are the
-/// one exception: they stay with the gateway's own routes.
+/// form, readiness, metering, headers, and all.
 pub async fn host_site_serving<
     Db: Store + 'static,
     Cluster: Api + 'static,
@@ -143,8 +142,7 @@ pub async fn host_site_serving<
     next.run(req).await
 }
 
-/// Whether a path sits in the well-known namespace, which is reserved for
-/// the gateway itself on every served host.
+/// Whether a path sits in the well-known namespace.
 fn is_well_known(path: &str) -> bool {
     path == "/.well-known" || path.starts_with("/.well-known/")
 }
@@ -603,7 +601,6 @@ mod tests {
     #[test]
     fn well_known_reservation() {
         assert!(is_well_known("/.well-known"));
-        assert!(is_well_known("/.well-known/"));
         assert!(is_well_known("/.well-known/acme-challenge/token"));
         assert!(!is_well_known("/"));
         assert!(!is_well_known("/well-known"));

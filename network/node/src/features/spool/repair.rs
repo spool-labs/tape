@@ -288,7 +288,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
     let group = GroupIndex::containing(spool);
     let position = group.position_of(spool).ok_or(())?;
-    let lost = SliceIndex::new(position as usize);
+    let lost = SliceIndex::new(position);
 
     // Merge previous and current helpers, excluding duplicates and our own slice. 
     let mut available: Vec<SliceIndex> = peers
@@ -298,7 +298,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         .filter_map(|helper_spool| {
             group
                 .position_of(*helper_spool)
-                .map(|helper_slice| SliceIndex::new(helper_slice as usize))
+                .map(SliceIndex::new)
         })
         .collect();
 
@@ -401,7 +401,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         let curr_id = peers.current.get(&req.helper_spool).copied();
         let candidates = [
             prev_id,
-            curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+            curr_id.filter(|id| prev_id != Some(*id)),
         ];
         join_set.spawn(
             fetch_one_helper(
@@ -433,7 +433,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     let curr_id = peers.current.get(&next_req.helper_spool).copied();
                     let candidates = [
                         prev_id,
-                        curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+                        curr_id.filter(|id| prev_id != Some(*id)),
                     ];
                     join_set.spawn(
                         fetch_one_helper(
@@ -476,7 +476,7 @@ fn per_helper_reqs(
     for stripe_repair in &plan.stripes {
         for helper in &stripe_repair.helpers {
             let entry = reqs.entry(helper.slice).or_insert_with(|| RepairReq {
-                track: track.into(),
+                track,
                 helper_spool: group.spool_at(*helper.slice),
                 stripes: vec![],
             });
@@ -680,16 +680,16 @@ mod tests {
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
         let group = GroupIndex::containing(SPOOL);
-        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
+        let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
         let track_blob = clay_blob(1024, &slices);
-        let track_blob_for_api = track_blob.clone();
+        let track_blob_for_api = track_blob;
         let slices_for_api = slices.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::Repair(ref req) => {
-                let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap() as usize];
+                let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap()];
 
                 let data = extract_repair_data(
                     &track_blob_for_api,
@@ -707,7 +707,7 @@ mod tests {
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
-        ctx.store.put_track_data(track, BlobData::Coded(track_blob.clone())).unwrap();
+        ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
 
@@ -810,16 +810,16 @@ mod tests {
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
         let group = GroupIndex::containing(SPOOL);
-        let lost_pos = group.position_of(SPOOL).unwrap() as usize;
+        let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
         let track_blob = clay_blob(1024, &slices);
-        let track_blob_for_api = track_blob.clone();
+        let track_blob_for_api = track_blob;
         let slices_for_api = slices.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::Repair(ref req) => {
-                let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap() as usize];
+                let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap()];
                 let data = extract_repair_data(
                     &track_blob_for_api,
                     &req.stripes,

@@ -706,6 +706,7 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiE
     }
     match status.as_u16() {
         404 => Err(ApiError::NotFound),
+        429 => Err(crate::rate_limited_error(&resp)),
         403 => {
             let body = resp.text().await.unwrap_or_default();
             if body.contains("not responsible") {

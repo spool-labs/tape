@@ -52,14 +52,14 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
     fn put_track(&self, track_address: Address, track: CompressedTrack) -> Result<()> {
         self.put::<TrackCol>(&track_address, &track.pack())?;
-        let lookup = TrackLookupKey::new(track.tape.into(), track.track_number, track.key);
+        let lookup = TrackLookupKey::new(track.tape, track.track_number, track.key);
         self.put::<TrackLookupCol>(&lookup, &UnitKey)?;
         Ok(())
     }
 
     fn delete_track(&self, track_address: Address) -> Result<()> {
         if let Some(track) = self.get_track(track_address)? {
-            let lookup = TrackLookupKey::new(track.tape.into(), track.track_number, track.key);
+            let lookup = TrackLookupKey::new(track.tape, track.track_number, track.key);
             self.delete::<TrackLookupCol>(&lookup)?;
         }
         self.delete::<TrackCol>(&track_address)?;
@@ -139,7 +139,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
             let key: TrackLookupKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))?;
-            let track_address = key::track_address(tape, key.track_number).into();
+            let track_address = key::track_address(tape, key.track_number);
             let track = self
                 .get_track(track_address)?
                 .ok_or_else(|| TapeStoreError::Serialization("missing track for lookup index".into()))?;
@@ -159,7 +159,7 @@ mod key {
     use tape_crypto::address::Address;
 
     pub fn track_address(tape: Address, track_number: TrackNumber) -> Address {
-        track_pda(tape.into(), track_number).0.into()
+        track_pda(tape, track_number).0
     }
 }
 
@@ -197,7 +197,7 @@ mod tests {
 
         assert!(store.get_track(track).unwrap().is_none());
 
-        store.put_track(track, info.clone()).unwrap();
+        store.put_track(track, info).unwrap();
 
         let retrieved = store.get_track(track).unwrap().unwrap();
         assert_eq!(retrieved, info);
@@ -290,19 +290,19 @@ mod tests {
         let mut track0 = make_track_info();
         track0.tape = tape_a;
         track0.track_number = TrackNumber(0);
-        let addr0 = track_pda(track0.tape.into(), track0.track_number).0.into();
+        let addr0 = track_pda(track0.tape, track0.track_number).0;
         store.put_track(addr0, track0).unwrap();
 
         let mut track1 = make_track_info();
         track1.tape = tape_a;
         track1.track_number = TrackNumber(1);
-        let addr1 = track_pda(track1.tape.into(), track1.track_number).0.into();
+        let addr1 = track_pda(track1.tape, track1.track_number).0;
         store.put_track(addr1, track1).unwrap();
 
         let mut other = make_track_info();
         other.tape = tape_b;
         other.track_number = TrackNumber(0);
-        let other_addr = track_pda(other.tape.into(), other.track_number).0.into();
+        let other_addr = track_pda(other.tape, other.track_number).0;
         store.put_track(other_addr, other).unwrap();
 
         let first = store.iter_tracks_by_tape_from(tape_a, None, 1).unwrap();

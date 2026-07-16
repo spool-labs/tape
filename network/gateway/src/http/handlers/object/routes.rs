@@ -173,7 +173,7 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
         decoded.bytes,
         &metadata,
         decoded.etag,
-        range_header(&headers).as_deref(),
+        range_header(&headers),
         StatusCode::OK,
     )
 }

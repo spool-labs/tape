@@ -11,7 +11,6 @@ use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, TrackNumber};
-use tape_crypto::address::Address;
 use tape_protocol::{read_snapshot_epoch, Api, DecodedSnapshot};
 use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
 use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
@@ -33,7 +32,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let tape = Address::from(snapshot_tape_pda(epoch).0);
+    let tape = snapshot_tape_pda(epoch).0;
 
     // The committed merkle root the snapshot was voted on. The
     // reader verifies every chunk list against this before it

@@ -164,20 +164,18 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         let expected_candidate = state.epoch().saturating_add(EpochNumber(2));
 
         if event.epoch == expected_next {
-            if !state
+            if state
                 .next_epoch
-                .as_ref()
-                .is_some_and(|epoch| epoch.id == event.epoch)
+                .as_ref().is_none_or(|epoch| epoch.id != event.epoch)
             {
                 let mut epoch = Epoch::zeroed();
                 epoch.id = event.epoch;
                 state.next_epoch = Some(epoch);
             }
         } else if event.epoch == expected_candidate {
-            if !state
+            if state
                 .candidate_epoch
-                .as_ref()
-                .is_some_and(|epoch| epoch.id == event.epoch)
+                .as_ref().is_none_or(|epoch| epoch.id != event.epoch)
             {
                 let mut epoch = Epoch::zeroed();
                 epoch.id = event.epoch;

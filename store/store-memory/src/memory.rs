@@ -51,8 +51,7 @@ impl Store for MemoryStore {
         let data = self.data.read().unwrap();
         let result = Ok(data
             .get(cf)
-            .and_then(|cf_data| cf_data.get(key))
-            .map(|v| v.clone()));
+            .and_then(|cf_data| cf_data.get(key)).cloned());
 
         #[cfg(feature = "metrics")]
         if let Some(metrics) = get_metrics() {
@@ -95,7 +94,7 @@ impl Store for MemoryStore {
 
         let mut data = self.data.write().unwrap();
         data.entry(cf.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(key.to_vec(), value.to_vec());
         let result = Ok(());
 
@@ -224,7 +223,7 @@ impl Store for MemoryStore {
                     }
 
                     data.entry(cf.clone())
-                        .or_insert_with(HashMap::new)
+                        .or_default()
                         .insert(key.clone(), value.clone());
                 }
                 BatchOp::Delete { cf, key } => {

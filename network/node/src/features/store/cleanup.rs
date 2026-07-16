@@ -60,7 +60,7 @@ pub fn delete_tape_local<Db: Store>(
         }
 
         for (track, info) in &tracks {
-            if info.tape == tape.into() {
+            if info.tape == tape {
                 remove_object_listing_for_track(store, *track, info)?;
                 stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
                 store.delete_track(*track).map_err(store_error)?;

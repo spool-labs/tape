@@ -274,7 +274,7 @@ pub fn build_set_name_ix(
     node_address: Address,
     name: &str,
 ) -> Instruction {
-    let name = to_name(&name);
+    let name = to_name(name);
 
     Instruction {
         program_id: tapedrive::ID,

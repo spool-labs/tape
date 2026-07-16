@@ -234,7 +234,7 @@ impl GatewayMeter {
 
     fn maybe_prune(&self, buckets: &mut HashMap<MeterKey, BucketState>, now: Instant) {
         let checks = self.checks.fetch_add(1, Ordering::Relaxed);
-        if checks % PRUNE_INTERVAL != 0 {
+        if !checks.is_multiple_of(PRUNE_INTERVAL) {
             return;
         }
 

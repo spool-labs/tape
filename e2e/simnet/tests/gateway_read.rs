@@ -14,6 +14,7 @@ use tape_protocol::api::{NodeStats, slice_url};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::{ChunkManifest, MAX_TRACK_SIZE};
 use tape_sdk::tapedrive::Tapedrive;
+use tape_store::ops::TrackDataOps;
 
 const NODE_COUNT: usize = GROUP_SIZE;
 const TARGET_GROUPS: u64 = 5;
@@ -395,6 +396,57 @@ async fn staked_gateway_inner() {
         "gateway should cache enough slices for offline decode"
     );
 
+    // Inline object: exercise the read-time peer-fetch fallback. The mirror tails
+    // the write live, so it starts with the bytes locally. We drop the local copy
+    // and confirm the gateway recovers the payload from a group owner and caches it.
+    let inline_data = deterministic_bytes(200);
+    let inline_track = writer
+        .write_track(&tape_key, &inline_data)
+        .await
+        .expect("write inline track");
+    assert!(
+        inline_track.is_inline(),
+        "small payload must produce an inline track"
+    );
+    let inline_addr = track_pda(inline_track.tape, inline_track.track_number).0;
+
+    wait_gateway_has_inline(&gateway, inline_addr, active_timeout)
+        .await
+        .expect("gateway mirror should tail the inline payload");
+    assert_gateway_decoded_route(&gateway.base_url(), "object", &inline_addr, &inline_data)
+        .await
+        .expect("gateway should serve inline object from its local mirror");
+    eprintln!("gateway_read: inline object served from local mirror");
+
+    gateway
+        .context()
+        .store
+        .delete_track_data(inline_addr)
+        .expect("drop gateway inline payload");
+    assert!(
+        !gateway
+            .context()
+            .store
+            .has_track_data(inline_addr)
+            .expect("gateway inline presence check"),
+        "gateway should have dropped its local inline payload"
+    );
+
+    assert_gateway_decoded_route(&gateway.base_url(), "object", &inline_addr, &inline_data)
+        .await
+        .expect("gateway should recover inline object from a group owner");
+    eprintln!("gateway_read: inline object recovered via peer-fetch fallback");
+
+    assert!(
+        gateway
+            .context()
+            .store
+            .has_track_data(inline_addr)
+            .expect("gateway inline presence check"),
+        "gateway should re-cache the fetched inline payload"
+    );
+    eprintln!("gateway_read: fetched inline payload re-cached locally");
+
     harness.stop_all().await.expect("stop gated storage nodes");
     eprintln!("gateway_read: gated storage nodes stopped");
 
@@ -698,6 +750,22 @@ async fn wait_current_owner_slices(
     }
 }
 
+async fn wait_gateway_has_inline(
+    gateway: &TestGateway,
+    track: Address,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    loop {
+        if gateway.context().store.has_track_data(track)? {
+            return Ok(());
+        }
+        if start.elapsed() >= timeout {
+            anyhow::bail!("timed out waiting for gateway to mirror inline payload");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
 
 async fn gateway_stats(base: &str) -> anyhow::Result<NodeStats> {
     Ok(reqwest::Client::new()
