@@ -87,6 +87,18 @@ where
 
     supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));
 
+    // observers configured means the atlas display polls this gateway too
+    if context.atlas.enabled() {
+        supervisor.spawn(
+            ServiceName::AtlasObserve,
+            tape_node::features::http::atlas_listener::serve(
+                context.clone(),
+                config.https.listen,
+                cancel.clone(),
+            ),
+        );
+    }
+
     if config.gateway.s3.enabled {
         // One Accounting instance is shared by the S3 data plane and the admin
         // control plane, so their ledger and audit mutations serialize against a

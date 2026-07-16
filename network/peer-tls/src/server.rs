@@ -12,6 +12,20 @@ use crate::error::TlsError;
 use crate::provider::ring_provider;
 use crate::verifier::PeerClientVerifier;
 
+/// Expand a listener IP into the certificate SAN list. A wildcard bind also
+/// gets both loopbacks, so health checks and co-located peers can dial
+/// localhost against the same cert.
+pub fn cert_san_ips(listen_ip: IpAddr) -> Vec<IpAddr> {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    let mut sans = vec![listen_ip];
+    if listen_ip.is_unspecified() {
+        sans.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        sans.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+    sans
+}
+
 /// Build a `rustls::ServerConfig` that presents a self-signed Ed25519 cert
 /// derived from `keypair`, with SANs for each listen IP.
 ///

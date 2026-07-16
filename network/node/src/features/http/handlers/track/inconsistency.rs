@@ -70,6 +70,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let message = TrackInvalidateMessage::new(
         epoch,
         track_info.get_hash(),
+        request.proof.observed_root,
     );
     let signature = state
         .context
@@ -137,6 +138,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let message = TrackInvalidateMessage::new(
         epoch,
         track_info.get_hash(),
+        proof.observed_root,
     );
     proof
         .signature

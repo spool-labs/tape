@@ -8,6 +8,7 @@ use tape_core::track::data::{
 use tape_core::track::types::{CompressedTrackProof, TrackKind};
 use tape_core::types::{ContentType, EpochNumber, SpoolBitmap, StorageUnits, StripeCount};
 use tape_crypto::address::Address;
+use tape_crypto::Hash;
 use tape_solana::*;
 
 use crate::helpers::read_instruction_pod;
@@ -43,6 +44,7 @@ pub struct InvalidateTrack {
     pub track: CompressedTrackProof,
     pub bitmap: SpoolBitmap,
     pub signature: BlsSignature,
+    pub computed_root: Hash,
 }
 
 pub fn build_track_write_ix(
@@ -118,6 +120,7 @@ pub fn build_invalidate_track_ix(
     epoch: EpochNumber,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
+    computed_root: Hash,
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (group_address, _) = group_pda(epoch, track.state.group);
@@ -135,6 +138,7 @@ pub fn build_invalidate_track_ix(
             track,
             bitmap,
             signature,
+            computed_root,
         }.to_bytes(),
     }
 }
@@ -312,7 +316,6 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::data::TrackObjectInfo;
-    use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
 
     fn valid_blob(size: StorageUnits) -> BlobEncoding {
