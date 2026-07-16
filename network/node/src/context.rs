@@ -21,6 +21,7 @@ use tape_protocol::{Api, ProtocolState};
 use tape_store::{TapeStore, ops::MetaOps};
 
 use crate::config::node::NodeConfig;
+use crate::core::atlas::AtlasBuffer;
 use crate::core::bootstrap::BootstrapBus;
 use crate::core::error::NodeError;
 use crate::core::ingest::{IngestBus, IngestState};
@@ -45,6 +46,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub admission: Arc<AdmissionLimiter>,
     pub eviction_queue: Arc<EvictionQueue>,
     pub metrics: NodeMetrics,
+    pub atlas: Arc<AtlasBuffer>,
 
     node_id: NodeId,
     node_address: Address,
@@ -203,9 +205,11 @@ pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     rpc: RpcClient<Blockchain>,
     peer_manager: Arc<PeerManager>,
     api: Arc<Cluster>,
+    atlas: Arc<AtlasBuffer>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, Blockchain> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
@@ -215,6 +219,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         rpc: RpcClient<Blockchain>,
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
+        atlas: Arc<AtlasBuffer>,
     ) -> Self {
         Self {
             config,
@@ -225,6 +230,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             rpc,
             peer_manager,
             api,
+            atlas,
         }
     }
 
@@ -247,7 +253,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             .map_err(|error| NodeError::Store(format!("set_node_id: {error}")))?;
 
         self.store
-            .set_node_address(node_address.into())
+            .set_node_address(node_address)
             .map_err(|error| NodeError::Store(format!("set_node_address: {error}")))?;
 
         Ok(Arc::new(NodeContext {
@@ -267,7 +273,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             api: self.api,
             admission,
             eviction_queue: Arc::new(EvictionQueue::default()),
-            metrics: NodeMetrics::default(),
+            metrics: NodeMetrics,
+            atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),
         }))
     }
@@ -289,6 +296,7 @@ mod tests {
     use tape_store::TapeStore;
 
     use super::{volume_below_threshold, NodeConfig, NodeContextBuilder};
+    use crate::core::atlas::AtlasBuffer;
     use store::{DiskVolume, StoreVolume};
 
     fn volume(role: StoreVolume, free: Option<u64>) -> DiskVolume {
@@ -332,6 +340,7 @@ mod tests {
             rpc,
             Arc::new(PeerManager::new()),
             Arc::new(MemoryApi::noop()),
+            Arc::new(AtlasBuffer::new(Vec::new())),
         )
         .build()
         .await

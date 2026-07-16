@@ -1,5 +1,5 @@
 mod bucket;
 mod http;
 
-pub(crate) use bucket::{GatewayMeter, GatewayMeterDecision, MeterCaller};
-pub(crate) use http::{object_read_metering, rate_limited_response};
+pub use bucket::{GatewayMeter, GatewayMeterDecision, MeterCaller};
+pub use http::{object_read_metering, rate_limited_response};

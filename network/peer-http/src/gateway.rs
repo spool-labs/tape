@@ -52,6 +52,40 @@ impl GatewayApi {
         self.get_bytes(gateway_object_url(&track.to_string())).await
     }
 
+    /// Fetch a byte window of the logical object for a representing track:
+    /// `len` bytes starting at `start`. A window whose end runs past the
+    /// object is clamped, so the result can be shorter than `len`; a `start`
+    /// at or past the object end surfaces the gateway's `416` as a
+    /// `ServerError` with status 416.
+    pub async fn get_object_bytes_range(
+        &self,
+        track: Address,
+        start: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, ApiError> {
+        if len == 0 {
+            return Err(ApiError::Other("empty byte range".to_string()));
+        }
+        let end_inclusive = start.saturating_add(len - 1);
+
+        let response = self
+            .client
+            .get(self.url(gateway_object_url(&track.to_string())))
+            .header("range", format!("bytes={start}-{end_inclusive}"))
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+        let response = check_status(response).await?;
+        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(ApiError::Other(format!(
+                "expected 206 partial content, got {}",
+                response.status()
+            )));
+        }
+        let bytes = response.bytes().await.map_err(map_reqwest)?;
+        Ok(bytes.to_vec())
+    }
+
     fn url(&self, path: String) -> String {
         format!("{}{}", self.base_url, path)
     }
@@ -311,6 +345,9 @@ async fn check_status(response: reqwest::Response) -> Result<reqwest::Response, 
     }
 
     let code = status.as_u16();
+    if code == 429 {
+        return Err(crate::rate_limited_error(&response));
+    }
     let message = response.text().await.unwrap_or_default();
     match code {
         403 if message.contains("not responsible") => Err(ApiError::NotResponsible),

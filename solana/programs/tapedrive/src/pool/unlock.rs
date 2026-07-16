@@ -178,7 +178,7 @@ mod tests {
             rate: activation_rate,
         };
         let (history_tape, pool_rate) =
-            make_closed_span(NodeId(5), history_address.into(), span);
+            make_closed_span(NodeId(5), history_address, span);
 
         let instruction = build_request_stake_unlock_ix(
             fee_payer.into(),
@@ -234,7 +234,7 @@ mod tests {
                         ..stake
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&Pubkey::from(pool_address)).data(
+                Check::account(&pool_address).data(
                     Node {
                         pool: StakingPool {
                             schedule: PoolSchedule {

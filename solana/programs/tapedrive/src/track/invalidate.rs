@@ -100,7 +100,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let message_bytes = message.to_bytes();
 
     verify_aggregate(
-        &message_bytes,
+        message_bytes,
         &pubkeys,
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
@@ -206,7 +206,7 @@ mod tests {
 
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .map(|&i| sks[i].sign(&message).unwrap())
+            .map(|&i| sks[i].sign(message).unwrap())
             .collect();
 
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
@@ -313,7 +313,7 @@ mod tests {
         let message = invalidate_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .map(|&i| sks[i].sign(&message).unwrap())
+            .map(|&i| sks[i].sign(message).unwrap())
             .collect();
 
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
@@ -402,7 +402,7 @@ mod tests {
         let message = TrackInvalidateMessage::new(stale, old_track_hash, computed_root).to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .map(|&i| sks[i].sign(&message).unwrap())
+            .map(|&i| sks[i].sign(message).unwrap())
             .collect();
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 

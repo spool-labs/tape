@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::future::join_all;
 use tape_core::bft::{max_faulty, min_correct};
@@ -26,8 +26,8 @@ use tracing::{info, warn};
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
 
-/// Default concurrency limit for uploads: one in-flight slice per group member.
-const DEFAULT_CONCURRENCY: usize = GROUP_SIZE;
+/// Longest a rate limited upload sleeps, whatever the server advertises.
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
 
 /// A slice with its merkle proof, ready for upload.
 ///
@@ -80,6 +80,7 @@ impl DistributedUploader {
         group: GroupIndex,
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
+        concurrency: usize,
     ) -> Result<Self, UploadError> {
         if slices.len() != GROUP_SIZE {
             return Err(UploadError::InvalidSliceCount {
@@ -97,14 +98,8 @@ impl DistributedUploader {
             slices,
             group_peers,
             group_member_count,
-            concurrency_limit: Arc::new(Semaphore::new(DEFAULT_CONCURRENCY)),
+            concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
         })
-    }
-
-    /// Set the concurrency limit.
-    pub fn with_concurrency(mut self, limit: usize) -> Self {
-        self.concurrency_limit = Arc::new(Semaphore::new(limit));
-        self
     }
 
     /// Upload all slices to the network via the Api trait.
@@ -267,7 +262,7 @@ async fn upload_node_slices<P: Api>(
         let payload = slice.to_payload();
         let payload_bytes = payload.data.len();
         let req = PutSliceReq {
-            track: track.into(),
+            track,
             spool: global_spool,
             payload,
         };
@@ -352,7 +347,7 @@ async fn upload_slice_with_retry<P: Api>(
                     return Err(error);
                 }
 
-                let Some(delay) = backoff.next_delay() else {
+                let Some(mut delay) = backoff.next_delay() else {
                     warn!(
                         track = %track,
                         node = %node,
@@ -376,6 +371,12 @@ async fn upload_slice_with_retry<P: Api>(
                     error = %error,
                     "slice upload failed, retrying after backoff"
                 );
+
+                // A server-advertised retry window beats the backoff guess, so
+                // no request lands inside a known-closed window.
+                if let ApiError::RateLimited { retry_after: Some(wait) } = &error {
+                    delay = delay.max((*wait).min(MAX_RATE_LIMIT_WAIT));
+                }
 
                 sleep(delay).await;
 
@@ -457,6 +458,7 @@ mod tests {
             GroupIndex(0),
             slices,
             &state,
+            GROUP_SIZE,
         )
         .unwrap();
 

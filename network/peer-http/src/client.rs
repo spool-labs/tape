@@ -27,6 +27,22 @@ pub struct PinnedPeerClient {
     pub network_address: NetworkAddress,
 }
 
+/// One completed peer call that moved payload bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct PeerTransfer {
+    /// The remote node.
+    pub node: Address,
+    /// Which api call moved the bytes.
+    pub op: &'static str,
+    /// True when this node sent the bytes, false when it received them.
+    pub sent: bool,
+    /// Payload bytes moved.
+    pub bytes: u64,
+}
+
+/// Callback receiving every byte-moving peer call, for live traffic feeds.
+pub type TransferSink = Arc<dyn Fn(PeerTransfer) + Send + Sync>;
+
 pub struct HttpApi {
     pub peer_manager: Arc<PeerManager>,
     pub clients: Arc<DashMap<Address, PinnedPeerClient>>,
@@ -36,6 +52,7 @@ pub struct HttpApi {
     pub put_slice_timeout: Duration,
     pub get_slice_timeout: Duration,
     pub local_identity: Option<Arc<Keypair>>,
+    pub transfer_sink: Option<TransferSink>,
 }
 
 impl HttpApi {
@@ -101,7 +118,7 @@ impl HttpApi {
             .ok_or(ApiError::NodeUnresolved(node))
     }
 
-    fn record(&self, op: &str, resp: &reqwest::Response, start: Instant, bytes_sent: u64) {
+    fn record(&self, node: Address, op: &'static str, resp: &reqwest::Response, start: Instant, bytes_sent: u64) {
         if let Some(m) = &self.metrics {
             let duration = start.elapsed().as_secs_f64();
             let status = resp.status().as_u16().to_string();
@@ -110,11 +127,21 @@ impl HttpApi {
                 m.record_bytes_sent(op, bytes_sent);
             }
         }
+        if bytes_sent > 0 && resp.status().is_success() {
+            if let Some(sink) = &self.transfer_sink {
+                sink(PeerTransfer { node, op, sent: true, bytes: bytes_sent });
+            }
+        }
     }
 
-    fn record_rx(&self, op: &str, bytes: u64) {
+    fn record_rx(&self, node: Address, op: &'static str, bytes: u64) {
         if let Some(m) = &self.metrics {
             m.record_bytes_received(op, bytes);
+        }
+        if bytes > 0 {
+            if let Some(sink) = &self.transfer_sink {
+                sink(PeerTransfer { node, op, sent: false, bytes });
+            }
         }
     }
 }
@@ -147,7 +174,7 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("put_slice", &resp, start, bytes_sent);
+        self.record(node, "put_slice", &resp, start, bytes_sent);
 
         check_status(resp).await?;
 
@@ -167,10 +194,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_slice", &resp, start, 0);
+        self.record(node, "get_slice", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_slice", bytes.len() as u64);
+        self.record_rx(node, "get_slice", bytes.len() as u64);
         Ok(GetSliceRes {
             data: bytes.to_vec(),
         })
@@ -188,10 +215,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_track", &resp, start, 0);
+        self.record(node, "get_track", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_track", bytes.len() as u64);
+        self.record_rx(node, "get_track", bytes.len() as u64);
         let wire: TrackResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -216,10 +243,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_track_by_number", &resp, start, 0);
+        self.record(node, "get_track_by_number", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_track_by_number", bytes.len() as u64);
+        self.record_rx(node, "get_track_by_number", bytes.len() as u64);
         let wire: TrackResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -250,10 +277,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("find_track", &resp, start, bytes_sent);
+        self.record(node, "find_track", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("find_track", bytes.len() as u64);
+        self.record_rx(node, "find_track", bytes.len() as u64);
         let wire: TrackResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -288,10 +315,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("list_tracks_by_tape", &resp, start, bytes_sent);
+        self.record(node, "list_tracks_by_tape", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("list_tracks_by_tape", bytes.len() as u64);
+        self.record_rx(node, "list_tracks_by_tape", bytes.len() as u64);
         let wire: ListTracksByTapeResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -333,10 +360,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("list_objects", &resp, start, bytes_sent);
+        self.record(node, "list_objects", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("list_objects", bytes.len() as u64);
+        self.record_rx(node, "list_objects", bytes.len() as u64);
         let wire: ListObjectsResponse =
             wincode::deserialize(&bytes).map_err(|e| ApiError::Serialization(e.to_string()))?;
 
@@ -364,10 +391,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_track_data", &resp, start, 0);
+        self.record(node, "get_track_data", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_track_data", bytes.len() as u64);
+        self.record_rx(node, "get_track_data", bytes.len() as u64);
         let wire: TrackDataResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -391,10 +418,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_track_proof", &resp, start, 0);
+        self.record(node, "get_track_proof", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_track_proof", bytes.len() as u64);
+        self.record_rx(node, "get_track_proof", bytes.len() as u64);
         let wire: TrackProofResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -430,10 +457,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("sync_slices", &resp, start, bytes_sent);
+        self.record(node, "sync_slices", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("sync_slices", bytes.len() as u64);
+        self.record_rx(node, "sync_slices", bytes.len() as u64);
         let wire_res: SyncSlicesResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -470,10 +497,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("sync_tracks", &resp, start, bytes_sent);
+        self.record(node, "sync_tracks", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("sync_tracks", bytes.len() as u64);
+        self.record_rx(node, "sync_tracks", bytes.len() as u64);
         let wire_res: SyncTracksResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -507,10 +534,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("repair", &resp, start, bytes_sent);
+        self.record(node, "repair", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("repair", bytes.len() as u64);
+        self.record_rx(node, "repair", bytes.len() as u64);
         Ok(RepairRes {
             data: bytes.to_vec(),
         })
@@ -528,10 +555,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("certify", &resp, start, 0);
+        self.record(node, "certify", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("certify", bytes.len() as u64);
+        self.record_rx(node, "certify", bytes.len() as u64);
         let wire: BlsSignResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -566,7 +593,7 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("vote", &resp, start, bytes_sent);
+        self.record(node, "vote", &resp, start, bytes_sent);
         check_status(resp).await?;
         Ok(VoteRes)
     }
@@ -596,10 +623,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("invalidate", &resp, start, bytes_sent);
+        self.record(node, "invalidate", &resp, start, bytes_sent);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("invalidate", bytes.len() as u64);
+        self.record_rx(node, "invalidate", bytes.len() as u64);
         let wire: BlsInconsistencyResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -626,7 +653,7 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_health", &resp, start, 0);
+        self.record(node, "get_health", &resp, start, 0);
         Ok(GetHealthRes {
             ok: resp.status().is_success(),
         })
@@ -648,7 +675,7 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_stats", &resp, start, 0);
+        self.record(node, "get_stats", &resp, start, 0);
         let resp = check_status(resp).await?;
         let stats = resp
             .json()
@@ -669,10 +696,10 @@ impl Api for HttpApi {
             .await
             .map_err(map_reqwest)?;
 
-        self.record("get_observe_board", &resp, start, 0);
+        self.record(node, "get_observe_board", &resp, start, 0);
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx("get_observe_board", bytes.len() as u64);
+        self.record_rx(node, "get_observe_board", bytes.len() as u64);
         Ok(bytes.to_vec())
     }
 }
@@ -706,6 +733,7 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiE
     }
     match status.as_u16() {
         404 => Err(ApiError::NotFound),
+        429 => Err(crate::rate_limited_error(&resp)),
         403 => {
             let body = resp.text().await.unwrap_or_default();
             if body.contains("not responsible") {

@@ -32,10 +32,10 @@ struct MeterKey {
 /// The identity a read is metered against: the resolved caller IP always, plus
 /// the verified access key and its assigned grade when the request was signed.
 #[derive(Clone, Debug)]
-pub(crate) struct MeterCaller {
-    pub(crate) ip: IpAddr,
-    pub(crate) access_key: Option<String>,
-    pub(crate) grade: Option<String>,
+pub struct MeterCaller {
+    pub ip: IpAddr,
+    pub access_key: Option<String>,
+    pub grade: Option<String>,
 }
 
 /// The refill rate and burst cap of one bucket layer.
@@ -46,7 +46,7 @@ struct BucketRates {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GatewayMeterDecision {
+pub enum GatewayMeterDecision {
     Allowed,
     RateLimited { retry_after: Duration },
 }
@@ -76,13 +76,13 @@ impl GatewayMeter {
 
     /// Meter one decoded-object request. The caller's IP bucket is charged
     /// first; a signed caller must then also clear its access-key bucket.
-    pub(crate) fn check_object_request(&self, caller: &MeterCaller) -> GatewayMeterDecision {
+    pub fn check_object_request(&self, caller: &MeterCaller) -> GatewayMeterDecision {
         self.check_layered(MeterClass::ObjectRequest, caller, 1.0)
     }
 
     /// Meter a decoded-object read of `bytes`, charging the IP byte bucket and
     /// then the access-key byte bucket for signed callers.
-    pub(crate) fn check_object_bytes(
+    pub fn check_object_bytes(
         &self,
         caller: &MeterCaller,
         bytes: u64,
@@ -230,7 +230,7 @@ impl GatewayMeter {
 
     fn maybe_prune(&self, buckets: &mut HashMap<MeterKey, BucketState>, now: Instant) {
         let checks = self.checks.fetch_add(1, Ordering::Relaxed);
-        if checks % PRUNE_INTERVAL != 0 {
+        if !checks.is_multiple_of(PRUNE_INTERVAL) {
             return;
         }
 

@@ -136,7 +136,7 @@ pub fn decode_blacklist_entry(
         return Err(NodeError::Store(format!("invalid blacklist track data for {track_address}")));
     };
 
-    let entry = try_from_bytes::<BlacklistEntry>(&bytes).map_err(|_| {
+    let entry = try_from_bytes::<BlacklistEntry>(bytes).map_err(|_| {
         NodeError::Store(format!("invalid blacklist entry data for {track_address}"))
     })?;
     if !entry.is_valid() || track.key != entry.key() || track.value_hash != entry.key() {

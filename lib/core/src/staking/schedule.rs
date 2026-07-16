@@ -23,6 +23,12 @@ pub struct PoolSchedule<const N: usize> {
     pub outgoing_shares: EpochValues<N>,
 }
 
+impl<const N: usize> Default for PoolSchedule<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize> PoolSchedule<N> {
     pub fn new() -> Self {
         Self {

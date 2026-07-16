@@ -54,8 +54,7 @@ impl<R: Rpc> RpcClient<R> {
                 )));
             }
 
-            System::unpack_with_discriminator(&account.data)
-                .map(|s| *s)
+            System::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;
@@ -92,8 +91,7 @@ impl<R: Rpc> RpcClient<R> {
                 .rpc()
                 .get_account_with_commitment(&address, commitment)
                 .await?;
-            Epoch::unpack_with_discriminator(&account.data)
-                .map(|e| *e)
+            Epoch::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;
@@ -218,8 +216,7 @@ impl<R: Rpc> RpcClient<R> {
 
         let result = async {
             let account = self.rpc().get_account(&ARCHIVE_ADDRESS).await?;
-            Archive::unpack_with_discriminator(&account.data)
-                .map(|a| *a)
+            Archive::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;
@@ -360,8 +357,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let (address, _bump) = node_pda(*authority);
             let account = self.rpc().get_account(&address).await?;
-            Node::unpack_with_discriminator(&account.data)
-                .map(|n| *n)
+            Node::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;
@@ -380,8 +376,7 @@ impl<R: Rpc> RpcClient<R> {
     /// Fetch a Node account by its PDA address directly.
     pub async fn get_node_by_address(&self, address: &Address) -> Result<Node, RpcError> {
         let account = self.rpc().get_account(address).await?;
-        Node::unpack_with_discriminator(&account.data)
-            .map(|n| *n)
+        Node::unpack_with_discriminator(&account.data).copied()
             .map_err(|e| RpcError::Deserialization(e.to_string()))
     }
 
@@ -399,8 +394,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let (address, _bump) = stake_pda(*authority);
             let account = self.rpc().get_account(&address).await?;
-            Stake::unpack_with_discriminator(&account.data)
-                .map(|s| *s)
+            Stake::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;
@@ -427,8 +421,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let (address, _bump) = tape_pda(*authority);
             let account = self.rpc().get_account(&address).await?;
-            Tape::unpack_with_discriminator(&account.data)
-                .map(|t| *t)
+            Tape::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;
@@ -455,8 +448,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let (address, _bump) = history_pda(*node);
             let account = self.rpc().get_account(&address).await?;
-            Tape::unpack_with_discriminator(&account.data)
-                .map(|t| *t)
+            Tape::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
         }
         .await;
@@ -504,8 +496,7 @@ impl<R: Rpc> RpcClient<R> {
         accounts
             .into_iter()
             .map(|(pubkey, account)| {
-                let node = Node::unpack_with_discriminator(&account.data)
-                    .map(|n| *n)
+                let node = Node::unpack_with_discriminator(&account.data).copied()
                     .map_err(|e| RpcError::Deserialization(e.to_string()))?;
                 Ok((pubkey, node))
             })
@@ -540,8 +531,7 @@ impl<R: Rpc> RpcClient<R> {
         accounts
             .into_iter()
             .map(|(pubkey, account)| {
-                let tape = Tape::unpack_with_discriminator(&account.data)
-                    .map(|t| *t)
+                let tape = Tape::unpack_with_discriminator(&account.data).copied()
                     .map_err(|e| RpcError::Deserialization(e.to_string()))?;
                 Ok((pubkey, tape))
             })
@@ -600,8 +590,7 @@ impl<R: Rpc> RpcClient<R> {
             .into_iter()
             .next()
             .map(|(pubkey, account)| {
-                let node = Node::unpack_with_discriminator(&account.data)
-                    .map(|n| *n)
+                let node = Node::unpack_with_discriminator(&account.data).copied()
                     .map_err(|e| RpcError::Deserialization(e.to_string()))?;
                 Ok((pubkey, node))
             })
@@ -653,8 +642,7 @@ impl<R: Rpc> RpcClient<R> {
             .into_iter()
             .next()
             .map(|(pubkey, account)| {
-                let tape = Tape::unpack_with_discriminator(&account.data)
-                    .map(|t| *t)
+                let tape = Tape::unpack_with_discriminator(&account.data).copied()
                     .map_err(|e| RpcError::Deserialization(e.to_string()))?;
                 Ok((pubkey, tape))
             })
@@ -670,8 +658,7 @@ impl<R: Rpc> RpcClient<R> {
     /// * `address` - The tape PDA address
     pub async fn get_tape_by_address(&self, address: &Address) -> Result<Tape, RpcError> {
         let account = self.rpc().get_account(address).await?;
-        Tape::unpack_with_discriminator(&account.data)
-            .map(|t| *t)
+        Tape::unpack_with_discriminator(&account.data).copied()
             .map_err(|e| RpcError::Deserialization(e.to_string()))
     }
 
@@ -686,8 +673,7 @@ fn unpack_group(data: &[u8], epoch: EpochNumber, group: GroupIndex) -> Result<Gr
         )));
     }
 
-    let decoded = Group::unpack_with_discriminator(data)
-        .map(|group| *group)
+    let decoded = Group::unpack_with_discriminator(data).copied()
         .map_err(|error| RpcError::Deserialization(error.to_string()))?;
 
     if decoded.epoch != epoch || decoded.id != group {

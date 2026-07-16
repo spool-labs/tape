@@ -54,7 +54,7 @@ pub fn migrate_dhondt(
     let next_addresses: Vec<Address> = next.iter().map(|m| m.node).collect();
     let stakes_next: Vec<_> = next.iter().map(|m| m.stake).collect();
 
-    let dh = DhondtSpooler::default();
+    let dh = DhondtSpooler;
     let spool_counts = dh.allocate(&stakes_next, spool_count)?;
 
     migrate_spools(group_count, current_spools, &next_addresses, &spool_counts, seed)
@@ -71,7 +71,7 @@ pub fn migrate_sainte_lague(
     let next_addresses: Vec<Address> = next.iter().map(|m| m.node).collect();
     let stakes_next: Vec<_> = next.iter().map(|m| m.stake).collect();
 
-    let sl = SainteLagueSpooler::default();
+    let sl = SainteLagueSpooler;
     let spool_counts = sl.allocate(&stakes_next, spool_count)?;
 
     migrate_spools(group_count, current_spools, &next_addresses, &spool_counts, seed)

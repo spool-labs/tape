@@ -1,5 +1,6 @@
 //! Error types for API operations.
 
+use std::time::Duration;
 use tape_crypto::Address;
 use tape_retry::Retryable;
 
@@ -23,6 +24,9 @@ pub enum ApiError {
     #[error("server error {status}: {message}")]
     ServerError { status: u16, message: String },
 
+    #[error("rate limited")]
+    RateLimited { retry_after: Option<Duration> },
+
     #[error("not responsible for this spool")]
     NotResponsible,
 
@@ -42,8 +46,11 @@ pub enum ApiError {
 impl Retryable for ApiError {
     fn is_retryable(&self) -> bool {
         match self {
-            Self::ConnectionFailed(_) | Self::Timeout | Self::StaleTrackProof => true,
-            Self::ServerError { status, .. } => matches!(status, 408 | 429 | 500 | 502 | 503 | 504),
+            Self::ConnectionFailed(_)
+            | Self::Timeout
+            | Self::StaleTrackProof
+            | Self::RateLimited { .. } => true,
+            Self::ServerError { status, .. } => matches!(status, 408 | 500 | 502 | 503 | 504),
             Self::NotFound
             | Self::NotResponsible
             | Self::BlacklistedObject

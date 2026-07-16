@@ -94,6 +94,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::NODE_STATS_PATH,
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::OBSERVE_ATLAS_PATH,
+                get(handlers::atlas::recent::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]
@@ -181,7 +185,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::TAPE_TRACK_FIND_PATH,
                 post(handlers::track::catalog::find_track::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone())
+                    .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,
@@ -190,7 +194,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::TAPE_TRACK_LIST_PATH,
                 post(handlers::track::catalog::list_tracks_by_tape::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone())
+                    .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,
@@ -199,7 +203,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::TAPE_OBJECT_LIST_PATH,
                 post(handlers::track::catalog::list_objects::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone())
+                    .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,
@@ -208,7 +212,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::TRACK_REPAIR_PATH,
                 post(handlers::track::repair::repair::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone())
+                    .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,
@@ -220,7 +224,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::SYNC_SLICES_PATH,
                 post(handlers::track::sync::sync_slices::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone())
+                    .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,
@@ -229,7 +233,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::SYNC_TRACKS_PATH,
                 post(handlers::track::sync::sync_tracks::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone())
+                    .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,
@@ -238,7 +242,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::VOTE_PATH,
                 post(handlers::vote::vote::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit.clone())
+                    .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
                         admission::metered_route_admission::<Db, Cluster, Blockchain>,

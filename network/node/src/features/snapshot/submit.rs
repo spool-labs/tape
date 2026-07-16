@@ -201,7 +201,7 @@ where
         let mut partials = Vec::with_capacity(sigs.len());
 
         for (signer, signature) in sigs {
-            let Some(index) = bitmap_index_in_group(&state, group, signer) else {
+            let Some(index) = bitmap_index_in_group(state, group, signer) else {
                 continue;
             };
             indices.push(index as usize);

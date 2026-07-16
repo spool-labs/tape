@@ -37,6 +37,7 @@ pub enum ConfigError {
 
 /// Root node configuration loaded from YAML.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 pub struct NodeConfig {
     /// Node identity and key material.
     #[serde(default)]
@@ -108,23 +109,6 @@ impl GenesisPreset {
     }
 }
 
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            node: IdentityConfig::default(),
-            solana: SolanaConfig::default(),
-            network: NetworkConfig::default(),
-            http: HttpConfig::default(),
-            https: HttpsConfig::default(),
-            store: StoreConfig::default(),
-            recovery: RecoveryConfig::default(),
-            logging: LoggingConfig::default(),
-            metrics: MetricsConfig::default(),
-            gateway: GatewayConfig::default(),
-            genesis_preset: GenesisPreset::default(),
-        }
-    }
-}
 
 impl NodeConfig {
     /// Load configuration from a YAML file.
@@ -147,7 +131,7 @@ impl NodeConfig {
             return Err(ConfigError::Invalid("node.name is required".into()));
         }
 
-        if self.node.name.as_bytes().len() > NAME_LENGTH {
+        if self.node.name.len() > NAME_LENGTH {
             return Err(ConfigError::Invalid(format!(
                 "node.name exceeds {} bytes",
                 NAME_LENGTH

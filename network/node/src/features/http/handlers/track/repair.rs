@@ -33,7 +33,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
 
-    let track_key = track.into();
+    let track_key = track;
 
     state
         .context
@@ -176,7 +176,7 @@ mod tests {
         let slice_position = group
             .position_of(helper_spool)
             .expect("helper slice position");
-        let helper_slice = slices[slice_position as usize].clone();
+        let helper_slice = slices[{ slice_position }].clone();
 
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
         let track_address = track_pda(snapshot_tape, track_number).0;
@@ -200,7 +200,7 @@ mod tests {
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
-            group: group,
+            group,
             value_hash: blob.get_hash(),
         };
 

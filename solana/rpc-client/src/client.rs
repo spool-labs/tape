@@ -26,7 +26,7 @@ use std::sync::Arc;
 pub struct RpcClient<R: Rpc> {
     rpc: R,
     #[cfg(feature = "metrics")]
-    pub(crate) metrics: Option<Arc<crate::metrics::ClientMetrics>>,
+    pub metrics: Option<Arc<crate::metrics::ClientMetrics>>,
 }
 
 impl<R: Rpc> RpcClient<R> {

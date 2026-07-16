@@ -44,7 +44,7 @@ pub fn num_stripes(blob_len: usize, stripe_size: usize) -> usize {
     if blob_len == 0 {
         1
     } else {
-        (blob_len + stripe_size - 1) / stripe_size
+        blob_len.div_ceil(stripe_size)
     }
 }
 

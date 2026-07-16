@@ -13,7 +13,7 @@ use crate::http::state::AppState;
 pub(crate) mod catalog;
 pub(crate) mod slice;
 
-pub(crate) fn track_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub fn track_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
 ) -> Result<Option<CompressedTrack>, RouteError> {
@@ -25,7 +25,7 @@ pub(crate) fn track_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(state.context.pending.apply_to_track(track_addr, in_store))
 }
 
-pub(crate) fn track_data_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub fn track_data_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
 ) -> Result<Option<BlobData>, RouteError> {
@@ -39,7 +39,7 @@ pub(crate) fn track_data_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-pub(crate) fn parse_address(value: &str, label: &str) -> Result<Address, RouteError> {
+pub fn parse_address(value: &str, label: &str) -> Result<Address, RouteError> {
     value
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid {label}: {error}")))

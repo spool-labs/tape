@@ -82,13 +82,13 @@ fn validate_layout(
 ) -> Result<(usize, usize), DecodeError> {
     let blob_len = metadata.blob_len();
     let stripe_size = metadata.stripe_size();
-    let num_stripes = (blob_len + stripe_size - 1) / stripe_size;
+    let num_stripes = blob_len.div_ceil(stripe_size);
 
     // Determine chunk_size from first sample: (total_len - metadata) / num_stripes
     let sample_len = chunks[0].1.len();
     let total_data_len = sample_len.saturating_sub(SliceMetadata::SIZE);
 
-    if total_data_len == 0 || total_data_len % num_stripes != 0 {
+    if total_data_len == 0 || !total_data_len.is_multiple_of(num_stripes) {
         return Err(DecodeError::InvalidLayout);
     }
     let chunk_size = total_data_len / num_stripes;
@@ -249,7 +249,7 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
         }
 
         let n = self.n();
-        let num_stripes = (blob_len + self.stripe_size - 1) / self.stripe_size;
+        let num_stripes = blob_len.div_ceil(self.stripe_size);
 
         // Encode first stripe to determine chunk size
         let first_stripe_data = &data[..self.stripe_size.min(blob_len)];
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn test_distribution() {
         let num_stripes = 100;
-        let mut slice_hits = vec![0usize; N];
+        let mut slice_hits = [0usize; N];
 
         for stripe in 0..num_stripes {
             for shard in 0..N {

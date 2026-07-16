@@ -144,14 +144,14 @@ impl Slicer<ClayCoder> {
         let num_stripes = if blob_len == 0 {
             1
         } else {
-            (blob_len + stripe_size - 1) / stripe_size
+            blob_len.div_ceil(stripe_size)
         };
 
         let chunk_size = self.coder.track_chunk_size(stripe_size, blob_len);
 
         let n = self.n();
         let alpha = self.coder.alpha();
-        if chunk_size % alpha != 0 {
+        if !chunk_size.is_multiple_of(alpha) {
             return Err(RepairError::InvalidLayout(
                 format!("chunk_size ({chunk_size}) not divisible by alpha ({alpha})"),
             ));
@@ -218,11 +218,11 @@ impl Slicer<ClayCoder> {
         let num_stripes = if blob_len == 0 {
             1
         } else {
-            (blob_len + stripe_size - 1) / stripe_size
+            blob_len.div_ceil(stripe_size)
         };
 
         let total_data_len = reference.len().saturating_sub(SliceMetadata::SIZE);
-        if total_data_len == 0 || total_data_len % num_stripes != 0 {
+        if total_data_len == 0 || !total_data_len.is_multiple_of(num_stripes) {
             return Err(RepairError::InvalidLayout(
                 "inconsistent slice layout".into(),
             ));
@@ -231,7 +231,7 @@ impl Slicer<ClayCoder> {
 
         let n = self.n();
         let alpha = self.coder.alpha();
-        if chunk_size % alpha != 0 {
+        if !chunk_size.is_multiple_of(alpha) {
             return Err(RepairError::InvalidLayout(
                 format!("chunk_size ({chunk_size}) not divisible by alpha ({alpha})"),
             ));
@@ -407,7 +407,7 @@ mod tests {
             let lost = si(lost_idx);
             let available: Vec<SliceIndex> = (0..20)
                 .filter(|&i| i != lost_idx)
-                .map(|i| si(i))
+                .map(si)
                 .collect();
 
             let plan = coder.plan_repair(lost, &available).unwrap();
@@ -466,7 +466,7 @@ mod tests {
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
-        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let available: Vec<SliceIndex> = (1..N).map(si).collect();
         let plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
 
         for stripe in &plan.stripes {
@@ -480,7 +480,7 @@ mod tests {
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
-        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let available: Vec<SliceIndex> = (1..N).map(si).collect();
         let plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
 
         let repair_bytes: u64 = plan
@@ -514,7 +514,7 @@ mod tests {
         let payload = mk(300_000);
         let chunks = slicer.encode(&payload).unwrap();
 
-        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let available: Vec<SliceIndex> = (1..N).map(si).collect();
         let plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
 
         assert!(plan.stripes.len() > 1, "need multiple stripes for this test");
@@ -554,7 +554,7 @@ mod tests {
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
-        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let available: Vec<SliceIndex> = (1..N).map(si).collect();
 
         let ref_plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
         let param_plan = slicer
@@ -592,7 +592,7 @@ mod tests {
         // encode() adapts stripe_size via pick_stripe_size, so use the actual value
         let actual_stripe_size = slicer.stripe_size();
 
-        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let available: Vec<SliceIndex> = (1..N).map(si).collect();
 
         let ref_plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
         let param_plan = slicer
