@@ -676,7 +676,11 @@ fn check_request_rate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     caller: &MeterCaller,
 ) -> Result<(), S3Error> {
     match state.meter.check_object_request(caller) {
-        GatewayMeterDecision::Allowed => Ok(()),
+        GatewayMeterDecision::Allowed => {
+            // feed the atlas display: s3 object reads are user fetches
+            state.context.atlas.push_ip(caller.ip, false);
+            Ok(())
+        }
         GatewayMeterDecision::RateLimited { retry_after } => Err(S3Error::slow_down(retry_after)),
     }
 }
