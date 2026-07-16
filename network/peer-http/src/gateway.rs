@@ -345,9 +345,6 @@ async fn check_status(response: reqwest::Response) -> Result<reqwest::Response, 
     }
 
     let code = status.as_u16();
-    if code == 429 {
-        return Err(crate::rate_limited_error(&response));
-    }
     let message = response.text().await.unwrap_or_default();
     match code {
         403 if message.contains("not responsible") => Err(ApiError::NotResponsible),

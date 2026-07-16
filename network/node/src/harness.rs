@@ -53,7 +53,7 @@ impl NodeHarness {
             let ctx = NodeContextBuilder::new(
                 test_config(),
                 clone_keypair(node.keypair()),
-                *node.bls_keypair(),
+                node.bls_keypair().clone(),
                 tls,
                 store,
                 rpc,

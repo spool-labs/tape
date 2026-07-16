@@ -1,4 +1,5 @@
 use axum::body::{Body, Bytes};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::Stream;
 use rpc::Rpc;
@@ -78,7 +79,7 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut chunks = Vec::with_capacity(plan.len());
     for planned in plan {
         let entry = &manifest.chunks[planned.index];
-        let chunk_addr = track_pda(tape, entry.track_number).0;
+        let chunk_addr = track_pda(tape, entry.track_number).0.into();
         let chunk = track_with_pending(state, chunk_addr)?.ok_or(RouteError::NotFound)?;
         if !chunk.is_certified() {
             return Err(RouteError::BadGateway(format!(
@@ -109,6 +110,7 @@ pub fn object_stream_response<Db, Cluster, Blockchain>(
     etag: Hash,
     total_size: u64,
     range: Option<ByteRange>,
+    status: StatusCode,
 ) -> Result<Response, RouteError>
 where
     Db: Store + 'static,
@@ -116,7 +118,7 @@ where
     Blockchain: Rpc + 'static,
 {
     let chunks = resolve_planned_chunks(&state, tape, manifest, plan)?;
-    let (status, headers) = ranged_object_headers(range, total_size, &metadata, etag)?;
+    let (status, headers) = ranged_object_headers(range, total_size, &metadata, etag, status)?;
     let body = Body::from_stream(manifest_chunk_stream(state, chunks));
     Ok((status, headers, body).into_response())
 }

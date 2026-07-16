@@ -89,7 +89,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     };
 
     let staked_tape = node.pool
-        .stake_with_pool_at(current, activation_epoch, amount)
+        .stake_with_pool_at(current, activation_epoch, amount.into())
         .map_err(|_| TapeError::StakingFailed)?;
 
     create_program_account::<Stake>(
@@ -227,7 +227,7 @@ mod tests {
                         },
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&authority_ata).data(
+                Check::account(&Pubkey::from(authority_ata)).data(
                     token(
                         authority_ata,
                         authority,

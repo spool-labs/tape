@@ -128,7 +128,7 @@ mod tests {
                 Check::success(),
 
                 // Authority receives the full commission
-                Check::account(&authority_ata).data(
+                Check::account(&Pubkey::from(authority_ata)).data(
                     token(authority_ata, authority, commission_amount).1.data.as_ref()
                 ).build(),
 

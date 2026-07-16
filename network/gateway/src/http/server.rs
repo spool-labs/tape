@@ -27,6 +27,7 @@ use tracing::info;
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
+use crate::http::handlers::site::hosts::SiteHostBindings;
 use crate::http::handlers::s3::{
     accounting::{Accounting, reservation_sweep_loop},
     admin::{AdminState, admin_router},
@@ -34,7 +35,7 @@ use crate::http::handlers::s3::{
     sigv4::verifier_from_config,
     write::S3WriteContext,
 };
-use crate::http::handlers::{health, object, track};
+use crate::http::handlers::{health, object, site, track};
 use crate::meter::GatewayMeter;
 
 pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -81,6 +82,7 @@ where
             write_ctx: None,
             accounting: Arc::new(Accounting::new()),
             admission: Arc::new(AdmitAll),
+            site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
@@ -128,6 +130,7 @@ where
                     ),
                 ),
             )
+            .merge(site_router(state.clone()))
             .route(
                 tape_protocol::api::TRACK_PATH,
                 get(track::catalog::get_track::<Db, Cluster, Blockchain>),
@@ -151,12 +154,12 @@ where
             .route(
                 tape_protocol::api::TAPE_TRACK_FIND_PATH,
                 post(track::catalog::find_track::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit),
+                    .layer(peer_body_limit.clone()),
             )
             .route(
                 tape_protocol::api::TAPE_TRACK_LIST_PATH,
                 post(track::catalog::list_tracks_by_tape::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit),
+                    .layer(peer_body_limit.clone()),
             )
             .route(
                 tape_protocol::api::TAPE_OBJECT_LIST_PATH,
@@ -168,9 +171,20 @@ where
                 require_ready::<Db, Cluster, Blockchain>,
             ));
 
-        status_router
+        // Routing happens before route-attached middleware runs, so the
+        // host rewrite must sit outside the routing decision: the real
+        // router becomes the fallback of a thin outer router, and the
+        // rewrite layer runs before that fallback routes anything.
+        let routes = status_router
             .merge(service_router)
-            .with_state(state.clone())
+            .with_state(state.clone());
+
+        Router::new()
+            .fallback_service(routes)
+            .layer(from_fn_with_state(
+                state.clone(),
+                site::routes::host_site_serving::<Db, Cluster, Blockchain>,
+            ))
             .layer(from_fn_with_state(
                 state,
                 count_requests::<Db, Cluster, Blockchain>,
@@ -275,6 +289,8 @@ where
             write_ctx: self.write_ctx.clone(),
             accounting: self.accounting.clone(),
             admission: self.admission.clone(),
+            // The S3 listener never serves site hosts.
+            site_hosts: None,
         };
 
         let verifier = verifier_from_config(&self.s3_config);
@@ -382,6 +398,38 @@ where
             .await
             .map_err(NodeError::Io)
     }
+}
+
+/// The three site routes, metered at the site grade and stamped with the
+/// site security headers in one place.
+fn site_router<Db, Cluster, Blockchain>(
+    state: AppState<Db, Cluster, Blockchain>,
+) -> Router<AppState<Db, Cluster, Blockchain>>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    Router::new()
+        .route(site::routes::SITE_ROOT_PATH, get(site::routes::get_site_root))
+        .route(
+            site::routes::SITE_INDEX_PATH,
+            get(site::routes::get_site_index::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                state.clone(),
+                crate::meter::site_read_metering::<Db, Cluster, Blockchain>,
+            )),
+        )
+        .route(
+            site::routes::SITE_PATH,
+            get(site::routes::get_site_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                state.clone(),
+                crate::meter::site_read_metering::<Db, Cluster, Blockchain>,
+            )),
+        )
+        .route_layer(from_fn_with_state(
+            state,
+            site::routes::site_response_headers::<Db, Cluster, Blockchain>,
+        ))
 }
 
 async fn handle_http_error(error: axum::BoxError) -> StatusCode {

@@ -71,7 +71,7 @@ pub fn process_vote_eviction(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let message = NodeEvictMessage::new(target_epoch_id, target_epoch.nonce, args.node)
         .to_bytes();
 
-    verify_aggregate(message, &pubkeys, &decompressed_sig)
+    verify_aggregate(&message, &pubkeys, &decompressed_sig)
         .map_err(|_| TapeError::BadSignature)?;
 
     let node_hash = eviction_vote_hash(args.node);
@@ -278,7 +278,7 @@ mod tests {
             let message = NodeEvictMessage::new(TARGET_EPOCH, self.sign_nonce, self.node).to_bytes();
             let partials: Vec<BlsSignature> = signed_indices
                 .iter()
-                .map(|&i| self.sks[i].sign(message).unwrap())
+                .map(|&i| self.sks[i].sign(&message).unwrap())
                 .collect();
             let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 

@@ -23,6 +23,7 @@ use solana_system_interface::program as system_program;
 
 pub const DEFAULT_LOADER_KEY: Pubkey = LOADER_V3;
 use pretty_hex::*;
+use bincode;
 
 use spl_associated_token_account::get_associated_token_address;
 use spl_token::state::{

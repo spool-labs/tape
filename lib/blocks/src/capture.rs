@@ -265,7 +265,7 @@ fn capture_instruction(
                 tx_id,
                 actor,
                 ReplayableEvent::CertifyTrack {
-                    track: (*track),
+                    track: (*track).into(),
                     epoch: event.epoch,
                 },
             ),
@@ -277,7 +277,7 @@ fn capture_instruction(
                 tx_id,
                 actor,
                 ReplayableEvent::InvalidateTrack {
-                    track: (*track),
+                    track: (*track).into(),
                     epoch: event.epoch,
                 },
             ),
@@ -298,7 +298,7 @@ fn capture_instruction(
                 tx_id,
                 actor,
                 ReplayableEvent::RegisterNode {
-                    authority: (*authority),
+                    authority: (*authority).into(),
                     node: event.node,
                     id: event.id,
                 },
@@ -311,7 +311,7 @@ fn capture_instruction(
                 tx_id,
                 actor,
                 ReplayableEvent::JoinCommittee {
-                    node: (*node),
+                    node: (*node).into(),
                     stake: event.stake,
                     key: event.key,
                     preferences: event.preferences,
@@ -529,20 +529,20 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::AdvancePool { node, .. }
         | ParsedInstruction::JoinCommittee { node, .. }
         | ParsedInstruction::AddToBlacklist { node, .. }
-        | ParsedInstruction::RemoveFromBlacklist { node, .. } => Some(*node),
+        | ParsedInstruction::RemoveFromBlacklist { node, .. } => Some((*node).into()),
 
         ParsedInstruction::TrackWrite { authority, .. }
         | ParsedInstruction::RegisterNode { authority, .. }
         | ParsedInstruction::StakeWithPool { authority, .. }
         | ParsedInstruction::RequestStakeUnlock { authority, .. }
         | ParsedInstruction::UnstakeFromPool { authority, .. }
-        | ParsedInstruction::ClaimCommission { authority, .. } => Some(*authority),
+        | ParsedInstruction::ClaimCommission { authority, .. } => Some((*authority).into()),
 
         ParsedInstruction::DeleteTrack { owner, .. }
         | ParsedInstruction::ReserveTape { owner, .. }
-        | ParsedInstruction::DestroyTape { owner, .. } => Some(*owner),
+        | ParsedInstruction::DestroyTape { owner, .. } => Some((*owner).into()),
 
-        ParsedInstruction::ExtendTape { payer, .. } => Some(*payer),
+        ParsedInstruction::ExtendTape { payer, .. } => Some((*payer).into()),
 
         ParsedInstruction::ProposeSnapshot { proposer, .. }
         | ParsedInstruction::ProposeAssignment { proposer, .. }
@@ -660,7 +660,7 @@ mod tests {
     }
 
     fn finalize_snapshot_instruction(epoch: EpochNumber) -> ParsedInstruction {
-        let snapshot_tape = snapshot_tape_pda(epoch).0;
+        let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
         ParsedInstruction::FinalizeSnapshot {
             epoch,
             event: SnapshotFinalized {
@@ -888,7 +888,7 @@ mod tests {
             _ => panic!("expected ReplayableEvent::Track"),
         }
 
-        assert_eq!(captured.raw_tracks[0].track, track);
+        assert_eq!(captured.raw_tracks[0].track, track.into());
         assert_eq!(u64::from(captured.raw_tracks[0].group), 4);
         assert_eq!(captured.raw_tracks[0].data, vec![0xAB; 4 * 1024]);
     }
@@ -978,7 +978,7 @@ mod tests {
         assert!(captured.raw_tracks.is_empty());
         assert_eq!(captured.next_epoch, snapshot_epoch);
 
-        let expected_tape = snapshot_tape_pda(snapshot_epoch).0;
+        let expected_tape = Address::from(snapshot_tape_pda(snapshot_epoch).0);
 
         match &captured.events[0].record.event {
             ReplayableEvent::SnapshotFinalized { epoch, snapshot_tape, .. } => {

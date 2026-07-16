@@ -47,12 +47,6 @@ pub struct PreviousRates<const N: usize>(RingBuffer<EpochExchangeRate, N>);
 unsafe impl<const N: usize> Zeroable for PreviousRates<N> {}
 unsafe impl<const N: usize> Pod for PreviousRates<N> {}
 
-impl<const N: usize> Default for PreviousRates<N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<const N: usize> PreviousRates<N> {
     pub fn new() -> Self {
         Self(RingBuffer::zeroed())
@@ -60,7 +54,7 @@ impl<const N: usize> PreviousRates<N> {
 
     /// Push a new rate for the given epoch.
     pub fn push(&mut self, epoch: EpochNumber, rate: ExchangeRate) {
-        assert!(self.0.back().is_none_or(|r| r.epoch < epoch));
+        assert!(self.0.back().map_or(true, |r| r.epoch < epoch));
 
         self.0.push(EpochExchangeRate { epoch, rate });
     }

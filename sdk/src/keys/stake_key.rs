@@ -41,7 +41,7 @@ impl StakeKey {
         }
         let file = std::fs::File::create(path)?;
         serde_json::to_writer(file, &self.keypair.to_keypair_bytes().to_vec())
-            .map_err(std::io::Error::other)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
 
     /// The on-chain address of the stake account this key controls.

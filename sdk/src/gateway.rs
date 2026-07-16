@@ -18,7 +18,6 @@ use tape_protocol::ProtocolState;
 use crate::error::TapedriveError;
 use crate::metrics::{Metrics, Noop, Operation, Phase};
 use crate::tapedrive::Tapedrive;
-use crate::write_options::WriteOptions;
 
 /// Read-only client for gateway-backed reads.
 ///
@@ -69,7 +68,7 @@ impl<Blockchain: Rpc> Gateway<Blockchain> {
         Request: Future<Output = Result<Vec<u8>, ApiError>>,
     {
         let timer = self.inner.timer(operation, Phase::Total);
-        let result = request.await.map_err(TapedriveError::from);
+        let result = request.await.map_err(TapedriveError::Peer);
         let timer = match &result {
             Ok(bytes) => timer.bytes(bytes.len() as u64),
             Err(_) => timer,
@@ -155,7 +154,6 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, GatewayApi> {
                 rpc: rpc_client,
                 payer: None,
                 metrics: Arc::new(Noop),
-                write_options: WriteOptions::default(),
             },
         })
     }

@@ -46,7 +46,6 @@ pub struct UploadView {
 }
 
 #[derive(Clone, Serialize)]
-#[derive(Default)]
 pub struct LocalnetView {
     pub cluster: ClusterView,
     pub nodes: Vec<NodeView>,
@@ -54,3 +53,13 @@ pub struct LocalnetView {
     pub uploads: Vec<UploadView>,
 }
 
+impl Default for LocalnetView {
+    fn default() -> Self {
+        Self {
+            cluster: ClusterView::default(),
+            nodes: Vec::new(),
+            spools: Vec::new(),
+            uploads: Vec::new(),
+        }
+    }
+}

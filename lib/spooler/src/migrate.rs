@@ -132,7 +132,7 @@ struct NodeSet {
 
 impl NodeSet {
     fn with_node_count(n: usize) -> Self {
-        let word_count = n.div_ceil(64);
+        let word_count = (n + 63) / 64;
         Self { words: vec![0u64; word_count] }
     }
 
@@ -164,7 +164,7 @@ struct GroupSet {
 
 impl GroupSet {
     fn with_group_count(n: usize) -> Self {
-        let word_count = n.div_ceil(64);
+        let word_count = (n + 63) / 64;
         Self { words: vec![0u64; word_count] }
     }
 
@@ -711,7 +711,7 @@ mod tests {
     }
 
     fn dhondt_counts(stakes: &[TAPE], total: SpoolCount) -> Vec<SpoolCount> {
-        DhondtSpooler.allocate(stakes, total).unwrap()
+        DhondtSpooler::default().allocate(stakes, total).unwrap()
     }
 
     fn verify_group_constraints(result: &[Address], expected_addresses: &[Address]) {

@@ -179,7 +179,7 @@ fn put_track_object<Db: Store>(
     validate_replay_track(replay)?;
 
     let (track, _) = track_pda(replay.state.tape, replay.state.track_number);
-    let track = track;
+    let track = Address::from(track);
 
     store.put_track(track, replay.state)
         .map_err(store_error)?;

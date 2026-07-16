@@ -203,11 +203,11 @@ mod tests {
                 Check::success(),
 
                 // fee_payer gets stake account rent refund (not vault rent - that goes to authority)
-                Check::account(&fee_payer)
+                Check::account(&Pubkey::from(fee_payer))
                     .lamports(1_000_000_000 + rent(source_stake.pack().len()))
                     .build(),
                 // source_authority receives vault rent refund
-                Check::account(&source_authority)
+                Check::account(&Pubkey::from(source_authority))
                     .lamports(rent_token())
                     .build(),
                 Check::account(&Pubkey::from(source_stake_address))

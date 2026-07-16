@@ -46,7 +46,7 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<impl IntoResponse, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
     let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
-    let data_addr = track_pda(track.tape, track.track_number).0;
+    let data_addr = track_pda(track.tape, track.track_number).0.into();
     let data = track_data_with_pending(&state, data_addr)?.ok_or(RouteError::NotFound)?;
 
     binary_response(&TrackDataResponse { data })
@@ -117,7 +117,7 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
     let tape = parse_address(&tape_id, "tape id")?;
-    let track_addr = track_pda(tape, TrackNumber(track_number)).0;
+    let track_addr = track_pda(tape, TrackNumber(track_number)).0.into();
     let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
 
     binary_response(&TrackResponse {
@@ -258,7 +258,7 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut by_number = BTreeMap::new();
 
     for disk_track in disk_tracks {
-        let track_addr = track_pda(disk_track.tape, disk_track.track_number).0;
+        let track_addr = track_pda(disk_track.tape, disk_track.track_number).0.into();
         if let Some(track) = state
             .context
             .pending

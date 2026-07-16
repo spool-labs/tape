@@ -25,15 +25,18 @@ impl SeededAccount {
 
 /// Runtime mode for spawned node fixtures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
 pub enum NodeRuntimeMode {
     /// Spawn full runtime (`ingestor + fsm + scheduler + task_runner + http`).
     Full,
     /// Do not spawn runtime tasks automatically.
-    #[default]
     Disabled,
 }
 
+impl Default for NodeRuntimeMode {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
 
 /// Top-level simnet configuration.
 #[derive(Debug, Clone)]

@@ -21,6 +21,7 @@ use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo, Track
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
+use tape_crypto::hash::hash;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
@@ -161,7 +162,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ) -> Result<CompressedTrack, TapedriveError> {
         let name = name.as_ref();
         if !inline_write_fits(name, raw.len()) {
-            return Err(TapedriveError::InvalidArgument("raw inline write exceeds SDK transaction limit; use write_track() or write_blob()".to_string()));
+            return Err(TapedriveError::InvalidArgument(format!(
+                "raw inline write exceeds SDK transaction limit; use write_track() or write_blob()"
+            )));
         }
 
         let timer = self
@@ -268,6 +271,17 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
+/// The etag content ends up with when written as a named object: the value
+/// hash for inline-sized payloads, the coded commitment otherwise. Encoding
+/// runs in full for coded sizes, so this trades CPU for detecting unchanged
+/// content before paying for a write.
+pub fn content_etag(data: &[u8]) -> Result<Hash, TapedriveError> {
+    if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
+        return Ok(hash(data));
+    }
+    Ok(prepare_plan(data.to_vec())?.commitment_hash)
+}
+
 fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
     let data_len = data.len();
     let profile = EncodingProfile::clay_default();
@@ -278,7 +292,7 @@ fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
 
     Ok(UploadPlan {
         slices,
-        commitment_hash: merkle_root,
+        commitment_hash: merkle_root.into(),
         storage_units: StorageUnits::from_bytes(data_len as u64),
         profile,
         stripe_size: pick_stripe_size(data_len),
@@ -430,7 +444,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
         .await?;
 
     let written = fetch_track_written_event(client, &signature).await?;
-    let track_address: Address = written.track;
+    let track_address: Address = written.track.into();
     let meta = data.meta().unwrap();
     let track = CompressedTrack {
         tape: written.tape,
@@ -534,7 +548,7 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
     sent: SentBlob,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let written = fetch_track_written_event(client, &sent.signature).await?;
-    let track_address: Address = written.track;
+    let track_address: Address = written.track.into();
     let meta = BlobDataSlice::Coded(sent.blob).meta()
         .ok_or(TapedriveError::InvalidArgument("invalid blob commitment".into()))?;
 
@@ -642,14 +656,8 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
 
     let state = state?;
 
-    let uploader = DistributedUploader::new(
-        track_address,
-        group,
-        slices,
-        &state,
-        client.write_options.slice_concurrency,
-    )
-    .map_err(TapedriveError::Upload)?;
+    let uploader = DistributedUploader::new(track_address, group, slices, &state)
+        .map_err(TapedriveError::Upload)?;
 
     let store = client
         .timer(operation, Phase::Store)
@@ -778,7 +786,7 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
             ))));
         }
 
-        if attempt.is_multiple_of(5) {
+        if attempt % 5 == 0 {
             warn!(
                 attempt,
                 visible,
@@ -811,7 +819,6 @@ pub(crate) fn should_retry_certification(err: &TapedriveError) -> bool {
         TapedriveError::NotFound => true,
         TapedriveError::Certification(_) => true,
         TapedriveError::Peer(err) => err.is_retryable(),
-        TapedriveError::RateLimited { .. } => true,
         TapedriveError::Rpc(rpc) => {
             matches!(
                 parse_tape_error(rpc),

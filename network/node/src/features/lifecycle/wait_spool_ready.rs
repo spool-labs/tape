@@ -62,7 +62,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    TaskDone::Cancelled(Action::WaitSpoolReady, epoch)
+    return TaskDone::Cancelled(Action::WaitSpoolReady, epoch);
 }
 
 pub enum Readiness {

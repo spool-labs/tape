@@ -4,11 +4,16 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::helpers::{deserialize_option_pathbuf, deserialize_socket_addr};
+use tape_crypto::address::Address;
+
+use super::cidr::CidrBlock;
+use super::helpers::{
+    deserialize_domain_map, deserialize_option_pathbuf, deserialize_socket_addr,
+    deserialize_subdomain_suffix,
+};
 
 /// Gateway-only runtime settings.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[derive(Default)]
 pub struct GatewayConfig {
     /// Slice cache settings for the public read gateway.
     #[serde(default)]
@@ -21,8 +26,96 @@ pub struct GatewayConfig {
     /// S3-compatible gateway listener. Disabled by default.
     #[serde(default)]
     pub s3: S3Config,
+
+    /// Static site serving over the native read listener.
+    #[serde(default)]
+    pub site: GatewaySiteConfig,
 }
 
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            cache: GatewayCacheConfig::default(),
+            metering: GatewayMeteringConfig::default(),
+            s3: S3Config::default(),
+            site: GatewaySiteConfig::default(),
+        }
+    }
+}
+
+/// Site route serving controls.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct GatewaySiteConfig {
+    /// Serve the site's index page for unknown paths instead of its 404 page,
+    /// the routing single-page apps expect.
+    #[serde(default)]
+    pub spa_fallback: bool,
+
+    /// Let tapes override serving policy with their own reserved site
+    /// policy object. Off means gateway-wide settings always apply.
+    #[serde(default = "default_true")]
+    pub tenant_overrides: bool,
+
+    /// Serve any hostname whose TXT record at the underscore tape label
+    /// proves a binding to a tape. Off means only configured domains and
+    /// the subdomain suffix serve.
+    #[serde(default)]
+    pub txt_domains: bool,
+
+    /// Custom hostnames served as sites: a request whose Host matches a key
+    /// serves that tape from the domain root.
+    #[serde(default, deserialize_with = "deserialize_domain_map")]
+    pub domains: BTreeMap<String, Address>,
+
+    /// When set, any host of the form subdomain-label dot suffix serves that
+    /// tape from the domain root, one isolated origin per site.
+    #[serde(default, deserialize_with = "deserialize_subdomain_suffix")]
+    pub subdomain_suffix: Option<String>,
+
+    /// Origins allowed to fetch site content cross-origin; a single star
+    /// entry allows any origin.
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
+
+    /// API origins hosted pages may call from the browser, added to the
+    /// content security policy; a single star entry allows any. List both
+    /// the https and wss forms when an endpoint speaks websockets.
+    #[serde(default)]
+    pub connect_origins: Vec<String>,
+}
+
+impl Default for GatewaySiteConfig {
+    fn default() -> Self {
+        Self {
+            spa_fallback: false,
+            tenant_overrides: true,
+            txt_domains: false,
+            domains: BTreeMap::new(),
+            subdomain_suffix: None,
+            cors_origins: Vec::new(),
+            connect_origins: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Whether a value can serve as an origin in a policy header: the wildcard,
+/// or a scheme-prefixed origin with no header-breaking bytes
+pub fn is_valid_origin(origin: &str) -> bool {
+    if origin == "*" {
+        return true;
+    }
+    let has_scheme = ["https://", "http://", "wss://", "ws://"]
+        .iter()
+        .any(|scheme| origin.starts_with(scheme));
+    let is_header_safe = origin
+        .bytes()
+        .all(|byte| byte.is_ascii_graphic() && byte != b';' && byte != b',');
+    has_scheme && is_header_safe
+}
 
 /// S3-compatible gateway listener controls.
 #[derive(Clone, Deserialize, Eq, PartialEq)]
@@ -121,7 +214,6 @@ fn default_s3_max_buffered_bytes() -> usize {
 
 /// S3 write-authorization defaults and control-plane wiring.
 #[derive(Clone, Deserialize, Eq, PartialEq)]
-#[derive(Default)]
 pub struct S3WriteConfig {
     /// The default authorization decision for a write that no stored policy rule
     /// explicitly resolves.
@@ -142,6 +234,16 @@ pub struct S3WriteConfig {
     pub pepper: Option<String>,
 }
 
+impl Default for S3WriteConfig {
+    fn default() -> Self {
+        Self {
+            default: WriteDefault::default(),
+            admin: S3AdminConfig::default(),
+            budgets: S3WriteBudgets::default(),
+            pepper: None,
+        }
+    }
+}
 
 // Custom Debug so the credential-hashing pepper never lands in a log line.
 impl std::fmt::Debug for S3WriteConfig {
@@ -325,6 +427,11 @@ pub struct GatewayMeteringConfig {
     #[serde(default = "default_default_grade")]
     pub default_grade: String,
 
+    /// Grade charged per resolved caller IP on site-route reads, where one
+    /// page load fans out into many asset requests.
+    #[serde(default = "default_site_grade")]
+    pub site_grade: String,
+
     /// Short block window after a caller exceeds its bucket.
     #[serde(default = "default_over_budget_penalty_secs")]
     pub over_budget_penalty_secs: u64,
@@ -333,10 +440,11 @@ pub struct GatewayMeteringConfig {
     #[serde(default = "default_stale_entry_secs")]
     pub stale_entry_secs: u64,
 
-    /// Proxy addresses whose X-Forwarded-For header is trusted when resolving
-    /// the caller IP. Empty means the socket peer is always the caller.
+    /// Proxy addresses or CIDR ranges whose X-Forwarded-For header is trusted
+    /// when resolving the caller IP. Empty means the socket peer is always
+    /// the caller.
     #[serde(default)]
-    pub trusted_proxies: Vec<IpAddr>,
+    pub trusted_proxies: Vec<CidrBlock>,
 }
 
 impl Default for GatewayMeteringConfig {
@@ -345,6 +453,7 @@ impl Default for GatewayMeteringConfig {
             grades: default_grades(),
             anonymous_grade: default_anonymous_grade(),
             default_grade: default_default_grade(),
+            site_grade: default_site_grade(),
             over_budget_penalty_secs: default_over_budget_penalty_secs(),
             stale_entry_secs: default_stale_entry_secs(),
             trusted_proxies: Vec::new(),
@@ -372,6 +481,17 @@ fn default_grades() -> BTreeMap<String, MeteringGrade> {
                 read_byte_burst: 256 * 1024 * 1024,
             },
         ),
+        (
+            // A single page load fans out into one request per asset, so site
+            // reads get more request headroom than plain object reads.
+            "site".to_string(),
+            MeteringGrade {
+                read_per_sec: 50,
+                read_burst: 200,
+                read_bytes_per_sec: 64 * 1024 * 1024,
+                read_byte_burst: 128 * 1024 * 1024,
+            },
+        ),
     ])
 }
 
@@ -381,6 +501,10 @@ fn default_anonymous_grade() -> String {
 
 fn default_default_grade() -> String {
     "standard".to_string()
+}
+
+fn default_site_grade() -> String {
+    "site".to_string()
 }
 
 fn default_over_budget_penalty_secs() -> u64 {

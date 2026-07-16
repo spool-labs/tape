@@ -4,7 +4,6 @@
 //! HeadObject, PutObject, multipart upload, DeleteObject).
 
 use std::io;
-use std::time::Duration;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -27,12 +26,13 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
 use tape_protocol::Api;
-use tape_protocol::api::ApiError;
-use tape_sdk::error::{TapedriveError, UploadError};
+use tape_sdk::error::TapedriveError;
 use tape_store::ops::{CredentialOps, ObjectListOps, TapeOps};
 use tape_store::types::CredentialScope;
 
-use crate::http::handlers::object::{ObjectResponseMetadata, range_header, read_object_response};
+use crate::http::handlers::object::{
+    CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
+};
 use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
@@ -42,7 +42,8 @@ use super::chunked::object_reader;
 use super::clock::now_unix;
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
-use super::resolve::{ResolvedObject, parse_bucket, resolve_object};
+use super::resolve::{parse_bucket, resolve_object};
+use crate::http::handlers::resolve::ResolvedObject;
 use super::response::{
     delete_response, head_response, put_response, set_last_modified, upload_part_response,
 };
@@ -587,6 +588,7 @@ where
     let metadata = ObjectResponseMetadata {
         content_type: resolved.content_type,
         filename: None,
+        cache: CachePolicy::Immutable,
     };
     let block_time = resolved.block_time;
 
@@ -598,6 +600,7 @@ where
         resolved.track_address,
         track,
         metadata,
+        StatusCode::OK,
         &caller,
         range,
         |retry_after| S3Error::slow_down(retry_after).into_response(),
@@ -659,10 +662,12 @@ fn meter_caller<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .flatten()
             .and_then(|credential| credential.grade)
     });
+    let metering = &state.context.config.gateway.metering;
     MeterCaller::resolve(
         remote.ip(),
         headers,
-        &state.context.config.gateway.metering.trusted_proxies,
+        &metering.trusted_proxies,
+        metering.anonymous_grade.clone(),
         access_key,
         grade,
     )
@@ -934,12 +939,6 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
     match error {
         TapedriveError::InvalidArgument(message) => S3Error::InvalidRequest(message),
         TapedriveError::NotFound => S3Error::NoSuchKey,
-        // A peer rate limit surfaces from the write pipeline wrapped in the
-        // upload error, and from reads as the dedicated variant.
-        TapedriveError::RateLimited { retry_after }
-        | TapedriveError::Upload(UploadError::Peer(ApiError::RateLimited { retry_after })) => {
-            S3Error::slow_down(retry_after.unwrap_or(Duration::from_secs(1)))
-        }
         other @ (TapedriveError::MissingPayer
         | TapedriveError::Rpc(_)
         | TapedriveError::Upload(_)
@@ -972,7 +971,6 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
         | TapedriveError::NotFound
-        | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::InvalidArgument(_)
         | TapedriveError::Io(_)
