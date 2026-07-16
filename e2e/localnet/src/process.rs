@@ -405,7 +405,8 @@ fn build_node_yaml(
 genesis_preset: localnet
 
 solana:
-  rpc: "{rpc_url}"
+  rpc:
+    - "{rpc_url}"
 
 network:
   host: "{LOCAL_HOST}"
