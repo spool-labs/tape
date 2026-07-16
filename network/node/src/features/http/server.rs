@@ -94,6 +94,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::NODE_STATS_PATH,
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::OBSERVE_ATLAS_PATH,
+                get(handlers::atlas::recent::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]

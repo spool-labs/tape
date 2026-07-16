@@ -1,3 +1,4 @@
+pub mod atlas;
 pub mod bootstrap;
 pub mod chain_tx;
 pub mod channels;
