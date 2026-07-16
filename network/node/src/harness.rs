@@ -59,7 +59,6 @@ impl NodeHarness {
                 rpc,
                 peer_manager,
                 api,
-                Arc::new(crate::core::atlas::AtlasBuffer::new(Vec::new())),
             )
             .build()
             .await?;

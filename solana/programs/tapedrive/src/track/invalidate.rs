@@ -3,7 +3,6 @@ use tape_api::program::prelude::*;
 use tape_api::state::Group;
 use tape_api::event::TrackInvalidated;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::track::types::TrackState;
 use tape_crypto::bls12254::min_sig::*;
 
 use crate::tape::helpers::verified_tape_address;
@@ -60,10 +59,6 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .verify(&proof)
         .map_err(|_| TapeError::BadProof)?;
 
-    if !track.is_coded() {
-        return Err(TapeError::UnexpectedState.into());
-    }
-
     if track.is_invalidated() {
         return Err(TapeError::AlreadyInvalidated.into());
     }
@@ -95,7 +90,6 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let message = TrackInvalidateMessage::new(
         curr,
         old_track_hash,
-        args.computed_root,
     );
     let message_bytes = message.to_bytes();
 
@@ -105,9 +99,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
 
-    let mut updated_track = track;
-    updated_track.state = TrackState::Invalidated as u64;
-    tape.update_track(&proof, &updated_track)
+    tape.invalidate_track(&proof)
         .map_err(|_| TapeError::BadProof)?;
 
     TrackInvalidated {
@@ -123,7 +115,7 @@ mod tests {
     use super::*;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
     use tape_test::*;
@@ -184,6 +176,8 @@ mod tests {
 
         let tape = Tape {
             authority: authority.into(),
+            capacity: StorageUnits::mb(1000),
+            used: track.size,
             tracks: TrackArchive {
                 tree: track_tree,
                 next_number: TrackNumber(1),
@@ -192,15 +186,12 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let computed_root = Hash::new_unique();
-
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = SpoolBitmap::from_indices(&signed_indices);
 
         let invalidate_message = TrackInvalidateMessage::new(
             curr,
             old_track_hash,
-            computed_root,
         );
         let message = invalidate_message.to_bytes();
 
@@ -217,7 +208,6 @@ mod tests {
             curr,
             bitmap,
             agg_sig,
-            computed_root,
         );
 
         let accounts = vec![
@@ -236,6 +226,125 @@ mod tests {
                 Check::success(),
                 Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
+                        used: StorageUnits(0),
+                        tracks: TrackArchive {
+                            tree: expected_tree,
+                            next_number: TrackNumber(1),
+                            num_tracks: 1,
+                        },
+                        ..tape
+                    }.pack().as_ref()
+                ).build(),
+            ],
+        );
+    }
+
+    // inline registered tracks invalidate and return their capacity too
+    #[test]
+    fn invalidate_inline() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let bucket_hash = Hash::new_unique();
+        let curr = EpochNumber(42);
+
+        let (tape_address, _) = tape_pda(authority.into());
+        let (system_address, _) = system_pda();
+        let group_id = GroupIndex(0);
+        let (group_address, _) = group_pda(curr, group_id);
+
+        const SIGNERS: usize = 14;
+
+        let (sks, group) = make_group(curr, group_id);
+
+        let system = System {
+            current_epoch: curr,
+            committee_size: 128,
+            ..System::zeroed()
+        };
+
+        let track_number = TrackNumber(0);
+        let track = CompressedTrack {
+            tape: tape_address,
+            key: bucket_hash,
+            track_number,
+            kind: TrackKind::Inline as u64,
+            state: TrackState::Registered as u64,
+            size: StorageUnits::mb(1),
+            group: group_id,
+            value_hash: Hash::new_unique(),
+        };
+        let old_track_hash = track.get_hash();
+        let mut track_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
+        track_tree.add_leaf_hash(old_track_hash).unwrap();
+        let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
+                &[old_track_hash],
+                track_number.0 as usize,
+            )
+            .expect("track proof is valid")
+            .try_into()
+            .expect("proof has correct length");
+
+        let mut expected_tree = track_tree;
+        let mut updated_track = track;
+        updated_track.state = TrackState::Invalidated as u64;
+        let new_track_hash = updated_track.get_hash();
+        expected_tree
+            .update_leaf_hash(track_number.0, &proof, old_track_hash, new_track_hash)
+            .unwrap();
+
+        let tape = Tape {
+            authority: authority.into(),
+            capacity: StorageUnits::mb(1000),
+            used: track.size,
+            tracks: TrackArchive {
+                tree: track_tree,
+                next_number: TrackNumber(1),
+                num_tracks: 1,
+            },
+            ..Tape::zeroed()
+        };
+
+        let signed_indices: Vec<usize> = (0..SIGNERS).collect();
+        let bitmap = SpoolBitmap::from_indices(&signed_indices);
+
+        let invalidate_message = TrackInvalidateMessage::new(
+            curr,
+            old_track_hash,
+        );
+        let message = invalidate_message.to_bytes();
+
+        let partials: Vec<BlsSignature> = signed_indices
+            .iter()
+            .map(|&i| sks[i].sign(message).unwrap())
+            .collect();
+
+        let agg_sig = BlsSignature::aggregate(&partials).unwrap();
+
+        let instruction = build_invalidate_track_ix(
+            fee_payer.into(),
+            CompressedTrackProof { state: track, proof },
+            curr,
+            bitmap,
+            agg_sig,
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(group_address, group.pack(), tapedrive::ID),
+            pda(tape_address, tape.pack(), tapedrive::ID),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&Pubkey::from(tape_address)).data(
+                    Tape {
+                        used: StorageUnits(0),
                         tracks: TrackArchive {
                             tree: expected_tree,
                             next_number: TrackNumber(1),
@@ -301,14 +410,12 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let computed_root = Hash::new_unique();
         let signed_indices: Vec<usize> = (0..14).collect();
         let bitmap = SpoolBitmap::from_indices(&signed_indices);
 
         let invalidate_message = TrackInvalidateMessage::new(
             curr,
             old_track_hash,
-            computed_root,
         );
         let message = invalidate_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
@@ -324,7 +431,6 @@ mod tests {
             curr,
             bitmap,
             agg_sig,
-            computed_root,
         );
 
         let accounts = vec![
@@ -396,10 +502,9 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let computed_root = Hash::new_unique();
         let signed_indices: Vec<usize> = (0..14).collect();
         let bitmap = SpoolBitmap::from_indices(&signed_indices);
-        let message = TrackInvalidateMessage::new(stale, old_track_hash, computed_root).to_bytes();
+        let message = TrackInvalidateMessage::new(stale, old_track_hash).to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
             .map(|&i| sks[i].sign(message).unwrap())
@@ -412,7 +517,6 @@ mod tests {
             stale,
             bitmap,
             agg_sig,
-            computed_root,
         );
 
         let accounts = vec![

@@ -1,5 +1,4 @@
 pub mod admission;
-pub mod atlas_listener;
 pub mod auth;
 mod error;
 pub mod handlers;

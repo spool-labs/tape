@@ -7,8 +7,8 @@ use crate::types::EpochNumber;
 pub const INVALIDATE_DOMAIN_TAG: &[u8; 8] = b"INVALID\0";
 
 /// Size of the invalidation message in bytes.
-/// 8 (domain) + 8 (epoch) + 32 (track hash) + 32 (computed root) = 80 bytes
-pub const INVALIDATE_MESSAGE_SIZE: usize = 80;
+/// 8 (domain) + 8 (epoch) + 32 (track hash) = 48 bytes
+pub const INVALIDATE_MESSAGE_SIZE: usize = 48;
 
 /// Message format for track invalidation BLS signatures.
 #[repr(C)]
@@ -18,20 +18,16 @@ pub struct TrackInvalidateMessage {
     pub epoch: EpochNumber,
     /// Current authenticated compressed-track hash.
     pub track_hash: Hash,
-    /// Computed merkle root from re-encoding (differs from registered commitment).
-    pub computed_root: Hash,
 }
 
 impl TrackInvalidateMessage {
     pub const fn new(
         epoch: EpochNumber,
         track_hash: Hash,
-        computed_root: Hash,
     ) -> Self {
         Self {
             epoch,
             track_hash,
-            computed_root,
         }
     }
 
@@ -61,7 +57,7 @@ mod tests {
 
     #[test]
     fn test_message_size() {
-        assert_eq!(INVALIDATE_MESSAGE_SIZE, 80);
+        assert_eq!(INVALIDATE_MESSAGE_SIZE, 48);
     }
 
     #[test]
@@ -74,9 +70,8 @@ mod tests {
     fn test_message_roundtrip() {
         let epoch = EpochNumber(12345);
         let track_hash = Hash([0xAB; 32]);
-        let computed_root = Hash([0xCD; 32]);
 
-        let msg = TrackInvalidateMessage::new(epoch, track_hash, computed_root);
+        let msg = TrackInvalidateMessage::new(epoch, track_hash);
         let bytes = msg.to_bytes();
 
         assert_eq!(bytes.len(), INVALIDATE_MESSAGE_SIZE);
@@ -84,22 +79,19 @@ mod tests {
         let recovered = TrackInvalidateMessage::from_bytes(&bytes).expect("should parse");
         assert_eq!(recovered.epoch, epoch);
         assert_eq!(recovered.track_hash, track_hash);
-        assert_eq!(recovered.computed_root, computed_root);
     }
 
     #[test]
     fn test_message_format() {
         let epoch = EpochNumber(0x0102030405060708);
         let track_hash = Hash([0x42; 32]);
-        let computed_root = Hash([0x99; 32]);
 
-        let msg = TrackInvalidateMessage::new(epoch, track_hash, computed_root);
+        let msg = TrackInvalidateMessage::new(epoch, track_hash);
         let bytes = msg.to_bytes();
 
         assert_eq!(&bytes[0..8], b"INVALID\0");
         assert_eq!(&bytes[8..16], &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
         assert_eq!(&bytes[16..48], &[0x42; 32]);
-        assert_eq!(&bytes[48..80], &[0x99; 32]);
     }
 
     #[test]
@@ -112,19 +104,18 @@ mod tests {
 
     #[test]
     fn test_wrong_length_rejected() {
-        let bytes = [0u8; 119];
+        let bytes = [0u8; 47];
         assert!(TrackInvalidateMessage::from_bytes(&bytes).is_none());
 
-        let bytes = [0u8; 121];
+        let bytes = [0u8; 49];
         assert!(TrackInvalidateMessage::from_bytes(&bytes).is_none());
     }
 
     #[test]
     fn test_different_epochs_produce_different_messages() {
         let leaf = Hash([0x42; 32]);
-        let root = Hash([0xAA; 32]);
-        let msg1 = TrackInvalidateMessage::new(EpochNumber(1), leaf, root);
-        let msg2 = TrackInvalidateMessage::new(EpochNumber(2), leaf, root);
+        let msg1 = TrackInvalidateMessage::new(EpochNumber(1), leaf);
+        let msg2 = TrackInvalidateMessage::new(EpochNumber(2), leaf);
 
         assert_ne!(msg1.to_bytes(), msg2.to_bytes());
     }
@@ -132,9 +123,8 @@ mod tests {
     #[test]
     fn test_different_leaves_produce_different_messages() {
         let epoch = EpochNumber(42);
-        let root = Hash([0xAA; 32]);
-        let msg1 = TrackInvalidateMessage::new(epoch, Hash([0x11; 32]), root);
-        let msg2 = TrackInvalidateMessage::new(epoch, Hash([0x22; 32]), root);
+        let msg1 = TrackInvalidateMessage::new(epoch, Hash([0x11; 32]));
+        let msg2 = TrackInvalidateMessage::new(epoch, Hash([0x22; 32]));
 
         assert_ne!(msg1.to_bytes(), msg2.to_bytes());
     }

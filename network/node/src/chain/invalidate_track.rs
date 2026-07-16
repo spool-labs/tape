@@ -7,7 +7,6 @@ use tape_api::instruction::build_invalidate_track_ix;
 use tape_core::bls::BlsSignature;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::SpoolBitmap;
-use tape_crypto::Hash;
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 
@@ -18,7 +17,6 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track: CompressedTrackProof,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
-    observed_root: Hash,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
     let epoch = ctx.state().epoch();
@@ -29,7 +27,6 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
         epoch,
         bitmap,
         signature,
-        observed_root,
     );
 
     ctx.rpc

@@ -273,19 +273,7 @@ where
     };
 
     match decision {
-        AdmissionDecision::Allowed => {
-            // Feed the atlas display: anonymous data traffic only, so probes
-            // and peer calls never show up as user activity. The upload bit
-            // follows how the route was mounted, not the method, so metered
-            // POST reads stay fetches.
-            if matches!(mode, AdmissionMode::Metered | AdmissionMode::DirectWrite) {
-                if let AdmissionCaller::Anonymous(ip) = caller {
-                    let is_write = matches!(mode, AdmissionMode::DirectWrite);
-                    state.context.atlas.push_ip(ip, is_write);
-                }
-            }
-            next.run(req).await
-        }
+        AdmissionDecision::Allowed => next.run(req).await,
         AdmissionDecision::RateLimited { retry_after } => {
             debug!(?caller, ?mode, retry_after_secs = retry_after.as_secs(), "http admission rejected request");
             rate_limited_response(retry_after)

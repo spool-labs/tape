@@ -718,7 +718,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core",
- "base64 0.22.1",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -737,10 +736,8 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
- "sha1",
  "sync_wrapper",
  "tokio",
- "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -3197,12 +3194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-range-header"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c"
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3532,12 +3523,6 @@ name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
-
-[[package]]
-name = "ipnetwork"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
 
 [[package]]
 name = "iri-string"
@@ -4095,19 +4080,6 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
-name = "maxminddb"
-version = "0.27.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76371bd37ce742f8954daabd0fde7f1594ee43ac2200e20c003ba5c3d65e2192"
-dependencies = [
- "ipnetwork",
- "log",
- "memchr",
- "serde",
- "thiserror 2.0.18",
-]
 
 [[package]]
 name = "memchr"
@@ -9194,26 +9166,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-atlas"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "serde",
-]
-
-[[package]]
-name = "tape-atlas-web"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "dioxus",
- "js-sys",
- "tape-atlas",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "tape-blocks"
 version = "0.3.0"
 dependencies = [
@@ -9275,34 +9227,6 @@ dependencies = [
  "tape-sdk",
  "thiserror 2.0.18",
  "tracing",
-]
-
-[[package]]
-name = "tape-collector"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bincode",
- "clap",
- "dashmap 6.1.0",
- "env_logger",
- "futures",
- "log",
- "maxminddb",
- "peer-tls",
- "reqwest",
- "rpc-client",
- "rpc-solana",
- "serde",
- "serde_yaml",
- "tape-api",
- "tape-atlas",
- "tape-core",
- "tape-crypto",
- "tape-observe-api",
- "tokio",
- "tower-http",
 ]
 
 [[package]]
@@ -9469,7 +9393,6 @@ dependencies = [
  "tape-crypto",
  "tape-gateway",
  "tape-node",
- "tape-observe-api",
  "tape-protocol",
  "tape-sdk",
  "tape-store",
@@ -10229,12 +10152,7 @@ dependencies = [
  "http 1.4.0",
  "http-body",
  "http-body-util",
- "http-range-header",
- "httpdate",
  "iri-string",
- "mime",
- "mime_guess",
- "percent-encoding",
  "pin-project-lite",
  "tokio",
  "tokio-util",

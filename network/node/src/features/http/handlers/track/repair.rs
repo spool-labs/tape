@@ -176,7 +176,7 @@ mod tests {
         let slice_position = group
             .position_of(helper_spool)
             .expect("helper slice position");
-        let helper_slice = slices[slice_position].clone();
+        let helper_slice = slices[{ slice_position }].clone();
 
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
         let track_address = track_pda(snapshot_tape, track_number).0;
