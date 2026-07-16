@@ -86,7 +86,11 @@ impl AtlasBuffer {
     /// Everything newer than the caller's cursor, plus the cursor to resume
     /// from. The cursor is the newest sequence actually returned, so entries
     /// pushed mid-read are picked up by the next poll rather than skipped.
+    /// A cursor ahead of the counter can only come from a previous process
+    /// of this node; treating it as current would filter every new entry
+    /// until the counter caught up, so it resets to a full replay instead.
     pub fn recent(&self, after: u64) -> AtlasRecent {
+        let after = if after > self.seq.load(Ordering::Relaxed) { 0 } else { after };
         let (transfers, newest_transfer) = drain_after(&self.transfers, after);
         let (ips, newest_ip) = drain_after(&self.ips, after);
         let (objects, newest_object) = drain_after(&self.objects, after);
@@ -199,5 +203,18 @@ mod tests {
         atlas.push_ip("0.0.0.0".parse().expect("ip"), true);
 
         assert!(atlas.recent(0).ips.is_empty());
+    }
+
+    // a cursor from before a restart replays the ring instead of wedging
+    #[test]
+    fn stale_cursor_after_restart() {
+        let atlas = AtlasBuffer::new(vec![observer()]);
+        atlas.push_ip("1.2.3.4".parse().expect("ip"), false);
+
+        let recent = atlas.recent(1_000);
+
+        assert_eq!(recent.ips.len(), 1);
+        assert_eq!(recent.seq, 1);
+        assert!(atlas.recent(recent.seq).ips.is_empty());
     }
 }
