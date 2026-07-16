@@ -417,7 +417,6 @@ https:
 store:
   path: "/var/lib/tape/data"
   compaction_mb_per_sec: 80
-  bulk_compaction_mb_per_sec: 40
   gc:
     enabled: true
     interval_secs: 30
@@ -491,7 +490,6 @@ metrics:
         assert!(!config.https.auto_update);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
-        assert_eq!(config.store.bulk_compaction_mb_per_sec, 40);
         assert!(config.store.gc.enabled);
         assert_eq!(config.store.gc.interval_secs, 30);
         assert_eq!(config.store.gc.track_batch, 64);

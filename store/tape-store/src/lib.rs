@@ -104,35 +104,43 @@ impl TapeStore<SplitStore> {
     /// bulk subdirectory, so a single-device box needs only one path. Use the
     /// split variant to place the bulk store on a separate device.
     pub fn open_primary<P: AsRef<Path>>(root: P) -> Result<Self, store::Error> {
+        Self::open_primary_with_compaction_rate_limit(root, 100)
+    }
+
+    pub fn open_primary_with_compaction_rate_limit<P: AsRef<Path>>(
+        root: P,
+        compaction_rate_limit_mb_per_sec: u64,
+    ) -> Result<Self, store::Error> {
         let root = root.as_ref();
         Self::open_primary_split(
             root.join(config::META_SUBDIR),
             root.join(config::BULK_SUBDIR),
-            config::DEFAULT_META_COMPACTION_MB_PER_SEC,
-            config::DEFAULT_BULK_COMPACTION_MB_PER_SEC,
+            compaction_rate_limit_mb_per_sec,
         )
     }
 
     /// Open a primary store with the metadata and bulk stores at explicit,
-    /// independent directories, typically on different devices, each with a
-    /// compaction rate fit to its medium
+    /// independent directories, typically on different devices
     pub fn open_primary_split<P: AsRef<Path>>(
         meta_dir: P,
         bulk_dir: P,
-        meta_compaction_mb_per_sec: u64,
-        bulk_compaction_mb_per_sec: u64,
+        compaction_rate_limit_mb_per_sec: u64,
     ) -> Result<Self, store::Error> {
         std::fs::create_dir_all(meta_dir.as_ref())?;
         std::fs::create_dir_all(bulk_dir.as_ref())?;
 
         let meta = RocksStore::open_with_cf_config(
             meta_dir.as_ref(),
-            config::create_db_options(meta_compaction_mb_per_sec),
+            config::create_db_options_with_compaction_rate_limit_mb_per_sec(
+                compaction_rate_limit_mb_per_sec,
+            ),
             config::create_metadata_store_configs(),
         )?;
         let bulk = RocksStore::open_with_cf_config(
             bulk_dir.as_ref(),
-            config::create_db_options(bulk_compaction_mb_per_sec),
+            config::create_db_options_with_compaction_rate_limit_mb_per_sec(
+                compaction_rate_limit_mb_per_sec,
+            ),
             config::create_bulk_store_configs(),
         )?;
         let store = Self::new(split_store(meta, bulk));
@@ -206,13 +214,13 @@ impl TapeStore<SplitStore> {
         let meta = RocksStore::open_secondary_with_cf_config(
             meta_primary.as_ref(),
             meta_secondary.as_ref(),
-            config::create_secondary_db_options(),
+            config::create_db_options(),
             config::create_metadata_store_configs(),
         )?;
         let bulk = RocksStore::open_secondary_with_cf_config(
             bulk_primary.as_ref(),
             bulk_secondary.as_ref(),
-            config::create_secondary_db_options(),
+            config::create_db_options(),
             config::create_bulk_store_configs(),
         )?;
         Ok(Self::new(split_store(meta, bulk)))
@@ -566,13 +574,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let meta_dir = dir.path().join("nvme");
         let bulk_dir = dir.path().join("sata");
-        let store = TapeStore::open_primary_split(
-            &meta_dir,
-            &bulk_dir,
-            config::DEFAULT_META_COMPACTION_MB_PER_SEC,
-            config::DEFAULT_BULK_COMPACTION_MB_PER_SEC,
-        )
-        .unwrap();
+        let store = TapeStore::open_primary_split(&meta_dir, &bulk_dir, 100).unwrap();
 
         // A track is small metadata; a slice over the 256 KiB threshold is a blob.
         store

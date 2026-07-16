@@ -73,7 +73,9 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(TapeError::NotStaked.into());
     }
 
-    if source_stake.inner.amount < amount {
+    // A split must leave something behind: a zeroed source stake can never be
+    // withdrawn or closed, and moving a whole stake is what merge is for.
+    if source_stake.inner.amount <= amount {
         return Err(ProgramError::InsufficientFunds);
     }
 
@@ -156,6 +158,7 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    // a partial split moves the amount and leaves the remainder staked
     #[test]
     fn test_split_pool_stake() {
         let amount: u64 = 1_000;
@@ -266,6 +269,68 @@ mod tests {
                     ).1.data.as_ref()
                 ).build(),
             ],
+        );
+    }
+
+    // a full split is rejected, it would strand the zeroed source stake
+    #[test]
+    fn full_split() {
+        let initial_source_balance: u64 = 5_000;
+        let amount = initial_source_balance;
+
+        let fee_payer = Pubkey::new_unique();
+        let source_authority = Pubkey::new_unique();
+        let dest_authority = Pubkey::new_unique();
+        let pool_address = Pubkey::new_unique();
+
+        let instruction = build_split_pool_stake_ix(fee_payer.into(), source_authority.into(), pool_address.into(), dest_authority.into(), amount.into());
+
+        let (source_stake_address, _) = stake_pda(source_authority.into());
+        let (source_vault_address, _) = vault_pda(source_stake_address);
+
+        let (dest_stake_address, _) = stake_pda(dest_authority.into());
+        let (dest_vault_address, _) = vault_pda(dest_stake_address);
+
+        let (stake_authority_address, _) = stake_authority_pda();
+
+        let node = Node::zeroed();
+
+        let source_stake = Stake {
+            authority: source_authority.into(),
+            pool: pool_address.into(),
+            inner: StakedTape {
+                amount: TAPE(initial_source_balance),
+                activation_epoch: EpochNumber(100),
+                unlock_shares: ShareAmount::zero(),
+                state: *StakeState::new().set_staked(),
+            },
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(source_authority, 0),
+            sol(dest_authority, 0),
+
+            pda(pool_address, node.pack(), tapedrive::ID),
+
+            pda(source_stake_address, source_stake.pack(), tapedrive::ID),
+            empty(dest_stake_address),
+
+            token(source_vault_address, source_vault_address, initial_source_balance),
+            empty(dest_vault_address),
+
+            mint(0),
+            token_program(),
+            system_program(),
+            staking_program(),
+            sol(stake_authority_address, 0),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(ProgramError::InsufficientFunds)],
         );
     }
 }

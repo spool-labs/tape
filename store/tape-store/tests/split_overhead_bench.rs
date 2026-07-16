@@ -17,9 +17,7 @@ use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
-use tape_store::config::{
-    create_db_options, create_tape_store_configs, DEFAULT_META_COMPACTION_MB_PER_SEC,
-};
+use tape_store::config::{create_db_options, create_tape_store_configs};
 use tape_store::ops::{SliceOps, TrackOps};
 use tape_store::TapeStore;
 use tempfile::TempDir;
@@ -195,7 +193,7 @@ fn single_instance_vs_split() {
         let store = TapeStore::new(
             RocksStore::open_with_cf_config(
                 dir.path().join("db"),
-                create_db_options(DEFAULT_META_COMPACTION_MB_PER_SEC),
+                create_db_options(),
                 create_tape_store_configs(),
             )
             .unwrap(),
