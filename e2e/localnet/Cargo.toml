@@ -14,6 +14,10 @@ path = "src/bin/localnet/main.rs"
 name = "upload-file"
 path = "src/bin/upload-file/main.rs"
 
+[[bin]]
+name = "invalidate-track"
+path = "src/bin/invalidate-track/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 tokio.workspace = true
