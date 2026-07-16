@@ -1,20 +1,18 @@
 //! S3-compatible error surface. Every variant maps to an S3 code string, 
 //! an HTTP status, and renders as a real S3 XML error body.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use tape_protocol::api::current_request_id;
 
 use super::xml;
 use crate::http::error::RouteError;
+use crate::http::request_id::next_request_id;
 
 /// The `x-amz-request-id` header echoed alongside the `<RequestId>` body field
 const AMZ_REQUEST_ID: &str = "x-amz-request-id";
-
-/// 64-bit odd "golden ratio" multiplier used to bit-mix the monotonic counter.
-const REQUEST_ID_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// An S3-compatible error.
 #[derive(Clone, Debug)]
@@ -160,18 +158,6 @@ impl From<RouteError> for S3Error {
     }
 }
 
-/// Generate an S3-style request id (uppercase hex). Unique-ish without a random
-/// dependency: a process-wide monotonic counter mixed with the wall clock
-fn next_request_id() -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanoseconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos() as u64)
-        .unwrap_or(0);
-    format!("{:016X}", nanoseconds ^ sequence.wrapping_mul(REQUEST_ID_MIX))
-}
-
 impl IntoResponse for S3Error {
     fn into_response(self) -> Response {
         let status = self.status();
@@ -200,7 +186,10 @@ impl IntoResponse for S3Error {
             tracing::error!(%code, "s3 gateway error: {detail}");
         }
 
-        let request_id = next_request_id();
+        // The middleware's id when the error renders inside a request, so the
+        // XML RequestId, x-amz-request-id, and x-request-id all agree; minted
+        // only for renders outside one (e.g. unit tests).
+        let request_id = current_request_id().unwrap_or_else(next_request_id);
         // <Resource> is left empty: S3Error carries no request path, and threading
         // it through every construction site (or rewriting the body in middleware)
         // isn't worth it for an informational field.

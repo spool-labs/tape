@@ -160,9 +160,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
 
         let start = Instant::now();
-        let resp = client
-            .get(&url)
-            .timeout(self.get_slice_timeout)
+        let resp = stamp_request_id(client.get(&url).timeout(self.get_slice_timeout))
             .send()
             .await
             .map_err(map_reqwest)?;
@@ -358,8 +356,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", track_data_url(&track_id));
 
         let start = Instant::now();
-        let resp = client
-            .get(&url)
+        let resp = stamp_request_id(client.get(&url))
             .send()
             .await
             .map_err(map_reqwest)?;
@@ -674,6 +671,17 @@ impl Api for HttpApi {
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         self.record_rx("get_observe_board", bytes.len() as u64);
         Ok(bytes.to_vec())
+    }
+}
+
+/// Stamp the in-scope correlation id on an outbound request, so the node's
+/// logs for this call tie back to the originating gateway request. A no-op
+/// for calls made outside a request scope (background sync, repair, votes),
+/// so it is safe on any send site.
+fn stamp_request_id(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match current_request_id() {
+        Some(id) => request.header(REQUEST_ID_HEADER, id),
+        None => request,
     }
 }
 

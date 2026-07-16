@@ -21,6 +21,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
 use tape_protocol::api::routes as api_routes;
+use tape_protocol::api::{REQUEST_ID_HEADER, sanitize_request_id};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
@@ -268,7 +269,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .layer(
                 ServiceBuilder::new()
                     .layer(HandleErrorLayer::new(handle_http_error))
-                    .layer(TraceLayer::new_for_http())
+                    .layer(TraceLayer::new_for_http().make_span_with(request_span))
                     .layer(LoadShedLayer::new())
                     .layer(ConcurrencyLimitLayer::new(self.http_config.concurrency))
                     .layer(TimeoutLayer::new(Duration::from_secs(
@@ -367,6 +368,18 @@ fn cert_san_ips(listen_ip: IpAddr) -> Vec<IpAddr> {
         sans.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
     }
     sans
+}
+
+/// The request span every node HTTP log line nests under. A peer-supplied
+/// x-request-id (the gateway forwards its own) ties a request's node-side
+/// lines back to the originating gateway request.
+fn request_span(request: &Request) -> tracing::Span {
+    let request_id = request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(sanitize_request_id);
+    tape_protocol::api::request_span(request.method(), request.uri(), request_id)
 }
 
 async fn handle_http_error(error: BoxError) -> StatusCode {
