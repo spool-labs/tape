@@ -208,6 +208,9 @@ cache-linux:
 gateway-linux:
 	$(call linux-cargo,.,-p tape-gateway,tape-gateway)
 
+collector-linux:
+	$(call linux-cargo,.,-p tape-collector,tape-collector)
+
 explorer-linux:
 	$(call linux-cargo,.,-p tapedrive-explorer,tapedrive-explorer)
 
