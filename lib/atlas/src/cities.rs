@@ -2,6 +2,8 @@
 //! locations are always snapped to the nearest entry, so a dot on the globe
 //! never means anything more precise than a major city.
 
+use std::sync::OnceLock;
+
 /// One displayable city.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct City {
@@ -15,16 +17,36 @@ const fn city(name: &'static str, cc: &'static str, lat: f32, lon: f32) -> City 
     City { name, cc, lat, lon }
 }
 
+/// Per-city trigonometry for the nearest scan, computed once. The scan runs
+/// for every user event, so the table's sin/cos must not be redone each call.
+struct CityTrig {
+    sin_lat: f32,
+    cos_lat: f32,
+    lon: f32,
+}
+
+fn trig_table() -> &'static [CityTrig] {
+    static TABLE: OnceLock<Vec<CityTrig>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        CITIES
+            .iter()
+            .map(|c| {
+                let (sin_lat, cos_lat) = c.lat.to_radians().sin_cos();
+                CityTrig { sin_lat, cos_lat, lon: c.lon.to_radians() }
+            })
+            .collect()
+    })
+}
+
 /// Index of the city nearest to a coordinate, by great-circle distance.
 pub fn nearest_idx(lat: f32, lon: f32) -> usize {
     let (sp, cp) = lat.to_radians().sin_cos();
     let plon = lon.to_radians();
     let mut best = 0;
     let mut best_score = f32::MIN;
-    for (i, c) in CITIES.iter().enumerate() {
-        let (sc, cc) = c.lat.to_radians().sin_cos();
+    for (i, c) in trig_table().iter().enumerate() {
         // cosine of the angular distance; bigger is closer
-        let score = sp * sc + cp * cc * (c.lon.to_radians() - plon).cos();
+        let score = sp * c.sin_lat + cp * c.cos_lat * (c.lon - plon).cos();
         if score > best_score {
             best_score = score;
             best = i;
@@ -38,6 +60,8 @@ pub fn nearest(lat: f32, lon: f32) -> &'static City {
     &CITIES[nearest_idx(lat, lon)]
 }
 
+/// Every city the display may name. Ordering carries meaning: the first entry
+/// for a country is its representative, where country-only geoip matches land.
 pub const CITIES: &[City] = &[
     // North America
     city("New York", "US", 40.71, -74.01),
@@ -261,5 +285,17 @@ mod tests {
         let city = nearest(-38.0, -179.0);
 
         assert!(city.cc == "NZ", "got {}", city.name);
+    }
+
+    // country-only geoip matches land on the first entry, so each country
+    // must lead with its flagship city
+    #[test]
+    fn country_representatives() {
+        let first = |cc: &str| CITIES.iter().find(|c| c.cc == cc).map(|c| c.name);
+
+        assert_eq!(first("US"), Some("New York"));
+        assert_eq!(first("DE"), Some("Berlin"));
+        assert_eq!(first("IT"), Some("Rome"));
+        assert_eq!(first("JP"), Some("Tokyo"));
     }
 }
