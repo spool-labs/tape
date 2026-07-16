@@ -149,7 +149,7 @@ async fn download_slice_with_retry<P: Api>(
     slice_idx: SpoolIndex,
 ) -> Result<GetSliceRes, ApiError> {
     let req = GetSliceReq {
-        track,
+        track: track.into(),
         spool: slice_idx,
     };
     let mut backoff = Backoff::new(RetryConfig::ten());

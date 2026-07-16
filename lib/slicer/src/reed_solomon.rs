@@ -77,9 +77,9 @@ impl ErasureCoder for ReedSolomonCoder {
         let slice_bytes = if data.is_empty() {
             64 // Minimal aligned slice for empty data
         } else {
-            let raw = data.len().div_ceil(k);
+            let raw = (data.len() + k - 1) / k;
             // RS library works best with 64-byte aligned slices
-            raw.div_ceil(64) * 64
+            ((raw + 63) / 64) * 64
         };
 
         // Ensure the encoder can handle this slice size

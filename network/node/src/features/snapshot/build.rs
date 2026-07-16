@@ -21,6 +21,7 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber};
 use tape_crypto::hash::hash as hash_bytes;
 use tape_crypto::hash::Hash;
+use tape_crypto::Address;
 use tape_protocol::{Api, ProtocolState};
 use tape_snapshot::encode_snapshot;
 use tape_store::ops::{
@@ -119,7 +120,7 @@ where
         entries,
     };
 
-    let snapshot_tape = snapshot_tape_pda(epoch).0;
+    let snapshot_tape = Address::from(snapshot_tape_pda(epoch).0);
     let chunks = encode_snapshot(snapshot_tape, epoch, &snapshot_log, total_groups)
         .map_err(|e| NodeError::Store(format!("encode snapshot epoch={}: {e}", epoch.0)))?;
 
@@ -184,7 +185,7 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    let snapshot_tape = snapshot_tape_pda(candidate.target_epoch).0;
+    let snapshot_tape = Address::from(snapshot_tape_pda(candidate.target_epoch).0);
     ctx.store
         .put_tape(
             snapshot_tape,
@@ -198,7 +199,7 @@ where
         .map_err(store_err("put_tape"))?;
 
     for track in &candidate.tracks {
-        let track_address = track_pda(track.track.tape, track.track.track_number).0;
+        let track_address = Address::from(track_pda(track.track.tape, track.track.track_number).0);
         ctx.store
             .put_track(track_address, track.track)
             .map_err(store_err("put_track"))?;

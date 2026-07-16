@@ -69,7 +69,7 @@ pub fn process_vote_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .map_err(|_| TapeError::BadSignature)?;
 
     let message = SnapshotSignMessage::new(target_epoch_id, args.hash).to_bytes();
-    verify_aggregate(message, &pubkeys, &decompressed_sig)
+    verify_aggregate(&message, &pubkeys, &decompressed_sig)
         .map_err(|_| TapeError::BadSignature)?;
 
     let (vote_address, _) = snapshot_vote_pda(voting_epoch_id, target_epoch_id, args.hash);
@@ -192,7 +192,7 @@ mod tests {
         let message = SnapshotSignMessage::new(target_epoch_id, hash).to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .map(|&i| sks[i].sign(message).unwrap())
+            .map(|&i| sks[i].sign(&message).unwrap())
             .collect();
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 

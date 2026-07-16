@@ -94,7 +94,7 @@ where
 
 fn finish_peer_query(last_error: Option<ApiError>, saw_not_found: bool) -> TapedriveError {
     if let Some(error) = last_error {
-        TapedriveError::from(error)
+        TapedriveError::Peer(error)
     } else if saw_not_found {
         TapedriveError::NotFound
     } else {
@@ -222,7 +222,7 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
     while let Some(result) = requests.next().await {
         match result {
             Ok(res) => {
-                let tape_address: Address = res.proof.state.tape;
+                let tape_address: Address = res.proof.state.tape.into();
                 let tape = client
                     .rpc()
                     .get_tape_by_address(&tape_address)

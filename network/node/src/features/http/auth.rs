@@ -60,15 +60,6 @@ pub struct StakedPeer {
 #[derive(Clone, Copy, Debug)]
 pub struct MaybeStakedPeer(pub Option<StakedPeer>);
 
-/// A request caller authenticated as a configured atlas observer via mTLS.
-///
-/// Observers are operator-configured identities (the atlas collector), not
-/// registered nodes; the allowlist lives in the https config.
-#[derive(Clone, Copy, Debug)]
-pub struct ObserverPeer {
-    pub tls_pubkey: NetworkTlsPubkey,
-}
-
 impl<S> axum::extract::FromRequestParts<S> for ActivePeer
 where
     S: Send + Sync,
@@ -100,24 +91,6 @@ where
         parts
             .extensions
             .get::<StakedPeer>()
-            .copied()
-            .ok_or(StatusCode::FORBIDDEN)
-    }
-}
-
-impl<S> axum::extract::FromRequestParts<S> for ObserverPeer
-where
-    S: Send + Sync,
-{
-    type Rejection = StatusCode;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        parts
-            .extensions
-            .get::<ObserverPeer>()
             .copied()
             .ok_or(StatusCode::FORBIDDEN)
     }
@@ -158,9 +131,6 @@ where
         .unwrap_or_default();
 
     if let Some(tls_pubkey) = identity.pubkey() {
-        if state.context.atlas.is_observer(tls_pubkey) {
-            req.extensions_mut().insert(ObserverPeer { tls_pubkey });
-        }
         if let Some(peer) = state.context.peer_manager.peer_for_tls_pubkey(tls_pubkey) {
             let node = peer.node;
             let threshold = local_access_threshold(&state);
@@ -193,7 +163,7 @@ where
     next.run(req).await
 }
 
-pub fn local_access_threshold<Db, Cluster, Blockchain>(
+pub(crate) fn local_access_threshold<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
 ) -> Coin<TAPE>
 where

@@ -43,8 +43,8 @@ pub fn sig_verify(pubkey: &[u8], sig: &[u8], message: &[u8]) -> Result<(), Signa
 
     let mut h: Sha512 = Sha512::new();
     h.update(sig_R.0);
-    h.update(pubkey);
-    h.update(message);
+    h.update(&pubkey);
+    h.update(&message);
 
     let f = h.finalize();
     let k = Scalar::from_bytes_mod_order_wide(f.as_ref());

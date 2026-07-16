@@ -175,7 +175,7 @@ impl Credential {
     /// Whether the credential is usable at `now` (unix seconds).
     pub fn is_usable(&self, now: i64) -> bool {
         matches!(self.status, CredentialStatus::Active)
-            && self.not_after.is_none_or(|not_after| now < not_after)
+            && self.not_after.map_or(true, |not_after| now < not_after)
     }
 
     /// Whether this credential's scope admits writes to `bucket`.
@@ -226,8 +226,8 @@ impl PolicyRule {
     /// Whether this rule matches a concrete `(principal, bucket, action)` request.
     /// A `None` subject is a wildcard; an Any rule matches every action.
     pub fn matches(&self, principal: &Address, bucket: &Address, action: PolicyAction) -> bool {
-        self.principal.is_none_or(|rule_principal| rule_principal == *principal)
-            && self.bucket.is_none_or(|rule_bucket| rule_bucket == *bucket)
+        self.principal.map_or(true, |rule_principal| rule_principal == *principal)
+            && self.bucket.map_or(true, |rule_bucket| rule_bucket == *bucket)
             && (matches!(self.action, PolicyAction::Any) || self.action == action)
     }
 }

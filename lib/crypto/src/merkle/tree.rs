@@ -334,7 +334,7 @@ impl<const N: usize> MerkleTree<N> {
         if proof.len() == N {
             Ok(())
         } else {
-            Err(MerkleError::ProofLength)
+            Err(MerkleError::ProofLength.into())
         }
     }
 
@@ -429,7 +429,7 @@ fn create_merkle_proof_hashes(
     let mut current_layer: Vec<Hash> = hashes.to_vec();
 
     for i in 0..height {
-        if !current_layer.len().is_multiple_of(2) {
+        if current_layer.len() % 2 != 0 {
             current_layer.push(empty[i]);
         }
 
@@ -444,7 +444,7 @@ fn create_merkle_proof_hashes(
     let mut layer_index = 0;
 
     for _ in 0..height {
-        let sibling = if current_index.is_multiple_of(2) {
+        let sibling = if current_index % 2 == 0 {
             layers[layer_index][current_index + 1]
         } else {
             layers[layer_index][current_index - 1]

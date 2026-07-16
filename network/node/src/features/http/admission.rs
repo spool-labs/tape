@@ -176,7 +176,7 @@ impl AdmissionLimiter {
 
     fn maybe_prune(&self, buckets: &mut HashMap<BucketKey, BucketState>, now: Instant) {
         let checks = self.checks.fetch_add(1, Ordering::Relaxed);
-        if !checks.is_multiple_of(PRUNE_INTERVAL) {
+        if checks % PRUNE_INTERVAL != 0 {
             return;
         }
 
@@ -273,16 +273,7 @@ where
     };
 
     match decision {
-        AdmissionDecision::Allowed => {
-            // Feed the atlas display: anonymous data traffic only, so probes
-            // and peer calls never show up as user activity.
-            if matches!(mode, AdmissionMode::Metered | AdmissionMode::DirectWrite) {
-                if let AdmissionCaller::Anonymous(ip) = caller {
-                    state.context.atlas.push_ip(ip, req.method() != Method::GET);
-                }
-            }
-            next.run(req).await
-        }
+        AdmissionDecision::Allowed => next.run(req).await,
         AdmissionDecision::RateLimited { retry_after } => {
             debug!(?caller, ?mode, retry_after_secs = retry_after.as_secs(), "http admission rejected request");
             rate_limited_response(retry_after)

@@ -39,8 +39,6 @@ pub enum S3Error {
     EntityTooSmall(String),
     /// The request was malformed. HTTP 400
     InvalidRequest(String),
-    /// A Range request that cannot be satisfied; carries the object size. HTTP 416
-    InvalidRange(u64),
     /// The caller is being rate limited; carries Retry-After seconds. HTTP 503
     SlowDown { retry_after_seconds: u64 },
     /// The operation is recognized but not implemented yet. HTTP 501
@@ -69,7 +67,6 @@ impl S3Error {
             Self::EntityTooLarge(_) => "EntityTooLarge",
             Self::EntityTooSmall(_) => "EntityTooSmall",
             Self::InvalidRequest(_) => "InvalidRequest",
-            Self::InvalidRange(_) => "InvalidRange",
             Self::SlowDown { .. } => "SlowDown",
             Self::NotImplemented(_) => "NotImplemented",
             Self::Internal(_) => "InternalError",
@@ -85,7 +82,6 @@ impl S3Error {
             | Self::EntityTooLarge(_)
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            Self::InvalidRange(_) => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::SlowDown { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -107,9 +103,6 @@ impl S3Error {
                     .to_string()
             }
             Self::SlowDown { .. } => "Please reduce your request rate.".to_string(),
-            Self::InvalidRange(total) => {
-                format!("The requested range is not satisfiable (object size {total}).")
-            }
             Self::ContentSha256Mismatch => {
                 "The provided 'x-amz-content-sha256' header does not match what was computed."
                     .to_string()
@@ -140,7 +133,6 @@ impl S3Error {
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_)
             | Self::SlowDown { .. }
-            | Self::InvalidRange(_)
             | Self::NotImplemented(_) => None,
         }
     }
@@ -151,7 +143,6 @@ impl From<RouteError> for S3Error {
     fn from(error: RouteError) -> Self {
         match error {
             RouteError::NotFound => Self::NoSuchKey,
-            RouteError::RangeNotSatisfiable(total) => Self::InvalidRange(total),
             RouteError::BadRequest(message) => Self::InvalidRequest(message),
             RouteError::BadGateway(message) | RouteError::Internal(message) => {
                 Self::Internal(message)
@@ -188,7 +179,6 @@ impl IntoResponse for S3Error {
             | Self::EntityTooLarge(_)
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_)
-            | Self::InvalidRange(_)
             | Self::NotImplemented(_)
             | Self::Internal(_) => None,
         };
@@ -214,13 +204,6 @@ impl IntoResponse for S3Error {
         if let Some(seconds) = retry_after {
             if let Ok(value) = HeaderValue::from_str(&seconds.max(1).to_string()) {
                 response.headers_mut().insert(header::RETRY_AFTER, value);
-            }
-        }
-        // A 416 carries the object size in Content-Range, matching the native
-        // listener's answer.
-        if let Self::InvalidRange(total) = &self {
-            if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total}")) {
-                response.headers_mut().insert(header::CONTENT_RANGE, value);
             }
         }
 
@@ -275,11 +258,6 @@ mod tests {
             S3Error::SlowDown { retry_after_seconds: 1 }.status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
-        assert_eq!(
-            S3Error::InvalidRange(1024).status(),
-            StatusCode::RANGE_NOT_SATISFIABLE
-        );
-        assert_eq!(S3Error::InvalidRange(1024).code(), "InvalidRange");
         assert_eq!(
             S3Error::NotImplemented("x".into()).status(),
             StatusCode::NOT_IMPLEMENTED

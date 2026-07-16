@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_api::program::tapedrive::track_pda;
-use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
+use tape_core::snapshot::replay::ReplayRecord;
 use tape_core::track::data::BlobData;
 use tape_core::types::SlotNumber;
 use tape_protocol::Api;
@@ -13,7 +12,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::context::NodeContext;
-use crate::core::atlas::short_label;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::replay::types::{RawTrack, ReplayBatch};
@@ -54,34 +52,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluster, Blockch
                     };
 
                     persist_batch(self.context.store.as_ref(), &batch)?;
-                    self.feed_atlas(&batch);
 
                     self.context.pending
                         .drop_slot(batch.slot);
                 }
             }
-        }
-    }
-
-    /// Surface freshly stored user objects to the atlas display. This runs on
-    /// the live tail only, so bootstrap replay never floods the feed.
-    fn feed_atlas(&self, batch: &ReplayBatch) {
-        if !self.context.atlas.enabled() {
-            return;
-        }
-        for record in &batch.records {
-            let ReplayableEvent::Track(replay) = &record.event else {
-                continue;
-            };
-            let Some(object) = replay.object.as_ref() else {
-                continue;
-            };
-            let (track, _) = track_pda(replay.state.tape, replay.state.track_number);
-            self.context.atlas.push_object(
-                short_label(&track.to_string()),
-                object.logical_size.0,
-                object.content_type.to_str(),
-            );
         }
     }
 }
@@ -95,7 +70,7 @@ pub enum RawTrackPolicy {
     All,
 }
 
-pub fn persist_batch<Db: Store>(
+pub(crate) fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {

@@ -31,7 +31,7 @@ pub struct HarnessSpec {
 }
 
 impl HarnessSpec {
-    pub fn epoch_state(&self) -> EpochState {
+    pub(crate) fn epoch_state(&self) -> EpochState {
         phase_to_epoch_state(self.phase)
     }
 }
@@ -65,25 +65,25 @@ impl HarnessNodeSpec {
     }
 }
 
-pub fn previous_epoch(epoch: EpochNumber) -> EpochNumber {
+pub(crate) fn previous_epoch(epoch: EpochNumber) -> EpochNumber {
     epoch.prev()
 }
 
-pub fn phase_to_epoch_state(phase: EpochPhase) -> EpochState {
+pub(crate) fn phase_to_epoch_state(phase: EpochPhase) -> EpochState {
     EpochState {
         phase: phase as u64,
         ..EpochState::zeroed()
     }
 }
 
-pub fn default_last_epoch() -> i64 {
+pub(crate) fn default_last_epoch() -> i64 {
     0
 }
 
-pub fn elapsed_last_epoch(now: i64) -> i64 {
+pub(crate) fn elapsed_last_epoch(now: i64) -> i64 {
     now - TEST_EPOCH_DURATION.0 as i64 - 1
 }
 
-pub fn onchain_elapsed_last_epoch(value: i64) -> i64 {
+pub(crate) fn onchain_elapsed_last_epoch(value: i64) -> i64 {
     -(value + 1)
 }

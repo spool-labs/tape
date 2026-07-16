@@ -71,7 +71,7 @@ pub fn process_vote_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     let message = AssignmentVoteMessage::new(target_epoch_id, target_epoch.nonce, args.hash)
         .to_bytes();
 
-    verify_aggregate(message, &pubkeys, &decompressed_sig)
+    verify_aggregate(&message, &pubkeys, &decompressed_sig)
         .map_err(|_| TapeError::BadSignature)?;
 
     let (vote_address, _) = assignment_vote_pda(voting_epoch_id, target_epoch_id, args.hash);
@@ -199,7 +199,7 @@ mod tests {
             AssignmentVoteMessage::new(target_epoch_id, nonce, hash).to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .map(|&i| sks[i].sign(message).unwrap())
+            .map(|&i| sks[i].sign(&message).unwrap())
             .collect();
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 

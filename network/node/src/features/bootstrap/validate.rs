@@ -190,7 +190,7 @@ mod tests {
 
     fn track_for(tape: Address, track_number: TrackNumber) -> (Address, CompressedTrack) {
         let (track, _) = track_pda(tape, track_number);
-        let track = track;
+        let track = Address::from(track);
         (
             track,
             CompressedTrack {

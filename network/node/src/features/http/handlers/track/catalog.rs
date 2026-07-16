@@ -108,7 +108,7 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BlacklistedObject);
     }
 
-    let data_addr = track_pda(track.tape, track.track_number).0;
+    let data_addr = track_pda(track.tape, track.track_number).0.into();
     let data = match state.context.pending.track_data(data_addr) {
         Some(data) => data,
         None => state
@@ -153,7 +153,7 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let tape = state
         .context
         .store
-        .get_tape(track.tape)
+        .get_tape(track.tape.into())
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
@@ -167,7 +167,7 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let pending_tracks = state
         .context
         .pending
-        .registered_tracks_by_tape(track.tape);
+        .registered_tracks_by_tape(track.tape.into());
 
     let pending_leaf_count = pending_tracks
         .iter()
@@ -193,12 +193,12 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let disk_tracks = state
         .context
         .store
-        .iter_tracks_by_tape_from(track.tape, None, leaf_count)
+        .iter_tracks_by_tape_from(track.tape.into(), None, leaf_count)
         .map_err(store_error)?;
 
     for tape_track in merge_pending_tape_tracks(
         &state,
-        track.tape,
+        track.tape.into(),
         disk_tracks,
         pending_tracks,
     ) {
@@ -231,7 +231,7 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
 
-    let track_addr = track_pda(tape, TrackNumber(track_number)).0;
+    let track_addr = track_pda(tape, TrackNumber(track_number)).0.into();
 
     let in_store = state
         .context
@@ -277,7 +277,7 @@ pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let disk_tracks = state
         .context
         .store
-        .iter_tracks_by_tape_from(tape, None, MAX_TRACK_SCAN_LIMIT)
+        .iter_tracks_by_tape_from(tape.into(), None, MAX_TRACK_SCAN_LIMIT)
         .map_err(store_error)?;
     let mut matches = merge_pending_tape_tracks(&state, tape, disk_tracks, pending_tracks)
         .into_iter()
@@ -336,7 +336,7 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let disk_tracks = state
         .context
         .store
-        .iter_tracks_by_tape_from(tape, request.cursor, disk_limit)
+        .iter_tracks_by_tape_from(tape.into(), request.cursor, disk_limit)
         .map_err(store_error)?;
 
     let mut tracks = merge_pending_tape_tracks(&state, tape, disk_tracks, pending_tracks);
@@ -443,7 +443,7 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut by_number = BTreeMap::new();
 
     for disk_track in disk_tracks {
-        let track_addr = track_pda(disk_track.tape, disk_track.track_number).0;
+        let track_addr = track_pda(disk_track.tape, disk_track.track_number).0.into();
         if let Some(track) = state
             .context
             .pending
@@ -520,7 +520,7 @@ mod tests {
             )
             .expect("put tape");
 
-        let track_addr = track_pda(tape, TrackNumber(0)).0;
+        let track_addr = track_pda(tape, TrackNumber(0)).0.into();
         let track = CompressedTrack {
             tape,
             track_number: TrackNumber(0),

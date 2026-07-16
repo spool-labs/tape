@@ -32,7 +32,8 @@ impl<R: Rpc> RpcClient<R> {
             )));
         }
 
-        let tape = Tape::unpack_with_discriminator(&account.data).copied()
+        let tape = Tape::unpack_with_discriminator(&account.data)
+            .map(|tape| *tape)
             .map_err(|error| RpcError::Deserialization(error.to_string()))?;
 
         if !tape.is_snapshot_tape(epoch) {

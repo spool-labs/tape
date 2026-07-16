@@ -242,7 +242,9 @@ fn spool_for_node_in_group_inner(
     group: GroupIndex,
     node: Address,
 ) -> Option<(SpoolIndex, &Spool)> {
-    assigned_node(node)?;
+    if assigned_node(node).is_none() {
+        return None;
+    }
 
     spools_in_group_inner(groups, group)?
         .find(|(_, spool)| spool.node == node)

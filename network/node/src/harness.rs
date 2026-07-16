@@ -53,13 +53,12 @@ impl NodeHarness {
             let ctx = NodeContextBuilder::new(
                 test_config(),
                 clone_keypair(node.keypair()),
-                *node.bls_keypair(),
+                node.bls_keypair().clone(),
                 tls,
                 store,
                 rpc,
                 peer_manager,
                 api,
-                Arc::new(crate::core::atlas::AtlasBuffer::new(Vec::new())),
             )
             .build()
             .await?;

@@ -11,24 +11,21 @@ use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_crypto::hash::hash;
 use tape_crypto::merkle::hash_leaf;
-use tape_protocol::api::GetTrackDataReq;
 use tape_protocol::Api;
 use tape_sdk::codec::decoder::BlobDecoder;
-use tape_store::ops::TrackDataOps;
 use tracing::{debug, warn};
 
 use crate::http::error::RouteError;
-use crate::http::handlers::store_error;
 use crate::http::handlers::track::slice::read_cached_slice;
 use crate::http::handlers::track::track_data_with_pending;
 use crate::http::state::AppState;
 
-pub struct DecodedObject {
-    pub bytes: Vec<u8>,
-    pub etag: Hash,
+pub(in crate::http::handlers::object) struct DecodedObject {
+    pub(in crate::http::handlers::object) bytes: Vec<u8>,
+    pub(in crate::http::handlers::object) etag: Hash,
 }
 
-pub async fn decode_track_bytes<
+pub(in crate::http::handlers::object) async fn decode_track_bytes<
     Db: Store,
     Cluster: Api,
     Blockchain: Rpc,
@@ -37,15 +34,30 @@ pub async fn decode_track_bytes<
     track_addr: Address,
     track: CompressedTrack,
 ) -> Result<DecodedObject, RouteError> {
+    let track_data = track_data_with_pending(state, track_addr)?.ok_or(RouteError::NotFound)?;
+
     if track.is_inline() {
-        return decode_inline(state, track_addr, track).await;
+        let BlobData::Inline(bytes) = track_data else {
+            crate::metrics::inc_decode_result("data_mismatch");
+            return Err(RouteError::BadRequest("track data is not inline".into()));
+        };
+        if hash(&bytes) != track.value_hash {
+            crate::metrics::inc_decode_result("inline_hash_mismatch");
+            return Err(RouteError::Internal("inline track hash mismatch".into()));
+        }
+
+        crate::metrics::inc_decode_result("ok");
+        crate::metrics::add_output_bytes(bytes.len());
+        return Ok(DecodedObject {
+            bytes,
+            etag: object_etag(&track, None),
+        });
     }
 
     if !track.is_coded() {
         return Err(RouteError::BadRequest("unsupported track kind".into()));
     }
 
-    let track_data = track_data_with_pending(state, track_addr)?.ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = track_data else {
         crate::metrics::inc_decode_result("data_mismatch");
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
@@ -76,92 +88,6 @@ pub async fn decode_track_bytes<
         bytes,
         etag: object_etag(&track, Some(&blob)),
     })
-}
-
-/// Serve an inline object, falling back to a peer fetch when the bytes are not
-/// held locally.
-///
-/// Snapshots carry the track record but never its content, so a mirror rebuilt
-/// from them holds inline records with no bytes. The group owners keep the
-/// payload; fetch it from one of them, verify, and cache for later reads. This
-/// mirrors the slice-fetch fallback for coded tracks.
-async fn decode_inline<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    track_addr: Address,
-    track: CompressedTrack,
-) -> Result<DecodedObject, RouteError> {
-    let bytes = match track_data_with_pending(state, track_addr)? {
-        Some(BlobData::Inline(bytes)) => {
-            // The peer-fetch path verifies before caching, so only the local copy
-            // needs checking here; either way the bytes are hashed exactly once.
-            if hash(&bytes) != track.value_hash {
-                crate::metrics::inc_decode_result("inline_hash_mismatch");
-                return Err(RouteError::Internal("inline track hash mismatch".into()));
-            }
-            bytes
-        }
-        Some(BlobData::Coded(_)) => {
-            crate::metrics::inc_decode_result("data_mismatch");
-            return Err(RouteError::BadRequest("track data is not inline".into()));
-        }
-        None => fetch_inline_from_peers(state, track_addr, track).await?,
-    };
-
-    crate::metrics::inc_decode_result("ok");
-    crate::metrics::add_output_bytes(bytes.len());
-    Ok(DecodedObject {
-        bytes,
-        etag: object_etag(&track, None),
-    })
-}
-
-async fn fetch_inline_from_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    track_addr: Address,
-    track: CompressedTrack,
-) -> Result<Vec<u8>, RouteError> {
-    let peers = state.context.state().group_peers(track.group);
-    if peers.is_empty() {
-        return Err(RouteError::NotFound);
-    }
-
-    for (_, node) in peers {
-        let response = match state
-            .context
-            .api
-            .get_track_data(node, &GetTrackDataReq { track: track_addr })
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                debug!(track = %track_addr, node = %node, ?error, "gateway inline fetch failed");
-                continue;
-            }
-        };
-
-        let bytes = match response.data {
-            BlobData::Inline(bytes) => bytes,
-            BlobData::Coded(_) => continue,
-        };
-
-        if hash(&bytes) != track.value_hash {
-            warn!(track = %track_addr, node = %node, "gateway skipped inline payload with mismatched hash");
-            continue;
-        }
-
-        // Cache so later reads serve locally, the same state live tailing leaves.
-        state
-            .context
-            .store
-            .put_track_data(track_addr, BlobData::Inline(bytes.clone()))
-            .map_err(store_error)?;
-
-        debug!(track = %track_addr, node = %node, bytes = bytes.len(), "gateway fetched inline payload from peer");
-        return Ok(bytes);
-    }
-
-    crate::metrics::inc_decode_result("inline_unavailable");
-    Err(RouteError::NotFound)
 }
 
 async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(

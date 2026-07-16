@@ -128,7 +128,7 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
     let chip_rows = if snap.nodes.is_empty() {
         1
     } else {
-        snap.nodes.len().div_ceil(chips_per_row)
+        (snap.nodes.len() + chips_per_row - 1) / chips_per_row
     };
     let node_chips_height = chip_rows as u16 + 2;
 
@@ -523,20 +523,22 @@ fn render_tapes(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         } else {
             format!(" last retry: {last_retry_error}")
         }
-    } else if let Some(next_retry_in_ms) = snap.uploads_next_retry_in_ms {
-        if next_retry_in_ms == 0 {
-            " retrying now".to_string()
-        } else {
-            format!(" next retry in {}", format_retry_delay(next_retry_in_ms))
-        }
-    } else if snap.uploads_retry_in_progress {
-        " retrying now".to_string()
-    } else if snap.uploads_stalled > 0 {
-        format!(" stalled uploads: {}", snap.uploads_stalled)
-    } else if snap.uploads_running > 0 {
-        format!(" uploads in flight: {}", snap.uploads_running)
     } else {
-        " no retry yet".to_string()
+        if let Some(next_retry_in_ms) = snap.uploads_next_retry_in_ms {
+            if next_retry_in_ms == 0 {
+                " retrying now".to_string()
+            } else {
+                format!(" next retry in {}", format_retry_delay(next_retry_in_ms))
+            }
+        } else if snap.uploads_retry_in_progress {
+            " retrying now".to_string()
+        } else if snap.uploads_stalled > 0 {
+            format!(" stalled uploads: {}", snap.uploads_stalled)
+        } else if snap.uploads_running > 0 {
+            format!(" uploads in flight: {}", snap.uploads_running)
+        } else {
+            " no retry yet".to_string()
+        }
     };
 
     let mut lines: Vec<Line> = vec![Line::from(line1), Line::from(line2)];

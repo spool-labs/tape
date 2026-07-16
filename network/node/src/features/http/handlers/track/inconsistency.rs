@@ -230,7 +230,7 @@ mod tests {
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: blob.size,
-            group,
+            group: group,
             value_hash: blob.get_hash(),
         };
 
