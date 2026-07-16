@@ -8,9 +8,7 @@ use super::error::RouteError;
 
 pub(crate) mod health;
 pub(crate) mod object;
-pub(crate) mod resolve;
 pub(crate) mod s3;
-pub(crate) mod site;
 pub(crate) mod track;
 
 pub fn binary_response<T: wincode::SchemaWrite<Src = T>>(
