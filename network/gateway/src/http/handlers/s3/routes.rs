@@ -58,10 +58,11 @@ use super::response::{
 use super::sigv4::{query_param, sigv4_auth, verify_signed_body, SigV4Verifier, SignedPayloadHash};
 use super::write::S3WriteContext;
 use super::xml::{
-    BucketEntry, ListObjectsV1, ListObjectsV2, ObjectEntry, Owner, PartEntry,
-    STORAGE_CLASS_STANDARD, UploadEntry, complete_multipart_upload_body,
+    BucketEntry, DeleteErrorEntry, ListObjectsV1, ListObjectsV2, ObjectEntry, Owner, PartEntry,
+    STORAGE_CLASS_STANDARD, UploadEntry, complete_multipart_upload_body, delete_result_body,
     initiate_multipart_upload_body, list_all_my_buckets_body, list_multipart_uploads_body, location_constraint_body,
     list_objects_v1_body, list_objects_v2_body, list_parts_body, parse_complete_multipart_upload,
+    parse_delete_objects,
 };
 
 /// Build the S3-compatible Axum router over the shared AppState
@@ -72,6 +73,7 @@ use super::xml::{
 /// - `HEAD /{bucket}` -> HeadBucket
 /// - `GET|HEAD /{bucket}/{key}` -> GetObject / HeadObject
 /// - `PUT /{bucket}/{key}` -> PutObject (or UploadPart with `?uploadId=`)
+/// - `POST /{bucket}` -> DeleteObjects (`?delete`)
 /// - `POST /{bucket}/{key}` -> CreateMultipartUpload (`?uploads`) /
 ///   CompleteMultipartUpload (`?uploadId=`)
 /// - `DELETE /{bucket}/{key}` -> DeleteObject (or AbortMultipartUpload with
@@ -95,7 +97,8 @@ where
             get(bucket_get::<Db, Cluster, Blockchain>)
                 .head(head_bucket::<Db, Cluster, Blockchain>)
                 .put(create_bucket::<Db, Cluster, Blockchain>)
-                .delete(delete_bucket),
+                .delete(delete_bucket)
+                .post(bucket_post::<Db, Cluster, Blockchain>),
         )
         .route(
             "/{bucket}/{*key}",
@@ -1407,15 +1410,16 @@ where
         // the buffered parts for the upload id.
         return abort_multipart_upload(&state, &auth, bucket, key, query.as_deref()).await;
     }
-    delete_object_impl(&state, &auth, bucket, key).await
+    let tape = parse_bucket(&bucket)?;
+    delete_object_impl(&state, &auth, tape, &key).await.map(|()| delete_response())
 }
 
 async fn delete_object_impl<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     auth: &Auth,
-    bucket: String,
-    key: String,
-) -> Result<Response, S3Error>
+    tape: Address,
+    key: &str,
+) -> Result<(), S3Error>
 where
     Db: Store + 'static,
     Cluster: Api + 'static,
@@ -1427,23 +1431,21 @@ where
         return Err(write_not_implemented(false, "DeleteObject"));
     };
 
-    let tape = parse_bucket(&bucket)?;
-
     // Authorization chokepoint runs before the existence check so an
     // unauthorized caller cannot probe which keys exist via the response code.
-    let permit = authorize_write(state, auth, tape, &key, WriteOp::Delete, 0).await?;
+    let permit = authorize_write(state, auth, tape, key, WriteOp::Delete, 0).await?;
 
     // S3 DeleteObject is idempotent: a key absent from the object-list index, or
     // deleted here already, is "deleted", so report success without touching the
     // chain. Nothing was spent, so release the reservation.
-    let resolved = match state.staging.is_deleted(tape, &key) {
+    let resolved = match state.staging.is_deleted(tape, key) {
         true => None,
-        false => resolve_object(state, tape, &key)?,
+        false => resolve_object(state, tape, key)?,
     };
     let Some(resolved) = resolved else {
-        state.staging.tombstone(tape, &key);
+        state.staging.tombstone(tape, key);
         permit.refund(state);
-        return Ok(delete_response());
+        return Ok(());
     };
 
     match write_ctx
@@ -1453,23 +1455,107 @@ where
         Ok(()) => {
             // Hidden here from now on, so the read-after-write window never serves
             // what the chain is about to drop.
-            state.staging.tombstone(tape, &key);
+            state.staging.tombstone(tape, key);
             permit.commit(state, 0);
-            Ok(delete_response())
+            Ok(())
         }
         // A track that raced to deletion (no longer resolvable on-chain) is
         // treated as an idempotent success, matching S3; nothing was spent, so
         // refund the reservation.
         Err(TapedriveError::NotFound) => {
-            state.staging.tombstone(tape, &key);
+            state.staging.tombstone(tape, key);
             permit.refund(state);
-            Ok(delete_response())
+            Ok(())
         }
         Err(error) => {
             permit.refund(state);
             Err(s3_write_error(error))
         }
     }
+}
+
+/// S3 caps a DeleteObjects request at 1000 keys
+const MAX_DELETE_OBJECTS: usize = 1000;
+
+/// `POST /{bucket}` -> DeleteObjects (`?delete`)
+async fn bucket_post<Db, Cluster, Blockchain>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    Extension(auth): Extension<Auth>,
+    Extension(signed_payload): Extension<SignedPayloadHash>,
+    Path(bucket): Path<String>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Result<Response, S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    // The delete-list XML is itself signed; verify it hashes to the signed
+    // x-amz-content-sha256 before parsing.
+    verify_signed_body(&signed_payload, &body)?;
+
+    if has_query_param(query.as_deref(), "delete", None) {
+        return delete_objects(&state, &auth, &bucket, &body).await;
+    }
+    Err(not_implemented("bucket POST"))
+}
+
+/// `POST /{bucket}?delete` -> DeleteObjects
+///
+/// Every key runs the same authorization and on-chain delete as a single
+/// DeleteObject; a failing key becomes an `<Error>` entry in the
+/// `DeleteResult` body instead of failing the batch. Quiet mode reports only
+/// failures.
+async fn delete_objects<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    auth: &Auth,
+    bucket: &str,
+    body: &Bytes,
+) -> Result<Response, S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    if state.write_ctx.is_none() {
+        return Err(write_not_implemented(false, "DeleteObjects"));
+    }
+    // A malformed bucket or request body fails the whole batch; everything
+    // after this point is reported per key.
+    let tape = parse_bucket(bucket)?;
+    let body_text = std::str::from_utf8(body).map_err(|_| {
+        S3Error::InvalidRequest("DeleteObjects body is not valid UTF-8".to_string())
+    })?;
+    let (keys, quiet) = parse_delete_objects(body_text).map_err(S3Error::InvalidRequest)?;
+    if keys.len() > MAX_DELETE_OBJECTS {
+        return Err(S3Error::InvalidRequest(format!(
+            "DeleteObjects lists {} objects; the limit is {MAX_DELETE_OBJECTS}",
+            keys.len()
+        )));
+    }
+
+    // Deletes run one at a time: each landed delete rewrites the tape's track
+    // tree, so the next proof only verifies once the previous delete is
+    // visible. This also paces a bulk purge to one in-flight transaction.
+    let mut deleted = Vec::new();
+    let mut errors = Vec::new();
+    for key in keys {
+        match delete_object_impl(state, auth, tape, &key).await {
+            Ok(()) => {
+                if !quiet {
+                    deleted.push(key);
+                }
+            }
+            Err(error) => errors.push(DeleteErrorEntry {
+                code: error.code(),
+                message: error.message(),
+                key,
+            }),
+        }
+    }
+
+    Ok(xml_ok_response(delete_result_body(&deleted, &errors)))
 }
 
 /// S3 caps `max-parts` (and a single ListParts page) at 1000

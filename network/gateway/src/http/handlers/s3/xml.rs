@@ -436,14 +436,7 @@ pub fn list_multipart_uploads_body(bucket: &str, uploads: &[UploadEntry]) -> Str
 /// etag)` pairs.
 pub fn parse_complete_multipart_upload(body: &str) -> Result<Vec<(u32, String)>, String> {
     let mut parts = Vec::new();
-    let mut rest = body;
-    while let Some(open) = rest.find("<Part>") {
-        let after = &rest[open + "<Part>".len()..];
-        let close = after
-            .find("</Part>")
-            .ok_or_else(|| "unterminated <Part> element".to_string())?;
-        let block = &after[..close];
-
+    for_each_element(body, "Part", |block| {
         let part_number = extract_element(block, "PartNumber")
             .ok_or_else(|| "missing <PartNumber> in <Part>".to_string())?
             .trim()
@@ -454,13 +447,87 @@ pub fn parse_complete_multipart_upload(body: &str) -> Result<Vec<(u32, String)>,
         );
 
         parts.push((part_number, etag));
-        rest = &after[close + "</Part>".len()..];
-    }
+        Ok(())
+    })?;
 
     if parts.is_empty() {
         return Err("CompleteMultipartUpload listed no <Part> elements".to_string());
     }
     Ok(parts)
+}
+
+/// Hand the inner block of every `<tag>...</tag>` element in `body` to `visit`
+fn for_each_element(
+    body: &str,
+    tag: &str,
+    mut visit: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut rest = body;
+    while let Some(start) = rest.find(&open) {
+        let after = &rest[start + open.len()..];
+        let end = after
+            .find(&close)
+            .ok_or_else(|| format!("unterminated <{tag}> element"))?;
+        visit(&after[..end])?;
+        rest = &after[end + close.len()..];
+    }
+    Ok(())
+}
+
+/// One failed key in a `DeleteResult` body
+pub struct DeleteErrorEntry {
+    /// Object key that failed to delete
+    pub key: String,
+    /// S3 error code
+    pub code: &'static str,
+    /// Human-readable failure message
+    pub message: String,
+}
+
+/// Build a `DeleteResult` (DeleteObjects) response body
+pub fn delete_result_body(deleted: &[String], errors: &[DeleteErrorEntry]) -> String {
+    let mut out = String::with_capacity(256);
+    out.push_str(XML_DECL);
+    out.push_str("<DeleteResult xmlns=\"");
+    out.push_str(S3_XMLNS);
+    out.push_str("\">");
+    for key in deleted {
+        out.push_str("<Deleted>");
+        push_element(&mut out, "Key", key);
+        out.push_str("</Deleted>");
+    }
+    for error in errors {
+        out.push_str("<Error>");
+        push_element(&mut out, "Key", &error.key);
+        push_element(&mut out, "Code", error.code);
+        push_element(&mut out, "Message", &error.message);
+        out.push_str("</Error>");
+    }
+    out.push_str("</DeleteResult>");
+    out
+}
+
+/// Parse a `DeleteObjects` request body into its object keys and quiet flag
+///
+/// `<VersionId>` elements are ignored: buckets are unversioned, so a key names
+/// exactly one object.
+pub fn parse_delete_objects(body: &str) -> Result<(Vec<String>, bool), String> {
+    let mut keys = Vec::new();
+    for_each_element(body, "Object", |block| {
+        let key = extract_element(block, "Key")
+            .ok_or_else(|| "missing <Key> in <Object>".to_string())?;
+        keys.push(key);
+        Ok(())
+    })?;
+
+    if keys.is_empty() {
+        return Err("DeleteObjects listed no <Object> elements".to_string());
+    }
+
+    let quiet = extract_element(body, "Quiet").map(|value| value.trim() == "true").unwrap_or(false);
+    Ok((keys, quiet))
 }
 
 /// Read the text content of the first `<tag>...</tag>` in `block`, unescaping the
@@ -813,6 +880,45 @@ mod tests {
         assert!(body.contains("<Owner><ID>owner-id</ID><DisplayName>owner</DisplayName></Owner>"));
         assert!(body.contains(
             "<Bucket><Name>tapeaddr</Name><CreationDate>1970-01-01T00:00:00.000Z</CreationDate></Bucket>"
+        ));
+    }
+
+    // a delete request parses its keys (unescaped) and the quiet flag
+    #[test]
+    fn delete_parse() {
+        let body = "<Delete><Object><Key>a.txt</Key></Object>\
+                    <Object><Key>b &amp; c.txt</Key><VersionId>v1</VersionId></Object>\
+                    <Quiet>true</Quiet></Delete>";
+        let (keys, quiet) = parse_delete_objects(body).expect("parse");
+        assert_eq!(keys, vec!["a.txt".to_string(), "b & c.txt".to_string()]);
+        assert!(quiet);
+    }
+
+    // quiet defaults to false; empty or key-less requests are rejected
+    #[test]
+    fn delete_parse_invalid() {
+        let (keys, quiet) =
+            parse_delete_objects("<Delete><Object><Key>a</Key></Object></Delete>").expect("parse");
+        assert_eq!(keys, vec!["a".to_string()]);
+        assert!(!quiet);
+        assert!(parse_delete_objects("<Delete></Delete>").is_err());
+        assert!(parse_delete_objects("<Delete><Object></Object></Delete>").is_err());
+        assert!(parse_delete_objects("<Delete><Object><Key>a</Key>").is_err());
+    }
+
+    // the delete result renders deleted and error entries, escaped
+    #[test]
+    fn delete_result_render() {
+        let errors = vec![DeleteErrorEntry {
+            key: "locked/<file>".to_string(),
+            code: "AccessDenied",
+            message: "denied".to_string(),
+        }];
+        let body = delete_result_body(&["ok.txt".to_string()], &errors);
+        assert!(body.starts_with(XML_DECL));
+        assert!(body.contains("<Deleted><Key>ok.txt</Key></Deleted>"));
+        assert!(body.contains(
+            "<Error><Key>locked/&lt;file&gt;</Key><Code>AccessDenied</Code><Message>denied</Message></Error>"
         ));
     }
 }

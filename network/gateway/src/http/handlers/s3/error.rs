@@ -99,7 +99,7 @@ impl S3Error {
     }
 
     /// A human-readable `<Message>` for this error
-    fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             Self::NoSuchBucket => "The specified bucket does not exist.".to_string(),
             Self::BucketAlreadyOwnedByYou => {

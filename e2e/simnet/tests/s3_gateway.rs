@@ -458,6 +458,23 @@ async fn read_write_inner() {
     wait_s3_get_size(&s3_base, &bucket_label, overwrite_key, v2.len(), Duration::from_secs(180)).await;
     assert_s3_get_object(&s3_base, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
     eprintln!("s3_gateway: overwrite reclaimed prior {v1_track} and served v2 ({} bytes)", v2.len());
+    // (2e) DeleteObjects (`POST /{bucket}?delete`) removes both gateway-written
+    // objects in one signed request and reports a never-existing key as deleted
+    // too (S3 delete is idempotent). Each key is a real delegate-signed on-chain
+    // delete; the objects then vanish from the S3 read surface once the gateway
+    // ingests the removals.
+    assert_s3_delete_objects(
+        &s3_base,
+        &host,
+        &bucket_label,
+        &[stream_key, mp_key, "missing/never-was.bin"],
+    )
+    .await;
+    eprintln!("s3_gateway: DeleteObjects returned Deleted for both objects + the idempotent miss");
+    let gone = StatusCode::NOT_FOUND;
+    wait_s3_head_status(&s3_base, &bucket_label, stream_key, gone, Duration::from_secs(180)).await;
+    wait_s3_head_status(&s3_base, &bucket_label, mp_key, gone, Duration::from_secs(180)).await;
+    eprintln!("s3_gateway: bulk-deleted objects gone from the S3 read surface");
 
     // (3) Revoke the credential; the same signed PutObject is now denied (the
     // credential resolves but is no longer usable — step 3 of the chokepoint).
@@ -1287,8 +1304,68 @@ async fn wait_sdk_object_listed(
     }
 }
 
-/// Poll `HEAD /{bucket}/{key}` until it returns `200 OK`.
-async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration) {
+/// DeleteObjects (`POST /{bucket}?delete`): send the signed bulk-delete XML and
+/// assert `200` with a `<Deleted>` entry for every key and no `<Error>` entries.
+async fn assert_s3_delete_objects(base: &str, host: &str, bucket: &str, keys: &[&str]) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("build s3 client");
+    let mut delete_xml = String::from("<Delete>");
+    for key in keys {
+        delete_xml.push_str(&format!("<Object><Key>{key}</Key></Object>"));
+    }
+    delete_xml.push_str("</Delete>");
+
+    let path = format!("/{bucket}");
+    let raw_query = "delete";
+    let url = format!("{base}{path}?{raw_query}");
+    let (authorization, amz_date, payload_hash) = sigv4_headers_with_payload(
+        "POST",
+        host,
+        &path,
+        &canonical_query(raw_query),
+        &sha256_hex(delete_xml.as_bytes()),
+    );
+
+    let response = client
+        .post(&url)
+        .header("authorization", authorization)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", payload_hash)
+        .body(delete_xml)
+        .send()
+        .await
+        .expect("delete objects send");
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "DeleteObjects should return 200, got {status}: {body}"
+    );
+    assert!(
+        !body.contains("<Error>"),
+        "DeleteObjects reported a per-key error: {body}"
+    );
+    for key in keys {
+        assert!(
+            body.contains(&format!("<Deleted><Key>{key}</Key></Deleted>")),
+            "DeleteObjects result missing <Deleted> for {key}: {body}"
+        );
+    }
+}
+
+/// Poll `HEAD /{bucket}/{key}` until it returns `expected`: `200` for an object
+/// becoming readable, `404` for a deleted object disappearing once the gateway
+/// ingests the removal.
+async fn wait_s3_head_status(
+    base: &str,
+    bucket: &str,
+    key: &str,
+    expected: StatusCode,
+    timeout: Duration,
+) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -1299,7 +1376,7 @@ async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration)
     loop {
         match client.head(&url).send().await {
             Ok(response) => {
-                if response.status() == StatusCode::OK {
+                if response.status() == expected {
                     return;
                 }
                 last = Some(response.status());
@@ -1308,11 +1385,16 @@ async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration)
         }
         if start.elapsed() >= timeout {
             panic!(
-                "object never became readable via S3 HEAD within {timeout:?} (last status {last:?})"
+                "S3 HEAD never returned {expected} within {timeout:?} (last status {last:?})"
             );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+/// Poll `HEAD /{bucket}/{key}` until it returns `200 OK`.
+async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration) {
+    wait_s3_head_status(base, bucket, key, StatusCode::OK, timeout).await;
 }
 
 /// Assert `GET /{bucket}?list-type=2&prefix=photos/` returns a valid
