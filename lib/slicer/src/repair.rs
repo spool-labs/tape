@@ -210,11 +210,16 @@ impl Slicer<ClayCoder> {
         available: &[SliceIndex],
         reference: &[u8],
     ) -> Result<RepairPlan, RepairError> {
-        let metadata = SliceMetadata::from_slice(reference)
+        let metadata = SliceMetadata::parse(reference)
             .map_err(|e| RepairError::InvalidLayout(e.to_string()))?;
 
         let blob_len = metadata.blob_len();
         let stripe_size = metadata.stripe_size();
+        if !self.validation.accepts(stripe_size, blob_len) {
+            return Err(RepairError::InvalidLayout(
+                format!("stripe size {stripe_size} not accepted"),
+            ));
+        }
         let num_stripes = if blob_len == 0 {
             1
         } else {

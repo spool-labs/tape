@@ -42,6 +42,69 @@ pub fn num_stripes(blob_len: usize, stripe_size: usize) -> usize {
     }
 }
 
+/// Cap for derived stripe sizes, preserving today's encode memory profile.
+pub const DERIVED_STRIPE_CAP: usize = 1_000_000;
+
+/// Derive a per-blob stripe size: split the blob into equal stripes no larger
+/// than roughly the cap, rounded up to the coder's alignment so total padding
+/// stays below one alignment unit per stripe.
+pub fn derive_stripe_size(blob_len: usize, alignment: usize, cap: usize) -> usize {
+    let count = blob_len.div_ceil(cap).max(1);
+    let stripe = blob_len.div_ceil(count).max(1);
+    stripe.div_ceil(alignment) * alignment
+}
+
+/// Writer-side stripe sizing policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripePolicy {
+    /// Ladder selection by blob size (production default).
+    Adaptive,
+    /// Per-blob equal split, aligned and capped.
+    Derived { alignment: usize, cap: usize },
+    /// Honor an explicitly configured stripe size.
+    Fixed(usize),
+}
+
+impl StripePolicy {
+    pub fn stripe_size_for(&self, blob_len: usize) -> usize {
+        match *self {
+            Self::Adaptive => pick_stripe_size(blob_len),
+            Self::Derived { alignment, cap } => derive_stripe_size(blob_len, alignment, cap),
+            Self::Fixed(size) => size,
+        }
+    }
+}
+
+/// Reader-side stripe size acceptance for slice metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripeValidation {
+    /// Ladder members only (production default).
+    LadderOnly,
+    /// Ladder members, or the size the derived policy picks for the blob
+    /// length carried in the same metadata.
+    LadderOrDerived { alignment: usize, cap: usize },
+    /// Ladder members or one explicit size.
+    LadderOrExact(usize),
+}
+
+impl StripeValidation {
+    pub fn accepts(&self, stripe_size: usize, blob_len: usize) -> bool {
+        if stripe_size == 0 {
+            return false;
+        }
+        if STRIPE_SIZES.contains(&stripe_size) {
+            return true;
+        }
+        match *self {
+            Self::LadderOnly => false,
+            Self::LadderOrDerived { alignment, cap } => {
+                stripe_size == derive_stripe_size(blob_len, alignment, cap)
+            }
+            Self::LadderOrExact(size) => stripe_size == size,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
