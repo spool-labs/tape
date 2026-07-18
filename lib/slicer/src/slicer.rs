@@ -134,7 +134,7 @@ pub struct Slicer<C: ErasureCoder> {
 impl<C: ErasureCoder> Slicer<C> {
     /// Create a new striped coder with identity mapping (no rotation).
     ///
-    /// Uses default stripe size (10 MB) and Clay default profile.
+    /// Uses default stripe size (1 MB) and Clay default profile.
     pub fn new(coder: C) -> Self {
         Self {
             coder,
@@ -465,8 +465,7 @@ mod tests {
         assert_eq!(pick_stripe_size(100), STRIPE_SIZES[0]);
         assert_eq!(pick_stripe_size(1_000_000), STRIPE_SIZES[0]);
         assert_eq!(pick_stripe_size(1_000_001), STRIPE_SIZES[1]);
-        assert_eq!(pick_stripe_size(100_000_000), STRIPE_SIZES[1]);
-        assert_eq!(pick_stripe_size(100_000_001), DEFAULT_STRIPE_SIZE);
+        assert_eq!(pick_stripe_size(100_000_000), DEFAULT_STRIPE_SIZE);
     }
 
     #[test]

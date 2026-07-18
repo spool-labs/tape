@@ -11,7 +11,7 @@ use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed2
 
 use crate::core::error::NodeError;
 use super::{
-    gateway::GatewayConfig,
+    gateway::{GatewayConfig, is_valid_origin},
     helpers::{deserialize_pathbuf, expand_path},
     http::{HttpConfig, NetworkConfig},
     https::HttpsConfig,
@@ -195,6 +195,27 @@ impl NodeConfig {
             )));
         }
 
+        if !metering.grades.contains_key(&metering.site_grade) {
+            return Err(ConfigError::Invalid(format!(
+                "gateway.metering.site_grade `{}` is not a defined grade",
+                metering.site_grade
+            )));
+        }
+
+        let site_origins = self
+            .gateway
+            .site
+            .connect_origins
+            .iter()
+            .chain(self.gateway.site.cors_origins.iter());
+        for origin in site_origins {
+            if !is_valid_origin(origin) {
+                return Err(ConfigError::Invalid(format!(
+                    "gateway.site origin `{origin}` is not a valid origin"
+                )));
+            }
+        }
+
         if self.gateway.metering.over_budget_penalty_secs == 0 {
             return Err(ConfigError::Invalid(
                 "gateway.metering.over_budget_penalty_secs must be greater than zero".into(),
@@ -372,12 +393,12 @@ fn default_commission() -> BasisPoints {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
     use std::path::PathBuf;
 
     use tape_core::types::{BasisPoints, SlotNumber};
 
     use super::{NodeConfig, default_config_path};
+    use crate::config::cidr::CidrBlock;
     use crate::config::logs::LoggingFormat;
 
     const EXAMPLE_CONFIG: &str = r#"
@@ -417,6 +438,7 @@ https:
 store:
   path: "/var/lib/tape/data"
   compaction_mb_per_sec: 80
+  bulk_compaction_mb_per_sec: 40
   gc:
     enabled: true
     interval_secs: 30
@@ -440,11 +462,17 @@ gateway:
         read_burst: 50
         read_bytes_per_sec: 2097152
         read_byte_burst: 4194304
+      site:
+        read_per_sec: 40
+        read_burst: 160
+        read_bytes_per_sec: 2097152
+        read_byte_burst: 4194304
     anonymous_grade: anonymous
     default_grade: standard
+    site_grade: site
     over_budget_penalty_secs: 8
     stale_entry_secs: 120
-    trusted_proxies: ["203.0.113.7"]
+    trusted_proxies: ["203.0.113.7", "173.245.48.0/20"]
 recovery:
   max_workers: 42
   sync_batch: 99
@@ -490,6 +518,7 @@ metrics:
         assert!(!config.https.auto_update);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
+        assert_eq!(config.store.bulk_compaction_mb_per_sec, 40);
         assert!(config.store.gc.enabled);
         assert_eq!(config.store.gc.interval_secs, 30);
         assert_eq!(config.store.gc.track_batch, 64);
@@ -512,9 +541,13 @@ metrics:
         assert_eq!(config.gateway.metering.default_grade, "standard");
         assert_eq!(config.gateway.metering.over_budget_penalty_secs, 8);
         assert_eq!(config.gateway.metering.stale_entry_secs, 120);
+        assert_eq!(config.gateway.metering.site_grade, "site");
         assert_eq!(
             config.gateway.metering.trusted_proxies,
-            vec!["203.0.113.7".parse::<IpAddr>().unwrap()]
+            vec![
+                "203.0.113.7".parse::<CidrBlock>().unwrap(),
+                "173.245.48.0/20".parse::<CidrBlock>().unwrap(),
+            ]
         );
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.sync_batch, 99);

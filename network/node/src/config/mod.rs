@@ -1,5 +1,6 @@
-pub mod http;
+pub mod cidr;
 pub mod gateway;
+pub mod http;
 mod helpers;
 pub mod https;
 pub mod logs;

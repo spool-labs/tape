@@ -39,6 +39,7 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, 
         &meta_dir,
         &bulk_dir,
         config.store.compaction_mb_per_sec,
+        config.store.bulk_compaction_mb_per_sec,
     )
     .map_err(|error| {
         NodeError::Store(format!(

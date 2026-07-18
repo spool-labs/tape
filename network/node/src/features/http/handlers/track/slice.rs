@@ -45,11 +45,19 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotResponsible)?;
 
-    let track = state
+    // Resolve through pending so a freshly written slice serves at confirmed
+    // latency instead of waiting for finalization; the blacklist check below only
+    // needs the tape, which pending state carries.
+    let in_store = state
         .context
         .store
         .get_track(track_key)
-        .map_err(store_error)?
+        .map_err(store_error)?;
+
+    let track = state
+        .context
+        .pending
+        .apply_to_track(track_key, in_store)
         .ok_or(RouteError::NotFound)?;
 
     if refuses_object(
@@ -191,6 +199,7 @@ mod tests {
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    use bytemuck::Zeroable;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::encoding::EncodingProfile;
@@ -325,6 +334,82 @@ mod tests {
         let response = match result {
             Ok(response) => response.into_response(),
             Err(_) => panic!("get_slice failed for projected snapshot track"),
+        };
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+
+        assert_eq!(body.as_ref(), slice_bytes.as_slice());
+    }
+
+    fn seed_pending_slice(ctx: &TestContext) -> (Address, SpoolIndex, Vec<u8>) {
+        let tape = Address::new_unique();
+        let group = GroupIndex(2);
+        let track_number = TrackNumber(3);
+        let owned_spool = group.spool_at(5);
+        let slice_bytes = vec![0xCD; 96];
+        let track_address = track_pda(tape, track_number).0;
+
+        // The blob contents do not matter here: get_slice serves the raw bytes and
+        // never decodes or verifies, so a zeroed placeholder is enough.
+        let blob = BlobEncoding::zeroed();
+
+        let track = CompressedTrack {
+            tape,
+            key: Hash::new_unique(),
+            track_number,
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Registered as u64,
+            size: blob.size,
+            group,
+            value_hash: blob.get_hash(),
+        };
+
+        // Slice bytes and spool ownership land in the store at put time.
+        ctx.store
+            .put_slice(owned_spool, track_address, slice_bytes.clone())
+            .expect("seed slice");
+        ctx.store
+            .set_spool_state(
+                owned_spool,
+                SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
+            )
+            .expect("set spool state");
+
+        // The record lives only in pending, as it would between confirmation and
+        // finalization, and is never written to disk.
+        ctx.pending
+            .apply_register(SlotNumber(100), track_address, track, BlobData::Coded(blob));
+
+        (track_address, owned_spool, slice_bytes)
+    }
+
+    // a slice serves while its record is still pending, not yet finalized to disk
+    #[tokio::test]
+    async fn serves_pending() {
+        let ctx = test_context().await;
+        let (track_address, owned_spool, slice_bytes) = seed_pending_slice(&ctx);
+
+        assert!(ctx.store.get_track(track_address).unwrap().is_none());
+
+        let result = get_slice(
+            State(AppState {
+                context: ctx.clone(),
+            }),
+            MaybeStakedPeer(Some(crate::features::http::auth::StakedPeer {
+                node: ctx.node_address(),
+                tls_pubkey: ctx.tls_pubkey(),
+                stake: TAPE(1),
+            })),
+            Path((track_address.to_string(), owned_spool)),
+        )
+        .await;
+        let response = match result {
+            Ok(response) => response.into_response(),
+            Err(_) => panic!("get_slice should serve a pending-only track"),
         };
 
         assert_eq!(response.status(), StatusCode::OK);

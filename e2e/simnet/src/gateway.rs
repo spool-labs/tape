@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use peer_http::HttpApi;
@@ -16,7 +17,7 @@ use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_node::config::gateway::WriteDefault;
+use tape_node::config::gateway::{GatewaySiteConfig, WriteDefault};
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::core::error::NodeError;
@@ -279,6 +280,31 @@ impl TestGateway {
 
     pub fn base_url(&self) -> String {
         format!("http://{}:{}", self.public_host, self.public_port)
+    }
+
+    /// Site serving knobs, settable before the runtime starts.
+    pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
+        &mut self.app_config.gateway.site
+    }
+
+    /// Poll the gateway's native health endpoint until it reports ready.
+    pub async fn wait_healthy(&self, timeout: Duration) -> Result<()> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()?;
+        let base = self.base_url();
+        let start = Instant::now();
+        loop {
+            if let Ok(response) = client.get(format!("{base}/v1/health")).send().await {
+                if response.status() == reqwest::StatusCode::OK {
+                    return Ok(());
+                }
+            }
+            if start.elapsed() >= timeout {
+                anyhow::bail!("timed out waiting for gateway health");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     pub fn context(&self) -> TestGatewayContext {

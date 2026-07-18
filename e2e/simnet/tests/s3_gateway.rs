@@ -256,13 +256,15 @@ async fn read_write_inner() {
             .stake_gateway(&gateway, GATEWAY_STAKE)
             .await
             .expect("stake gateway");
-        wait_gateway_known_by_storage_nodes(&harness, &gateway, active_timeout)
+        harness
+            .wait_gateway_known(&gateway, active_timeout)
             .await
             .expect("storage nodes learned gateway peer");
         eprintln!("s3_gateway: storage nodes learned gateway peer");
 
         gateway.start().await.expect("start gateway");
-        wait_gateway_healthy(&gateway.base_url(), Duration::from_secs(180))
+        gateway
+            .wait_healthy(Duration::from_secs(180))
             .await
             .expect("gateway healthy");
         eprintln!("s3_gateway: gateway runtime healthy");
@@ -1402,62 +1404,7 @@ async fn assert_s3_no_such_key(base: &str, bucket: &str, missing_key: &str) {
     );
 }
 
-/// Wait until every running storage node has discovered the gateway as a peer
-/// (by its pinned TLS pubkey). Mirrors the helper in `gateway_read.rs`.
-async fn wait_gateway_known_by_storage_nodes(
-    harness: &SimnetHarness,
-    gateway: &TestGateway,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let start = Instant::now();
-    let tls_pubkey = gateway.tls_pubkey();
 
-    loop {
-        let mut running = 0usize;
-        let mut known = 0usize;
-        for node in harness.nodes().iter().filter(|node| node.is_running()) {
-            running += 1;
-            if node
-                .context()
-                .peer_manager
-                .peer_for_tls_pubkey(tls_pubkey)
-                .is_some()
-            {
-                known += 1;
-            }
-        }
-
-        if running > 0 && known == running {
-            return Ok(());
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "timed out waiting for storage nodes to learn gateway peer, known {known}/{running}"
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-/// Poll the gateway's native `/v1/health` endpoint until it reports `200 OK`.
-/// Mirrors the helper in `gateway_read.rs`.
-async fn wait_gateway_healthy(base: &str, timeout: Duration) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()?;
-    let start = Instant::now();
-    loop {
-        if let Ok(response) = client.get(format!("{base}/v1/health")).send().await {
-            if response.status() == StatusCode::OK {
-                return Ok(());
-            }
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!("timed out waiting for gateway health");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
 
 /// Deterministic pseudo-random bytes, matching `gateway_read.rs`.
 fn deterministic_bytes(len: usize) -> Vec<u8> {
