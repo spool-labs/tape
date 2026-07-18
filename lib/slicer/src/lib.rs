@@ -20,8 +20,8 @@ pub use reed_solomon::ReedSolomonCoder;
 pub use metadata::SliceMetadata;
 pub use slicer::{Slicer, MappingStrategy, ROTATION_STEP, shard_to_slice, slice_to_shard};
 pub use adaptive::{
-    derive_stripe_size, num_stripes, pick_stripe_size, StripePolicy, StripeValidation,
-    DEFAULT_STRIPE_SIZE, DERIVED_STRIPE_CAP, STRIPE_SIZES,
+    derive_stripe_size, num_stripes, pick_stripe_size, stripe_size_accepted, StripePolicy,
+    StripeValidation, DEFAULT_STRIPE_SIZE, DERIVED_STRIPE_CAP, STRIPE_SIZES,
 };
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;

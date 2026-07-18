@@ -54,22 +54,33 @@ pub fn derive_stripe_size(blob_len: usize, alignment: usize, cap: usize) -> usiz
     stripe.div_ceil(alignment) * alignment
 }
 
+/// Whether a stripe size is one production readers accept for this blob
+/// length and coder alignment: a legacy ladder value, or the derived size.
+pub fn stripe_size_accepted(stripe_size: usize, blob_len: usize, alignment: usize) -> bool {
+    if stripe_size == 0 {
+        return false;
+    }
+    STRIPE_SIZES.contains(&stripe_size)
+        || stripe_size == derive_stripe_size(blob_len, alignment, DERIVED_STRIPE_CAP)
+}
+
 /// Writer-side stripe sizing policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StripePolicy {
-    /// Ladder selection by blob size (production default).
-    Adaptive,
-    /// Per-blob equal split, aligned and capped.
-    Derived { alignment: usize, cap: usize },
+    /// Per-blob equal split, aligned and capped (production default).
+    Derived { cap: usize },
+    /// Legacy ladder selection by blob size, kept for reading and for
+    /// emulating pre-derived writers in tests.
+    Ladder,
     /// Honor an explicitly configured stripe size.
     Fixed(usize),
 }
 
 impl StripePolicy {
-    pub fn stripe_size_for(&self, blob_len: usize) -> usize {
+    pub fn stripe_size_for(&self, blob_len: usize, alignment: usize) -> usize {
         match *self {
-            Self::Adaptive => pick_stripe_size(blob_len),
-            Self::Derived { alignment, cap } => derive_stripe_size(blob_len, alignment, cap),
+            Self::Derived { cap } => derive_stripe_size(blob_len, alignment, cap),
+            Self::Ladder => pick_stripe_size(blob_len),
             Self::Fixed(size) => size,
         }
     }
@@ -78,17 +89,15 @@ impl StripePolicy {
 /// Reader-side stripe size acceptance for slice metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StripeValidation {
-    /// Ladder members only (production default).
-    LadderOnly,
     /// Ladder members, or the size the derived policy picks for the blob
-    /// length carried in the same metadata.
-    LadderOrDerived { alignment: usize, cap: usize },
+    /// length carried in the same metadata (production default).
+    LadderOrDerived { cap: usize },
     /// Ladder members or one explicit size.
     LadderOrExact(usize),
 }
 
 impl StripeValidation {
-    pub fn accepts(&self, stripe_size: usize, blob_len: usize) -> bool {
+    pub fn accepts(&self, stripe_size: usize, blob_len: usize, alignment: usize) -> bool {
         if stripe_size == 0 {
             return false;
         }
@@ -96,8 +105,7 @@ impl StripeValidation {
             return true;
         }
         match *self {
-            Self::LadderOnly => false,
-            Self::LadderOrDerived { alignment, cap } => {
+            Self::LadderOrDerived { cap } => {
                 stripe_size == derive_stripe_size(blob_len, alignment, cap)
             }
             Self::LadderOrExact(size) => stripe_size == size,

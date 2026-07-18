@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use tape_core::encoding::EncodingProfile;
 use tape_core::types::ChunkNumber;
 
-use crate::adaptive::STRIPE_SIZES;
+use crate::adaptive::{stripe_size_accepted, STRIPE_SIZES};
 use crate::errors::DecodeError;
 
 /// Metadata suffix appended to each slice.
@@ -77,11 +77,21 @@ impl SliceMetadata {
         Ok(*bytemuck::from_bytes(&buf))
     }
 
-    /// Parse from slice suffix bytes, accepting ladder stripe sizes only.
+    /// Parse from slice suffix bytes, accepting legacy ladder stripe sizes
+    /// and, for clay profiles, the derived size for the carried blob length.
     pub fn from_slice(slice_data: &[u8]) -> Result<Self, DecodeError> {
         let meta = Self::parse(slice_data)?;
 
-        if !STRIPE_SIZES.contains(&(meta.stripe_size as usize)) {
+        let accepted = if meta.profile.is_clay() {
+            stripe_size_accepted(
+                meta.stripe_size as usize,
+                meta.blob_len as usize,
+                meta.profile.clay_params().stripe_alignment() as usize,
+            )
+        } else {
+            STRIPE_SIZES.contains(&(meta.stripe_size as usize))
+        };
+        if !accepted {
             return Err(DecodeError::InvalidLayout);
         }
 

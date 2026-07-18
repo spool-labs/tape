@@ -1,15 +1,15 @@
-//! Stripe ladder reachability and padding behavior (issue 69).
+//! Stripe sizing regression tests (issue 69).
 //!
-//! Guards against two regressions:
-//! 1. A ladder tier only selectable for blobs larger than any encode path
-//!    accepts, which becomes dead code the parser still validates against.
-//! 2. Unquantified drift in the final-stripe padding that multi-stripe blobs
-//!    pay just past a stripe boundary.
+//! Production writers derive the stripe size per blob; readers accept derived
+//! sizes plus the legacy ladder that already-stored tracks carry. These tests
+//! pin the derived scheme's padding floor, the legacy ladder's continued
+//! acceptance, and the sawtooth the ladder pays (so old-format costs stay
+//! documented, not rediscovered).
 
 use tape_core::encoding::ClayParams;
 use tape_slicer::{
-    num_stripes, pick_stripe_size, ClayCoder, ErasureCoder, SliceMetadata, Slicer,
-    DEFAULT_STRIPE_SIZE, MAX_CHUNK_BYTES, STRIPE_SIZES,
+    derive_stripe_size, num_stripes, pick_stripe_size, ClayCoder, ErasureCoder, SliceMetadata,
+    Slicer, StripePolicy, DERIVED_STRIPE_CAP, MAX_CHUNK_BYTES, STRIPE_SIZES,
 };
 
 /// SDK cap on a single coded track (sdk/src/stream/manifest.rs). Redeclared
@@ -17,21 +17,37 @@ use tape_slicer::{
 /// matching test in the SDK ties the ladder to the real constant.
 const MAX_TRACK_SIZE: usize = 64 * 1024 * 1024;
 
+/// Default Clay profile encode granularity (k * alpha * 2).
+const ALIGN: usize = 1_400;
+
 fn mk(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
 }
 
-/// Bytes stored across all slices for one blob, metadata suffixes excluded.
-fn stored_payload_bytes(blob: &[u8]) -> usize {
+fn ladder_slicer() -> Slicer<ClayCoder> {
     let mut slicer = Slicer::clay_default();
+    slicer.set_policy(StripePolicy::Ladder);
+    slicer
+}
+
+/// Bytes stored across all slices for one blob, metadata suffixes excluded.
+fn stored_payload_bytes(slicer: &mut Slicer<ClayCoder>, blob: &[u8]) -> usize {
     let slices = slicer.encode(blob).unwrap();
     slices.iter().map(|s| s.len() - SliceMetadata::SIZE).sum()
 }
 
-/// The same figure derived from chunk arithmetic without encoding.
-fn modeled_payload_bytes(blob_len: usize) -> usize {
+/// The ladder scheme's stored bytes, derived from chunk arithmetic.
+fn modeled_ladder_bytes(blob_len: usize) -> usize {
     let coder = ClayCoder::from_params(ClayParams::default());
     let stripe_size = pick_stripe_size(blob_len);
+    let stripes = num_stripes(blob_len, stripe_size);
+    stripes * coder.track_chunk_size(stripe_size, blob_len) * coder.n()
+}
+
+/// The derived scheme's stored bytes, derived from chunk arithmetic.
+fn modeled_derived_bytes(blob_len: usize) -> usize {
+    let coder = ClayCoder::from_params(ClayParams::default());
+    let stripe_size = derive_stripe_size(blob_len, ALIGN, DERIVED_STRIPE_CAP);
     let stripes = num_stripes(blob_len, stripe_size);
     stripes * coder.track_chunk_size(stripe_size, blob_len) * coder.n()
 }
@@ -42,10 +58,33 @@ fn ideal_payload_bytes(blob_len: usize) -> usize {
     blob_len * coder.n() / coder.k()
 }
 
-// Every ladder tier is selected by some blob size within the track cap, and
-// only ladder values are ever selected, so no tier is dead code.
+// the default writer emits the derived size for every blob and the metadata
+// parser accepts it
 #[test]
-fn every_ladder_tier_reachable_within_track_cap() {
+fn default_writer_output_accepted_by_parser() {
+    let mut slicer = Slicer::clay_default();
+    for len in [1, 500_000, 1_000_000, 2_000_000, 4 * 1024 * 1024 + 8] {
+        let slices = slicer.encode(&mk(len)).unwrap();
+        let meta = SliceMetadata::from_slice(&slices[0]).unwrap();
+        assert_eq!(
+            meta.stripe_size(),
+            derive_stripe_size(len, ALIGN, DERIVED_STRIPE_CAP),
+            "blob_len {len}"
+        );
+    }
+}
+
+// legacy ladder values stay accepted so stored tracks keep decoding; the
+// ladder itself stays fully reachable for old-writer emulation
+#[test]
+fn legacy_ladder_still_accepted_and_reachable() {
+    let mut slicer = ladder_slicer();
+    for len in [1, 100_001, 1_000_001] {
+        let slices = slicer.encode(&mk(len)).unwrap();
+        let meta = SliceMetadata::from_slice(&slices[0]).unwrap();
+        assert!(STRIPE_SIZES.contains(&meta.stripe_size()), "blob_len {len}");
+    }
+
     let mut seen: Vec<usize> = STRIPE_SIZES
         .iter()
         .flat_map(|&size| [size, size + 1])
@@ -58,84 +97,83 @@ fn every_ladder_tier_reachable_within_track_cap() {
     assert_eq!(seen, STRIPE_SIZES);
 }
 
-// The constructor default is the top tier, and encode always picks from the
-// ladder, so slice metadata never carries an off-ladder size.
+// the parser still fails closed on sizes that are neither ladder nor the
+// derived size for the carried blob length
 #[test]
-fn encode_always_picks_a_ladder_stripe_size() {
-    assert_eq!(DEFAULT_STRIPE_SIZE, *STRIPE_SIZES.last().unwrap());
-
-    let mut slicer = Slicer::clay_default();
-    for len in [1, 500_000, 1_000_000, 2_000_000] {
-        let slices = slicer.encode(&mk(len)).unwrap();
-        let meta = SliceMetadata::from_slice(&slices[0]).unwrap();
-        assert!(STRIPE_SIZES.contains(&meta.stripe_size()), "blob_len {len}");
-    }
-}
-
-// Rollout constraint: every decode, repair, and recover path parses metadata
-// through this check, so a stripe size outside the ladder fails fleet-wide.
-// Any sizing scheme that emits new values needs all parsers upgraded first.
-#[test]
-fn parser_rejects_off_ladder_stripe_size() {
+fn parser_rejects_off_scheme_stripe_size() {
     let mut meta = SliceMetadata::new(3_000_000, STRIPE_SIZES[1]);
     meta.stripe_size = 2_000_000;
     assert!(SliceMetadata::from_slice(&meta.to_bytes()).is_err());
+
+    meta.stripe_size = 0;
+    assert!(SliceMetadata::from_slice(&meta.to_bytes()).is_err());
 }
 
-// The analytic model used below reproduces the encoder exactly.
+// the analytic models used below reproduce both encoders exactly
 #[test]
-fn analytic_model_matches_encoder() {
+fn analytic_models_match_encoders() {
+    let mut ladder = ladder_slicer();
+    let mut derived = Slicer::clay_default();
     for len in [1, 1_400, 100_000, 100_001, 250_000, 1_000_000, 1_000_001, 1_500_000] {
+        let blob = mk(len);
         assert_eq!(
-            modeled_payload_bytes(len),
-            stored_payload_bytes(&mk(len)),
-            "model diverges at blob_len {len}"
+            modeled_ladder_bytes(len),
+            stored_payload_bytes(&mut ladder, &blob),
+            "ladder model diverges at blob_len {len}"
+        );
+        assert_eq!(
+            modeled_derived_bytes(len),
+            stored_payload_bytes(&mut derived, &blob),
+            "derived model diverges at blob_len {len}"
         );
     }
 }
 
-// One byte past a stripe boundary encodes as two full stripes, storing nearly
-// twice the k/n coded overhead. At the boundary itself the overhead is only
-// the coder's 1400-byte alignment rounding.
+// derived padding sits at the alignment floor at every size, including the
+// boundary-adjacent sizes where the ladder paid up to 2x
 #[test]
-fn padding_sawtooth_peaks_past_stripe_boundaries() {
-    for boundary in [100_000, 1_000_000] {
-        let at = stored_payload_bytes(&mk(boundary)) as f64 / ideal_payload_bytes(boundary) as f64;
-        let past = stored_payload_bytes(&mk(boundary + 1)) as f64
-            / ideal_payload_bytes(boundary + 1) as f64;
-
-        assert!(at < 1.05, "overhead at {boundary} boundary: {at:.3}");
-        assert!(past > 1.9, "overhead past {boundary} boundary: {past:.3}");
+fn derived_padding_stays_at_alignment_floor() {
+    for len in [100_001usize, 1_000_001, 1_500_000, 2_000_001, 4 * 1024 * 1024 + 8] {
+        let ratio = modeled_derived_bytes(len) as f64 / ideal_payload_bytes(len) as f64;
+        assert!(ratio < 1.01, "derived overhead at {len}: {ratio:.4}");
     }
-}
-
-// The sawtooth decays as the final stripe fills back up.
-#[test]
-fn padding_overhead_decays_as_final_stripe_fills() {
-    let ratio = |len: usize| modeled_payload_bytes(len) as f64 / ideal_payload_bytes(len) as f64;
-    assert!(ratio(1_000_001) > ratio(1_500_000));
-    assert!(ratio(1_500_000) > ratio(1_999_999));
-    assert!(ratio(1_999_999) < 1.01);
-}
-
-// At the 64 MiB track cap the final-stripe padding amortizes to roughly one
-// percent.
-#[test]
-fn padding_amortizes_at_max_track_size() {
-    let ratio = modeled_payload_bytes(MAX_TRACK_SIZE) as f64
+    let cap_ratio = modeled_derived_bytes(MAX_TRACK_SIZE) as f64
         / ideal_payload_bytes(MAX_TRACK_SIZE) as f64;
-    assert!(ratio < 1.02, "overhead at MAX_TRACK_SIZE: {ratio:.4}");
+    assert!(cap_ratio < 1.001, "derived overhead at cap: {cap_ratio:.5}");
 }
 
-// The floor for any sizing scheme: the default Clay profile encodes in
-// multiples of k * alpha * 2 = 1400 bytes, so padding below that rounding is
-// impossible.
+// the ladder's sawtooth stays documented: one byte past a boundary stored
+// nearly twice the coded ideal, decaying to about one percent at the cap
+#[test]
+fn legacy_ladder_sawtooth_documented() {
+    let mut slicer = ladder_slicer();
+    for boundary in [100_000usize, 1_000_000] {
+        let at = stored_payload_bytes(&mut slicer, &mk(boundary)) as f64
+            / ideal_payload_bytes(boundary) as f64;
+        let past = stored_payload_bytes(&mut slicer, &mk(boundary + 1)) as f64
+            / ideal_payload_bytes(boundary + 1) as f64;
+        assert!(at < 1.05, "ladder overhead at {boundary}: {at:.3}");
+        assert!(past > 1.9, "ladder overhead past {boundary}: {past:.3}");
+    }
+
+    let cap_ratio = modeled_ladder_bytes(MAX_TRACK_SIZE) as f64
+        / ideal_payload_bytes(MAX_TRACK_SIZE) as f64;
+    assert!(cap_ratio < 1.02, "ladder overhead at cap: {cap_ratio:.4}");
+}
+
+// the floor for any sizing scheme: the default Clay profile encodes in
+// multiples of k * alpha * 2 = 1400 bytes, and the params arithmetic agrees
+// with the constructed coder
 #[test]
 fn clay_alignment_floor_is_1400_bytes() {
-    let coder = ClayCoder::from_params(ClayParams::default());
+    let params = ClayParams::default();
+    let coder = ClayCoder::from_params(params);
+
     assert_eq!(coder.k(), 7);
     assert_eq!(coder.alpha(), 100);
-    assert_eq!(coder.k() * coder.alpha() * 2, 1_400);
+    assert_eq!(params.alpha(), 100);
+    assert_eq!(params.stripe_alignment() as usize, ALIGN);
+    assert_eq!(coder.stripe_alignment(), ALIGN);
 
     assert_eq!(coder.chunk_size_for(1) * coder.k(), 1_400);
     assert_eq!(coder.chunk_size_for(1_400) * coder.k(), 1_400);

@@ -54,7 +54,7 @@ fn measure_stripe_size_throughput() {
 #[test]
 #[ignore]
 fn measure_policy_comparison() {
-    let derived = StripePolicy::Derived { alignment: ALIGN, cap: DERIVED_STRIPE_CAP };
+    let derived = StripePolicy::Derived { cap: DERIVED_STRIPE_CAP };
     let sizes = [100_001usize, 1_000_001, 4 * MIB + 8, 16 * MIB, 64 * MIB];
 
     println!("blob_len policy stripe stripes stored ratio encode_mbps decode_mbps");
@@ -62,13 +62,10 @@ fn measure_policy_comparison() {
         let blob = mk(len);
         let ideal = len as f64 * 20.0 / 7.0;
 
-        for (name, policy) in [("ladder", StripePolicy::Adaptive), ("derived", derived)] {
+        for (name, policy) in [("ladder", StripePolicy::Ladder), ("derived", derived)] {
             let mut slicer = Slicer::clay_default();
             slicer.set_policy(policy);
-            slicer.set_validation(StripeValidation::LadderOrDerived {
-                alignment: ALIGN,
-                cap: DERIVED_STRIPE_CAP,
-            });
+            slicer.set_validation(StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP });
 
             slicer.encode(&blob).unwrap();
             let reps = if len >= 16 * MIB { 2 } else { 5 };
@@ -106,18 +103,15 @@ fn measure_policy_comparison() {
 #[test]
 #[ignore]
 fn measure_repair() {
-    let derived = StripePolicy::Derived { alignment: ALIGN, cap: DERIVED_STRIPE_CAP };
+    let derived = StripePolicy::Derived { cap: DERIVED_STRIPE_CAP };
 
     println!("blob_len policy repair_ms helper_bytes");
     for &len in &[1_000_001usize, 4 * MIB + 8] {
         let blob = mk(len);
-        for (name, policy) in [("ladder", StripePolicy::Adaptive), ("derived", derived)] {
+        for (name, policy) in [("ladder", StripePolicy::Ladder), ("derived", derived)] {
             let mut slicer = Slicer::clay_default();
             slicer.set_policy(policy);
-            slicer.set_validation(StripeValidation::LadderOrDerived {
-                alignment: ALIGN,
-                cap: DERIVED_STRIPE_CAP,
-            });
+            slicer.set_validation(StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP });
             let slices = slicer.encode(&blob).unwrap();
 
             let helpers: Vec<(SliceIndex, &[u8])> = slices

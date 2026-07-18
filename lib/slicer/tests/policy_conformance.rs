@@ -40,16 +40,13 @@ fn schemes() -> Vec<Scheme> {
     vec![
         Scheme {
             name: "ladder",
-            policy: StripePolicy::Adaptive,
-            validation: StripeValidation::LadderOnly,
+            policy: StripePolicy::Ladder,
+            validation: StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP },
         },
         Scheme {
             name: "derived",
-            policy: StripePolicy::Derived { alignment: ALIGN, cap: DERIVED_STRIPE_CAP },
-            validation: StripeValidation::LadderOrDerived {
-                alignment: ALIGN,
-                cap: DERIVED_STRIPE_CAP,
-            },
+            policy: StripePolicy::Derived { cap: DERIVED_STRIPE_CAP },
+            validation: StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP },
         },
         Scheme {
             name: "writer-chosen",
@@ -231,38 +228,39 @@ fn derived_padding_and_range_bounds() {
 }
 
 // rollout matrix: what each parser generation accepts from each writer
-// generation; parsers must upgrade before writers switch
+// generation; the deployed fleet must pick up this build before derived
+// tracks are written, since its parser fails closed on them
 #[test]
 fn rollout_matrix() {
     let fleet_accepts = |meta: &SliceMetadata| FLEET_LADDER.contains(&meta.stripe_size());
-    let upgraded = StripeValidation::LadderOrDerived { alignment: ALIGN, cap: DERIVED_STRIPE_CAP };
+    let upgraded = StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP };
 
     for &len in &[100_001usize, 1_000_001, SNAPSHOT_PACKED] {
         let payload = mk(len);
 
         let mut ladder_writer = Slicer::clay_default();
+        ladder_writer.set_policy(StripePolicy::Ladder);
         let ladder_meta = SliceMetadata::parse(&ladder_writer.encode(&payload).unwrap()[0]).unwrap();
 
         let mut derived_writer = Slicer::clay_default();
-        derived_writer.set_policy(StripePolicy::Derived { alignment: ALIGN, cap: DERIVED_STRIPE_CAP });
         let derived_meta = SliceMetadata::parse(&derived_writer.encode(&payload).unwrap()[0]).unwrap();
 
-        // today's data keeps working everywhere, before and after upgrade
+        // ladder-written data keeps working everywhere, before and after
         assert!(fleet_accepts(&ladder_meta));
-        assert!(upgraded.accepts(ladder_meta.stripe_size(), ladder_meta.blob_len()));
+        assert!(upgraded.accepts(ladder_meta.stripe_size(), ladder_meta.blob_len(), ALIGN));
 
-        // derived-written data needs the upgraded parser; the fleet parser
-        // and today's from_slice both fail closed on it
+        // derived-written data is accepted by this build's parser but fails
+        // closed on the deployed fleet parser
         assert!(!fleet_accepts(&derived_meta));
-        assert!(upgraded.accepts(derived_meta.stripe_size(), derived_meta.blob_len()));
+        assert!(upgraded.accepts(derived_meta.stripe_size(), derived_meta.blob_len(), ALIGN));
         let mut raw = vec![0u8; 64];
         raw.extend_from_slice(&derived_meta.to_bytes());
-        assert!(SliceMetadata::from_slice(&raw).is_err());
+        assert!(SliceMetadata::from_slice(&raw).is_ok());
 
-        // garbage stays rejected after the upgrade
-        assert!(!upgraded.accepts(0, len));
-        assert!(!upgraded.accepts(999_999, len));
-        assert!(!upgraded.accepts(2_000_000, len));
+        // garbage stays rejected
+        assert!(!upgraded.accepts(0, len, ALIGN));
+        assert!(!upgraded.accepts(999_999, len, ALIGN));
+        assert!(!upgraded.accepts(2_000_000, len, ALIGN));
     }
 }
 

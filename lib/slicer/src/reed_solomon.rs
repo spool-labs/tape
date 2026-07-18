@@ -69,6 +69,11 @@ impl ErasureCoder for ReedSolomonCoder {
         self.m
     }
 
+    #[inline]
+    fn stripe_alignment(&self) -> usize {
+        self.k * 64
+    }
+
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let k = self.k;
 

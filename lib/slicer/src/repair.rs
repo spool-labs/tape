@@ -215,7 +215,7 @@ impl Slicer<ClayCoder> {
 
         let blob_len = metadata.blob_len();
         let stripe_size = metadata.stripe_size();
-        if !self.validation.accepts(stripe_size, blob_len) {
+        if !self.validation.accepts(stripe_size, blob_len, self.coder.stripe_alignment()) {
             return Err(RepairError::InvalidLayout(
                 format!("stripe size {stripe_size} not accepted"),
             ));
@@ -516,7 +516,7 @@ mod tests {
             true,
             EncodingProfile::clay_default(),
         );
-        let payload = mk(300_000);
+        let payload = mk(2_500_000);
         let chunks = slicer.encode(&payload).unwrap();
 
         let available: Vec<SliceIndex> = (1..N).map(si).collect();
@@ -594,7 +594,7 @@ mod tests {
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
-        // encode() adapts stripe_size via pick_stripe_size, so use the actual value
+        // encode() picks the stripe size per policy, so use the actual value
         let actual_stripe_size = slicer.stripe_size();
 
         let available: Vec<SliceIndex> = (1..N).map(si).collect();
