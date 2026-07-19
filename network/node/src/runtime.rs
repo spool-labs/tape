@@ -290,6 +290,7 @@ where
 
     #[cfg(feature = "metrics")]
     if config.metrics.enabled {
+        crate::observe::register_core_collectors(context.clone());
         crate::observe::register_block_channels(&senders, &store_tx);
     }
 
@@ -407,7 +408,7 @@ where
     supervisor.spawn(
         ServiceName::GcManager,
         GcManager::new(
-            context, 
+            context,
             config.store.gc.clone(),
             cancel
         ).run(),
