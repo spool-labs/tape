@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use tape_core::encoding::{ClayParams, EncodingProfile};
 use tape_core::types::ChunkNumber;
 
-use crate::adaptive::{StripePolicy, StripeValidation, DEFAULT_STRIPE_SIZE, DERIVED_STRIPE_CAP};
+use crate::adaptive::{pick_stripe_size, DEFAULT_STRIPE_SIZE};
 use crate::clay::ClayCoder;
 use crate::errors::{DecodeError, EncodeError};
 use crate::metadata::SliceMetadata;
@@ -129,16 +129,12 @@ pub struct Slicer<C: ErasureCoder> {
     /// Chunk/group index embedded in slice metadata. Ensures that identical
     /// data chunks at different positions produce distinct commitments.
     pub chunk_index: ChunkNumber,
-    /// Writer-side stripe sizing policy applied on encode.
-    pub policy: StripePolicy,
-    /// Reader-side stripe size acceptance applied on decode and repair.
-    pub validation: StripeValidation,
 }
 
 impl<C: ErasureCoder> Slicer<C> {
     /// Create a new striped coder with identity mapping (no rotation).
     ///
-    /// Uses default stripe size (1 MB) and Clay default profile.
+    /// Uses default stripe size (10 MB) and Clay default profile.
     pub fn new(coder: C) -> Self {
         Self {
             coder,
@@ -146,8 +142,6 @@ impl<C: ErasureCoder> Slicer<C> {
             strategy: MappingStrategy::Identity,
             profile: EncodingProfile::clay_default(),
             chunk_index: ChunkNumber(0),
-            policy: StripePolicy::Derived { cap: DERIVED_STRIPE_CAP },
-            validation: StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP },
         }
     }
 
@@ -161,13 +155,10 @@ impl<C: ErasureCoder> Slicer<C> {
             strategy: MappingStrategy::Rotated,
             profile: EncodingProfile::clay_default(),
             chunk_index: ChunkNumber(0),
-            policy: StripePolicy::Derived { cap: DERIVED_STRIPE_CAP },
-            validation: StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP },
         }
     }
 
-    /// Create with a fixed stripe size, honored on encode and accepted on
-    /// decode alongside the ladder.
+    /// Create with a specific stripe size.
     pub fn with_stripe_size(coder: C, stripe_size: usize) -> Self {
         Self {
             coder,
@@ -175,8 +166,6 @@ impl<C: ErasureCoder> Slicer<C> {
             strategy: MappingStrategy::Identity,
             profile: EncodingProfile::clay_default(),
             chunk_index: ChunkNumber(0),
-            policy: StripePolicy::Fixed(stripe_size),
-            validation: StripeValidation::LadderOrExact(stripe_size),
         }
     }
 
@@ -188,19 +177,7 @@ impl<C: ErasureCoder> Slicer<C> {
             strategy: if rotated { MappingStrategy::Rotated } else { MappingStrategy::Identity },
             profile,
             chunk_index: ChunkNumber(0),
-            policy: StripePolicy::Derived { cap: DERIVED_STRIPE_CAP },
-            validation: StripeValidation::LadderOrDerived { cap: DERIVED_STRIPE_CAP },
         }
-    }
-
-    /// Set the writer-side sizing policy.
-    pub fn set_policy(&mut self, policy: StripePolicy) {
-        self.policy = policy;
-    }
-
-    /// Set the reader-side stripe size acceptance.
-    pub fn set_validation(&mut self, validation: StripeValidation) {
-        self.validation = validation;
     }
 
     /// Set the chunk index for metadata. Ensures identical data at different
@@ -257,15 +234,11 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
         self.coder.m()
     }
 
-    fn stripe_alignment(&self) -> usize {
-        self.coder.stripe_alignment()
-    }
-
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let blob_len = data.len();
 
-        // Select stripe size per the configured policy
-        let optimal_stripe = self.policy.stripe_size_for(blob_len, self.coder.stripe_alignment());
+        // Select optimal stripe size
+        let optimal_stripe = pick_stripe_size(blob_len);
         if self.stripe_size != optimal_stripe {
             self.set_stripe_size(optimal_stripe);
         }
@@ -329,11 +302,7 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
 
         // Parse metadata from any available chunk
         let sample_data = chunks[0].1;
-        let metadata = SliceMetadata::parse(sample_data)?;
-        let alignment = self.coder.stripe_alignment();
-        if !self.validation.accepts(metadata.stripe_size(), metadata.blob_len(), alignment) {
-            return Err(DecodeError::InvalidLayout);
-        }
+        let metadata = SliceMetadata::from_slice(sample_data)?;
 
         // Check minimum chunks using profile's k value
         let min_chunks = metadata.profile().clay_params().k() as usize;
@@ -421,7 +390,7 @@ impl<C: ErasureCoder> Slicer<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{pick_stripe_size, ClayCoder, STRIPE_SIZES};
+    use crate::{ClayCoder, STRIPE_SIZES};
 
     const N: usize = 20; // k=7 + m=13 (default Clay)
 
@@ -496,7 +465,8 @@ mod tests {
         assert_eq!(pick_stripe_size(100), STRIPE_SIZES[0]);
         assert_eq!(pick_stripe_size(1_000_000), STRIPE_SIZES[0]);
         assert_eq!(pick_stripe_size(1_000_001), STRIPE_SIZES[1]);
-        assert_eq!(pick_stripe_size(100_000_000), DEFAULT_STRIPE_SIZE);
+        assert_eq!(pick_stripe_size(100_000_000), STRIPE_SIZES[1]);
+        assert_eq!(pick_stripe_size(100_000_001), DEFAULT_STRIPE_SIZE);
     }
 
     #[test]
@@ -634,10 +604,10 @@ mod tests {
         let payload = mk(2000);
         let chunks = slicer.encode(&payload).unwrap();
 
-        // Fixed policy is honored on encode and carried in the metadata
-        let meta = SliceMetadata::parse(&chunks[0]).unwrap();
+        // Parse metadata from first chunk
+        let meta = SliceMetadata::from_slice(&chunks[0]).unwrap();
         assert_eq!(meta.blob_len(), 2000);
-        assert_eq!(meta.stripe_size(), 1024);
+        assert!(STRIPE_SIZES.contains(&meta.stripe_size()));
     }
 
     #[test]
@@ -702,16 +672,16 @@ mod tests {
 
     #[test]
     fn test_layout_valid() {
-        let mut slicer = Slicer::clay_default();
-        // derived sizing splits 2.5MB into three equal stripes under the cap
-        let payload = mk(2_500_000);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        // pick_stripe_size selects 100KB for small blobs, so use 250KB to get 3 stripes
+        let payload = mk(250_000);
         let chunks = slicer.encode(&payload).unwrap();
 
         let refs = to_refs(&chunks);
         let meta = SliceMetadata::from_slice(&chunks[0]).unwrap();
 
         let (num_stripes, chunk_size) = validate_layout(&refs, &meta).unwrap();
-        assert_eq!(num_stripes, 3);
+        assert_eq!(num_stripes, 3); // 250KB / 100KB = 3 stripes
         assert!(chunk_size > 0);
     }
 
@@ -725,7 +695,7 @@ mod tests {
         chunks[1].pop();
 
         let refs = to_refs(&chunks);
-        let meta = SliceMetadata::parse(&chunks[0]).unwrap();
+        let meta = SliceMetadata::from_slice(&chunks[0]).unwrap();
 
         let result = validate_layout(&refs, &meta);
         assert!(matches!(result, Err(DecodeError::InvalidLayout)));

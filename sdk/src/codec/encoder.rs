@@ -101,14 +101,6 @@ impl BlobEncoder {
         self.profile
     }
 
-    /// Stripe size the last clay encode used; the default before any encode.
-    pub fn stripe_size(&self) -> usize {
-        match &self.clay {
-            Some(slicer) => slicer.stripe_size(),
-            None => DEFAULT_STRIPE_SIZE,
-        }
-    }
-
     /// Internal encoding dispatch that returns the raw chunks.
     fn encode_internal(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, UploadError> {
         match self.encoding_type() {

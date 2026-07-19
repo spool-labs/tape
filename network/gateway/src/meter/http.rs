@@ -82,6 +82,8 @@ where
     let caller = MeterCaller::resolve(peer_ip(&req), req.headers(), trusted, ip_grade, None, None);
     match state.meter.check_object_request(&caller) {
         GatewayMeterDecision::Allowed => {
+            // feed the atlas display: gateway reads are user fetches
+            state.context.atlas.push_ip(caller.ip, false);
             req.extensions_mut().insert(caller);
             next.run(req).await
         }

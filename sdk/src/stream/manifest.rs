@@ -216,12 +216,4 @@ mod tests {
         let recovered = ChunkManifest::from_bytes(&bytes).expect("deserialize manifest");
         assert_eq!(recovered.chunks[3].size, StorageUnits::from_bytes(1000));
     }
-
-    // the stripe ladder's top tier stays reachable within the track cap, so
-    // no tier is dead code the metadata parser still validates against.
-    #[test]
-    fn stripe_ladder_top_tier_reachable() {
-        use tape_slicer::{pick_stripe_size, STRIPE_SIZES};
-        assert_eq!(pick_stripe_size(MAX_TRACK_SIZE), *STRIPE_SIZES.last().unwrap());
-    }
 }

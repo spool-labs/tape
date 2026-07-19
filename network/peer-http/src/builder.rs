@@ -5,6 +5,7 @@ use dashmap::DashMap;
 use peer_manager::PeerManager;
 use tape_crypto::ed25519::Keypair;
 
+use crate::client::TransferSink;
 use crate::HttpApi;
 use crate::metrics::ApiMetrics;
 
@@ -15,6 +16,7 @@ pub struct HttpApiBuilder {
     get_slice_timeout: Duration,
     metrics: Option<Arc<ApiMetrics>>,
     local_identity: Option<Arc<Keypair>>,
+    transfer_sink: Option<TransferSink>,
 }
 
 impl Default for HttpApiBuilder {
@@ -32,6 +34,7 @@ impl HttpApiBuilder {
             get_slice_timeout: Duration::from_secs(120),
             metrics: None,
             local_identity: None,
+            transfer_sink: None,
         }
     }
 
@@ -65,6 +68,12 @@ impl HttpApiBuilder {
         self
     }
 
+    /// Callback invoked for every peer call that moved payload bytes.
+    pub fn transfer_sink(mut self, sink: TransferSink) -> Self {
+        self.transfer_sink = Some(sink);
+        self
+    }
+
     pub fn build(self, peer_manager: Arc<PeerManager>) -> Result<HttpApi, peer_tls::TlsError> {
         peer_tls::install_default_provider();
         Ok(HttpApi {
@@ -76,6 +85,7 @@ impl HttpApiBuilder {
             put_slice_timeout: self.put_slice_timeout,
             get_slice_timeout: self.get_slice_timeout,
             local_identity: self.local_identity,
+            transfer_sink: self.transfer_sink,
         })
     }
 }

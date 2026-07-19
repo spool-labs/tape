@@ -23,9 +23,6 @@ pub trait ErasureCoder {
         self.k() + self.m()
     }
 
-    /// Encode granularity in bytes: inputs pad up to a multiple of this.
-    fn stripe_alignment(&self) -> usize;
-
     /// Encode data into n chunks.
     ///
     /// # Arguments

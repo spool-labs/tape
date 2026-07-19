@@ -27,7 +27,10 @@ members = [
   "solana/rpc-cache",
   "lib/metrics",
   "lib/observe-api",
+  "lib/atlas",
   "monitoring/dashboard",
+  "monitoring/atlas-web",
+  "monitoring/atlas-collector",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -69,6 +72,7 @@ default-members = [
   "store/tape-store",
   "lib/metrics",
   "lib/observe-api",
+  "lib/atlas",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -121,6 +125,7 @@ tape-test = { version = "0.3.0", path = "./test" }
 tape-chain-harness = { version = "0.3.0", path = "./test/harness" }
 tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
 tape-observe-api = { version = "0.1.0", path = "./lib/observe-api" }
+tape-atlas = { version = "0.1.0", path = "./lib/atlas" }
 tape-gateway = { version = "0.3.0", path = "./network/gateway" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 peer-manager = { version = "0.3.0", path = "./network/peer-manager" }
@@ -200,7 +205,7 @@ async-trait = "0.1"
 arc-swap = "1"
 
 # cli-specific
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 colored = "3.0.0"
 dialoguer = "0.11.0"
 dirs = "5.0"
