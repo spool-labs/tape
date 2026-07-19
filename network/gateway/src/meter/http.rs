@@ -1,13 +1,14 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::IpAddr;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rpc::Rpc;
 use store::Store;
-use tape_node::config::cidr::{CidrBlock, resolve_caller_ip};
+use tape_node::config::cidr::CidrBlock;
+use tape_node::features::http::forwarded::{peer_ip, resolve_caller_ip};
 use tape_protocol::Api;
 use tracing::debug;
 
@@ -94,13 +95,6 @@ where
     }
 }
 
-fn peer_ip(req: &Request) -> IpAddr {
-    req.extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-}
-
 pub fn rate_limited_response(retry_after: Duration) -> Response {
     let retry_after_secs = retry_after.as_secs().max(1).to_string();
     (
@@ -110,4 +104,3 @@ pub fn rate_limited_response(retry_after: Duration) -> Response {
     )
         .into_response()
 }
-

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -14,8 +14,9 @@ use tape_crypto::Address;
 use tape_protocol::Api;
 use tracing::{debug, warn};
 
-use crate::config::cidr::{CidrBlock, resolve_caller_ip};
+use crate::config::cidr::CidrBlock;
 use crate::config::http::AdmissionConfig;
+use crate::features::http::forwarded::caller_ip;
 use crate::features::http::auth::{ActivePeer, StakedPeer};
 use crate::features::http::state::AppState;
 
@@ -308,12 +309,7 @@ fn caller_from_request(req: &Request, trusted: &[CidrBlock]) -> AdmissionCaller 
         return AdmissionCaller::Peer(staked.node);
     }
 
-    let peer = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-    AdmissionCaller::Anonymous(resolve_caller_ip(peer, req.headers(), trusted))
+    AdmissionCaller::Anonymous(caller_ip(req, trusted))
 }
 
 fn insufficient_storage_response() -> Response {
@@ -335,6 +331,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
 
     use super::*;
 
