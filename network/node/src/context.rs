@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::watch::Receiver;
@@ -14,6 +14,7 @@ use store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
+use tape_core::types::coin::SOL;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::prelude::{Address, BLSError, Keypair, Signature};
 use tape_crypto::ed25519::Pubkey;
@@ -52,7 +53,11 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     bls_keypair: Arc<BlsPrivateKey>,
     tls_keypair: Arc<Keypair>,
     reclaim_pending: AtomicBool,
+    fee_payer_balance: AtomicU64,
 }
+
+/// Sentinel for a balance the monitor has not sampled yet
+const UNSAMPLED_BALANCE: u64 = u64::MAX;
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
     pub fn node_id(&self) -> NodeId {
@@ -158,6 +163,24 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn set_reclaim_pending(&self, is_pending: bool) {
         self.reclaim_pending.store(is_pending, Ordering::Relaxed);
+    }
+
+    /// Last observed fee payer balance
+    ///
+    /// Sampled off the request path by the balance monitor, so this is stale by
+    /// up to one refresh interval. There is no reading until the first sample
+    /// lands, which keeps an unsampled node distinguishable from one that is
+    /// actually broke.
+    pub fn fee_payer_balance(&self) -> Option<SOL> {
+        match self.fee_payer_balance.load(Ordering::Relaxed) {
+            UNSAMPLED_BALANCE => None,
+            lamports => Some(SOL(lamports)),
+        }
+    }
+
+    /// Record a fresh sample from the balance monitor
+    pub fn set_fee_payer_balance(&self, balance: SOL) {
+        self.fee_payer_balance.store(balance.0, Ordering::Relaxed);
     }
 
     /// Whether new uploads should be rejected because a volume is low on space.
@@ -269,6 +292,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             eviction_queue: Arc::new(EvictionQueue::default()),
             metrics: NodeMetrics,
             reclaim_pending: AtomicBool::new(false),
+            fee_payer_balance: AtomicU64::new(UNSAMPLED_BALANCE),
         }))
     }
 }
