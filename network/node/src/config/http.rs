@@ -3,6 +3,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use serde::{Deserialize, Deserializer};
 use tape_protocol::api::SLICE_BODY_LIMIT;
 
+use super::cidr::CidrBlock;
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct NetworkConfig {
     #[serde(default)]
@@ -105,6 +107,12 @@ pub struct AdmissionConfig {
     /// Remove idle limiter entries after this many seconds.
     #[serde(default = "default_stale_entry_secs")]
     pub stale_entry_secs: u64,
+
+    /// Proxy addresses or CIDR ranges whose X-Forwarded-For header is trusted
+    /// when resolving the caller address. Empty means the socket peer is
+    /// always the caller.
+    #[serde(default)]
+    pub trusted_proxies: Vec<CidrBlock>,
 }
 
 impl Default for AdmissionConfig {
@@ -120,6 +128,7 @@ impl Default for AdmissionConfig {
             trusted_metered_burst: default_trusted_metered_burst(),
             over_budget_penalty_secs: default_over_budget_penalty_secs(),
             stale_entry_secs: default_stale_entry_secs(),
+            trusted_proxies: Vec::new(),
         }
     }
 }

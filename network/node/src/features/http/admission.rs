@@ -14,6 +14,7 @@ use tape_crypto::Address;
 use tape_protocol::Api;
 use tracing::{debug, warn};
 
+use crate::config::cidr::{CidrBlock, resolve_caller_ip};
 use crate::config::http::AdmissionConfig;
 use crate::features::http::auth::{ActivePeer, StakedPeer};
 use crate::features::http::state::AppState;
@@ -68,6 +69,11 @@ impl AdmissionLimiter {
             buckets: Mutex::new(HashMap::new()),
             checks: AtomicUsize::new(0),
         }
+    }
+
+    /// Proxy ranges whose forwarded-for header resolves the real caller
+    pub fn trusted_proxies(&self) -> &[CidrBlock] {
+        &self.config.trusted_proxies
     }
 
     pub fn check_direct_write(&self, caller: AdmissionCaller) -> AdmissionDecision {
@@ -265,7 +271,7 @@ where
         return insufficient_storage_response();
     }
 
-    let caller = caller_from_request(&req);
+    let caller = caller_from_request(&req, state.context.admission.trusted_proxies());
     let decision = match mode {
         AdmissionMode::DirectWrite => state.context.admission.check_direct_write(caller),
         AdmissionMode::Metered => state.context.admission.check_metered(caller),
@@ -293,7 +299,7 @@ where
     }
 }
 
-fn caller_from_request(req: &Request) -> AdmissionCaller {
+fn caller_from_request(req: &Request, trusted: &[CidrBlock]) -> AdmissionCaller {
     if let Some(active) = req.extensions().get::<ActivePeer>() {
         return AdmissionCaller::Peer(active.node);
     }
@@ -302,12 +308,12 @@ fn caller_from_request(req: &Request) -> AdmissionCaller {
         return AdmissionCaller::Peer(staked.node);
     }
 
-    let ip = req
+    let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| addr.ip())
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-    AdmissionCaller::Anonymous(ip)
+    AdmissionCaller::Anonymous(resolve_caller_ip(peer, req.headers(), trusted))
 }
 
 fn insufficient_storage_response() -> Response {
@@ -328,6 +334,8 @@ fn rate_limited_response(retry_after: Duration) -> Response {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
+    use axum::body::Body;
+
     use super::*;
 
     fn test_config() -> AdmissionConfig {
@@ -342,7 +350,43 @@ mod tests {
             trusted_metered_burst: 1,
             over_budget_penalty_secs: 30,
             stale_entry_secs: 60,
+            trusted_proxies: Vec::new(),
         }
+    }
+
+    fn request(peer: &str, forwarded: Option<&str>) -> Request {
+        let mut req = Request::new(Body::empty());
+        let addr: SocketAddr = format!("{peer}:443").parse().expect("peer address");
+        req.extensions_mut().insert(ConnectInfo(addr));
+        if let Some(forwarded) = forwarded {
+            req.headers_mut()
+                .insert("x-forwarded-for", forwarded.parse().expect("header"));
+        }
+        req
+    }
+
+    // behind a trusted proxy the forwarded client is the admitted caller, so a
+    // same-host proxy cannot collapse every user into one loopback bucket
+    #[test]
+    fn trusted_proxy_resolves_the_forwarded_caller() {
+        let trusted: Vec<CidrBlock> = vec!["127.0.0.1".parse().expect("cidr block")];
+        let req = request("127.0.0.1", Some("198.51.100.9"));
+
+        assert_eq!(
+            caller_from_request(&req, &trusted),
+            AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)))
+        );
+    }
+
+    // an untrusted peer stays the caller even when it sends a forwarded header
+    #[test]
+    fn untrusted_peer_ignores_the_forwarded_header() {
+        let req = request("203.0.113.5", Some("198.51.100.9"));
+
+        assert_eq!(
+            caller_from_request(&req, &[]),
+            AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)))
+        );
     }
 
     #[test]
