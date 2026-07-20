@@ -29,10 +29,6 @@ pub const SETTLE_SPOOL_CU:        u32 =  50_000;
 pub const SYNC_SPOOL_CU:          u32 =  30_000;
 pub const JOIN_COMMITTEE_CU:      u32 =  50_000;
 pub const CREATE_EPOCH_CU:        u32 =  50_000;
-// Creating the committee derives its PDA on-chain, and the bump search costs
-// a few thousand units per candidate it rejects, so the cost swings with the
-// epoch number. This covers a little more than the average search; an epoch
-// unlucky enough to exceed it falls back to the measured-limit retry.
 pub const CREATE_COMMITTEE_CU:    u32 =  35_000;
 pub const RESIZE_COMMITTEE_CU:    u32 =  50_000;
 pub const RESIZE_PEER_SET_CU:     u32 =  30_000;
