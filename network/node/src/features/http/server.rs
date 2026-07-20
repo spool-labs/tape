@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use axum::{BoxError, Router};
 
 use axum_server::Handle;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
-use peer_tls::{build_server_config_with_peer_auth, cert_san_ips, install_default_provider};
+use peer_tls::{build_server_config_with_peer_auth, install_default_provider};
 
 use rpc::Rpc;
 use store::Store;
@@ -94,10 +94,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::NODE_STATS_PATH,
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
-            )
-            .route(
-                api_routes::OBSERVE_ATLAS_PATH,
-                get(handlers::atlas::recent::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]
@@ -358,6 +354,19 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let _ = http_task.await;
         result
     }
+}
+
+/// Expand the cert SAN list. When the server listens on `0.0.0.0`/`::`, include
+/// loopback as well so health checks and local peer dials succeed.
+fn cert_san_ips(listen_ip: IpAddr) -> Vec<IpAddr> {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    let mut sans = vec![listen_ip];
+    if listen_ip.is_unspecified() {
+        sans.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        sans.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+    sans
 }
 
 async fn handle_http_error(error: BoxError) -> StatusCode {

@@ -39,7 +39,6 @@ tracing = "0.1"
 store-memory.workspace = true
 reqwest.workspace = true
 tape-sdk.workspace = true
-tape-observe-api.workspace = true
 tape-crypto.workspace = true
 rand.workspace = true
 

@@ -34,11 +34,6 @@ pub struct HttpsConfig {
     /// explicit `SetNetworkTls` submissions.
     #[serde(default = "default_auto_update")]
     pub auto_update: bool,
-
-    /// TLS public keys (base58) allowed to read the recent-traffic atlas
-    /// endpoint over mTLS. Leaving this empty disables collection entirely.
-    #[serde(default)]
-    pub observers: Vec<String>,
 }
 
 impl Default for HttpsConfig {
@@ -47,7 +42,6 @@ impl Default for HttpsConfig {
             listen: default_https_listen(),
             identity_keypair: default_identity_keypair(),
             auto_update: default_auto_update(),
-            observers: Vec::new(),
         }
     }
 }

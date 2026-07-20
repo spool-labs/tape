@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use peer_http::{HttpApi, PeerTransfer};
+use peer_http::HttpApi;
 use peer_manager::PeerManager;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
@@ -19,7 +19,6 @@ use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_node::config::gateway::{GatewaySiteConfig, WriteDefault};
 use tape_node::config::node::NodeConfig;
-use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::core::error::NodeError;
 use tape_store::TapeStore;
@@ -359,21 +358,9 @@ impl TestGateway {
         let peer_manager = Arc::new(PeerManager::new());
         let tls_identity = Arc::new(clone_ed25519_keypair(&self.tls_keypair));
 
-        // Same atlas wiring as node startup, so observer-gated tests work.
-        let observers = parse_observers(&self.app_config.https.observers)
-            .map_err(|error| anyhow::anyhow!(error))?;
-        let atlas = Arc::new(AtlasBuffer::new(observers));
-
-        let mut api_builder =
-            peer_http::HttpApiBuilder::new().local_identity(tls_identity.clone());
-        if atlas.enabled() {
-            let sink = atlas.clone();
-            api_builder = api_builder.transfer_sink(Arc::new(move |transfer: PeerTransfer| {
-                sink.push_transfer(transfer.node, transfer.op, transfer.sent, transfer.bytes);
-            }));
-        }
         let api = Arc::new(
-            api_builder
+            peer_http::HttpApiBuilder::new()
+                .local_identity(tls_identity.clone())
                 .build(peer_manager.clone())
                 .context("build gateway HttpApi")?,
         );
@@ -387,7 +374,6 @@ impl TestGateway {
             rpc,
             peer_manager,
             api,
-            atlas,
         )
         .build()
         .await
