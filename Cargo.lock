@@ -1483,12 +1483,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+
+[[package]]
+name = "crc32c"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+dependencies = [
+ "rustc_version",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "crc64fast-nvme"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38fe9239af6a04e140c7424d36d1615f37f1804700c17d5339af162add9022e0"
+dependencies = [
+ "crc",
 ]
 
 [[package]]
@@ -9707,6 +9740,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-measure"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crc32c",
+ "crc32fast",
+ "crc64fast-nvme",
+ "libc",
+ "lz4_flex",
+ "num_cpus",
+ "rand 0.8.5",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tape-core",
+ "tape-crypto",
+ "tape-slicer",
+ "tempfile",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "tape-metrics"
 version = "0.3.0"
 dependencies = [
@@ -10002,9 +10060,7 @@ dependencies = [
  "store-rocks",
  "tape-core",
  "tape-crypto",
- "tape-slicer",
  "tape-store",
- "tempfile",
 ]
 
 [[package]]

@@ -7,7 +7,7 @@ use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::SpoolIndex;
 use tape_slicer::{
-    ClayCoder, ErasureCoder, ReedSolomonCoder, Slicer, SliceMetadata,
+    ClayCoder, DEFAULT_STRIPE_SIZE, ErasureCoder, ReedSolomonCoder, Slicer, SliceMetadata,
 };
 
 use crate::error::DownloadError;
@@ -59,6 +59,7 @@ impl BlobDecoder {
             EncodingType::Clay | EncodingType::Unknown => {
                 decoder.clay = Some(Slicer::with_profile(
                     ClayCoder::from_params(profile.clay_params()),
+                    DEFAULT_STRIPE_SIZE,
                     true, // rotated
                     profile,
                 ));

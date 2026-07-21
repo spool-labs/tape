@@ -53,7 +53,7 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 //
 //      e. Build repair plan:
 //         - ClayCoder::from_params(track_info.profile().clay_params())
-//         - Slicer::with_profile(coder, rotated=true, profile)
+//         - Slicer::with_profile(coder, stripe_size, rotated=true, profile)
 //         - slicer.repair_plan_from_params(lost, &available, original_size, stripe_size)
 //         - If plan fails → escalate, continue.
 //
@@ -311,6 +311,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
     let slicer = Slicer::with_profile(
         ClayCoder::from_params(profile.clay_params()),
+        track_data.stripe_size.as_usize(),
         true,
         profile,
     );
@@ -671,6 +672,7 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
+            512,
             true,
             profile,
         );
@@ -722,6 +724,7 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
+            512,
             true,
             profile,
         );
@@ -762,6 +765,7 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
+            512,
             true,
             profile,
         );
@@ -798,6 +802,7 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
+            512,
             true,
             profile,
         );

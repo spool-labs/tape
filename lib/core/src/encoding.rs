@@ -220,27 +220,6 @@ impl ClayParams {
         self.n().saturating_sub(self.k())
     }
 
-    /// Sub-chunks per chunk: alpha = q^t with q = d - k + 1 and t = ceil(n/q).
-    #[inline]
-    pub const fn alpha(&self) -> u64 {
-        let q = (self.d() - self.k() + 1) as u64;
-        let n = self.n() as u64;
-        let t = (n + q - 1) / q;
-        let mut out = 1u64;
-        let mut i = 0;
-        while i < t {
-            out *= q;
-            i += 1;
-        }
-        out
-    }
-
-    /// Encode granularity in bytes: stripe inputs pad to k * alpha * 2.
-    #[inline]
-    pub const fn stripe_alignment(&self) -> u64 {
-        self.k() as u64 * self.alpha() * 2
-    }
-
     /// Convert to raw u64 for storage.
     #[inline]
     pub const fn as_u64(&self) -> u64 {

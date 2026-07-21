@@ -143,10 +143,18 @@ impl RpcError {
 
     /// True when a transaction ran out of compute units, whether reported by
     /// preflight simulation or by on-chain execution.
+    ///
+    /// The runtime reports an exhausted meter two different ways. A budget
+    /// checked before the program runs gives ComputationalBudgetExceeded, but
+    /// an SBF program that runs out mid-execution halts the VM and surfaces as
+    /// ProgramFailedToComplete. Missing the second variant leaves every
+    /// on-chain exhaustion unrecognised, so the measured-limit retry in
+    /// send_capped never fires and the limit has to be raised by hand instead.
     pub fn is_compute_budget_exceeded(&self) -> bool {
         matches!(
             self.instruction_error(),
             Some(InstructionError::ComputationalBudgetExceeded)
+                | Some(InstructionError::ProgramFailedToComplete)
         )
     }
 

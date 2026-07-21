@@ -10,7 +10,7 @@ use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, root_from_le
 use tape_crypto::Hash;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, SLICE_TREE_HEIGHT,
-    build_blob_merkle_tree, BlobMerkleRoot, STRIPE_CAP,
+    build_blob_merkle_tree, BlobMerkleRoot, DEFAULT_STRIPE_SIZE,
 };
 
 use crate::error::UploadError;
@@ -69,6 +69,7 @@ impl BlobEncoder {
             EncodingType::Clay | EncodingType::Unknown => {
                 encoder.clay = Some(Slicer::with_profile(
                     ClayCoder::from_params(profile.clay_params()),
+                    DEFAULT_STRIPE_SIZE,
                     true, // rotated
                     profile,
                 ));
@@ -98,14 +99,6 @@ impl BlobEncoder {
     /// Get the encoding profile used by this encoder.
     pub fn profile(&self) -> EncodingProfile {
         self.profile
-    }
-
-    /// Stripe size the last clay encode used; the cap before any encode.
-    pub fn stripe_size(&self) -> usize {
-        match &self.clay {
-            Some(slicer) => slicer.stripe_size(),
-            None => STRIPE_CAP,
-        }
     }
 
     /// Internal encoding dispatch that returns the raw chunks.
