@@ -4,9 +4,9 @@
 
 use std::time::Instant;
 
-use tape_slicer::{ErasureCoder, SliceIndex, SliceMetadata, Slicer, STRIPE_CAP};
+use tape_core::encoding::ClayParams;
+use tape_slicer::{num_stripes, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
 
-const ALIGN: usize = 1_400;
 const MIB: usize = 1024 * 1024;
 
 fn mk(len: usize) -> Vec<u8> {
@@ -29,8 +29,9 @@ fn measure_stripe_size_throughput() {
     let blob = mk(32 * MIB);
     println!("stripe_size_bytes encode_mbps");
 
+    let align = ClayParams::default().stripe_alignment() as usize;
     for units in [71usize, 143, 357, 715, 1_786, 3_572, 7_143, 11_429] {
-        let cap = units * ALIGN;
+        let cap = units * align;
         let mut slicer = Slicer::clay_default();
         slicer.set_stripe_cap(cap);
 
@@ -59,8 +60,6 @@ fn measure_encode_decode() {
         let ideal = len as f64 * 20.0 / 7.0;
 
         let mut slicer = Slicer::clay_default();
-        assert_eq!(slicer.stripe_cap, STRIPE_CAP);
-
         slicer.encode(&blob).unwrap();
         let reps = if len >= 16 * MIB { 2 } else { 5 };
         let start = Instant::now();
@@ -71,7 +70,7 @@ fn measure_encode_decode() {
 
         let slices = slicer.encode(&blob).unwrap();
         let stripe = slicer.stripe_size();
-        let stripes = len.div_ceil(stripe);
+        let stripes = num_stripes(len, stripe);
         let stored = stored_payload(&slices);
 
         let k = slicer.k();

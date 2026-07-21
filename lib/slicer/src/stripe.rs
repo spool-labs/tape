@@ -5,7 +5,9 @@
 //! padding never exceeds one alignment unit per stripe, and the cap holds peak
 //! encode memory flat regardless of blob size.
 
-/// Largest stripe a writer emits.
+/// Largest stripe a writer emits. Encode throughput peaks here and flattens
+/// above it, so the cap buys nothing to raise and holds peak encode memory
+/// flat. The sweep behind that sits in tests/stripe_measure.rs.
 pub const STRIPE_CAP: usize = 1_000_000;
 
 /// Stripe size for a blob: an equal split no larger than the cap, rounded up
@@ -27,37 +29,23 @@ pub fn num_stripes(blob_len: usize, stripe_size: usize) -> usize {
     }
 }
 
+/// Whether a stripe size read off a slice is the one this blob length derives.
+/// Anything else is not something a writer at this cap could have produced.
+#[inline]
+pub fn stripe_size_accepted(
+    stripe_size: usize,
+    blob_len: usize,
+    alignment: usize,
+    cap: usize,
+) -> bool {
+    stripe_size == derive_stripe_size(blob_len, alignment, cap)
+}
+
+// Alignment and padding bounds are pinned over the full track range by the
+// conformance battery in tests/conformance.rs.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Default Clay profile encode granularity (k * alpha * 2).
-    const ALIGN: usize = 1_400;
-
-    #[test]
-    fn test_derived_is_aligned_and_capped() {
-        let cap_aligned = STRIPE_CAP.div_ceil(ALIGN) * ALIGN;
-
-        for len in [0, 1, 1_399, 1_400, 100_000, 999_999, 1_000_001, 64 * 1024 * 1024] {
-            let stripe = derive_stripe_size(len, ALIGN, STRIPE_CAP);
-            assert!(stripe.is_multiple_of(ALIGN), "len {len}: stripe {stripe} unaligned");
-            assert!(stripe >= ALIGN, "len {len}: stripe {stripe} below alignment");
-            assert!(stripe <= cap_aligned, "len {len}: stripe {stripe} above cap");
-        }
-    }
-
-    #[test]
-    fn test_derived_padding_stays_below_one_unit_per_stripe() {
-        for len in [1, 100_001, 250_000, 1_000_001, 2_000_001, 4 * 1024 * 1024 + 8] {
-            let stripe = derive_stripe_size(len, ALIGN, STRIPE_CAP);
-            let count = num_stripes(len, stripe);
-            assert!(count * stripe >= len, "len {len}: stripes do not cover the blob");
-            assert!(
-                count * stripe - len < count * ALIGN,
-                "len {len}: padding bound violated (stripe {stripe}, count {count})"
-            );
-        }
-    }
 
     #[test]
     fn test_num_stripes() {

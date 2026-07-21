@@ -1,6 +1,6 @@
 #![allow(clippy::len_without_is_empty)]
 
-pub mod adaptive;
+mod stripe;
 pub mod coder;
 pub mod errors;
 pub mod merkle_helpers;
@@ -19,7 +19,7 @@ pub use clay::ClayCoder;
 pub use reed_solomon::ReedSolomonCoder;
 pub use metadata::SliceMetadata;
 pub use slicer::{Slicer, MappingStrategy, ROTATION_STEP, shard_to_slice, slice_to_shard};
-pub use adaptive::{derive_stripe_size, num_stripes, STRIPE_CAP};
+pub use stripe::{derive_stripe_size, num_stripes, stripe_size_accepted, STRIPE_CAP};
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;
 pub use repair::{RepairPlan, StripeRepair, HelperPlan, extract_repair_data};

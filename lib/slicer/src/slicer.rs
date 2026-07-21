@@ -1,7 +1,7 @@
 //! Striped erasure coder with optional rotation.
 //!
 //! `Slicer<C>` wraps any `ErasureCoder` implementation and adds:
-//! - Stripe splitting (adaptive size selection for optimal encoding)
+//! - Stripe splitting (size derived per blob)
 //! - Metadata suffix (blob_len, stripe_size, profile for decoding)
 //! - Optional rotation mapping for fair load distribution
 
@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use tape_core::encoding::{ClayParams, EncodingProfile};
 use tape_core::types::ChunkNumber;
 
-use crate::adaptive::{derive_stripe_size, STRIPE_CAP};
+use crate::stripe::{derive_stripe_size, stripe_size_accepted, STRIPE_CAP};
 use crate::clay::ClayCoder;
 use crate::errors::{DecodeError, EncodeError};
 use crate::metadata::SliceMetadata;
@@ -123,7 +123,7 @@ fn validate_layout(
 /// ```
 pub struct Slicer<C: ErasureCoder> {
     pub coder: C,
-    /// Stripe size of the last encode or decode; derived, never configured.
+    /// Stripe size of the last encode or decode; 0 until the first one.
     pub stripe_size: usize,
     pub strategy: MappingStrategy,
     pub profile: EncodingProfile,
@@ -131,65 +131,53 @@ pub struct Slicer<C: ErasureCoder> {
     /// data chunks at different positions produce distinct commitments.
     pub chunk_index: ChunkNumber,
     /// Largest stripe this slicer derives, on encode and when checking what it
-    /// reads.
+    /// reads. Every production path runs at the constant. Only tests and the
+    /// measurement harness vary it, to reach many-stripe geometry without
+    /// multi-megabyte payloads and to sweep stripe size against throughput.
     pub stripe_cap: usize,
 }
 
 impl<C: ErasureCoder> Slicer<C> {
+    fn build(coder: C, strategy: MappingStrategy, profile: EncodingProfile, cap: usize) -> Self {
+        Self {
+            coder,
+            stripe_size: 0,
+            strategy,
+            profile,
+            chunk_index: ChunkNumber(0),
+            stripe_cap: cap,
+        }
+    }
+
     /// Create a new striped coder with identity mapping (no rotation).
     ///
     /// Uses the production stripe cap and Clay default profile.
     pub fn new(coder: C) -> Self {
-        Self {
-            coder,
-            stripe_size: STRIPE_CAP,
-            strategy: MappingStrategy::Identity,
-            profile: EncodingProfile::clay_default(),
-            chunk_index: ChunkNumber(0),
-            stripe_cap: STRIPE_CAP,
-        }
+        Self::build(coder, MappingStrategy::Identity, EncodingProfile::clay_default(), STRIPE_CAP)
     }
 
     /// Create a new striped coder with rotation (production mode).
     ///
     /// Rotation ensures fair load distribution across all nodes.
     pub fn with_rotation(coder: C) -> Self {
-        Self {
-            coder,
-            stripe_size: STRIPE_CAP,
-            strategy: MappingStrategy::Rotated,
-            profile: EncodingProfile::clay_default(),
-            chunk_index: ChunkNumber(0),
-            stripe_cap: STRIPE_CAP,
-        }
+        Self::build(coder, MappingStrategy::Rotated, EncodingProfile::clay_default(), STRIPE_CAP)
     }
 
     /// Create with a stripe cap other than the production one. Sizing still
-    /// derives from the blob; only the ceiling moves.
+    /// derives from the blob; only the ceiling moves. Test affordance, not a
+    /// production path.
     pub fn with_stripe_cap(coder: C, cap: usize) -> Self {
-        Self {
-            coder,
-            stripe_size: cap,
-            strategy: MappingStrategy::Identity,
-            profile: EncodingProfile::clay_default(),
-            chunk_index: ChunkNumber(0),
-            stripe_cap: cap,
-        }
+        Self::build(coder, MappingStrategy::Identity, EncodingProfile::clay_default(), cap)
     }
 
     /// Create with a specific encoding profile and rotation.
     pub fn with_profile(coder: C, rotated: bool, profile: EncodingProfile) -> Self {
-        Self {
-            coder,
-            stripe_size: STRIPE_CAP,
-            strategy: if rotated { MappingStrategy::Rotated } else { MappingStrategy::Identity },
-            profile,
-            chunk_index: ChunkNumber(0),
-            stripe_cap: STRIPE_CAP,
-        }
+        let strategy =
+            if rotated { MappingStrategy::Rotated } else { MappingStrategy::Identity };
+        Self::build(coder, strategy, profile, STRIPE_CAP)
     }
 
-    /// Set the stripe cap.
+    /// Set the stripe cap. Test affordance, not a production path.
     pub fn set_stripe_cap(&mut self, cap: usize) {
         self.stripe_cap = cap;
     }
@@ -202,7 +190,12 @@ impl<C: ErasureCoder> Slicer<C> {
     /// Whether a stripe size read off a slice is the one this blob length
     /// derives. Anything else is not something this scheme could have written.
     pub fn accepts_stripe_size(&self, stripe_size: usize, blob_len: usize) -> bool {
-        stripe_size != 0 && stripe_size == self.derived_stripe_size(blob_len)
+        stripe_size_accepted(
+            stripe_size,
+            blob_len,
+            self.coder.stripe_alignment(),
+            self.stripe_cap,
+        )
     }
 
     /// Set the chunk index for metadata. Ensures identical data at different
@@ -226,10 +219,6 @@ impl<C: ErasureCoder> Slicer<C> {
         self.strategy
     }
 
-    /// Reconfigure the coder for a different stripe size.
-    fn set_stripe_size(&mut self, stripe_size: usize) {
-        self.stripe_size = stripe_size;
-    }
 }
 
 impl Slicer<ClayCoder> {
@@ -267,10 +256,7 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
         let blob_len = data.len();
 
         // Derive the stripe size from the blob
-        let stripe_size = self.derived_stripe_size(blob_len);
-        if self.stripe_size != stripe_size {
-            self.set_stripe_size(stripe_size);
-        }
+        self.stripe_size = self.derived_stripe_size(blob_len);
 
         // Handle empty blob
         if blob_len == 0 {
@@ -293,22 +279,22 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
         // Distribute first stripe chunks
         distribute_chunks(self.strategy, n, 0, &first_chunks, &mut slices);
 
-        // Encode remaining stripes
+        // Encode remaining stripes. Only the last one can fall short, and the
+        // derived stripe size is a multiple of the coder's alignment, so
+        // padding it up front is what keeps chunk sizes uniform.
+        let mut padded = Vec::new();
         for s in 1..num_stripes {
             let start = s * self.stripe_size;
             let end = (start + self.stripe_size).min(blob_len);
             let stripe_data = &data[start..end];
 
-            let chunks = self.coder.encode(stripe_data)?;
-
-            // Ensure consistent chunk sizes across stripes
-            let chunks = if chunks[0].len() != chunk_size {
-                // Pad the last stripe to full size for consistent chunks
-                let mut padded = stripe_data.to_vec();
+            let chunks = if stripe_data.len() == self.stripe_size {
+                self.coder.encode(stripe_data)?
+            } else {
+                padded.clear();
+                padded.extend_from_slice(stripe_data);
                 padded.resize(self.stripe_size, 0);
                 self.coder.encode(&padded)?
-            } else {
-                chunks
             };
 
             distribute_chunks(self.strategy, n, s, &chunks, &mut slices);
@@ -342,10 +328,7 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
             return Err(DecodeError::NotEnoughSlices);
         }
 
-        // Reconfigure if needed
-        if self.stripe_size != metadata.stripe_size() {
-            self.stripe_size = metadata.stripe_size();
-        }
+        self.stripe_size = metadata.stripe_size();
 
         let blob_len = metadata.blob_len();
         if blob_len == 0 {
@@ -504,7 +487,6 @@ mod tests {
         // one stripe under the cap, several equal stripes above it
         for (len, stripes) in [(1usize, 1usize), (500_000, 1), (1_000_000, 1), (2_500_000, 3)] {
             slicer.encode(&mk(len)).unwrap();
-            assert_eq!(slicer.stripe_size(), slicer.derived_stripe_size(len), "blob_len {len}");
             assert_eq!(num_stripes(len, slicer.stripe_size()), stripes, "blob_len {len}");
         }
     }

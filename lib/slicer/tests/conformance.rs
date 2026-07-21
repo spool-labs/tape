@@ -9,12 +9,15 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
+use tape_core::encoding::ClayParams;
 use tape_slicer::{
     derive_stripe_size, num_stripes, ErasureCoder, SliceIndex, SliceMetadata, Slicer, STRIPE_CAP,
 };
 
 /// Default Clay profile encode granularity (k * alpha * 2).
-const ALIGN: usize = 1_400;
+fn align() -> usize {
+    ClayParams::default().stripe_alignment() as usize
+}
 
 /// Snapshot symbol payload size: 4 MiB plus the chunk number header.
 const SNAPSHOT_PACKED: usize = 4 * 1024 * 1024 + 8;
@@ -172,7 +175,10 @@ fn repair_plan_params_match_reference() {
 // cap, across the whole track range
 #[test]
 fn padding_and_range_bounds() {
-    let cap_aligned = STRIPE_CAP.div_ceil(ALIGN) * ALIGN;
+    let align = align();
+    let cap_aligned = STRIPE_CAP.div_ceil(align) * align;
+    // empty blobs are their own case: one stripe of pure padding, covered by
+    // roundtrip_empty_blob
     let mut sizes: Vec<usize> = ROUNDTRIP_SIZES.to_vec();
     for boundary in (1_000_000..=67_108_864usize).step_by(1_000_000) {
         sizes.push(boundary);
@@ -180,13 +186,13 @@ fn padding_and_range_bounds() {
     }
 
     for len in sizes {
-        let stripe = derive_stripe_size(len, ALIGN, STRIPE_CAP);
+        let stripe = derive_stripe_size(len, align, STRIPE_CAP);
         let count = num_stripes(len, stripe);
-        assert!(stripe >= ALIGN);
+        assert!(stripe >= align);
         assert!(stripe <= cap_aligned, "len {len}: stripe {stripe} above cap");
-        assert!(stripe.is_multiple_of(ALIGN), "len {len}: stripe {stripe} unaligned");
+        assert!(stripe.is_multiple_of(align), "len {len}: stripe {stripe} unaligned");
         assert!(
-            count * stripe >= len && count * stripe - len < count * ALIGN,
+            count * stripe >= len && count * stripe - len < count * align,
             "len {len}: padding bound violated (stripe {stripe}, count {count})"
         );
     }
@@ -196,12 +202,12 @@ fn padding_and_range_bounds() {
 // blob length does not derive cannot enter the decode path
 #[test]
 fn parser_takes_writer_output_only() {
-    for &len in &[100_001usize, 1_000_001, SNAPSHOT_PACKED] {
+    for &len in &[1usize, 500_000, 1_000_000, 100_001, 1_000_001, 2_000_000, SNAPSHOT_PACKED] {
         let payload = mk(len);
         let mut writer = Slicer::clay_default();
         let meta = SliceMetadata::parse(&writer.encode(&payload).unwrap()[0]).unwrap();
 
-        assert_eq!(meta.stripe_size(), derive_stripe_size(len, ALIGN, STRIPE_CAP));
+        assert_eq!(meta.stripe_size(), writer.derived_stripe_size(len));
 
         let mut raw = vec![0u8; 64];
         raw.extend_from_slice(&meta.to_bytes());
@@ -224,10 +230,11 @@ fn parser_takes_writer_output_only() {
 // count; deriving from the blob caps it, and the parser rejects the rest
 #[test]
 fn hostile_stripe_count_rejected() {
-    let hostile = num_stripes(SNAPSHOT_PACKED, ALIGN);
+    let align = align();
+    let hostile = num_stripes(SNAPSHOT_PACKED, align);
     let derived = num_stripes(
         SNAPSHOT_PACKED,
-        derive_stripe_size(SNAPSHOT_PACKED, ALIGN, STRIPE_CAP),
+        derive_stripe_size(SNAPSHOT_PACKED, align, STRIPE_CAP),
     );
 
     assert!(hostile > 2_900, "hostile stripe count: {hostile}");
@@ -235,7 +242,7 @@ fn hostile_stripe_count_rejected() {
 
     // the mechanics still work at one stripe per alignment unit, so only the
     // parser stands between a hostile writer and per-track resource blowup
-    let mut slicer = slicer_at(ALIGN);
+    let mut slicer = slicer_at(align);
     let payload = mk(100_001);
     let slices = slicer.encode(&payload).unwrap();
     assert!(num_stripes(payload.len(), slicer.stripe_size()) > 70);

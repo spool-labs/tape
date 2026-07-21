@@ -222,12 +222,13 @@ mod tests {
     // with the track size.
     #[test]
     fn stripe_sizing_holds_at_track_cap() {
+        use tape_core::encoding::ClayParams;
         use tape_slicer::{derive_stripe_size, num_stripes, STRIPE_CAP};
 
-        const ALIGN: usize = 1_400;
-        let stripe = derive_stripe_size(MAX_TRACK_SIZE, ALIGN, STRIPE_CAP);
+        let align = ClayParams::default().stripe_alignment() as usize;
+        let stripe = derive_stripe_size(MAX_TRACK_SIZE, align, STRIPE_CAP);
 
-        assert!(stripe <= STRIPE_CAP.div_ceil(ALIGN) * ALIGN);
+        assert!(stripe <= STRIPE_CAP.div_ceil(align) * align);
         assert_eq!(num_stripes(MAX_TRACK_SIZE, stripe), 68);
     }
 }

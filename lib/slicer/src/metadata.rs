@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use tape_core::encoding::EncodingProfile;
 use tape_core::types::ChunkNumber;
 
-use crate::adaptive::{derive_stripe_size, STRIPE_CAP};
+use crate::stripe::{stripe_size_accepted, STRIPE_CAP};
 use crate::errors::DecodeError;
 
 /// Metadata suffix appended to each slice.
@@ -86,7 +86,7 @@ impl SliceMetadata {
             return Err(DecodeError::InvalidLayout);
         }
         let alignment = meta.profile.clay_params().stripe_alignment() as usize;
-        if meta.stripe_size as usize != derive_stripe_size(meta.blob_len(), alignment, STRIPE_CAP) {
+        if !stripe_size_accepted(meta.stripe_size(), meta.blob_len(), alignment, STRIPE_CAP) {
             return Err(DecodeError::InvalidLayout);
         }
 
@@ -123,11 +123,9 @@ impl SliceMetadata {
 mod tests {
     use super::*;
 
-    /// Default Clay profile encode granularity (k * alpha * 2).
-    const ALIGN: usize = 1_400;
-
     fn derived(blob_len: usize) -> usize {
-        derive_stripe_size(blob_len, ALIGN, STRIPE_CAP)
+        let alignment = EncodingProfile::clay_default().clay_params().stripe_alignment();
+        crate::stripe::derive_stripe_size(blob_len, alignment as usize, STRIPE_CAP)
     }
 
     #[test]
