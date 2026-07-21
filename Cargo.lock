@@ -10002,7 +10002,9 @@ dependencies = [
  "store-rocks",
  "tape-core",
  "tape-crypto",
+ "tape-slicer",
  "tape-store",
+ "tempfile",
 ]
 
 [[package]]

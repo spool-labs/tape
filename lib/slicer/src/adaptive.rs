@@ -1,41 +1,20 @@
-//! Adaptive stripe size selection.
+//! Per-blob stripe sizing.
 //!
-//! Selects optimal stripe size based on blob size to balance:
-//! - Encoding efficiency (larger stripes = better throughput)
-//! - Memory usage (smaller stripes = less peak memory)
-//! - Chunk overhead (fewer stripes = less metadata per chunk)
+//! A blob splits into equal stripes no larger than the cap, each rounded up to
+//! the coder's encode granularity. Every stripe is full by construction, so
+//! padding never exceeds one alignment unit per stripe, and the cap holds peak
+//! encode memory flat regardless of blob size.
 
-/// Available stripe sizes for adaptive encoding.
-///
-/// Multiples of 2000 for Clay alignment (k × α × 2 = 10 × 100 × 2 = 2000).
-/// Sizes chosen to cover common blob size ranges:
-/// - 100 KB: Small blobs (< 1 MB)
-/// - 1 MB: Medium blobs (1-100 MB)
-/// - 10 MB: Large blobs (> 100 MB)
-pub const STRIPE_SIZES: [usize; 3] = [
-    100_000,     // 100 KB
-    1_000_000,   //   1 MB
-    10_000_000,  //  10 MB
-];
+/// Largest stripe a writer emits.
+pub const STRIPE_CAP: usize = 1_000_000;
 
-/// Default stripe size (10 MB).
-pub const DEFAULT_STRIPE_SIZE: usize = STRIPE_SIZES[2];
-
-/// Select optimal stripe size based on blob size.
-///
-/// Strategy:
-/// - Blobs ≤ 1 MB: Use 100 KB stripes (1-10 stripes)
-/// - Blobs ≤ 100 MB: Use 1 MB stripes (1-100 stripes)
-/// - Blobs > 100 MB: Use 10 MB stripes (10+ stripes)
+/// Stripe size for a blob: an equal split no larger than the cap, rounded up
+/// to the coder's alignment.
 #[inline]
-pub fn pick_stripe_size(blob_len: usize) -> usize {
-    if blob_len <= 1_000_000 {
-        STRIPE_SIZES[0] // 100 KB
-    } else if blob_len <= 100_000_000 {
-        STRIPE_SIZES[1] // 1 MB
-    } else {
-        STRIPE_SIZES[2] // 10 MB
-    }
+pub fn derive_stripe_size(blob_len: usize, alignment: usize, cap: usize) -> usize {
+    let count = blob_len.div_ceil(cap).max(1);
+    let stripe = blob_len.div_ceil(count).max(1);
+    stripe.div_ceil(alignment) * alignment
 }
 
 /// Calculate number of stripes for a given blob and stripe size.
@@ -52,21 +31,32 @@ pub fn num_stripes(blob_len: usize, stripe_size: usize) -> usize {
 mod tests {
     use super::*;
 
+    /// Default Clay profile encode granularity (k * alpha * 2).
+    const ALIGN: usize = 1_400;
+
     #[test]
-    fn test_stripe_selection() {
-        // Small blobs -> 100KB stripes
-        assert_eq!(pick_stripe_size(100), STRIPE_SIZES[0]);
-        assert_eq!(pick_stripe_size(500_000), STRIPE_SIZES[0]);
-        assert_eq!(pick_stripe_size(1_000_000), STRIPE_SIZES[0]);
+    fn test_derived_is_aligned_and_capped() {
+        let cap_aligned = STRIPE_CAP.div_ceil(ALIGN) * ALIGN;
 
-        // Medium blobs -> 1MB stripes
-        assert_eq!(pick_stripe_size(1_000_001), STRIPE_SIZES[1]);
-        assert_eq!(pick_stripe_size(50_000_000), STRIPE_SIZES[1]);
-        assert_eq!(pick_stripe_size(100_000_000), STRIPE_SIZES[1]);
+        for len in [0, 1, 1_399, 1_400, 100_000, 999_999, 1_000_001, 64 * 1024 * 1024] {
+            let stripe = derive_stripe_size(len, ALIGN, STRIPE_CAP);
+            assert!(stripe.is_multiple_of(ALIGN), "len {len}: stripe {stripe} unaligned");
+            assert!(stripe >= ALIGN, "len {len}: stripe {stripe} below alignment");
+            assert!(stripe <= cap_aligned, "len {len}: stripe {stripe} above cap");
+        }
+    }
 
-        // Large blobs -> 10MB stripes
-        assert_eq!(pick_stripe_size(100_000_001), STRIPE_SIZES[2]);
-        assert_eq!(pick_stripe_size(1_000_000_000), STRIPE_SIZES[2]);
+    #[test]
+    fn test_derived_padding_stays_below_one_unit_per_stripe() {
+        for len in [1, 100_001, 250_000, 1_000_001, 2_000_001, 4 * 1024 * 1024 + 8] {
+            let stripe = derive_stripe_size(len, ALIGN, STRIPE_CAP);
+            let count = num_stripes(len, stripe);
+            assert!(count * stripe >= len, "len {len}: stripes do not cover the blob");
+            assert!(
+                count * stripe - len < count * ALIGN,
+                "len {len}: padding bound violated (stripe {stripe}, count {count})"
+            );
+        }
     }
 
     #[test]
@@ -76,14 +66,5 @@ mod tests {
         assert_eq!(num_stripes(100_000, 100_000), 1);
         assert_eq!(num_stripes(100_001, 100_000), 2);
         assert_eq!(num_stripes(250_000, 100_000), 3);
-    }
-
-    #[test]
-    fn test_stripe_alignment() {
-        // Verify all stripe sizes are multiples of Clay alignment (2000)
-        const CLAY_ALIGNMENT: usize = 2000;
-        for &size in &STRIPE_SIZES {
-            assert_eq!(size % CLAY_ALIGNMENT, 0, "{size} not aligned");
-        }
     }
 }

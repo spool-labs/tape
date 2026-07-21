@@ -210,11 +210,16 @@ impl Slicer<ClayCoder> {
         available: &[SliceIndex],
         reference: &[u8],
     ) -> Result<RepairPlan, RepairError> {
-        let metadata = SliceMetadata::from_slice(reference)
+        let metadata = SliceMetadata::parse(reference)
             .map_err(|e| RepairError::InvalidLayout(e.to_string()))?;
 
         let blob_len = metadata.blob_len();
         let stripe_size = metadata.stripe_size();
+        if !self.accepts_stripe_size(stripe_size, blob_len) {
+            return Err(RepairError::InvalidLayout(
+                format!("stripe size {stripe_size} not accepted"),
+            ));
+        }
         let num_stripes = if blob_len == 0 {
             1
         } else {
@@ -431,7 +436,7 @@ mod tests {
 
     #[test]
     fn repair_full_single() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_cap(ClayCoder::new(20, 10, 19), 100_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -446,10 +451,10 @@ mod tests {
     fn repair_full_rotated() {
         let mut slicer = Slicer::with_profile(
             ClayCoder::new(20, 10, 19),
-            2000,
             true,
             EncodingProfile::clay_default(),
         );
+        slicer.set_stripe_cap(2_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -462,7 +467,7 @@ mod tests {
 
     #[test]
     fn repair_plan_helpers() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_cap(ClayCoder::new(20, 10, 19), 100_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -476,7 +481,7 @@ mod tests {
 
     #[test]
     fn repair_plan_bandwidth() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_cap(ClayCoder::new(20, 10, 19), 100_000);
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -507,11 +512,10 @@ mod tests {
     fn repair_plan_rotation() {
         let mut slicer = Slicer::with_profile(
             ClayCoder::new(20, 10, 19),
-            100_000,
             true,
             EncodingProfile::clay_default(),
         );
-        let payload = mk(300_000);
+        let payload = mk(2_500_000);
         let chunks = slicer.encode(&payload).unwrap();
 
         let available: Vec<SliceIndex> = (1..N).map(si).collect();
@@ -530,7 +534,7 @@ mod tests {
 
     #[test]
     fn repair_exactly_d() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_cap(ClayCoder::new(20, 10, 19), 100_000);
         let d = slicer.coder.d();
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -550,7 +554,7 @@ mod tests {
 
     #[test]
     fn repair_plan_from_params_matches() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_cap(ClayCoder::new(20, 10, 19), 100_000);
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -582,14 +586,14 @@ mod tests {
     fn repair_plan_from_params_rotated() {
         let mut slicer = Slicer::with_profile(
             ClayCoder::new(20, 10, 19),
-            2000,
             true,
             EncodingProfile::clay_default(),
         );
+        slicer.set_stripe_cap(2_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
-        // encode() adapts stripe_size via pick_stripe_size, so use the actual value
+        // encode() derives the stripe size, so use the actual value
         let actual_stripe_size = slicer.stripe_size();
 
         let available: Vec<SliceIndex> = (1..N).map(si).collect();
@@ -614,7 +618,7 @@ mod tests {
 
     #[test]
     fn repair_insufficient() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_cap(ClayCoder::new(20, 10, 19), 100_000);
         let d = slicer.coder.d();
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();

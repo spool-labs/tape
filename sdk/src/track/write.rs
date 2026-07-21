@@ -29,7 +29,7 @@ use tape_protocol::api::GetTrackDataReq;
 use tape_protocol::api::GetTrackByNumberReq;
 use futures::stream::StreamExt;
 use tape_retry::{retry, retry_if, RetryConfig, Retryable};
-use tape_slicer::{num_stripes, pick_stripe_size};
+use tape_slicer::num_stripes;
 use tokio::time::sleep;
 
 use crate::codec::encoder::BlobEncoder;
@@ -288,13 +288,17 @@ fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
         .encode_with_leaves(data)
         .map_err(|e| TapedriveError::Encoding(e.to_string()))?;
 
+    // Stripe geometry must come from the encoder so the plan always matches
+    // the slice metadata it just produced.
+    let stripe_size = encoder.stripe_size();
+
     Ok(UploadPlan {
         slices,
         commitment_hash: merkle_root,
         storage_units: StorageUnits::from_bytes(data_len as u64),
         profile,
-        stripe_size: pick_stripe_size(data_len),
-        stripe_count: num_stripes(data_len, pick_stripe_size(data_len)),
+        stripe_size,
+        stripe_count: num_stripes(data_len, stripe_size),
         leaves,
     })
 }

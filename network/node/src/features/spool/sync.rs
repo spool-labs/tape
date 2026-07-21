@@ -458,7 +458,6 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            512,
             true,
             profile,
         );

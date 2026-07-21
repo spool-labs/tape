@@ -216,4 +216,18 @@ mod tests {
         let recovered = ChunkManifest::from_bytes(&bytes).expect("deserialize manifest");
         assert_eq!(recovered.chunks[3].size, StorageUnits::from_bytes(1000));
     }
+
+    // stripe sizing holds across the whole track range: a full track still
+    // splits into stripes at the cap, so peak encode memory does not grow
+    // with the track size.
+    #[test]
+    fn stripe_sizing_holds_at_track_cap() {
+        use tape_slicer::{derive_stripe_size, num_stripes, STRIPE_CAP};
+
+        const ALIGN: usize = 1_400;
+        let stripe = derive_stripe_size(MAX_TRACK_SIZE, ALIGN, STRIPE_CAP);
+
+        assert!(stripe <= STRIPE_CAP.div_ceil(ALIGN) * ALIGN);
+        assert_eq!(num_stripes(MAX_TRACK_SIZE, stripe), 68);
+    }
 }

@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use tape_core::encoding::EncodingProfile;
 use tape_core::types::ChunkNumber;
 
-use crate::adaptive::STRIPE_SIZES;
+use crate::adaptive::{derive_stripe_size, STRIPE_CAP};
 use crate::errors::DecodeError;
 
 /// Metadata suffix appended to each slice.
@@ -26,7 +26,7 @@ pub struct SliceMetadata {
     pub version: u64,
     /// Original blob length in bytes.
     pub blob_len: u64,
-    /// Stripe size used for encoding (one of STRIPE_SIZES).
+    /// Stripe size used for encoding, derived from the blob length.
     pub stripe_size: u64,
     /// Encoding profile (type + params).
     pub profile: EncodingProfile,
@@ -63,8 +63,9 @@ impl SliceMetadata {
         bytemuck::bytes_of(self).try_into().unwrap()
     }
 
-    /// Parse from slice suffix bytes.
-    pub fn from_slice(slice_data: &[u8]) -> Result<Self, DecodeError> {
+    /// Parse from slice suffix bytes without checking the stripe size. Callers
+    /// holding a slicer check it against that slicer's cap themselves.
+    pub fn parse(slice_data: &[u8]) -> Result<Self, DecodeError> {
         if slice_data.len() < Self::SIZE {
             return Err(DecodeError::InvalidLayout);
         }
@@ -73,9 +74,19 @@ impl SliceMetadata {
         // Copy to aligned buffer for safe Pod conversion
         let mut buf = [0u8; Self::SIZE];
         buf.copy_from_slice(suffix);
-        let meta: Self = *bytemuck::from_bytes(&buf);
+        Ok(*bytemuck::from_bytes(&buf))
+    }
 
-        if !STRIPE_SIZES.contains(&(meta.stripe_size as usize)) {
+    /// Parse from slice suffix bytes at the production stripe cap, rejecting
+    /// any stripe size the carried blob length does not derive.
+    pub fn from_slice(slice_data: &[u8]) -> Result<Self, DecodeError> {
+        let meta = Self::parse(slice_data)?;
+
+        if !meta.profile.is_clay() {
+            return Err(DecodeError::InvalidLayout);
+        }
+        let alignment = meta.profile.clay_params().stripe_alignment() as usize;
+        if meta.stripe_size as usize != derive_stripe_size(meta.blob_len(), alignment, STRIPE_CAP) {
             return Err(DecodeError::InvalidLayout);
         }
 
@@ -112,6 +123,13 @@ impl SliceMetadata {
 mod tests {
     use super::*;
 
+    /// Default Clay profile encode granularity (k * alpha * 2).
+    const ALIGN: usize = 1_400;
+
+    fn derived(blob_len: usize) -> usize {
+        derive_stripe_size(blob_len, ALIGN, STRIPE_CAP)
+    }
+
     #[test]
     fn test_size() {
         assert_eq!(SliceMetadata::SIZE, 48);
@@ -119,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let mut meta = SliceMetadata::new(12345, STRIPE_SIZES[0]);
+        let mut meta = SliceMetadata::new(12345, derived(12345));
         meta.chunk_index = ChunkNumber(42);
         let bytes = meta.to_bytes();
 
@@ -129,7 +147,7 @@ mod tests {
 
         let parsed = SliceMetadata::from_slice(&slice).unwrap();
         assert_eq!(parsed.blob_len(), 12345);
-        assert_eq!(parsed.stripe_size(), STRIPE_SIZES[0]);
+        assert_eq!(parsed.stripe_size(), derived(12345));
         assert_eq!(parsed.version(), SliceMetadata::VERSION);
         assert_eq!(parsed.chunk_index(), ChunkNumber(42));
     }
@@ -142,11 +160,20 @@ mod tests {
 
     #[test]
     fn test_invalid_stripe() {
-        let mut meta = SliceMetadata::new(1000, STRIPE_SIZES[0]);
-        meta.stripe_size = 999; // invalid
+        let mut meta = SliceMetadata::new(1000, derived(1000));
+        meta.stripe_size = 999; // not what 1000 bytes derives
         let bytes = meta.to_bytes();
 
         let result = SliceMetadata::from_slice(&bytes);
         assert!(result.is_err());
+    }
+
+    // a stripe size that is valid for some other blob length is still rejected
+    #[test]
+    fn test_stripe_must_match_blob_len() {
+        let mut meta = SliceMetadata::new(3_000_000, derived(3_000_000));
+        meta.stripe_size = derived(100_000) as u64;
+
+        assert!(SliceMetadata::from_slice(&meta.to_bytes()).is_err());
     }
 }
