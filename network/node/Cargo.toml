@@ -28,7 +28,7 @@ rpc-client = { workspace = true }
 rpc-solana = { workspace = true }
 tape-retry = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
-tape-observe-api = { workspace = true }
+tape-observe-api = { workspace = true, optional = true }
 memory-stats = { version = "1", optional = true }
 
 # External
@@ -80,6 +80,7 @@ tape-chain-harness = { workspace = true }
 default = []
 metrics = [
     "tape-metrics/metrics",
+    "dep:tape-observe-api",
     "dep:memory-stats",
     "rpc-client/metrics",
     "store/metrics",

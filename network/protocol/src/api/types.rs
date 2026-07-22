@@ -144,10 +144,7 @@ pub struct NodeStats {
     #[serde(default)]
     pub bootstrap_current_slot: u64,
     #[serde(default)]
-    pub bootstrap_target_slot: u64,
-    #[serde(default)]
-    pub fee_payer_lamports: Option<u64>,
-}
+    pub bootstrap_target_slot: u64,}
 
 /// Project the wire stats onto the dashboard's per-node stats.
 impl From<&NodeStats> for tape_observe_api::NodeStats {
@@ -171,7 +168,6 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             } else {
                 s.bootstrap_target_slot.saturating_sub(s.bootstrap_current_slot)
             },
-            fee_payer_lamports: s.fee_payer_lamports,
         }
     }
 }

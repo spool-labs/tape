@@ -127,28 +127,32 @@ mod tests {
     use super::*;
 
     fn test_coder() -> ClayCoder {
-        ClayCoder::new(20, 10, 19)
+        ClayCoder::from_params(ClayParams::default())
     }
 
     fn make_data(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
+    fn assert_recovers(recovered: &[u8], original: &[u8]) {
+        assert_eq!(&recovered[..original.len()], original);
+    }
+
     #[test]
     fn test_params() {
         let coder = test_coder();
-        assert_eq!(coder.k(), 10);
-        assert_eq!(coder.m(), 10);
+        assert_eq!(coder.k(), 7);
+        assert_eq!(coder.m(), 13);
         assert_eq!(coder.n(), 20);
-        assert_eq!(coder.d(), 19);
+        assert_eq!(coder.d(), 16);
     }
 
     #[test]
     fn test_from_params() {
-        let params = ClayParams::new(20, 10, 19);
+        let params = ClayParams::new(20, 7, 16);
         let coder = ClayCoder::from_params(params);
-        assert_eq!(coder.k(), 10);
-        assert_eq!(coder.m(), 10);
+        assert_eq!(coder.k(), 7);
+        assert_eq!(coder.m(), 13);
         assert_eq!(coder.n(), 20);
     }
 
@@ -182,7 +186,7 @@ mod tests {
             .collect();
 
         let recovered = coder.decode(&available).unwrap();
-        assert_eq!(recovered, original);
+        assert_recovers(&recovered, &original);
     }
 
     #[test]
@@ -200,7 +204,7 @@ mod tests {
             .collect();
 
         let recovered = coder.decode(&available).unwrap();
-        assert_eq!(recovered, original);
+        assert_recovers(&recovered, &original);
     }
 
     #[test]
@@ -219,7 +223,7 @@ mod tests {
             .collect();
 
         let recovered = coder.decode(&available).unwrap();
-        assert_eq!(recovered, original);
+        assert_recovers(&recovered, &original);
     }
 
     #[test]
@@ -237,7 +241,7 @@ mod tests {
             .collect();
 
         let recovered = coder.decode(&available).unwrap();
-        assert_eq!(recovered, original);
+        assert_recovers(&recovered, &original);
     }
 
     #[test]

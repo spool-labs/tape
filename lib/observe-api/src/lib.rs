@@ -5,13 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Balance in lamports below which a fee payer is treated as low
-///
-/// The node logs against it and the dashboard tints against it, so it lives
-/// here rather than in either of them. The alert rules carry their own copy
-/// because promql cannot import one, and say so where they set it.
-pub const LOW_BALANCE_LAMPORTS: u64 = 50_000_000;
-
 /// Path the node serves one node's board from.
 pub const BOARD_PATH: &str = "/v1/observe/board";
 
@@ -72,7 +65,6 @@ pub struct NodeStats {
     #[serde(default)] pub blocks_processed: u64,
     #[serde(default)] pub bootstrap_ready: bool,
     #[serde(default)] pub bootstrap_behind_slots: u64,
-    #[serde(default)] pub fee_payer_lamports: Option<u64>,
 }
 
 /// One committee member, as seen on-chain and optionally enriched with liveness

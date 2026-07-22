@@ -172,7 +172,7 @@ impl Default for EncodingProfile {
 /// - m: parity slices (1-255), where n = k + m
 /// - d: helper count for repair (k+1 <= d <= n-1)
 ///
-/// Constraints (from clay-codes 0.1.1):
+/// Constraints (from clay-codes):
 /// - k >= 1, m >= 1, k + m = n
 /// - d >= k + 1, d <= n - 1
 #[repr(C)]

@@ -39,6 +39,7 @@ pub trait ErasureCoder {
     ///              Must have at least k chunks for reconstruction.
     ///
     /// # Returns
-    /// Reconstructed original data.
+    /// Reconstructed data, including any encode padding. Callers that know
+    /// the original length truncate.
     fn decode(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError>;
 }
