@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Balance in lamports below which a fee payer is treated as low
+pub const LOW_BALANCE_LAMPORTS: u64 = 50_000_000;
+
 /// Path the node serves one node's board from.
 pub const BOARD_PATH: &str = "/v1/observe/board";
 
@@ -65,6 +68,7 @@ pub struct NodeStats {
     #[serde(default)] pub blocks_processed: u64,
     #[serde(default)] pub bootstrap_ready: bool,
     #[serde(default)] pub bootstrap_behind_slots: u64,
+    #[serde(default)] pub fee_payer_lamports: Option<u64>,
 }
 
 /// One committee member, as seen on-chain and optionally enriched with liveness

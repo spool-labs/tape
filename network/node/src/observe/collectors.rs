@@ -27,6 +27,7 @@ const GROUPS_TOTAL: (&str, &str) = ("tape_node_groups_total", "Spool groups in t
 const PEERS_TOTAL: (&str, &str) = ("tape_node_peers_total", "Known peers in the directory");
 const PEER_CAPACITY: (&str, &str) = ("tape_node_peer_capacity", "Configured peer directory capacity");
 const EPOCH_SYNCED: (&str, &str) = ("tape_node_epoch_synced_groups", "Groups past the sync threshold this epoch");
+const FEE_PAYER_BALANCE: (&str, &str) = ("tape_node_fee_payer_lamports", "Fee payer balance sampled by the balance monitor");
 
 fn int_gauge((name, help): (&str, &str)) -> IntGauge {
     IntGauge::new(name, help).expect("int gauge")
@@ -111,6 +112,7 @@ pub struct NodeStatusCollector<Db: Store, Cluster: Api, Blockchain: Rpc> {
     peers: IntGauge,
     peer_capacity: IntGauge,
     synced: IntGauge,
+    fee_payer: IntGauge,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeStatusCollector<Db, Cluster, Blockchain> {
@@ -128,6 +130,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeStatusCollector<Db, Cluster, 
             peers: int_gauge(PEERS_TOTAL),
             peer_capacity: int_gauge(PEER_CAPACITY),
             synced: int_gauge(EPOCH_SYNCED),
+            fee_payer: int_gauge(FEE_PAYER_BALANCE),
         }
     }
 
@@ -152,7 +155,15 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Col
     for NodeStatusCollector<Db, Cluster, Blockchain>
 {
     fn desc(&self) -> Vec<&Desc> {
-        self.gauges().into_iter().flat_map(|g| g.desc()).collect()
+        // The fee payer gauge is described but only collected once a sample
+        // lands, so it stays out of the array the collect path walks
+        // unconditionally. Folding it in would export a zero that reads as a
+        // node with no money.
+        self.gauges()
+            .into_iter()
+            .chain([&self.fee_payer])
+            .flat_map(|g| g.desc())
+            .collect()
     }
 
     fn collect(&self) -> Vec<MetricFamily> {
@@ -175,6 +186,16 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Col
         self.peer_capacity.set(state.peer_capacity as i64);
         self.synced.set(state.current.epoch.state.synced_count as i64);
 
-        self.gauges().into_iter().flat_map(|g| g.collect()).collect()
+        let mut families: Vec<MetricFamily> =
+            self.gauges().into_iter().flat_map(|g| g.collect()).collect();
+
+        // Only exported once sampled, so a process without a balance monitor
+        // (the gateway) never reports a zero balance that reads as broke.
+        if let Some(balance) = self.context.fee_payer_balance() {
+            self.fee_payer.set(balance.0 as i64);
+            families.extend(self.fee_payer.collect());
+        }
+
+        families
     }
 }

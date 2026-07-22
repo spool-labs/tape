@@ -1,7 +1,6 @@
 //! Slicer benchmarks.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use tape_core::encoding::ClayParams;
 use tape_slicer::{ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder};
 
 fn make_data(len: usize) -> Vec<u8> {
@@ -15,7 +14,7 @@ fn clay_encode(c: &mut Criterion) {
         let data = make_data(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_function(format!("{size}B"), |b| {
-            let mut coder = ClayCoder::from_params(ClayParams::default());
+            let mut coder = ClayCoder::new(20, 10, 19);
             b.iter(|| {
                 black_box(coder.encode(black_box(&data)).unwrap())
             })
@@ -30,11 +29,11 @@ fn clay_decode(c: &mut Criterion) {
 
     for size in [10_000, 100_000, 1_000_000] {
         let data = make_data(size);
-        let mut coder = ClayCoder::from_params(ClayParams::default());
+        let mut coder = ClayCoder::new(20, 10, 19);
         let chunks = coder.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()
-            .take(coder.k())
+            .take(10) // k chunks
             .map(|(i, c)| (i, c.as_slice()))
             .collect();
 
@@ -117,7 +116,7 @@ fn slicer_decode(c: &mut Criterion) {
         let chunks = slicer.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()
-            .take(slicer.k())
+            .take(10)
             .map(|(i, c)| (i, c.as_slice()))
             .collect();
 

@@ -385,6 +385,7 @@ where
         } else {
             bootstrap.target_slot.saturating_sub(bootstrap.current_slot)
         },
+        fee_payer_lamports: context.fee_payer_balance().map(|b| b.0),
     }
 }
 

@@ -16,6 +16,7 @@ pub enum ServiceName {
     StateManager,
     GcManager,
     PeerAggregator,
+    BalanceMonitor,
 }
 
 impl ServiceName {
@@ -37,6 +38,7 @@ impl ServiceName {
             Self::StateManager => "StateManager",
             Self::GcManager => "GcManager",
             Self::PeerAggregator => "PeerAggregator",
+            Self::BalanceMonitor => "BalanceMonitor",
         }
     }
 }
