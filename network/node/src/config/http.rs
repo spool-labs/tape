@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Deserializer};
+use tape_core::types::coin::{Coin, TAPE};
 use tape_protocol::api::SLICE_BODY_LIMIT;
 
 use super::cidr::CidrBlock;
@@ -141,13 +142,26 @@ impl Default for AdmissionConfig {
     }
 }
 
-/// One stake-tier admission rate: callers staking at least this many whole
-/// TAPE refill at this rate with this burst capacity.
+/// One stake-tier admission rate: callers staking at least the floor refill
+/// at this rate with this burst capacity. The floor is written in whole TAPE
+/// in config and normalized to flux on load.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct StakeTier {
-    pub min_stake_tape: u64,
+    #[serde(rename = "min_stake_tape", deserialize_with = "whole_tape")]
+    pub min_stake: Coin<TAPE>,
     pub per_sec: u32,
     pub burst: u32,
+}
+
+fn whole_tape<'de, D>(deserializer: D) -> Result<Coin<TAPE>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let whole = u64::deserialize(deserializer)?;
+    whole
+        .checked_mul(TAPE::SCALE)
+        .map(TAPE)
+        .ok_or_else(|| serde::de::Error::custom("stake tier floor overflows"))
 }
 
 fn default_port() -> u16 {
@@ -187,9 +201,9 @@ fn default_anonymous_write_per_sec() -> u32 {
 
 fn default_stake_tiers() -> Vec<StakeTier> {
     vec![
-        StakeTier { min_stake_tape: 100, per_sec: 32, burst: 128 },
-        StakeTier { min_stake_tape: 1_000, per_sec: 128, burst: 512 },
-        StakeTier { min_stake_tape: 10_000, per_sec: 512, burst: 2_048 },
+        StakeTier { min_stake: TAPE::from_fixed(100, 0), per_sec: 32, burst: 128 },
+        StakeTier { min_stake: TAPE::from_fixed(1_000, 0), per_sec: 128, burst: 512 },
+        StakeTier { min_stake: TAPE::from_fixed(10_000, 0), per_sec: 512, burst: 2_048 },
     ]
 }
 

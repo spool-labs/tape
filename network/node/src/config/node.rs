@@ -276,19 +276,24 @@ impl NodeConfig {
             ));
         }
 
-        let mut floor = 0u64;
         for tier in &self.http.admission.stake_tiers {
             if tier.per_sec == 0 || tier.burst == 0 {
                 return Err(ConfigError::Invalid(
                     "http.admission.stake_tiers rates must be greater than zero".into(),
                 ));
             }
-            if tier.min_stake_tape <= floor {
-                return Err(ConfigError::Invalid(
-                    "http.admission.stake_tiers must ascend by stake".into(),
-                ));
-            }
-            floor = tier.min_stake_tape;
+        }
+
+        let ascending = self
+            .http
+            .admission
+            .stake_tiers
+            .windows(2)
+            .all(|pair| pair[0].min_stake < pair[1].min_stake);
+        if !ascending {
+            return Err(ConfigError::Invalid(
+                "http.admission.stake_tiers must ascend by stake".into(),
+            ));
         }
 
         if self.http.admission.over_budget_penalty_secs == 0 {

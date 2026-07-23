@@ -41,8 +41,7 @@ enum BucketClass {
     AnonymousRead,
     Probe,
     TrustedMetered,
-    StakedWrite,
-    StakedMetered,
+    Staked,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -80,75 +79,47 @@ impl AdmissionLimiter {
         }
     }
 
-    /// Proxy ranges whose forwarded-for header resolves the real caller
-    pub fn trusted_proxies(&self) -> &[CidrBlock] {
-        &self.config.trusted_proxies
-    }
-
     /// The full admission config, for caller classification.
     pub fn config(&self) -> &AdmissionConfig {
         &self.config
     }
 
-    pub fn check_direct_write(&self, caller: AdmissionCaller) -> AdmissionDecision {
-        match caller {
-            AdmissionCaller::Peer(_) => self.check_bucket(
+    /// One admission check: the whole mode-by-caller policy table lives in
+    /// bucket_params, so every class and rate is visible in one place. A
+    /// committee peer and a staked caller each share one bucket across
+    /// modes; only anonymous callers split write from read budgets.
+    pub fn check(&self, mode: AdmissionMode, caller: AdmissionCaller) -> AdmissionDecision {
+        let (class, per_sec, burst) = self.bucket_params(mode, caller);
+        self.check_bucket(class, caller, per_sec, burst)
+    }
+
+    fn bucket_params(&self, mode: AdmissionMode, caller: AdmissionCaller) -> (BucketClass, u32, u32) {
+        match (mode, caller) {
+            (AdmissionMode::Probe, _) => (
+                BucketClass::Probe,
+                self.config.probe_per_sec,
+                self.config.probe_burst,
+            ),
+            (_, AdmissionCaller::Peer(_)) => (
                 BucketClass::TrustedMetered,
-                caller,
                 self.config.trusted_metered_per_sec,
                 self.config.trusted_metered_burst,
             ),
-            AdmissionCaller::Staked(_, tier) => {
-                let rates = self.tier_rates(tier);
-                self.check_bucket(BucketClass::StakedWrite, caller, rates.per_sec, rates.burst)
+            (_, AdmissionCaller::Staked(_, tier)) => {
+                let rates = &self.config.stake_tiers[tier];
+                (BucketClass::Staked, rates.per_sec, rates.burst)
             }
-            AdmissionCaller::Anonymous(_) => self.check_bucket(
+            (AdmissionMode::DirectWrite, AdmissionCaller::Anonymous(_)) => (
                 BucketClass::AnonymousWrite,
-                caller,
                 self.config.anonymous_write_per_sec,
                 self.config.anonymous_write_burst,
             ),
-        }
-    }
-
-    /// Rates for a matched stake tier; the index came from this config, so a
-    /// mismatch can only mean the config was swapped, and the last tier is
-    /// the safe stand-in.
-    fn tier_rates(&self, tier: usize) -> &StakeTier {
-        let tiers = &self.config.stake_tiers;
-        tiers.get(tier).unwrap_or_else(|| {
-            tiers.last().expect("staked caller classified with no tiers configured")
-        })
-    }
-
-    pub fn check_metered(&self, caller: AdmissionCaller) -> AdmissionDecision {
-        match caller {
-            AdmissionCaller::Peer(_) => self.check_bucket(
-                BucketClass::TrustedMetered,
-                caller,
-                self.config.trusted_metered_per_sec,
-                self.config.trusted_metered_burst,
-            ),
-            AdmissionCaller::Staked(_, tier) => {
-                let rates = self.tier_rates(tier);
-                self.check_bucket(BucketClass::StakedMetered, caller, rates.per_sec, rates.burst)
-            }
-            AdmissionCaller::Anonymous(_) => self.check_bucket(
+            (AdmissionMode::Metered, AdmissionCaller::Anonymous(_)) => (
                 BucketClass::AnonymousRead,
-                caller,
                 self.config.anonymous_read_per_sec,
                 self.config.anonymous_read_burst,
             ),
         }
-    }
-
-    pub fn check_probe(&self, caller: AdmissionCaller) -> AdmissionDecision {
-        self.check_bucket(
-            BucketClass::Probe,
-            caller,
-            self.config.probe_per_sec,
-            self.config.probe_burst,
-        )
     }
 
     fn check_bucket(
@@ -281,7 +252,7 @@ where
 }
 
 #[derive(Clone, Copy, Debug)]
-enum AdmissionMode {
+pub enum AdmissionMode {
     DirectWrite,
     Metered,
     Probe,
@@ -304,11 +275,7 @@ where
     }
 
     let caller = caller_from_request(&req, state.context.admission.config());
-    let decision = match mode {
-        AdmissionMode::DirectWrite => state.context.admission.check_direct_write(caller),
-        AdmissionMode::Metered => state.context.admission.check_metered(caller),
-        AdmissionMode::Probe => state.context.admission.check_probe(caller),
-    };
+    let decision = state.context.admission.check(mode, caller);
 
     match decision {
         AdmissionDecision::Allowed => {
@@ -348,13 +315,7 @@ fn caller_from_request(req: &Request, config: &AdmissionConfig) -> AdmissionCall
 /// Highest tier whose stake floor the caller reaches; below the first tier
 /// the caller is admitted as anonymous.
 fn stake_tier_index(tiers: &[StakeTier], stake: Coin<TAPE>) -> Option<usize> {
-    let mut matched = None;
-    for (index, tier) in tiers.iter().enumerate() {
-        if stake.0 >= tier.min_stake_tape.saturating_mul(TAPE::SCALE) {
-            matched = Some(index);
-        }
-    }
-    matched
+    tiers.iter().rposition(|tier| stake >= tier.min_stake)
 }
 
 fn insufficient_storage_response() -> Response {
@@ -394,8 +355,8 @@ mod tests {
             over_budget_penalty_secs: 30,
             stale_entry_secs: 60,
             stake_tiers: vec![
-                StakeTier { min_stake_tape: 100, per_sec: 1, burst: 1 },
-                StakeTier { min_stake_tape: 1_000, per_sec: 2, burst: 2 },
+                StakeTier { min_stake: TAPE::from_fixed(100, 0), per_sec: 1, burst: 1 },
+                StakeTier { min_stake: TAPE::from_fixed(1_000, 0), per_sec: 2, burst: 2 },
             ],
             trusted_proxies: Vec::new(),
         }
@@ -416,10 +377,12 @@ mod tests {
     // same-host proxy cannot collapse every user into one loopback bucket
     #[test]
     fn trusted_proxy_resolves_the_forwarded_caller() {
-        let trusted: Vec<CidrBlock> = vec!["127.0.0.1".parse().expect("cidr block")];
         let req = request("127.0.0.1", Some("198.51.100.9"));
 
-        let config = AdmissionConfig { trusted_proxies: trusted, ..test_config() };
+        let config = AdmissionConfig {
+            trusted_proxies: vec!["127.0.0.1".parse().expect("cidr block")],
+            ..test_config()
+        };
         assert_eq!(
             caller_from_request(&req, &config),
             AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)))
@@ -444,15 +407,15 @@ mod tests {
         let second = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
 
         assert_eq!(
-            limiter.check_direct_write(first),
+            limiter.check(AdmissionMode::DirectWrite, first),
             AdmissionDecision::Allowed
         );
         assert!(matches!(
-            limiter.check_direct_write(first),
+            limiter.check(AdmissionMode::DirectWrite, first),
             AdmissionDecision::RateLimited { .. }
         ));
         assert_eq!(
-            limiter.check_direct_write(second),
+            limiter.check(AdmissionMode::DirectWrite, second),
             AdmissionDecision::Allowed
         );
     }
@@ -464,15 +427,15 @@ mod tests {
         let second = AdmissionCaller::Peer(Address::from([2u8; 32]));
 
         assert_eq!(
-            limiter.check_metered(first),
+            limiter.check(AdmissionMode::Metered, first),
             AdmissionDecision::Allowed
         );
         assert!(matches!(
-            limiter.check_metered(first),
+            limiter.check(AdmissionMode::Metered, first),
             AdmissionDecision::RateLimited { .. }
         ));
         assert_eq!(
-            limiter.check_metered(second),
+            limiter.check(AdmissionMode::Metered, second),
             AdmissionDecision::Allowed
         );
     }
@@ -484,15 +447,15 @@ mod tests {
         let second = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
 
         assert_eq!(
-            limiter.check_metered(first),
+            limiter.check(AdmissionMode::Metered, first),
             AdmissionDecision::Allowed
         );
         assert!(matches!(
-            limiter.check_metered(first),
+            limiter.check(AdmissionMode::Metered, first),
             AdmissionDecision::RateLimited { .. }
         ));
         assert_eq!(
-            limiter.check_metered(second),
+            limiter.check(AdmissionMode::Metered, second),
             AdmissionDecision::Allowed
         );
     }
@@ -503,13 +466,13 @@ mod tests {
         let anonymous = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         let peer = AdmissionCaller::Peer(Address::from([3u8; 32]));
 
-        assert_eq!(limiter.check_probe(anonymous), AdmissionDecision::Allowed);
+        assert_eq!(limiter.check(AdmissionMode::Probe, anonymous), AdmissionDecision::Allowed);
         assert!(matches!(
-            limiter.check_probe(anonymous),
+            limiter.check(AdmissionMode::Probe, anonymous),
             AdmissionDecision::RateLimited { .. }
         ));
         assert_eq!(
-            limiter.check_probe(peer),
+            limiter.check(AdmissionMode::Probe, peer),
             AdmissionDecision::Allowed
         );
     }
@@ -519,7 +482,7 @@ mod tests {
     #[test]
     fn stake_picks_the_highest_reached_tier() {
         let tiers = test_config().stake_tiers;
-        let whole = |tape: u64| TAPE(tape.saturating_mul(TAPE::SCALE));
+        let whole = |tape: u64| TAPE::from_fixed(tape, 0);
 
         assert_eq!(stake_tier_index(&tiers, whole(99)), None);
         assert_eq!(stake_tier_index(&tiers, whole(100)), Some(0));
@@ -535,12 +498,12 @@ mod tests {
         let first = AdmissionCaller::Staked(Address::from([4u8; 32]), 0);
         let second = AdmissionCaller::Staked(Address::from([5u8; 32]), 0);
 
-        assert_eq!(limiter.check_direct_write(first), AdmissionDecision::Allowed);
+        assert_eq!(limiter.check(AdmissionMode::DirectWrite, first), AdmissionDecision::Allowed);
         assert!(matches!(
-            limiter.check_direct_write(first),
+            limiter.check(AdmissionMode::DirectWrite, first),
             AdmissionDecision::RateLimited { .. }
         ));
-        assert_eq!(limiter.check_direct_write(second), AdmissionDecision::Allowed);
+        assert_eq!(limiter.check(AdmissionMode::DirectWrite, second), AdmissionDecision::Allowed);
     }
 
     // a second-tier caller gets the second tier's burst, not the first's
@@ -549,10 +512,10 @@ mod tests {
         let limiter = AdmissionLimiter::new(test_config());
         let caller = AdmissionCaller::Staked(Address::from([6u8; 32]), 1);
 
-        assert_eq!(limiter.check_direct_write(caller), AdmissionDecision::Allowed);
-        assert_eq!(limiter.check_direct_write(caller), AdmissionDecision::Allowed);
+        assert_eq!(limiter.check(AdmissionMode::DirectWrite, caller), AdmissionDecision::Allowed);
+        assert_eq!(limiter.check(AdmissionMode::DirectWrite, caller), AdmissionDecision::Allowed);
         assert!(matches!(
-            limiter.check_direct_write(caller),
+            limiter.check(AdmissionMode::DirectWrite, caller),
             AdmissionDecision::RateLimited { .. }
         ));
     }
