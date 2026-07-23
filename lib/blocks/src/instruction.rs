@@ -130,7 +130,6 @@ pub enum RawInstruction {
     },
     RegisterNode {
         authority: Address,
-        node: Address,
         name: [u8; 32],
         network_address: NetworkAddress,
         network_tls: NetworkTlsPubkey,
@@ -305,7 +304,6 @@ pub enum ParsedInstruction {
     // Node management
     RegisterNode {
         authority: Address,
-        node: Address,
         name: [u8; 32],
         network_address: NetworkAddress,
         network_tls: NetworkTlsPubkey,
@@ -579,13 +577,10 @@ pub fn parse_raw_instruction(
         TapeInstruction::RegisterNode => {
             let args = ix::RegisterNode::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(format!("register_node: {e:?}")))?;
-            // Account layout from process_register_node:
-            // [fee_payer, authority, system, node, history, blacklist, system_program, rent]
+            // The node account address rides the paired NodeRegistered event.
             let authority = get_account(1)?;
-            let node = get_account(3)?;
             Ok(Some(RawInstruction::RegisterNode {
                 authority,
-                node,
                 name: args.name,
                 network_address: args.network_address,
                 network_tls: args.network_tls,
@@ -734,7 +729,6 @@ mod tests {
         build_set_name_ix, build_set_network_address_ix, build_set_network_tls_ix,
         build_vote_assignment_ix, build_vote_snapshot_ix,
     };
-    use tape_api::program::tapedrive::node_pda;
     use tape_core::bls::BlsPubkey;
     use tape_core::system::NodePreferences;
     use tape_core::types::network::NetworkAddress;
@@ -792,7 +786,6 @@ mod tests {
         match parse_raw_instruction(&ix, &keys).unwrap() {
             Some(RawInstruction::RegisterNode {
                 authority: parsed_authority,
-                node,
                 name,
                 network_address: parsed_address,
                 network_tls: parsed_tls,
@@ -800,7 +793,6 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(parsed_authority, authority);
-                assert_eq!(node, node_pda(authority).0);
                 assert_eq!(name, [3u8; 32]);
                 assert_eq!(parsed_address, network_address);
                 assert_eq!(parsed_tls, network_tls);

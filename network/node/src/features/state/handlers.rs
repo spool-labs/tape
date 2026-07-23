@@ -5,8 +5,8 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated, NodeEvicted,
-    NodeJoinedCommittee, PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced,
-    VoteRecorded,
+    NodeJoinedCommittee, NodeRegistered, PeerSetResized, PoolAdvanced, SnapshotFinalized,
+    SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
 use peer_manager::PeerNode;
@@ -14,6 +14,7 @@ use tape_core::bls::BlsPubkey;
 use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
+use tape_core::types::coin::TAPE;
 use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -305,13 +306,28 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     }
 
     /// Upsert the peer from the parsed registration; the event's node address
-    /// is authoritative. No chain fetch: the ix data carries the metadata.
+    /// is authoritative. No chain fetch: the ix data carries the metadata, and
+    /// registration carries no stake, which is stamped only from pool advances
+    /// and protocol state.
     pub async fn handle_register_node(
         &self,
-        registration: PeerNode,
+        event: NodeRegistered,
+        name: [u8; 32],
+        network_address: NetworkAddress,
+        network_tls: NetworkTlsPubkey,
+        bls_pubkey: BlsPubkey,
+        preferences: NodePreferences,
     ) -> Result<(), NodeError> {
-        debug!(node = %registration.node, "received node registration");
-        self.context.peer_manager.upsert_registered(registration);
+        debug!(node = %event.node, "received node registration");
+        self.context.peer_manager.upsert_registered(PeerNode {
+            node: event.node,
+            bls_pubkey,
+            tls_pubkey: network_tls,
+            network_address,
+            preferences,
+            stake: TAPE(0),
+            name,
+        });
         Ok(())
     }
 

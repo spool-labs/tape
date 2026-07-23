@@ -533,11 +533,7 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::AdvancePool { node, .. }
         | ParsedInstruction::JoinCommittee { node, .. }
         | ParsedInstruction::AddToBlacklist { node, .. }
-        | ParsedInstruction::RemoveFromBlacklist { node, .. }
-        | ParsedInstruction::SetName { node, .. }
-        | ParsedInstruction::SetNetworkAddress { node, .. }
-        | ParsedInstruction::SetNetworkTls { node, .. }
-        | ParsedInstruction::SetBlsPubkey { node, .. } => Some(*node),
+        | ParsedInstruction::RemoveFromBlacklist { node, .. } => Some(*node),
 
         ParsedInstruction::TrackWrite { authority, .. }
         | ParsedInstruction::RegisterNode { authority, .. }
@@ -570,6 +566,10 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::FinalizeGroup { .. }
         | ParsedInstruction::CertifyTrack { .. }
         | ParsedInstruction::InvalidateTrack { .. }
+        | ParsedInstruction::SetName { .. }
+        | ParsedInstruction::SetNetworkAddress { .. }
+        | ParsedInstruction::SetNetworkTls { .. }
+        | ParsedInstruction::SetBlsPubkey { .. }
         | ParsedInstruction::StartNetwork => None,
     }
 }

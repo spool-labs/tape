@@ -29,6 +29,7 @@ tape-core.workspace = true
 tape-chain-harness.workspace = true
 tokio-util = "0.7"
 solana-compute-budget-interface.workspace = true
+solana-instruction.workspace = true
 solana-keypair.workspace = true
 solana-program-pack.workspace = true
 solana-pubkey.workspace = true

@@ -4,7 +4,6 @@
 
 use std::time::Duration;
 
-use peer_manager::PeerNode;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::coin::TAPE;
@@ -12,7 +11,7 @@ use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::BasisPoints;
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, TestGateway, run_simnet_test};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TestGateway, run_simnet_test};
 
 const NODE_COUNT: usize = GROUP_SIZE;
 const GATEWAY_STAKE: u64 = 2_000;
@@ -47,36 +46,15 @@ async fn peer_metadata_propagates_from_events_inner() {
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
     let propagate_timeout = Duration::from_secs(30);
 
-    {
-        let scenario = harness.scenario();
-        scenario.init_system().await.expect("init system");
-        scenario
-            .register_nodes(BasisPoints(100))
-            .await
-            .expect("register storage nodes");
-        scenario
-            .stake_all(STORAGE_NODE_STAKE)
-            .await
-            .expect("stake storage nodes");
-        scenario.start_network().await.expect("start network");
-    }
-
     harness
-        .start_all_with_retry(3, Duration::from_millis(200))
+        .bootstrap_nodes(BasisPoints(100), STORAGE_NODE_STAKE, health_timeout)
         .await
-        .expect("start storage nodes");
-
-    {
-        let scenario = harness.scenario();
-        scenario
-            .wait_nodes_healthy(health_timeout)
-            .await
-            .expect("storage nodes healthy");
-        scenario
-            .wait_nodes_active(&all, active_timeout)
-            .await
-            .expect("storage nodes active");
-    }
+        .expect("bootstrap storage nodes");
+    harness
+        .scenario()
+        .wait_nodes_active(&all, active_timeout)
+        .await
+        .expect("storage nodes active");
 
     // Registration: the gateway never starts a runtime, so nodes can only
     // learn it from the ingested RegisterNode event.
@@ -89,7 +67,7 @@ async fn peer_metadata_propagates_from_events_inner() {
             .await
             .expect("register gateway");
     }
-    wait_gateway_peer(&harness, gateway_node, propagate_timeout, "registration", |peer| {
+    wait_gateway(&harness, gateway_node, propagate_timeout, "registration", move |peer| {
         peer.tls_pubkey == original_tls && peer.stake == TAPE(0)
     })
     .await;
@@ -107,7 +85,7 @@ async fn peer_metadata_propagates_from_events_inner() {
             .await
             .expect("set gateway network address");
     }
-    wait_gateway_peer(&harness, gateway_node, propagate_timeout, "metadata setters", |peer| {
+    wait_gateway(&harness, gateway_node, propagate_timeout, "metadata setters", |peer| {
         peer.network_address == moved_address() && peer.name.starts_with(RENAMED.as_bytes())
     })
     .await;
@@ -120,7 +98,7 @@ async fn peer_metadata_propagates_from_events_inner() {
             .await
             .expect("set gateway network tls");
     }
-    wait_gateway_peer(&harness, gateway_node, propagate_timeout, "tls rotation", |peer| {
+    wait_gateway(&harness, gateway_node, propagate_timeout, "tls rotation", move |peer| {
         peer.tls_pubkey == rotated_tls
     })
     .await;
@@ -150,7 +128,7 @@ async fn peer_metadata_propagates_from_events_inner() {
             .await
             .expect("advance gateway pool");
     }
-    wait_gateway_peer(&harness, gateway_node, propagate_timeout, "pool advance stake", |peer| {
+    wait_gateway(&harness, gateway_node, propagate_timeout, "pool advance stake", |peer| {
         peer.stake > TAPE(0)
     })
     .await;
@@ -169,36 +147,19 @@ async fn peer_metadata_propagates_from_events_inner() {
     assert_eq!(peer.tls_pubkey, rotated_tls);
 }
 
-/// Poll until every running node's cached entry for the gateway satisfies the
+/// Wait until every running node's cached entry for the gateway satisfies the
 /// predicate.
-async fn wait_gateway_peer(
-    harness: &SimnetHarness,
+async fn wait_gateway(
+    harness: &tape_e2e_simnet::SimnetHarness,
     gateway_node: Address,
     timeout: Duration,
     what: &str,
-    check: impl Fn(&PeerNode) -> bool,
+    check: impl Fn(&peer_manager::PeerNode) -> bool + Copy,
 ) {
-    let start = std::time::Instant::now();
-    loop {
-        let mut running = 0usize;
-        let mut satisfied = 0usize;
-        for node in harness.nodes().iter().filter(|node| node.is_running()) {
-            running += 1;
-            let matched = node
-                .context()
-                .peer_manager
-                .get(gateway_node)
-                .is_some_and(|peer| check(&peer));
-            if matched {
-                satisfied += 1;
-            }
-        }
-        if running > 0 && satisfied == running {
-            return;
-        }
-        if start.elapsed() >= timeout {
-            panic!("timed out waiting for {what}: {satisfied}/{running} nodes");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    harness
+        .wait_peers(timeout, what, |peers| {
+            peers.get(gateway_node).is_some_and(|peer| check(&peer))
+        })
+        .await
+        .expect(what)
 }

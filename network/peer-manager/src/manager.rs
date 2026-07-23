@@ -134,34 +134,21 @@ impl PeerManager {
     /// Insert a newly registered peer, or refresh an existing entry's
     /// metadata. Stake on an existing entry is preserved: it is stamped from
     /// protocol state and pool advances, never from registration.
-    pub fn upsert_registered(&self, peer: PeerNode) {
-        let guard = self.peers.load();
-        let mut map = (**guard).clone();
-        match map.get_mut(&peer.node) {
-            Some(existing) => {
-                let stake = existing.stake;
-                *existing = peer;
-                existing.stake = stake;
-            }
-            None => {
-                map.insert(peer.node, peer);
-            }
+    pub fn upsert_registered(&self, mut peer: PeerNode) {
+        if let Some(existing) = self.get(peer.node) {
+            peer.stake = existing.stake;
         }
-        self.peers.store(Arc::new(map));
+        self.add_peer(peer);
     }
 
     /// Apply a single-field change to a cached peer. An unknown node is
     /// skipped: only registration or the bootstrap scan creates entries.
     pub fn patch_peer(&self, node: Address, patch: impl FnOnce(&mut PeerNode)) {
-        let guard = self.peers.load();
-        let Some(existing) = guard.get(&node) else {
+        let Some(mut peer) = self.get(node) else {
             return;
         };
-        let mut peer = existing.clone();
         patch(&mut peer);
-        let mut map = (**guard).clone();
-        map.insert(node, peer);
-        self.peers.store(Arc::new(map));
+        self.add_peer(peer);
     }
 
     /// Fetch all registered Node accounts and merge them into the peer cache.

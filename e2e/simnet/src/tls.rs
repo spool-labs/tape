@@ -1,14 +1,11 @@
 use std::collections::HashSet;
 use std::net::TcpListener;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Result};
 
 /// Ports this process already handed out but has not necessarily bound yet.
-static ASSIGNED: Mutex<Option<HashSet<u16>>> = Mutex::new(None);
-
-/// Candidate ports probed per pick before giving up.
-const PICK_ATTEMPTS: u64 = 200;
+static ASSIGNED: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
 
 /// Ports reserved per harness process.
 const RANGE_SIZE: u64 = 400;
@@ -19,18 +16,19 @@ const RANGE_SIZE: u64 = 400;
 /// harnesses: freed ephemeral ports are reused most-recent-first, so a second
 /// simnet on the same host steals them before the node binds. Instead each
 /// process probes its own PID-keyed range in 30000-39999, clear of the OS
-/// ephemeral range (49152+) and the harness's historic fixed bases (10000,
-/// 20000, 40000), and remembers what it handed out so two fixtures in one
-/// process never receive the same port.
-pub fn pick_bind(off: u64) -> Result<std::net::SocketAddr> {
+/// ephemeral range (49152+) and remembers what it handed out, so no two picks
+/// in one process ever share a port.
+pub fn pick_bind() -> Result<std::net::SocketAddr> {
     let pid = std::process::id() as u64;
     let base = 30_000 + (pid % 25) * RANGE_SIZE;
 
-    let mut assigned = ASSIGNED.lock().expect("port set lock");
-    let assigned = assigned.get_or_insert_with(HashSet::new);
+    let mut assigned = ASSIGNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .expect("port set lock");
 
-    for attempt in 0..PICK_ATTEMPTS {
-        let port = (base + (off.wrapping_mul(7) + attempt) % RANGE_SIZE) as u16;
+    for attempt in 0..RANGE_SIZE {
+        let port = (base + attempt) as u16;
         if assigned.contains(&port) {
             continue;
         }

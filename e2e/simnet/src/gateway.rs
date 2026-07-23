@@ -31,12 +31,6 @@ use crate::tls;
 
 type TestGatewayContext = Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>;
 
-/// Maximum attempts to pick a loopback port distinct from the ports the gateway
-/// runtime already binds before giving up.
-const MAX_PORT_PICK_ATTEMPTS: u64 = 16;
-const S3_PORT_BASE: u64 = 20_000;
-const ADMIN_PORT_BASE: u64 = 40_000;
-
 /// One simulated read gateway with in-memory storage and a public HTTP server.
 pub struct TestGateway {
     id: usize,
@@ -56,7 +50,7 @@ pub struct TestGateway {
 
 impl TestGateway {
     pub fn new(id: usize, rpc: LiteSvmRpc) -> Result<Self> {
-        let bind_addr = tls::pick_bind(10_000 + id as u64)?;
+        let bind_addr = tls::pick_bind()?;
         let public_port = bind_addr.port();
         let keypair = Keypair::new();
         let bls_keypair = BlsPrivateKey::from_random();
@@ -97,16 +91,7 @@ impl TestGateway {
     /// chosen distinct from the public read-gateway port, since the runtime binds
     /// both when it starts.
     pub fn enable_s3(&mut self) -> Result<SocketAddr> {
-        let mut s3_addr = tls::pick_bind(S3_PORT_BASE + self.id as u64)?;
-        let mut attempts = 0u64;
-        while s3_addr.port() == self.public_port {
-            attempts += 1;
-            if attempts > MAX_PORT_PICK_ATTEMPTS {
-                anyhow::bail!("could not pick an s3 port distinct from the public read port");
-            }
-            s3_addr = tls::pick_bind(S3_PORT_BASE + self.id as u64 + attempts)?;
-        }
-
+        let s3_addr = tls::pick_bind()?;
         self.app_config.gateway.s3.enabled = true;
         self.app_config.gateway.s3.listen = s3_addr;
         self.s3_listen = Some(s3_addr);
@@ -188,20 +173,9 @@ impl TestGateway {
         self.app_config.gateway.s3.write.pepper = Some(pepper.to_string());
         self.app_config.gateway.s3.write.admin.operator_token = Some(operator_token.to_string());
 
-        // The admin control plane binds its own listener (the runtime binds the
-        // public read port, the S3 data port, and this admin port). Pick a port
-        // distinct from the other two.
-        let mut admin_addr = tls::pick_bind(ADMIN_PORT_BASE + self.id as u64)?;
-        let mut attempts = 0u64;
-        while admin_addr.port() == self.public_port || admin_addr.port() == s3_addr.port() {
-            attempts += 1;
-            if attempts > MAX_PORT_PICK_ATTEMPTS {
-                anyhow::bail!(
-                    "could not pick an s3 admin port distinct from the public and s3 ports"
-                );
-            }
-            admin_addr = tls::pick_bind(ADMIN_PORT_BASE + self.id as u64 + attempts)?;
-        }
+        // The admin control plane binds its own listener; pick_bind never
+        // hands out the same port twice in one process.
+        let admin_addr = tls::pick_bind()?;
         self.app_config.gateway.s3.write.admin.listen = admin_addr;
         self.s3_admin_listen = Some(admin_addr);
 

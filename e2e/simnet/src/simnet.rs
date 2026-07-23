@@ -264,7 +264,7 @@ impl SimnetHarness {
 
 fn make_node(config: &SimnetConfig, chain: &ChainFixture, id: usize) -> Result<TestNode> {
     let bind_addr = if config.base_port == 0 {
-        tls::pick_bind(id as u64)?
+        tls::pick_bind()?
     } else {
         let port = config
             .base_port

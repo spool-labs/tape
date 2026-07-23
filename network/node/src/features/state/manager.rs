@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use peer_manager::PeerNode;
 use rpc::Rpc;
 use store::Store;
 use tape_blocks::ParsedInstruction;
-use tape_core::types::coin::Coin;
 use tape_protocol::Api;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -110,15 +108,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                     ..
                 } => {
                     handlers
-                        .handle_register_node(PeerNode {
-                            node: event.node,
-                            bls_pubkey: *bls_pubkey,
-                            tls_pubkey: *network_tls,
-                            network_address: *network_address,
-                            preferences: *preferences,
-                            stake: Coin::default(),
-                            name: *name,
-                        })
+                        .handle_register_node(
+                            *event,
+                            *name,
+                            *network_address,
+                            *network_tls,
+                            *bls_pubkey,
+                            *preferences,
+                        )
                         .await?;
                 }
                 ParsedInstruction::SetName { node, name } => {

@@ -314,7 +314,6 @@ pub fn merge(
 
             RawInstruction::RegisterNode {
                 authority,
-                node,
                 name,
                 network_address,
                 network_tls,
@@ -331,7 +330,6 @@ pub fn merge(
                 };
                 ParsedInstruction::RegisterNode {
                     authority,
-                    node,
                     name,
                     network_address,
                     network_tls,
@@ -980,7 +978,6 @@ mod tests {
             },
             RawInstruction::RegisterNode {
                 authority: Address::new_unique(),
-                node: Address::new_unique(),
                 name: [0u8; 32],
                 network_address: NetworkAddress::zeroed(),
                 network_tls: NetworkTlsPubkey::zeroed(),
@@ -1092,7 +1089,6 @@ mod tests {
             (
                 RawInstruction::RegisterNode {
                     authority: Address::new_unique(),
-                    node: register_node,
                     name: [0u8; 32],
                     network_address: NetworkAddress::zeroed(),
                     network_tls: NetworkTlsPubkey::zeroed(),

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use solana_instruction::Instruction;
 use solana_signature::Signature;
 use solana_signer::Signer;
 use tape_api::consts::NAME_LENGTH;
@@ -236,40 +237,48 @@ impl<'a> SimnetScenario<'a> {
             .with_context(|| format!("register_gateway {}", gateway.id()))
     }
 
+    /// Submit one gateway-signed instruction against its own node account.
+    async fn send_gateway_ix(
+        &self,
+        gateway: &TestGateway,
+        build: impl FnOnce(Address, Address) -> Instruction,
+        what: &str,
+    ) -> Result<Signature> {
+        let authority: Address = gateway.authority().into();
+        let (node_address, _) = node_pda(authority);
+        self.harness
+            .chain()
+            .send_instructions_and_advance(
+                gateway.keypair(),
+                vec![build(authority, node_address)],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("{what} gateway {}", gateway.id()))
+    }
+
     /// Change a registered gateway's on-chain network address.
     pub async fn set_gateway_network_address(
         &self,
         gateway: &TestGateway,
         network_address: NetworkAddress,
     ) -> Result<Signature> {
-        let authority: Address = gateway.authority().into();
-        let (node_address, _) = node_pda(authority);
-        let ix = build_set_network_address_ix(authority, authority, node_address, network_address);
-        self.harness
-            .chain()
-            .send_instructions_and_advance(
-                gateway.keypair(),
-                vec![ix],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("set_network_address gateway {}", gateway.id()))
+        self.send_gateway_ix(
+            gateway,
+            |authority, node| build_set_network_address_ix(authority, authority, node, network_address),
+            "set_network_address",
+        )
+        .await
     }
 
     /// Change a registered gateway's on-chain display name.
     pub async fn set_gateway_name(&self, gateway: &TestGateway, name: &str) -> Result<Signature> {
-        let authority: Address = gateway.authority().into();
-        let (node_address, _) = node_pda(authority);
-        let ix = build_set_name_ix(authority, authority, node_address, name);
-        self.harness
-            .chain()
-            .send_instructions_and_advance(
-                gateway.keypair(),
-                vec![ix],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("set_name gateway {}", gateway.id()))
+        self.send_gateway_ix(
+            gateway,
+            |authority, node| build_set_name_ix(authority, authority, node, name),
+            "set_name",
+        )
+        .await
     }
 
     /// Change a registered gateway's on-chain TLS pubkey.
@@ -278,18 +287,12 @@ impl<'a> SimnetScenario<'a> {
         gateway: &TestGateway,
         network_tls: tape_core::types::tls::NetworkTlsPubkey,
     ) -> Result<Signature> {
-        let authority: Address = gateway.authority().into();
-        let (node_address, _) = node_pda(authority);
-        let ix = build_set_network_tls_ix(authority, authority, node_address, network_tls);
-        self.harness
-            .chain()
-            .send_instructions_and_advance(
-                gateway.keypair(),
-                vec![ix],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("set_network_tls gateway {}", gateway.id()))
+        self.send_gateway_ix(
+            gateway,
+            |authority, node| build_set_network_tls_ix(authority, authority, node, network_tls),
+            "set_network_tls",
+        )
+        .await
     }
 
     pub async fn register_many(
