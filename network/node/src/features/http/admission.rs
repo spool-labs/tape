@@ -14,8 +14,10 @@ use tape_crypto::Address;
 use tape_protocol::Api;
 use tracing::{debug, warn};
 
+use tape_core::types::coin::{Coin, TAPE};
+
 use crate::config::cidr::CidrBlock;
-use crate::config::http::AdmissionConfig;
+use crate::config::http::{AdmissionConfig, StakeTier};
 use crate::features::http::forwarded::caller_ip;
 use crate::features::http::auth::{ActivePeer, StakedPeer};
 use crate::features::http::state::AppState;
@@ -25,7 +27,11 @@ const PRUNE_INTERVAL: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AdmissionCaller {
+    /// A current committee member; rides the trusted rates.
     Peer(Address),
+    /// A registered staked caller outside the committee, such as a gateway,
+    /// carrying the index of the stake tier its stake reached.
+    Staked(Address, usize),
     Anonymous(IpAddr),
 }
 
@@ -35,6 +41,8 @@ enum BucketClass {
     AnonymousRead,
     Probe,
     TrustedMetered,
+    StakedWrite,
+    StakedMetered,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -77,6 +85,11 @@ impl AdmissionLimiter {
         &self.config.trusted_proxies
     }
 
+    /// The full admission config, for caller classification.
+    pub fn config(&self) -> &AdmissionConfig {
+        &self.config
+    }
+
     pub fn check_direct_write(&self, caller: AdmissionCaller) -> AdmissionDecision {
         match caller {
             AdmissionCaller::Peer(_) => self.check_bucket(
@@ -85,6 +98,10 @@ impl AdmissionLimiter {
                 self.config.trusted_metered_per_sec,
                 self.config.trusted_metered_burst,
             ),
+            AdmissionCaller::Staked(_, tier) => {
+                let rates = self.tier_rates(tier);
+                self.check_bucket(BucketClass::StakedWrite, caller, rates.per_sec, rates.burst)
+            }
             AdmissionCaller::Anonymous(_) => self.check_bucket(
                 BucketClass::AnonymousWrite,
                 caller,
@@ -92,6 +109,16 @@ impl AdmissionLimiter {
                 self.config.anonymous_write_burst,
             ),
         }
+    }
+
+    /// Rates for a matched stake tier; the index came from this config, so a
+    /// mismatch can only mean the config was swapped, and the last tier is
+    /// the safe stand-in.
+    fn tier_rates(&self, tier: usize) -> &StakeTier {
+        let tiers = &self.config.stake_tiers;
+        tiers.get(tier).unwrap_or_else(|| {
+            tiers.last().expect("staked caller classified with no tiers configured")
+        })
     }
 
     pub fn check_metered(&self, caller: AdmissionCaller) -> AdmissionDecision {
@@ -102,6 +129,10 @@ impl AdmissionLimiter {
                 self.config.trusted_metered_per_sec,
                 self.config.trusted_metered_burst,
             ),
+            AdmissionCaller::Staked(_, tier) => {
+                let rates = self.tier_rates(tier);
+                self.check_bucket(BucketClass::StakedMetered, caller, rates.per_sec, rates.burst)
+            }
             AdmissionCaller::Anonymous(_) => self.check_bucket(
                 BucketClass::AnonymousRead,
                 caller,
@@ -272,7 +303,7 @@ where
         return insufficient_storage_response();
     }
 
-    let caller = caller_from_request(&req, state.context.admission.trusted_proxies());
+    let caller = caller_from_request(&req, state.context.admission.config());
     let decision = match mode {
         AdmissionMode::DirectWrite => state.context.admission.check_direct_write(caller),
         AdmissionMode::Metered => state.context.admission.check_metered(caller),
@@ -300,16 +331,30 @@ where
     }
 }
 
-fn caller_from_request(req: &Request, trusted: &[CidrBlock]) -> AdmissionCaller {
+fn caller_from_request(req: &Request, config: &AdmissionConfig) -> AdmissionCaller {
     if let Some(active) = req.extensions().get::<ActivePeer>() {
         return AdmissionCaller::Peer(active.node);
     }
 
     if let Some(staked) = req.extensions().get::<StakedPeer>() {
-        return AdmissionCaller::Peer(staked.node);
+        if let Some(tier) = stake_tier_index(&config.stake_tiers, staked.stake) {
+            return AdmissionCaller::Staked(staked.node, tier);
+        }
     }
 
-    AdmissionCaller::Anonymous(caller_ip(req, trusted))
+    AdmissionCaller::Anonymous(caller_ip(req, &config.trusted_proxies))
+}
+
+/// Highest tier whose stake floor the caller reaches; below the first tier
+/// the caller is admitted as anonymous.
+fn stake_tier_index(tiers: &[StakeTier], stake: Coin<TAPE>) -> Option<usize> {
+    let mut matched = None;
+    for (index, tier) in tiers.iter().enumerate() {
+        if stake.0 >= tier.min_stake_tape.saturating_mul(TAPE::SCALE) {
+            matched = Some(index);
+        }
+    }
+    matched
 }
 
 fn insufficient_storage_response() -> Response {
@@ -348,6 +393,10 @@ mod tests {
             trusted_metered_burst: 1,
             over_budget_penalty_secs: 30,
             stale_entry_secs: 60,
+            stake_tiers: vec![
+                StakeTier { min_stake_tape: 100, per_sec: 1, burst: 1 },
+                StakeTier { min_stake_tape: 1_000, per_sec: 2, burst: 2 },
+            ],
             trusted_proxies: Vec::new(),
         }
     }
@@ -370,8 +419,9 @@ mod tests {
         let trusted: Vec<CidrBlock> = vec!["127.0.0.1".parse().expect("cidr block")];
         let req = request("127.0.0.1", Some("198.51.100.9"));
 
+        let config = AdmissionConfig { trusted_proxies: trusted, ..test_config() };
         assert_eq!(
-            caller_from_request(&req, &trusted),
+            caller_from_request(&req, &config),
             AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)))
         );
     }
@@ -382,7 +432,7 @@ mod tests {
         let req = request("203.0.113.5", Some("198.51.100.9"));
 
         assert_eq!(
-            caller_from_request(&req, &[]),
+            caller_from_request(&req, &test_config()),
             AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)))
         );
     }
@@ -462,5 +512,48 @@ mod tests {
             limiter.check_probe(peer),
             AdmissionDecision::Allowed
         );
+    }
+
+    // a staked caller lands on the highest tier its stake reaches, and below
+    // the first tier it has no tier at all
+    #[test]
+    fn stake_picks_the_highest_reached_tier() {
+        let tiers = test_config().stake_tiers;
+        let whole = |tape: u64| TAPE(tape.saturating_mul(TAPE::SCALE));
+
+        assert_eq!(stake_tier_index(&tiers, whole(99)), None);
+        assert_eq!(stake_tier_index(&tiers, whole(100)), Some(0));
+        assert_eq!(stake_tier_index(&tiers, whole(999)), Some(0));
+        assert_eq!(stake_tier_index(&tiers, whole(1_000)), Some(1));
+        assert_eq!(stake_tier_index(&tiers, whole(50_000)), Some(1));
+    }
+
+    // staked callers are bucketed per node at their tier's rates
+    #[test]
+    fn staked_write_is_bucketed_per_node() {
+        let limiter = AdmissionLimiter::new(test_config());
+        let first = AdmissionCaller::Staked(Address::from([4u8; 32]), 0);
+        let second = AdmissionCaller::Staked(Address::from([5u8; 32]), 0);
+
+        assert_eq!(limiter.check_direct_write(first), AdmissionDecision::Allowed);
+        assert!(matches!(
+            limiter.check_direct_write(first),
+            AdmissionDecision::RateLimited { .. }
+        ));
+        assert_eq!(limiter.check_direct_write(second), AdmissionDecision::Allowed);
+    }
+
+    // a second-tier caller gets the second tier's burst, not the first's
+    #[test]
+    fn tier_rates_follow_the_matched_tier() {
+        let limiter = AdmissionLimiter::new(test_config());
+        let caller = AdmissionCaller::Staked(Address::from([6u8; 32]), 1);
+
+        assert_eq!(limiter.check_direct_write(caller), AdmissionDecision::Allowed);
+        assert_eq!(limiter.check_direct_write(caller), AdmissionDecision::Allowed);
+        assert!(matches!(
+            limiter.check_direct_write(caller),
+            AdmissionDecision::RateLimited { .. }
+        ));
     }
 }

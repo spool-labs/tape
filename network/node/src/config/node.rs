@@ -276,6 +276,21 @@ impl NodeConfig {
             ));
         }
 
+        let mut floor = 0u64;
+        for tier in &self.http.admission.stake_tiers {
+            if tier.per_sec == 0 || tier.burst == 0 {
+                return Err(ConfigError::Invalid(
+                    "http.admission.stake_tiers rates must be greater than zero".into(),
+                ));
+            }
+            if tier.min_stake_tape <= floor {
+                return Err(ConfigError::Invalid(
+                    "http.admission.stake_tiers must ascend by stake".into(),
+                ));
+            }
+            floor = tier.min_stake_tape;
+        }
+
         if self.http.admission.over_budget_penalty_secs == 0 {
             return Err(ConfigError::Invalid(
                 "http.admission.over_budget_penalty_secs must be greater than zero".into(),
