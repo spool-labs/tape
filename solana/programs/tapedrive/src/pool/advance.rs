@@ -123,7 +123,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         node: pool_address,
         epoch: prev,
         span: closing_span,
-        stake: node.pool.stake,
     }.log();
 
     Ok(())

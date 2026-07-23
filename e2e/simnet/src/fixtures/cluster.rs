@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use peer_manager::PeerManager;
 use anyhow::{bail, Context, Result};
 use tape_core::types::BasisPoints;
 use tracing::trace;
@@ -78,37 +77,31 @@ impl SimnetHarness {
         gateway: &TestGateway,
         timeout: Duration,
     ) -> Result<()> {
-        let tls_pubkey = gateway.tls_pubkey();
-        self.wait_peers(timeout, "gateway peer known", move |peers| {
-            peers.peer_for_tls_pubkey(tls_pubkey).is_some()
-        })
-        .await
-    }
-
-    /// Wait until every running storage node's peer cache satisfies the
-    /// predicate.
-    pub async fn wait_peers(
-        &self,
-        timeout: Duration,
-        what: &str,
-        check: impl Fn(&PeerManager) -> bool,
-    ) -> Result<()> {
         let start = Instant::now();
+        let tls_pubkey = gateway.tls_pubkey();
+
         loop {
             let mut running = 0usize;
-            let mut satisfied = 0usize;
+            let mut known = 0usize;
             for node in self.nodes().iter().filter(|node| node.is_running()) {
                 running += 1;
-                if check(&node.context().peer_manager) {
-                    satisfied += 1;
+                if node
+                    .context()
+                    .peer_manager
+                    .peer_for_tls_pubkey(tls_pubkey)
+                    .is_some()
+                {
+                    known += 1;
                 }
             }
 
-            if running > 0 && satisfied == running {
+            if running > 0 && known == running {
                 return Ok(());
             }
             if start.elapsed() >= timeout {
-                bail!("timed out waiting for {what}: {satisfied}/{running} nodes");
+                bail!(
+                    "timed out waiting for storage nodes to learn gateway peer, known {known}/{running}"
+                );
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }

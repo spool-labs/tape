@@ -131,26 +131,6 @@ impl PeerManager {
         self.merge_peers(std::iter::once((peer.node, peer)).collect());
     }
 
-    /// Insert a newly registered peer, or refresh an existing entry's
-    /// metadata. Stake on an existing entry is preserved: it is stamped from
-    /// protocol state and pool advances, never from registration.
-    pub fn upsert_registered(&self, mut peer: PeerNode) {
-        if let Some(existing) = self.get(peer.node) {
-            peer.stake = existing.stake;
-        }
-        self.add_peer(peer);
-    }
-
-    /// Apply a single-field change to a cached peer. An unknown node is
-    /// skipped: only registration or the bootstrap scan creates entries.
-    pub fn patch_peer(&self, node: Address, patch: impl FnOnce(&mut PeerNode)) {
-        let Some(mut peer) = self.get(node) else {
-            return;
-        };
-        patch(&mut peer);
-        self.add_peer(peer);
-    }
-
     /// Fetch all registered Node accounts and merge them into the peer cache.
     ///
     /// This keeps non-committee gateway/read peers discoverable without a
@@ -392,44 +372,6 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[0] = byte;
         Address::new(bytes)
-    }
-
-    // a registration upsert refreshes metadata but never touches stake
-    #[test]
-    fn upsert_registered_preserves_stake() {
-        let manager = PeerManager::new();
-        let node = address(1);
-
-        let staked = make_peer(node, 4000).with_stake(TAPE(500));
-        manager.add_peer(staked);
-
-        let mut reregistered = make_peer(node, 5000);
-        reregistered.name[0] = b'x';
-        manager.upsert_registered(reregistered);
-
-        let peer = manager.get(node).expect("peer");
-        assert_eq!(peer.stake, TAPE(500));
-        assert_eq!(peer.network_address, NetworkAddress::new_ipv4([127, 0, 0, 1], 5000));
-        assert_eq!(peer.name[0], b'x');
-
-        let fresh = address(2);
-        manager.upsert_registered(make_peer(fresh, 6000));
-        assert_eq!(manager.get(fresh).expect("fresh peer").stake, TAPE(0));
-    }
-
-    // patches apply one field to known peers and skip unknown nodes
-    #[test]
-    fn patch_peer_updates_known_only() {
-        let manager = PeerManager::new();
-        let node = address(1);
-        manager.add_peer(make_peer(node, 4000).with_stake(TAPE(100)));
-
-        manager.patch_peer(node, |peer| peer.stake = TAPE(900));
-        assert_eq!(manager.get(node).expect("peer").stake, TAPE(900));
-
-        let unknown = address(9);
-        manager.patch_peer(unknown, |peer| peer.stake = TAPE(1));
-        assert!(manager.get(unknown).is_none());
     }
 
     fn make_peer(node: Address, port: u16) -> PeerNode {

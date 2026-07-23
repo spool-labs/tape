@@ -9642,7 +9642,6 @@ dependencies = [
  "rpc-litesvm",
  "sha2 0.10.9",
  "solana-compute-budget-interface",
- "solana-instruction",
  "solana-keypair",
  "solana-program-pack",
  "solana-pubkey 4.1.0",

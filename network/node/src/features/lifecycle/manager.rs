@@ -361,11 +361,10 @@ pub fn next_action(
                 return None;
             }
 
-            // JoinCommittee: gated to the last fifth of the epoch. Joining early
+            // JoinCommittee: gated to the last tenth of the epoch. Joining early
             // only starts the commit-eligibility clock sooner and races other
-            // members for the same window; a fifth leaves room for the
-            // pipeline to land every join before commits open. The program
-            // does not reject an early join, so this gate is local.
+            // members for the same window, so hold until 90% elapsed. The
+            // program does not reject an early join, so this gate is local.
             if !in_next
                 && !done.contains(&Action::JoinCommittee)
                 && join_window_open(state, now)
@@ -376,14 +375,8 @@ pub fn next_action(
             // CommitEpoch: captures the next-epoch nonce and enters Closing.
             // Gated on the elapsed epoch duration so we never spawn a task that
             // would only submit TooSoon-rejected transactions until the window
-            // opens; the 1s heartbeat re-evaluates cheaply. While the next
-            // committee is still filling the commit is held for a bounded
-            // grace, so a fast joiner does not close the epoch on peers whose
-            // joins are in flight.
-            if !done.contains(&Action::CommitEpoch)
-                && commit_window_open(state, now)
-                && (next_committee_filled(state) || commit_grace_over(state, now))
-            {
+            // opens; the 1s heartbeat re-evaluates cheaply.
+            if !done.contains(&Action::CommitEpoch) && commit_window_open(state, now) {
                 return Some(Action::CommitEpoch);
             }
 
@@ -422,41 +415,13 @@ fn commit_window_open(state: &ProtocolState, now: i64) -> bool {
     now >= commit_at(state)
 }
 
-/// Fraction of the epoch a commit is held past its window while the next
-/// committee is below strength, bounding the wait so a dead peer cannot stall
-/// the epoch.
-const COMMIT_GRACE_NUM: i64 = 1;
-const COMMIT_GRACE_DENOM: i64 = 10;
-
-/// True once the bounded commit grace has elapsed against `now`.
-fn commit_grace_over(state: &ProtocolState, now: i64) -> bool {
-    let grace = (state.current.epoch.preferences.epoch_duration.0 as i64)
-        .saturating_mul(COMMIT_GRACE_NUM)
-        / COMMIT_GRACE_DENOM;
-    now >= commit_at(state).saturating_add(grace)
-}
-
-/// True when the next committee is full to its declared capacity. Capacity is
-/// the operator's intent for the serving set, so the commit waits (bounded by
-/// the grace) for every declared slot, including growth beyond the current
-/// membership.
-fn next_committee_filled(state: &ProtocolState) -> bool {
-    let capacity = state
-        .next_committee_capacity
-        .unwrap_or(state.system.committee_size);
-    state
-        .next_committee
-        .as_ref()
-        .is_some_and(|committee| committee.len() as u64 >= capacity)
-}
-
-/// Fraction of the epoch (four fifths) that must elapse before a node joins the
+/// Fraction of the epoch (nine tenths) that must elapse before a node joins the
 /// next committee. Joining earlier only starts the commit clock sooner and
 /// contends for the same slots.
-const JOIN_GATE_NUM: i64 = 4;
-const JOIN_GATE_DENOM: i64 = 5;
+const JOIN_GATE_NUM: i64 = 9;
+const JOIN_GATE_DENOM: i64 = 10;
 
-/// Wall-clock instant (unix seconds) at which JoinCommittee is planned: 80% of
+/// Wall-clock instant (unix seconds) at which JoinCommittee is planned: 90% of
 /// the way through the current epoch's stamped duration.
 pub fn join_at(state: &ProtocolState) -> i64 {
     let epoch = &state.current.epoch;
@@ -756,53 +721,19 @@ mod tests {
         state
     }
 
-    // JoinCommittee is withheld until 80% of the epoch has elapsed, then planned.
+    // JoinCommittee is withheld until 90% of the epoch has elapsed, then planned.
     #[test]
-    fn join_gated_to_last_fifth() {
+    fn join_gated_to_last_tenth() {
         let node = Address::new_unique();
-        let state = join_ready_state(500, 100); // join window opens at 580
+        let state = join_ready_state(500, 100); // join window opens at 590
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
 
-        assert_eq!(join_at(&state), 580);
-        assert_eq!(next_action(&state, node, &done, 579), None);
+        assert_eq!(join_at(&state), 590);
+        assert_eq!(next_action(&state, node, &done, 589), None);
         assert_eq!(
-            next_action(&state, node, &done, 580),
+            next_action(&state, node, &done, 590),
             Some(Action::JoinCommittee)
-        );
-    }
-
-    // A commit past its window is held while the next committee is below the
-    // current committee's strength, then released by the bounded grace.
-    #[test]
-    fn commit_held_while_next_committee_fills() {
-        let node = Address::new_unique();
-        let mut state = join_ready_state(500, 100); // commit window opens at 600
-        state.system.committee_size = 2;
-        state.next_committee_capacity = Some(2);
-        state.current.committee = vec![member(node), member(Address::new_unique())];
-        state.next_committee = Some(vec![member(node)]);
-        let mut done = HashSet::new();
-        done.insert(Action::AdvancePool);
-        done.insert(Action::JoinCommittee);
-
-        // Window open, next committee one short: held.
-        assert_eq!(next_action(&state, node, &done, 600), None);
-        // Grace (a tenth of the epoch) elapsed: released regardless.
-        assert_eq!(
-            next_action(&state, node, &done, 610),
-            Some(Action::CommitEpoch)
-        );
-
-        // Full next committee commits at the window with no grace.
-        state
-            .next_committee
-            .as_mut()
-            .expect("next committee")
-            .push(member(Address::new_unique()));
-        assert_eq!(
-            next_action(&state, node, &done, 600),
-            Some(Action::CommitEpoch)
         );
     }
 }

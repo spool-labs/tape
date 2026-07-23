@@ -361,11 +361,7 @@ fn capture_instruction(
         | ParsedInstruction::CreateEpoch { .. }
         | ParsedInstruction::CreateCommittee { .. }
         | ParsedInstruction::ResizeCommittee { .. }
-        | ParsedInstruction::ResizePeerSet { .. }
-        | ParsedInstruction::SetName { .. }
-        | ParsedInstruction::SetNetworkAddress { .. }
-        | ParsedInstruction::SetNetworkTls { .. }
-        | ParsedInstruction::SetBlsPubkey { .. } => return Ok(None),
+        | ParsedInstruction::ResizePeerSet { .. } => return Ok(None),
     };
 
     Ok(Some(captured))
@@ -566,10 +562,6 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::FinalizeGroup { .. }
         | ParsedInstruction::CertifyTrack { .. }
         | ParsedInstruction::InvalidateTrack { .. }
-        | ParsedInstruction::SetName { .. }
-        | ParsedInstruction::SetNetworkAddress { .. }
-        | ParsedInstruction::SetNetworkTls { .. }
-        | ParsedInstruction::SetBlsPubkey { .. }
         | ParsedInstruction::StartNetwork => None,
     }
 }

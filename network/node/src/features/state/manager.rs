@@ -95,42 +95,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 ParsedInstruction::SyncSpool { event, .. } => {
                     handlers.handle_sync_spool(*event).await?;
                 }
-                ParsedInstruction::AdvancePool { event, .. } => {
-                    handlers.handle_advance_pool(*event).await?;
+                ParsedInstruction::AdvancePool { node, event, .. } => {
+                    handlers.handle_advance_pool(*node, event.epoch).await?;
                 }
-                ParsedInstruction::RegisterNode {
-                    name,
-                    network_address,
-                    network_tls,
-                    bls_pubkey,
-                    preferences,
-                    event,
-                    ..
-                } => {
-                    handlers
-                        .handle_register_node(
-                            *event,
-                            *name,
-                            *network_address,
-                            *network_tls,
-                            *bls_pubkey,
-                            *preferences,
-                        )
-                        .await?;
-                }
-                ParsedInstruction::SetName { node, name } => {
-                    handlers.handle_set_name(*node, *name).await?;
-                }
-                ParsedInstruction::SetNetworkAddress { node, network_address } => {
-                    handlers
-                        .handle_set_network_address(*node, *network_address)
-                        .await?;
-                }
-                ParsedInstruction::SetNetworkTls { node, network_tls } => {
-                    handlers.handle_set_network_tls(*node, *network_tls).await?;
-                }
-                ParsedInstruction::SetBlsPubkey { node, bls_pubkey } => {
-                    handlers.handle_set_bls_pubkey(*node, *bls_pubkey).await?;
+                ParsedInstruction::RegisterNode { node, .. } => {
+                    handlers.handle_register_node(*node).await?;
                 }
                 ParsedInstruction::JoinCommittee { event, .. } => {
                     handlers.handle_join_committee(*event).await?;
