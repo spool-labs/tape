@@ -1,10 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
-use peer_http::{HttpApi, PeerTransfer};
+use peer_http::HttpApi;
 use peer_manager::PeerManager;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
@@ -17,9 +16,8 @@ use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_node::config::gateway::{GatewaySiteConfig, WriteDefault};
+use tape_node::config::gateway::WriteDefault;
 use tape_node::config::node::NodeConfig;
-use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::core::error::NodeError;
 use tape_store::TapeStore;
@@ -283,31 +281,6 @@ impl TestGateway {
         format!("http://{}:{}", self.public_host, self.public_port)
     }
 
-    /// Site serving knobs, settable before the runtime starts.
-    pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
-        &mut self.app_config.gateway.site
-    }
-
-    /// Poll the gateway's native health endpoint until it reports ready.
-    pub async fn wait_healthy(&self, timeout: Duration) -> Result<()> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()?;
-        let base = self.base_url();
-        let start = Instant::now();
-        loop {
-            if let Ok(response) = client.get(format!("{base}/v1/health")).send().await {
-                if response.status() == reqwest::StatusCode::OK {
-                    return Ok(());
-                }
-            }
-            if start.elapsed() >= timeout {
-                anyhow::bail!("timed out waiting for gateway health");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
     pub fn context(&self) -> TestGatewayContext {
         self.context
             .as_ref()
@@ -359,21 +332,9 @@ impl TestGateway {
         let peer_manager = Arc::new(PeerManager::new());
         let tls_identity = Arc::new(clone_ed25519_keypair(&self.tls_keypair));
 
-        // Same atlas wiring as node startup, so observer-gated tests work.
-        let observers = parse_observers(&self.app_config.https.observers)
-            .map_err(|error| anyhow::anyhow!(error))?;
-        let atlas = Arc::new(AtlasBuffer::new(observers));
-
-        let mut api_builder =
-            peer_http::HttpApiBuilder::new().local_identity(tls_identity.clone());
-        if atlas.enabled() {
-            let sink = atlas.clone();
-            api_builder = api_builder.transfer_sink(Arc::new(move |transfer: PeerTransfer| {
-                sink.push_transfer(transfer.node, transfer.op, transfer.sent, transfer.bytes);
-            }));
-        }
         let api = Arc::new(
-            api_builder
+            peer_http::HttpApiBuilder::new()
+                .local_identity(tls_identity.clone())
                 .build(peer_manager.clone())
                 .context("build gateway HttpApi")?,
         );
@@ -387,7 +348,6 @@ impl TestGateway {
             rpc,
             peer_manager,
             api,
-            atlas,
         )
         .build()
         .await

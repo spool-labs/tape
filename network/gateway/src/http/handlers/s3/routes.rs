@@ -32,9 +32,7 @@ use tape_sdk::error::{TapedriveError, UploadError};
 use tape_store::ops::{CredentialOps, ObjectListOps, TapeOps};
 use tape_store::types::CredentialScope;
 
-use crate::http::handlers::object::{
-    CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
-};
+use crate::http::handlers::object::{ObjectResponseMetadata, range_header, read_object_response};
 use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
@@ -44,8 +42,7 @@ use super::chunked::object_reader;
 use super::clock::now_unix;
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
-use super::resolve::{parse_bucket, resolve_object};
-use crate::http::handlers::resolve::ResolvedObject;
+use super::resolve::{ResolvedObject, parse_bucket, resolve_object};
 use super::response::{
     delete_response, head_response, put_response, set_last_modified, upload_part_response,
 };
@@ -590,7 +587,6 @@ where
     let metadata = ObjectResponseMetadata {
         content_type: resolved.content_type,
         filename: None,
-        cache: CachePolicy::Immutable,
     };
     let block_time = resolved.block_time;
 
@@ -602,7 +598,6 @@ where
         resolved.track_address,
         track,
         metadata,
-        StatusCode::OK,
         &caller,
         range,
         |retry_after| S3Error::slow_down(retry_after).into_response(),
@@ -664,12 +659,10 @@ fn meter_caller<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .flatten()
             .and_then(|credential| credential.grade)
     });
-    let metering = &state.context.config.gateway.metering;
     MeterCaller::resolve(
         remote.ip(),
         headers,
-        &metering.trusted_proxies,
-        metering.anonymous_grade.clone(),
+        &state.context.config.gateway.metering.trusted_proxies,
         access_key,
         grade,
     )
@@ -683,11 +676,7 @@ fn check_request_rate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     caller: &MeterCaller,
 ) -> Result<(), S3Error> {
     match state.meter.check_object_request(caller) {
-        GatewayMeterDecision::Allowed => {
-            // feed the atlas display: s3 object reads are user fetches
-            state.context.atlas.push_ip(caller.ip, false);
-            Ok(())
-        }
+        GatewayMeterDecision::Allowed => Ok(()),
         GatewayMeterDecision::RateLimited { retry_after } => Err(S3Error::slow_down(retry_after)),
     }
 }
@@ -751,6 +740,11 @@ where
     // (1..=MAX_NAME_LEN bytes) up front for a precise client error.
     validate_object_key(&key)?;
 
+    // The track this key is bound to now, if any. A PUT that overwrites it writes
+    // a new track and rebinds the name, orphaning this one; capture it so the
+    // write below can reclaim it once the rebinding lands.
+    let prior = resolve_object(&state, tape, &key)?;
+
     let content_type = content_type_from_headers(headers);
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
@@ -786,7 +780,14 @@ where
             let size = data.len() as u64;
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
             let result = write_ctx
-                .write_object(state.context.as_ref(), tape, key.as_bytes(), content_type, &data)
+                .write_object(
+                    state.context.as_ref(),
+                    tape,
+                    key.as_bytes(),
+                    content_type,
+                    &data,
+                    prior.as_ref().map(|object| object.track_number),
+                )
                 .await;
             settle_write(permit, &state, size, result)?
         }
@@ -960,6 +961,7 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
+        | TapedriveError::WriteConflict { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::Io(_)
         | TapedriveError::Stream(_)) => S3Error::Internal(other.to_string()),
@@ -982,6 +984,7 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
+        | TapedriveError::WriteConflict { .. }
         | TapedriveError::NotFound
         | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }
@@ -1406,6 +1409,10 @@ where
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let assembled = multipart::assemble(store, &upload_id, bucket, &key, &requested, max_object_bytes)?;
 
+    // Prior binding for this key; a completed multipart that overwrites it
+    // orphans this track, reclaimed after the new write lands (see PutObject).
+    let prior = resolve_object(state, bucket, &assembled.key)?;
+
     // Authorization chokepoint.
     let size = assembled.data.len() as u64;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, size).await?;
@@ -1416,6 +1423,7 @@ where
             assembled.key.as_bytes(),
             assembled.content_type,
             &assembled.data,
+            prior.as_ref().map(|object| object.track_number),
         )
         .await;
     // On failure `?` returns before the upload is dropped, so it stays intact for

@@ -261,63 +261,52 @@ pub fn create_bulk_store_configs() -> Vec<ColumnFamilyDescriptor> {
 /// Cap on total write-ahead-log size, so a write burst cannot balloon the volume
 const MAX_TOTAL_WAL_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Default compaction rate for the metadata volume, sized for a fast device
-pub const DEFAULT_META_COMPACTION_MB_PER_SEC: u64 = 200;
-
-/// Default compaction rate for the bulk volume
-pub const DEFAULT_BULK_COMPACTION_MB_PER_SEC: u64 = 100;
-
 /// Create database-wide options for TapeStore
 ///
 /// Returns a configured Options instance with settings optimized for the
 /// TapeStore workload: 64 MiB write buffers, parallelism scaled to CPU count,
-/// LZ4 compression, the given compaction rate limit, and a bounded WAL.
-pub fn create_db_options(compaction_mb_per_sec: u64) -> Options {
-    let mut options = base_db_options();
-
-    // Rate limiting for compaction to prevent I/O spikes
-    // set_ratelimiter(rate_bytes_per_sec, refill_period_us, fairness)
-    let rate_limit_bytes_per_sec = compaction_mb_per_sec
-        .saturating_mul(1024 * 1024)
-        .min(i64::MAX as u64) as i64;
-    options.set_ratelimiter(rate_limit_bytes_per_sec, 100_000, 10);
-
-    options
+/// LZ4 compression, a compaction rate limit, and a bounded WAL.
+pub fn create_db_options() -> Options {
+    create_db_options_with_compaction_rate_limit_mb_per_sec(100)
 }
 
-/// Create options for a secondary instance, which never flushes or compacts
-/// and so carries no compaction rate limiter
-pub fn create_secondary_db_options() -> Options {
-    base_db_options()
-}
-
-fn base_db_options() -> Options {
-    let mut options = Options::default();
+pub fn create_db_options_with_compaction_rate_limit_mb_per_sec(
+    rate_limit_mb_per_sec: u64,
+) -> Options {
+    let mut opts = Options::default();
 
     // Basic database options
-    options.create_if_missing(true);
-    options.create_missing_column_families(true);
+    opts.create_if_missing(true);
+    opts.create_missing_column_families(true);
 
     // Memory and write buffer tuning
     // 64 MiB per write buffer, up to 4 buffers per CF
-    options.set_write_buffer_size(64 * 1024 * 1024);
-    options.set_max_write_buffer_number(4);
-    options.set_min_write_buffer_number_to_merge(2);
+    opts.set_write_buffer_size(64 * 1024 * 1024);
+    opts.set_max_write_buffer_number(4);
+    opts.set_min_write_buffer_number_to_merge(2);
 
     // Parallelism - scale with CPU count
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4) as i32;
-    options.increase_parallelism(cpus);
-    options.set_max_background_jobs(cpus);
+    opts.increase_parallelism(cpus);
+    opts.set_max_background_jobs(cpus);
 
     // Compression - LZ4 is fast and good enough
-    options.set_compression_type(rocksdb::DBCompressionType::Lz4);
+    opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+
+    // Rate limiting for compaction to prevent I/O spikes
+    // 100 MB/s should be gentle on the system
+    // set_ratelimiter(rate_bytes_per_sec, refill_period_us, fairness)
+    let rate_limit_bytes_per_sec = rate_limit_mb_per_sec
+        .saturating_mul(1024 * 1024)
+        .min(i64::MAX as u64) as i64;
+    opts.set_ratelimiter(rate_limit_bytes_per_sec, 100_000, 10);
 
     // Bound the WAL so a write burst cannot fill the fast volume
-    options.set_max_total_wal_size(MAX_TOTAL_WAL_SIZE_BYTES);
+    opts.set_max_total_wal_size(MAX_TOTAL_WAL_SIZE_BYTES);
 
-    options
+    opts
 }
 
 #[cfg(test)]
@@ -371,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_db_options() {
-        let opts = create_db_options(DEFAULT_META_COMPACTION_MB_PER_SEC);
+        let opts = create_db_options();
         drop(opts);
     }
 

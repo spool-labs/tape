@@ -5,9 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Balance in lamports below which a fee payer is treated as low
-pub const LOW_BALANCE_LAMPORTS: u64 = 50_000_000;
-
 /// Path the node serves one node's board from.
 pub const BOARD_PATH: &str = "/v1/observe/board";
 
@@ -19,54 +16,6 @@ pub const PEER_BOARD_PREFIX: &str = "/v1/observe/peer/";
 
 /// Route template for a peer's board.
 pub const PEER_BOARD_PATH: &str = "/v1/observe/peer/{addr}/board";
-
-/// Path the node serves its recent-traffic snapshot from, for the atlas
-/// collector. Gated to configured observer identities over mTLS.
-pub const ATLAS_PATH: &str = "/v1/observe/atlas";
-
-/// One peer call that moved payload bytes, from the serving node's view.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AtlasTransfer {
-    /// The remote node's address.
-    pub peer: String,
-    /// Which api call moved the bytes.
-    pub op: String,
-    /// True when this node sent the bytes, false when it received them.
-    pub sent: bool,
-    /// Payload bytes moved.
-    pub bytes: u64,
-}
-
-/// One anonymous client request. The address is only shared with authorized
-/// observers, which resolve it to a city and discard it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AtlasIp {
-    /// The caller's address.
-    pub ip: String,
-    /// True for uploads, false for fetches.
-    pub write: bool,
-}
-
-/// One recently stored object, coarsened for display.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AtlasObject {
-    pub label: String,
-    pub size: u64,
-    pub kind: String,
-}
-
-/// Everything that happened since a caller's cursor, plus the new cursor.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AtlasRecent {
-    /// Pass back as the after query parameter to resume from here.
-    pub seq: u64,
-    /// Peer transfers since the cursor.
-    pub transfers: Vec<AtlasTransfer>,
-    /// Anonymous callers since the cursor.
-    pub ips: Vec<AtlasIp>,
-    /// Stored objects since the cursor.
-    pub objects: Vec<AtlasObject>,
-}
 
 /// How reachable a committee member is from the node serving this board.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -116,7 +65,6 @@ pub struct NodeStats {
     #[serde(default)] pub blocks_processed: u64,
     #[serde(default)] pub bootstrap_ready: bool,
     #[serde(default)] pub bootstrap_behind_slots: u64,
-    #[serde(default)] pub fee_payer_lamports: Option<u64>,
 }
 
 /// One committee member, as seen on-chain and optionally enriched with liveness

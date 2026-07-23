@@ -34,8 +34,6 @@ use crate::features::snapshot::manager::SnapshotManager;
 use crate::features::spool::manager::SpoolManager;
 use crate::features::store::manager::StoreManager;
 use crate::features::state::manager::StateManager;
-#[cfg(feature = "metrics")]
-use crate::observe::{register_block_channels, register_core_collectors, BalanceMonitor};
 use crate::supervisor::Supervisor;
 
 const MIN_WORKER_THREADS: usize = 4;
@@ -292,13 +290,7 @@ where
 
     #[cfg(feature = "metrics")]
     if config.metrics.enabled {
-        register_core_collectors(context.clone());
-        register_block_channels(&senders, &store_tx);
-
-        supervisor.spawn(
-            ServiceName::BalanceMonitor,
-            BalanceMonitor::new(context.clone(), cancel.clone()).run(),
-        );
+        crate::observe::register_block_channels(&senders, &store_tx);
     }
 
     #[cfg(feature = "metrics")]
@@ -415,7 +407,7 @@ where
     supervisor.spawn(
         ServiceName::GcManager,
         GcManager::new(
-            context,
+            context, 
             config.store.gc.clone(),
             cancel
         ).run(),

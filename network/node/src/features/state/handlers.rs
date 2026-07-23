@@ -4,16 +4,11 @@ use bytemuck::Zeroable;
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::{
-    AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated, NodeEvicted,
-    NodeJoinedCommittee, PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced,
-    VoteRecorded,
+    AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated,
+    NodeEvicted, NodeJoinedCommittee, PeerSetResized, SnapshotFinalized, SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
-use peer_manager::PeerNode;
-use tape_core::bls::BlsPubkey;
 use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
-use tape_core::types::network::NetworkAddress;
-use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -296,65 +291,31 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         Ok(())
     }
 
-    pub async fn handle_advance_pool(&self, event: PoolAdvanced) -> Result<(), NodeError> {
-        debug!(node = %event.node, epoch = event.epoch.0, stake = event.stake.0, "received advance pool");
-        self.context
-            .peer_manager
-            .patch_peer(event.node, |peer| peer.stake = event.stake);
-        Ok(())
-    }
-
-    /// Upsert the peer from the parsed registration; the event's node address
-    /// is authoritative. No chain fetch: the ix data carries the metadata.
-    pub async fn handle_register_node(
-        &self,
-        registration: PeerNode,
-    ) -> Result<(), NodeError> {
-        debug!(node = %registration.node, "received node registration");
-        self.context.peer_manager.upsert_registered(registration);
-        Ok(())
-    }
-
-    pub async fn handle_set_name(&self, node: Address, name: [u8; 32]) -> Result<(), NodeError> {
-        debug!(node = %node, "received node rename");
-        self.context.peer_manager.patch_peer(node, |peer| peer.name = name);
-        Ok(())
-    }
-
-    pub async fn handle_set_network_address(
+    pub async fn handle_advance_pool(
         &self,
         node: Address,
-        network_address: NetworkAddress,
+        epoch: EpochNumber,
     ) -> Result<(), NodeError> {
-        debug!(node = %node, "received network address change");
-        self.context
-            .peer_manager
-            .patch_peer(node, |peer| peer.network_address = network_address);
+        debug!(node = %node, epoch = epoch.0, "received advance pool");
+        self.refresh_registered_nodes("pool advance").await;
         Ok(())
     }
 
-    pub async fn handle_set_network_tls(
-        &self,
-        node: Address,
-        network_tls: NetworkTlsPubkey,
-    ) -> Result<(), NodeError> {
-        debug!(node = %node, "received network tls change");
-        self.context
-            .peer_manager
-            .patch_peer(node, |peer| peer.tls_pubkey = network_tls);
+    pub async fn handle_register_node(&self, node: Address) -> Result<(), NodeError> {
+        debug!(node = %node, "received node registration");
+        self.refresh_registered_nodes("node registration").await;
         Ok(())
     }
 
-    pub async fn handle_set_bls_pubkey(
-        &self,
-        node: Address,
-        bls_pubkey: BlsPubkey,
-    ) -> Result<(), NodeError> {
-        debug!(node = %node, "received bls pubkey change");
-        self.context
+    async fn refresh_registered_nodes(&self, reason: &'static str) {
+        if let Err(error) = self
+            .context
             .peer_manager
-            .patch_peer(node, |peer| peer.bls_pubkey = bls_pubkey);
-        Ok(())
+            .refresh_registered_nodes(&self.context.rpc)
+            .await
+        {
+            warn!(error = %error, reason, "registered peer refresh failed");
+        }
     }
 
     pub async fn handle_join_committee(&self, event: NodeJoinedCommittee) -> Result<(), NodeError> {
@@ -511,7 +472,7 @@ fn apply_event_phase(state: &mut tape_protocol::ProtocolState, phase: u64) {
 
 #[cfg(test)]
 mod tests {
-    use tape_api::event::{NodeEvicted, PoolAdvanced, SpoolSynced};
+    use tape_api::event::{NodeEvicted, SpoolSynced};
     use tape_core::system::EpochPhase;
     use tape_core::types::{BitmapRead, EpochNumber};
     use tokio_util::sync::CancellationToken;
@@ -594,12 +555,7 @@ mod tests {
         let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         handlers
-            .handle_advance_pool(PoolAdvanced {
-                node: harness.node(NODE).node_address.into(),
-                epoch: EPOCH,
-                span: bytemuck::Zeroable::zeroed(),
-                stake: tape_core::types::coin::TAPE(0),
-            })
+            .handle_advance_pool(harness.node(NODE).node_address.into(), EPOCH)
             .await
             .expect("handle advance pool");
         assert_eq!(ctx.state().phase(), EpochPhase::Snapshot);

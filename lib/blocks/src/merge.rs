@@ -312,15 +312,7 @@ pub fn merge(
                 }
             }
 
-            RawInstruction::RegisterNode {
-                authority,
-                node,
-                name,
-                network_address,
-                network_tls,
-                bls_pubkey,
-                preferences,
-            } => {
+            RawInstruction::RegisterNode { authority, node } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::NodeRegistered(e)) => e,
                     _ => {
@@ -332,25 +324,8 @@ pub fn merge(
                 ParsedInstruction::RegisterNode {
                     authority,
                     node,
-                    name,
-                    network_address,
-                    network_tls,
-                    bls_pubkey,
-                    preferences,
                     event,
                 }
-            }
-
-            // The metadata setters emit no events; the parsed args are the payload.
-            RawInstruction::SetName { node, name } => ParsedInstruction::SetName { node, name },
-            RawInstruction::SetNetworkAddress { node, network_address } => {
-                ParsedInstruction::SetNetworkAddress { node, network_address }
-            }
-            RawInstruction::SetNetworkTls { node, network_tls } => {
-                ParsedInstruction::SetNetworkTls { node, network_tls }
-            }
-            RawInstruction::SetBlsPubkey { node, bls_pubkey } => {
-                ParsedInstruction::SetBlsPubkey { node, bls_pubkey }
             }
 
             RawInstruction::JoinCommittee { node } => {
@@ -523,8 +498,6 @@ mod tests {
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::BlobData;
     use tape_core::types::coin::TAPE;
-    use tape_core::types::network::NetworkAddress;
-    use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::{SpoolBitmap, SpoolIndex, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -981,11 +954,6 @@ mod tests {
             RawInstruction::RegisterNode {
                 authority: Address::new_unique(),
                 node: Address::new_unique(),
-                name: [0u8; 32],
-                network_address: NetworkAddress::zeroed(),
-                network_tls: NetworkTlsPubkey::zeroed(),
-                bls_pubkey: BlsPubkey::zeroed(),
-                preferences: NodePreferences::zeroed(),
             },
             RawInstruction::JoinCommittee {
                 node: Address::new_unique(),
@@ -1093,11 +1061,6 @@ mod tests {
                 RawInstruction::RegisterNode {
                     authority: Address::new_unique(),
                     node: register_node,
-                    name: [0u8; 32],
-                    network_address: NetworkAddress::zeroed(),
-                    network_tls: NetworkTlsPubkey::zeroed(),
-                    bls_pubkey: BlsPubkey::zeroed(),
-                    preferences: NodePreferences::zeroed(),
                 },
                 TapedriveEvent::NodeRegistered(NodeRegistered {
                     node: register_node,
@@ -1259,7 +1222,6 @@ mod tests {
             node,
             epoch: EpochNumber(3),
             span,
-            stake: TAPE(0),
         };
         let track_event = TrackWritten::zeroed();
         let merged = merge(

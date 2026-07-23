@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use rpc::Rpc;
 use store::Store;
@@ -47,7 +47,6 @@ pub async fn get_object<
         track_addr,
         track,
         metadata,
-        StatusCode::OK,
         &caller,
         range_header(&headers).map(str::to_string),
         rate_limited_response,
@@ -61,8 +60,7 @@ pub async fn get_object<
 /// `range` is the raw `Range` header value (`bytes=...`). Single-track objects
 /// slice the decoded bytes in memory; multi-track streams decode only the
 /// chunks the range touches. Either way a satisfied range answers `206` and an
-/// unsatisfiable one `416`. `status` is the serve status; a non-OK body, like
-/// a site's 404 page, is served whole and never range-sliced.
+/// unsatisfiable one `416`.
 pub async fn read_object_response<
     Db: Store + 'static,
     Cluster: Api + 'static,
@@ -72,7 +70,6 @@ pub async fn read_object_response<
     track_addr: Address,
     track: CompressedTrack,
     metadata: ObjectResponseMetadata,
-    status: StatusCode,
     caller: &MeterCaller,
     range: Option<String>,
     rate_limited: impl Fn(Duration) -> Response,
@@ -91,21 +88,11 @@ pub async fn read_object_response<
             .metrics
             .add_downloaded(decoded.bytes.len() as u64);
         // Single-track object: bytes are in memory, so honor a Range slice here.
-        return object_response_ranged(
-            decoded.bytes,
-            &metadata,
-            decoded.etag,
-            range.as_deref(),
-            status,
-        );
+        return object_response_ranged(decoded.bytes, &metadata, decoded.etag, range.as_deref());
     };
 
     let total_size = manifest.total_size.to_bytes();
-    let range = if status == StatusCode::OK {
-        resolve_range(range.as_deref(), total_size)?
-    } else {
-        None
-    };
+    let range = resolve_range(range.as_deref(), total_size)?;
 
     // One plan drives everything downstream: what a ranged read is charged,
     // which chunk tracks get resolved, and what the stream decodes. A full
@@ -136,7 +123,6 @@ pub async fn read_object_response<
         decoded.etag,
         total_size,
         range,
-        status,
     )
 }
 
@@ -174,6 +160,5 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
         &metadata,
         decoded.etag,
         range_header(&headers),
-        StatusCode::OK,
     )
 }

@@ -13,26 +13,10 @@ use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
 use crate::http::state::AppState;
 
-/// How long clients may reuse the response before asking again
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CachePolicy {
-    /// Track-addressed content never changes under its URL
-    Immutable,
-    /// Name-addressed content can be rewritten, so revalidate often
-    Revalidate { max_age_secs: u64 },
-}
-
-/// Default revalidation window for name-addressed responses; the string
-/// form below must spell the same number.
-pub const DEFAULT_SITE_MAX_AGE_SECS: u64 = 60;
-
-/// A named response downloads as an attachment; a nameless one renders
-/// inline, which is how the site route serves pages.
 #[derive(Clone, Debug)]
 pub struct ObjectResponseMetadata {
     pub content_type: ContentType,
     pub filename: Option<Vec<u8>>,
-    pub cache: CachePolicy,
 }
 
 pub fn object_response_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -55,7 +39,6 @@ pub fn object_response_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(ObjectResponseMetadata {
         content_type,
         filename,
-        cache: CachePolicy::Immutable,
     })
 }
 
@@ -150,17 +133,16 @@ pub fn resolve_range(
 }
 
 /// The status line and headers for an optionally-ranged object response:
-/// the serve status with the full length, or `206` with the ranged length
-/// and `Content-Range`. Only an `OK` response is ever range-served.
+/// `200` with the full length, or `206` with the ranged length and
+/// `Content-Range`.
 pub fn ranged_object_headers(
     range: Option<ByteRange>,
     total: u64,
     metadata: &ObjectResponseMetadata,
     etag: Hash,
-    status: StatusCode,
 ) -> Result<(StatusCode, HeaderMap), RouteError> {
     match range {
-        None => Ok((status, object_headers(total, metadata, etag)?)),
+        None => Ok((StatusCode::OK, object_headers(total, metadata, etag)?)),
         Some(range) => {
             let mut headers = object_headers(range.len(), metadata, etag)?;
             headers.insert(header::CONTENT_RANGE, content_range_header(range, total)?);
@@ -170,7 +152,7 @@ pub fn ranged_object_headers(
 }
 
 /// Build the read response for fully-decoded object `bytes`, honoring a single
-/// `Range` (slice + `206 Partial Content`), serving the whole object, or
+/// `Range` (slice + `206 Partial Content`), serving the whole object (`200`), or
 /// rejecting an unsatisfiable range (`416`). Single-track objects only — the
 /// bytes are already in memory, so the slice is free.
 pub fn object_response_ranged(
@@ -178,17 +160,10 @@ pub fn object_response_ranged(
     metadata: &ObjectResponseMetadata,
     etag: Hash,
     range_header: Option<&str>,
-    status: StatusCode,
 ) -> Result<Response, RouteError> {
     let total = bytes.len() as u64;
-    // A non-OK body, like a site's 404 page, is served whole; honoring a
-    // range there would relabel the error as partial content.
-    let range = if status == StatusCode::OK {
-        resolve_range(range_header, total)?
-    } else {
-        None
-    };
-    let (status, headers) = ranged_object_headers(range, total, metadata, etag, status)?;
+    let range = resolve_range(range_header, total)?;
+    let (status, headers) = ranged_object_headers(range, total, metadata, etag)?;
     let body = match range {
         // Zero-copy slice: `Bytes::from` takes ownership and `slice` is a refcount.
         Some(range) => Bytes::from(bytes).slice(range.start as usize..range.end as usize),
@@ -212,9 +187,6 @@ pub fn content_range_header(
         .map_err(|error| RouteError::Internal(format!("content range header: {error}")))
 }
 
-const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-const DEFAULT_REVALIDATE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
-
 pub fn object_headers(
     content_length: u64,
     metadata: &ObjectResponseMetadata,
@@ -230,8 +202,15 @@ pub fn object_headers(
         HeaderValue::from_str(&content_length.to_string())
             .map_err(|error| RouteError::Internal(format!("content length header: {error}")))?,
     );
-    headers.insert(header::ETAG, etag_header(etag)?);
-    headers.insert(header::CACHE_CONTROL, cache_control_header(metadata.cache));
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{etag}\""))
+            .map_err(|error| RouteError::Internal(format!("etag header: {error}")))?,
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     if let Some(filename) = metadata.filename.as_deref() {
         headers.insert(
@@ -243,27 +222,6 @@ pub fn object_headers(
     }
 
     Ok(headers)
-}
-
-/// The quoted strong ETag header for an object's commitment hash
-pub fn etag_header(etag: Hash) -> Result<HeaderValue, RouteError> {
-    HeaderValue::from_str(&format!("\"{etag}\""))
-        .map_err(|error| RouteError::Internal(format!("etag header: {error}")))
-}
-
-/// The Cache-Control header for a cache policy
-pub fn cache_control_header(cache: CachePolicy) -> HeaderValue {
-    match cache {
-        CachePolicy::Immutable => HeaderValue::from_static(IMMUTABLE_CACHE_CONTROL),
-        // The default window is the common case; serve it without a format.
-        CachePolicy::Revalidate {
-            max_age_secs: DEFAULT_SITE_MAX_AGE_SECS,
-        } => HeaderValue::from_static(DEFAULT_REVALIDATE_CACHE_CONTROL),
-        CachePolicy::Revalidate { max_age_secs } => {
-            HeaderValue::from_str(&format!("public, max-age={max_age_secs}, must-revalidate"))
-                .unwrap_or_else(|_| HeaderValue::from_static(DEFAULT_REVALIDATE_CACHE_CONTROL))
-        }
-    }
 }
 
 fn content_disposition(filename: &[u8]) -> String {
@@ -307,14 +265,13 @@ mod tests {
     use tape_core::types::ContentType;
     use tape_crypto::Hash;
 
-    use super::{CachePolicy, ObjectResponseMetadata, object_headers};
+    use super::{ObjectResponseMetadata, object_headers};
 
     #[test]
     fn object_headers_include_encoded_filename() {
         let metadata = ObjectResponseMetadata {
             content_type: ContentType::TextPlain,
             filename: Some(b"reports/june final.txt".to_vec()),
-            cache: CachePolicy::Immutable,
         };
 
         let headers = object_headers(42, &metadata, Hash::default()).unwrap();
@@ -327,24 +284,16 @@ mod tests {
         );
     }
 
-    // a nameless response renders inline and revalidates instead of caching
     #[test]
     fn object_headers_skip_empty_metadata_filename() {
         let metadata = ObjectResponseMetadata {
             content_type: ContentType::Unknown,
             filename: None,
-            cache: CachePolicy::Revalidate { max_age_secs: 60 },
         };
 
         let headers = object_headers(42, &metadata, Hash::default()).unwrap();
 
         assert!(headers.get(header::CONTENT_DISPOSITION).is_none());
-        assert_eq!(
-            headers
-                .get(header::CACHE_CONTROL)
-                .and_then(|value| value.to_str().ok()),
-            Some("public, max-age=60, must-revalidate")
-        );
     }
 
     #[test]

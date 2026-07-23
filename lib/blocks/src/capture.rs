@@ -361,11 +361,7 @@ fn capture_instruction(
         | ParsedInstruction::CreateEpoch { .. }
         | ParsedInstruction::CreateCommittee { .. }
         | ParsedInstruction::ResizeCommittee { .. }
-        | ParsedInstruction::ResizePeerSet { .. }
-        | ParsedInstruction::SetName { .. }
-        | ParsedInstruction::SetNetworkAddress { .. }
-        | ParsedInstruction::SetNetworkTls { .. }
-        | ParsedInstruction::SetBlsPubkey { .. } => return Ok(None),
+        | ParsedInstruction::ResizePeerSet { .. } => return Ok(None),
     };
 
     Ok(Some(captured))
@@ -533,11 +529,7 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::AdvancePool { node, .. }
         | ParsedInstruction::JoinCommittee { node, .. }
         | ParsedInstruction::AddToBlacklist { node, .. }
-        | ParsedInstruction::RemoveFromBlacklist { node, .. }
-        | ParsedInstruction::SetName { node, .. }
-        | ParsedInstruction::SetNetworkAddress { node, .. }
-        | ParsedInstruction::SetNetworkTls { node, .. }
-        | ParsedInstruction::SetBlsPubkey { node, .. } => Some(*node),
+        | ParsedInstruction::RemoveFromBlacklist { node, .. } => Some(*node),
 
         ParsedInstruction::TrackWrite { authority, .. }
         | ParsedInstruction::RegisterNode { authority, .. }

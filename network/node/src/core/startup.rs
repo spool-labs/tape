@@ -24,7 +24,6 @@ use crate::chain::register_node::submit_register_node;
 use crate::chain::set_network_tls::submit_set_network_tls;
 use crate::config::node::NodeConfig;
 use crate::context::{AppContext, NodeContextBuilder};
-use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
 
 pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, NodeError> {
@@ -40,7 +39,6 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, 
         &meta_dir,
         &bulk_dir,
         config.store.compaction_mb_per_sec,
-        config.store.bulk_compaction_mb_per_sec,
     )
     .map_err(|error| {
         NodeError::Store(format!(
@@ -102,27 +100,24 @@ fn build_peer_api(
     config: &NodeConfig,
     peer_manager: Arc<PeerManager>,
     tls_identity: Arc<Keypair>,
-    atlas: Arc<AtlasBuffer>,
 ) -> Result<Arc<HttpApi>, NodeError> {
-    let mut builder = peer_http::HttpApiBuilder::new().local_identity(tls_identity);
-    if atlas.enabled() {
-        builder = builder.transfer_sink(Arc::new(move |transfer: peer_http::PeerTransfer| {
-            atlas.push_transfer(transfer.node, transfer.op, transfer.sent, transfer.bytes);
-        }));
-    }
-
     #[cfg(feature = "metrics")]
     if config.metrics.enabled {
         if let Some(registry) = tape_metrics::MetricsRegistry::get() {
             let metrics = Arc::new(
                 peer_http::ApiMetrics::new(registry.prometheus_registry()),
             );
-            let api = builder.metrics(metrics).build(peer_manager)?;
+            let api = peer_http::HttpApiBuilder::new()
+                .metrics(metrics)
+                .local_identity(tls_identity)
+                .build(peer_manager)?;
             return Ok(Arc::new(api));
         }
     }
 
-    let api = builder.build(peer_manager)?;
+    let api = peer_http::HttpApiBuilder::new()
+        .local_identity(tls_identity)
+        .build(peer_manager)?;
     Ok(Arc::new(api))
 }
 
@@ -158,11 +153,7 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
     let peer_manager = Arc::new(PeerManager::new());
     let tls_identity = Arc::new(tls_keypair);
 
-    let observers = atlas::parse_observers(&config.https.observers)
-        .map_err(NodeError::Config)?;
-    let atlas = Arc::new(AtlasBuffer::new(observers));
-
-    let api = build_peer_api(config, peer_manager.clone(), tls_identity.clone(), atlas.clone())?;
+    let api = build_peer_api(config, peer_manager.clone(), tls_identity.clone())?;
 
     NodeContextBuilder::new(
         config.clone(),
@@ -173,7 +164,6 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
         rpc,
         peer_manager,
         api,
-        atlas,
     )
     .build()
     .await

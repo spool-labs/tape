@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::watch::Receiver;
@@ -14,7 +14,6 @@ use store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
-use tape_core::types::coin::SOL;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::prelude::{Address, BLSError, Keypair, Signature};
 use tape_crypto::ed25519::Pubkey;
@@ -22,7 +21,6 @@ use tape_protocol::{Api, ProtocolState};
 use tape_store::{TapeStore, ops::MetaOps};
 
 use crate::config::node::NodeConfig;
-use crate::core::atlas::AtlasBuffer;
 use crate::core::bootstrap::BootstrapBus;
 use crate::core::error::NodeError;
 use crate::core::ingest::{IngestBus, IngestState};
@@ -47,7 +45,6 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub admission: Arc<AdmissionLimiter>,
     pub eviction_queue: Arc<EvictionQueue>,
     pub metrics: NodeMetrics,
-    pub atlas: Arc<AtlasBuffer>,
 
     node_id: NodeId,
     node_address: Address,
@@ -55,11 +52,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     bls_keypair: Arc<BlsPrivateKey>,
     tls_keypair: Arc<Keypair>,
     reclaim_pending: AtomicBool,
-    fee_payer_balance: AtomicU64,
 }
-
-/// Sentinel for a balance the monitor has not sampled yet
-const UNSAMPLED_BALANCE: u64 = u64::MAX;
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
     pub fn node_id(&self) -> NodeId {
@@ -167,24 +160,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.reclaim_pending.store(is_pending, Ordering::Relaxed);
     }
 
-    /// Last observed fee payer balance
-    ///
-    /// Sampled off the request path by the balance monitor, so this is stale by
-    /// up to one refresh interval. There is no reading until the first sample
-    /// lands, which keeps an unsampled node distinguishable from one that is
-    /// actually broke.
-    pub fn fee_payer_balance(&self) -> Option<SOL> {
-        match self.fee_payer_balance.load(Ordering::Relaxed) {
-            UNSAMPLED_BALANCE => None,
-            lamports => Some(SOL(lamports)),
-        }
-    }
-
-    /// Record a fresh sample from the balance monitor
-    pub fn set_fee_payer_balance(&self, balance: SOL) {
-        self.fee_payer_balance.store(balance.0, Ordering::Relaxed);
-    }
-
     /// Whether new uploads should be rejected because a volume is low on space.
     ///
     /// Disabled (always false) unless a free-space floor is configured.
@@ -228,11 +203,9 @@ pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     rpc: RpcClient<Blockchain>,
     peer_manager: Arc<PeerManager>,
     api: Arc<Cluster>,
-    atlas: Arc<AtlasBuffer>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, Blockchain> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
@@ -242,7 +215,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         rpc: RpcClient<Blockchain>,
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
-        atlas: Arc<AtlasBuffer>,
     ) -> Self {
         Self {
             config,
@@ -253,7 +225,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             rpc,
             peer_manager,
             api,
-            atlas,
         }
     }
 
@@ -297,9 +268,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             admission,
             eviction_queue: Arc::new(EvictionQueue::default()),
             metrics: NodeMetrics,
-            atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),
-            fee_payer_balance: AtomicU64::new(UNSAMPLED_BALANCE),
         }))
     }
 }
@@ -320,7 +289,6 @@ mod tests {
     use tape_store::TapeStore;
 
     use super::{volume_below_threshold, NodeConfig, NodeContextBuilder};
-    use crate::core::atlas::AtlasBuffer;
     use store::{DiskVolume, StoreVolume};
 
     fn volume(role: StoreVolume, free: Option<u64>) -> DiskVolume {
@@ -364,7 +332,6 @@ mod tests {
             rpc,
             Arc::new(PeerManager::new()),
             Arc::new(MemoryApi::noop()),
-            Arc::new(AtlasBuffer::new(Vec::new())),
         )
         .build()
         .await

@@ -27,10 +27,7 @@ members = [
   "solana/rpc-cache",
   "lib/metrics",
   "lib/observe-api",
-  "lib/atlas",
   "monitoring/dashboard",
-  "monitoring/atlas-web",
-  "monitoring/atlas-collector",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -50,7 +47,6 @@ members = [
   "tools/tape-cli-common",
   "tools/tape-recover-assignment",
   "tools/tape-store-cli",
-  "tools/tape-measure",
 ]
 
 # Programs and test crates excluded from default cargo build/check:
@@ -73,7 +69,6 @@ default-members = [
   "store/tape-store",
   "lib/metrics",
   "lib/observe-api",
-  "lib/atlas",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -90,7 +85,6 @@ default-members = [
   "tools/tape-cli-common",
   "tools/tape-recover-assignment",
   "tools/tape-store-cli",
-  "tools/tape-measure",
 ]
 
 [workspace.package]
@@ -127,7 +121,6 @@ tape-test = { version = "0.3.0", path = "./test" }
 tape-chain-harness = { version = "0.3.0", path = "./test/harness" }
 tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
 tape-observe-api = { version = "0.1.0", path = "./lib/observe-api" }
-tape-atlas = { version = "0.1.0", path = "./lib/atlas" }
 tape-gateway = { version = "0.3.0", path = "./network/gateway" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 peer-manager = { version = "0.3.0", path = "./network/peer-manager" }
@@ -184,11 +177,6 @@ spl-associated-token-account-interface = { version = "=2.0.0", features = ["bors
 
 # client-specific
 sha2 = "0.10.8"
-libc = "0.2"
-crc32fast = "1.4"
-crc32c = "0.6"
-crc64fast-nvme = "1.2"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
 hmac = "0.12"
 zeroize = "1"
 anyhow = "1.0"
@@ -198,8 +186,6 @@ bincode = "1.3"
 base64 = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-hickory-resolver = { version = "0.26", features = ["dnssec-ring"] }
-moka = { version = "0.12", features = ["future"] }
 chrono = "0.4"
 rand = { version = "0.8", features = ["small_rng"] }
 thiserror = "2.0.12"
@@ -212,7 +198,7 @@ async-trait = "0.1"
 arc-swap = "1"
 
 # cli-specific
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.5", features = ["derive"] }
 colored = "3.0.0"
 dialoguer = "0.11.0"
 dirs = "5.0"

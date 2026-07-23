@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use rpc::Rpc;
 use tape_api::instruction::build_delete_track_ix;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
+use tape_retry::{retry_if, RetryConfig, Retryable};
 
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
@@ -16,7 +19,30 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 
     /// Delete a concrete track version as an arbitrary TapeOperator.
+    ///
+    /// The proof is fetched from peers and verified against the current tape
+    /// root, which can be transiently stale right after another write to the
+    /// same tape (an overwrite reclaim), so a stale proof is refetched and
+    /// retried before giving up.
     pub async fn delete_as(
+        &self,
+        operator: &impl TapeOperator,
+        track: Address,
+    ) -> Result<(), TapedriveError> {
+        retry_if(
+            RetryConfig {
+                base_delay: Duration::from_millis(300),
+                max_delay: Duration::from_secs(2),
+                max_retries: Some(5),
+            },
+            None,
+            || self.delete_once(operator, track),
+            should_retry_delete,
+        )
+        .await
+    }
+
+    async fn delete_once(
         &self,
         operator: &impl TapeOperator,
         track: Address,
@@ -31,5 +57,17 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .await?;
 
         Ok(())
+    }
+}
+
+/// A missing track is idempotent success, not retried; a stale proof or a
+/// transient peer/RPC error is retried.
+fn should_retry_delete(error: &TapedriveError) -> bool {
+    match error {
+        TapedriveError::NotFound => false,
+        TapedriveError::Peer(api) => api.is_retryable(),
+        TapedriveError::Rpc(rpc) => rpc.is_retriable(),
+        TapedriveError::Network(_) => true,
+        _ => false,
     }
 }
