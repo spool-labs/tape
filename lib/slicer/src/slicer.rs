@@ -115,11 +115,11 @@ fn validate_layout(
 /// # Examples
 /// ```ignore
 /// // Production: striped + rotated Clay codes
-/// let mut slicer = Slicer::with_rotation(ClayCoder::new(20, 10, 19));
+/// let mut slicer = Slicer::with_rotation(ClayCoder::new(20, 7, 16));
 /// let chunks = slicer.encode(&data)?;
 ///
 /// // Striped only (no rotation)
-/// let mut slicer = Slicer::new(ClayCoder::new(20, 10, 19));
+/// let mut slicer = Slicer::new(ClayCoder::new(20, 7, 16));
 /// ```
 pub struct Slicer<C: ErasureCoder> {
     pub coder: C,
@@ -391,8 +391,13 @@ impl<C: ErasureCoder> Slicer<C> {
 mod tests {
     use super::*;
     use crate::{ClayCoder, STRIPE_SIZES};
+    use tape_core::encoding::ClayParams;
 
     const N: usize = 20; // k=7 + m=13 (default Clay)
+
+    fn test_coder() -> ClayCoder {
+        ClayCoder::from_params(ClayParams::default())
+    }
 
     fn mk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -471,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_small_identity() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let payload = mk(500);
         let chunks = slicer.encode(&payload).unwrap();
         assert_eq!(chunks.len(), N);
@@ -484,7 +489,7 @@ mod tests {
     #[test]
     fn test_small_rotated() {
         let mut slicer = Slicer::with_profile(
-            ClayCoder::new(20, 10, 19),
+            test_coder(),
             1024,
             true,
             EncodingProfile::clay_default(),
@@ -500,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_multi_stripe() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let payload = mk(5000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -511,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_empty() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let payload = Vec::new();
         let chunks = slicer.encode(&payload).unwrap();
         assert_eq!(chunks.len(), N);
@@ -523,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_data_only() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let k = slicer.k();
         let payload = mk(3000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -536,7 +541,7 @@ mod tests {
     #[test]
     fn test_missing_slices() {
         let mut slicer = Slicer::with_profile(
-            ClayCoder::new(20, 10, 19),
+            test_coder(),
             1024,
             true,
             EncodingProfile::clay_default(),
@@ -555,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_insufficient() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let k = slicer.k();
         let payload = mk(1000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -567,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_uniform_slices() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let payload = mk(5000);
         let chunks = slicer.encode(&payload).unwrap();
         let first_len = chunks[0].len();
@@ -592,15 +597,15 @@ mod tests {
 
     #[test]
     fn test_accessors() {
-        let slicer = Slicer::new(ClayCoder::new(20, 10, 19));
-        assert_eq!(slicer.k(), 10);
-        assert_eq!(slicer.m(), 10);
+        let slicer = Slicer::new(test_coder());
+        assert_eq!(slicer.k(), 7);
+        assert_eq!(slicer.m(), 13);
         assert_eq!(slicer.n(), 20);
     }
 
     #[test]
     fn test_metadata() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let payload = mk(2000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -672,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_layout_valid() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         // pick_stripe_size selects 100KB for small blobs, so use 250KB to get 3 stripes
         let payload = mk(250_000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -687,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_layout_mismatch() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 1024);
         let payload = mk(2000);
         let mut chunks = slicer.encode(&payload).unwrap();
 
@@ -708,15 +713,11 @@ mod tests {
         // Encode identical zero data at two different chunk indices
         let zeros = vec![0u8; 1000];
 
-        let mut slicer_a = Slicer::new(ClayCoder::from_params(
-            tape_core::encoding::ClayParams::default(),
-        ));
+        let mut slicer_a = Slicer::new(test_coder());
         slicer_a.set_chunk_index(ChunkNumber(0));
         let slices_a = slicer_a.encode(&zeros).unwrap();
 
-        let mut slicer_b = Slicer::new(ClayCoder::from_params(
-            tape_core::encoding::ClayParams::default(),
-        ));
+        let mut slicer_b = Slicer::new(test_coder());
         slicer_b.set_chunk_index(ChunkNumber(1));
         let slices_b = slicer_b.encode(&zeros).unwrap();
 

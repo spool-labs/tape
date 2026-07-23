@@ -2,6 +2,8 @@
 //!
 //! Accepts a bare address or an address with a prefix length, so existing
 //! single-address configs keep parsing while CDN ranges become expressible.
+//! Matching a request's caller against these blocks lives in
+//! features::http::forwarded.
 
 use std::fmt;
 use std::net::IpAddr;

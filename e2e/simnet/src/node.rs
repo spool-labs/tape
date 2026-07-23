@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use peer_http::HttpApi;
+use peer_http::{HttpApi, PeerTransfer};
 use peer_manager::PeerManager;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
@@ -16,6 +16,7 @@ use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_node::config::node::NodeConfig;
+use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
 use tape_store::TapeStore;
@@ -99,6 +100,12 @@ impl TestNode {
 
     pub fn tls_pubkey(&self) -> NetworkTlsPubkey {
         NetworkTlsPubkey::new(self.tls_keypair.pubkey().to_bytes())
+    }
+
+    /// Allow this TLS public key (base58) to read the atlas observe endpoint.
+    /// Takes effect on the next start.
+    pub fn add_observer(&mut self, key: String) {
+        self.app_config.https.observers.push(key);
     }
 
     pub fn id(&self) -> usize {
@@ -212,9 +219,21 @@ impl TestNode {
 
         let tls_identity = Arc::new(clone_ed25519_keypair(&self.tls_keypair));
 
+        // Same atlas wiring as node startup, so observer-gated tests work.
+        let observers = parse_observers(&self.app_config.https.observers)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let atlas = Arc::new(AtlasBuffer::new(observers));
+
+        let mut api_builder =
+            peer_http::HttpApiBuilder::new().local_identity(tls_identity.clone());
+        if atlas.enabled() {
+            let sink = atlas.clone();
+            api_builder = api_builder.transfer_sink(Arc::new(move |transfer: PeerTransfer| {
+                sink.push_transfer(transfer.node, transfer.op, transfer.sent, transfer.bytes);
+            }));
+        }
         let api = Arc::new(
-            peer_http::HttpApiBuilder::new()
-                .local_identity(tls_identity.clone())
+            api_builder
                 .build(peer_manager.clone())
                 .context("build HttpApi")?,
         );
@@ -228,6 +247,7 @@ impl TestNode {
             rpc,
             peer_manager,
             api,
+            atlas,
         )
         .build()
             .await
