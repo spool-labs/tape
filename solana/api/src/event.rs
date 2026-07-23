@@ -306,6 +306,9 @@ pub struct PoolAdvanced {
 
     /// Closed rate span written to the node history tape.
     pub span: RateSpan,
+
+    /// Pool stake after this advance applied scheduled changes and rewards.
+    pub stake: Coin<TAPE>,
 }
 
 tape_solana::event!(EventType, PoolAdvanced);
