@@ -66,7 +66,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux cache-linux gateway-linux collector-linux explorer-linux linux-binaries dashboard-web atlas-web deploy-tools install uninstall
+.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux cache-linux gateway-linux collector-linux explorer-linux linux-binaries dashboard-web atlas-web s3-bench deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -227,6 +227,12 @@ dashboard-web:
 atlas-web:
 	cd monitoring/atlas-web && dx build --platform web --release
 	@echo "bundle: target/dx/tape-atlas-web/release/web/public"
+
+# Timed S3 PUT against a live gateway. Requires S3_ENDPOINT, S3_BUCKET,
+# S3_ACCESS_KEY and S3_SECRET_KEY in the environment; SIZE_MB defaults to 100.
+s3-bench:
+	@dd if=/dev/urandom of=/tmp/s3-bench.bin bs=1048576 count=$(or $(SIZE_MB),100) 2>/dev/null
+	@curl -sS -o /dev/null -w "PUT $(or $(SIZE_MB),100) MiB: HTTP %{http_code} in %{time_total}s (%{speed_upload} bytes/s)\n" 		-T /tmp/s3-bench.bin --aws-sigv4 "aws:amz:us-east-1:s3" 		--user "$(S3_ACCESS_KEY):$(S3_SECRET_KEY)" 		"$(S3_ENDPOINT)/$(S3_BUCKET)/bench/upload-$(or $(SIZE_MB),100)mb.bin"
 
 deploy-tools: programs admin network tape linux-binaries
 
