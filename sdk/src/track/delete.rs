@@ -60,7 +60,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
-/// A missing track is idempotent success, not retried; a stale proof or a
+/// A missing track is final and surfaces to the caller; a stale proof or a
 /// transient peer/RPC error is retried.
 fn should_retry_delete(error: &TapedriveError) -> bool {
     match error {

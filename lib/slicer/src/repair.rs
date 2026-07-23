@@ -373,9 +373,13 @@ mod tests {
 
     use super::*;
     use crate::ErasureCoder;
-    use tape_core::encoding::EncodingProfile;
+    use tape_core::encoding::{ClayParams, EncodingProfile};
 
     const N: usize = 20;
+
+    fn test_coder() -> ClayCoder {
+        ClayCoder::from_params(ClayParams::default())
+    }
 
     fn mk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -396,7 +400,7 @@ mod tests {
 
     #[test]
     fn repair_coder_direct() {
-        let mut coder = ClayCoder::new(20, 10, 19);
+        let mut coder = test_coder();
         let original = mk(10_000);
         let chunks = coder.encode(&original).unwrap();
         let chunk_size = chunks[0].len();
@@ -431,7 +435,7 @@ mod tests {
 
     #[test]
     fn repair_full_single() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 100_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -445,7 +449,7 @@ mod tests {
     #[test]
     fn repair_full_rotated() {
         let mut slicer = Slicer::with_profile(
-            ClayCoder::new(20, 10, 19),
+            test_coder(),
             2000,
             true,
             EncodingProfile::clay_default(),
@@ -462,21 +466,22 @@ mod tests {
 
     #[test]
     fn repair_plan_helpers() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 100_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
         let available: Vec<SliceIndex> = (1..N).map(si).collect();
         let plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
 
+        let d = slicer.coder.d();
         for stripe in &plan.stripes {
-            assert_eq!(stripe.helpers.len(), 19, "expected d=19 helpers per stripe");
+            assert_eq!(stripe.helpers.len(), d, "expected d={d} helpers per stripe");
         }
     }
 
     #[test]
     fn repair_plan_bandwidth() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 100_000);
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -495,18 +500,22 @@ mod tests {
             .sum();
 
         let k = slicer.k() as u64;
+        let d = slicer.coder.d() as u64;
+        let alpha = slicer.coder.alpha() as u64;
+        let beta = slicer.coder.beta() as u64;
         let full_decode_bytes = k * chunks[0].len() as u64;
 
+        // Repair reads d*beta of the k*alpha sub-chunks a full decode needs
         assert!(
-            repair_bytes < full_decode_bytes / 5,
-            "repair bytes ({repair_bytes}) should be < 20% of full decode ({full_decode_bytes})"
+            repair_bytes * k * alpha <= full_decode_bytes * d * beta,
+            "repair bytes ({repair_bytes}) exceed d*beta/(k*alpha) of full decode ({full_decode_bytes})"
         );
     }
 
     #[test]
     fn repair_plan_rotation() {
         let mut slicer = Slicer::with_profile(
-            ClayCoder::new(20, 10, 19),
+            test_coder(),
             100_000,
             true,
             EncodingProfile::clay_default(),
@@ -530,7 +539,7 @@ mod tests {
 
     #[test]
     fn repair_exactly_d() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 100_000);
         let d = slicer.coder.d();
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -550,7 +559,7 @@ mod tests {
 
     #[test]
     fn repair_plan_from_params_matches() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 100_000);
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -581,7 +590,7 @@ mod tests {
     #[test]
     fn repair_plan_from_params_rotated() {
         let mut slicer = Slicer::with_profile(
-            ClayCoder::new(20, 10, 19),
+            test_coder(),
             2000,
             true,
             EncodingProfile::clay_default(),
@@ -614,7 +623,7 @@ mod tests {
 
     #[test]
     fn repair_insufficient() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let mut slicer = Slicer::with_stripe_size(test_coder(), 100_000);
         let d = slicer.coder.d();
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();

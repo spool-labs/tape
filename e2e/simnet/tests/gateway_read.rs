@@ -190,14 +190,16 @@ async fn staked_gateway_inner() {
             .await
             .expect("stake gateway");
         eprintln!("gateway_read: gateway staked");
-        wait_gateway_known_by_storage_nodes(&harness, &gateway, active_timeout)
+        harness
+            .wait_gateway_known(&gateway, active_timeout)
             .await
             .expect("storage nodes learned gateway peer");
         eprintln!("gateway_read: storage nodes learned gateway peer");
 
         gateway.start().await.expect("start gateway before gating");
         eprintln!("gateway_read: gateway runtime started before gating");
-        wait_gateway_healthy(&gateway.base_url(), Duration::from_secs(180))
+        gateway
+            .wait_healthy(Duration::from_secs(180))
             .await
             .expect("gateway healthy before gating");
         eprintln!("gateway_read: gateway healthy before gating");
@@ -722,42 +724,6 @@ async fn assert_direct_slice_forbidden(
     Ok(())
 }
 
-async fn wait_gateway_known_by_storage_nodes(
-    harness: &tape_e2e_simnet::SimnetHarness,
-    gateway: &TestGateway,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let start = Instant::now();
-    let tls_pubkey = gateway.tls_pubkey();
-
-    loop {
-        let mut running = 0usize;
-        let mut known = 0usize;
-        for node in harness.nodes().iter().filter(|node| node.is_running()) {
-            running += 1;
-            if node
-                .context()
-                .peer_manager
-                .peer_for_tls_pubkey(tls_pubkey)
-                .is_some()
-            {
-                known += 1;
-            }
-        }
-
-        if running > 0 && known == running {
-            return Ok(());
-        }
-
-        if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "timed out waiting for storage nodes to learn gateway peer, known {known}/{running}"
-            );
-        }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
 
 async fn wait_current_owner_slices(
     scenario: &SimnetScenario<'_>,
@@ -798,24 +764,6 @@ async fn wait_gateway_has_inline(
             anyhow::bail!("timed out waiting for gateway to mirror inline payload");
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-async fn wait_gateway_healthy(base: &str, timeout: Duration) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()?;
-    let start = Instant::now();
-    loop {
-        if let Ok(response) = client.get(format!("{base}/v1/health")).send().await {
-            if response.status() == StatusCode::OK {
-                return Ok(());
-            }
-        }
-        if start.elapsed() >= timeout {
-            anyhow::bail!("timed out waiting for gateway health");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 

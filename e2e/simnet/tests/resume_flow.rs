@@ -282,7 +282,7 @@ async fn resume_flow_inner() {
                 OBJECT_NAME,
                 ContentType::Unknown,
                 &other,
-                Some(first.track_number),
+                Some(track_pda(key.address(), first.track_number).0),
             )
             .await
             .expect("I overwrite");

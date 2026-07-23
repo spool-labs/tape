@@ -9,6 +9,7 @@ use crate::admission::Admission;
 use crate::cache::GatewaySliceCache;
 use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::handlers::s3::write::S3WriteContext;
+use crate::http::handlers::site::hosts::SiteHostBindings;
 use crate::meter::GatewayMeter;
 
 pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -25,6 +26,9 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// Admission gate consulted at the write chokepoint; injected by an
     /// embedder, everything else admits all writes
     pub admission: Arc<dyn Admission>,
+    /// TXT-proven host bindings for self-serve site domains. `None` when
+    /// txt domains are disabled or no system resolver is available.
+    pub site_hosts: Option<Arc<SiteHostBindings>>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, Blockchain> {
@@ -36,6 +40,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, B
             write_ctx: self.write_ctx.clone(),
             accounting: self.accounting.clone(),
             admission: self.admission.clone(),
+            site_hosts: self.site_hosts.clone(),
         }
     }
 }
+

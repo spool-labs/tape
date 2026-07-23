@@ -6,7 +6,7 @@ mod gateway;
 mod metrics;
 
 pub use builder::HttpApiBuilder;
-pub use client::HttpApi;
+pub use client::{HttpApi, PeerTransfer, TransferSink};
 pub use gateway::GatewayApi;
 pub use metrics::ApiMetrics;
 

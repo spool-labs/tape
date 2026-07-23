@@ -413,6 +413,7 @@ mod tests {
         let page = s.list_objects(b, b"photos/", None, None, 100).unwrap();
         assert_eq!(names(&page), vec![b"photos/".to_vec(), b"photos/a".to_vec()]);
     }
+
     #[test]
     fn hides_uncertified() {
         let s = store();

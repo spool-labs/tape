@@ -22,6 +22,7 @@ use tape_core::track::data::{track_key, BlobData, BlobDataSlice, BlobInfo, Track
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
+use tape_crypto::hash::hash;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
@@ -137,18 +138,18 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     /// Write a named object track, resuming or overwriting an existing one.
     ///
-    /// `existing` is the object's current track number, if the caller has it
-    /// (e.g. the gateway's object-list entry). A matching incomplete track is
+    /// `existing` is the object's current track address, if the caller has it
+    /// (e.g. the gateway's resolved object). A matching incomplete track is
     /// finished, a matching complete one is skipped, a different one is
     /// overwritten and reclaimed, and an absent one is written fresh. Callers
-    /// that hold the number avoid a `find_track` scan on the hot path.
+    /// that hold the address avoid a find_track scan on the hot path.
     pub async fn write_or_resume_track_as(
         &self,
         operator: &impl TapeOperator,
         name: impl AsRef<[u8]>,
         content_type: ContentType,
         data: &[u8],
-        existing: Option<TrackNumber>,
+        existing: Option<Address>,
     ) -> Result<CompressedTrack, TapedriveError> {
         resume_or_write_track(
             self,
@@ -334,6 +335,17 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         timer.finish_result(&result);
         result
     }
+}
+
+/// The etag content ends up with when written as a named object: the value
+/// hash for inline-sized payloads, the coded commitment otherwise. Encoding
+/// runs in full for coded sizes, so this trades CPU for detecting unchanged
+/// content before paying for a write.
+pub fn content_etag(data: &[u8]) -> Result<Hash, TapedriveError> {
+    if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
+        return Ok(hash(data));
+    }
+    Ok(prepare_plan(data.to_vec())?.commitment_hash)
 }
 
 fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
@@ -1166,13 +1178,14 @@ pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
         // dedicates a fresh tape to one blob at track 0, and reusing its key for
         // different data is a conflict, not an overwrite.
         Ok(_) => {
+            let first = track_pda(tape_key.address(), TrackNumber(0)).0;
             resume_or_write_track(
                 client,
                 tape_key,
                 name,
                 content_type,
                 data,
-                Some(TrackNumber(0)),
+                Some(first),
                 OnConflict::Reject,
             )
             .await
@@ -1192,8 +1205,8 @@ pub(crate) enum OnConflict {
 /// Resume, skip, overwrite, or write a single named track at a known position.
 ///
 /// `existing` is where the caller located this object's current track, if any:
-/// track 0 for the one-call write, the object-list entry for the gateway,
-/// `find_track` for an SDK append. A matching certified track is returned as is;
+/// track 0 for the one-call write, the resolved object for the gateway,
+/// find_track for an SDK append. A matching certified track is returned as is;
 /// a matching registered track is finished (upload the missing slices, then
 /// certify); a missing track is written fresh. A track whose content differs is
 /// rejected as a conflict, or overwritten and the stale track reclaimed, per
@@ -1204,16 +1217,14 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
-    existing: Option<TrackNumber>,
+    existing: Option<Address>,
     on_conflict: OnConflict,
 ) -> Result<CompressedTrack, TapedriveError> {
-    let tape = operator.address();
-
-    let Some(track_number) = existing else {
+    let Some(track_address) = existing else {
         return write_track(client, operator, name, content_type, data).await;
     };
 
-    let existing_track = match client.get_track_by_number(&tape, track_number).await {
+    let existing_track = match client.get_track(&track_address).await {
         Ok(track) => track,
         // The located track is gone or never landed: write fresh.
         Err(TapedriveError::NotFound) => {
@@ -1257,11 +1268,8 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
             let written = write_track(client, operator, name, content_type, data).await?;
             // Reclaim the stale track; best-effort, never fails the write that
             // already landed. A failure leaves it for a later overwrite or sweep.
-            if let Err(error) = client
-                .delete_as(operator, track_pda(tape, track_number).0)
-                .await
-            {
-                debug!(%error, stale_track = %track_number, "overwrite reclaim failed; stale track left for later reclaim");
+            if let Err(error) = client.delete_as(operator, track_address).await {
+                debug!(%error, %track_address, "overwrite reclaim failed; stale track left for later reclaim");
             }
             Ok(written)
         }

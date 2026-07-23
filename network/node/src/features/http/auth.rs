@@ -35,6 +35,8 @@ use tape_crypto::Address;
 use tape_protocol::Api;
 use tracing::trace;
 
+use crate::core::atlas::AtlasBuffer;
+
 use super::peer_identity::PeerIdentity;
 use super::state::AppState;
 
@@ -59,6 +61,23 @@ pub struct StakedPeer {
 /// Optional stake-qualified peer capability.
 #[derive(Clone, Copy, Debug)]
 pub struct MaybeStakedPeer(pub Option<StakedPeer>);
+
+/// A request caller authenticated as a configured atlas observer via mTLS.
+///
+/// Observers are operator-configured identities (the atlas collector), not
+/// registered nodes; the allowlist lives in the https config.
+#[derive(Clone, Copy, Debug)]
+pub struct ObserverPeer {
+    pub tls_pubkey: NetworkTlsPubkey,
+}
+
+/// The observer capability for a connection identity, when its client cert is
+/// on the atlas allowlist. Shared by the node's peer authorization and the
+/// gateway's dedicated observe listener so the check cannot drift.
+pub fn observer_capability(atlas: &AtlasBuffer, identity: PeerIdentity) -> Option<ObserverPeer> {
+    let tls_pubkey = identity.pubkey()?;
+    atlas.is_observer(tls_pubkey).then_some(ObserverPeer { tls_pubkey })
+}
 
 impl<S> axum::extract::FromRequestParts<S> for ActivePeer
 where
@@ -91,6 +110,24 @@ where
         parts
             .extensions
             .get::<StakedPeer>()
+            .copied()
+            .ok_or(StatusCode::FORBIDDEN)
+    }
+}
+
+impl<S> axum::extract::FromRequestParts<S> for ObserverPeer
+where
+    S: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<ObserverPeer>()
             .copied()
             .ok_or(StatusCode::FORBIDDEN)
     }
@@ -130,6 +167,9 @@ where
         .copied()
         .unwrap_or_default();
 
+    if let Some(observer) = observer_capability(&state.context.atlas, identity) {
+        req.extensions_mut().insert(observer);
+    }
     if let Some(tls_pubkey) = identity.pubkey() {
         if let Some(peer) = state.context.peer_manager.peer_for_tls_pubkey(tls_pubkey) {
             let node = peer.node;

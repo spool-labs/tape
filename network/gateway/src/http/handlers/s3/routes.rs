@@ -32,7 +32,9 @@ use tape_sdk::error::{TapedriveError, UploadError};
 use tape_store::ops::{CredentialOps, ObjectListOps, TapeOps};
 use tape_store::types::CredentialScope;
 
-use crate::http::handlers::object::{ObjectResponseMetadata, range_header, read_object_response};
+use crate::http::handlers::object::{
+    CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
+};
 use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
@@ -42,7 +44,8 @@ use super::chunked::object_reader;
 use super::clock::now_unix;
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
-use super::resolve::{ResolvedObject, parse_bucket, resolve_object};
+use super::resolve::{parse_bucket, resolve_object};
+use crate::http::handlers::resolve::ResolvedObject;
 use super::response::{
     delete_response, head_response, put_response, set_last_modified, upload_part_response,
 };
@@ -587,6 +590,7 @@ where
     let metadata = ObjectResponseMetadata {
         content_type: resolved.content_type,
         filename: None,
+        cache: CachePolicy::Immutable,
     };
     let block_time = resolved.block_time;
 
@@ -598,6 +602,7 @@ where
         resolved.track_address,
         track,
         metadata,
+        StatusCode::OK,
         &caller,
         range,
         |retry_after| S3Error::slow_down(retry_after).into_response(),
@@ -659,10 +664,12 @@ fn meter_caller<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .flatten()
             .and_then(|credential| credential.grade)
     });
+    let metering = &state.context.config.gateway.metering;
     MeterCaller::resolve(
         remote.ip(),
         headers,
-        &state.context.config.gateway.metering.trusted_proxies,
+        &metering.trusted_proxies,
+        metering.anonymous_grade.clone(),
         access_key,
         grade,
     )
@@ -676,7 +683,11 @@ fn check_request_rate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     caller: &MeterCaller,
 ) -> Result<(), S3Error> {
     match state.meter.check_object_request(caller) {
-        GatewayMeterDecision::Allowed => Ok(()),
+        GatewayMeterDecision::Allowed => {
+            // feed the atlas display: s3 object reads are user fetches
+            state.context.atlas.push_ip(caller.ip, false);
+            Ok(())
+        }
         GatewayMeterDecision::RateLimited { retry_after } => Err(S3Error::slow_down(retry_after)),
     }
 }
@@ -786,7 +797,7 @@ where
                     key.as_bytes(),
                     content_type,
                     &data,
-                    prior.as_ref().map(|object| object.track_number),
+                    prior.as_ref().map(|object| object.track_address),
                 )
                 .await;
             settle_write(permit, &state, size, result)?
@@ -1423,7 +1434,7 @@ where
             assembled.key.as_bytes(),
             assembled.content_type,
             &assembled.data,
-            prior.as_ref().map(|object| object.track_number),
+            prior.as_ref().map(|object| object.track_address),
         )
         .await;
     // On failure `?` returns before the upload is dropped, so it stays intact for

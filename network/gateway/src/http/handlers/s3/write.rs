@@ -9,8 +9,7 @@ use std::path::Path;
 use arc_swap::ArcSwap;
 use rpc::Rpc;
 use store::Store;
-use tape_api::program::tapedrive::track_pda;
-use tape_core::types::{ContentType, StorageUnits, TrackNumber};
+use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::{Keypair, Pubkey};
 use tape_crypto::Hash;
@@ -86,7 +85,7 @@ impl S3WriteContext {
 
     /// Write an in-memory object to `tape` as the delegate, returning its ETag.
     ///
-    /// `existing` is the object's current track number, if the caller resolved
+    /// `existing` is the object's current track address, if the caller resolved
     /// it (an S3 overwrite). A single-track write then resumes a matching
     /// incomplete track, skips a matching complete one, or overwrites and
     /// reclaims a differing one, instead of always appending a duplicate.
@@ -97,7 +96,7 @@ impl S3WriteContext {
         name: &[u8],
         content_type: ContentType,
         data: &[u8],
-        existing: Option<TrackNumber>,
+        existing: Option<Address>,
     ) -> Result<Hash, TapedriveError>
     where
         Db: Store,
@@ -120,11 +119,8 @@ impl S3WriteContext {
                 .write_named_bytes_as(&operator, name, content_type, data)
                 .await?;
             if let Some(prior) = existing {
-                if let Err(error) = client
-                    .reclaim_object_as(&operator, track_pda(tape, prior).0)
-                    .await
-                {
-                    tracing::warn!(%error, %tape, prior = %prior, "overwrite reclaim failed; prior object left for later sweep");
+                if let Err(error) = client.reclaim_object_as(&operator, prior).await {
+                    tracing::warn!(%error, %tape, %prior, "overwrite reclaim failed; prior object left for later sweep");
                 }
             }
             Ok(receipt.manifest_value_hash)

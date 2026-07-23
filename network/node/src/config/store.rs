@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use tape_store::config::{DEFAULT_BULK_COMPACTION_MB_PER_SEC, DEFAULT_META_COMPACTION_MB_PER_SEC};
+
 use super::helpers::{deserialize_option_pathbuf, deserialize_pathbuf};
 
 /// Local RocksDB store settings.
@@ -17,9 +19,14 @@ pub struct StoreConfig {
     #[serde(default, deserialize_with = "deserialize_option_pathbuf")]
     pub bulk_path: Option<PathBuf>,
 
-    /// Global RocksDB compaction rate limit in MB/s.
+    /// RocksDB compaction rate limit for the metadata volume in MB/s.
     #[serde(default = "default_compaction_mb_per_sec")]
     pub compaction_mb_per_sec: u64,
+
+    /// RocksDB compaction rate limit for the bulk volume in MB/s. Lower it
+    /// well under the default when the bulk store lives on a spinning disk.
+    #[serde(default = "default_bulk_compaction_mb_per_sec")]
+    pub bulk_compaction_mb_per_sec: u64,
 
     /// Reject new uploads when the metadata volume has fewer free bytes than this.
     /// 0 disables the check.
@@ -57,6 +64,7 @@ impl Default for StoreConfig {
             path: default_store_path(),
             bulk_path: None,
             compaction_mb_per_sec: default_compaction_mb_per_sec(),
+            bulk_compaction_mb_per_sec: default_bulk_compaction_mb_per_sec(),
             min_free_bytes: 0,
             bulk_min_free_bytes: 0,
             gc: GcConfig::default(),
@@ -101,7 +109,11 @@ fn default_store_path() -> PathBuf {
 }
 
 fn default_compaction_mb_per_sec() -> u64 {
-    100
+    DEFAULT_META_COMPACTION_MB_PER_SEC
+}
+
+fn default_bulk_compaction_mb_per_sec() -> u64 {
+    DEFAULT_BULK_COMPACTION_MB_PER_SEC
 }
 
 fn default_gc_enabled() -> bool {
@@ -151,11 +163,14 @@ mod tests {
         assert_eq!(config.bulk_dir(), PathBuf::from("/mnt/hdd/tape/bulk"));
     }
 
+    // unspecified keys fall back to the shared defaults
     #[test]
-    fn bulk_path_defaults_to_none() {
+    fn yaml_defaults() {
         let config: StoreConfig = serde_yaml::from_str("path: /data/tape").unwrap();
         assert_eq!(config.path, PathBuf::from("/data/tape"));
         assert_eq!(config.bulk_path, None);
         assert_eq!(config.bulk_dir(), PathBuf::from("/data/tape/bulk"));
+        assert_eq!(config.compaction_mb_per_sec, DEFAULT_META_COMPACTION_MB_PER_SEC);
+        assert_eq!(config.bulk_compaction_mb_per_sec, DEFAULT_BULK_COMPACTION_MB_PER_SEC);
     }
 }
