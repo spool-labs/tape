@@ -66,7 +66,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux cache-linux gateway-linux collector-linux explorer-linux linux-binaries dashboard-web atlas-web s3-bench deploy-tools install uninstall
+.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape node-linux cache-linux gateway-linux collector-linux explorer-linux linux-binaries dashboard-web atlas-web deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -206,7 +206,7 @@ cache-linux:
 	$(call linux-cargo,.,-p rpc-cache,rpc-cache)
 
 gateway-linux:
-	$(call linux-cargo,.,--features metrics -p tape-gateway,tape-gateway)
+	$(call linux-cargo,.,-p tape-gateway,tape-gateway)
 
 collector-linux:
 	$(call linux-cargo,.,-p tape-collector,tape-collector)
@@ -227,39 +227,6 @@ dashboard-web:
 atlas-web:
 	cd monitoring/atlas-web && dx build --platform web --release
 	@echo "bundle: target/dx/tape-atlas-web/release/web/public"
-
-# Timed S3 upload plus read-after-write against a live gateway: PUT, wait for
-# the gateway to serve the uploaded version (etag match), GET it back and
-# verify the bytes. Requires S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY and
-# S3_SECRET_KEY in the environment. SIZE_MB defaults to 100; OBJECT_KEY
-# defaults to a unique per-run name so repeat runs never overwrite.
-s3-bench:
-	$(eval BENCH_KEY := $(or $(OBJECT_KEY),bench/upload-$(or $(SIZE_MB),100)mb-$(shell date +%s).bin))
-	@mkdir -p target/s3-bench
-	@dd if=/dev/urandom of=target/s3-bench/payload.bin bs=1048576 count=$(or $(SIZE_MB),100) 2>/dev/null
-	@echo "object: $(BENCH_KEY) ($(or $(SIZE_MB),100) MiB)"
-	@curl -sS -D target/s3-bench/put-headers.txt -o target/s3-bench/put-body.txt \
-		-w "put: HTTP %{http_code} in %{time_total}s (%{speed_upload} bytes/s)\n" \
-		-T target/s3-bench/payload.bin --aws-sigv4 "aws:amz:us-east-1:s3" \
-		--user "$(S3_ACCESS_KEY):$(S3_SECRET_KEY)" \
-		"$(S3_ENDPOINT)/$(S3_BUCKET)/$(BENCH_KEY)"
-	@want=$$(grep -i '^etag' target/s3-bench/put-headers.txt | tr -d '\r' | cut -d' ' -f2); \
-	echo "put etag: $$want"; \
-	start=$$(date +%s); \
-	while :; do \
-		got=$$(curl -sfI "$(S3_ENDPOINT)/$(S3_BUCKET)/$(BENCH_KEY)" | tr -d '\r' | grep -i '^etag' | cut -d' ' -f2); \
-		if [ "$$got" = "$$want" ]; then break; fi; \
-		if [ $$(( $$(date +%s) - start )) -ge 300 ]; then \
-			echo "servable: timed out after 300s (serving $$got, want $$want)" >&2; exit 1; fi; \
-		sleep 1; \
-	done; \
-	echo "uploaded version servable after $$(( $$(date +%s) - start ))s"
-	@curl -sS -o target/s3-bench/readback.bin \
-		-w "get: HTTP %{http_code} in %{time_total}s (%{speed_download} bytes/s, first byte %{time_starttransfer}s)\n" \
-		"$(S3_ENDPOINT)/$(S3_BUCKET)/$(BENCH_KEY)"
-	@if cmp -s target/s3-bench/payload.bin target/s3-bench/readback.bin; \
-		then echo "verify: read-back matches upload"; \
-		else echo "verify: MISMATCH" >&2; exit 1; fi
 
 deploy-tools: programs admin network tape linux-binaries
 

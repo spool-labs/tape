@@ -161,12 +161,15 @@ fn default_peer_max_bytes() -> usize {
     1024 * 1024
 }
 
+// A single writer streaming one blob sends a slice put per chunk plus the
+// certify sign polls to every committee node from one address, so the
+// write bucket must absorb a full stream, not just a lone track.
 fn default_anonymous_write_per_sec() -> u32 {
-    1
+    16
 }
 
 fn default_anonymous_write_burst() -> u32 {
-    4
+    64
 }
 
 fn default_anonymous_read_per_sec() -> u32 {
