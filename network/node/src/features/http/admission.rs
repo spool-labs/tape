@@ -27,10 +27,7 @@ const PRUNE_INTERVAL: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AdmissionCaller {
-    /// A current committee member; rides the trusted rates.
     Peer(Address),
-    /// A registered staked caller outside the committee, such as a gateway,
-    /// carrying the index of the stake tier its stake reached.
     Staked(Address, usize),
     Anonymous(IpAddr),
 }
