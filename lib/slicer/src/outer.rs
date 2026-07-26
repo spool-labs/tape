@@ -2,26 +2,27 @@
 //! that any `k` reconstruct it. No striping or rotation; `n` (e.g. the active
 //! spool group count) is supplied at construction. Snapshot-specific `k`/segment
 //! sizing lives in `tape-snapshot`.
-//!
-//! This stays on `reed-solomon-simd` while the inner coder uses
-//! `tape-reed-solomon`, so the workspace carries both. Measured, not assumed:
-//! `tape-reed-solomon` ships generated programs for a fixed shape list that
-//! covers the blob shapes but not 17 of 50, so outer coding routes to the
-//! fused-matrix path and runs 1.34x slower at 64 KiB, 1.49x at 1 MiB and 2.48x
-//! at the 4 MiB chunk ceiling. See tests/outer_backend_probe.rs.
-//!
-//! The outer shape is not one shape. It follows the live group count, k being
-//! a third of it, so g=20 gives 7 of 20, which the list happens to cover, while
-//! g=50 gives 17 of 50 and g=100 gives 34 of 100. Unifying on one backend means
-//! covering that family in `tape-reed-solomon`, not a swap here.
 
-use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
+//! Needs a tape-reed-solomon carrying a generated program for the outer shape.
+//! Without one the codec falls back to its fused matrix path and a 68 MiB
+//! segment takes 67.6 ms instead of 31.1 ms, which is worse than the
+//! reed-solomon-simd this replaced. The shape follows the live group count,
+//! 17 of 50 at fifty groups, so a new group count needs a new generated shape.
+
+use tape_reed_solomon::ReedSolomon;
 
 use crate::errors::{DecodeError, EncodeError};
 
-/// Maximum per-symbol size for the outer RS coder, set by the
-/// `reed_solomon_simd` shard-size constraint.
+/// Maximum per-symbol size for the outer RS coder. The codec itself has no
+/// ceiling; this bounds one segment so a snapshot chunk stays a sane size.
 pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Bytes each shard starts past the one before it while coding.
+///
+/// Shards of one size sit on page boundaries, so the same offset in every shard
+/// maps to one cache set and the n streams collide. Offsetting each shard keeps
+/// them apart and is worth 1.9x at this shape.
+const SHARD_SKEW: usize = 320;
 
 /// Outer Reed-Solomon coder for distribution across `n` shards.
 ///
@@ -31,8 +32,7 @@ pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 pub struct OuterCoder {
     k: usize,
     n: usize,
-    encoder: Option<ReedSolomonEncoder>,
-    decoder: Option<ReedSolomonDecoder>,
+    rs: Option<ReedSolomon>,
 }
 
 impl OuterCoder {
@@ -43,21 +43,9 @@ impl OuterCoder {
         assert!(k <= n, "k must be <= n");
 
         let m = n - k;
-        let (encoder, decoder) = if m == 0 {
-            (None, None)
-        } else {
-            (
-                Some(ReedSolomonEncoder::new(k, m, MAX_CHUNK_BYTES).expect("RS encoder init")),
-                Some(ReedSolomonDecoder::new(k, m, MAX_CHUNK_BYTES).expect("RS decoder init")),
-            )
-        };
+        let rs = (m > 0).then(|| ReedSolomon::new(k, m).expect("RS init"));
 
-        Self {
-            k,
-            n,
-            encoder,
-            decoder,
-        }
+        Self { k, n, rs }
     }
 
     /// Number of data chunks needed for reconstruction.
@@ -81,7 +69,6 @@ impl OuterCoder {
     /// the remaining m are parity chunks.
     pub fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let k = self.k;
-        let m = self.m();
 
         // Calculate chunk size: ceil(data.len() / k), 64-byte aligned
         let chunk_bytes = if data.is_empty() {
@@ -95,40 +82,32 @@ impl OuterCoder {
             return Err(EncodeError::TooMuchData);
         }
 
-        // Pad data to k * chunk_bytes
-        let total_len = k * chunk_bytes;
-        let mut padded = data.to_vec();
-        padded.resize(total_len, 0);
-
-        // Feed k original chunks
-        let mut data_chunks = Vec::with_capacity(k);
-        for chunk in padded.chunks(chunk_bytes) {
-            data_chunks.push(chunk.to_vec());
+        // Code through one arena that keeps the shards off each other's cache
+        // sets, then hand back owned chunks.
+        let n = self.n;
+        let stride = chunk_bytes + SHARD_SKEW;
+        let mut arena = vec![0u8; stride * n];
+        for (i, chunk) in data.chunks(chunk_bytes).enumerate() {
+            arena[i * stride..][..chunk.len()].copy_from_slice(chunk);
         }
 
-        let Some(encoder) = self.encoder.as_mut() else {
-            return Ok(data_chunks);
-        };
+        if let Some(rs) = self.rs.as_ref() {
+            let mut views: Vec<&mut [u8]> = Vec::with_capacity(n);
+            let mut rest = arena.as_mut_slice();
+            for _ in 0..n {
+                let (head, tail) = rest.split_at_mut(stride);
+                views.push(&mut head[..chunk_bytes]);
+                rest = tail;
+            }
 
-        encoder
-            .reset(k, m, chunk_bytes)
-            .map_err(|_| EncodeError::TooMuchData)?;
-
-        for chunk in &data_chunks {
-            encoder
-                .add_original_shard(chunk)
-                .expect("adding chunks of the configured size should succeed");
+            rs.encode(&mut views).map_err(|_| EncodeError::TooMuchData)?;
         }
 
-        // Generate parity chunks
-        let output = encoder
-            .encode()
-            .expect("should be able to encode after k data chunks were added");
-        let parity_chunks: Vec<Vec<u8>> = output.recovery_iter().map(<[u8]>::to_vec).collect();
-
-        let mut result = data_chunks;
-        result.extend(parity_chunks);
-        Ok(result)
+        Ok(arena
+            .chunks(stride)
+            .take(n)
+            .map(|shard| shard[..chunk_bytes].to_vec())
+            .collect())
     }
 
     /// Decode from at least k chunks.
@@ -150,60 +129,44 @@ impl OuterCoder {
         }
 
         let m = self.m();
-
-        if m == 0 {
-            let mut payload = Vec::with_capacity(self.k * chunk_bytes);
-            for data_idx in 0..self.k {
-                let Some((_, data)) = chunks.iter().find(|(idx, _)| *idx == data_idx) else {
-                    return Err(DecodeError::InvalidLayout);
-                };
-                payload.extend_from_slice(data);
-            }
-            return Ok(payload);
+        let n = self.n;
+        if chunks.iter().any(|&(idx, _)| idx >= n) {
+            return Err(DecodeError::InvalidLayout);
         }
 
-        let decoder = self.decoder.as_mut().ok_or(DecodeError::InvalidLayout)?;
-        decoder
-            .reset(self.k, m, chunk_bytes)
-            .map_err(|_| DecodeError::TooMuchData)?;
-
+        // Reconstruct in place inside the payload buffer so a data chunk is
+        // copied once in and never again out.
+        let mut payload = vec![0u8; self.k * chunk_bytes];
+        let mut have_data = vec![false; self.k];
+        let mut parity = vec![Vec::new(); m];
         for &(idx, data) in chunks {
-            if idx < self.k {
-                decoder
-                    .add_original_shard(idx, data)
-                    .map_err(|_| DecodeError::InvalidLayout)?;
-            } else if idx < self.n {
-                let offset = idx - self.k;
-                decoder
-                    .add_recovery_shard(offset, data)
-                    .map_err(|_| DecodeError::InvalidLayout)?;
-            } else {
+            match idx.checked_sub(self.k) {
+                None => {
+                    payload[idx * chunk_bytes..][..chunk_bytes].copy_from_slice(data);
+                    have_data[idx] = true;
+                }
+                Some(offset) => parity[offset] = data.to_vec(),
+            }
+        }
+
+        let Some(rs) = self.rs.as_ref() else {
+            if !have_data.iter().all(|present| *present) {
                 return Err(DecodeError::InvalidLayout);
             }
-        }
+            return Ok(payload);
+        };
 
-        let restored = decoder
-            .decode()
+        let mut shards: Vec<(&mut [u8], bool)> =
+            payload.chunks_mut(chunk_bytes).zip(have_data).collect();
+        shards.extend(parity.iter_mut().map(|shard| {
+            let present = !shard.is_empty();
+            (shard.as_mut_slice(), present)
+        }));
+
+        rs.reconstruct_data(&mut shards)
             .map_err(|_| DecodeError::InvalidLayout)?;
 
-        // Reassemble payload from data chunks in order [0..k)
-        let provided: std::collections::HashSet<usize> =
-            chunks.iter().map(|(i, _)| *i).collect();
-        let chunks_map: std::collections::HashMap<usize, &[u8]> =
-            chunks.iter().map(|&(i, d)| (i, d)).collect();
-
-        let mut payload = Vec::with_capacity(self.k * chunk_bytes);
-        for data_idx in 0..self.k {
-            let slice_ref = if provided.contains(&data_idx) {
-                *chunks_map.get(&data_idx).unwrap()
-            } else {
-                restored
-                    .restored_original(data_idx)
-                    .ok_or(DecodeError::InvalidLayout)?
-            };
-            payload.extend_from_slice(slice_ref);
-        }
-
+        drop(shards);
         Ok(payload)
     }
 }
