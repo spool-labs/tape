@@ -54,12 +54,16 @@ impl ErasureCoder for ReedSolomonCoder {
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let slice_bytes = self.slice_bytes(data.len());
 
-        // Data slices carry the padded payload, parity slices start zeroed and
-        // are filled in place.
-        let mut padded = data.to_vec();
-        padded.resize(self.k * slice_bytes, 0);
-
-        let mut slices: Vec<Vec<u8>> = padded.chunks(slice_bytes).map(<[u8]>::to_vec).collect();
+        // Copy the payload straight into its data slices, zero-padding the tail.
+        // Parity slices start zeroed and are filled in place.
+        let mut slices: Vec<Vec<u8>> = Vec::with_capacity(self.k + self.m);
+        for i in 0..self.k {
+            let mut slice = vec![0u8; slice_bytes];
+            let start = (i * slice_bytes).min(data.len());
+            let end = (start + slice_bytes).min(data.len());
+            slice[..end - start].copy_from_slice(&data[start..end]);
+            slices.push(slice);
+        }
         slices.resize(self.k + self.m, vec![0u8; slice_bytes]);
 
         self.rs
