@@ -9981,6 +9981,7 @@ dependencies = [
  "solana-keypair",
  "tape-core",
  "tape-crypto",
+ "tape-reed-solomon",
  "thiserror 1.0.69",
  "wincode 0.2.5",
 ]

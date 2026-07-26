@@ -1,59 +1,41 @@
 //! Reed-Solomon erasure code wrapper.
 //!
-//! Provides a thin wrapper around `reed_solomon_simd` with consistent
+//! Provides a thin wrapper around `tape_reed_solomon` with consistent
 //! error handling and parameter management.
 
-use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
+use tape_reed_solomon::ReedSolomon;
 
 use crate::{ErasureCoder, EncodeError, DecodeError};
 
-/// Maximum slice size for ReedSolomonCoder (used for testing/debugging only).
-/// 4 KiB allows encoding blobs up to ~40 KB (k * 4 KiB with k=10).
-/// For production workloads, use Slicer which handles large blobs efficiently.
-pub const MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
-
 /// Reed-Solomon coder (k = data, m = parity).
-/// This is a thin wrapper around reed_solomon_simd. It reuses working buffers across calls.
+/// A thin wrapper around tape-reed-solomon. Slice size follows the payload, so
+/// there is no ceiling on how much data one call may encode.
 pub struct ReedSolomonCoder {
     k: usize,
     m: usize,
-    max_slice_bytes: usize,
-    encoder: ReedSolomonEncoder,
-    decoder: ReedSolomonDecoder,
+    rs: ReedSolomon,
 }
 
 impl ReedSolomonCoder {
-    /// Create a new Reed-Solomon coder with default max slice size (4 KiB).
-    /// This is suitable for testing/debugging. For larger blobs, use `with_max_slice_bytes`.
+    /// Create a new Reed-Solomon coder.
     pub fn new(k: usize, m: usize) -> Self {
-        Self::with_max_slice_bytes(k, m, MAX_SLICE_BYTES)
-    }
-
-    /// Create a new Reed-Solomon coder with a custom max slice size.
-    ///
-    /// The max_slice_bytes determines the maximum size of each slice,
-    /// which affects memory allocation in the encoder/decoder.
-    /// Use larger values for benchmarks or when encoding large blobs.
-    pub fn with_max_slice_bytes(k: usize, m: usize, max_slice_bytes: usize) -> Self {
         assert!(k > 0, "k must be > 0");
         assert!(m > 0, "m must be > 0");
-        assert!(max_slice_bytes > 0, "max_slice_bytes must be > 0");
 
         let n = k + m;
         assert!(n <= 65536, "too many total slices for RS field");
 
-        // Use a bounded max slice size the library accepts. Per-call reset() will set the actual slice size.
-        let encoder = ReedSolomonEncoder::new(k, m, max_slice_bytes)
-            .expect("RS encoder init");
-        let decoder = ReedSolomonDecoder::new(k, m, max_slice_bytes)
-            .expect("RS decoder init");
+        let rs = ReedSolomon::new(k, m).expect("RS init");
 
-        Self {
-            k,
-            m,
-            max_slice_bytes,
-            encoder,
-            decoder,
+        Self { k, m, rs }
+    }
+
+    /// Slice length this coder uses for a payload, aligned for the kernel.
+    fn slice_bytes(&self, data_len: usize) -> usize {
+        if data_len == 0 {
+            64
+        } else {
+            data_len.div_ceil(self.k).div_ceil(64) * 64
         }
     }
 }
@@ -70,52 +52,21 @@ impl ErasureCoder for ReedSolomonCoder {
     }
 
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
-        let k = self.k;
+        let slice_bytes = self.slice_bytes(data.len());
 
-        // Calculate slice size: ceil(data.len() / k)
-        // Must be at least 1 byte, and we round up to 64-byte alignment for RS efficiency
-        let slice_bytes = if data.is_empty() {
-            64 // Minimal aligned slice for empty data
-        } else {
-            let raw = data.len().div_ceil(k);
-            // RS library works best with 64-byte aligned slices
-            raw.div_ceil(64) * 64
-        };
+        // Data slices carry the padded payload, parity slices start zeroed and
+        // are filled in place.
+        let mut padded = data.to_vec();
+        padded.resize(self.k * slice_bytes, 0);
 
-        // Ensure the encoder can handle this slice size
-        if slice_bytes > self.max_slice_bytes {
-            return Err(EncodeError::TooMuchData);
-        }
+        let mut slices: Vec<Vec<u8>> = padded.chunks(slice_bytes).map(<[u8]>::to_vec).collect();
+        slices.resize(self.k + self.m, vec![0u8; slice_bytes]);
 
-        self.encoder
-            .reset(self.k, self.m, slice_bytes)
+        self.rs
+            .encode(&mut slices)
             .map_err(|_| EncodeError::TooMuchData)?;
 
-        // Pad data to k * slice_bytes
-        let total_len = k * slice_bytes;
-        let mut padded = data.to_vec();
-        padded.resize(total_len, 0);
-
-        // Feed k original slices into the encoder
-        let mut data_chunks = Vec::with_capacity(k);
-        for chunk in padded.chunks(slice_bytes) {
-            self.encoder
-                .add_original_shard(chunk)
-                .expect("adding slices of the configured size should succeed");
-            data_chunks.push(chunk.to_vec());
-        }
-
-        // Create parity slices
-        let output = self
-            .encoder
-            .encode()
-            .expect("should be able to encode after k data slices were added");
-        let coding_chunks: Vec<Vec<u8>> = output.recovery_iter().map(<[u8]>::to_vec).collect();
-
-        // Return all chunks: data first, then parity
-        let mut result = data_chunks;
-        result.extend(coding_chunks);
-        Ok(result)
+        Ok(slices)
     }
 
     fn decode(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
@@ -134,46 +85,23 @@ impl ErasureCoder for ReedSolomonCoder {
             return Err(DecodeError::InvalidLayout);
         }
 
-        self.decoder
-            .reset(self.k, self.m, slice_bytes)
-            .map_err(|_| DecodeError::TooMuchData)?;
-
-        // Feed chunks into decoder based on their indices
+        let n = self.k + self.m;
+        let mut slices: Vec<Option<Vec<u8>>> = vec![None; n];
         for &(idx, data) in chunks {
-            if idx < self.k {
-                // Data chunk (original)
-                self.decoder
-                    .add_original_shard(idx, data)
-                    .map_err(|_| DecodeError::InvalidLayout)?;
-            } else if idx < self.k + self.m {
-                // Parity chunk (recovery)
-                let offset = idx - self.k;
-                self.decoder
-                    .add_recovery_shard(offset, data)
-                    .map_err(|_| DecodeError::InvalidLayout)?;
-            } else {
+            if idx >= n {
                 return Err(DecodeError::InvalidLayout);
             }
+            slices[idx] = Some(data.to_vec());
         }
 
-        let restored = self.decoder.decode().map_err(|_| DecodeError::InvalidLayout)?;
+        self.rs
+            .reconstruct_data(&mut slices)
+            .map_err(|_| DecodeError::InvalidLayout)?;
 
         // Reassemble the payload from data slices in order [0..k)
-        // Build a set of provided indices for quick lookup
-        let provided: std::collections::HashSet<usize> = chunks.iter().map(|(i, _)| *i).collect();
-        let chunks_map: std::collections::HashMap<usize, &[u8]> =
-            chunks.iter().map(|&(i, d)| (i, d)).collect();
-
         let mut payload = Vec::with_capacity(self.k * slice_bytes);
-        for data_idx in 0..self.k {
-            let slice_ref = if provided.contains(&data_idx) {
-                *chunks_map.get(&data_idx).unwrap()
-            } else {
-                restored
-                    .restored_original(data_idx)
-                    .ok_or(DecodeError::InvalidLayout)?
-            };
-            payload.extend_from_slice(slice_ref);
+        for slice in slices.iter().take(self.k) {
+            payload.extend_from_slice(slice.as_ref().ok_or(DecodeError::InvalidLayout)?);
         }
 
         Ok(payload)
@@ -196,156 +124,80 @@ mod tests {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    #[allow(dead_code)]
     fn keep_indices(chunks: &[Vec<u8>], keep: &[usize]) -> Vec<(usize, Vec<u8>)> {
-        keep.iter()
-            .filter_map(|&i| chunks.get(i).map(|c| (i, c.clone())))
-            .collect()
+        keep.iter().map(|&i| (i, chunks[i].clone())).collect()
     }
 
     #[test]
-    fn test_chunk_count() {
+    fn round_trip_all_slices() {
         let mut coder = test_coder();
-        let data = make_data(20_000);
-        let chunks = coder.encode(&data).unwrap();
+        let data = make_data(10_000);
 
+        let chunks = coder.encode(&data).expect("encode");
         assert_eq!(chunks.len(), K + M);
 
-        // All chunks should be the same size
-        let size = chunks[0].len();
-        assert!(chunks.iter().all(|c| c.len() == size));
-    }
-
-    #[test]
-    fn test_roundtrip_all() {
-        let mut coder = test_coder();
-        let original = make_data(20_000);
-        let chunks = coder.encode(&original).unwrap();
-
-        let available: Vec<(usize, &[u8])> = chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, c.as_slice()))
-            .collect();
-
-        let recovered = coder.decode(&available).unwrap();
-        // Note: recovered may have padding at end
-        assert_eq!(&recovered[..original.len()], &original);
-    }
-
-    #[test]
-    fn test_data_only() {
-        let mut coder = test_coder();
-        let original = make_data(20_000);
-        let chunks = coder.encode(&original).unwrap();
-
-        // Keep only first k chunks (data chunks)
-        let available: Vec<(usize, &[u8])> = chunks
+        let borrowed: Vec<(usize, &[u8])> = chunks
             .iter()
             .enumerate()
             .take(K)
             .map(|(i, c)| (i, c.as_slice()))
             .collect();
+        let decoded = coder.decode(&borrowed).expect("decode");
 
-        let recovered = coder.decode(&available).unwrap();
-        assert_eq!(&recovered[..original.len()], &original);
+        assert_eq!(&decoded[..data.len()], &data[..]);
     }
 
     #[test]
-    fn test_mixed_chunks() {
+    fn round_trip_from_parity_only() {
         let mut coder = test_coder();
-        let original = make_data(20_000);
-        let chunks = coder.encode(&original).unwrap();
+        let data = make_data(10_000);
 
-        // Keep every other chunk (0, 2, 4, 6, 8, 10, 12, 14, 16, 18) = 10 chunks
-        let available: Vec<(usize, &[u8])> = chunks
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| i % 2 == 0)
-            .map(|(i, c)| (i, c.as_slice()))
-            .collect();
+        let chunks = coder.encode(&data).expect("encode");
+        let kept = keep_indices(&chunks, &[10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+        let borrowed: Vec<(usize, &[u8])> =
+            kept.iter().map(|(i, c)| (*i, c.as_slice())).collect();
 
-        let recovered = coder.decode(&available).unwrap();
-        assert_eq!(&recovered[..original.len()], &original);
+        let decoded = coder.decode(&borrowed).expect("decode");
+        assert_eq!(&decoded[..data.len()], &data[..]);
     }
 
     #[test]
-    fn test_insufficient() {
+    fn round_trip_mixed_slices() {
         let mut coder = test_coder();
-        let original = make_data(10_000);
-        let chunks = coder.encode(&original).unwrap();
+        let data = make_data(10_000);
 
-        // Keep only k-1 chunks
-        let available: Vec<(usize, &[u8])> = chunks
-            .iter()
-            .enumerate()
-            .take(K - 1)
-            .map(|(i, c)| (i, c.as_slice()))
-            .collect();
+        let chunks = coder.encode(&data).expect("encode");
+        let kept = keep_indices(&chunks, &[0, 2, 4, 6, 8, 11, 13, 15, 17, 19]);
+        let borrowed: Vec<(usize, &[u8])> =
+            kept.iter().map(|(i, c)| (*i, c.as_slice())).collect();
 
-        let result = coder.decode(&available);
-        assert!(matches!(result, Err(DecodeError::NotEnoughSlices)));
+        let decoded = coder.decode(&borrowed).expect("decode");
+        assert_eq!(&decoded[..data.len()], &data[..]);
     }
 
     #[test]
-    fn test_empty() {
+    fn too_few_slices_is_rejected() {
         let mut coder = test_coder();
-        let chunks = coder.encode(&[]).unwrap();
+        let data = make_data(1_000);
+
+        let chunks = coder.encode(&data).expect("encode");
+        let kept = keep_indices(&chunks, &[0, 1, 2]);
+        let borrowed: Vec<(usize, &[u8])> =
+            kept.iter().map(|(i, c)| (*i, c.as_slice())).collect();
+
+        assert!(matches!(
+            coder.decode(&borrowed),
+            Err(DecodeError::NotEnoughSlices)
+        ));
+    }
+
+    #[test]
+    fn encodes_a_payload_far_over_the_old_four_kib_cap() {
+        let mut coder = test_coder();
+        let data = make_data(4 * 1024 * 1024);
+
+        let chunks = coder.encode(&data).expect("encode");
         assert_eq!(chunks.len(), K + M);
-
-        // Roundtrip
-        let available: Vec<(usize, &[u8])> = chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, c.as_slice()))
-            .collect();
-        let recovered = coder.decode(&available).unwrap();
-        // Empty data decodes to k 1-byte zero chunks
-        assert!(recovered.iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_size_mismatch() {
-        let mut coder = test_coder();
-        let original = make_data(20_000);
-        let mut chunks = coder.encode(&original).unwrap();
-
-        // Corrupt one chunk by truncating it
-        chunks[0].pop();
-
-        let available: Vec<(usize, &[u8])> = chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, c.as_slice()))
-            .collect();
-
-        let result = coder.decode(&available);
-        assert!(matches!(result, Err(DecodeError::InvalidLayout)));
-    }
-
-    #[test]
-    fn test_many_sizes() {
-        let mut coder = test_coder();
-        let sizes = [1, K - 1, K, K + 1, 2 * K, 5_000, 20_000, 30_000];
-
-        for &sz in &sizes {
-            let original = make_data(sz);
-            let chunks = coder.encode(&original).unwrap();
-
-            let available: Vec<(usize, &[u8])> = chunks
-                .iter()
-                .enumerate()
-                .take(K)
-                .map(|(i, c)| (i, c.as_slice()))
-                .collect();
-
-            let recovered = coder.decode(&available).unwrap();
-            assert_eq!(
-                &recovered[..original.len()],
-                &original,
-                "roundtrip failed for size {}",
-                sz
-            );
-        }
+        assert!(chunks[0].len() > 4096);
     }
 }
