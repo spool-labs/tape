@@ -1,4 +1,9 @@
-//! Erasure coding constants and parameters.
+//! Erasure coding constants, and the commitment leaves derived from a slice.
+
+use tape_crypto::Hash;
+use tape_crypto::merkle::{MerkleTree, hash_leaf};
+
+use crate::types::{GroupIndex, SpoolIndex};
 
 /// Number of slices per group (fixed network constant).
 /// Individual encoding profiles may use n ≤ GROUP_SIZE.
@@ -13,17 +18,10 @@ pub const SLICE_TREE_HEIGHT: usize = 5;
 pub const SUB_LEAF_BYTES: usize = 1024;
 
 /// Merkle tree height for the sub-leaf tree under a single slice.
-/// Sized for the worst case any encoding can produce, which is Reed-Solomon at
-/// k=1: no erasure at all, so one slice holds the whole track. A 64 MiB track is
-/// exactly 65,536 sample leaves, so 2^16 covers it with nothing to spare.
-/// Clay at its default k=7 is far under this, at 9,497 leaves.
-/// Both counts are measured by lib/slicer/tests/capacity_probe.rs.
+/// Sized for the worst case, Reed-Solomon at k=1, where one slice holds the
+/// whole track: a 64 MiB track is exactly 65,536 leaves, so 2^16 fits it with
+/// nothing to spare. Measured by lib/slicer/tests/capacity_probe.rs.
 pub const SUB_TREE_HEIGHT: usize = 16;
-
-use tape_crypto::Hash;
-use tape_crypto::merkle::{MerkleTree, hash_leaf};
-
-use crate::types::{GroupIndex, SpoolIndex};
 
 /// Number of sample leaves a slice of this length is split into.
 #[inline]
@@ -46,7 +44,7 @@ pub fn slice_root(slice: &[u8]) -> Option<Hash> {
 
     let mut tree = MerkleTree::<SUB_TREE_HEIGHT>::new();
     for leaf in slice.chunks(SUB_LEAF_BYTES) {
-        tree.add_leaf(leaf).ok()?;
+        tree.add_leaf(leaf).expect("leaf count checked above");
     }
     Some(tree.root())
 }
@@ -118,22 +116,14 @@ mod tests {
         assert!(slice_root(&vec![0u8; capacity + 1]).is_none());
     }
 
-    /// The largest legal track must fit, which is what fixes the tree height.
-    /// Both counts are measured by lib/slicer/tests/capacity_probe.rs. Deriving
-    /// them here would be wrong: Clay pads a slice about 1.4% above track size
-    /// over k, while bare Reed-Solomon does not.
+    /// The tree must hold a slice that is a whole 64 MiB track, which is what
+    /// Reed-Solomon at k=1 produces. This is exact, so a larger track size or
+    /// any padding on the RS path needs the height raised with it.
     #[test]
-    fn test_max_track_slice_fits() {
+    fn test_capacity_is_one_whole_track() {
         const MAX_TRACK_BYTES: usize = 64 * 1024 * 1024;
-        const RS_K1_SUB_LEAVES: usize = 65_536;
-        const CLAY_K7_SUB_LEAVES: usize = 9_497;
 
-        // Replication is the worst case: one slice carries the whole track.
-        assert_eq!(RS_K1_SUB_LEAVES, MAX_TRACK_BYTES / SUB_LEAF_BYTES);
-        assert!(RS_K1_SUB_LEAVES <= 1 << SUB_TREE_HEIGHT);
-        assert!(RS_K1_SUB_LEAVES > 1 << (SUB_TREE_HEIGHT - 1));
-
-        assert!(CLAY_K7_SUB_LEAVES <= 1 << SUB_TREE_HEIGHT);
+        assert_eq!(SUB_LEAF_BYTES << SUB_TREE_HEIGHT, MAX_TRACK_BYTES);
     }
 
     #[test]

@@ -2,6 +2,12 @@
 //! that any `k` reconstruct it. No striping or rotation; `n` (e.g. the active
 //! spool group count) is supplied at construction. Snapshot-specific `k`/segment
 //! sizing lives in `tape-snapshot`.
+//!
+//! This stays on `reed-solomon-simd` while the inner coder uses
+//! `tape-reed-solomon`, so the workspace carries both. That is deliberate:
+//! `tape-reed-solomon` ships tuned programs for the blob shapes, 10 of 20 and
+//! 7 of 20, and outer coding runs 17 of 50, which matches none of them and
+//! would fall back to the schoolbook path. Move it only with a measurement.
 
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 

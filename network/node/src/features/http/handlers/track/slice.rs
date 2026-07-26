@@ -166,14 +166,19 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("invalid merkle proof".into()));
     }
 
+    // The registered leaf is already on hand, so settle the claim with a 32 byte
+    // compare before hashing the slice to check the claim is honest.
+    let leaf_pos = spool_id.as_usize() % GROUP_SIZE;
+    if payload.leaf_hash != blob.leaves[leaf_pos] {
+        return Err(RouteError::BadRequest("leaf hash mismatch".into()));
+    }
+
     let Some(root) = slice_root(&payload.data) else {
         return Err(RouteError::BadRequest("slice exceeds sub-leaf tree capacity".into()));
     };
     if root != payload.leaf_hash {
         return Err(RouteError::BadRequest("leaf hash mismatch".into()));
     }
-
-    let leaf_pos = spool_id.as_usize() % GROUP_SIZE;
 
     if !verify_proof_hash(
         root,

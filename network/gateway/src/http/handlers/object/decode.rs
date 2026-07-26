@@ -16,9 +16,9 @@ use tape_sdk::codec::decoder::BlobDecoder;
 use tape_store::ops::TrackDataOps;
 use tracing::{debug, warn};
 
+use crate::cache::CacheSource;
 use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
-use crate::cache::CacheSource;
 use crate::http::handlers::track::slice::read_cached_slice;
 use crate::http::handlers::track::track_data_with_pending;
 use crate::http::state::AppState;
@@ -202,7 +202,7 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 };
                 // A miss verified these bytes as it fetched them. A hit comes off
                 // disk, possibly written by an earlier process, so it still needs
-                // checking; rebuilding the sub-leaf tree is too costly to do twice.
+                // checking.
                 if source == CacheSource::Hit
                     && !blob.verify_slice(SpoolIndex(position as u64), &data)
                 {
