@@ -13,8 +13,10 @@ pub const SLICE_TREE_HEIGHT: usize = 5;
 pub const SUB_LEAF_BYTES: usize = 1024;
 
 /// Merkle tree height for the sub-leaf tree under a single slice.
-/// Sized for the largest legal track: 64 MiB at k=7 puts 9,363 leaves in a slice,
-/// so 2^14 = 16,384 covers it and 2^13 does not.
+/// Sized for the largest legal track. Clay at k=7 is the only encoding that can
+/// carry 64 MiB, and it puts 9,497 leaves in a slice, so 2^14 = 16,384 covers it
+/// and 2^13 does not. That count is measured rather than derived: stripe padding
+/// and per-slice metadata put a slice 1.4% above track size over k.
 pub const SUB_TREE_HEIGHT: usize = 14;
 
 use tape_crypto::Hash;
@@ -116,15 +118,14 @@ mod tests {
     }
 
     /// The largest legal track must fit, which is what fixes the tree height.
+    /// The count is measured by lib/slicer/tests/capacity_probe.rs, not derived
+    /// here, because track size over k understates a slice by about 1.4%.
     #[test]
     fn test_max_track_slice_fits() {
-        const MAX_TRACK_BYTES: usize = 64 * 1024 * 1024;
+        const MEASURED_MAX_SUB_LEAVES: usize = 9_497;
 
-        let k = crate::encoding::ClayParams::DEFAULT.k() as usize;
-        let slice_len = MAX_TRACK_BYTES.div_ceil(k);
-
-        assert!(sub_leaf_count(slice_len) <= 1 << SUB_TREE_HEIGHT);
-        assert!(sub_leaf_count(slice_len) > 1 << (SUB_TREE_HEIGHT - 1));
+        assert!(MEASURED_MAX_SUB_LEAVES <= 1 << SUB_TREE_HEIGHT);
+        assert!(MEASURED_MAX_SUB_LEAVES > 1 << (SUB_TREE_HEIGHT - 1));
     }
 
     #[test]
