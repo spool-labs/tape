@@ -1,7 +1,7 @@
 //! Erasure coding constants, and the commitment leaves derived from a slice.
 
 use tape_crypto::Hash;
-use tape_crypto::merkle::{MerkleTree, hash_leaf};
+use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
 
 use crate::types::{GroupIndex, SpoolIndex};
 
@@ -42,11 +42,7 @@ pub fn slice_root(slice: &[u8]) -> Option<Hash> {
         return None;
     }
 
-    let mut tree = MerkleTree::<SUB_TREE_HEIGHT>::new();
-    for leaf in slice.chunks(SUB_LEAF_BYTES) {
-        tree.add_leaf(leaf).expect("leaf count checked above");
-    }
-    Some(tree.root())
+    Some(root_from_leaf_hashes::<SUB_TREE_HEIGHT>(&sub_leaf_hashes(slice)))
 }
 
 /// Get the group index for a given spool.

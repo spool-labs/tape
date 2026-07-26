@@ -341,12 +341,34 @@ impl<const N: usize> MerkleTree<N> {
 }
 
 /// Compute a Merkle root from pre-hashed leaf values.
+///
+/// Folds level by level rather than inserting leaves one at a time. Insertion
+/// walks all N levels per leaf, so it costs leaves times height; folding pays
+/// one hash per internal node. At a height-16 tree over 9,497 leaves that is
+/// about 9.5k pair hashes instead of 152k. Each level pads its odd tail with
+/// that level's empty subtree root, which is what insertion does implicitly,
+/// so the root is identical.
 pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
-    let mut tree = MerkleTree::<N>::new();
-    for h in hashes {
-        tree.add_leaf_hash(*h).expect("tree capacity");
+    assert!(N > 0 && N <= MAX_MERKLE_TREE_HEIGHT);
+    if hashes.is_empty() {
+        // Matches the empty-tree root Default installs, which is one level
+        // shallower than a fully-empty height-N subtree would suggest.
+        return EMPTY_ROOTS[N - 1].into();
     }
-    tree.root()
+
+    let mut level: Vec<Hash> = hashes.to_vec();
+    for depth in 0..N {
+        let empty: Hash = EMPTY_ROOTS[depth].into();
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            let right = if pair.len() == 2 { pair[1] } else { empty };
+            next.push(hash_pair(pair[0], right));
+        }
+        level = next;
+    }
+
+    debug_assert_eq!(level.len(), 1, "leaf count exceeds the tree height");
+    level[0]
 }
 
 /// Create a Merkle proof from pre-hashed leaf values.
@@ -500,6 +522,46 @@ pub fn verify_proof_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The folded root must equal what inserting the leaves one at a time
+    /// produces, at every leaf count including empty, odd tails and full.
+    #[test]
+    fn folded_root_matches_incremental() {
+        fn incremental<const N: usize>(hashes: &[Hash]) -> Hash {
+            let mut tree = MerkleTree::<N>::new();
+            for h in hashes {
+                tree.add_leaf_hash(*h).expect("tree capacity");
+            }
+            tree.root()
+        }
+
+        let leaves: Vec<Hash> = (0..300u32)
+            .map(|i| hash_leaf(&i.to_le_bytes()))
+            .collect();
+
+        for count in [0usize, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100, 255, 256, 257, 300] {
+            let slice = &leaves[..count.min(leaves.len())];
+            if count <= 32 {
+                assert_eq!(
+                    root_from_leaf_hashes::<5>(slice),
+                    incremental::<5>(slice),
+                    "height 5, {count} leaves"
+                );
+            }
+            if count <= 256 {
+                assert_eq!(
+                    root_from_leaf_hashes::<8>(slice),
+                    incremental::<8>(slice),
+                    "height 8, {count} leaves"
+                );
+            }
+            assert_eq!(
+                root_from_leaf_hashes::<16>(slice),
+                incremental::<16>(slice),
+                "height 16, {count} leaves"
+            );
+        }
+    }
 
     #[test]
     fn basic() {

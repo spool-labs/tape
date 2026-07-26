@@ -1236,9 +1236,7 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "clay-codes"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad7cca7b43749e51ce90aa2eda79ee530d8668ddaea549f5335e2e4f3f81061"
+version = "0.2.2"
 dependencies = [
  "tape-reed-solomon",
 ]
@@ -9886,9 +9884,7 @@ dependencies = [
 
 [[package]]
 name = "tape-reed-solomon"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5caa74bc4c32fdc105b23ee10a4f77d8b6df174f09f08ae325044aa83172a735"
+version = "0.2.3"
 
 [[package]]
 name = "tape-retry"
