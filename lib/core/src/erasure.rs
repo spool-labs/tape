@@ -13,11 +13,12 @@ pub const SLICE_TREE_HEIGHT: usize = 5;
 pub const SUB_LEAF_BYTES: usize = 1024;
 
 /// Merkle tree height for the sub-leaf tree under a single slice.
-/// Sized for the largest legal track. Clay at k=7 is the only encoding that can
-/// carry 64 MiB, and it puts 9,497 leaves in a slice, so 2^14 = 16,384 covers it
-/// and 2^13 does not. That count is measured rather than derived: stripe padding
-/// and per-slice metadata put a slice 1.4% above track size over k.
-pub const SUB_TREE_HEIGHT: usize = 14;
+/// Sized for the worst case any encoding can produce, which is Reed-Solomon at
+/// k=1: no erasure at all, so one slice holds the whole track. A 64 MiB track is
+/// exactly 65,536 sample leaves, so 2^16 covers it with nothing to spare.
+/// Clay at its default k=7 is far under this, at 9,497 leaves.
+/// Both counts are measured by lib/slicer/tests/capacity_probe.rs.
+pub const SUB_TREE_HEIGHT: usize = 16;
 
 use tape_crypto::Hash;
 use tape_crypto::merkle::{MerkleTree, hash_leaf};
@@ -118,14 +119,21 @@ mod tests {
     }
 
     /// The largest legal track must fit, which is what fixes the tree height.
-    /// The count is measured by lib/slicer/tests/capacity_probe.rs, not derived
-    /// here, because track size over k understates a slice by about 1.4%.
+    /// Both counts are measured by lib/slicer/tests/capacity_probe.rs. Deriving
+    /// them here would be wrong: Clay pads a slice about 1.4% above track size
+    /// over k, while bare Reed-Solomon does not.
     #[test]
     fn test_max_track_slice_fits() {
-        const MEASURED_MAX_SUB_LEAVES: usize = 9_497;
+        const MAX_TRACK_BYTES: usize = 64 * 1024 * 1024;
+        const RS_K1_SUB_LEAVES: usize = 65_536;
+        const CLAY_K7_SUB_LEAVES: usize = 9_497;
 
-        assert!(MEASURED_MAX_SUB_LEAVES <= 1 << SUB_TREE_HEIGHT);
-        assert!(MEASURED_MAX_SUB_LEAVES > 1 << (SUB_TREE_HEIGHT - 1));
+        // Replication is the worst case: one slice carries the whole track.
+        assert_eq!(RS_K1_SUB_LEAVES, MAX_TRACK_BYTES / SUB_LEAF_BYTES);
+        assert!(RS_K1_SUB_LEAVES <= 1 << SUB_TREE_HEIGHT);
+        assert!(RS_K1_SUB_LEAVES > 1 << (SUB_TREE_HEIGHT - 1));
+
+        assert!(CLAY_K7_SUB_LEAVES <= 1 << SUB_TREE_HEIGHT);
     }
 
     #[test]
