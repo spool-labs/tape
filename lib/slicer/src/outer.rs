@@ -4,10 +4,16 @@
 //! sizing lives in `tape-snapshot`.
 //!
 //! This stays on `reed-solomon-simd` while the inner coder uses
-//! `tape-reed-solomon`, so the workspace carries both. That is deliberate:
-//! `tape-reed-solomon` ships tuned programs for the blob shapes, 10 of 20 and
-//! 7 of 20, and outer coding runs 17 of 50, which matches none of them and
-//! would fall back to the schoolbook path. Move it only with a measurement.
+//! `tape-reed-solomon`, so the workspace carries both. Measured, not assumed:
+//! `tape-reed-solomon` ships generated programs for a fixed shape list that
+//! covers the blob shapes but not 17 of 50, so outer coding routes to the
+//! fused-matrix path and runs 1.34x slower at 64 KiB, 1.49x at 1 MiB and 2.48x
+//! at the 4 MiB chunk ceiling. See tests/outer_backend_probe.rs.
+//!
+//! The outer shape is not one shape. It follows the live group count, k being
+//! a third of it, so g=20 gives 7 of 20, which the list happens to cover, while
+//! g=50 gives 17 of 50 and g=100 gives 34 of 100. Unifying on one backend means
+//! covering that family in `tape-reed-solomon`, not a swap here.
 
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 
