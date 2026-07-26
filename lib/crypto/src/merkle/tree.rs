@@ -351,8 +351,9 @@ impl<const N: usize> MerkleTree<N> {
 pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
     assert!(N > 0 && N <= MAX_MERKLE_TREE_HEIGHT);
     if hashes.is_empty() {
-        // Matches the empty-tree root Default installs, which is one level
-        // shallower than a fully-empty height-N subtree would suggest.
+        // The empty-tree root Default installs. It reads one level shallow, but
+        // the table holds MAX_MERKLE_TREE_HEIGHT entries and N may equal that,
+        // so EMPTY_ROOTS[N] is not addressable at the tallest tree.
         return EMPTY_ROOTS[N - 1].into();
     }
 

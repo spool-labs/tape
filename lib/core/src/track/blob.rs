@@ -6,7 +6,7 @@ use bytemuck::{Pod, Zeroable};
 use tape_crypto::Hash;
 use tape_crypto::hash::hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
-use tape_crypto::merkle::{compute_path, create_proof_from_leaf_hashes, hash_leaf, verify_proof_hash};
+use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, verify_proof_hash};
 
 use crate::encoding::EncodingProfile;
 use crate::erasure::{
@@ -48,7 +48,12 @@ pub struct BlobEncoding {
     pub leaves: [Hash; GROUP_SIZE],
 }
 
-/// One sampled sub-leaf with its path to the blob commitment.
+/// One sampled sub-leaf with its path to that slice's registered root
+///
+/// The path stops at the slice root rather than climbing to the commitment,
+/// because every verifier holds the encoding and so already has the root the
+/// path must reach. Carrying the top path would add 160 bytes a verifier can
+/// derive for itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubLeafProof {
     /// Bytes of the sampled leaf, shorter than a full leaf only at the end of a slice.
@@ -56,9 +61,6 @@ pub struct SubLeafProof {
 
     /// Path from the sampled leaf to the root of its slice.
     pub sub_proof: Vec<Hash>,
-
-    /// Path from that slice root to the blob commitment.
-    pub top_proof: Vec<Hash>,
 }
 
 pub type PackedBlobEncoding = [u8; size_of::<BlobEncoding>()];
@@ -114,17 +116,14 @@ impl BlobEncoding {
         let hashes = sub_leaf_hashes(slice);
         let sub_proof =
             create_proof_from_leaf_hashes::<SUB_TREE_HEIGHT>(&hashes, sub_leaf_index).ok()?;
-        let top_proof =
-            create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&self.leaves, position).ok()?;
 
         Some(SubLeafProof {
             sub_leaf: slice[start..end].to_vec(),
             sub_proof,
-            top_proof,
         })
     }
 
-    /// Verify a sampled sub-leaf against the commitment.
+    /// Verify a sampled sub-leaf against its slice's registered root.
     pub fn verify_sub_leaf(
         &self,
         position: SpoolIndex,
@@ -145,21 +144,12 @@ impl BlobEncoding {
             return false;
         }
 
-        let leaf = hash_leaf(&proof.sub_leaf);
-        let sub_path = compute_path(
+        verify_proof_hash(
+            hash_leaf(&proof.sub_leaf),
+            &self.leaves[position],
             &proof.sub_proof,
-            leaf,
             sub_leaf_index as u64,
             SUB_TREE_HEIGHT,
-        );
-        let slice_root = sub_path[SUB_TREE_HEIGHT];
-
-        verify_proof_hash(
-            slice_root,
-            &self.commitment,
-            &proof.top_proof,
-            position as u64,
-            SLICE_TREE_HEIGHT,
         )
     }
 
@@ -279,7 +269,6 @@ mod tests {
                 .prove_sub_leaf(position, index, slice)
                 .expect("proof for a held sub-leaf");
             assert_eq!(proof.sub_proof.len(), SUB_TREE_HEIGHT);
-            assert_eq!(proof.top_proof.len(), SLICE_TREE_HEIGHT);
             assert!(blob.verify_sub_leaf(position, index, &proof));
         }
     }
@@ -312,10 +301,6 @@ mod tests {
         let mut short_sub = proof.clone();
         short_sub.sub_proof.pop();
         assert!(!blob.verify_sub_leaf(position, 1, &short_sub));
-
-        let mut short_top = proof.clone();
-        short_top.top_proof.clear();
-        assert!(!blob.verify_sub_leaf(position, 1, &short_top));
 
         let mut empty_leaf = proof.clone();
         empty_leaf.sub_leaf.clear();
