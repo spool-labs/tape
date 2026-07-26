@@ -29,7 +29,7 @@ use tape_protocol::api::GetTrackDataReq;
 use tape_protocol::api::GetTrackByNumberReq;
 use futures::stream::StreamExt;
 use tape_retry::{retry, retry_if, RetryConfig, Retryable};
-use tape_slicer::{num_stripes, pick_stripe_size};
+use tape_slicer::num_stripes;
 use tokio::time::sleep;
 
 use crate::codec::encoder::BlobEncoder;
@@ -272,12 +272,17 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 /// The etag content ends up with when written as a named object: the value
 /// hash for inline-sized payloads, the coded commitment otherwise. Encoding
 /// runs in full for coded sizes, so this trades CPU for detecting unchanged
-/// content before paying for a write.
-pub fn content_etag(data: &[u8]) -> Result<Hash, TapedriveError> {
+/// content before paying for a write; the encode runs on the blocking pool
+/// like the write path's own.
+pub async fn content_etag(data: &[u8]) -> Result<Hash, TapedriveError> {
     if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
         return Ok(hash(data));
     }
-    Ok(prepare_plan(data.to_vec())?.commitment_hash)
+    let owned = data.to_vec();
+    match tokio::task::spawn_blocking(move || prepare_plan(owned)).await {
+        Ok(plan) => Ok(plan?.commitment_hash),
+        Err(join) => Err(TapedriveError::Encoding(format!("etag encode task failed: {join}"))),
+    }
 }
 
 fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
@@ -288,13 +293,17 @@ fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
         .encode_with_leaves(data)
         .map_err(|e| TapedriveError::Encoding(e.to_string()))?;
 
+    // Stripe geometry must come from the encoder so the plan always matches
+    // the slice metadata it just produced.
+    let stripe_size = encoder.stripe_size();
+
     Ok(UploadPlan {
         slices,
         commitment_hash: merkle_root,
         storage_units: StorageUnits::from_bytes(data_len as u64),
         profile,
-        stripe_size: pick_stripe_size(data_len),
-        stripe_count: num_stripes(data_len, pick_stripe_size(data_len)),
+        stripe_size,
+        stripe_count: num_stripes(data_len, stripe_size),
         leaves,
     })
 }

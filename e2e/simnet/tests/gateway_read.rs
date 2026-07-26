@@ -319,6 +319,11 @@ async fn staked_gateway_inner() {
     .expect("gateway manifest track endpoint should return manifest bytes");
     eprintln!("gateway_read: gateway manifest track endpoint succeeded");
 
+    assert_gateway_request_id(&gateway.base_url(), &track_address, &stream_receipt.manifest)
+        .await
+        .expect("gateway responses should carry a request id");
+    eprintln!("gateway_read: request id assertions succeeded");
+
     // Range reads: single-track objects slice in memory on both read routes.
     assert_gateway_range_route(&gateway.base_url(), "object", &track_address, &data, 1000, 1999)
         .await
@@ -485,6 +490,65 @@ async fn staked_gateway_inner() {
     eprintln!("gateway_read: cached gateway manifest track endpoint succeeded");
 
     gateway.stop().await.expect("stop gateway");
+}
+
+/// Every gateway response carries an x-request-id: minted (16 uppercase hex)
+/// when the caller sends none, echoed verbatim when the caller supplies a
+/// sane one, on the single-track and the streamed manifest read alike.
+async fn assert_gateway_request_id(
+    gateway_base: &str,
+    track: &Address,
+    manifest: &Address,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()?;
+
+    let response = client
+        .get(format!("{gateway_base}/object/{track}"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let minted = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("read response should carry a request id")
+        .to_string();
+    assert_eq!(minted.len(), 16, "minted id should be 16 hex chars: {minted}");
+    assert!(
+        minted
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_lowercase()),
+        "minted id should be uppercase hex: {minted}"
+    );
+
+    let response = client
+        .get(format!("{gateway_base}/object/{track}"))
+        .header("x-request-id", "e2e-request-id-123")
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("e2e-request-id-123"),
+        "a sane caller-supplied id should echo back"
+    );
+
+    let response = client
+        .get(format!("{gateway_base}/object/{manifest}"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get("x-request-id").is_some(),
+        "streamed reads should carry a request id too"
+    );
+
+    Ok(())
 }
 
 async fn assert_gateway_decoded_route(

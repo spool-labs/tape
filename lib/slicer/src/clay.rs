@@ -96,6 +96,11 @@ impl ErasureCoder for ClayCoder {
         self.m
     }
 
+    #[inline]
+    fn stripe_alignment(&self) -> usize {
+        self.k * self.alpha() * 2
+    }
+
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         if data.is_empty() {
             return Err(EncodeError::EmptyInput);

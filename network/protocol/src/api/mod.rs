@@ -2,11 +2,13 @@
 
 pub mod error;
 pub mod ops;
+pub mod request_id;
 pub mod routes;
 pub mod types;
 
 pub use error::ApiError;
 pub use ops::*;
+pub use request_id::*;
 pub use routes::*;
 pub use types::*;
 

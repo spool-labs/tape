@@ -48,7 +48,7 @@ const RECOVER_FETCH_CONCURRENCY: usize = 4;
 //
 //      e. Reconstruct:
 //         - ClayCoder::from_params(track_info.profile().clay_params())
-//         - Slicer::with_profile(coder, stripe_size, rotated=true, profile)
+//         - Slicer::with_profile(coder, rotated=true, profile)
 //         - Parse SliceMetadata from any fetched slice to get chunk_index.
 //         - slicer.set_chunk_index(metadata.chunk_index)
 //         - decoded = slicer.decode(&slice_refs)
@@ -190,7 +190,6 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
             let mut slicer = Slicer::with_profile(
                 ClayCoder::from_params(profile.clay_params()),
-                track_data.stripe_size.as_usize(),
                 true,
                 profile,
             );
@@ -564,7 +563,6 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            512,
             true,
             profile,
         );
@@ -610,7 +608,6 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            512,
             true,
             profile,
         );
@@ -637,7 +634,6 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            512,
             true,
             profile,
         );
@@ -674,7 +670,6 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            512,
             true,
             profile,
         );
@@ -722,7 +717,6 @@ mod tests {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            2_000,
             true,
             profile,
         );
@@ -743,7 +737,6 @@ mod tests {
 
         let mut recovery_slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            2_000,
             true,
             profile,
         );
@@ -759,7 +752,6 @@ mod tests {
         let k = profile.k() as usize;
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
-            512,
             true,
             profile,
         );

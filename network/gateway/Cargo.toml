@@ -52,6 +52,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 store-memory = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
 
 [features]
 default = []

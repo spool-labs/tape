@@ -12,10 +12,13 @@ use bs58::decode as bs58_decode;
 use tape_core::spooler::GroupIndex;
 use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::staking::RateSpan;
-use tape_core::system::BlacklistEntry;
+use tape_core::bls::BlsPubkey;
+use tape_core::system::{BlacklistEntry, NodePreferences};
 use tape_core::track::data::{track_key, BlobData};
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::coin::{Coin, TAPE};
+use tape_core::types::network::NetworkAddress;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -127,7 +130,27 @@ pub enum RawInstruction {
     },
     RegisterNode {
         authority: Address,
+        name: [u8; 32],
+        network_address: NetworkAddress,
+        network_tls: NetworkTlsPubkey,
+        bls_pubkey: BlsPubkey,
+        preferences: NodePreferences,
+    },
+    SetName {
         node: Address,
+        name: [u8; 32],
+    },
+    SetNetworkAddress {
+        node: Address,
+        network_address: NetworkAddress,
+    },
+    SetNetworkTls {
+        node: Address,
+        network_tls: NetworkTlsPubkey,
+    },
+    SetBlsPubkey {
+        node: Address,
+        bls_pubkey: BlsPubkey,
     },
     JoinCommittee {
         node: Address,
@@ -281,8 +304,28 @@ pub enum ParsedInstruction {
     // Node management
     RegisterNode {
         authority: Address,
-        node: Address,
+        name: [u8; 32],
+        network_address: NetworkAddress,
+        network_tls: NetworkTlsPubkey,
+        bls_pubkey: BlsPubkey,
+        preferences: NodePreferences,
         event: NodeRegistered,
+    },
+    SetName {
+        node: Address,
+        name: [u8; 32],
+    },
+    SetNetworkAddress {
+        node: Address,
+        network_address: NetworkAddress,
+    },
+    SetNetworkTls {
+        node: Address,
+        network_tls: NetworkTlsPubkey,
+    },
+    SetBlsPubkey {
+        node: Address,
+        bls_pubkey: BlsPubkey,
     },
     JoinCommittee {
         node: Address,
@@ -532,9 +575,54 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::RegisterNode => {
+            let args = ix::RegisterNode::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("register_node: {e:?}")))?;
+            // The node account address rides the paired NodeRegistered event.
             let authority = get_account(1)?;
-            let node = get_account(5)?;
-            Ok(Some(RawInstruction::RegisterNode { authority, node }))
+            Ok(Some(RawInstruction::RegisterNode {
+                authority,
+                name: args.name,
+                network_address: args.network_address,
+                network_tls: args.network_tls,
+                bls_pubkey: args.bls_pubkey,
+                preferences: args.preferences,
+            }))
+        }
+
+        TapeInstruction::SetName => {
+            let args = ix::SetName::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("set_name: {e:?}")))?;
+            Ok(Some(RawInstruction::SetName {
+                node: get_account(2)?,
+                name: args.name,
+            }))
+        }
+
+        TapeInstruction::SetNetworkAddress => {
+            let args = ix::SetNetworkAddress::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("set_network_address: {e:?}")))?;
+            Ok(Some(RawInstruction::SetNetworkAddress {
+                node: get_account(2)?,
+                network_address: args.network_address,
+            }))
+        }
+
+        TapeInstruction::SetNetworkTls => {
+            let args = ix::SetNetworkTls::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("set_network_tls: {e:?}")))?;
+            Ok(Some(RawInstruction::SetNetworkTls {
+                node: get_account(2)?,
+                network_tls: args.network_tls,
+            }))
+        }
+
+        TapeInstruction::SetBlsPubkey => {
+            let args = ix::SetBlsPubkey::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(format!("set_bls_pubkey: {e:?}")))?;
+            Ok(Some(RawInstruction::SetBlsPubkey {
+                node: get_account(2)?,
+                bls_pubkey: args.bls_pubkey,
+            }))
         }
 
         TapeInstruction::JoinCommittee => {
@@ -612,10 +700,6 @@ pub fn parse_raw_instruction(
         | TapeInstruction::CreateArchive
         | TapeInstruction::CreatePeerSet
         | TapeInstruction::SetAuthority
-        | TapeInstruction::SetName
-        | TapeInstruction::SetBlsPubkey
-        | TapeInstruction::SetNetworkAddress
-        | TapeInstruction::SetNetworkTls
         | TapeInstruction::SetCommissionRate
         | TapeInstruction::SetStoragePrice
         | TapeInstruction::SetBurnFeeBps
@@ -641,8 +725,15 @@ mod tests {
     use solana_instruction::Instruction;
     use solana_transaction_status::UiCompiledInstruction;
     use tape_api::instruction::{
-        build_finalize_group_ix, build_vote_assignment_ix, build_vote_snapshot_ix,
+        build_finalize_group_ix, build_register_node_ix, build_set_bls_pubkey_ix,
+        build_set_name_ix, build_set_network_address_ix, build_set_network_tls_ix,
+        build_vote_assignment_ix, build_vote_snapshot_ix,
     };
+    use tape_core::bls::BlsPubkey;
+    use tape_core::system::NodePreferences;
+    use tape_core::types::network::NetworkAddress;
+    use tape_core::types::tls::NetworkTlsPubkey;
+    use tape_core::types::BasisPoints;
     use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
     use tape_core::bls::BlsSignature;
     use tape_core::cert::{AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT};
@@ -672,6 +763,110 @@ mod tests {
             },
             account_keys,
         )
+    }
+
+    // registration parse keys the node PDA and carries the ix metadata
+    #[test]
+    fn parses_register_node() {
+        let authority = Address::new_unique();
+        let network_address = NetworkAddress::new_ipv4([10, 0, 0, 1], 4433);
+        let network_tls = NetworkTlsPubkey::new([7u8; 32]);
+        let bls_pubkey = BlsPubkey::new_unique();
+        let (ix, keys) = compiled_instruction(&build_register_node_ix(
+            Address::new_unique(),
+            authority,
+            [3u8; 32],
+            BasisPoints(100),
+            network_address,
+            network_tls,
+            bls_pubkey,
+            BlsSignature::zeroed(),
+            NodePreferences::zeroed(),
+        ));
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::RegisterNode {
+                authority: parsed_authority,
+                name,
+                network_address: parsed_address,
+                network_tls: parsed_tls,
+                bls_pubkey: parsed_bls,
+                ..
+            }) => {
+                assert_eq!(parsed_authority, authority);
+                assert_eq!(name, [3u8; 32]);
+                assert_eq!(parsed_address, network_address);
+                assert_eq!(parsed_tls, network_tls);
+                assert_eq!(parsed_bls, bls_pubkey);
+            }
+            other => panic!("expected RawInstruction::RegisterNode, got {other:?}"),
+        }
+    }
+
+    // each metadata setter parses into its node-plus-value variant
+    #[test]
+    fn parses_metadata_setters() {
+        let authority = Address::new_unique();
+        let node = Address::new_unique();
+
+        let (ix, keys) = compiled_instruction(&build_set_name_ix(
+            Address::new_unique(),
+            authority,
+            node,
+            "renamed",
+        ));
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::SetName { node: parsed, name }) => {
+                assert_eq!(parsed, node);
+                assert_eq!(&name[..7], b"renamed");
+            }
+            other => panic!("expected RawInstruction::SetName, got {other:?}"),
+        }
+
+        let network_address = NetworkAddress::new_ipv4([10, 0, 0, 2], 8443);
+        let (ix, keys) = compiled_instruction(&build_set_network_address_ix(
+            Address::new_unique(),
+            authority,
+            node,
+            network_address,
+        ));
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::SetNetworkAddress { node: parsed, network_address: value }) => {
+                assert_eq!(parsed, node);
+                assert_eq!(value, network_address);
+            }
+            other => panic!("expected RawInstruction::SetNetworkAddress, got {other:?}"),
+        }
+
+        let network_tls = NetworkTlsPubkey::new([5u8; 32]);
+        let (ix, keys) = compiled_instruction(&build_set_network_tls_ix(
+            Address::new_unique(),
+            authority,
+            node,
+            network_tls,
+        ));
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::SetNetworkTls { node: parsed, network_tls: value }) => {
+                assert_eq!(parsed, node);
+                assert_eq!(value, network_tls);
+            }
+            other => panic!("expected RawInstruction::SetNetworkTls, got {other:?}"),
+        }
+
+        let bls_pubkey = BlsPubkey::new_unique();
+        let (ix, keys) = compiled_instruction(&build_set_bls_pubkey_ix(
+            Address::new_unique(),
+            authority,
+            node,
+            bls_pubkey,
+            BlsSignature::zeroed(),
+        ));
+        match parse_raw_instruction(&ix, &keys).unwrap() {
+            Some(RawInstruction::SetBlsPubkey { node: parsed, bls_pubkey: value }) => {
+                assert_eq!(parsed, node);
+                assert_eq!(value, bls_pubkey);
+            }
+            other => panic!("expected RawInstruction::SetBlsPubkey, got {other:?}"),
+        }
     }
 
     #[test]

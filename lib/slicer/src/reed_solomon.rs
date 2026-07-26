@@ -41,6 +41,11 @@ impl ErasureCoder for ReedSolomonCoder {
         self.m
     }
 
+    #[inline]
+    fn stripe_alignment(&self) -> usize {
+        self.k * 64
+    }
+
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let slice_bytes = self.slice_bytes(data.len());
 
