@@ -13,7 +13,7 @@ pub const SLICE_TREE_HEIGHT: usize = 5;
 pub const SUB_LEAF_BYTES: usize = 1024;
 
 /// Merkle tree height for the sub-leaf tree under a single slice.
-/// Sized for the largest legal track: 64 MiB at k=7 puts 9,497 leaves in a slice,
+/// Sized for the largest legal track: 64 MiB at k=7 puts 9,363 leaves in a slice,
 /// so 2^14 = 16,384 covers it and 2^13 does not.
 pub const SUB_TREE_HEIGHT: usize = 14;
 
@@ -36,6 +36,11 @@ pub fn sub_leaf_hashes(slice: &[u8]) -> Vec<Hash> {
 /// Merkle root over the sample leaves of one coded slice.
 /// None when the slice needs more leaves than the tree can hold.
 pub fn slice_root(slice: &[u8]) -> Option<Hash> {
+    // Reject on length first, so an oversized slice costs nothing to refuse.
+    if sub_leaf_count(slice.len()) > 1 << SUB_TREE_HEIGHT {
+        return None;
+    }
+
     let mut tree = MerkleTree::<SUB_TREE_HEIGHT>::new();
     for leaf in slice.chunks(SUB_LEAF_BYTES) {
         tree.add_leaf(leaf).ok()?;
@@ -114,9 +119,9 @@ mod tests {
     #[test]
     fn test_max_track_slice_fits() {
         const MAX_TRACK_BYTES: usize = 64 * 1024 * 1024;
-        const CLAY_K: usize = 7;
 
-        let slice_len = MAX_TRACK_BYTES.div_ceil(CLAY_K);
+        let k = crate::encoding::ClayParams::DEFAULT.k() as usize;
+        let slice_len = MAX_TRACK_BYTES.div_ceil(k);
 
         assert!(sub_leaf_count(slice_len) <= 1 << SUB_TREE_HEIGHT);
         assert!(sub_leaf_count(slice_len) > 1 << (SUB_TREE_HEIGHT - 1));

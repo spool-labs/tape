@@ -119,10 +119,12 @@ pub fn encode_chunk(
     };
     let packed = payload.pack();
 
+    let context = format!("epoch={} group={group} chunk={chunk}", epoch.0);
+
     let mut slicer = Slicer::clay_default();
-    let slices = slicer.encode(&packed).map_err(|e| {
-        SnapshotError::ClayEncode(format!("epoch={} group={group} chunk={chunk}: {e}", epoch.0))
-    })?;
+    let slices = slicer
+        .encode(&packed)
+        .map_err(|e| SnapshotError::ClayEncode(format!("{context}: {e}")))?;
 
     let slices: [Vec<u8>; GROUP_SIZE] =
         slices.try_into().map_err(|v: Vec<Vec<u8>>| SnapshotError::ClayEncodeArity {
@@ -133,10 +135,7 @@ pub fn encode_chunk(
     let mut leaves = [Hash::default(); GROUP_SIZE];
     for (leaf, slice) in leaves.iter_mut().zip(slices.iter()) {
         *leaf = slice_root(slice).ok_or_else(|| {
-            SnapshotError::ClayEncode(format!(
-                "epoch={} group={group} chunk={chunk}: slice exceeds sub-leaf tree capacity",
-                epoch.0
-            ))
+            SnapshotError::ClayEncode(format!("{context}: slice exceeds sub-leaf tree capacity"))
         })?;
     }
     let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);

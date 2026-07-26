@@ -6,7 +6,7 @@ use bytemuck::{Pod, Zeroable};
 use tape_crypto::Hash;
 use tape_crypto::hash::hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
-use tape_crypto::merkle::{compute_path, create_proof_from_leaf_hashes, hash_leaf};
+use tape_crypto::merkle::{compute_path, create_proof_from_leaf_hashes, hash_leaf, verify_proof_hash};
 
 use crate::encoding::EncodingProfile;
 use crate::erasure::{
@@ -49,9 +49,6 @@ pub struct BlobEncoding {
 }
 
 /// One sampled sub-leaf with its path to the blob commitment.
-///
-/// The proof stands alone against the commitment, so a verifier holding only the
-/// 32 byte root can check it without the per-slice leaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubLeafProof {
     /// Bytes of the sampled leaf, shorter than a full leaf only at the end of a slice.
@@ -86,10 +83,7 @@ impl BlobEncoding {
         root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&self.leaves)
     }
 
-    /// Verify a whole slice against its stored slice root.
-    ///
-    /// This rebuilds the slice's sub-leaf tree, so it costs more than a single
-    /// hash. Prefer verify_sub_leaf when one sampled leaf is enough.
+    /// Verify a whole slice against its stored slice root, rebuilding its sub-leaf tree.
     pub fn verify_slice(&self, position: SpoolIndex, data: &[u8]) -> bool {
         let position = position.as_usize();
         if position >= self.leaves.len() {
@@ -141,9 +135,12 @@ impl BlobEncoding {
         if position >= self.leaves.len() {
             return false;
         }
-        if proof.sub_proof.len() != SUB_TREE_HEIGHT || proof.top_proof.len() != SLICE_TREE_HEIGHT {
+        // compute_path indexes the proof directly, so a short one must not reach it.
+        if proof.sub_proof.len() != SUB_TREE_HEIGHT {
             return false;
         }
+        // An empty leaf hashes to the value padding uses, so without this a prover
+        // could answer at any index past the end of the slice.
         if proof.sub_leaf.is_empty() || proof.sub_leaf.len() > SUB_LEAF_BYTES {
             return false;
         }
@@ -155,17 +152,15 @@ impl BlobEncoding {
             sub_leaf_index as u64,
             SUB_TREE_HEIGHT,
         );
-        let Some(slice_root) = sub_path.last().copied() else {
-            return false;
-        };
+        let slice_root = sub_path[SUB_TREE_HEIGHT];
 
-        let top_path = compute_path(
-            &proof.top_proof,
+        verify_proof_hash(
             slice_root,
+            &self.commitment,
+            &proof.top_proof,
             position as u64,
             SLICE_TREE_HEIGHT,
-        );
-        top_path.last().copied() == Some(self.commitment)
+        )
     }
 
     /// Compute the canonical value hash for this blob payload.
@@ -247,18 +242,13 @@ mod tests {
             })
             .collect();
 
-        let mut leaves = [Hash::default(); GROUP_SIZE];
-        for (i, slice) in slices.iter().enumerate() {
-            leaves[i] = slice_root(slice).expect("slice within capacity");
-        }
+        let leaves: [Hash; GROUP_SIZE] =
+            core::array::from_fn(|i| slice_root(&slices[i]).expect("slice within capacity"));
 
         let blob = BlobEncoding {
-            size: StorageUnits::from_bytes(512),
             commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
-            profile: EncodingProfile::basic_default(),
-            stripe_size: StorageUnits::from_bytes(64),
-            stripe_count: StripeCount(2),
             leaves,
+            ..sample_blob_encoding()
         };
         (blob, slices)
     }

@@ -149,6 +149,23 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
+    // Settle ownership and proof shape before hashing, so a slice we would drop
+    // anyway never costs a sub-leaf tree build.
+    let spool_state = state
+        .context
+        .store
+        .get_spool_state(spool_id)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotResponsible)?;
+
+    if spool_state.is_locked() {
+        return Err(RouteError::NotResponsible);
+    }
+
+    if payload.merkle_proof.len() != SLICE_TREE_HEIGHT {
+        return Err(RouteError::BadRequest("invalid merkle proof".into()));
+    }
+
     let Some(root) = slice_root(&payload.data) else {
         return Err(RouteError::BadRequest("slice exceeds sub-leaf tree capacity".into()));
     };
@@ -166,17 +183,6 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         SLICE_TREE_HEIGHT,
     ) {
         return Err(RouteError::BadRequest("invalid merkle proof".into()));
-    }
-
-    let spool_state = state
-        .context
-        .store
-        .get_spool_state(spool_id)
-        .map_err(store_error)?
-        .ok_or(RouteError::NotResponsible)?;
-
-    if spool_state.is_locked() {
-        return Err(RouteError::NotResponsible);
     }
 
     let data_len = payload.data.len() as u64;
