@@ -9910,9 +9910,9 @@ dependencies = [
 
 [[package]]
 name = "tape-reed-solomon"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23cce0f8ff0168bf9757a8f45abf2f02e78e7bea099c13e780f1a42d819df2e2"
+checksum = "5caa74bc4c32fdc105b23ee10a4f77d8b6df174f09f08ae325044aa83172a735"
 
 [[package]]
 name = "tape-retry"
