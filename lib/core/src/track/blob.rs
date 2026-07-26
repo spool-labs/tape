@@ -6,10 +6,12 @@ use bytemuck::{Pod, Zeroable};
 use tape_crypto::Hash;
 use tape_crypto::hash::hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
-use tape_crypto::merkle::hash_leaf;
+use tape_crypto::merkle::{compute_path, create_proof_from_leaf_hashes, hash_leaf};
 
 use crate::encoding::EncodingProfile;
-use crate::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+use crate::erasure::{
+    GROUP_SIZE, SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT, slice_root, sub_leaf_hashes,
+};
 use crate::types::{SpoolIndex, StorageUnits, StripeCount};
 
 #[cfg(feature = "wincode")]
@@ -42,8 +44,24 @@ pub struct BlobEncoding {
     /// Number of stripes.
     pub stripe_count: StripeCount,
 
-    /// Per-slice commitment leaves.
+    /// Per-slice commitment leaves, each the root of that slice's sub-leaf tree.
     pub leaves: [Hash; GROUP_SIZE],
+}
+
+/// One sampled sub-leaf with its path to the blob commitment.
+///
+/// The proof stands alone against the commitment, so a verifier holding only the
+/// 32 byte root can check it without the per-slice leaves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubLeafProof {
+    /// Bytes of the sampled leaf, shorter than a full leaf only at the end of a slice.
+    pub sub_leaf: Vec<u8>,
+
+    /// Path from the sampled leaf to the root of its slice.
+    pub sub_proof: Vec<Hash>,
+
+    /// Path from that slice root to the blob commitment.
+    pub top_proof: Vec<Hash>,
 }
 
 pub type PackedBlobEncoding = [u8; size_of::<BlobEncoding>()];
@@ -68,14 +86,86 @@ impl BlobEncoding {
         root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&self.leaves)
     }
 
-    /// Verify a single slice against its stored leaf hash.
+    /// Verify a whole slice against its stored slice root.
+    ///
+    /// This rebuilds the slice's sub-leaf tree, so it costs more than a single
+    /// hash. Prefer verify_sub_leaf when one sampled leaf is enough.
     pub fn verify_slice(&self, position: SpoolIndex, data: &[u8]) -> bool {
         let position = position.as_usize();
         if position >= self.leaves.len() {
             return false;
         }
 
-        hash_leaf(data) == self.leaves[position]
+        slice_root(data) == Some(self.leaves[position])
+    }
+
+    /// Prove one sample leaf of a slice the caller holds.
+    pub fn prove_sub_leaf(
+        &self,
+        position: SpoolIndex,
+        sub_leaf_index: usize,
+        slice: &[u8],
+    ) -> Option<SubLeafProof> {
+        let position = position.as_usize();
+        if position >= self.leaves.len() {
+            return None;
+        }
+
+        let start = sub_leaf_index.checked_mul(SUB_LEAF_BYTES)?;
+        if start >= slice.len() {
+            return None;
+        }
+        let end = (start + SUB_LEAF_BYTES).min(slice.len());
+
+        let hashes = sub_leaf_hashes(slice);
+        let sub_proof =
+            create_proof_from_leaf_hashes::<SUB_TREE_HEIGHT>(&hashes, sub_leaf_index).ok()?;
+        let top_proof =
+            create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&self.leaves, position).ok()?;
+
+        Some(SubLeafProof {
+            sub_leaf: slice[start..end].to_vec(),
+            sub_proof,
+            top_proof,
+        })
+    }
+
+    /// Verify a sampled sub-leaf against the commitment.
+    pub fn verify_sub_leaf(
+        &self,
+        position: SpoolIndex,
+        sub_leaf_index: usize,
+        proof: &SubLeafProof,
+    ) -> bool {
+        let position = position.as_usize();
+        if position >= self.leaves.len() {
+            return false;
+        }
+        if proof.sub_proof.len() != SUB_TREE_HEIGHT || proof.top_proof.len() != SLICE_TREE_HEIGHT {
+            return false;
+        }
+        if proof.sub_leaf.is_empty() || proof.sub_leaf.len() > SUB_LEAF_BYTES {
+            return false;
+        }
+
+        let leaf = hash_leaf(&proof.sub_leaf);
+        let sub_path = compute_path(
+            &proof.sub_proof,
+            leaf,
+            sub_leaf_index as u64,
+            SUB_TREE_HEIGHT,
+        );
+        let Some(slice_root) = sub_path.last().copied() else {
+            return false;
+        };
+
+        let top_path = compute_path(
+            &proof.top_proof,
+            slice_root,
+            position as u64,
+            SLICE_TREE_HEIGHT,
+        );
+        top_path.last().copied() == Some(self.commitment)
     }
 
     /// Compute the canonical value hash for this blob payload.
@@ -115,6 +205,7 @@ impl<'de> SchemaRead<'de> for BlobEncoding {
 mod tests {
     use super::*;
     use crate::encoding::EncodingProfile;
+    use crate::erasure::sub_leaf_count;
 
     fn sample_blob_encoding() -> BlobEncoding {
         BlobEncoding {
@@ -145,5 +236,112 @@ mod tests {
         assert_eq!(recovered.stripe_size, StorageUnits::from_bytes(64));
         assert_eq!(recovered.stripe_count, StripeCount(2));
         assert_eq!(recovered, blob);
+    }
+
+    /// A blob whose leaves are the real sub-leaf roots of the returned slices.
+    fn coded_blob() -> (BlobEncoding, Vec<Vec<u8>>) {
+        let slices: Vec<Vec<u8>> = (0..GROUP_SIZE)
+            .map(|i| {
+                let len = SUB_LEAF_BYTES * 3 + i + 1;
+                (0..len).map(|b| (b + i) as u8).collect()
+            })
+            .collect();
+
+        let mut leaves = [Hash::default(); GROUP_SIZE];
+        for (i, slice) in slices.iter().enumerate() {
+            leaves[i] = slice_root(slice).expect("slice within capacity");
+        }
+
+        let blob = BlobEncoding {
+            size: StorageUnits::from_bytes(512),
+            commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::basic_default(),
+            stripe_size: StorageUnits::from_bytes(64),
+            stripe_count: StripeCount(2),
+            leaves,
+        };
+        (blob, slices)
+    }
+
+    #[test]
+    fn verify_slice_accepts_only_the_stored_slice() {
+        let (blob, slices) = coded_blob();
+
+        for (i, slice) in slices.iter().enumerate() {
+            assert!(blob.verify_slice(SpoolIndex(i as u64), slice));
+        }
+
+        let mut tampered = slices[0].clone();
+        tampered[SUB_LEAF_BYTES + 5] ^= 0xFF;
+        assert!(!blob.verify_slice(SpoolIndex(0), &tampered));
+
+        assert!(!blob.verify_slice(SpoolIndex(GROUP_SIZE as u64), &slices[0]));
+    }
+
+    #[test]
+    fn sub_leaf_proof_round_trip() {
+        let (blob, slices) = coded_blob();
+        let position = SpoolIndex(3);
+        let slice = &slices[3];
+
+        for index in 0..sub_leaf_count(slice.len()) {
+            let proof = blob
+                .prove_sub_leaf(position, index, slice)
+                .expect("proof for a held sub-leaf");
+            assert_eq!(proof.sub_proof.len(), SUB_TREE_HEIGHT);
+            assert_eq!(proof.top_proof.len(), SLICE_TREE_HEIGHT);
+            assert!(blob.verify_sub_leaf(position, index, &proof));
+        }
+    }
+
+    #[test]
+    fn sub_leaf_proof_rejects_tampering() {
+        let (blob, slices) = coded_blob();
+        let position = SpoolIndex(3);
+        let proof = blob
+            .prove_sub_leaf(position, 1, &slices[3])
+            .expect("proof for a held sub-leaf");
+
+        let mut flipped = proof.clone();
+        flipped.sub_leaf[0] ^= 0xFF;
+        assert!(!blob.verify_sub_leaf(position, 1, &flipped));
+
+        // The same proof replayed at a different index or slice must not verify.
+        assert!(!blob.verify_sub_leaf(position, 2, &proof));
+        assert!(!blob.verify_sub_leaf(SpoolIndex(4), 1, &proof));
+    }
+
+    #[test]
+    fn sub_leaf_proof_rejects_malformed_paths_without_panicking() {
+        let (blob, slices) = coded_blob();
+        let position = SpoolIndex(3);
+        let proof = blob
+            .prove_sub_leaf(position, 1, &slices[3])
+            .expect("proof for a held sub-leaf");
+
+        let mut short_sub = proof.clone();
+        short_sub.sub_proof.pop();
+        assert!(!blob.verify_sub_leaf(position, 1, &short_sub));
+
+        let mut short_top = proof.clone();
+        short_top.top_proof.clear();
+        assert!(!blob.verify_sub_leaf(position, 1, &short_top));
+
+        let mut empty_leaf = proof.clone();
+        empty_leaf.sub_leaf.clear();
+        assert!(!blob.verify_sub_leaf(position, 1, &empty_leaf));
+
+        let mut long_leaf = proof;
+        long_leaf.sub_leaf = vec![0u8; SUB_LEAF_BYTES + 1];
+        assert!(!blob.verify_sub_leaf(position, 1, &long_leaf));
+    }
+
+    #[test]
+    fn prove_sub_leaf_rejects_an_index_past_the_slice() {
+        let (blob, slices) = coded_blob();
+        let past_end = sub_leaf_count(slices[0].len());
+
+        assert!(blob.prove_sub_leaf(SpoolIndex(0), past_end, &slices[0]).is_none());
+        assert!(blob.prove_sub_leaf(SpoolIndex(GROUP_SIZE as u64), 0, &slices[0]).is_none());
     }
 }

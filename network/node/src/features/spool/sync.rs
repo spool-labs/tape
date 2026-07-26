@@ -401,13 +401,13 @@ async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockcha
 mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::SLICE_TREE_HEIGHT;
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
-    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
+    use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::ops::{PeerReq, PeerRes, SyncSlicesRes};
     use tape_protocol::api::types::SyncSliceEntry;
     use tape_slicer::{ClayCoder, ErasureCoder, SliceMetadata, Slicer};
@@ -468,7 +468,7 @@ mod tests {
     fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobEncoding {
         let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
-        let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
+        let leaves = core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
         BlobEncoding {

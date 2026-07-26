@@ -106,7 +106,7 @@ mod tests {
     use axum::response::IntoResponse;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE, slice_root};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
@@ -119,7 +119,7 @@ mod tests {
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
-    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
+    use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::{RepairRequest, StripeSubChunkRequest};
     use tape_slicer::{ErasureCoder, Slicer};
     use tape_store::ops::{ObjectInfoOps, SliceOps, TapeOps, TrackDataOps, TrackOps};
@@ -156,7 +156,7 @@ mod tests {
         let stripe_count = chunk.len().div_ceil(stripe_size);
 
         let leaves: [Hash; GROUP_SIZE] =
-            core::array::from_fn(|index| hash_leaf(&slices[index]));
+            core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
         let blob = BlobEncoding {

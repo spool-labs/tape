@@ -7,11 +7,11 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
-use tape_crypto::merkle::{hash_leaf, verify_proof};
+use tape_crypto::merkle::verify_proof_hash;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, SlicePayload};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
@@ -149,14 +149,17 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
-    if hash_leaf(&payload.data) != payload.leaf_hash {
+    let Some(root) = slice_root(&payload.data) else {
+        return Err(RouteError::BadRequest("slice exceeds sub-leaf tree capacity".into()));
+    };
+    if root != payload.leaf_hash {
         return Err(RouteError::BadRequest("leaf hash mismatch".into()));
     }
 
     let leaf_pos = spool_id.as_usize() % GROUP_SIZE;
 
-    if !verify_proof(
-        &payload.data,
+    if !verify_proof_hash(
+        root,
         &blob.commitment,
         &payload.merkle_proof,
         leaf_pos as u64,

@@ -8,7 +8,40 @@ pub const GROUP_SIZE: usize = 20;
 /// Derived from GROUP_SIZE: 2^5 = 32 >= 20 leaves.
 pub const SLICE_TREE_HEIGHT: usize = 5;
 
+/// Bytes covered by one sample leaf beneath a slice root.
+/// Kept small because a challenge response carries one leaf and its path.
+pub const SUB_LEAF_BYTES: usize = 1024;
+
+/// Merkle tree height for the sub-leaf tree under a single slice.
+/// Sized for the largest legal track: 64 MiB at k=7 puts 9,497 leaves in a slice,
+/// so 2^14 = 16,384 covers it and 2^13 does not.
+pub const SUB_TREE_HEIGHT: usize = 14;
+
+use tape_crypto::Hash;
+use tape_crypto::merkle::{MerkleTree, hash_leaf};
+
 use crate::types::{GroupIndex, SpoolIndex};
+
+/// Number of sample leaves a slice of this length is split into.
+#[inline]
+pub fn sub_leaf_count(slice_len: usize) -> usize {
+    slice_len.div_ceil(SUB_LEAF_BYTES)
+}
+
+/// Hash every sample leaf of one coded slice, in order.
+pub fn sub_leaf_hashes(slice: &[u8]) -> Vec<Hash> {
+    slice.chunks(SUB_LEAF_BYTES).map(hash_leaf).collect()
+}
+
+/// Merkle root over the sample leaves of one coded slice.
+/// None when the slice needs more leaves than the tree can hold.
+pub fn slice_root(slice: &[u8]) -> Option<Hash> {
+    let mut tree = MerkleTree::<SUB_TREE_HEIGHT>::new();
+    for leaf in slice.chunks(SUB_LEAF_BYTES) {
+        tree.add_leaf(leaf).ok()?;
+    }
+    Some(tree.root())
+}
 
 /// Get the group index for a given spool.
 #[inline]
@@ -47,6 +80,46 @@ mod tests {
     #[test]
     fn test_spool_group_size() {
         assert_eq!(GROUP_SIZE, 20);
+    }
+
+    #[test]
+    fn test_sub_leaf_count_rounds_up() {
+        assert_eq!(sub_leaf_count(0), 0);
+        assert_eq!(sub_leaf_count(1), 1);
+        assert_eq!(sub_leaf_count(SUB_LEAF_BYTES), 1);
+        assert_eq!(sub_leaf_count(SUB_LEAF_BYTES + 1), 2);
+    }
+
+    #[test]
+    fn test_slice_root_matches_leaf_hashes() {
+        let slice: Vec<u8> = (0..SUB_LEAF_BYTES * 2 + 7).map(|b| b as u8).collect();
+        let hashes = sub_leaf_hashes(&slice);
+
+        assert_eq!(hashes.len(), sub_leaf_count(slice.len()));
+        assert_eq!(
+            slice_root(&slice),
+            Some(tape_crypto::merkle::root_from_leaf_hashes::<SUB_TREE_HEIGHT>(&hashes))
+        );
+    }
+
+    #[test]
+    fn test_slice_root_bounded_by_tree_capacity() {
+        let capacity = SUB_LEAF_BYTES << SUB_TREE_HEIGHT;
+
+        assert!(slice_root(&vec![0u8; capacity]).is_some());
+        assert!(slice_root(&vec![0u8; capacity + 1]).is_none());
+    }
+
+    /// The largest legal track must fit, which is what fixes the tree height.
+    #[test]
+    fn test_max_track_slice_fits() {
+        const MAX_TRACK_BYTES: usize = 64 * 1024 * 1024;
+        const CLAY_K: usize = 7;
+
+        let slice_len = MAX_TRACK_BYTES.div_ceil(CLAY_K);
+
+        assert!(sub_leaf_count(slice_len) <= 1 << SUB_TREE_HEIGHT);
+        assert!(sub_leaf_count(slice_len) > 1 << (SUB_TREE_HEIGHT - 1));
     }
 
     #[test]

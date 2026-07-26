@@ -466,11 +466,23 @@ pub fn verify_proof(
     index: u64,
     height: usize
 ) -> bool {
+    verify_proof_hash(hash_leaf(data), root, proof, index, height)
+}
+
+/// Verify a proof for a leaf whose hash is already known.
+/// Used where the leaf is itself a root rather than a hash of the bytes.
+pub fn verify_proof_hash(
+    leaf_hash: Hash,
+    root: &Hash,
+    proof: &[Hash],
+    index: u64,
+    height: usize
+) -> bool {
     if proof.len() != height {
         return false;
     }
 
-    let mut node = hash_leaf(data);
+    let mut node = leaf_hash;
     let mut idx = index;
 
     for &sibling in proof.iter() {

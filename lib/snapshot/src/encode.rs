@@ -2,7 +2,7 @@
 //! `decode`. Pure: no transport, no consensus, no store, no on-chain types — the
 //! caller supplies the snapshot tape address and the active group count.
 
-use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
@@ -10,7 +10,7 @@ use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
-use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
+use tape_crypto::merkle::root_from_leaf_hashes;
 use tape_slicer::{num_stripes, ErasureCoder, OuterCoder, Slicer};
 
 use crate::chunk::{
@@ -130,7 +130,15 @@ pub fn encode_chunk(
             expected: GROUP_SIZE,
         })?;
 
-    let leaves: [Hash; GROUP_SIZE] = core::array::from_fn(|i| hash_leaf(&slices[i]));
+    let mut leaves = [Hash::default(); GROUP_SIZE];
+    for (leaf, slice) in leaves.iter_mut().zip(slices.iter()) {
+        *leaf = slice_root(slice).ok_or_else(|| {
+            SnapshotError::ClayEncode(format!(
+                "epoch={} group={group} chunk={chunk}: slice exceeds sub-leaf tree capacity",
+                epoch.0
+            ))
+        })?;
+    }
     let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
     let stripe_size = slicer.stripe_size();

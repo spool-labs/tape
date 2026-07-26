@@ -3,11 +3,9 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
-use tape_crypto::merkle::hash_leaf;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, GetSliceReq};
 use tracing::debug;
@@ -88,7 +86,7 @@ async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .await
         .map_err(|error| RouteError::BadGateway(format!("get_slice: {error}")))?;
 
-    if position >= GROUP_SIZE || hash_leaf(&response.data) != blob.leaves[position] {
+    if !blob.verify_slice(SpoolIndex(position as u64), &response.data) {
         return Err(RouteError::BadGateway("slice leaf hash mismatch".into()));
     }
 

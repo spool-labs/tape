@@ -1,7 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use serde::{Deserialize, Deserializer};
-use tape_core::types::coin::{Coin, TAPE};
 use tape_protocol::api::SLICE_BODY_LIMIT;
 
 use super::cidr::CidrBlock;
@@ -109,13 +108,9 @@ pub struct AdmissionConfig {
     #[serde(default = "default_stale_entry_secs")]
     pub stale_entry_secs: u64,
 
-    /// Stake-tiered rates for registered staked callers that are not
-    /// committee members, such as gateways.
-    #[serde(default = "default_stake_tiers")]
-    pub stake_tiers: Vec<StakeTier>,
-
     /// Proxy addresses or CIDR ranges whose X-Forwarded-For header is trusted
-    /// when resolving the caller address.
+    /// when resolving the caller address. Empty means the socket peer is
+    /// always the caller.
     #[serde(default)]
     pub trusted_proxies: Vec<CidrBlock>,
 }
@@ -133,32 +128,9 @@ impl Default for AdmissionConfig {
             trusted_metered_burst: default_trusted_metered_burst(),
             over_budget_penalty_secs: default_over_budget_penalty_secs(),
             stale_entry_secs: default_stale_entry_secs(),
-            stake_tiers: default_stake_tiers(),
             trusted_proxies: Vec::new(),
         }
     }
-}
-
-/// One stake-tier admission rate: callers staking at least the floor refill
-/// at this rate with this burst capacity. The floor is written in whole TAPE
-/// in config and normalized to flux on load.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct StakeTier {
-    #[serde(rename = "min_stake_tape", deserialize_with = "whole_tape")]
-    pub min_stake: Coin<TAPE>,
-    pub per_sec: u32,
-    pub burst: u32,
-}
-
-fn whole_tape<'de, D>(deserializer: D) -> Result<Coin<TAPE>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let whole = u64::deserialize(deserializer)?;
-    whole
-        .checked_mul(TAPE::SCALE)
-        .map(TAPE)
-        .ok_or_else(|| serde::de::Error::custom("stake tier floor overflows"))
 }
 
 fn default_port() -> u16 {
@@ -189,23 +161,12 @@ fn default_peer_max_bytes() -> usize {
     1024 * 1024
 }
 
-// A single writer streaming one blob sends a slice put per chunk plus the
-// certify sign polls to every committee node from one address, so the
-// write bucket must absorb a full stream, not just a lone track.
 fn default_anonymous_write_per_sec() -> u32 {
-    16
-}
-
-fn default_stake_tiers() -> Vec<StakeTier> {
-    vec![
-        StakeTier { min_stake: TAPE::from_fixed(100, 0), per_sec: 32, burst: 128 },
-        StakeTier { min_stake: TAPE::from_fixed(1_000, 0), per_sec: 128, burst: 512 },
-        StakeTier { min_stake: TAPE::from_fixed(10_000, 0), per_sec: 512, burst: 2_048 },
-    ]
+    1
 }
 
 fn default_anonymous_write_burst() -> u32 {
-    64
+    4
 }
 
 fn default_anonymous_read_per_sec() -> u32 {

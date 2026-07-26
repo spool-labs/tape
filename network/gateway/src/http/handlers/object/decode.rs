@@ -10,7 +10,6 @@ use tape_core::types::SpoolIndex;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_crypto::hash::hash;
-use tape_crypto::merkle::hash_leaf;
 use tape_protocol::api::GetTrackDataReq;
 use tape_protocol::Api;
 use tape_sdk::codec::decoder::BlobDecoder;
@@ -200,7 +199,7 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
                     warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice outside track group");
                     continue;
                 };
-                if position >= GROUP_SIZE || hash_leaf(&data) != blob.leaves[position] {
+                if !blob.verify_slice(SpoolIndex(position as u64), &data) {
                     rejected_leaf += 1;
                     warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice with mismatched leaf hash");
                     continue;

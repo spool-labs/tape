@@ -575,7 +575,7 @@ mod tests {
     };
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{BlacklistEntry, NodePreferences};
@@ -587,7 +587,7 @@ mod tests {
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
-    use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
+    use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
 
@@ -595,7 +595,8 @@ mod tests {
     use crate::ParsedInstruction;
 
     fn blob_encoding(slices: &[Vec<u8>]) -> BlobEncoding {
-        let leaves = core::array::from_fn(|index| hash_leaf(&slices[index]));
+        let leaves =
+            core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
         BlobEncoding {

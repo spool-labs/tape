@@ -4,9 +4,9 @@
 //! raw blobs into network-ready slices with merkle commitments.
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::erasure::{GROUP_SIZE, slice_root};
 use tape_core::types::SpoolIndex;
-use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, root_from_leaf_hashes};
+use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
 use tape_crypto::Hash;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, SLICE_TREE_HEIGHT,
@@ -223,9 +223,15 @@ impl BlobEncoder {
     ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
         let chunks = self.encode_internal(&data)?;
 
-        // Hash each slice once, then reuse the hashes for the root, proofs,
-        // and per-slice leaf hash stored in the upload payload.
-        let leaf_hashes: Vec<Hash> = chunks.iter().map(|chunk| hash_leaf(chunk)).collect();
+        // Build each slice's sub-leaf root once, then reuse it for the blob root,
+        // the proofs, and the per-slice leaf stored in the upload payload.
+        let leaf_hashes: Vec<Hash> = chunks
+            .iter()
+            .map(|chunk| slice_root(chunk))
+            .collect::<Option<Vec<Hash>>>()
+            .ok_or_else(|| {
+                UploadError::Encoding("slice exceeds sub-leaf tree capacity".to_string())
+            })?;
         let root = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaf_hashes);
 
         let proofs: Result<Vec<Vec<Hash>>, _> = (0..leaf_hashes.len())
@@ -357,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_encode_with_proofs() {
-        use tape_crypto::merkle::verify_proof;
+        use tape_crypto::merkle::verify_proof_hash;
 
         let mut encoder = test_encoder();
         let data = vec![0x42; 20_000];
@@ -365,10 +371,10 @@ mod tests {
 
         assert_eq!(slices_with_proofs.len(), GROUP_SIZE);
 
-        // Verify each proof
+        // The top tree commits to slice roots, so the proof starts from the root
         for slice in &slices_with_proofs {
-            let valid = verify_proof(
-                &slice.data,
+            let valid = verify_proof_hash(
+                slice_root(&slice.data).unwrap(),
                 &root,
                 &slice.merkle_proof,
                 slice.index.as_u64(),
@@ -404,15 +410,13 @@ mod tests {
 
     #[test]
     fn test_encode_with_proofs_has_leaf_hash() {
-        use tape_crypto::merkle::hash_leaf;
-
         let mut encoder = test_encoder();
         let data = vec![0xEF; 10_000];
         let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
 
-        // Verify leaf hashes are correctly computed
+        // Each leaf is the slice's sub-leaf root, not a hash of the whole slice
         for slice in &slices_with_proofs {
-            let expected_leaf = hash_leaf(&slice.data);
+            let expected_leaf = slice_root(&slice.data).unwrap();
             assert_eq!(slice.leaf_hash, expected_leaf);
         }
     }

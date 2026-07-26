@@ -1,6 +1,6 @@
 //! Merkle tree helpers for blob commitments.
 
-use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE, slice_root};
 use tape_crypto::Hash;
 use tape_crypto::merkle::MerkleTree;
 
@@ -8,7 +8,8 @@ pub type BlobMerkleTree = MerkleTree<{ SLICE_TREE_HEIGHT }>;
 pub type BlobMerkleRoot = Hash;
 
 /// Build a merkle tree from the slices of an erasure-coded blob.
-/// The tree has SLICE_TREE_HEIGHT levels with GROUP_SIZE leaves.
+/// The tree has SLICE_TREE_HEIGHT levels with GROUP_SIZE leaves, and each leaf is
+/// the root of that slice's sub-leaf tree rather than a hash of the whole slice.
 ///
 /// Accepts any slice-like data that can be converted to `&[u8]`.
 pub fn build_blob_merkle_tree<T: AsRef<[u8]>>(slices: &[T]) -> BlobMerkleTree {
@@ -18,7 +19,8 @@ pub fn build_blob_merkle_tree<T: AsRef<[u8]>>(slices: &[T]) -> BlobMerkleTree {
     );
     let mut tree = BlobMerkleTree::new();
     for s in slices.iter() {
-        tree.add_leaf(s.as_ref()).expect("tree capacity");
+        let root = slice_root(s.as_ref()).expect("slice within sub-leaf tree capacity");
+        tree.add_leaf_hash(root).expect("tree capacity");
     }
     tree
 }
