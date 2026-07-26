@@ -3,12 +3,6 @@
 //! spool group count) is supplied at construction. Snapshot-specific `k`/segment
 //! sizing lives in `tape-snapshot`.
 
-//! Needs a tape-reed-solomon carrying a generated program for the outer shape.
-//! Without one the codec falls back to its fused matrix path and a 68 MiB
-//! segment takes 67.6 ms instead of 31.1 ms, which is worse than the
-//! reed-solomon-simd this replaced. The shape follows the live group count,
-//! 17 of 50 at fifty groups, so a new group count needs a new generated shape.
-
 use tape_reed_solomon::ReedSolomon;
 
 use crate::errors::{DecodeError, EncodeError};
@@ -18,10 +12,6 @@ use crate::errors::{DecodeError, EncodeError};
 pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// Bytes each shard starts past the one before it while coding.
-///
-/// Shards of one size sit on page boundaries, so the same offset in every shard
-/// maps to one cache set and the n streams collide. Offsetting each shard keeps
-/// them apart and is worth 1.9x at this shape.
 const SHARD_SKEW: usize = 320;
 
 /// Outer Reed-Solomon coder for distribution across `n` shards.

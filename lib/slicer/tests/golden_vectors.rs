@@ -9,10 +9,7 @@ use tape_slicer::{blob_merkle_root, ErasureCoder, SliceMetadata, Slicer};
 /// (blob_len, stripe_size, slice_len, commitment root) under the default
 /// Clay profile.
 ///
-/// Roots regenerated for the two-level sub-leaf commitment: `leaves[i]` is now
-/// the root of slice i's sub-leaf tree rather than a hash of the whole slice.
-/// Stripe size and slice length are unchanged at every entry, so the slicing
-/// geometry did not move, only what the leaf commits to.
+/// Roots regenerated for the two-level sub-leaf commitment.
 const GOLDEN: &[(usize, usize, usize, &str)] = &[
     (0, 1_400, 248, "DoM27JE3kReomQ4qwxB2qHDqRkHiLH4aBght8EUDuBuY"),
     (1, 1_400, 248, "2KJ8MwxdoDReK11CEmxhZ33mrMuk8gwQCodEsyyN5Gp5"),

@@ -49,9 +49,6 @@ impl ErasureCoder for ReedSolomonCoder {
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let slice_bytes = self.slice_bytes(data.len());
 
-        // Each data slice takes one copy of its span, zero-padded at the tail.
-        // Parity slices are allocated zeroed and filled in place, so building
-        // them from a cloned template would be writes the encoder discards.
         let mut slices: Vec<Vec<u8>> = data
             .chunks(slice_bytes)
             .map(|chunk| {
