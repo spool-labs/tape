@@ -18,9 +18,9 @@ pub const SLICE_TREE_HEIGHT: usize = 5;
 pub const SUB_LEAF_BYTES: usize = 1024;
 
 /// Merkle tree height for the sub-leaf tree under a single slice.
-/// Sized for the worst case, Reed-Solomon at k=1, where one slice holds the
-/// whole track: a 64 MiB track is exactly 65,536 leaves, so 2^16 fits it with
-/// nothing to spare. Measured by lib/slicer/tests/capacity_probe.rs.
+/// 2^16 sample leaves of SUB_LEAF_BYTES is 64 MiB, which is where the max
+/// track size came from. Reed-Solomon at k=1 puts a whole track in one slice,
+/// so that is the case the height has to cover.
 pub const SUB_TREE_HEIGHT: usize = 16;
 
 /// Number of sample leaves a slice of this length is split into.

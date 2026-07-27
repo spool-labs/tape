@@ -17,8 +17,10 @@ pub const MANIFEST_VERSION: u8 = 1;
 
 /// Maximum bytes per direct coded track / stream chunk track.
 ///
-/// Clay(20,7) with 10 MiB slices gives a theoretical 70 MiB per track. The SDK
-/// uses 64 MiB to leave headroom for stripe padding and metadata suffixes.
+/// 2^SUB_TREE_HEIGHT sample leaves of SUB_LEAF_BYTES, which is the largest
+/// slice the sub-leaf commitment can cover. Clay(20,7) with 10 MiB slices
+/// allows 70 MiB, so this also leaves headroom for stripe padding and
+/// metadata suffixes.
 pub const MAX_TRACK_SIZE: usize = 64 * 1024 * 1024;
 
 /// Maximum track slots in one tape.
