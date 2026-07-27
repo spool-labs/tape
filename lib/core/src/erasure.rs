@@ -1,7 +1,7 @@
 //! Erasure coding constants, and the commitment leaves derived from a slice.
 
 use tape_crypto::Hash;
-use tape_crypto::merkle::{hash_leaf, root_from_leaf_hashes};
+use tape_crypto::merkle::{hash_leaves, root_from_leaf_hashes};
 
 use crate::types::{GroupIndex, SpoolIndex};
 
@@ -30,8 +30,11 @@ pub fn sub_leaf_count(slice_len: usize) -> usize {
 }
 
 /// Hash every sample leaf of one coded slice, in order.
+///
+/// The leaves are independent, so the whole slice hashes in one multi-buffer
+/// pass. A 64 MiB slice is 65,536 of them.
 pub fn sub_leaf_hashes(slice: &[u8]) -> Vec<Hash> {
-    slice.chunks(SUB_LEAF_BYTES).map(hash_leaf).collect()
+    hash_leaves(&slice.chunks(SUB_LEAF_BYTES).collect::<Vec<_>>())
 }
 
 /// Merkle root over the sample leaves of one coded slice.

@@ -97,6 +97,27 @@ pub fn hashv(data: &[&[u8]]) -> Hash {
     Hash(res.to_bytes())
 }
 
+/// Name of the SHA-256 kernel this build hashes with.
+///
+/// Off-chain it is chosen from what the CPU reports, so a box that fell back to
+/// one lane is otherwise indistinguishable.
+pub fn sha256_backend() -> &'static str {
+    #[cfg(not(target_os = "solana"))]
+    return tape_sha256::backend();
+    #[cfg(target_os = "solana")]
+    return "solana-syscall";
+}
+
+/// How many messages that kernel hashes at once.
+///
+/// One means every message costs a pass of its own.
+pub fn sha256_lane_width() -> usize {
+    #[cfg(not(target_os = "solana"))]
+    return tape_sha256::lane_width();
+    #[cfg(target_os = "solana")]
+    return 1;
+}
+
 #[inline(always)]
 pub fn hash(data: &[u8]) -> Hash {
     #[cfg(not(target_os = "solana"))]

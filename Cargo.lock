@@ -1237,6 +1237,8 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 [[package]]
 name = "clay-codes"
 version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "025604490be7569adf8e0da6194d98af196f6226999646a40ee23d09933efc52"
 dependencies = [
  "tape-reed-solomon",
 ]
@@ -9488,6 +9490,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "ark-serialize 0.5.0",
  "bytemuck",
+ "criterion",
  "curve25519-dalek",
  "dashu",
  "ed25519-consensus",
@@ -9508,6 +9511,7 @@ dependencies = [
  "solana-sha256-hasher",
  "solana-signature",
  "solana-signer",
+ "tape-sha256",
  "thiserror 2.0.18",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
@@ -9886,6 +9890,8 @@ dependencies = [
 [[package]]
 name = "tape-reed-solomon"
 version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8d60ec175b7c0ef10297410f621b88006ce9e327b18fd85a12982839e6c294b"
 
 [[package]]
 name = "tape-retry"
@@ -9938,6 +9944,12 @@ dependencies = [
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
 ]
+
+[[package]]
+name = "tape-sha256"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecfcb393a3304db7c48a8ce2f3a51aa9188ce00ae6bb2c9e03dcd0f3fc3d6da9"
 
 [[package]]
 name = "tape-slicer"
