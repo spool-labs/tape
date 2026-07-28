@@ -169,7 +169,7 @@ where
         Ok(())
     }
 
-    // Detach the proposal and vote submits so their rank staggers never block the
+    // Detach the proposal and vote submits so their rank waits never block the
     // block loop. The in-flight guard drops the per-block and per-heartbeat
     // re-fire while a round is still running.
     fn spawn_vote_round(&mut self, state: Arc<ProtocolState>, candidate: AssignmentCandidate) {
@@ -204,7 +204,7 @@ where
             return Ok(());
         }
 
-        // Detach the finalize so its rank stagger never blocks the block loop.
+        // Detach the finalize so its rank wait never blocks the block loop.
         let ctx = self.context.clone();
         let cancel = self.cancel.clone();
         spawn_guarded(&mut self.finalize, async move {
@@ -389,7 +389,7 @@ where
 
 // Drive one assignment vote round to completion: propose, sign local votes, fan
 // them out to peers, then submit the aggregated group votes. Each on-chain
-// submit staggers by committee rank internally, so this runs detached.
+// submit waits its committee-rank turn internally, so this runs detached.
 async fn run_vote_round<Db, Cluster, Blockchain>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     state: Arc<ProtocolState>,

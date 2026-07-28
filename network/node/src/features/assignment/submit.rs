@@ -18,7 +18,7 @@ use tracing::{debug, info};
 
 use crate::chain::{submit_finalize_group, submit_propose_assignment, submit_vote_assignment};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{stagger_by_rank, submit_if_at_tip, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{await_submit_turn, submit_if_at_tip, TxOutcome, TxRejectionKind};
 use crate::core::error::NodeError;
 use crate::features::assignment::build::AssignmentCandidate;
 use crate::features::assignment::vote::vote_candidate;
@@ -46,11 +46,11 @@ where
         return Ok(());
     }
 
-    if stagger_by_rank(committee_rank(&state, me), cancel).await {
+    if await_submit_turn(committee_rank(&state, me), cancel).await {
         return Ok(());
     }
 
-    // Re-read after the stagger: skip proposing if another member's proposal for
+    // Re-read after the wait: skip proposing if another member's proposal for
     // this voting epoch already landed, or the round already reached a canonical
     // assignment hash, while this node waited its turn.
     if proposed
@@ -166,7 +166,7 @@ where
         return Ok(());
     }
 
-    if stagger_by_rank(committee_rank(state, me), cancel).await {
+    if await_submit_turn(committee_rank(state, me), cancel).await {
         return Ok(());
     }
 
@@ -343,11 +343,11 @@ where
         return Ok(());
     }
 
-    if stagger_by_rank(committee_rank(&state, me), cancel).await {
+    if await_submit_turn(committee_rank(&state, me), cancel).await {
         return Ok(());
     }
 
-    // Re-read after the stagger: bail if the round left Closing, or every group
+    // Re-read after the wait: bail if the round left Closing, or every group
     // is already finalized. Groups can finalize out of order, so they are not
     // skipped by index; a re-submit of a finalized group is cheaply rejected.
     let state = ctx.state();

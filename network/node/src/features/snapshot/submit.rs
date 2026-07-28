@@ -18,7 +18,7 @@ use tracing::{debug, info};
 
 use crate::chain::{submit_finalize_snapshot, submit_propose_snapshot, submit_vote_snapshot};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{stagger_by_rank, submit_if_at_tip, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{await_submit_turn, submit_if_at_tip, TxOutcome, TxRejectionKind};
 use crate::core::error::NodeError;
 use crate::features::lifecycle::manager::committee_rank;
 use crate::features::snapshot::build::{persist_snapshot_candidate, SnapshotCandidate};
@@ -46,11 +46,11 @@ where
         return Ok(());
     }
 
-    if stagger_by_rank(committee_rank(&state, me), cancel).await {
+    if await_submit_turn(committee_rank(&state, me), cancel).await {
         return Ok(());
     }
 
-    // Re-read after the stagger: skip proposing if another member's proposal for
+    // Re-read after the wait: skip proposing if another member's proposal for
     // this voting epoch already landed, or the round already reached a canonical
     // snapshot hash, while this node waited its turn.
     if proposed
@@ -166,7 +166,7 @@ where
         return Ok(());
     }
 
-    if stagger_by_rank(committee_rank(state, me), cancel).await {
+    if await_submit_turn(committee_rank(state, me), cancel).await {
         return Ok(());
     }
 
@@ -349,11 +349,11 @@ where
 
     persist_snapshot_candidate(ctx.as_ref(), candidate)?;
 
-    if stagger_by_rank(committee_rank(&state, me), cancel).await {
+    if await_submit_turn(committee_rank(&state, me), cancel).await {
         return Ok(());
     }
 
-    // Re-read after the stagger: finalizing moves the voting epoch out of the
+    // Re-read after the wait: finalizing moves the voting epoch out of the
     // Snapshot phase, so skip if a lower-ranked member already finalized.
     let state = ctx.state();
     if state.epoch() != candidate.voting_epoch || state.phase() != EpochPhase::Snapshot {

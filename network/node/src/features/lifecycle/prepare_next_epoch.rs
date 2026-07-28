@@ -14,7 +14,7 @@ use crate::chain::{
 };
 use crate::context::NodeContext;
 use crate::core::chain_tx::{
-    stagger_by_rank, submit_if_at_tip, wait_for_state_change, TxOutcome, TxRejectionKind,
+    await_submit_turn, submit_if_at_tip, wait_for_state_change, TxOutcome, TxRejectionKind,
 };
 use crate::features::lifecycle::manager::committee_rank;
 use crate::features::lifecycle::types::{Action, TaskDone};
@@ -93,10 +93,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
             }
             step => {
-                // Stagger by rank so lower ranks submit first. Re-staggered per
+                // Wait for this rank's turn so lower ranks submit first. Waited again per
                 // step because each setup account is a separate race; after the
                 // delay, re-check in case a lower rank already advanced this step.
-                if stagger_by_rank(rank, &cancel).await {
+                if await_submit_turn(rank, &cancel).await {
                     break;
                 }
                 if next_setup_step(&ctx.state(), next_epoch, candidate_epoch) != step {
