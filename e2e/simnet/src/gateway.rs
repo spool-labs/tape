@@ -17,7 +17,7 @@ use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_node::config::gateway::{GatewaySiteConfig, WriteDefault};
+use tape_node::config::gateway::{GatewaySiteConfig, MeteringGrade, WriteDefault};
 use tape_node::config::node::NodeConfig;
 use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
@@ -380,8 +380,24 @@ fn gateway_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
     config.http.listen = bind_addr;
     config.https.listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     config.store.path = PathBuf::from("/tmp");
+
+    // Tests drive reads as fast as the harness allows, from one address, which
+    // any production grade rejects. Metering is covered by its own unit tests,
+    // so leave the read paths unmetered here rather than pacing every caller.
+    for grade in config.gateway.metering.grades.values_mut() {
+        *grade = UNMETERED;
+    }
+
     Ok(config)
 }
+
+/// A grade no test can exhaust, standing in for having no meter at all.
+const UNMETERED: MeteringGrade = MeteringGrade {
+    read_per_sec: u32::MAX,
+    read_burst: u32::MAX,
+    read_bytes_per_sec: u64::MAX,
+    read_byte_burst: u64::MAX,
+};
 
 fn clone_keypair(keypair: &Keypair) -> CryptoKeypair {
     CryptoKeypair::from_solana_keypair(keypair).expect("clone keypair")
