@@ -45,6 +45,7 @@ wincode-derive = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [target.'cfg(not(target_os = "solana"))'.dependencies]
+tape-sha256 = { workspace = true }
 ark-bn254 = { version = "0.5.0" }
 ark-ec = { version = "0.5.0" }
 ark-ff = { version = "0.5.0" }
@@ -59,6 +60,13 @@ solana-pubkey = { workspace = true }
 solana-sha256-hasher = { workspace = true }
 solana-signature = { workspace = true }
 solana-signer = { workspace = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "merkle"
+harness = false
 
 [target.'cfg(target_os = "solana")'.dependencies]
 solana-program = { workspace = true }
