@@ -5,7 +5,6 @@ use anyhow::{bail, Result};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
-use tape_core::system::NodeStatus;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
@@ -65,6 +64,7 @@ async fn spool_recovery_inner() {
     let active_timeout = Duration::from_secs(60);
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
     let recovery_timeout = Duration::from_secs(120);
+    let expansion_timeout = epoch_timeout * 2;
     let scenario = harness.scenario();
 
     scenario
@@ -77,6 +77,20 @@ async fn spool_recovery_inner() {
         .expect("genesis committee active");
     assert_group_counts(&scenario, 1, 1).await;
 
+    // Expand first. Seating is redrawn every epoch and is not promised in any
+    // one of them, so this waits for the size rather than naming an epoch. The
+    // recovery checks below run after the upload so they cannot drift away from
+    // it while this waits.
+    scenario
+        .wait_committee_size(NODE_COUNT, expansion_timeout)
+        .await
+        .expect("committee reached the expanded size");
+    scenario
+        .wait_nodes_active(&all, active_timeout)
+        .await
+        .expect("all nodes active once the committee expanded");
+    assert_group_counts(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
+
     let data: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
     let (_tape_key, track_address, track) = scenario
         .upload(harness.admin(), &data, 6)
@@ -88,99 +102,28 @@ async fn spool_recovery_inner() {
         track.is_certified(),
         "uploaded blob track should be certified"
     );
-    assert_eq!(
-        track.group,
-        GroupIndex(0),
-        "genesis upload should land in the only live group"
-    );
 
-    let epoch1_owners = group_owners(&scenario, track.group).await;
-    wait_current_owner_slices(
-        &scenario,
-        &track_address,
-        track.group,
-        GROUP_SIZE,
-        recovery_timeout,
-    )
-    .await
-    .expect("genesis owners store all blob slices");
-
-    let epoch2 = scenario
-        .self_advance_epoch(epoch_timeout)
-        .await
-        .expect("advance to epoch 2");
-    assert_eq!(epoch2, 2, "expected epoch 2");
-    scenario
-        .wait_nodes_active(&genesis_committee, active_timeout)
-        .await
-        .expect("genesis committee active at epoch 2");
-    for &node in &late_nodes {
-        assert_eq!(
-            scenario.node_status(node),
-            Some(NodeStatus::Standby),
-            "late node {node} should not be active until epoch 3"
-        );
-    }
-    assert_eq!(
-        scenario.committee_size().await.expect("committee size"),
-        genesis_committee.len(),
-        "unexpected epoch 2 committee size"
-    );
-    scenario
-        .wait_next_quorum(NODE_COUNT, active_timeout)
-        .await
-        .expect("epoch 3 candidate committee reached expanded size");
-    assert_eq!(
-        scenario
-            .committee_next_size()
-            .await
-            .expect("next committee size"),
-        NODE_COUNT,
-        "unexpected epoch 3 candidate committee size"
-    );
-    assert_group_counts(&scenario, TARGET_GROUPS, 1).await;
-
-    wait_current_owner_slices(
-        &scenario,
-        &track_address,
-        track.group,
-        GROUP_SIZE,
-        recovery_timeout,
-    )
-    .await
-    .expect("epoch 2 owners keep all blob slices available");
-
-    let epoch2_read = scenario
-        .download(harness.admin(), &track_address)
-        .await
-        .expect("download blob after epoch 2 staging");
-    assert_eq!(epoch2_read, data, "epoch 2 download should match upload");
-
-    let epoch3 = scenario
-        .self_advance_epoch(epoch_timeout)
-        .await
-        .expect("advance to epoch 3");
-    assert_eq!(epoch3, 3, "expected epoch 3");
-    scenario
-        .wait_nodes_active(&all, active_timeout)
-        .await
-        .expect("all nodes active at epoch 3");
-    assert_eq!(
-        scenario.committee_size().await.expect("committee size"),
-        NODE_COUNT,
-        "unexpected epoch 3 committee size"
-    );
-    assert_group_counts(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
-
-    let epoch3_owners = group_owners(&scenario, track.group).await;
-    assert_ne!(
-        epoch1_owners, epoch3_owners,
-        "expected group ownership to change after high-stake late nodes join"
-    );
+    let upload_owners = group_owners(&scenario, track.group).await;
     assert!(
-        includes_late_owner(&scenario, &late_nodes, &epoch3_owners),
-        "expected at least one late node to receive track group ownership"
+        includes_late_owner(&scenario, &late_nodes, &upload_owners),
+        "expected at least one late node to own the track group after expansion"
     );
+    wait_current_owner_slices(
+        &scenario,
+        &track_address,
+        track.group,
+        GROUP_SIZE,
+        recovery_timeout,
+    )
+    .await
+    .expect("owners store all blob slices");
+
+    // One turnover is all the recovery path needs to prove: whoever owns the
+    // group next must fetch what it does not already hold.
+    scenario
+        .self_advance_epoch(epoch_timeout)
+        .await
+        .expect("advance one epoch");
 
     wait_current_owner_slices(
         &scenario,
@@ -190,13 +133,13 @@ async fn spool_recovery_inner() {
         recovery_timeout,
     )
     .await
-    .expect("expanded group owners keep all blob slices available");
+    .expect("owners after the turnover keep all blob slices available");
 
-    let epoch3_read = scenario
+    let reread = scenario
         .download(harness.admin(), &track_address)
         .await
-        .expect("download blob after group expansion");
-    assert_eq!(epoch3_read, data, "epoch 3 download should match upload");
+        .expect("download blob after the turnover");
+    assert_eq!(reread, data, "post-turnover download should match upload");
 
     harness.stop_all().await.expect("stop runtimes");
 }

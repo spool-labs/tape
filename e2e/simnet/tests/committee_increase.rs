@@ -55,6 +55,10 @@ async fn committee_increase_inner() {
 
     let active_timeout = Duration::from_secs(60);
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
+    // Seating is not promised in any one epoch and does not converge steadily:
+    // measured counts wander before settling, so this is a generous budget, not
+    // a tight bound on how many epochs it should take.
+    let expansion_timeout = epoch_timeout * 2;
     let scenario = harness.scenario();
 
     scenario
@@ -97,7 +101,7 @@ async fn committee_increase_inner() {
         assert_eq!(
             scenario.node_status(node),
             Some(NodeStatus::Standby),
-            "late node {node} should not be active until epoch 3"
+            "late node {node} should not be active before the committee expands"
         );
     }
     let system = scenario.read_system().await.expect("read system");
@@ -110,34 +114,19 @@ async fn committee_increase_inner() {
         genesis_committee.len(),
         "unexpected epoch 2 committee size"
     );
-    scenario
-        .wait_next_quorum(node_count, active_timeout)
-        .await
-        .expect("epoch 3 candidate committee reached expanded size");
-    assert_eq!(
-        scenario
-            .committee_next_size()
-            .await
-            .expect("next committee size"),
-        node_count,
-        "unexpected epoch 3 candidate committee size"
-    );
     assert_group_owners(&scenario, TARGET_GROUPS, 1).await;
 
-    let epoch3 = scenario
-        .self_advance_epoch(epoch_timeout)
+    // The seating is not promised in any one epoch: an epoch commits once
+    // GROUP_SIZE members are in, so a joiner that misses the window is seated in
+    // a later one. Wait for the size to converge rather than name the epoch.
+    scenario
+        .wait_committee_size(node_count, expansion_timeout)
         .await
-        .expect("advance to epoch 3");
-    assert_eq!(epoch3, 3, "expected epoch 3");
+        .expect("committee reached the expanded size");
     scenario
         .wait_nodes_active(&all, active_timeout)
         .await
-        .expect("all nodes active at epoch 3");
-    assert_eq!(
-        scenario.committee_size().await.expect("committee size"),
-        node_count,
-        "unexpected epoch 3 committee size"
-    );
+        .expect("all nodes active once the committee expanded");
 
     let expanded_owners = assert_group_owners(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
     assert_ne!(

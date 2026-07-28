@@ -89,6 +89,27 @@ impl SimnetScenario<'_> {
         self.committee_len(system.current_epoch.next()).await
     }
 
+    /// Wait for the active committee to reach `min_size`, over as many epochs as
+    /// the timeout allows.
+    ///
+    /// A raised committee size is not promised in any one epoch: the program
+    /// commits an epoch once GROUP_SIZE members are seated, so joiners that miss
+    /// a window are seated in a later one. Tests that assert a target size must
+    /// wait for it to converge rather than name the epoch it lands in.
+    pub async fn wait_committee_size(&self, min_size: usize, timeout: Duration) -> Result<usize> {
+        let start = Instant::now();
+        loop {
+            let size = self.committee_size().await?;
+            if size >= min_size {
+                return Ok(size);
+            }
+            if start.elapsed() >= timeout {
+                bail!("timed out waiting for committee size >= {min_size}, got {size}");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     pub async fn wait_next_quorum(&self, min_size: usize, timeout: Duration) -> Result<()> {
         let start = Instant::now();
         loop {
