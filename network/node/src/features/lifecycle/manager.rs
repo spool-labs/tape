@@ -19,7 +19,7 @@
 //   Snapshot  | pool done                                    | None (snapshot manager)
 //   Active    | pool not done                                | AdvancePool
 //   Active    | next epoch setup incomplete                  | PrepareNextEpoch
-//   Active    | setup done, join not done, 90% time elapsed  | JoinCommittee
+//   Active    | setup done, join not done                    | JoinCommittee
 //   Active    | join done, commit not done                   | CommitEpoch
 //   Active    | all done                                     | None (wait)
 //   Closing   | assignment incomplete                        | None (assignment manager)
@@ -366,10 +366,7 @@ pub fn next_action(
             // members for the same window; a fifth leaves room for the
             // pipeline to land every join before commits open. The program
             // does not reject an early join, so this gate is local.
-            if !in_next
-                && !done.contains(&Action::JoinCommittee)
-                && join_window_open(state, now)
-            {
+            if !in_next && !done.contains(&Action::JoinCommittee) {
                 return Some(Action::JoinCommittee);
             }
 
@@ -450,27 +447,6 @@ fn next_committee_filled(state: &ProtocolState) -> bool {
         .is_some_and(|committee| committee.len() as u64 >= capacity)
 }
 
-/// Fraction of the epoch (four fifths) that must elapse before a node joins the
-/// next committee. Joining earlier only starts the commit clock sooner and
-/// contends for the same slots.
-const JOIN_GATE_NUM: i64 = 4;
-const JOIN_GATE_DENOM: i64 = 5;
-
-/// Chain instant (unix seconds) at which JoinCommittee is planned: 80% of
-/// the way through the current epoch's stamped duration.
-pub fn join_at(state: &ProtocolState) -> i64 {
-    let epoch = &state.current.epoch;
-    let elapsed = (epoch.preferences.epoch_duration.0 as i64)
-        .saturating_mul(JOIN_GATE_NUM)
-        / JOIN_GATE_DENOM;
-    epoch.start_time.saturating_add(elapsed)
-}
-
-/// True once the epoch is at least 90% elapsed against `now`.
-fn join_window_open(state: &ProtocolState, now: i64) -> bool {
-    now >= join_at(state)
-}
-
 /// This node's 0-based position in the current committee, used to order
 /// contended submissions. Falls back to 0 (submit first) when not found.
 pub fn committee_rank(state: &ProtocolState, node: Address) -> usize {
@@ -525,7 +501,7 @@ mod tests {
     use tape_crypto::{Address, Hash};
     use tape_protocol::{EpochBundle, ProtocolState};
 
-    use super::{commit_at, join_at, next_action};
+    use super::{commit_at, next_action};
     use crate::features::lifecycle::types::Action;
 
     // A wall-clock instant well past any zeroed epoch's commit window.
@@ -748,20 +724,22 @@ mod tests {
         state
     }
 
-    // JoinCommittee is withheld until 80% of the epoch has elapsed, then planned.
+    // JoinCommittee is planned as soon as the next epoch is set up, at any point
+    // in the epoch.
     #[test]
-    fn join_gated_to_last_fifth() {
+    fn join_planned_once_setup_ready() {
         let node = Address::new_unique();
-        let state = join_ready_state(500, 100); // join window opens at 580
+        let state = join_ready_state(500, 100);
         let mut done = HashSet::new();
         done.insert(Action::AdvancePool);
 
-        assert_eq!(join_at(&state), 580);
-        assert_eq!(next_action(&state, node, &done, 579), None);
-        assert_eq!(
-            next_action(&state, node, &done, 580),
-            Some(Action::JoinCommittee)
-        );
+        for now in [500, 540, 580, 599] {
+            assert_eq!(
+                next_action(&state, node, &done, now),
+                Some(Action::JoinCommittee),
+                "epoch start 500, now {now}"
+            );
+        }
     }
 
     // A commit past its window is held while the next committee is below the
