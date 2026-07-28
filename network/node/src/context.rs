@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch::Receiver;
 
@@ -130,6 +131,20 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn is_at_tip(&self) -> bool {
         self.ingest.is_at_tip()
+    }
+
+    /// Current time in unix seconds as the chain sees it
+    ///
+    /// The timestamp of the latest dispatched block, or the wall clock until
+    /// one arrives. Epoch gates compare against on-chain timestamps, so they
+    /// must use this rather than a local clock that can drift from the cluster.
+    pub fn chain_now(&self) -> i64 {
+        self.ingest.progress().chain_time().unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0)
+        })
     }
 
     pub async fn refresh_peers(&self) -> Result<(), PeerManagerError> {

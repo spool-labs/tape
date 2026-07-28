@@ -3,7 +3,6 @@ mod keygen;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use tape_crypto::hash::sha256_backend;
 use tape_node::VERSION;
 use tape_node::config::node::{NodeConfig, default_config_path};
 use tape_node::core::limits::check_fd_limit;
@@ -73,10 +72,6 @@ fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
 
     let rpc_display = config.solana.rpc_display();
 
-    // The hashing kernel is picked from what the CPU reports, and a box that
-    // falls back to one lane looks identical otherwise. Name it at boot.
-    let sha256 = sha256_backend();
-
     if let Some(host) = &config.network.host {
         info!(
             node_name = %config.node.name,
@@ -85,7 +80,6 @@ fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
             port = config.network.port,
             rpc = rpc_display,
             boot_marker = VERSION,
-            sha256,
             "starting node"
         );
     } else {
@@ -94,7 +88,6 @@ fn run_node(config_path: &str, rpc_url: Option<String>) -> ExitCode {
             listen = %config.http.listen,
             rpc = rpc_display,
             boot_marker = VERSION,
-            sha256,
             "starting node"
         );
     }

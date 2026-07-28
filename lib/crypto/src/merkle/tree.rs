@@ -61,69 +61,6 @@ pub fn hash_pair(left: Hash, right: Hash) -> Hash {
     hashv(&[LEFT_LABEL, left.as_ref(), RIGHT_LABEL, right.as_ref()])
 }
 
-/// Hash a batch of leaves, one message per lane.
-///
-/// Output is in input order and equal to hash_leaf on each body.
-pub fn hash_leaves(bodies: &[&[u8]]) -> Vec<Hash> {
-    let mut out = vec![Hash::default(); bodies.len()];
-
-    #[cfg(not(target_os = "solana"))]
-    tape_sha256::hash_many_prefixed(LEAF_LABEL, bodies, bytemuck::cast_slice_mut(&mut out));
-
-    #[cfg(target_os = "solana")]
-    for (slot, body) in out.iter_mut().zip(bodies) {
-        *slot = hash_leaf(body);
-    }
-
-    out
-}
-
-/// Join one level of a tree into its parents, one pair per lane.
-///
-/// Adjacent nodes are siblings. Output is equal to hash_pair on each pair.
-pub fn hash_level(nodes: &[Hash]) -> Vec<Hash> {
-    assert!(nodes.len().is_multiple_of(2), "a level joins in pairs");
-    let mut out = vec![Hash::default(); nodes.len() / 2];
-
-    #[cfg(not(target_os = "solana"))]
-    {
-        // Bytes of a joined node that follow the left child.
-        const RIGHT_SEGMENT_LEN: usize = RIGHT_LABEL.len() + Hash::LEN;
-
-        // A multiple of every lane width, so no pass runs half empty.
-        const RUN: usize = 128;
-        let mut staged = [[0u8; RIGHT_SEGMENT_LEN]; RUN];
-
-        for (pairs, digests) in nodes.chunks(RUN * 2).zip(out.chunks_mut(RUN)) {
-            for (segment, pair) in staged.iter_mut().zip(pairs.chunks_exact(2)) {
-                segment[..RIGHT_LABEL.len()].copy_from_slice(RIGHT_LABEL);
-                segment[RIGHT_LABEL.len()..].copy_from_slice(pair[1].as_ref());
-            }
-
-            let mut messages = [tape_sha256::Message::new(&[]); RUN];
-            for ((message, pair), right) in messages
-                .iter_mut()
-                .zip(pairs.chunks_exact(2))
-                .zip(staged.iter())
-            {
-                *message = tape_sha256::Message::pair(LEFT_LABEL, pair[0].as_ref(), right);
-            }
-
-            tape_sha256::hash_messages(
-                &messages[..digests.len()],
-                bytemuck::cast_slice_mut(digests),
-            );
-        }
-    }
-
-    #[cfg(target_os = "solana")]
-    for (slot, pair) in out.iter_mut().zip(nodes.chunks_exact(2)) {
-        *slot = hash_pair(pair[0], pair[1]);
-    }
-
-    out
-}
-
 /// Root of a fully-empty subtree of the given height
 #[inline]
 pub fn empty_subtree_root(height: usize) -> Hash {
@@ -420,18 +357,15 @@ pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
         return EMPTY_ROOTS[N - 1].into();
     }
 
-    // One spare slot, so padding an odd level never reallocates the whole level.
-    let mut level: Vec<Hash> = Vec::with_capacity(hashes.len() + 1);
-    level.extend_from_slice(hashes);
-
+    let mut level: Vec<Hash> = hashes.to_vec();
     for depth in 0..N {
-        // Pad the odd tail with this level's empty subtree root, which is what
-        // insertion does implicitly, then join the whole level in one pass.
-        if !level.len().is_multiple_of(2) {
-            level.push(EMPTY_ROOTS[depth].into());
+        let empty: Hash = EMPTY_ROOTS[depth].into();
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            let right = if pair.len() == 2 { pair[1] } else { empty };
+            next.push(hash_pair(pair[0], right));
         }
-
-        level = hash_level(&level);
+        level = next;
     }
 
     debug_assert_eq!(level.len(), 1, "leaf count exceeds the tree height");
@@ -484,9 +418,12 @@ pub fn create_merkle_proof<T: AsRef<[u8]>>(
     index: usize, 
     height: usize,
 ) -> Result<Vec<Hash>, MerkleError> {
-    let bodies: Vec<&[u8]> = leaves.iter().map(AsRef::as_ref).collect();
+    let hashes: Vec<Hash> = leaves
+        .iter()
+        .map(|leaf| hash_leaf(leaf.as_ref()))
+        .collect();
 
-    create_merkle_proof_hashes(&hash_leaves(&bodies), index, height)
+    create_merkle_proof_hashes(&hashes, index, height)
 }
 
 fn create_merkle_proof_hashes(
@@ -520,7 +457,9 @@ fn create_merkle_proof_hashes(
         }
 
         layers.push(current_layer.clone());
-        current_layer = hash_level(&current_layer);
+        current_layer = (0..current_layer.len() / 2)
+            .map(|j| hash_pair(current_layer[2 * j], current_layer[2 * j + 1]))
+            .collect();
     }
 
     let mut proof = Vec::with_capacity(height);
@@ -584,42 +523,6 @@ pub fn verify_proof_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn bodies(count: usize, len: usize) -> Vec<Vec<u8>> {
-        (0..count)
-            .map(|i| (0..len).map(|b| (b as u8).wrapping_add(i as u8)).collect())
-            .collect()
-    }
-
-    /// Batched leaves match one-at-a-time leaves, across lane widths and lengths.
-    #[test]
-    fn hash_leaves_matches_hash_leaf() {
-        for count in [0usize, 1, 3, 4, 5, 7, 8, 9, 15, 16, 17, 20, 31, 32, 33, 100] {
-            for len in [0usize, 1, 55, 56, 59, 60, 63, 64, 65, 119, 1_000, 1_024] {
-                let payloads = bodies(count, len);
-                let refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
-
-                let serial: Vec<Hash> = refs.iter().map(|body| hash_leaf(body)).collect();
-                assert_eq!(hash_leaves(&refs), serial, "count {count}, len {len}");
-            }
-        }
-    }
-
-    /// Batched joins match one-at-a-time joins, including a partial final run.
-    #[test]
-    fn hash_level_matches_hash_pair() {
-        for pairs in [0usize, 1, 2, 3, 4, 8, 10, 16, 17, 32, 33, 127, 128, 129, 1_000] {
-            let nodes: Vec<Hash> = (0..pairs * 2)
-                .map(|i| hash_leaf(&(i as u64).to_le_bytes()))
-                .collect();
-
-            let serial: Vec<Hash> = nodes
-                .chunks_exact(2)
-                .map(|pair| hash_pair(pair[0], pair[1]))
-                .collect();
-            assert_eq!(hash_level(&nodes), serial, "pairs {pairs}");
-        }
-    }
 
     /// The folded root must equal what inserting the leaves one at a time
     /// produces, at every leaf count including empty, odd tails and full.

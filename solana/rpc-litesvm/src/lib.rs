@@ -272,6 +272,10 @@ impl LiteSvmRpc {
         inner.svm.get_sysvar::<SvmClock>().slot
     }
 
+    fn current_block_time_locked(inner: &Inner) -> i64 {
+        inner.svm.get_sysvar::<SvmClock>().unix_timestamp
+    }
+
     fn balances_for_transaction(inner: &Inner, tx: &VersionedTransaction) -> Vec<u64> {
         tx.message
             .static_account_keys()
@@ -305,6 +309,7 @@ impl LiteSvmRpc {
                 parent_slot,
                 transactions: Vec::new(),
                 block_height: inner.current_block_height,
+                block_time: Self::current_block_time_locked(inner),
             },
         );
         inner.last_recorded_slot = Some(slot);
@@ -329,6 +334,7 @@ impl LiteSvmRpc {
             .and_then(|prev_slot| inner.slots.get(&prev_slot).map(|s| s.blockhash.clone()))
             .unwrap_or_else(|| Hash::default().to_string());
         let parent_slot = inner.last_recorded_slot.unwrap_or(0);
+        let block_time = Self::current_block_time_locked(inner);
 
         let slot_data = inner.slots.entry(slot).or_insert_with(|| {
             inner.current_block_height += 1;
@@ -339,6 +345,7 @@ impl LiteSvmRpc {
                 parent_slot,
                 transactions: Vec::new(),
                 block_height: inner.current_block_height,
+                block_time,
             }
         });
 
@@ -455,7 +462,7 @@ impl Rpc for LiteSvmRpc {
         ConfirmedTransactionWithStatusMeta {
             slot,
             tx_with_meta,
-            block_time: None,
+            block_time: Some(slot_data.block_time),
             index: 0,
         }
         .encode(UiTransactionEncoding::Json, Some(0))

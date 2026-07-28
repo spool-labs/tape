@@ -14,14 +14,14 @@ use tracing::{debug, info, warn};
 use crate::chain::submit_commit_epoch;
 use crate::context::NodeContext;
 use crate::core::chain_tx::{
-    stagger_by_rank, submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind,
+    await_submit_turn, submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind,
 };
-use crate::features::lifecycle::manager::{commit_at, committee_rank, unix_now};
+use crate::features::lifecycle::manager::{commit_at, committee_rank};
 use crate::features::lifecycle::types::{Action, TaskDone};
 
-/// Fixed retry cadence once the local clock is past the commit window but the
-/// validator's Clock sysvar has not yet caught up. Bounded so a small skew does
-/// not turn into a paid-failure loop.
+/// Fixed retry cadence once the commit window looks open locally but the
+/// program disagrees. Bounded so a small lag does not turn into a paid-failure
+/// loop.
 const TOOSOON_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 // Purpose: Submit a CommitEpoch transaction after the active epoch duration
@@ -37,9 +37,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut state_rx = ctx.subscribe_state();
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
-    // Lower ranks commit first; if one lands during the stagger the phase check
+    // Lower ranks commit first; if one lands during the wait the phase check
     // below returns Done, so higher ranks never race for a commit no longer needed.
-    if stagger_by_rank(rank, &cancel).await {
+    if await_submit_turn(rank, &cancel).await {
         return TaskDone::Cancelled(Action::CommitEpoch, epoch);
     }
 
@@ -80,8 +80,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 kind: TxRejectionKind::Program(TapeError::TooSoon),
                 ..
             } => {
-                // Local wall clock ran ahead of the on-chain clock; wait for the
-                // window rather than the generic backoff, then retry.
+                // The gate opened on an older block than the program judged
+                // against, so wait out the window rather than back off.
                 if wait_for_commit_window(&ctx, epoch, &cancel).await {
                     break;
                 }
@@ -140,7 +140,7 @@ async fn wait_for_commit_window<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: &CancellationToken,
 ) -> bool {
-    let remaining = commit_at(&ctx.state()).saturating_sub(unix_now());
+    let remaining = commit_at(&ctx.state()).saturating_sub(ctx.chain_now());
     let wait = if remaining > 0 {
         Duration::from_secs(remaining as u64)
     } else {

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
@@ -47,9 +47,14 @@ pub struct IngestProgress {
     last_dispatched_slot: AtomicU64,
     last_known_tip: AtomicU64,
     last_fetch_slot: AtomicU64,
+    chain_time: AtomicI64,
     queue_len: AtomicU64,
     started: Instant,
 }
+
+/// Held until a block carrying a timestamp is dispatched. No real block time is
+/// ever this, so "not yet known" stays distinct from "earlier than everything".
+const CHAIN_TIME_UNSET: i64 = i64::MIN;
 
 impl IngestProgress {
     fn new() -> Self {
@@ -58,6 +63,7 @@ impl IngestProgress {
             last_dispatched_slot: AtomicU64::new(0),
             last_known_tip: AtomicU64::new(u64::MAX),
             last_fetch_slot: AtomicU64::new(0),
+            chain_time: AtomicI64::new(CHAIN_TIME_UNSET),
             queue_len: AtomicU64::new(0),
             started: Instant::now(),
         }
@@ -87,6 +93,17 @@ impl IngestProgress {
     pub fn record_dispatched(&self, slot: u64) {
         self.last_dispatched_slot.store(slot, Ordering::Relaxed);
         self.record_attempt();
+    }
+
+    /// Record a dispatched block's timestamp, which is the chain's own clock.
+    pub fn record_chain_time(&self, unix_seconds: i64) {
+        self.chain_time.store(unix_seconds, Ordering::Relaxed);
+    }
+
+    /// Timestamp of the latest dispatched block, or None before one arrives.
+    pub fn chain_time(&self) -> Option<i64> {
+        let time = self.chain_time.load(Ordering::Relaxed);
+        (time != CHAIN_TIME_UNSET).then_some(time)
     }
 
     pub fn last_attempt_ms(&self) -> u64 {

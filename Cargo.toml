@@ -184,7 +184,6 @@ spl-associated-token-account-interface = { version = "=2.0.0", features = ["bors
 
 # client-specific
 sha2 = "0.10.8"
-tape-sha256 = "0.1.0"
 libc = "0.2"
 crc32fast = "1.4"
 crc32c = "0.6"

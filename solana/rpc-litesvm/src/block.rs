@@ -21,6 +21,7 @@ pub struct SlotData {
     pub parent_slot: Slot,
     pub transactions: Vec<RecordedTransaction>,
     pub block_height: u64,
+    pub block_time: i64,
 }
 
 impl SlotData {
@@ -47,7 +48,7 @@ impl SlotData {
             transactions,
             rewards: vec![],
             num_partitions: None,
-            block_time: None,
+            block_time: Some(self.block_time),
             block_height: Some(self.block_height),
         }
     }

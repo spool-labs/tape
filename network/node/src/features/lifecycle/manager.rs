@@ -93,7 +93,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -238,7 +238,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         let state = self.context.state();
         let node = self.context.node_address();
-        let now = unix_now();
+        let now = self.context.chain_now();
 
         let Some(action) = next_action(&state, node, done, now) else {
             return;
@@ -309,9 +309,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
 /// Determine the next epoch action based on current state.
 ///
-/// The now argument is wall-clock unix seconds, used to gate CommitEpoch on the
-/// elapsed epoch duration. Returns None if no action is needed (waiting for a
-/// phase change, the commit window, or the next epoch).
+/// The now argument is chain unix seconds, used to gate JoinCommittee and
+/// CommitEpoch on the elapsed epoch duration. Returns None if no action is
+/// needed (waiting for a phase change, the commit window, or the next epoch).
 pub fn next_action(
     state: &ProtocolState,
     node: Address,
@@ -407,7 +407,7 @@ pub fn next_action(
     }
 }
 
-/// Wall-clock instant (unix seconds) at which the active epoch's CommitEpoch is
+/// Chain instant (unix seconds) at which the active epoch's CommitEpoch is
 /// accepted on chain; before it the program rejects the tx as too soon. Reads
 /// the per-epoch stamped duration, so it is recomputed per epoch, never cached.
 pub fn commit_at(state: &ProtocolState) -> i64 {
@@ -456,7 +456,7 @@ fn next_committee_filled(state: &ProtocolState) -> bool {
 const JOIN_GATE_NUM: i64 = 4;
 const JOIN_GATE_DENOM: i64 = 5;
 
-/// Wall-clock instant (unix seconds) at which JoinCommittee is planned: 80% of
+/// Chain instant (unix seconds) at which JoinCommittee is planned: 80% of
 /// the way through the current epoch's stamped duration.
 pub fn join_at(state: &ProtocolState) -> i64 {
     let epoch = &state.current.epoch;
@@ -471,15 +471,7 @@ fn join_window_open(state: &ProtocolState, now: i64) -> bool {
     now >= join_at(state)
 }
 
-/// Current wall-clock time in unix seconds. Clamped to 0 before the unix epoch.
-pub fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// This node's 0-based position in the current committee, used to stagger
+/// This node's 0-based position in the current committee, used to order
 /// contended submissions. Falls back to 0 (submit first) when not found.
 pub fn committee_rank(state: &ProtocolState, node: Address) -> usize {
     state

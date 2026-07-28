@@ -247,6 +247,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             self.fanout(&block).await?;
             self.context.metrics.inc_blocks_processed();
             progress.record_dispatched(block.slot.0);
+            if let Some(time) = block.block_time {
+                progress.record_chain_time(time);
+            }
             self.dispatch_log_count += 1;
             debug!(slot = block.slot.0, "dispatched parsed block");
         }
