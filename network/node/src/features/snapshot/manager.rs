@@ -158,6 +158,15 @@ where
                     self.on_snapshot_finalized(state, event.epoch, event.hash)
                         .await?;
                 }
+                // The sync that carries the epoch into the Snapshot phase is the
+                // edge that should start the round. Without it nothing starts
+                // one until the heartbeat happens to tick, and the phase has no
+                // deadline of its own, so the whole epoch waits behind it.
+                ParsedInstruction::SyncSpool { event, .. } => {
+                    if event.phase == EpochPhase::Snapshot as u64 {
+                        self.try_progress_snapshot().await?;
+                    }
+                }
                 ParsedInstruction::FinalizeGroup { .. } => {
                     self.try_progress_snapshot().await?;
                 }
