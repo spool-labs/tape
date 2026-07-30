@@ -350,17 +350,25 @@ mod tests {
         let spool = SpoolIndex(7);
         let other = SpoolIndex(8);
 
+        // Vary the fill. The recorded size is the payload length before any
+        // storage-layer encoding, so a constant would pass either way, but a
+        // sample set is read to decide what to challenge and a test that cannot
+        // tell one slice from another is not worth much.
+        let fill = |n: usize, len: usize| -> Vec<u8> {
+            (0..len).map(|byte| (byte ^ (n * 37)) as u8).collect()
+        };
+
         let mut expected: Vec<(Address, StorageUnits)> = (1..=3)
             .map(|n| {
                 let track = Address::new_unique();
                 let len = n * 512;
-                store.put_slice(spool, track, vec![0u8; len]).unwrap();
+                store.put_slice(spool, track, fill(n, len)).unwrap();
                 (track, StorageUnits::from_bytes(len as u64))
             })
             .collect();
         // A slice in a different spool must not leak into the sample set.
         store
-            .put_slice(other, Address::new_unique(), vec![0u8; 99])
+            .put_slice(other, Address::new_unique(), fill(9, 99))
             .unwrap();
 
         // The order is the challenge's canonical one, so it must be by address.

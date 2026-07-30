@@ -356,11 +356,20 @@ mod tests {
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
+    /// A distinct non-zero hash per level. Zero is the seed the empty-subtree
+    /// roots derive from, so it is the one 32-byte value with a meaning of its
+    /// own and a poor stand-in for a path element.
+    fn path() -> Vec<Hash> {
+        (0..SUB_TREE_HEIGHT)
+            .map(|level| Hash::from([level as u8 + 1; 32]))
+            .collect()
+    }
+
     #[test]
     fn a_sample_proof_survives_the_wire() {
         let proof = SubLeafProof {
-            sub_leaf: vec![0xA5; SUB_LEAF_BYTES],
-            sub_proof: vec![Hash::from([7u8; 32]); SUB_TREE_HEIGHT],
+            sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
+            sub_proof: path(),
         };
         let encoded = wincode::serialize(&SampleProofPayload::from(proof.clone())).unwrap();
         // The response has to fit the body cap the route allows.
@@ -376,8 +385,8 @@ mod tests {
         // peer. Overstate the leaf length in a valid encoding and it must fail
         // before anything allocates.
         let mut encoded = wincode::serialize(&SampleProofPayload {
-            sub_leaf: vec![0u8; SUB_LEAF_BYTES],
-            sub_proof: vec![Hash::from([0u8; 32]); SUB_TREE_HEIGHT],
+            sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
+            sub_proof: path(),
         })
         .unwrap();
         encoded[..size_of::<u64>()]
