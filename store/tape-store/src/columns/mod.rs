@@ -26,6 +26,9 @@
 //! - `slice_size`: Slice payload lengths (SliceKey -> u64)
 //! - `slice_sidecar`: Sub-leaf tree nodes for challenge proofs (SliceKey -> Vec<Hash>)
 //!
+//! ## Challenge Column
+//! - `challenge_record`: Per-peer challenge history (Address -> PeerRecord)
+//!
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
 //!
@@ -60,6 +63,7 @@ pub mod policy;
 pub mod s3_multipart;
 pub mod snapshot;
 pub mod slice;
+pub mod challenge_record;
 pub mod slice_sidecar;
 pub mod slice_size;
 pub mod spool;
@@ -85,6 +89,7 @@ pub use policy::PolicyRuleCol;
 pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
+pub use challenge_record::ChallengeRecordCol;
 pub use slice_sidecar::SliceSidecarCol;
 pub use slice_size::SliceSizeCol;
 pub use spool::{
@@ -115,6 +120,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "slice",
     "slice_size",
     "slice_sidecar",
+    "challenge_record",
     "spool_sync_cursor",
     "event_log",
     "vote_sig",

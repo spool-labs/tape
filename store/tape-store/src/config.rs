@@ -158,6 +158,11 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_prefix_extractor(2)
             .build(),
 
+        // Challenge record - 32-byte peer address, small counters
+        ColumnFamilyConfig::new("challenge_record")
+            .with_block_based()
+            .build(),
+
         // Spool sync progress - 2-byte SpoolIndexKey
         ColumnFamilyConfig::new("spool_sync_cursor")
             .with_block_based()
@@ -338,7 +343,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 29);
+        assert_eq!(configs.len(), 30);
     }
 
     #[test]
@@ -363,6 +368,7 @@ mod tests {
             "slice",
             "slice_size",
             "slice_sidecar",
+            "challenge_record",
             "spool_sync_cursor",
             "event_log",
             "vote_sig",
