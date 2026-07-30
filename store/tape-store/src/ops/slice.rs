@@ -8,7 +8,7 @@ use tape_crypto::address::Address;
 
 use crate::columns::{SliceCol, SliceSidecarCol, SliceSizeCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{SliceKey, SliceValue};
+use crate::types::{SliceKey, SliceValue, SliceWrite};
 use crate::TapeStore;
 
 /// Entries staged before a rebuild flushes its batch
@@ -19,8 +19,17 @@ pub trait SliceOps {
     /// Get slice data
     fn get_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<Option<Vec<u8>>>;
 
-    /// Store slice data
-    fn put_slice(&self, spool_id: SpoolIndex, track_address: Address, data: Vec<u8>) -> Result<()>;
+    /// Store slice data with the sidecar its bytes imply
+    ///
+    /// Takes anything that converts into a `SliceWrite`, so a caller with raw
+    /// bytes passes them straight in and one that already derived the sidecar to
+    /// check the slice root hands that over instead of paying for it twice.
+    fn put_slice(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+        slice: impl Into<SliceWrite>,
+    ) -> Result<()>;
 
     /// Delete slice data
     fn delete_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
@@ -104,13 +113,20 @@ impl<S: Store> SliceOps for TapeStore<S> {
         Ok(self.get::<SliceCol>(&key)?.map(|value| value.0))
     }
 
-    fn put_slice(&self, spool_id: SpoolIndex, track_address: Address, data: Vec<u8>) -> Result<()> {
+    fn put_slice(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+        slice: impl Into<SliceWrite>,
+    ) -> Result<()> {
+        // A slice too large for the sub-leaf tree has no sidecar and no provable
+        // sample either, so it is stored without one rather than refused here.
+        let (data, sidecar) = slice.into().into_parts();
+
         let key = SliceKey::new(spool_id, track_address);
         let key_bytes = serialize_slice_key(&key)?;
         let size_bytes = serialize_size(StorageUnits(data.len() as u64))?;
-        // A slice too large for the sub-leaf tree has no sidecar and no proof to
-        // serve either, so it is stored without one rather than refused here.
-        let sidecar_bytes = slice_sidecar(&data).map(serialize_sidecar).transpose()?;
+        let sidecar_bytes = sidecar.map(serialize_sidecar).transpose()?;
         let value_bytes = wincode::serialize(&SliceValue(data))
             .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
 
@@ -431,6 +447,29 @@ mod tests {
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    #[test]
+    fn one_pass_gives_the_writer_both_the_root_and_the_sidecar() {
+        // The write path checks the slice root before storing, and the store
+        // keeps the sidecar. Both fall out of the same hash of the slice, so a
+        // writer that builds a SliceWrite never hashes twice.
+        let data: Vec<u8> = (0..300_000).map(|byte| (byte * 13 % 249) as u8).collect();
+        let write = SliceWrite::new(data.clone());
+
+        assert_eq!(write.root(), tape_core::erasure::slice_root(&data));
+        assert_eq!(write.data(), data.as_slice());
+
+        let store = test_store();
+        let spool = SpoolIndex(5);
+        let track = Address::new_unique();
+        store.put_slice(spool, track, write).unwrap();
+
+        assert_eq!(
+            store.get_slice_sidecar(spool, track).unwrap(),
+            tape_core::erasure::slice_sidecar(&data)
+        );
+        assert_eq!(store.get_slice(spool, track).unwrap(), Some(data));
     }
 
     #[test]

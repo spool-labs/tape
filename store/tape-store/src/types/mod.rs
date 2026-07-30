@@ -24,5 +24,5 @@ pub use keys::{
 pub use values::{
     AuditEntry, AuthState, BudgetLimits, Credential, CredentialCaps, InvalidationProof,
     LedgerEntry, LedgerReservation, MultipartPart, MultipartPartData, MultipartUpload,
-    ObjectListEntry, ObjectMetadata, PolicyRule, SliceValue, SnapshotArtifact, TapeInfo,
+    ObjectListEntry, ObjectMetadata, PolicyRule, SliceValue, SliceWrite, SnapshotArtifact, TapeInfo,
 };

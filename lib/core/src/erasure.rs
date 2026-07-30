@@ -67,6 +67,19 @@ pub fn slice_sidecar(slice: &[u8]) -> Option<Vec<Hash>> {
     Some(fold_level(&sub_leaf_hashes(slice), 0, SAMPLE_WINDOW_HEIGHT))
 }
 
+/// Slice root folded up from a sidecar rather than rehashed from the bytes.
+///
+/// A writer that built the sidecar already paid for every leaf hash, so this is
+/// what saves it hashing the slice a second time to verify the root it just
+/// committed to.
+pub fn slice_root_from_sidecar(sidecar: &[Hash]) -> Hash {
+    if sidecar.is_empty() {
+        return root_from_leaf_hashes::<SUB_TREE_HEIGHT>(&[]);
+    }
+
+    fold_level(sidecar, SAMPLE_WINDOW_HEIGHT, SUB_TREE_HEIGHT - SAMPLE_WINDOW_HEIGHT)[0]
+}
+
 /// Byte range of the slice a sample leaf's proof is built from.
 pub fn sample_window(sub_leaf: usize, slice_len: usize) -> Range<usize> {
     let start = (sub_leaf / SAMPLE_WINDOW_LEAVES) * SAMPLE_WINDOW_BYTES;
@@ -219,6 +232,22 @@ mod tests {
 
                 assert_eq!(windowed, full, "leaves {leaves} tail {tail} leaf {sub_leaf}");
             }
+        }
+    }
+
+    #[test]
+    fn a_root_folds_out_of_the_sidecar() {
+        // A writer builds the sidecar and needs the root to check what it is
+        // about to store. Folding has to agree with hashing the slice, or the
+        // write path would have to do both.
+        for (leaves, tail) in [(0usize, 0usize), (0, 9), (1, 0), (255, 0), (256, 0), (900, 33)] {
+            let slice = slice_of(leaves, tail);
+            let sidecar = slice_sidecar(&slice).expect("within capacity");
+            assert_eq!(
+                slice_root_from_sidecar(&sidecar),
+                slice_root(&slice).expect("within capacity"),
+                "leaves {leaves} tail {tail}"
+            );
         }
     }
 
