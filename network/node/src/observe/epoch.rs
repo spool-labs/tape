@@ -7,10 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use tape_metrics::prometheus::proto::MetricFamily;
 use tape_metrics::prometheus::IntGauge;
 use tape_metrics::MetricsRegistry;
-use tape_observe_api::{
-    Bucket, HttpStats, LastEpoch, DECODE_FAILURES, DECODE_SLICES_WASTED, SPOOL_OPS,
-    SPOOL_STAGE_FETCHED, SPOOL_STAGE_PERSISTED,
-};
+use tape_observe_api::{Bucket, HttpStats, LastEpoch, DECODE_FAILURES, DECODE_SLICES_WASTED, SPOOL_OPS};
 
 use super::board::{family_counter, family_gauge, histogram_snapshot, split_rpc_errors};
 
@@ -87,8 +84,8 @@ fn read_counters(families: &[MetricFamily]) -> Counters {
         decode_failures: DECODE_FAILURES.iter().map(|&r| decode(r)).sum(),
         slices_used: slices("used"),
         slices_wasted: DECODE_SLICES_WASTED.iter().map(|&o| slices(o)).sum(),
-        spool_bytes_persisted: spool(SPOOL_STAGE_PERSISTED),
-        spool_bytes_fetched: spool(SPOOL_STAGE_FETCHED),
+        spool_bytes_persisted: spool("persisted"),
+        spool_bytes_fetched: spool("fetched"),
         cache_hits: m.cache_requests_total.with_label_values(&["hit"]).get(),
         cache_misses: m.cache_requests_total.with_label_values(&["miss"]).get(),
         repair_escalations: m.repair_escalations_total.get(),

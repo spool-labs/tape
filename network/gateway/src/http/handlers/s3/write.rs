@@ -84,6 +84,11 @@ impl S3WriteContext {
     }
 
     /// Write an in-memory object to `tape` as the delegate, returning its ETag.
+    ///
+    /// `existing` is the object's current track address, if the caller resolved
+    /// it (an S3 overwrite). A single-track write then resumes a matching
+    /// incomplete track, skips a matching complete one, or overwrites and
+    /// reclaims a differing one, instead of always appending a duplicate.
     pub async fn write_object<Db, Cluster, Blockchain>(
         &self,
         context: &NodeContext<Db, Cluster, Blockchain>,
@@ -91,6 +96,7 @@ impl S3WriteContext {
         name: &[u8],
         content_type: ContentType,
         data: &[u8],
+        existing: Option<Address>,
     ) -> Result<Hash, TapedriveError>
     where
         Db: Store,
@@ -102,13 +108,21 @@ impl S3WriteContext {
 
         if data.len() <= MAX_TRACK_SIZE {
             let track = client
-                .write_named_track_as(&operator, name, content_type, data)
+                .write_or_resume_track_as(&operator, name, content_type, data, existing)
                 .await?;
             Ok(track.value_hash)
         } else {
+            // A stream is written fresh (its manifest embeds per-chunk track
+            // numbers, so it cannot resume in place), then the prior object this
+            // overwrite orphaned is reclaimed whole via its manifest.
             let receipt = client
                 .write_named_bytes_as(&operator, name, content_type, data)
                 .await?;
+            if let Some(prior) = existing {
+                if let Err(error) = client.reclaim_object_as(&operator, prior).await {
+                    tracing::warn!(%error, %tape, %prior, "overwrite reclaim failed; prior object left for later sweep");
+                }
+            }
             Ok(receipt.manifest_value_hash)
         }
     }

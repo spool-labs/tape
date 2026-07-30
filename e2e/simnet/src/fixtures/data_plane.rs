@@ -31,8 +31,9 @@ impl SimnetScenario<'_> {
         epochs: u64,
     ) -> Result<(TapeKey, Address, CompressedTrack)> {
         let sdk = self.sdk(keypair);
-        let (tape_key, track) = sdk
-            .write(data, epochs)
+        let tape_key = TapeKey::generate();
+        let track = sdk
+            .write(&tape_key, data, epochs)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let track_address = track_pda(track.tape, track.track_number).0;

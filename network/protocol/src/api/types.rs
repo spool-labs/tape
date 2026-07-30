@@ -93,7 +93,7 @@ pub struct VolumeStats {
 }
 
 /// Response from the node stats endpoint.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeStats {
     #[serde(default)]
     pub version: String,
@@ -125,12 +125,6 @@ pub struct NodeStats {
     pub bytes_uploaded: u64,
     #[serde(default)]
     pub bytes_downloaded: u64,
-    #[serde(default)]
-    pub sync_bytes_fetched: u64,
-    #[serde(default)]
-    pub repair_bytes_fetched: u64,
-    #[serde(default)]
-    pub recover_bytes_fetched: u64,
     #[serde(default)]
     pub requests_total: u64,
     #[serde(default)]
@@ -178,10 +172,6 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
                 s.bootstrap_target_slot.saturating_sub(s.bootstrap_current_slot)
             },
             fee_payer_lamports: s.fee_payer_lamports,
-            sync_bytes: s.sync_bytes_fetched,
-            repair_bytes: s.repair_bytes_fetched,
-            recover_bytes: s.recover_bytes_fetched,
-            upload_bytes: s.bytes_uploaded,
         }
     }
 }
@@ -352,26 +342,6 @@ mod tests {
         let result: Result<SlicePayload, _> = wincode::deserialize(&[0u8; 10]);
         assert!(result.is_err());
     }
-
-    // each transfer counter reaches the dashboard's field of the same meaning
-    #[test]
-    fn transfer_counters_projected() {
-        let wire = NodeStats {
-            sync_bytes_fetched: 11,
-            repair_bytes_fetched: 22,
-            recover_bytes_fetched: 33,
-            bytes_uploaded: 44,
-            ..NodeStats::default()
-        };
-
-        let stats = tape_observe_api::NodeStats::from(&wire);
-
-        assert_eq!(stats.sync_bytes, 11);
-        assert_eq!(stats.repair_bytes, 22);
-        assert_eq!(stats.recover_bytes, 33);
-        assert_eq!(stats.upload_bytes, 44);
-    }
-
 
     // Validates that slice payloads larger than the default wincode vector cap still roundtrip.
     #[test]
