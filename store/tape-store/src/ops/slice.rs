@@ -1,10 +1,12 @@
 //! Slice data operations (merged primary + recovery)
 
 use store::{Column, Store, WriteBatch};
+use tape_core::erasure::slice_sidecar;
 use tape_core::types::{SpoolIndex, StorageUnits};
+use tape_crypto::Hash;
 use tape_crypto::address::Address;
 
-use crate::columns::{SliceCol, SliceSizeCol};
+use crate::columns::{SliceCol, SliceSidecarCol, SliceSizeCol};
 use crate::error::{Result, TapeStoreError};
 use crate::types::{SliceKey, SliceValue};
 use crate::TapeStore;
@@ -56,6 +58,28 @@ pub trait SliceOps {
         spool_id: SpoolIndex,
     ) -> Result<Vec<(Address, StorageUnits)>>;
 
+    /// Sub-leaf tree nodes kept beside a slice, for answering a storage challenge.
+    ///
+    /// None when the slice is absent or predates the sidecar; a caller that needs
+    /// one either rebuilds from the slice or runs `ensure_slice_sidecars`.
+    fn get_slice_sidecar(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+    ) -> Result<Option<Vec<Hash>>>;
+
+    /// Drop a slice's sidecar, leaving the slice itself in place.
+    ///
+    /// Only the rebuild path and its tests need this; a live node deletes the
+    /// slice and its sidecar together.
+    fn delete_slice_sidecar(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
+
+    /// Build any missing sidecar from the slice it belongs to.
+    ///
+    /// Returns how many were written. Reads slices, so it is a startup job rather
+    /// than something to run on a request.
+    fn ensure_slice_sidecars(&self) -> Result<usize>;
+
     /// Count slices in a spool without loading data.
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize>;
 
@@ -84,15 +108,21 @@ impl<S: Store> SliceOps for TapeStore<S> {
         let key = SliceKey::new(spool_id, track_address);
         let key_bytes = serialize_slice_key(&key)?;
         let size_bytes = serialize_size(StorageUnits(data.len() as u64))?;
+        // A slice too large for the sub-leaf tree has no sidecar and no proof to
+        // serve either, so it is stored without one rather than refused here.
+        let sidecar_bytes = slice_sidecar(&data).map(serialize_sidecar).transpose()?;
         let value_bytes = wincode::serialize(&SliceValue(data))
             .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
 
-        // Both families share a volume, so one batch keeps a payload and its
-        // recorded length from ever disagreeing. Hand the serialized bytes over
-        // rather than copying the payload into the batch.
+        // All three families share a volume, so one batch keeps a payload, its
+        // recorded length and its sidecar from ever disagreeing. Hand the
+        // serialized bytes over rather than copying the payload into the batch.
         let mut batch = WriteBatch::new();
         batch.put_owned(SliceCol::CF_NAME, key_bytes.clone(), value_bytes);
-        batch.put_owned(SliceSizeCol::CF_NAME, key_bytes, size_bytes);
+        batch.put_owned(SliceSizeCol::CF_NAME, key_bytes.clone(), size_bytes);
+        if let Some(sidecar) = sidecar_bytes {
+            batch.put_owned(SliceSidecarCol::CF_NAME, key_bytes, sidecar);
+        }
         self.inner().inner().write_batch(batch)?;
         Ok(())
     }
@@ -103,7 +133,8 @@ impl<S: Store> SliceOps for TapeStore<S> {
 
         let mut batch = WriteBatch::new();
         batch.delete_owned(SliceCol::CF_NAME, key_bytes.clone());
-        batch.delete_owned(SliceSizeCol::CF_NAME, key_bytes);
+        batch.delete_owned(SliceSizeCol::CF_NAME, key_bytes.clone());
+        batch.delete_owned(SliceSidecarCol::CF_NAME, key_bytes);
         self.inner().inner().write_batch(batch)?;
         Ok(())
     }
@@ -218,6 +249,58 @@ impl<S: Store> SliceOps for TapeStore<S> {
         Ok(results)
     }
 
+    fn get_slice_sidecar(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+    ) -> Result<Option<Vec<Hash>>> {
+        let key = SliceKey::new(spool_id, track_address);
+        Ok(self.get::<SliceSidecarCol>(&key)?)
+    }
+
+    fn delete_slice_sidecar(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
+        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
+        self.inner().inner().delete(SliceSidecarCol::CF_NAME, &key)?;
+        Ok(())
+    }
+
+    fn ensure_slice_sidecars(&self) -> Result<usize> {
+        let raw = self.inner().inner();
+        let mut written = 0usize;
+        let mut batch = WriteBatch::new();
+        let mut staged = 0usize;
+
+        for key_bytes in raw.iter_keys_prefix(SliceCol::CF_NAME, &[])? {
+            if raw.get(SliceSidecarCol::CF_NAME, &key_bytes)?.is_some() {
+                continue;
+            }
+
+            let Some(value_bytes) = raw.get(SliceCol::CF_NAME, &key_bytes)? else {
+                continue;
+            };
+            let slice: SliceValue = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
+            let Some(sidecar) = slice_sidecar(&slice.0) else {
+                continue;
+            };
+
+            batch.put_owned(SliceSidecarCol::CF_NAME, key_bytes, serialize_sidecar(sidecar)?);
+            written += 1;
+            staged += 1;
+
+            if staged >= REBUILD_BATCH_LEN {
+                raw.write_batch(core::mem::take(&mut batch))?;
+                staged = 0;
+            }
+        }
+
+        if staged > 0 {
+            raw.write_batch(batch)?;
+        }
+
+        Ok(written)
+    }
+
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
         let prefix = SliceKey::spool_prefix(spool_id);
         // Keys-only: never read/copy the (blob) values just to count them.
@@ -266,6 +349,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
             Some(end) => {
                 raw.delete_range(SliceCol::CF_NAME, &start, &end)?;
                 raw.delete_range(SliceSizeCol::CF_NAME, &start, &end)?;
+                raw.delete_range(SliceSidecarCol::CF_NAME, &start, &end)?;
             }
             None => {
                 // The max spool prefix has no exclusive successor; fall back to
@@ -275,6 +359,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
                 for key in &keys {
                     batch.delete(SliceCol::CF_NAME, key);
                     batch.delete(SliceSizeCol::CF_NAME, key);
+                    batch.delete(SliceSidecarCol::CF_NAME, key);
                 }
                 raw.write_batch(batch)?;
             }
@@ -324,6 +409,11 @@ fn serialize_slice_key(key: &SliceKey) -> Result<Vec<u8>> {
         .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))
 }
 
+fn serialize_sidecar(sidecar: Vec<Hash>) -> Result<Vec<u8>> {
+    wincode::serialize(&sidecar)
+        .map_err(|e| TapeStoreError::Serialization(format!("slice sidecar: {}", e)))
+}
+
 fn serialize_size(size: StorageUnits) -> Result<Vec<u8>> {
     wincode::serialize(&size)
         .map_err(|e| TapeStoreError::Serialization(format!("slice size: {}", e)))
@@ -341,6 +431,45 @@ mod tests {
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    #[test]
+    fn a_slice_carries_a_sidecar_through_its_whole_life() {
+        let store = test_store();
+        let spool = SpoolIndex(3);
+        let track = Address::new_unique();
+        let slice: Vec<u8> = (0..300_000).map(|byte| (byte * 7 % 251) as u8).collect();
+
+        store.put_slice(spool, track, slice.clone()).unwrap();
+        assert_eq!(
+            store.get_slice_sidecar(spool, track).unwrap(),
+            tape_core::erasure::slice_sidecar(&slice)
+        );
+
+        // Nothing left behind: a stale sidecar would prove a slice the node no
+        // longer holds.
+        store.delete_slice(spool, track).unwrap();
+        assert!(store.get_slice_sidecar(spool, track).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_missing_sidecar_is_rebuilt_from_the_slice() {
+        // What a store written before the sidecar existed goes through on open.
+        let store = test_store();
+        let spool = SpoolIndex(4);
+        let track = Address::new_unique();
+        let slice: Vec<u8> = (0..300_000).map(|byte| (byte * 11 % 253) as u8).collect();
+
+        store.put_slice(spool, track, slice.clone()).unwrap();
+        let expected = store.get_slice_sidecar(spool, track).unwrap();
+        store.delete_slice_sidecar(spool, track).unwrap();
+        assert!(store.get_slice_sidecar(spool, track).unwrap().is_none());
+
+        assert_eq!(store.ensure_slice_sidecars().unwrap(), 1);
+        assert_eq!(store.get_slice_sidecar(spool, track).unwrap(), expected);
+
+        // Idempotent, so a restart with nothing missing writes nothing.
+        assert_eq!(store.ensure_slice_sidecars().unwrap(), 0);
     }
 
     #[test]
