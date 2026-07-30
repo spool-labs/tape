@@ -117,10 +117,13 @@ impl S3WriteContext {
         let operator = self.operator(tape)?;
 
         if data.len() <= MAX_TRACK_SIZE {
-            let track = client
+            // The canonical ETag, the same one the object index will record, so
+            // a client is never told one value now and served another once the
+            // index catches up.
+            let written = client
                 .write_or_resume_track_as(&operator, name, content_type, data, existing)
                 .await?;
-            Ok(track.value_hash)
+            Ok(written.etag)
         } else {
             // A stream is written fresh (its manifest embeds per-chunk track
             // numbers, so it cannot resume in place), then the prior object this

@@ -282,13 +282,16 @@ async fn resume_flow_inner() {
                 OBJECT_NAME,
                 ContentType::Unknown,
                 &other,
-                Some(track_pda(key.address(), first.track_number).0),
+                Some(track_pda(key.address(), first.track.track_number).0),
             )
             .await
             .expect("I overwrite");
-        assert_ne!(second.track_number, first.track_number, "I: overwrite writes a new track");
+        assert_ne!(
+            second.track.track_number, first.track.track_number,
+            "I: overwrite writes a new track"
+        );
         wait_track_count(&sdk, &key.address(), 1, active_timeout).await;
-        assert_eq!(read_track(&sdk, &second, active_timeout).await, other, "I: reads overwritten bytes");
+        assert_eq!(read_track(&sdk, &second.track, active_timeout).await, other, "I: reads overwritten bytes");
     }
 
     // Case J: gateway stream overwrite. A multi-track stream re-put under the same

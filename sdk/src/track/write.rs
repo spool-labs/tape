@@ -126,7 +126,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         data: &[u8],
     ) -> Result<CompressedTrack, TapedriveError> {
-        write_track(
+        write_track_only(
             self,
             operator,
             name.as_ref(),
@@ -150,7 +150,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         data: &[u8],
         existing: Option<Address>,
-    ) -> Result<CompressedTrack, TapedriveError> {
+    ) -> Result<ObjectWrite, TapedriveError> {
         resume_or_write_track(
             self,
             operator,
@@ -1095,13 +1095,54 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
 ///
 /// Returns once certification is confirmed on-chain; peers may lag briefly
 /// before reporting the track certified.
-pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
+/// A completed object write: the track, and the ETag the object index will
+/// record for it.
+///
+/// A coded track's canonical ETag is its blob commitment, which cannot be
+/// derived from the track row alone. Reporting it here is what lets a caller
+/// answer with the same ETag the index will serve later, instead of a
+/// placeholder that changes once the index catches up.
+pub struct ObjectWrite {
+    pub track: CompressedTrack,
+    pub etag: Hash,
+}
+
+impl ObjectWrite {
+    /// An inline track is its own content, so the track row carries the ETag.
+    fn inline(track: CompressedTrack) -> Self {
+        let etag = track.value_hash;
+        Self { track, etag }
+    }
+
+    fn coded(track: CompressedTrack, commitment: Hash) -> Self {
+        Self {
+            track,
+            etag: commitment,
+        }
+    }
+}
+
+/// Write a track and report only the track, for callers with no object ETag to
+/// answer with.
+pub async fn write_track_only<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
 ) -> Result<CompressedTrack, TapedriveError> {
+    write_track(client, tape_key, name, content_type, data)
+        .await
+        .map(|written| written.track)
+}
+
+pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    content_type: ContentType,
+    data: &[u8],
+) -> Result<ObjectWrite, TapedriveError> {
     let timer = client
         .timer(Operation::WriteTrack, Phase::Total)
         .bytes(data.len() as u64);
@@ -1116,7 +1157,7 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
                 Operation::WriteTrack,
             )
             .await?;
-            return Ok(written.track);
+            return Ok(ObjectWrite::inline(written.track));
         }
 
         // The tape fetched before the register carries the track tree the
@@ -1137,6 +1178,7 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         )
         .await?;
         let (written, plan) = resolve_sent_blob(client, sent).await?;
+        let commitment = plan.commitment_hash;
 
         // A register landing between the tape fetch and ours breaks the
         // mirror's sequence; those writes certify through the peer path.
@@ -1145,14 +1187,16 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         upload_with_retry(client, &written, &plan, Operation::WriteTrack).await?;
 
         if !mirrored {
-            return certify_with_retry(client, tape_key, &written, Operation::WriteTrack).await;
+            return certify_with_retry(client, tape_key, &written, Operation::WriteTrack)
+                .await
+                .map(|track| ObjectWrite::coded(track, commitment));
         }
 
         certify_with_mirror(client, tape_key, &mirror, &written, Operation::WriteTrack).await?;
 
         // The certify transaction is confirmed, so the on-chain leaf is
         // final; readers poll peers, so their visibility is not waited on.
-        Ok(certified_track(&written.track))
+        Ok(ObjectWrite::coded(certified_track(&written.track), commitment))
     }
     .await;
     timer.finish_result(&result);
@@ -1182,7 +1226,7 @@ pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
             reserve.finish_result(&reserved);
             reserved?;
 
-            write_track(client, tape_key, name, content_type, data).await
+            write_track_only(client, tape_key, name, content_type, data).await
         }
         // An existing tape means a prior interrupted call. The one-call write
         // dedicates a fresh tape to one blob at track 0, and reusing its key for
@@ -1199,6 +1243,7 @@ pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
                 OnConflict::Reject,
             )
             .await
+            .map(|written| written.track)
         }
         Err(other) => Err(other),
     }
@@ -1229,7 +1274,7 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
     data: &[u8],
     existing: Option<Address>,
     on_conflict: OnConflict,
-) -> Result<CompressedTrack, TapedriveError> {
+) -> Result<ObjectWrite, TapedriveError> {
     let Some(track_address) = existing else {
         return write_track(client, operator, name, content_type, data).await;
     };
@@ -1263,9 +1308,12 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
         // else upload + certify).
         return match coded_plan {
             Some(plan) => {
-                finish_coded_track(client, operator, existing_track, &plan, Operation::Write).await
+                let commitment = plan.commitment_hash;
+                finish_coded_track(client, operator, existing_track, &plan, Operation::Write)
+                    .await
+                    .map(|track| ObjectWrite::coded(track, commitment))
             }
-            None => Ok(existing_track),
+            None => Ok(ObjectWrite::inline(existing_track)),
         };
     }
 
