@@ -65,15 +65,6 @@ pub struct DistributedUploader {
     group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
     concurrency_limit: Arc<Semaphore>,
-    reputation: Option<Arc<crate::bootstrap::Reputation>>,
-}
-
-impl DistributedUploader {
-    /// Spend less time on owners already known to be down.
-    pub fn with_reputation(mut self, reputation: Arc<crate::bootstrap::Reputation>) -> Self {
-        self.reputation = Some(reputation);
-        self
-    }
 }
 
 struct NodeUploadResult {
@@ -108,7 +99,6 @@ impl DistributedUploader {
             group_peers,
             group_member_count,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
-            reputation: None,
         })
     }
 
@@ -161,40 +151,18 @@ impl DistributedUploader {
                 .filter_map(|spool| slice_map.get(spool).map(|s| (*spool, (*s).clone())))
                 .collect();
 
-            // An owner already known to be down gets the same budget a
-            // straggler gets after quorum: one attempt, then recovery takes
-            // it. Upload routing is fixed, so the only saving available is not
-            // spending the full ladder on a node that will not answer.
-            let known_down = self
-                .reputation
-                .as_ref()
-                .map(|reputation| reputation.is_quarantined(&node))
-                .unwrap_or(false);
-            let budget = match known_down {
-                true => Arc::new(AtomicBool::new(true)),
-                false => quorum_reached,
-            };
-            let reputation = self.reputation.clone();
-
             // Detached: stragglers finish after quorum returns, and anything they
             // fail to land is picked up by the recovery worker.
             tokio::spawn(async move {
-                let started = Instant::now();
                 let result = upload_node_slices(
                     peer_client.as_ref(),
                     node,
                     track,
                     slices,
-                    budget.as_ref(),
+                    quorum_reached.as_ref(),
                     concurrency_limit,
                 )
                 .await;
-                if let Some(reputation) = reputation {
-                    match result.as_ref().map(|outcome| outcome.failed.is_empty()) {
-                        Ok(true) => reputation.record_success(node, started.elapsed()),
-                        Ok(false) | Err(_) => reputation.record_failure(node),
-                    }
-                }
                 let _ = result_sender.send(result);
             });
         }

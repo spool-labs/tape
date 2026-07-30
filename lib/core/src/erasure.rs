@@ -48,6 +48,16 @@ pub fn slice_root(slice: &[u8]) -> Option<Hash> {
     Some(root_from_leaf_hashes::<SUB_TREE_HEIGHT>(&sub_leaf_hashes(slice)))
 }
 
+/// The slice position a spool holds within its group.
+///
+/// A spool index is network-wide while a commitment leaf index runs 0..GROUP_SIZE,
+/// so anything indexing `leaves` has to convert first. Total, because every spool
+/// index belongs to the group it divides into.
+#[inline]
+pub fn leaf_position(spool: SpoolIndex) -> SpoolIndex {
+    SpoolIndex(spool.as_u64() % GROUP_SIZE as u64)
+}
+
 /// Get the group index for a given spool.
 #[inline]
 pub fn group_for_spool(spool: SpoolIndex) -> GroupIndex {
@@ -85,6 +95,26 @@ mod tests {
     #[test]
     fn test_spool_group_size() {
         assert_eq!(GROUP_SIZE, 20);
+    }
+
+    #[test]
+    fn a_leaf_position_wraps_within_its_group() {
+        // The distinction that matters: a spool index runs network-wide while a
+        // leaf index runs 0..GROUP_SIZE, so anything past the first group has to
+        // wrap or it indexes off the end of the commitment.
+        assert_eq!(leaf_position(SpoolIndex(0)), SpoolIndex(0));
+        assert_eq!(leaf_position(SpoolIndex(19)), SpoolIndex(19));
+        assert_eq!(leaf_position(SpoolIndex(20)), SpoolIndex(0));
+        assert_eq!(leaf_position(SpoolIndex(137)), SpoolIndex(17));
+
+        // It agrees with the group-derived form every other caller uses, and it
+        // is total where that one is not.
+        for spool in [0u64, 1, 20, 137, 999] {
+            let spool = SpoolIndex(spool);
+            let position = leaf_position(spool);
+            assert!(position.as_usize() < GROUP_SIZE);
+            assert_eq!(group_for_spool(spool).position_of(spool), Some(position.as_usize()));
+        }
     }
 
     #[test]

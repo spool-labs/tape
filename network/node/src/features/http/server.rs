@@ -181,6 +181,13 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         admission::slice_admission::<Db, Cluster, Blockchain>,
                     )),
             )
+            // A storage challenge answers to any peer. It reveals one 1 KiB leaf
+            // a reader could already fetch, and gating it would let a node opt
+            // out of being checked.
+            .route(
+                api_routes::TRACK_SAMPLE_PATH,
+                get(handlers::track::sample::get_sample::<Db, Cluster, Blockchain>),
+            )
             // Staked-peer gated POSTs. Snapshot/system tape catalogs are also
             // listable for bootstrap catch-up.
             .route(

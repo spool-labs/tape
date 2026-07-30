@@ -18,6 +18,7 @@ use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::eviction::build::{EvictionCandidate, build_eviction};
+use crate::features::eviction::challenge::{Entropy, challenge_target};
 use crate::features::eviction::fanout::fanout_eviction_votes;
 use crate::features::eviction::submit::{submit_eviction_proposal, submit_ready_eviction_votes};
 use crate::features::eviction::vote::create_eviction_votes;
@@ -31,6 +32,9 @@ pub struct EvictionManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     // Voting epoch of the last failed probe per target. A target is re-probed
     // once per epoch so a recovered node stops collecting votes.
     probe_failed: HashMap<Address, EpochNumber>,
+    // Newest finalized block seen, which seeds every challenge sample. None
+    // until the first block arrives, and no target is challenged before then.
+    entropy: Option<Entropy>,
 }
 
 impl<Db, Cluster, Blockchain> EvictionManager<Db, Cluster, Blockchain>
@@ -49,6 +53,7 @@ where
             block_rx,
             cancel,
             probe_failed: HashMap::new(),
+            entropy: None,
         }
     }
 
@@ -86,6 +91,14 @@ where
     /// the committee voting in step across the window, which is what lets the
     /// partial signatures accumulate into a landed eviction.
     async fn on_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
+        // Seeding from the newest finalized block is what keeps a sample
+        // unpredictable: a target cannot know which leaf it owes until the block
+        // it is drawn from exists.
+        self.entropy = Some(Entropy {
+            slot: block.slot,
+            hash: block.blockhash,
+        });
+
         for ix in &block.instructions {
             match ix {
                 ParsedInstruction::ProposeEviction { node, .. } => {
@@ -122,7 +135,7 @@ where
         }
 
         for node in self.context.eviction_queue.snapshot() {
-            if !self.judge_target(node, state.epoch()).await {
+            if !self.judge_target(&state, node).await {
                 continue;
             }
 
@@ -143,15 +156,24 @@ where
     /// Judge the target with this node's own probe, at most once per voting
     /// epoch. A proposal alone never recruits a signature: only a target this
     /// node observes failing stays queued, and a recovered target is dropped.
-    async fn judge_target(&mut self, node: Address, epoch: EpochNumber) -> bool {
+    ///
+    /// A group-mate is judged by a storage challenge, which shows the target is
+    /// reachable and can still prove a sample of its assigned bytes. Everyone
+    /// else falls back to a health ping, because only a group-mate holds the
+    /// track list to draw a sample from.
+    async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
+        let epoch = state.epoch();
         if self.probe_failed.get(&node) == Some(&epoch) {
             return true;
         }
 
-        let healthy = matches!(
-            self.context.api.get_health(node, &GetHealthReq).await,
-            Ok(GetHealthRes { ok: true })
-        );
+        let healthy = match self.challenge(state, node).await {
+            Some(answered) => answered,
+            None => matches!(
+                self.context.api.get_health(node, &GetHealthReq).await,
+                Ok(GetHealthRes { ok: true })
+            ),
+        };
         if healthy {
             debug!(node = %node, "eviction: target probed healthy, dropping");
             self.context.eviction_queue.remove(&node);
@@ -162,6 +184,14 @@ where
         info!(node = %node, epoch = epoch.0, "eviction: target probe failed, voting to evict");
         self.probe_failed.insert(node, epoch);
         true
+    }
+
+    /// Challenge the target for one sample leaf, if we can pose the question.
+    ///
+    /// None means no judgement was reached, not a pass: no finalized block seen
+    /// yet, no shared group, or nothing stored to draw from.
+    async fn challenge(&self, state: &ProtocolState, node: Address) -> Option<bool> {
+        challenge_target(&self.context, state, node, self.entropy?).await
     }
 
     async fn run_round(

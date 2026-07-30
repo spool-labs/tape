@@ -62,13 +62,6 @@ pub trait Rpc: Send + Sync {
     /// Get the latest blockhash for transaction signing
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError>;
 
-    /// Get the cluster's genesis hash.
-    ///
-    /// Identifies which chain we are talking to. One program key can be
-    /// deployed to two clusters, so anything cached against a program id needs
-    /// this to tell them apart.
-    async fn get_genesis_hash(&self) -> Result<Hash, RpcError>;
-
     /// Get a confirmed block by slot number
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError>;
 
