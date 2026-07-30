@@ -15,11 +15,10 @@ use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::balance::{sol_balance_of, tape_balance_of};
-use crate::bootstrap::{BootstrapStore, Reputation};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
-use crate::metrics::{Metrics, Noop, Operation, Phase, Timer};
+use crate::metrics::{Metrics, Noop, Operation, Outcome, Phase, Timer};
 use crate::read_options::ReadOptions;
 use crate::write_options::WriteOptions;
 use crate::stream::{
@@ -27,7 +26,7 @@ use crate::stream::{
     receipt::StreamReceipt,
     write::{write_bytes as write_stream_bytes, write_stream as write_reader_stream},
 };
-use crate::track::write::{write_or_resume, UNNAMED_TRACK, UNTYPED_TRACK};
+use crate::track::write::{UNNAMED_TRACK, UNTYPED_TRACK};
 
 /// High-level client for the Tapedrive storage network.
 ///
@@ -41,7 +40,6 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub metrics: Arc<dyn Metrics>,
     pub write_options: WriteOptions,
     pub read_options: ReadOptions,
-    pub reputation: Arc<Reputation>,
 }
 
 /// Default constructor using `HttpApi`.
@@ -68,10 +66,6 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
-            reputation: Arc::new(Reputation::attach(
-                BootstrapStore::disabled(),
-                tape_api::program::tapedrive::id().into(),
-            )),
         }
     }
 }
@@ -94,20 +88,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
-            reputation: Arc::new(Reputation::attach(
-                BootstrapStore::disabled(),
-                tape_api::program::tapedrive::id().into(),
-            )),
         }
-    }
-
-    /// Persist peer reputation and bootstrap hints to this store.
-    pub fn with_bootstrap_cache(mut self, store: BootstrapStore) -> Self {
-        self.reputation = Arc::new(Reputation::attach(
-            store,
-            tape_api::program::tapedrive::id().into(),
-        ));
-        self
     }
 
     /// Attach or replace the payer used for mutating operations.
@@ -165,21 +146,18 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     /// Write unnamed content-addressed data to the network in one call.
     ///
-    /// Reserves the tape controlled by `tape_key` sized to fit `data`, registers
-    /// a track, uploads erasure-coded slices to storage nodes, and certifies the
+    /// Creates a tape sized to fit `data` exactly, registers a track,
+    /// uploads erasure-coded slices to storage nodes, and certifies the
     /// track with BLS signatures. Unnamed tracks are excluded from object
     /// listings.
     ///
-    /// The caller owns the tape key: generate and durably persist it before
-    /// calling, so an interrupted write leaves the reserved tape recoverable.
+    /// Returns the tape key (save it!) and the registered track.
     pub async fn write(
         &self,
-        tape_key: &TapeKey,
         data: &[u8],
         epochs: u64,
-    ) -> Result<CompressedTrack, TapedriveError> {
+    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
         self.write_named(
-            tape_key,
             UNNAMED_TRACK,
             UNTYPED_TRACK,
             data,
@@ -191,24 +169,36 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Write named data to the network in one call.
     ///
     /// Named tracks on non-system tapes are materialized into object listings.
-    /// The caller owns the tape key; see [`Tapedrive::write`].
     pub async fn write_named(
         &self,
-        tape_key: &TapeKey,
         name: impl AsRef<[u8]>,
         content_type: ContentType,
         data: &[u8],
         epochs: u64,
-    ) -> Result<CompressedTrack, TapedriveError> {
+    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
         let total = self
             .timer(Operation::Write, Phase::Total)
             .bytes(data.len() as u64);
 
-        let result =
-            write_or_resume(self, tape_key, name.as_ref(), content_type, data, epochs).await;
-        total.finish_result(&result);
+        let tape_key = TapeKey::generate();
+        let capacity = StorageUnits::from_bytes(data.len() as u64);
+        let reserve_capacity = capacity + StorageUnits::mb(1);
 
-        result
+        let reserve = self.timer(Operation::Write, Phase::Reserve);
+        let result = self.reserve(&tape_key, reserve_capacity, epochs).await;
+        reserve.finish_result(&result);
+        if let Err(error) = result {
+            total.finish(Outcome::Error);
+            return Err(error);
+        }
+
+        let result = self
+            .write_named_track(&tape_key, name, content_type, data)
+            .await;
+        total.finish_result(&result);
+        let track = result?;
+
+        Ok((tape_key, track))
     }
 
     /// Write unnamed in-memory bytes to an existing tape as a logical stream.

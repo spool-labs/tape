@@ -32,6 +32,7 @@ pub const TRACK_PROOF_PATH: &str = "/v1/tracks/{track_id}/proof";
 pub const TRACK_REPAIR_PATH: &str = "/v1/tracks/{track_id}/repair";
 pub const TRACK_SIGN_PATH: &str = "/v1/tracks/{track_id}/sign";
 pub const TRACK_SLICE_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}";
+pub const TRACK_SAMPLE_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/sample/{sub_leaf}";
 pub const TRACK_SLICE_STATUS_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
 pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
@@ -39,6 +40,10 @@ pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
 pub fn slice_url(track_id: &str, spool_id: SpoolIndex) -> String {
     format!("/v1/tracks/{track_id}/slices/{}", spool_id.0)
+}
+
+pub fn sample_url(track_id: &str, spool_id: SpoolIndex, sub_leaf: u64) -> String {
+    format!("/v1/tracks/{track_id}/slices/{}/sample/{sub_leaf}", spool_id.0)
 }
 
 pub fn status_url(track_id: &str) -> String {

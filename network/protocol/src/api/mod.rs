@@ -39,6 +39,7 @@ pub trait Api: Send + Sync + 'static {
     async fn certify(&self, node: Address, req: &CertifyReq) -> Result<CertifyRes, ApiError>;
     async fn invalidate(&self, node: Address, req: &InvalidateReq) -> Result<InvalidateRes, ApiError>;
     async fn vote(&self, node: Address, req: &VoteReq) -> Result<VoteRes, ApiError>;
+    async fn get_sample(&self, node: Address, req: &GetSampleReq) -> Result<GetSampleRes, ApiError>;
     async fn get_health(&self, node: Address, req: &GetHealthReq) -> Result<GetHealthRes, ApiError>;
     async fn get_stats(&self, node: Address, req: &GetStatsReq) -> Result<GetStatsRes, ApiError>;
 
