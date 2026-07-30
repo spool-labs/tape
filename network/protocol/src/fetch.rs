@@ -5,14 +5,43 @@ use tape_core::types::EpochNumber;
 
 use crate::{EpochBundle, ProtocolState};
 
+/// How much of the protocol state a caller actually needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FetchScope {
+    /// The current epoch only.
+    ///
+    /// Enough to route a read or a write: the client picks peers from the
+    /// current committee and maps spools through the current groups. The
+    /// previous and next bundles exist for node-side recovery and consensus,
+    /// which no client path reads.
+    Current,
+
+    /// Current, previous, next and candidate epochs.
+    Full,
+}
+
 pub async fn fetch_state<R: Rpc>(rpc: &RpcClient<R>) -> Result<ProtocolState, RpcError> {
     fetch_state_with_commitment(rpc, rpc.rpc().commitment()).await
+}
+
+/// Fetch only what a client needs to route traffic.
+pub async fn fetch_state_current<R: Rpc>(rpc: &RpcClient<R>) -> Result<ProtocolState, RpcError> {
+    fetch_state_scoped(rpc, rpc.rpc().commitment(), FetchScope::Current).await
 }
 
 pub async fn fetch_state_with_commitment<R: Rpc>(
     rpc: &RpcClient<R>,
     commitment: CommitmentLevel,
 ) -> Result<ProtocolState, RpcError> {
+    fetch_state_scoped(rpc, commitment, FetchScope::Full).await
+}
+
+pub async fn fetch_state_scoped<R: Rpc>(
+    rpc: &RpcClient<R>,
+    commitment: CommitmentLevel,
+    scope: FetchScope,
+) -> Result<ProtocolState, RpcError> {
+    let want_full = matches!(scope, FetchScope::Full);
 
     let system = rpc
         .get_system_with_commitment(commitment)
@@ -25,7 +54,7 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
     // Every account below has a known address once the system row is read, so
     // the reads collapse into one concurrent round; groups follow in a second
     // round because their counts come from the epoch rows.
-    let has_previous = !system.current_epoch.is_zero();
+    let has_previous = want_full && !system.current_epoch.is_zero();
     let (
         current_epoch,
         current_committee,
@@ -52,10 +81,30 @@ pub async fn fetch_state_with_commitment<R: Rpc>(
                 false => Ok(None),
             }
         },
-        rpc.get_epoch_with_commitment(next, commitment),
-        rpc.get_committee_account_with_commitment(next, commitment),
-        rpc.get_epoch_with_commitment(candidate, commitment),
-        rpc.get_committee_account_with_commitment(candidate, commitment),
+        async {
+            match want_full {
+                true => rpc.get_epoch_with_commitment(next, commitment).await,
+                false => Err(RpcError::AccountNotFound(tape_crypto::address::Address::default())),
+            }
+        },
+        async {
+            match want_full {
+                true => rpc.get_committee_account_with_commitment(next, commitment).await,
+                false => Err(RpcError::AccountNotFound(tape_crypto::address::Address::default())),
+            }
+        },
+        async {
+            match want_full {
+                true => rpc.get_epoch_with_commitment(candidate, commitment).await,
+                false => Err(RpcError::AccountNotFound(tape_crypto::address::Address::default())),
+            }
+        },
+        async {
+            match want_full {
+                true => rpc.get_committee_account_with_commitment(candidate, commitment).await,
+                false => Err(RpcError::AccountNotFound(tape_crypto::address::Address::default())),
+            }
+        },
     );
 
     let current_epoch = current_epoch?;

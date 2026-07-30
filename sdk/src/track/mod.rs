@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
-use tape_protocol::{Api, ProtocolState, fetch::fetch_state};
+use tape_protocol::{Api, ProtocolState, fetch::fetch_state_current};
 
 use crate::bootstrap::{NetworkKey, Prediction};
 use crate::error::TapedriveError;
@@ -28,11 +28,11 @@ pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
     let state = match operation {
         Some(operation) => {
             let timer = client.timer(operation, Phase::Bootstrap);
-            let result = fetch_state(&client.rpc).await;
+            let result = fetch_state_current(&client.rpc).await;
             timer.finish_result(&result);
             result?
         }
-        None => fetch_state(&client.rpc).await?,
+        None => fetch_state_current(&client.rpc).await?,
     };
 
     match operation {
