@@ -2,9 +2,17 @@
 //!
 //! Every other eviction test opens the vote by calling `propose_eviction` from
 //! the scenario, because until the challenge ran there was nothing on a node that
-//! could make the first proposal. Here nobody calls it. A node is stopped, its
-//! group stops seeing certificates for the spool it holds, and the local rule
-//! fires on its own.
+//! could make the first proposal. Here nobody calls it. A node's runtime is
+//! stopped while the scenario keeps signing its per-epoch committee join and
+//! pool advance, exactly what a seat-keeping operator whose storage went dark
+//! would run. It keeps its seat and its spool, its group stops seeing
+//! certificates for that spool, and the local rule fires on its own.
+//!
+//! The crank is the point, not a contrivance. A fully dead node already loses
+//! its seat at the next boundary because joining is per-epoch and
+//! authority-signed. The seated-but-dark node is the failure only the challenge
+//! can catch, and the eviction's teeth are that a suspended node's join is
+//! refused on chain.
 //!
 //! This is also the only place the challenge transport runs for real: answers and
 //! attestations over HTTP between live nodes, relayed through the group, with
@@ -22,16 +30,20 @@ use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_
 const COMMITTEE_NODES: usize = GROUP_SIZE;
 const NODE_COUNT: usize = COMMITTEE_NODES + 1;
 const SPARE_NODE: usize = COMMITTEE_NODES;
-const TARGET_GROUPS: u64 = 1;
 const SILENT_NODE: usize = 0;
+const TARGET_GROUPS: u64 = 1;
 const SEATED_STAKE: u64 = 1_000;
 const SPARE_STAKE: u64 = 500;
 const STEADY_EPOCH: u64 = 3;
 
-/// A round fires every 12 slots on a 20-second epoch, and the local rule needs
-/// three consecutive misses, so the earliest a proposal can appear is about
-/// fifteen seconds after the node goes quiet. The rest is the voting window.
-const EVICT_TIMEOUT: Duration = Duration::from_secs(180);
+/// Simnet settles two or three rounds per epoch and an epoch takes a minute or
+/// two of wall clock, so three consecutive misses accumulate across roughly two
+/// epochs, and the proposal and votes need another one or two to land.
+const EVICT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How often the operator crank re-signs the join and pool advance while the
+/// node is dark.
+const CRANK_INTERVAL: Duration = Duration::from_secs(2);
 
 #[test]
 fn challenge_eviction() {
@@ -94,7 +106,7 @@ async fn challenge_eviction_inner() {
     // and every node holds a record for every other.
     advance_to_epoch(&harness, EpochNumber(STEADY_EPOCH), epoch_timeout).await;
 
-    // Go quiet. Nothing else is done to this node and nothing proposes on its
+    // Go dark. Nothing else is done to this node and nothing proposes on its
     // behalf; from here the mechanism is on its own.
     harness
         .stop_nodes(&[SILENT_NODE])
@@ -105,10 +117,10 @@ async fn challenge_eviction_inner() {
     assert_ne!(
         suspended,
         EpochNumber(0),
-        "the silent node was never suspended, so nothing originated a proposal"
+        "the dark node was never suspended, so nothing originated a proposal"
     );
 
-    // One silent spool must not poison the group. A certificate needs a
+    // One dark spool must not poison the group. A certificate needs a
     // supermajority, not unanimity, so the nodes that stayed up keep certifying
     // for each other and none of them collects an eviction.
     for node in 1..COMMITTEE_NODES {
@@ -139,22 +151,26 @@ async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber, epoch_ti
     }
 }
 
-/// Poll for the suspension, advancing epochs but never proposing.
+/// Poll for the suspension, keeping the dark node seated but never proposing.
 ///
-/// The absence of a `propose_eviction` call here is the whole point of the test.
+/// The epochs keep turning on their own, which is what opens the voting windows.
+/// The crank is what stops the boundary from solving the problem for us: a node
+/// that neither joins nor advances falls out of the next committee and stops
+/// being challenged with its record frozen, which is the failure of the earlier
+/// version of this test.
 async fn wait_eviction_without_proposing(
     harness: &SimnetHarness,
     timeout: Duration,
 ) -> EpochNumber {
     let start = Instant::now();
-    let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
+    let mut last_crank: Option<Instant> = None;
 
     loop {
         let suspended = harness
             .scenario()
             .read_node(SILENT_NODE)
             .await
-            .expect("read the silent node")
+            .expect("read the dark node")
             .suspended_until;
         if suspended != EpochNumber(0) {
             return suspended;
@@ -165,8 +181,15 @@ async fn wait_eviction_without_proposing(
             "no eviction landed within {timeout:?} without a hand-driven proposal"
         );
 
-        // A vote only lands inside its window, so keep the epochs turning.
-        let _ = harness.scenario().self_advance_epoch(epoch_timeout).await;
+        // Retried across phases: each only has to land once per epoch, whenever
+        // that epoch's window is open. Errors are expected outside the windows,
+        // and the join failing for good is the suspension the poll then sees.
+        if last_crank.is_none_or(|at| at.elapsed() >= CRANK_INTERVAL) {
+            let _ = harness.scenario().advance_pool_ok(SILENT_NODE).await;
+            let _ = harness.scenario().join_committee(SILENT_NODE).await;
+            last_crank = Some(Instant::now());
+        }
+
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

@@ -8,6 +8,12 @@
 //! It is never reset at an epoch boundary. A node that stops answering keeps
 //! accumulating across the boundary, which is what lets a rule fire on the next
 //! one rather than starting over each time.
+//!
+//! Outcomes do not always arrive in round order: a certificate folds the moment
+//! it forms, while a miss folds only when the next round opens, so a fold is
+//! judged against what is already recorded for that round rather than against a
+//! high-water mark. A late certificate may replace a recorded miss, which the
+//! paper requires; nothing ever replaces a recorded success.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +35,17 @@ pub const RATE_FLOOR: BasisPoints = BasisPoints(5_000);
 /// noise this has to tolerate is zero.
 pub const MAX_CONSECUTIVE_MISSES: u64 = 3;
 
+/// What folding one outcome did to the record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fold {
+    /// Nothing new: the outcome repeats what is recorded, or a success stands.
+    Ignored,
+    /// Folded in round order, counters and recency both updated here.
+    Advanced,
+    /// Counted, but the recency fields must be rebuilt from the stored rounds.
+    Rebuild,
+}
+
 /// One peer's challenge history, as step 5 of the mechanism keeps it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
@@ -39,9 +56,9 @@ pub struct PeerRecord {
     pub successes: u64,
     /// Misses since its last success.
     pub consecutive_misses: u64,
-    /// Epoch of the last outcome folded in.
+    /// Epoch of the newest outcome folded in.
     pub last_epoch: EpochNumber,
-    /// Round of the last outcome folded in.
+    /// Round of the newest outcome folded in.
     pub last_round: RoundNumber,
     /// Whether any outcome has been folded in at all.
     pub started: bool,
@@ -57,30 +74,73 @@ pub struct PeerRecord {
 pub const RECENT_ROUNDS: u32 = u64::BITS;
 
 impl PeerRecord {
-    /// Fold in one round's outcome.
+    /// Fold in one round's outcome, given what is already recorded for it.
     ///
-    /// Returns false when the round was already recorded, which happens whenever
-    /// the same round is judged twice, and leaves the record untouched. Without
-    /// this a retried challenge would count as a fresh opportunity and a single
-    /// slow peer could be talked into an eviction by repetition alone.
-    pub fn record(&mut self, epoch: EpochNumber, round: RoundNumber, proved: bool) -> bool {
-        if self.started && (epoch, round) <= (self.last_epoch, self.last_round) {
-            return false;
+    /// `prior` is the outcome the caller has stored for this exact round, so a
+    /// repeat never counts twice and a peer cannot be talked into an eviction by
+    /// repetition alone. A success is never downgraded; a recorded miss is
+    /// upgraded when its certificate arrives late. A fold behind the newest
+    /// round still counts, but the caller must rebuild recency from the stored
+    /// rounds, since only they know the order.
+    pub fn record(
+        &mut self,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        proved: bool,
+        prior: Option<bool>,
+    ) -> Fold {
+        match prior {
+            Some(true) => return Fold::Ignored,
+            Some(false) if !proved => return Fold::Ignored,
+            Some(false) => {
+                self.successes += 1;
+                return Fold::Rebuild;
+            }
+            None => {}
         }
 
         self.opportunities += 1;
         if proved {
             self.successes += 1;
+        }
+
+        if self.started && (epoch, round) <= (self.last_epoch, self.last_round) {
+            return Fold::Rebuild;
+        }
+
+        if proved {
             self.consecutive_misses = 0;
         } else {
             self.consecutive_misses += 1;
         }
-
         self.recent = (self.recent << 1) | u64::from(proved);
         self.last_epoch = epoch;
         self.last_round = round;
         self.started = true;
-        true
+        Fold::Advanced
+    }
+
+    /// Re-derive the order-sensitive fields from the rounds as stored.
+    ///
+    /// `rounds` is every recorded outcome for this peer, oldest first.
+    pub fn rebuild_recency(&mut self, rounds: &[(EpochNumber, RoundNumber, bool)]) {
+        self.consecutive_misses = rounds
+            .iter()
+            .rev()
+            .take_while(|(_, _, proved)| !proved)
+            .count() as u64;
+
+        self.recent = 0;
+        let tail = rounds.len().saturating_sub(RECENT_ROUNDS as usize);
+        for (_, _, proved) in &rounds[tail..] {
+            self.recent = (self.recent << 1) | u64::from(*proved);
+        }
+
+        if let Some((epoch, round, _)) = rounds.last() {
+            self.last_epoch = *epoch;
+            self.last_round = *round;
+            self.started = true;
+        }
     }
 
     /// Share of opportunities the peer answered, in basis points.
@@ -139,7 +199,7 @@ mod tests {
         let mut record = PeerRecord::default();
         for round in 0..500 {
             let (epoch, round) = at(round);
-            assert!(record.record(epoch, round, true));
+            assert_eq!(record.record(epoch, round, true, None), Fold::Advanced);
         }
         assert_eq!(record.success_rate(), BasisPoints(BasisPoints::MAX));
         assert!(!record.eviction_fires());
@@ -151,10 +211,10 @@ mod tests {
         // before its lifetime rate has moved.
         let mut record = PeerRecord::default();
         for round in 0..100 {
-            record.record(EpochNumber(1), RoundNumber(round), true);
+            record.record(EpochNumber(1), RoundNumber(round), true, None);
         }
         for round in 100..103 {
-            record.record(EpochNumber(1), RoundNumber(round), false);
+            record.record(EpochNumber(1), RoundNumber(round), false, None);
         }
 
         assert!(record.success_rate() > RATE_FLOOR);
@@ -167,7 +227,7 @@ mod tests {
         // survivable or weather would evict the network.
         let mut record = PeerRecord::default();
         for round in 0..10 {
-            record.record(EpochNumber(1), RoundNumber(round), round != 5);
+            record.record(EpochNumber(1), RoundNumber(round), round != 5, None);
         }
         assert!(!record.eviction_fires());
     }
@@ -178,14 +238,14 @@ mod tests {
         // rate sits at the floor.
         let mut record = PeerRecord::default();
         for round in 0..40 {
-            record.record(EpochNumber(1), RoundNumber(round), round % 2 == 0);
+            record.record(EpochNumber(1), RoundNumber(round), round % 2 == 0, None);
         }
         assert_eq!(record.consecutive_misses, 1);
         assert_eq!(record.success_rate(), BasisPoints(5_000));
         assert!(!record.eviction_fires());
 
         // One more miss tips it under the floor.
-        record.record(EpochNumber(1), RoundNumber(40), false);
+        record.record(EpochNumber(1), RoundNumber(40), false, None);
         assert!(record.success_rate() < RATE_FLOOR);
         assert!(record.eviction_fires());
     }
@@ -198,7 +258,7 @@ mod tests {
         assert!(record.recent_rounds().is_empty());
 
         for (round, proved) in [true, true, false, true].into_iter().enumerate() {
-            record.record(EpochNumber(1), RoundNumber(round as u64), proved);
+            record.record(EpochNumber(1), RoundNumber(round as u64), proved, None);
         }
         assert_eq!(record.recent_rounds(), vec![true, true, false, true]);
     }
@@ -208,7 +268,7 @@ mod tests {
         let mut record = PeerRecord::default();
         for round in 0..(RECENT_ROUNDS as u64 + 10) {
             // Miss only the very first round, which falls off the end.
-            record.record(EpochNumber(1), RoundNumber(round), round != 0);
+            record.record(EpochNumber(1), RoundNumber(round), round != 0, None);
         }
 
         let strip = record.recent_rounds();
@@ -222,7 +282,7 @@ mod tests {
         let mut record = PeerRecord::default();
         for round in 0..rounds {
             let answered = pattern[(round as usize) % pattern.len()];
-            record.record(EpochNumber(1), RoundNumber(round), answered);
+            record.record(EpochNumber(1), RoundNumber(round), answered, None);
         }
         record
     }
@@ -236,10 +296,10 @@ mod tests {
         assert!(!record.eviction_fires());
 
         for round in 40..42 {
-            record.record(EpochNumber(1), RoundNumber(round), false);
+            record.record(EpochNumber(1), RoundNumber(round), false, None);
             assert!(!record.eviction_fires(), "fired after {} misses", round - 39);
         }
-        record.record(EpochNumber(1), RoundNumber(42), false);
+        record.record(EpochNumber(1), RoundNumber(42), false, None);
         assert!(record.eviction_fires(), "three misses in a row should fire");
     }
 
@@ -271,9 +331,9 @@ mod tests {
         // Two misses then an answer clears the run, so a brief outage that ends
         // before the third round costs nothing.
         let mut record = run(&[true], 20);
-        record.record(EpochNumber(1), RoundNumber(20), false);
-        record.record(EpochNumber(1), RoundNumber(21), false);
-        record.record(EpochNumber(1), RoundNumber(22), true);
+        record.record(EpochNumber(1), RoundNumber(20), false, None);
+        record.record(EpochNumber(1), RoundNumber(21), false, None);
+        record.record(EpochNumber(1), RoundNumber(22), true, None);
 
         assert_eq!(record.consecutive_misses, 0);
         assert!(!record.eviction_fires());
@@ -292,13 +352,79 @@ mod tests {
         // Judging the same round twice must not manufacture opportunities, or a
         // peer could be evicted by repetition rather than by its answers.
         let mut record = PeerRecord::default();
-        assert!(record.record(EpochNumber(1), RoundNumber(7), false));
-        assert!(!record.record(EpochNumber(1), RoundNumber(7), false));
-        assert!(!record.record(EpochNumber(1), RoundNumber(6), false));
-        assert!(!record.record(EpochNumber(0), RoundNumber(99), false));
+        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, None), Fold::Advanced);
+        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, Some(false)), Fold::Ignored);
 
         assert_eq!(record.opportunities, 1);
         assert_eq!(record.consecutive_misses, 1);
+    }
+
+    #[test]
+    fn a_recorded_success_is_never_downgraded() {
+        let mut record = PeerRecord::default();
+        record.record(EpochNumber(1), RoundNumber(7), true, None);
+        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, Some(true)), Fold::Ignored);
+
+        assert_eq!(record.opportunities, 1);
+        assert_eq!(record.successes, 1);
+        assert_eq!(record.consecutive_misses, 0);
+    }
+
+    #[test]
+    fn a_late_certificate_upgrades_a_recorded_miss() {
+        // Step 5 of the mechanism: certificates continue circulating after their
+        // round, so one that arrives after the miss was recorded replaces it.
+        let mut record = PeerRecord::default();
+        record.record(EpochNumber(1), RoundNumber(7), false, None);
+        record.record(EpochNumber(1), RoundNumber(8), false, None);
+        assert_eq!(record.consecutive_misses, 2);
+
+        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), true, Some(false)), Fold::Rebuild);
+        record.rebuild_recency(&[
+            (EpochNumber(1), RoundNumber(7), true),
+            (EpochNumber(1), RoundNumber(8), false),
+        ]);
+
+        assert_eq!(record.opportunities, 2);
+        assert_eq!(record.successes, 1);
+        assert_eq!(record.consecutive_misses, 1);
+        assert_eq!(record.recent_rounds(), vec![true, false]);
+    }
+
+    #[test]
+    fn a_miss_behind_the_newest_round_still_counts() {
+        // A miss settles a full round after the fact, so a certificate for the
+        // next round can land first. The late miss must not vanish behind it.
+        let mut record = PeerRecord::default();
+        record.record(EpochNumber(1), RoundNumber(8), true, None);
+
+        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, None), Fold::Rebuild);
+        record.rebuild_recency(&[
+            (EpochNumber(1), RoundNumber(7), false),
+            (EpochNumber(1), RoundNumber(8), true),
+        ]);
+
+        assert_eq!(record.opportunities, 2);
+        assert_eq!(record.successes, 1);
+        assert_eq!(record.consecutive_misses, 0, "a later success already broke the run");
+        assert_eq!(record.recent_rounds(), vec![false, true]);
+    }
+
+    #[test]
+    fn rebuilding_recency_matches_folding_in_order() {
+        let rounds: Vec<(EpochNumber, RoundNumber, bool)> = (0..100)
+            .map(|round| (EpochNumber(1), RoundNumber(round), round % 3 != 0))
+            .collect();
+
+        let mut folded = PeerRecord::default();
+        for (epoch, round, proved) in &rounds {
+            folded.record(*epoch, *round, *proved, None);
+        }
+
+        let mut rebuilt = folded;
+        rebuilt.rebuild_recency(&rounds);
+
+        assert_eq!(rebuilt, folded);
     }
 
     #[test]
@@ -306,9 +432,9 @@ mod tests {
         // Never reset, so a node that stops answering late in one epoch is caught
         // at the next boundary rather than starting over.
         let mut record = PeerRecord::default();
-        record.record(EpochNumber(1), RoundNumber(9), false);
-        record.record(EpochNumber(2), RoundNumber(0), false);
-        record.record(EpochNumber(2), RoundNumber(1), false);
+        record.record(EpochNumber(1), RoundNumber(9), false, None);
+        record.record(EpochNumber(2), RoundNumber(0), false, None);
+        record.record(EpochNumber(2), RoundNumber(1), false, None);
 
         assert_eq!(record.consecutive_misses, 3);
         assert!(record.eviction_fires());

@@ -17,12 +17,18 @@ use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 
-/// One challenged spool in one round.
+/// One challenged spool in one round, pinned to its entropy block.
+///
+/// The block is part of the identity because signatures over different block
+/// candidates cannot aggregate: an answer and its attestations only certify
+/// together when they name the same block, so evidence gathered under one
+/// candidate must never satisfy a lookup made under another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RoundKey {
     pub epoch: EpochNumber,
     pub round: RoundNumber,
     pub spool: SpoolIndex,
+    pub block: Hash,
 }
 
 /// Rounds this node still has something to do about.
@@ -161,6 +167,7 @@ mod tests {
             epoch: EpochNumber(3),
             round: RoundNumber(round),
             spool: SpoolIndex(spool),
+            block: Hash([1; 32]),
         }
     }
 
@@ -170,7 +177,7 @@ mod tests {
             group: GroupIndex(0),
             round: key.round,
             spool: key.spool,
-            block: Hash([1; 32]),
+            block: key.block,
             track: Address::new_unique(),
             sub_leaf: 0,
             proof: SubLeafProof {
@@ -268,6 +275,7 @@ mod tests {
             epoch: EpochNumber(2),
             round: RoundNumber(9_000),
             spool: SpoolIndex(4),
+            block: Hash([1; 32]),
         };
         buffer.accept_answer(old, answer(old));
         buffer.accept_answer(key(0, 4), answer(key(0, 4)));
@@ -275,5 +283,24 @@ mod tests {
         buffer.retire_before(EpochNumber(3), RoundNumber(0));
         assert!(buffer.answer(old).is_none());
         assert!(buffer.answer(key(0, 4)).is_some());
+    }
+
+    #[test]
+    fn evidence_under_one_block_never_answers_for_another() {
+        // Signatures over different block candidates cannot aggregate, so a
+        // certificate gathered under one candidate must be invisible to a lookup
+        // made under another, or a stale grid placement reads as a success.
+        let buffer = RoundBuffer::default();
+        let mine = key(1, 4);
+        let theirs = RoundKey { block: Hash([2; 32]), ..mine };
+
+        buffer.accept_answer(theirs, answer(theirs));
+        for _ in 0..4 {
+            buffer.accept_attestation(theirs, Address::new_unique(), signature());
+        }
+        assert!(buffer.claim_certificate(theirs, 4));
+
+        assert!(buffer.answer(mine).is_none());
+        assert!(!buffer.is_certified(mine));
     }
 }

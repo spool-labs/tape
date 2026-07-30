@@ -1,3 +1,4 @@
+pub mod fold;
 pub mod manager;
 pub mod rounds;
 pub mod witness;

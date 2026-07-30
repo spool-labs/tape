@@ -44,6 +44,7 @@ impl Round {
             epoch: self.epoch,
             round: self.round,
             spool,
+            block: self.block,
         }
     }
 }

@@ -16,9 +16,9 @@ use store::Store;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_protocol::Api;
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
-use tape_store::ops::ChallengeOps;
 use tracing::{debug, trace};
 
+use crate::features::challenge::fold::fold_outcome;
 use crate::features::challenge::rounds::RoundKey;
 use crate::features::challenge::witness::{
     Round, accept_answer, attest_message, group_members, round_of, spawn_relay_and_attest,
@@ -163,13 +163,7 @@ fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return;
     }
 
-    let mut record = state.context.store.peer_record(owner).unwrap_or_default();
-    if !record.record(round.epoch, round.round, true) {
-        return;
-    }
-    if let Err(error) = state.context.store.put_peer_record(owner, record) {
-        debug!(%error, node = %owner, "challenge: certificate not recorded");
-    }
+    fold_outcome(&state.context.store, owner, round.epoch, round.round, true);
 }
 
 /// Signatures a certificate needs, given how many positions the group holds.

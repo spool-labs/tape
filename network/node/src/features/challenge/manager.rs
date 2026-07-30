@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::challenge::PeerRecord;
 use tape_core::challenge::schedule::{SLOT_MS, Schedule};
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
@@ -24,7 +23,6 @@ use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
-use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace};
@@ -33,6 +31,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::challenge::fold::fold_outcome;
 use crate::features::challenge::witness::{Round, build_answer, group_members};
 
 pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -208,38 +207,10 @@ where
 
     /// Fold one outcome into a peer's record, and queue it if the rule fires.
     fn record(&self, peer: Address, epoch: EpochNumber, round: RoundNumber, certified: bool) {
-        let mut record = self
-            .context
-            .store
-            .peer_record(peer)
-            .unwrap_or_else(|_| PeerRecord::default());
-
-        if !record.record(epoch, round, certified) {
+        let Some(record) = fold_outcome(&self.context.store, peer, epoch, round, certified)
+        else {
             return;
-        }
-
-        // The counters say how often; this says which rounds, so a report can
-        // name the ones a node failed rather than only count them.
-        if let Err(error) = self
-            .context
-            .store
-            .put_round_outcome(peer, epoch, round, certified)
-        {
-            debug!(%error, node = %peer, "challenge: round outcome not persisted");
-        }
-
-        debug!(
-            node = %peer,
-            round = round.0,
-            certified,
-            misses = record.consecutive_misses,
-            opportunities = record.opportunities,
-            "challenge: record advanced"
-        );
-
-        if let Err(error) = self.context.store.put_peer_record(peer, record) {
-            debug!(%error, node = %peer, "challenge: record not persisted");
-        }
+        };
 
         if record.eviction_fires() {
             info!(

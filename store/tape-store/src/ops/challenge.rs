@@ -33,6 +33,14 @@ pub trait ChallengeOps {
         certified: bool,
     ) -> Result<()>;
 
+    /// The outcome recorded for one peer in one round, if any.
+    fn round_outcome(
+        &self,
+        peer: Address,
+        epoch: EpochNumber,
+        round: RoundNumber,
+    ) -> Result<Option<bool>>;
+
     /// One peer's rounds in the order they happened, oldest first.
     ///
     /// Answers which rounds a node failed, where the counters on `PeerRecord`
@@ -72,6 +80,16 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
         let key = ChallengeRoundKey::new(peer, epoch, round);
         self.put::<ChallengeRoundCol>(&key, &certified)?;
         Ok(())
+    }
+
+    fn round_outcome(
+        &self,
+        peer: Address,
+        epoch: EpochNumber,
+        round: RoundNumber,
+    ) -> Result<Option<bool>> {
+        let key = ChallengeRoundKey::new(peer, epoch, round);
+        Ok(self.get::<ChallengeRoundCol>(&key)?)
     }
 
     fn peer_rounds(&self, peer: Address) -> Result<Vec<(EpochNumber, RoundNumber, bool)>> {
@@ -173,6 +191,23 @@ mod tests {
     }
 
     #[test]
+    fn one_rounds_outcome_can_be_read_back_and_replaced() {
+        // A late certificate overwrites the miss it supersedes, in place.
+        let store = test_store();
+        let peer = Address::new_unique();
+        let (epoch, round) = (EpochNumber(4), RoundNumber(7));
+
+        assert_eq!(store.round_outcome(peer, epoch, round).unwrap(), None);
+
+        store.put_round_outcome(peer, epoch, round, false).unwrap();
+        assert_eq!(store.round_outcome(peer, epoch, round).unwrap(), Some(false));
+
+        store.put_round_outcome(peer, epoch, round, true).unwrap();
+        assert_eq!(store.round_outcome(peer, epoch, round).unwrap(), Some(true));
+        assert_eq!(store.peer_rounds(peer).unwrap().len(), 1);
+    }
+
+    #[test]
     fn the_failed_rounds_can_be_named() {
         // The report the operator wants: this node failed these rounds.
         let store = test_store();
@@ -219,7 +254,7 @@ mod tests {
         let peer = Address::new_unique();
 
         let mut record = PeerRecord::default();
-        record.record(EpochNumber(4), RoundNumber(9), false);
+        record.record(EpochNumber(4), RoundNumber(9), false, None);
         store.put_peer_record(peer, record).unwrap();
 
         assert_eq!(store.peer_record(peer).unwrap(), record);
