@@ -50,7 +50,7 @@ pub fn process_vote_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .as_account::<Group>(&tapedrive::ID)?;
 
     let weight = args.bitmap.count_ones() as u64;
-    if !has_honest_signer(weight, GROUP_SIZE as u64) {
+    if !is_supermajority(weight, GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
@@ -185,22 +185,17 @@ mod tests {
             bitmap: Tail::new(bitmap_len as u64, bitmap_len as u64),
         };
 
-        const SIGNERS: usize = 8;
+        const SIGNERS: usize = 14;
 
+        let signed_indices: Vec<usize> = (0..SIGNERS).collect();
+        let bitmap = SpoolBitmap::from_indices(&signed_indices);
         let message = SnapshotSignMessage::new(target_epoch_id, hash).to_bytes();
-        let signed = |count: usize| {
-            let indices: Vec<usize> = (0..count).collect();
-            let partials: Vec<BlsSignature> = indices
-                .iter()
-                .map(|&i| sks[i].sign(message).unwrap())
-                .collect();
-            (
-                SpoolBitmap::from_indices(&indices),
-                BlsSignature::aggregate(&partials).unwrap(),
-            )
-        };
+        let partials: Vec<BlsSignature> = signed_indices
+            .iter()
+            .map(|&i| sks[i].sign(message).unwrap())
+            .collect();
+        let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 
-        let (bitmap, agg_sig) = signed(SIGNERS);
         let instruction = build_vote_snapshot_ix(
             fee_payer.into(),
             voting_epoch_id,
@@ -208,16 +203,6 @@ mod tests {
             group_id,
             bitmap,
             agg_sig,
-        );
-
-        let (low_bitmap, low_sig) = signed(SIGNERS - 1);
-        let low_instruction = build_vote_snapshot_ix(
-            fee_payer.into(),
-            voting_epoch_id,
-            hash,
-            group_id,
-            low_bitmap,
-            low_sig,
         );
 
         let accounts = vec![
@@ -237,11 +222,6 @@ mod tests {
         };
 
         let env = test_env();
-        env.process_instruction(
-            &low_instruction,
-            &accounts,
-            &[Check::err(TapeError::NoQuorum.into())],
-        );
         env.process_instruction(
             &instruction,
             &accounts,

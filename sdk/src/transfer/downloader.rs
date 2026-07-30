@@ -15,6 +15,10 @@ use tracing::warn;
 
 use crate::error::DownloadError;
 
+/// Default concurrency limit for parallel downloads.
+/// This limits how many HTTP requests are in flight at once.
+const DEFAULT_CONCURRENCY: usize = 8;
+
 /// Parallel downloader for retrieving slices from storage nodes.
 pub struct ParallelDownloader {
     track: Address,
@@ -26,9 +30,22 @@ pub struct ParallelDownloader {
 
 impl ParallelDownloader {
     /// Create a new downloader with spool-based routing.
-    ///
-    /// `concurrency` bounds how many slice fetches are in flight at once.
     pub fn new(
+        track: Address,
+        slice_to_node: HashMap<SpoolIndex, Address>,
+        min_slices: usize,
+    ) -> Self {
+        Self {
+            track,
+            slice_to_node,
+            concurrency: DEFAULT_CONCURRENCY,
+            min_slices,
+            exclude_slices: HashSet::new(),
+        }
+    }
+
+    /// Create a new downloader with custom concurrency limit.
+    pub fn with_concurrency(
         track: Address,
         slice_to_node: HashMap<SpoolIndex, Address>,
         min_slices: usize,
@@ -67,7 +84,7 @@ impl ParallelDownloader {
         let mut collected_slices = Vec::with_capacity(self.min_slices);
         let mut futures = FuturesUnordered::new();
 
-        let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
+        let sem = Arc::new(Semaphore::new(self.concurrency));
 
         for (&slice_idx, &node) in &self.slice_to_node {
             if self.exclude_slices.contains(&slice_idx) {
@@ -187,8 +204,6 @@ async fn download_slice_with_retry<P: Api>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TEST_CONCURRENCY: usize = 8;
     use tape_crypto::address::Address;
 
     fn make_slice_map(count: usize) -> HashMap<SpoolIndex, Address> {
@@ -203,7 +218,7 @@ mod tests {
         let min_slices = 10;
 
         let track = Address::new_unique();
-        let downloader = ParallelDownloader::new(track, slice_map, min_slices, TEST_CONCURRENCY);
+        let downloader = ParallelDownloader::new(track, slice_map, min_slices);
 
         assert_eq!(downloader.track, track);
         assert!(downloader.exclude_slices.is_empty());
@@ -217,12 +232,7 @@ mod tests {
         let first = SpoolIndex::from(42);
         let second = SpoolIndex::from(100);
 
-        let downloader = ParallelDownloader::new(
-            Address::new_unique(),
-            slice_map,
-            min_slices,
-            TEST_CONCURRENCY,
-        )
+        let downloader = ParallelDownloader::new(Address::new_unique(), slice_map, min_slices)
             .exclude_slice(first)
             .exclude_slice(second);
 
@@ -241,12 +251,7 @@ mod tests {
             SpoolIndex::from(30),
         ];
 
-        let downloader = ParallelDownloader::new(
-            Address::new_unique(),
-            slice_map,
-            min_slices,
-            TEST_CONCURRENCY,
-        )
+        let downloader = ParallelDownloader::new(Address::new_unique(), slice_map, min_slices)
             .with_excluded_slices(excludes);
 
         assert_eq!(downloader.exclude_slices.len(), 3);

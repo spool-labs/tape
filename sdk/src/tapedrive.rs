@@ -19,7 +19,6 @@ use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Metrics, Noop, Operation, Outcome, Phase, Timer};
-use crate::read_options::ReadOptions;
 use crate::write_options::WriteOptions;
 use crate::stream::{
     read::{read_bytes, read_into},
@@ -39,7 +38,6 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub payer: Option<Keypair>,
     pub metrics: Arc<dyn Metrics>,
     pub write_options: WriteOptions,
-    pub read_options: ReadOptions,
 }
 
 /// Default constructor using `HttpApi`.
@@ -65,7 +63,6 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
             payer: None,
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
-            read_options: ReadOptions::default(),
         }
     }
 }
@@ -87,7 +84,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             payer,
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
-            read_options: ReadOptions::default(),
         }
     }
 
@@ -100,12 +96,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Replace the write concurrency knobs.
     pub fn with_write_options(mut self, options: WriteOptions) -> Self {
         self.write_options = options;
-        self
-    }
-
-    /// Replace the read concurrency knobs.
-    pub fn with_read_options(mut self, options: ReadOptions) -> Self {
-        self.read_options = options;
         self
     }
 

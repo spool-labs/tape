@@ -27,16 +27,6 @@ pub const fn is_supermajority(weight: u64, total: u64) -> bool {
     3 * weight >= 2 * total + 1
 }
 
-/// Returns true when weight guarantees at least one honest signer under the
-/// fault bound implied by `is_supermajority` (f + 1, i.e. 8 of 20). Only
-/// sound for attesting deterministic, independently recomputable values —
-/// never for subjective votes.
-pub const fn has_honest_signer(weight: u64, total: u64) -> bool {
-    let quorum = (2 * total + 3) / 3;
-    let tolerated = 2 * quorum - total - 1;
-    weight > tolerated
-}
-
 /// Finds the highest value where the cumulative weight of all votes for that value and higher
 /// achieves a supermajority. If no such value exists, it returns 0.
 ///
@@ -107,24 +97,6 @@ mod tests {
             }
             assert!(is_supermajority(thr, n));
             assert!(is_supermajority(n, n));
-        }
-    }
-
-    #[test]
-    fn honest_signer_edges() {
-        assert!(!has_honest_signer(7, 20));
-        assert!(has_honest_signer(8, 20));
-        assert!(has_honest_signer(20, 20));
-
-        for n in 1..=50u64 {
-            let quorum = (2 * n + 1).div_ceil(3);
-            let thr = 2 * quorum - n;
-            if thr > 0 {
-                assert!(!has_honest_signer(thr - 1, n));
-            }
-            assert!(has_honest_signer(thr, n));
-            assert!(thr <= quorum);
-            assert!(has_honest_signer(quorum, n));
         }
     }
 
