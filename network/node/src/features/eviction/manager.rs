@@ -9,8 +9,6 @@ use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_protocol::api::{GetHealthReq, GetHealthRes};
 use tape_protocol::{Api, ProtocolState};
-use tape_core::challenge::record::MIN_OPPORTUNITIES;
-use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -124,7 +122,7 @@ where
         }
 
         for node in self.context.eviction_queue.snapshot() {
-            if !self.judge_target(&state, node).await {
+            if !self.judge_target(node, state.epoch()).await {
                 continue;
             }
 
@@ -145,30 +143,15 @@ where
     /// Judge the target with this node's own probe, at most once per voting
     /// epoch. A proposal alone never recruits a signature: only a target this
     /// node observes failing stays queued, and a recovered target is dropped.
-    ///
-    /// A group-mate is judged by the challenge record this node has been keeping
-    /// for it, once that record holds enough rounds to mean anything. Below that
-    /// it falls back to a health ping, which is also what a node outside the
-    /// target's group always does, since only a group-mate witnesses its rounds.
-    ///
-    /// The threshold matters. A record with one or two observations is thinner
-    /// evidence than a live probe, and an epoch whose active phase was short may
-    /// have held very few rounds.
-    async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
-        let epoch = state.epoch();
+    async fn judge_target(&mut self, node: Address, epoch: EpochNumber) -> bool {
         if self.probe_failed.get(&node) == Some(&epoch) {
             return true;
         }
 
-        let record = self.context.store.peer_record(node).unwrap_or_default();
-        let healthy = if record.opportunities >= MIN_OPPORTUNITIES {
-            !record.eviction_fires()
-        } else {
-            matches!(
-                self.context.api.get_health(node, &GetHealthReq).await,
-                Ok(GetHealthRes { ok: true })
-            )
-        };
+        let healthy = matches!(
+            self.context.api.get_health(node, &GetHealthReq).await,
+            Ok(GetHealthRes { ok: true })
+        );
         if healthy {
             debug!(node = %node, "eviction: target probed healthy, dropping");
             self.context.eviction_queue.remove(&node);

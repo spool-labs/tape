@@ -3,6 +3,7 @@
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
+use tape_core::types::ContentType;
 use tape_crypto::Hash;
 
 use super::error::S3Error;
@@ -49,19 +50,37 @@ pub fn set_last_modified(headers: &mut HeaderMap, block_time: Option<i64>) {
 /// `Last-Modified`, with an empty body. A `Range` request answers with the
 /// ranged Content-Length and `Content-Range`, exactly as the GET would.
 pub fn head_response(resolved: &ResolvedObject, range: Option<&str>) -> Result<Response, S3Error> {
+    head_response_parts(
+        resolved.size,
+        resolved.etag,
+        resolved.content_type,
+        resolved.block_time,
+        range,
+    )
+}
+
+/// The same headers built from loose parts, for an object that has no index
+/// entry yet and is being served out of read-after-write staging.
+pub fn head_response_parts(
+    size: u64,
+    etag: Hash,
+    content_type: ContentType,
+    block_time: Option<i64>,
+    range: Option<&str>,
+) -> Result<Response, S3Error> {
     // S3 content type comes from the listing index; no filename (no
     // Content-Disposition) is set for S3 objects.
     let metadata = ObjectResponseMetadata {
-        content_type: resolved.content_type,
+        content_type,
         filename: None,
         cache: CachePolicy::Immutable,
     };
 
-    let range = resolve_range(range, resolved.size).map_err(S3Error::from)?;
+    let range = resolve_range(range, size).map_err(S3Error::from)?;
     let (status, mut headers) =
-        ranged_object_headers(range, resolved.size, &metadata, resolved.etag, StatusCode::OK)
+        ranged_object_headers(range, size, &metadata, etag, StatusCode::OK)
             .map_err(S3Error::from)?;
-    set_last_modified(&mut headers, resolved.block_time);
+    set_last_modified(&mut headers, block_time);
     Ok((status, headers).into_response())
 }
 
