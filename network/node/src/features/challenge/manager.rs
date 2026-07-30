@@ -118,7 +118,17 @@ where
             block: block.blockhash,
         };
 
-        if self.last_run.as_ref().is_some_and(|(open, _)| *open == round) {
+        // Match on the round, not on the block. A window spans several slots and
+        // each carries a different hash, so comparing whole rounds would treat
+        // every slot in the window as a new round: it would re-open the round
+        // three more times and settle the previous one a slot after it opened,
+        // before any attestation could have arrived. The first block in the
+        // window seeds the round and the rest of the window is already answered.
+        if self
+            .last_run
+            .as_ref()
+            .is_some_and(|(open, _)| (open.epoch, open.round) == (round.epoch, round.round))
+        {
             return Ok(());
         }
 
