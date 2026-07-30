@@ -744,7 +744,8 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
         &state,
         client.write_options.slice_concurrency,
     )
-    .map_err(TapedriveError::Upload)?;
+    .map_err(TapedriveError::Upload)?
+    .with_reputation(client.reputation.clone());
 
     let store = client
         .timer(operation, Phase::Store)

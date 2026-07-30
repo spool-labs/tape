@@ -15,6 +15,7 @@ use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::balance::{sol_balance_of, tape_balance_of};
+use crate::bootstrap::{BootstrapStore, Reputation};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
@@ -40,6 +41,7 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub metrics: Arc<dyn Metrics>,
     pub write_options: WriteOptions,
     pub read_options: ReadOptions,
+    pub reputation: Arc<Reputation>,
 }
 
 /// Default constructor using `HttpApi`.
@@ -66,6 +68,10 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
+            reputation: Arc::new(Reputation::attach(
+                BootstrapStore::disabled(),
+                tape_api::program::tapedrive::id().into(),
+            )),
         }
     }
 }
@@ -88,7 +94,20 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
+            reputation: Arc::new(Reputation::attach(
+                BootstrapStore::disabled(),
+                tape_api::program::tapedrive::id().into(),
+            )),
         }
+    }
+
+    /// Persist peer reputation and bootstrap hints to this store.
+    pub fn with_bootstrap_cache(mut self, store: BootstrapStore) -> Self {
+        self.reputation = Arc::new(Reputation::attach(
+            store,
+            tape_api::program::tapedrive::id().into(),
+        ));
+        self
     }
 
     /// Attach or replace the payer used for mutating operations.

@@ -1,5 +1,8 @@
+use std::time::Instant;
+
 use futures::stream::{FuturesUnordered, StreamExt};
 use rpc::Rpc;
+use tokio::time::{Instant as TokioInstant, sleep};
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -10,6 +13,7 @@ use tape_protocol::api::{
 };
 use tape_protocol::Api;
 
+use crate::bootstrap::HEDGE_DELAY;
 use crate::error::TapedriveError;
 use crate::tapedrive::Tapedrive;
 use crate::track::bootstrap_network_state;
@@ -92,6 +96,94 @@ where
     peers.into_iter().map(call).collect()
 }
 
+/// Ask peers in a widening ladder rather than all at once.
+///
+/// The old behaviour sent one request per committee member, so a full
+/// committee meant up to MEMBER_COUNT requests for every metadata lookup, and
+/// every lookup rediscovered the dead ones. Here the best few peers are asked
+/// first and the circle widens only while nobody has answered, which keeps the
+/// latency of a race without its cost.
+///
+/// Outcomes feed reputation, so the ordering improves as the client runs.
+pub(crate) async fn query_ladder<Blockchain, Cluster, PeerFuture, AcceptFuture, T>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    call: impl Fn(Address) -> PeerFuture,
+    accept: impl Fn(T) -> AcceptFuture,
+) -> Result<T, TapedriveError>
+where
+    Blockchain: Rpc,
+    Cluster: Api,
+    PeerFuture: std::future::Future<Output = Result<T, ApiError>>,
+    AcceptFuture: std::future::Future<Output = Result<Option<T>, TapedriveError>>,
+{
+    let peers = queryable_peers(client).await?;
+    let ordered = client.reputation.order(&peers);
+    let width = client.read_options.query_fan_out.max(1);
+
+    let mut saw_not_found = false;
+    let mut last_error = None;
+    let mut launched = 0usize;
+    let mut pending = FuturesUnordered::new();
+
+    let launch = |index: usize, pending: &mut FuturesUnordered<_>| {
+        let node = ordered[index];
+        let started = Instant::now();
+        let future = call(node);
+        pending.push(async move { (node, started, future.await) });
+    };
+
+    while launched < width.min(ordered.len()) {
+        launch(launched, &mut pending);
+        launched += 1;
+    }
+
+    let hedge = sleep(HEDGE_DELAY);
+    tokio::pin!(hedge);
+
+    loop {
+        tokio::select! {
+            biased;
+
+            Some((node, started, result)) = pending.next() => {
+                match result {
+                    Ok(value) => {
+                        client.reputation.record_success(node, started.elapsed());
+                        match accept(value).await? {
+                            Some(accepted) => return Ok(accepted),
+                            None => last_error = Some(ApiError::StaleTrackProof),
+                        }
+                    }
+                    // A peer that answers "no" is healthy; it simply lacks the
+                    // record. Counting that as a failure would quarantine the
+                    // whole committee on the first miss.
+                    Err(ApiError::NotFound) => {
+                        client.reputation.record_success(node, started.elapsed());
+                        saw_not_found = true;
+                    }
+                    Err(error) => {
+                        client.reputation.record_failure(node);
+                        last_error = Some(error);
+                    }
+                }
+            }
+
+            _ = &mut hedge, if launched < ordered.len() => {
+                launch(launched, &mut pending);
+                launched += 1;
+                hedge.as_mut().reset(TokioInstant::now() + HEDGE_DELAY);
+            }
+
+            else => break,
+        }
+
+        if pending.is_empty() && launched >= ordered.len() {
+            break;
+        }
+    }
+
+    Err(finish_peer_query(last_error, saw_not_found))
+}
+
 fn finish_peer_query(last_error: Option<ApiError>, saw_not_found: bool) -> TapedriveError {
     if let Some(error) = last_error {
         TapedriveError::from(error)
@@ -108,23 +200,16 @@ pub async fn query_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: &Address,
 ) -> Result<CompressedTrack, TapedriveError> {
-    let peers = queryable_peers(client).await?;
-    let mut saw_not_found = false;
-    let mut last_error = None;
-
-    let mut requests = race_peers(peers, |node| {
-        let req = GetTrackReq { track: *track };
-        async move { client.api.get_track(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
-            Ok(res) => return Ok(res.track),
-            Err(ApiError::NotFound) => saw_not_found = true,
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(finish_peer_query(last_error, saw_not_found))
+    query_ladder(
+        client,
+        |node| {
+            let req = GetTrackReq { track: *track };
+            async move { client.api.get_track(node, &req).await }
+        },
+        |res: tape_protocol::api::GetTrackRes| async move { Ok(Some(res)) },
+    )
+    .await
+    .map(|res| res.track)
 }
 
 pub async fn query_track_by_number<Blockchain: Rpc, Cluster: Api>(
@@ -132,23 +217,16 @@ pub async fn query_track_by_number<Blockchain: Rpc, Cluster: Api>(
     tape: &Address,
     track_number: TrackNumber,
 ) -> Result<CompressedTrack, TapedriveError> {
-    let peers = queryable_peers(client).await?;
-    let mut saw_not_found = false;
-    let mut last_error = None;
-
-    let mut requests = race_peers(peers, |node| {
-        let req = GetTrackByNumberReq { tape: *tape, track_number };
-        async move { client.api.get_track_by_number(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
-            Ok(res) => return Ok(res.track),
-            Err(ApiError::NotFound) => saw_not_found = true,
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(finish_peer_query(last_error, saw_not_found))
+    query_ladder(
+        client,
+        |node| {
+            let req = GetTrackByNumberReq { tape: *tape, track_number };
+            async move { client.api.get_track_by_number(node, &req).await }
+        },
+        |res: tape_protocol::api::GetTrackByNumberRes| async move { Ok(Some(res)) },
+    )
+    .await
+    .map(|res| res.track)
 }
 
 pub async fn query_find_track<Blockchain: Rpc, Cluster: Api>(
@@ -157,27 +235,20 @@ pub async fn query_find_track<Blockchain: Rpc, Cluster: Api>(
     key: Hash,
     version: FindTrackVersion,
 ) -> Result<CompressedTrack, TapedriveError> {
-    let peers = queryable_peers(client).await?;
-    let mut saw_not_found = false;
-    let mut last_error = None;
-
-    let mut requests = race_peers(peers, |node| {
-        let req = FindTrackReq {
-            tape: *tape,
-            key,
-            version: version.clone(),
-        };
-        async move { client.api.find_track(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
-            Ok(res) => return Ok(res.track),
-            Err(ApiError::NotFound) => saw_not_found = true,
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(finish_peer_query(last_error, saw_not_found))
+    query_ladder(
+        client,
+        |node| {
+            let req = FindTrackReq {
+                tape: *tape,
+                key,
+                version: version.clone(),
+            };
+            async move { client.api.find_track(node, &req).await }
+        },
+        |res: tape_protocol::api::FindTrackRes| async move { Ok(Some(res)) },
+    )
+    .await
+    .map(|res| res.track)
 }
 
 pub async fn query_tracks_by_tape<Blockchain: Rpc, Cluster: Api>(
@@ -186,57 +257,47 @@ pub async fn query_tracks_by_tape<Blockchain: Rpc, Cluster: Api>(
     cursor: Option<TrackNumber>,
     limit: u32,
 ) -> Result<(Vec<CompressedTrack>, Option<TrackNumber>), TapedriveError> {
-    let peers = queryable_peers(client).await?;
-    let mut last_error = None;
-
-    let mut requests = race_peers(peers, |node| {
-        let req = ListTracksByTapeReq {
-            tape: *tape,
-            cursor,
-            limit,
-        };
-        async move { client.api.list_tracks_by_tape(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
-            Ok(res) => return Ok((res.tracks, res.next_cursor)),
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(finish_peer_query(last_error, false))
+    query_ladder(
+        client,
+        |node| {
+            let req = ListTracksByTapeReq {
+                tape: *tape,
+                cursor,
+                limit,
+            };
+            async move { client.api.list_tracks_by_tape(node, &req).await }
+        },
+        |res: tape_protocol::api::ListTracksByTapeRes| async move { Ok(Some(res)) },
+    )
+    .await
+    .map(|res| (res.tracks, res.next_cursor))
 }
 
 pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: &Address,
 ) -> Result<CompressedTrackProof, TapedriveError> {
-    let peers = queryable_peers(client).await?;
-    let mut saw_not_found = false;
-    let mut last_error = None;
-
-    let mut requests = race_peers(peers, |node| {
-        let req = GetTrackProofReq { track: *track };
-        async move { client.api.get_track_proof(node, &req).await }
-    });
-    while let Some(result) = requests.next().await {
-        match result {
-            Ok(res) => {
-                let tape_address: Address = res.proof.state.tape;
-                let tape = client
-                    .rpc()
-                    .get_tape_by_address(&tape_address)
-                    .await
-                    .map_err(TapedriveError::Rpc)?;
-                if tape.tracks.verify(&res.proof).is_ok() {
-                    return Ok(res.proof);
-                }
-                last_error = Some(ApiError::StaleTrackProof);
+    query_ladder(
+        client,
+        |node| {
+            let req = GetTrackProofReq { track: *track };
+            async move { client.api.get_track_proof(node, &req).await }
+        },
+        // A proof can be honestly served and still be stale, so it is checked
+        // against the tape before it counts as an answer. Rejecting one keeps
+        // the ladder going rather than failing the query.
+        |res: tape_protocol::api::GetTrackProofRes| async move {
+            let tape = client
+                .rpc()
+                .get_tape_by_address(&res.proof.state.tape)
+                .await
+                .map_err(TapedriveError::Rpc)?;
+            match tape.tracks.verify(&res.proof).is_ok() {
+                true => Ok(Some(res)),
+                false => Ok(None),
             }
-            Err(ApiError::NotFound) => saw_not_found = true,
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(finish_peer_query(last_error, saw_not_found))
+        },
+    )
+    .await
+    .map(|res| res.proof)
 }

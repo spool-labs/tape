@@ -5,8 +5,10 @@
 //! asking for and which peers are worth talking to, so a stale file can cost a
 //! wasted round trip but can never serve stale topology.
 
+mod reputation;
 mod store;
 
+pub use reputation::{HEDGE_DELAY, Reputation, now_secs};
 pub use store::{BYPASS_ENV, BootstrapStore, StoreError};
 
 use serde::{Deserialize, Serialize};
