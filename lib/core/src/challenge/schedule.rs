@@ -118,10 +118,10 @@ impl Schedule {
         Ok(())
     }
 
-    /// Rounds that fit inside the epoch.
+    /// Rounds an epoch of the nominal duration holds.
     ///
-    /// A round that would still be gossiping when the epoch ends is not scheduled,
-    /// so the last round finishes inside the epoch that owns it.
+    /// Used to size the cadence and to project cost. It is not a limit on the
+    /// grid: an epoch that runs past its nominal length keeps challenging.
     pub fn rounds(&self) -> u64 {
         let width = round_width_slots();
         if self.epoch_slots < width {
@@ -150,13 +150,17 @@ impl Schedule {
     ///
     /// None between rounds, which is most of the grid: the window is four slots
     /// out of an interval that is usually a hundred and fifty.
+    ///
+    /// Not bounded by `rounds()`. That count is what an epoch of the nominal
+    /// duration holds, but an epoch ends when the committee advances it, not when
+    /// its nominal length elapses, so one can run long. Capping here would stop
+    /// challenging partway through exactly the epochs that ran longest.
     pub fn round_at(&self, slot: SlotNumber) -> Option<RoundNumber> {
         let offset = slot.as_u64().checked_sub(self.epoch_start_slot.as_u64())?;
-        let round = offset / self.interval_slots;
-        if round >= self.rounds() || offset % self.interval_slots >= SPAN_SLOTS {
+        if offset % self.interval_slots >= SPAN_SLOTS {
             return None;
         }
-        Some(RoundNumber(round))
+        Some(RoundNumber(offset / self.interval_slots))
     }
 }
 
@@ -254,11 +258,32 @@ mod tests {
     }
 
     #[test]
+    fn an_epoch_that_runs_long_keeps_challenging() {
+        // An epoch ends when the committee advances it, not when its nominal
+        // length elapses. A grid that stopped at the nominal count would leave
+        // the tail of a long epoch unchallenged, which is when a node is most
+        // likely to have gone quiet unnoticed.
+        let schedule = Schedule::for_epoch(SlotNumber(0), epoch_slots(SIMNET));
+        let nominal = schedule.rounds();
+
+        let past = nominal * schedule.interval_slots;
+        assert_eq!(
+            schedule.round_at(SlotNumber(past)),
+            Some(RoundNumber(nominal))
+        );
+        let far = past + schedule.interval_slots * 10;
+        assert_eq!(
+            schedule.round_at(SlotNumber(far)),
+            Some(RoundNumber(nominal + 10))
+        );
+    }
+
+    #[test]
     fn a_slot_maps_back_to_the_round_that_owns_it() {
         let start = SlotNumber(9_000);
         let schedule = Schedule::for_epoch(start, epoch_slots(DEVNET));
 
-        for round in [0u64, 1, 30, schedule.rounds() - 1] {
+        for round in [0u64, 1, 30, schedule.rounds() + 5] {
             let window = schedule.entropy_window(RoundNumber(round));
             for slot in window.clone() {
                 assert_eq!(schedule.round_at(SlotNumber(slot)), Some(RoundNumber(round)));
@@ -267,9 +292,7 @@ mod tests {
             assert_eq!(schedule.round_at(SlotNumber(window.end)), None);
         }
 
-        // Before the epoch, and past its last round.
+        // Before the epoch there is no round at all.
         assert_eq!(schedule.round_at(SlotNumber(start.as_u64() - 1)), None);
-        let past = start.as_u64() + schedule.rounds() * schedule.interval_slots;
-        assert_eq!(schedule.round_at(SlotNumber(past)), None);
     }
 }
