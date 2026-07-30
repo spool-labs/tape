@@ -4,9 +4,8 @@ use core::mem::size_of;
 
 use tape_core::{
     bls::BlsSignature,
-    erasure::{SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT},
+    erasure::SLICE_TREE_HEIGHT,
     spooler::GroupIndex,
-    track::blob::SubLeafProof,
 };
 pub use tape_core::system::VoteCandidate;
 use tape_core::prelude::{BlobData, EpochNumber, SpoolIndex, TrackNumber};
@@ -27,11 +26,6 @@ pub const SLICE_BODY_LIMIT: usize = size_of::<u64>()
     + (SLICE_TREE_HEIGHT * Hash::LEN);
 
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
-
-/// A sample leaf is one fixed-size chunk, so a longer one is malformed. This is
-/// the bound that actually holds on a challenge response: the path length is
-/// fixed by the tree height, so the leaf is the only part a peer can inflate.
-type SampleLeafBytes = WincodeVec<Pod<u8>, BincodeLen<SUB_LEAF_BYTES>>;
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -182,36 +176,6 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
     }
 }
 
-/// Payload for a sampled sub-leaf proof, the answer to a storage challenge.
-///
-/// It carries the leaf bytes rather than their hash, because a hash and a path
-/// prove only that the owner cached a proof. The path stops at the slice root,
-/// which the challenger already holds in the track's registered encoding.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SampleProofPayload {
-    #[wincode(with = "SampleLeafBytes")]
-    pub sub_leaf: Vec<u8>,
-    pub sub_proof: Vec<Hash>,
-}
-
-impl From<SubLeafProof> for SampleProofPayload {
-    fn from(proof: SubLeafProof) -> Self {
-        Self {
-            sub_leaf: proof.sub_leaf,
-            sub_proof: proof.sub_proof,
-        }
-    }
-}
-
-impl From<SampleProofPayload> for SubLeafProof {
-    fn from(payload: SampleProofPayload) -> Self {
-        Self {
-            sub_leaf: payload.sub_leaf,
-            sub_proof: payload.sub_proof,
-        }
-    }
-}
-
 /// Payload for slice upload requests.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SlicePayload {
@@ -351,42 +315,6 @@ mod tests {
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
-
-    /// A distinct non-zero hash per level. Zero is the seed the empty-subtree
-    /// roots derive from, so it is the one 32-byte value with a meaning of its
-    /// own and a poor stand-in for a path element.
-    fn path() -> Vec<Hash> {
-        (0..SUB_TREE_HEIGHT)
-            .map(|level| Hash::from([level as u8 + 1; 32]))
-            .collect()
-    }
-
-    #[test]
-    fn a_sample_proof_survives_the_wire() {
-        let proof = SubLeafProof {
-            sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
-            sub_proof: path(),
-        };
-        let encoded = wincode::serialize(&SampleProofPayload::from(proof.clone())).unwrap();
-        let decoded: SampleProofPayload = wincode::deserialize(&encoded).unwrap();
-        assert_eq!(SubLeafProof::from(decoded), proof);
-    }
-
-    #[test]
-    fn a_sample_leaf_longer_than_one_chunk_is_refused() {
-        // The bound belongs on decode, because the oversize claim comes from a
-        // peer. Overstate the leaf length in a valid encoding and it must fail
-        // before anything allocates.
-        let mut encoded = wincode::serialize(&SampleProofPayload {
-            sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
-            sub_proof: path(),
-        })
-        .unwrap();
-        encoded[..size_of::<u64>()]
-            .copy_from_slice(&(SUB_LEAF_BYTES as u64 + 1).to_le_bytes());
-
-        assert!(wincode::deserialize::<SampleProofPayload>(&encoded).is_err());
-    }
 
     fn address(byte: u8) -> Address {
         let mut bytes = [0u8; 32];
