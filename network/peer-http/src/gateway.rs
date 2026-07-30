@@ -291,6 +291,15 @@ impl Api for GatewayApi {
         Err(unsupported("vote"))
     }
 
+    /// A gateway is not a spool owner, so it holds no slice to sample.
+    async fn get_sample(
+        &self,
+        _node: Address,
+        _req: &GetSampleReq,
+    ) -> Result<GetSampleRes, ApiError> {
+        Err(unsupported("get_sample"))
+    }
+
     async fn get_health(
         &self,
         _node: Address,

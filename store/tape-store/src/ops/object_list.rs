@@ -1,12 +1,10 @@
 //! Per-bucket object listing index for S3-style `ListObjects`.
 
 use store::{Column, Direction, Store};
-use tape_api::program::tapedrive::track_pda;
 use tape_crypto::address::Address;
 
 use crate::columns::ObjectListCol;
 use crate::error::{Result, TapeStoreError};
-use crate::ops::object_info::ObjectInfoOps;
 use crate::types::{ObjectListEntry, ObjectListKey};
 use crate::TapeStore;
 
@@ -143,24 +141,12 @@ impl<S: Store> ObjectListOps for TapeStore<S> {
                         None => break 'scan,
                     }
                 } else {
-                    let entry = decode_entry(&value_bytes)?;
-                    // Hide uncertified objects: the track is registered but not
-                    // yet servable, so listing it would return a key that 404s on
-                    // GET. Skipped entries do not count against max_keys, so pages
-                    // stay full of servable objects.
-                    let track = track_pda(entry.data_tape, entry.track_number).0;
-                    let certified = self
-                        .get_object_info(track)?
-                        .is_some_and(|info| info.is_certified());
-                    if !certified {
-                        continue;
-                    }
                     if page.objects.len() + page.common_prefixes.len() >= max_keys {
                         page.is_truncated = true;
                         page.next = Some(name.to_vec());
                         break 'scan;
                     }
-                    page.objects.push((name.to_vec(), entry));
+                    page.objects.push((name.to_vec(), decode_entry(&value_bytes)?));
                 }
             }
 
@@ -207,10 +193,8 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
-    use tape_api::program::tapedrive::track_pda;
-    use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{ContentType, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::Hash;
-    use crate::types::ObjectInfo;
 
     fn store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -229,23 +213,6 @@ mod tests {
         }
     }
 
-    // Mirror production: a listed object has both an entry and a certified
-    // ObjectInfo. `put_object_entry` alone leaves it uncertified (hidden).
-    fn put_certified(s: &TapeStore<MemoryStore>, bucket: Address, name: &[u8], e: ObjectListEntry) {
-        let track = track_pda(e.data_tape, e.track_number).0;
-        s.put_object_info(
-            track,
-            ObjectInfo::Valid {
-                track_address: track,
-                registered_epoch: EpochNumber(1),
-                certified_epoch: Some(EpochNumber(1)),
-                slot: e.slot,
-            },
-        )
-        .unwrap();
-        s.put_object_entry(bucket, name, e).unwrap();
-    }
-
     fn names(page: &ObjectListPage) -> Vec<Vec<u8>> {
         page.objects.iter().map(|(n, _)| n.clone()).collect()
     }
@@ -256,7 +223,7 @@ mod tests {
         let b = Address::new_unique();
         assert!(s.get_object_entry(b, b"a").unwrap().is_none());
         let e = entry(7);
-        put_certified(&s, b, b"a", e.clone());
+        s.put_object_entry(b, b"a", e.clone()).unwrap();
         assert_eq!(s.get_object_entry(b, b"a").unwrap(), Some(e));
     }
 
@@ -264,9 +231,9 @@ mod tests {
     fn overwrite_last_write_wins() {
         let s = store();
         let b = Address::new_unique();
-        put_certified(&s, b, b"k", entry(1));
+        s.put_object_entry(b, b"k", entry(1)).unwrap();
         let e2 = entry(2);
-        put_certified(&s, b, b"k", e2.clone());
+        s.put_object_entry(b, b"k", e2.clone()).unwrap();
         assert_eq!(s.get_object_entry(b, b"k").unwrap(), Some(e2));
         let page = s.list_objects(b, b"", None, None, 100).unwrap();
         assert_eq!(page.objects.len(), 1);
@@ -276,7 +243,7 @@ mod tests {
     fn delete_entry() {
         let s = store();
         let b = Address::new_unique();
-        put_certified(&s, b, b"k", entry(1));
+        s.put_object_entry(b, b"k", entry(1)).unwrap();
         s.delete_object_entry(b, b"k").unwrap();
         assert!(s.get_object_entry(b, b"k").unwrap().is_none());
     }
@@ -286,7 +253,7 @@ mod tests {
         let s = store();
         let b = Address::new_unique();
         for n in [b"banana".as_slice(), b"apple", b"cherry"] {
-            put_certified(&s, b, n, entry(1));
+            s.put_object_entry(b, n, entry(1)).unwrap();
         }
         let page = s.list_objects(b, b"", None, None, 100).unwrap();
         assert_eq!(
@@ -301,7 +268,7 @@ mod tests {
         let s = store();
         let b = Address::new_unique();
         for n in [b"photos/a".as_slice(), b"photos/b", b"docs/c", b"zoo"] {
-            put_certified(&s, b, n, entry(1));
+            s.put_object_entry(b, n, entry(1)).unwrap();
         }
         let page = s.list_objects(b, b"photos/", None, None, 100).unwrap();
         assert_eq!(names(&page), vec![b"photos/a".to_vec(), b"photos/b".to_vec()]);
@@ -312,8 +279,8 @@ mod tests {
         let s = store();
         let a = Address::new_unique();
         let b = Address::new_unique();
-        put_certified(&s, a, b"x", entry(1));
-        put_certified(&s, b, b"y", entry(1));
+        s.put_object_entry(a, b"x", entry(1)).unwrap();
+        s.put_object_entry(b, b"y", entry(1)).unwrap();
         assert_eq!(names(&s.list_objects(a, b"", None, None, 100).unwrap()), vec![b"x".to_vec()]);
         assert_eq!(names(&s.list_objects(b, b"", None, None, 100).unwrap()), vec![b"y".to_vec()]);
     }
@@ -323,7 +290,7 @@ mod tests {
         let s = store();
         let b = Address::new_unique();
         for n in [b"a".as_slice(), b"p/1", b"p/2", b"q/r/s", b"z"] {
-            put_certified(&s, b, n, entry(1));
+            s.put_object_entry(b, n, entry(1)).unwrap();
         }
         let page = s.list_objects(b, b"", Some(b"/"), None, 100).unwrap();
         assert_eq!(names(&page), vec![b"a".to_vec(), b"z".to_vec()]);
@@ -336,7 +303,7 @@ mod tests {
         let s = store();
         let b = Address::new_unique();
         for n in [b"p/file".as_slice(), b"p/sub/x", b"p/sub/y", b"p/z"] {
-            put_certified(&s, b, n, entry(1));
+            s.put_object_entry(b, n, entry(1)).unwrap();
         }
         let page = s.list_objects(b, b"p/", Some(b"/"), None, 100).unwrap();
         assert_eq!(names(&page), vec![b"p/file".to_vec(), b"p/z".to_vec()]);
@@ -348,7 +315,7 @@ mod tests {
         let s = store();
         let b = Address::new_unique();
         for n in [b"a".as_slice(), b"b", b"c", b"d", b"e"] {
-            put_certified(&s, b, n, entry(1));
+            s.put_object_entry(b, n, entry(1)).unwrap();
         }
         let mut seen = Vec::new();
         let mut start: Option<Vec<u8>> = None;
@@ -381,7 +348,7 @@ mod tests {
         let s = store();
         let b = Address::new_unique();
         for n in [b"a".as_slice(), b"p/1", b"p/2", b"q/1", b"z"] {
-            put_certified(&s, b, n, entry(1));
+            s.put_object_entry(b, n, entry(1)).unwrap();
         }
         let p1 = s.list_objects(b, b"", Some(b"/"), None, 2).unwrap();
         assert_eq!(names(&p1), vec![b"a".to_vec()]);
@@ -408,20 +375,9 @@ mod tests {
     fn key_equal_to_prefix_is_returned() {
         let s = store();
         let b = Address::new_unique();
-        put_certified(&s, b, b"photos/", entry(1));
-        put_certified(&s, b, b"photos/a", entry(1));
+        s.put_object_entry(b, b"photos/", entry(1)).unwrap();
+        s.put_object_entry(b, b"photos/a", entry(1)).unwrap();
         let page = s.list_objects(b, b"photos/", None, None, 100).unwrap();
         assert_eq!(names(&page), vec![b"photos/".to_vec(), b"photos/a".to_vec()]);
-    }
-
-    #[test]
-    fn hides_uncertified() {
-        let s = store();
-        let b = Address::new_unique();
-        put_certified(&s, b, b"live", entry(1));
-        // An entry with no certified ObjectInfo (an interrupted write) is skipped.
-        s.put_object_entry(b, b"pending", entry(2)).unwrap();
-        let page = s.list_objects(b, b"", None, None, 100).unwrap();
-        assert_eq!(names(&page), vec![b"live".to_vec()]);
     }
 }

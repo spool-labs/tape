@@ -44,7 +44,7 @@ pub async fn read_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + Unpin
 }
 
 /// Load and validate the manifest plus its track metadata.
-pub(crate) async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
+async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     manifest_address: &Address,
 ) -> Result<(ChunkManifest, CompressedTrack), TapedriveError> {

@@ -3,13 +3,12 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use rpc::{CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
+use rpc::{CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc};
 use rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
 use tape_api::instruction::{build_certify_track_ix, build_track_write_ix, track_write_ix_len};
-use tape_api::program::tapedrive::track_pda;
 use solana_instruction::Instruction;
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::bft::min_correct;
@@ -134,73 +133,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             data,
         )
         .await
-    }
-
-    /// Write a named object track, resuming or overwriting an existing one.
-    ///
-    /// `existing` is the object's current track address, if the caller has it
-    /// (e.g. the gateway's resolved object). A matching incomplete track is
-    /// finished, a matching complete one is skipped, a different one is
-    /// overwritten and reclaimed, and an absent one is written fresh. Callers
-    /// that hold the address avoid a find_track scan on the hot path.
-    pub async fn write_or_resume_track_as(
-        &self,
-        operator: &impl TapeOperator,
-        name: impl AsRef<[u8]>,
-        content_type: ContentType,
-        data: &[u8],
-        existing: Option<Address>,
-    ) -> Result<CompressedTrack, TapedriveError> {
-        resume_or_write_track(
-            self,
-            operator,
-            name.as_ref(),
-            content_type,
-            data,
-            existing,
-            OnConflict::Overwrite,
-        )
-        .await
-    }
-
-    /// Reclaim the object a track backs, freeing its capacity.
-    ///
-    /// A stream (manifest) track is reclaimed whole: the manifest lists every
-    /// chunk's track number, so each chunk is deleted and then the manifest. A
-    /// single-track object is just deleted. Per-track best-effort: a failure
-    /// leaves that track for a later overwrite or sweep, never erroring. Used to
-    /// reclaim the prior object an overwrite orphaned.
-    pub async fn reclaim_object_as(
-        &self,
-        operator: &impl TapeOperator,
-        track: Address,
-    ) -> Result<(), TapedriveError> {
-        match self.get_track(&track).await {
-            Ok(_) => {}
-            Err(TapedriveError::NotFound) => return Ok(()),
-            Err(error) => return Err(error),
-        };
-
-        // A stream's object track is its manifest, whose data deserializes into a
-        // ChunkManifest listing every chunk track; a single-track object's data
-        // does not. Detect by that parse, not by the manifest track's own size:
-        // the manifest is only the serialized chunk list, a few hundred bytes,
-        // so it never exceeds one track. Reclaim each listed chunk, then fall
-        // through to delete the manifest track itself.
-        if let Ok((manifest, _)) = crate::stream::read::read_manifest(self, &track).await {
-            let tape = operator.address();
-            for entry in &manifest.chunks {
-                let chunk = track_pda(tape, entry.track_number).0;
-                if let Err(error) = self.delete_as(operator, chunk).await {
-                    debug!(%error, chunk = %entry.track_number, "stream chunk reclaim failed");
-                }
-            }
-        }
-
-        if let Err(error) = self.delete_as(operator, track).await {
-            debug!(%error, %track, "object track reclaim failed");
-        }
-        Ok(())
     }
 
     /// Write unnamed raw bytes to an existing tape.
@@ -582,19 +514,6 @@ pub(crate) struct SentBlob {
     plan: UploadPlan,
 }
 
-/// The on-chain blob encoding a plan registers as; also the input to a coded
-/// track's logical key.
-pub(crate) fn plan_blob(plan: &UploadPlan) -> BlobEncoding {
-    BlobEncoding {
-        size: plan.storage_units,
-        commitment: plan.commitment_hash,
-        profile: plan.profile,
-        stripe_size: StorageUnits::from_bytes(plan.stripe_size as u64),
-        stripe_count: StripeCount(plan.stripe_count as u64),
-        leaves: plan.leaves,
-    }
-}
-
 fn build_blob_write(
     payer: Address,
     tape_key: &impl TapeOperator,
@@ -603,7 +522,14 @@ fn build_blob_write(
     logical_size: StorageUnits,
     plan: &UploadPlan,
 ) -> Result<(Instruction, BlobEncoding, Hash), TapedriveError> {
-    let blob = plan_blob(plan);
+    let blob = BlobEncoding {
+        size: plan.storage_units,
+        commitment: plan.commitment_hash,
+        profile: plan.profile,
+        stripe_size: StorageUnits::from_bytes(plan.stripe_size as u64),
+        stripe_count: StripeCount(plan.stripe_count as u64),
+        leaves: plan.leaves,
+    };
 
     let key = track_key(name, &BlobDataSlice::Coded(blob));
     let object = track_object(name, content_type, logical_size);
@@ -744,8 +670,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
         &state,
         client.write_options.slice_concurrency,
     )
-    .map_err(TapedriveError::Upload)?
-    .with_reputation(client.reputation.clone());
+    .map_err(TapedriveError::Upload)?;
 
     let store = client
         .timer(operation, Phase::Store)
@@ -1157,191 +1082,6 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     .await;
     timer.finish_result(&result);
     result
-}
-
-/// One-call write that reserves a fresh tape or resumes an interrupted one.
-///
-/// A missing tape is reserved and written normally. An existing tape means a
-/// prior call was interrupted after reserving, so its single track is resumed.
-/// Backs [`Tapedrive::write`] and [`Tapedrive::write_named`].
-pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &TapeKey,
-    name: &[u8],
-    content_type: ContentType,
-    data: &[u8],
-    epochs: u64,
-) -> Result<CompressedTrack, TapedriveError> {
-    match client.get_tape(&tape_key.address()).await {
-        Err(TapedriveError::Rpc(RpcError::AccountNotFound(_))) => {
-            let capacity = StorageUnits::from_bytes(data.len() as u64);
-            let reserve_capacity = capacity + StorageUnits::mb(1);
-
-            let reserve = client.timer(Operation::Write, Phase::Reserve);
-            let reserved = client.reserve(tape_key, reserve_capacity, epochs).await;
-            reserve.finish_result(&reserved);
-            reserved?;
-
-            write_track(client, tape_key, name, content_type, data).await
-        }
-        // An existing tape means a prior interrupted call. The one-call write
-        // dedicates a fresh tape to one blob at track 0, and reusing its key for
-        // different data is a conflict, not an overwrite.
-        Ok(_) => {
-            let first = track_pda(tape_key.address(), TrackNumber(0)).0;
-            resume_or_write_track(
-                client,
-                tape_key,
-                name,
-                content_type,
-                data,
-                Some(first),
-                OnConflict::Reject,
-            )
-            .await
-        }
-        Err(other) => Err(other),
-    }
-}
-
-/// How to handle a resume where the existing track holds different content.
-pub(crate) enum OnConflict {
-    /// The identity was reused for different data; refuse (one-call write).
-    Reject,
-    /// Last-write-wins: write the new content and reclaim the stale track.
-    Overwrite,
-}
-
-/// Resume, skip, overwrite, or write a single named track at a known position.
-///
-/// `existing` is where the caller located this object's current track, if any:
-/// track 0 for the one-call write, the resolved object for the gateway,
-/// find_track for an SDK append. A matching certified track is returned as is;
-/// a matching registered track is finished (upload the missing slices, then
-/// certify); a missing track is written fresh. A track whose content differs is
-/// rejected as a conflict, or overwritten and the stale track reclaimed, per
-/// `on_conflict`.
-pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    operator: &impl TapeOperator,
-    name: &[u8],
-    content_type: ContentType,
-    data: &[u8],
-    existing: Option<Address>,
-    on_conflict: OnConflict,
-) -> Result<CompressedTrack, TapedriveError> {
-    let Some(track_address) = existing else {
-        return write_track(client, operator, name, content_type, data).await;
-    };
-
-    let existing_track = match client.get_track(&track_address).await {
-        Ok(track) => track,
-        // The located track is gone or never landed: write fresh.
-        Err(TapedriveError::NotFound) => {
-            return write_track(client, operator, name, content_type, data).await;
-        }
-        Err(other) => return Err(other),
-    };
-
-    // Recover the expected identity the register path produces (via
-    // BlobDataSlice::meta), plus the coded upload plan needed to finish. Inline
-    // tracks certify at register, so a matching inline track is already complete.
-    let (expected_key, expected_value_hash, coded_plan) = if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
-        let slice = BlobDataSlice::Inline(data);
-        let meta = slice
-            .meta()
-            .ok_or_else(|| TapedriveError::Encoding("inline blob has no commitment".into()))?;
-        (track_key(name, &slice), meta.value_hash, None)
-    } else {
-        let (plan, key, value_hash) = coded_identity(client, name, data, Operation::Write).await?;
-        (key, value_hash, Some(plan))
-    };
-
-    if existing_track.key == expected_key && existing_track.value_hash == expected_value_hash {
-        // Same content: an inline track is certified at register, so a match is
-        // already complete; a coded track is finished in place (skip if certified,
-        // else upload + certify).
-        return match coded_plan {
-            Some(plan) => {
-                finish_coded_track(client, operator, existing_track, &plan, Operation::Write).await
-            }
-            None => Ok(existing_track),
-        };
-    }
-
-    // Different content at this position.
-    match on_conflict {
-        OnConflict::Reject => Err(TapedriveError::WriteConflict {
-            track_number: existing_track.track_number,
-        }),
-        OnConflict::Overwrite => {
-            let written = write_track(client, operator, name, content_type, data).await?;
-            // Reclaim the stale track; best-effort, never fails the write that
-            // already landed. A failure leaves it for a later overwrite or sweep.
-            if let Err(error) = client.delete_as(operator, track_address).await {
-                debug!(%error, %track_address, "overwrite reclaim failed; stale track left for later reclaim");
-            }
-            Ok(written)
-        }
-    }
-}
-
-/// Confirm an existing track is the one this write would produce. A key or
-/// value-hash mismatch means the tape holds a different track at this position;
-/// used by the stream resume path, where a chunk mismatch is always a conflict.
-pub(crate) fn ensure_track_matches(
-    track: &CompressedTrack,
-    expected_key: Hash,
-    expected_value_hash: Hash,
-) -> Result<(), TapedriveError> {
-    if track.key == expected_key && track.value_hash == expected_value_hash {
-        Ok(())
-    } else {
-        Err(TapedriveError::WriteConflict {
-            track_number: track.track_number,
-        })
-    }
-}
-
-/// Encode `data` as a coded blob and return its upload plan plus the identity
-/// (logical key, value hash) a registered coded track for `name` would carry.
-/// Shared by the single-track and stream resume paths, which all compare an
-/// existing track against a freshly encoded blob.
-pub(crate) async fn coded_identity<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    name: &[u8],
-    data: &[u8],
-    operation: Operation,
-) -> Result<(UploadPlan, Hash, Hash), TapedriveError> {
-    let plan = encode_blob(client, data.to_vec(), operation).await?;
-    let slice = BlobDataSlice::Coded(plan_blob(&plan));
-    let meta = slice
-        .meta()
-        .ok_or_else(|| TapedriveError::Encoding("coded blob has no commitment".into()))?;
-    let key = track_key(name, &slice);
-    Ok((plan, key, meta.value_hash))
-}
-
-/// Complete a matching but incomplete coded track in place: return it if already
-/// certified, else upload the missing slices and certify. Certification uses the
-/// order-independent peer-proof path, not write_track's mirror shortcut, whose
-/// proof is only valid for tracks certified in tape order.
-pub(crate) async fn finish_coded_track<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    operator: &impl TapeOperator,
-    existing: CompressedTrack,
-    plan: &UploadPlan,
-    operation: Operation,
-) -> Result<CompressedTrack, TapedriveError> {
-    if existing.is_certified() {
-        return Ok(existing);
-    }
-    let written = WrittenTrack {
-        address: track_pda(existing.tape, existing.track_number).0,
-        track: existing,
-    };
-    upload_with_retry(client, &written, plan, operation).await?;
-    certify_with_retry(client, operator, &written, operation).await
 }
 
 /// Certify a written track with a proof from a mirror seeded before its
