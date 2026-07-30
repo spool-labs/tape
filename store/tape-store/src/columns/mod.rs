@@ -28,6 +28,7 @@
 //!
 //! ## Challenge Column
 //! - `challenge_record`: Per-peer challenge history (Address -> PeerRecord)
+//! - `challenge_round`: Per-round outcomes (peer + epoch + round -> bool)
 //!
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
@@ -64,6 +65,7 @@ pub mod s3_multipart;
 pub mod snapshot;
 pub mod slice;
 pub mod challenge_record;
+pub mod challenge_round;
 pub mod slice_sidecar;
 pub mod slice_size;
 pub mod spool;
@@ -90,6 +92,7 @@ pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUp
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
 pub use challenge_record::ChallengeRecordCol;
+pub use challenge_round::ChallengeRoundCol;
 pub use slice_sidecar::SliceSidecarCol;
 pub use slice_size::SliceSizeCol;
 pub use spool::{
@@ -121,6 +124,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "slice_size",
     "slice_sidecar",
     "challenge_record",
+    "challenge_round",
     "spool_sync_cursor",
     "event_log",
     "vote_sig",

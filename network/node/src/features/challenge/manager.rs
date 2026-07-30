@@ -218,6 +218,16 @@ where
             return;
         }
 
+        // The counters say how often; this says which rounds, so a report can
+        // name the ones a node failed rather than only count them.
+        if let Err(error) = self
+            .context
+            .store
+            .put_round_outcome(peer, epoch, round, certified)
+        {
+            debug!(%error, node = %peer, "challenge: round outcome not persisted");
+        }
+
         debug!(
             node = %peer,
             round = round.0,
