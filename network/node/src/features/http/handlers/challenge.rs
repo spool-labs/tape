@@ -21,13 +21,13 @@ use tracing::{debug, trace};
 
 use crate::features::challenge::rounds::RoundKey;
 use crate::features::challenge::witness::{
-    Round, accept_answer, attest_message, group_members, relay_and_attest, round_of,
+    Round, accept_answer, attest_message, group_members, round_of, spawn_relay_and_attest,
 };
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
 /// Take in one owner's broadcast answer for a round.
-pub async fn proof_of_access<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -62,7 +62,7 @@ pub async fn proof_of_access<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     trace!(spool = %answer.spool, round = answer.round.0, "challenge: answer accepted");
-    relay_and_attest(&state.context, &protocol, &answer).await;
+    spawn_relay_and_attest(&state.context, &protocol, &answer);
     certify_if_ready(&state, &protocol, &round, key);
 
     Ok(StatusCode::OK)

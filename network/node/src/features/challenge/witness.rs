@@ -148,12 +148,21 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-/// Relay an accepted answer to the group and push our attestation for it.
+/// Peers an accepting owner forwards the answer to.
 ///
-/// Relay first. A peer the answering owner skipped only hears about the round
-/// through us, and it cannot check our attestation without the answer it attests
-/// to.
-pub async fn relay_and_attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
+/// The owner already broadcast to the whole group, so relaying exists only to
+/// reach members it deliberately skipped. One hop from a handful of witnesses
+/// covers those; flooding every acceptance to every peer turns one round into
+/// hundreds of forwards per spool and adds nothing, which the simulation measured
+/// before this was built.
+const RELAY_FANOUT: usize = 3;
+
+/// Relay an accepted answer onward and push our attestation for it.
+///
+/// Runs off the request path. Every peer that accepts an answer calls this, and
+/// each call talks to the rest of the group, so doing it inside the handler makes
+/// one delivery wait on a fan-out that is itself triggering more handlers.
+pub fn spawn_relay_and_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     state: &ProtocolState,
     answer: &ProofOfAccess,
@@ -168,38 +177,62 @@ pub async fn relay_and_attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .round_buffer
         .accept_attestation(round.key(answer.spool), me, signature);
 
-    for peer in group_members(state, answer.group) {
-        if peer == me {
-            continue;
-        }
+    let peers: Vec<Address> = group_members(state, answer.group)
+        .into_iter()
+        .filter(|peer| *peer != me)
+        .collect();
+    let spool = answer.spool;
+    let context = context.clone();
+    let answer = answer.clone();
 
-        let relayed = context
-            .api
-            .proof_of_access(peer, &ProofOfAccessReq { answer: answer.clone() })
-            .await;
-        if let Err(error) = relayed {
-            trace!(node = %peer, %error, "challenge: relay failed");
-        }
+    tokio::spawn(async move {
+        // Relay to a few, attest to all. An attestation is a hundred bytes and
+        // every peer needs a quorum of them to certify; the answer is kilobytes
+        // and only the skipped need another copy.
+        let relays = peers.iter().take(RELAY_FANOUT).map(|peer| {
+            let context = context.clone();
+            let answer = answer.clone();
+            async move {
+                if let Err(error) = context
+                    .api
+                    .proof_of_access(*peer, &ProofOfAccessReq { answer })
+                    .await
+                {
+                    trace!(node = %peer, %error, "challenge: relay failed");
+                }
+            }
+        });
 
-        let attested = context
-            .api
-            .attest(
-                peer,
-                &AttestReq {
-                    epoch: round.epoch,
-                    group: round.group,
-                    round: round.round,
-                    spool: answer.spool,
-                    block: round.block,
-                    signer: me,
-                    signature,
-                },
-            )
-            .await;
-        if let Err(error) = attested {
-            trace!(node = %peer, %error, "challenge: attestation not delivered");
-        }
-    }
+        let attestations = peers.iter().map(|peer| {
+            let context = context.clone();
+            async move {
+                let sent = context
+                    .api
+                    .attest(
+                        *peer,
+                        &AttestReq {
+                            epoch: round.epoch,
+                            group: round.group,
+                            round: round.round,
+                            spool,
+                            block: round.block,
+                            signer: me,
+                            signature,
+                        },
+                    )
+                    .await;
+                if let Err(error) = sent {
+                    trace!(node = %peer, %error, "challenge: attestation not delivered");
+                }
+            }
+        });
+
+        futures::future::join(
+            futures::future::join_all(relays),
+            futures::future::join_all(attestations),
+        )
+        .await;
+    });
 }
 
 /// The message every accepting observer signs for a round.
