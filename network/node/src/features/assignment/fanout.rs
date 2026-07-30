@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::bft::is_supermajority;
+use tape_core::bft::has_honest_signer;
 use tape_core::erasure::GROUP_SIZE;
 use tape_protocol::api::VoteReq;
 use tape_protocol::{Api, ProtocolState};
@@ -60,7 +60,7 @@ where
             .iter_vote_sigs(vote, group)
             .map_err(|e| NodeError::Store(format!("iter_vote_sigs: {e}")))?;
 
-        if is_supermajority(sigs.len() as u64, GROUP_SIZE as u64) {
+        if has_honest_signer(sigs.len() as u64, GROUP_SIZE as u64) {
             continue;
         }
 

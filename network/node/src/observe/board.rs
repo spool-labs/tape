@@ -718,3 +718,77 @@ where
         lifetime: super::epoch::lifetime_including(&current_epoch),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tape_observe_api::{
+        NodeStats, SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGE_FETCHED,
+    };
+
+    use super::{build, build_network, lite_board};
+    use crate::harness::{NodeHarness, TestContext};
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
+
+    // the network view carries the clock the charts bucket by
+    #[tokio::test]
+    async fn network_is_stamped() {
+        let context = test_context().await;
+
+        let network = build_network(&context);
+
+        assert!(network.generated_at > 0);
+        assert!(!network.committee.is_empty());
+    }
+
+    // repair bytes reach both this node's board and its row in the network view
+    #[tokio::test]
+    async fn repair_bytes_surface() {
+        let context = test_context().await;
+        let before = build(&context).spool_bytes(SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED);
+        let uploaded = build(&context).throughput.bytes_uploaded;
+
+        context.metrics.add_repair_fetched(4_096);
+        context.metrics.add_uploaded(512);
+
+        let board = build(&context);
+        assert_eq!(board.spool_bytes(SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED), before + 4_096);
+        assert_eq!(board.throughput.bytes_uploaded, uploaded + 512);
+        let network = build_network(&context);
+        let local = network
+            .committee
+            .iter()
+            .find_map(|node| node.stats.as_ref())
+            .expect("local node stats");
+        assert!(local.repair_bytes >= 4_096);
+        assert!(local.upload_bytes >= 512);
+    }
+
+    // a peer reachable only over public stats still charts every transfer path
+    #[tokio::test]
+    async fn lite_board_transfer() {
+        let stats = NodeStats {
+            sync_bytes: 11,
+            repair_bytes: 22,
+            recover_bytes: 33,
+            upload_bytes: 44,
+            ..NodeStats::default()
+        };
+
+        let board = lite_board("peer".to_string(), &stats);
+
+        assert_eq!(board.spool_bytes(SPOOL_OP_SYNC, SPOOL_STAGE_FETCHED), 11);
+        assert_eq!(board.spool_bytes(SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED), 22);
+        assert_eq!(board.spool_bytes(SPOOL_OP_RECOVER, SPOOL_STAGE_FETCHED), 33);
+        assert_eq!(board.throughput.bytes_uploaded, 44);
+        assert!(board.generated_at > 0);
+    }
+}
