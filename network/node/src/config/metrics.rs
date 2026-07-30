@@ -8,8 +8,8 @@ pub struct MetricsConfig {
     pub enabled: bool,
 
     /// Probe committee peers in the background for the dashboard's network
-    /// table. Off by default; enable it only on nodes that serve a dashboard.
-    #[serde(default)]
+    /// table and bandwidth charts. Without it a node only knows its own figures.
+    #[serde(default = "default_aggregate_peers")]
     pub aggregate_peers: bool,
 
     /// How often, in seconds, to refresh peer liveness.
@@ -21,13 +21,17 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             enabled: default_enabled(),
-            aggregate_peers: false,
+            aggregate_peers: default_aggregate_peers(),
             aggregate_interval_secs: default_aggregate_interval_secs(),
         }
     }
 }
 
 fn default_enabled() -> bool {
+    true
+}
+
+fn default_aggregate_peers() -> bool {
     true
 }
 
