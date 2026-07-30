@@ -47,16 +47,6 @@ pub trait SliceOps {
         spool_id: SpoolIndex,
     ) -> Result<Vec<Address>>;
 
-    /// Iterate each track in a spool with the byte length of its slice.
-    ///
-    /// Reads the size index rather than the slices, so this stays cheap enough to
-    /// run per challenge round. Ordered by track address, which is the order a
-    /// challenge sample set has to be built in.
-    fn iter_slice_sizes_by_spool(
-        &self,
-        spool_id: SpoolIndex,
-    ) -> Result<Vec<(Address, StorageUnits)>>;
-
     /// Count slices in a spool without loading data.
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize>;
 
@@ -200,25 +190,6 @@ impl<S: Store> SliceOps for TapeStore<S> {
         Ok(results)
     }
 
-    fn iter_slice_sizes_by_spool(
-        &self,
-        spool_id: SpoolIndex,
-    ) -> Result<Vec<(Address, StorageUnits)>> {
-        let prefix = SliceKey::spool_prefix(spool_id);
-        let iter = self
-            .inner()
-            .inner()
-            .iter_prefix(SliceSizeCol::CF_NAME, &prefix)?;
-
-        let mut results = Vec::new();
-        for (key_bytes, value_bytes) in iter {
-            let key: SliceKey = wincode::deserialize(&key_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            results.push((key.track_address, deserialize_size(&value_bytes)?));
-        }
-        Ok(results)
-    }
-
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
         let prefix = SliceKey::spool_prefix(spool_id);
         // Keys-only: never read/copy the (blob) values just to count them.
@@ -342,31 +313,6 @@ mod tests {
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
-    }
-
-    #[test]
-    fn slice_sizes_pair_each_track_with_its_length() {
-        let store = test_store();
-        let spool = SpoolIndex(7);
-        let other = SpoolIndex(8);
-
-        let mut expected: Vec<(Address, StorageUnits)> = (1..=3)
-            .map(|n| {
-                let track = Address::new_unique();
-                let len = n * 512;
-                store.put_slice(spool, track, vec![0u8; len]).unwrap();
-                (track, StorageUnits::from_bytes(len as u64))
-            })
-            .collect();
-        // A slice in a different spool must not leak into the sample set.
-        store
-            .put_slice(other, Address::new_unique(), vec![0u8; 99])
-            .unwrap();
-
-        // The order is the challenge's canonical one, so it must be by address.
-        expected.sort_unstable_by_key(|(track, _)| *track);
-        assert_eq!(store.iter_slice_sizes_by_spool(spool).unwrap(), expected);
-        assert!(store.iter_slice_sizes_by_spool(SpoolIndex(99)).unwrap().is_empty());
     }
 
     #[test]

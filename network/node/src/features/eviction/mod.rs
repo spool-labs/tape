@@ -1,5 +1,4 @@
 pub mod build;
-pub mod challenge;
 pub mod fanout;
 pub mod manager;
 pub mod queue;

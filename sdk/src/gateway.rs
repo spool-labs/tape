@@ -158,6 +158,10 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, GatewayApi> {
                 metrics: Arc::new(Noop),
                 write_options: WriteOptions::default(),
                 read_options: ReadOptions::default(),
+                reputation: Arc::new(crate::bootstrap::Reputation::attach(
+                    crate::bootstrap::BootstrapStore::disabled(),
+                    tape_api::program::tapedrive::id().into(),
+                )),
             },
         })
     }

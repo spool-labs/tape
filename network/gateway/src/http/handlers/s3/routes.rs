@@ -751,6 +751,11 @@ where
     // (1..=MAX_NAME_LEN bytes) up front for a precise client error.
     validate_object_key(&key)?;
 
+    // The track this key is bound to now, if any. A PUT that overwrites it writes
+    // a new track and rebinds the name, orphaning this one; capture it so the
+    // write below can reclaim it once the rebinding lands.
+    let prior = resolve_object(&state, tape, &key)?;
+
     let content_type = content_type_from_headers(headers);
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
@@ -786,7 +791,14 @@ where
             let size = data.len() as u64;
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
             let result = write_ctx
-                .write_object(state.context.as_ref(), tape, key.as_bytes(), content_type, &data)
+                .write_object(
+                    state.context.as_ref(),
+                    tape,
+                    key.as_bytes(),
+                    content_type,
+                    &data,
+                    prior.as_ref().map(|object| object.track_address),
+                )
                 .await;
             settle_write(permit, &state, size, result)?
         }
@@ -960,6 +972,7 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
+        | TapedriveError::WriteConflict { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::Io(_)
         | TapedriveError::Stream(_)) => S3Error::Internal(other.to_string()),
@@ -982,6 +995,7 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
+        | TapedriveError::WriteConflict { .. }
         | TapedriveError::NotFound
         | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }
@@ -1406,6 +1420,10 @@ where
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let assembled = multipart::assemble(store, &upload_id, bucket, &key, &requested, max_object_bytes)?;
 
+    // Prior binding for this key; a completed multipart that overwrites it
+    // orphans this track, reclaimed after the new write lands (see PutObject).
+    let prior = resolve_object(state, bucket, &assembled.key)?;
+
     // Authorization chokepoint.
     let size = assembled.data.len() as u64;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, size).await?;
@@ -1416,6 +1434,7 @@ where
             assembled.key.as_bytes(),
             assembled.content_type,
             &assembled.data,
+            prior.as_ref().map(|object| object.track_address),
         )
         .await;
     // On failure `?` returns before the upload is dropped, so it stays intact for
