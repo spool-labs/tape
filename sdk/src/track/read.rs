@@ -103,7 +103,12 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let slice_to_node: HashMap<SpoolIndex, Address> =
             state.group_peers(group).into_iter().collect();
 
-        let downloader = ParallelDownloader::new(*track, slice_to_node, k);
+        let downloader = ParallelDownloader::new(
+            *track,
+            slice_to_node,
+            k,
+            client.read_options.slice_concurrency,
+        );
         let download = client.timer(operation, Phase::Download);
 
         let slices = downloader

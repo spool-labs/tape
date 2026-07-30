@@ -21,7 +21,7 @@ pub const MAX_SUBSIDY_DECAY_BPS:        BasisPoints = BasisPoints(500);
 pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
 pub const FUTURE_EPOCHS:          usize = 256;  // ~5 years at 1 week epochs
 
-tape_solana::declare_id!("De8r5cE7mN3WwW22RnzBkJi3FqzKPYGc2VFDpCud2Lea");
+tape_solana::declare_id!("8to76GbzdszBPa4MrHB51THLMPHhCQqBn6QMnkV39SeJ");
 
 pub const PROGRAM_ID: [u8; 32] =
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };

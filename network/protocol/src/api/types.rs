@@ -126,12 +126,6 @@ pub struct NodeStats {
     #[serde(default)]
     pub bytes_downloaded: u64,
     #[serde(default)]
-    pub sync_bytes_fetched: u64,
-    #[serde(default)]
-    pub repair_bytes_fetched: u64,
-    #[serde(default)]
-    pub recover_bytes_fetched: u64,
-    #[serde(default)]
     pub requests_total: u64,
     #[serde(default)]
     pub ingest_state: String,
@@ -178,10 +172,6 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
                 s.bootstrap_target_slot.saturating_sub(s.bootstrap_current_slot)
             },
             fee_payer_lamports: s.fee_payer_lamports,
-            sync_bytes: s.sync_bytes_fetched,
-            repair_bytes: s.repair_bytes_fetched,
-            recover_bytes: s.recover_bytes_fetched,
-            upload_bytes: s.bytes_uploaded,
         }
     }
 }
