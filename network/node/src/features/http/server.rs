@@ -181,12 +181,27 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         admission::slice_admission::<Db, Cluster, Blockchain>,
                     )),
             )
-            // A storage challenge answers to any peer. It reveals one 1 KiB leaf
-            // a reader could already fetch, and gating it would let a node opt
-            // out of being checked.
+            // Challenge traffic: an answer and the attestations over it. Both
+            // are verified in the handler before anything is kept, and both must
+            // reach every group member, so they sit behind the peer body limit
+            // and the ordinary peer admission rather than a staking gate.
             .route(
-                api_routes::TRACK_SAMPLE_PATH,
-                get(handlers::track::sample::get_sample::<Db, Cluster, Blockchain>),
+                api_routes::CHALLENGE_PROOF_PATH,
+                post(handlers::challenge::proof_of_access::<Db, Cluster, Blockchain>)
+                    .layer(peer_body_limit)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
+            )
+            .route(
+                api_routes::CHALLENGE_ATTEST_PATH,
+                post(handlers::challenge::attest::<Db, Cluster, Blockchain>)
+                    .layer(peer_body_limit)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
             )
             // Staked-peer gated POSTs. Snapshot/system tape catalogs are also
             // listable for bootstrap catch-up.

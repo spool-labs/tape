@@ -17,6 +17,9 @@ pub const OBSERVE_ATLAS_PATH: &str = tape_observe_api::ATLAS_PATH;
 
 pub const VOTE_PATH: &str = "/v1/votes";
 
+pub const CHALLENGE_PROOF_PATH: &str = "/v1/challenge/proof";
+pub const CHALLENGE_ATTEST_PATH: &str = "/v1/challenge/attest";
+
 pub const SYNC_SLICES_PATH: &str = "/v1/sync/slices";
 pub const SYNC_TRACKS_PATH: &str = "/v1/sync/tracks";
 
@@ -32,7 +35,6 @@ pub const TRACK_PROOF_PATH: &str = "/v1/tracks/{track_id}/proof";
 pub const TRACK_REPAIR_PATH: &str = "/v1/tracks/{track_id}/repair";
 pub const TRACK_SIGN_PATH: &str = "/v1/tracks/{track_id}/sign";
 pub const TRACK_SLICE_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}";
-pub const TRACK_SAMPLE_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/sample/{sub_leaf}";
 pub const TRACK_SLICE_STATUS_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
 pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
@@ -40,10 +42,6 @@ pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
 pub fn slice_url(track_id: &str, spool_id: SpoolIndex) -> String {
     format!("/v1/tracks/{track_id}/slices/{}", spool_id.0)
-}
-
-pub fn sample_url(track_id: &str, spool_id: SpoolIndex, sub_leaf: u64) -> String {
-    format!("/v1/tracks/{track_id}/slices/{}/sample/{sub_leaf}", spool_id.0)
 }
 
 pub fn status_url(track_id: &str) -> String {

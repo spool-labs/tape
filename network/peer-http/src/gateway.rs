@@ -291,13 +291,17 @@ impl Api for GatewayApi {
         Err(unsupported("vote"))
     }
 
-    /// A gateway is not a spool owner, so it holds no slice to sample.
-    async fn get_sample(
+    /// A gateway holds no spool, so it neither answers a round nor witnesses one.
+    async fn proof_of_access(
         &self,
         _node: Address,
-        _req: &GetSampleReq,
-    ) -> Result<GetSampleRes, ApiError> {
-        Err(unsupported("get_sample"))
+        _req: &ProofOfAccessReq,
+    ) -> Result<ProofOfAccessRes, ApiError> {
+        Err(unsupported("proof_of_access"))
+    }
+
+    async fn attest(&self, _node: Address, _req: &AttestReq) -> Result<AttestRes, ApiError> {
+        Err(unsupported("attest"))
     }
 
     async fn get_health(

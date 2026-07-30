@@ -6,20 +6,23 @@
 //! block, and a window that finalizes no block is a void round that counts
 //! against nobody.
 //!
-//! What comes out is a local record per peer, not a verdict. A missing answer is
-//! this node's own observation, so only a sustained pattern proposes anything, and
-//! the proposal still needs the group and then the network to agree.
+//! When a round opens this node answers its own challenge and broadcasts, and
+//! settles the previous round: any spool whose answer did not certify by then is
+//! a local miss. What comes out is a record per peer, not a verdict, so only a
+//! sustained pattern proposes anything and the proposal still needs the group and
+//! then the network to agree.
 
 use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::challenge::schedule::{SLOT_MS, Schedule};
 use tape_core::challenge::PeerRecord;
+use tape_core::challenge::schedule::{SLOT_MS, Schedule};
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
-use tape_core::types::{EpochNumber, RoundNumber};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
+use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
@@ -30,15 +33,16 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::eviction::challenge::{Entropy, challenge_target};
+use crate::features::challenge::witness::{Round, build_answer, group_members};
 
 pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
-    // The last round run. A round's window spans several slots and only its first
-    // finalized block seeds it, so the rest of the window is ignored.
-    last_run: Option<(EpochNumber, RoundNumber)>,
+    // The round this node last opened. A round's window spans several slots and
+    // only its first finalized block seeds it, so the rest of the window is
+    // ignored, and the previous round is settled when the next one opens.
+    last_run: Option<(Round, Vec<SpoolIndex>)>,
 }
 
 impl<Db, Cluster, Blockchain> ChallengeManager<Db, Cluster, Blockchain>
@@ -78,14 +82,14 @@ where
         }
     }
 
-    /// Fire a round when a finalized block lands in one's entropy window.
+    /// Open a round when a finalized block lands in one's entropy window.
     ///
     /// There is no timer here on purpose. The schedule is expressed in slots and
     /// the entropy has to come from a block that finalized, so a block arriving is
     /// the only thing that can open a round.
     async fn on_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
-        // Never judge a peer off stale state: a node still catching up would read
-        // an old committee and challenge for spools nobody owns any more.
+        // Never take part off stale state: a node still catching up would read an
+        // old committee and answer for spools nobody owns any more.
         if !self.context.is_at_tip() {
             return Ok(());
         }
@@ -98,64 +102,104 @@ where
         let Some(schedule) = challenge_schedule(&state) else {
             return Ok(());
         };
-        let Some(round) = schedule.round_at(block.slot) else {
+        let Some(number) = schedule.round_at(block.slot) else {
             return Ok(());
         };
 
         let epoch = state.epoch();
-        if self.last_run == Some((epoch, round)) {
+        let Some(mine) = state.member_spools(self.context.node_address()).first().copied() else {
+            return Ok(());
+        };
+        let group = group_for_spool(mine);
+        let round = Round {
+            epoch,
+            group,
+            round: number,
+            block: block.blockhash,
+        };
+
+        if self.last_run.as_ref().is_some_and(|(open, _)| *open == round) {
             return Ok(());
         }
-        self.last_run = Some((epoch, round));
 
-        self.run_round(&state, epoch, round, &block).await
-    }
+        self.settle_previous(&state);
+        self.last_run = Some((round, group_spools(&state, group)));
 
-    /// Challenge every group-mate once, and fold each answer into its record.
-    async fn run_round(
-        &self,
-        state: &ProtocolState,
-        epoch: EpochNumber,
-        round: RoundNumber,
-        block: &ParsedBlock,
-    ) -> Result<(), NodeError> {
-        let entropy = Entropy {
-            slot: block.slot,
-            hash: block.blockhash,
-        };
-        let mates = group_mates(state, self.context.node_address());
-        trace!(epoch = epoch.0, round = round.0, peers = mates.len(), "challenge: round opens");
-
-        for peer in mates {
-            let round_task = challenge_target(&self.context, state, peer, entropy);
-            let Some(proved) = self.cancel.run_until_cancelled(round_task).await.flatten() else {
-                // No judgement reached, which is not a miss. Recording it as one
-                // would punish a peer for our own missing data.
-                continue;
-            };
-
-            self.record(peer, epoch, round, proved)?;
-        }
+        self.answer_and_broadcast(&state, &round, mine).await;
+        self.context
+            .round_buffer
+            .retire_before(epoch, RoundNumber(number.as_u64().saturating_sub(1)));
 
         Ok(())
     }
 
-    /// Fold one outcome into a peer's record, and queue it if the rule fires.
-    fn record(
+    /// Record how the previous round went for every spool in the group.
+    ///
+    /// A spool whose answer certified is a success; one that did not is a local
+    /// miss. Settling on the next round's opening is what gives a late certificate
+    /// the whole interval to arrive and replace a miss before anyone acts on it.
+    fn settle_previous(&self, state: &ProtocolState) {
+        let Some((round, spools)) = self.last_run.as_ref() else {
+            return;
+        };
+
+        for spool in spools {
+            let Some(owner) = state.spool_owner(*spool) else {
+                continue;
+            };
+            if owner == self.context.node_address() {
+                continue;
+            }
+
+            let certified = self.context.round_buffer.is_certified(round.key(*spool));
+            self.record(owner, round.epoch, round.round, certified);
+        }
+    }
+
+    /// Answer this node's own challenge and push it to the group.
+    async fn answer_and_broadcast(
         &self,
-        peer: Address,
-        epoch: EpochNumber,
-        round: RoundNumber,
-        proved: bool,
-    ) -> Result<(), NodeError> {
+        state: &ProtocolState,
+        round: &Round,
+        mine: SpoolIndex,
+    ) {
+        let Some(answer) = build_answer(&self.context, round, mine) else {
+            debug!(spool = %mine, round = round.round.0, "challenge: no answer to give");
+            return;
+        };
+
+        // Hold our own answer, so a peer relaying it back is a duplicate rather
+        // than something to verify again.
+        self.context.round_buffer.accept_answer(round.key(mine), answer.clone());
+
+        let members = group_members(state, round.group);
+        trace!(round = round.round.0, peers = members.len(), "challenge: broadcasting");
+
+        for peer in members {
+            if peer == self.context.node_address() {
+                continue;
+            }
+            let sent = self
+                .context
+                .api
+                .proof_of_access(peer, &ProofOfAccessReq { answer: answer.clone() })
+                .await;
+            if let Err(error) = sent {
+                trace!(node = %peer, %error, "challenge: broadcast failed");
+            }
+        }
+    }
+
+    /// Fold one outcome into a peer's record, and queue it if the rule fires.
+    fn record(&self, peer: Address, epoch: EpochNumber, round: RoundNumber, certified: bool) {
         let mut record = self
             .context
             .store
             .peer_record(peer)
             .unwrap_or_else(|_| PeerRecord::default());
 
-        if !record.record(epoch, round, proved) {
-            return Ok(());
+        if !record.record(epoch, round, certified) {
+            return;
         }
 
         if let Err(error) = self.context.store.put_peer_record(peer, record) {
@@ -171,8 +215,6 @@ where
             );
             self.context.eviction_queue.insert(peer);
         }
-
-        Ok(())
     }
 }
 
@@ -185,21 +227,23 @@ pub fn challenge_schedule(state: &ProtocolState) -> Option<Schedule> {
     schedule.validate().ok().map(|()| schedule)
 }
 
+/// Every spool position in a group.
+pub fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
+    state
+        .spools_in_group(group)
+        .map(|spools| spools.map(|(spool, _)| spool).collect())
+        .unwrap_or_default()
+}
+
 /// Every other node holding a spool in a group this node also holds one in.
 ///
 /// The group is the unit that challenges itself: only a group-mate holds slices
-/// of the same tracks, so only a group-mate can pose the question.
+/// of the same tracks, so only a group-mate can check the answer.
 pub fn group_mates(state: &ProtocolState, me: Address) -> Vec<Address> {
     let mut mates = Vec::new();
 
     for mine in state.member_spools(me) {
-        let Some(spools) = state.spools_in_group(group_for_spool(mine)) else {
-            continue;
-        };
-        for (spool, _) in spools {
-            let Some(owner) = state.spool_owner(spool) else {
-                continue;
-            };
+        for owner in group_members(state, group_for_spool(mine)) {
             if owner != me && !mates.contains(&owner) {
                 mates.push(owner);
             }

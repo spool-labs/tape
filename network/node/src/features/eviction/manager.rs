@@ -9,6 +9,7 @@ use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_protocol::api::{GetHealthReq, GetHealthRes};
 use tape_protocol::{Api, ProtocolState};
+use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -18,7 +19,6 @@ use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::eviction::build::{EvictionCandidate, build_eviction};
-use crate::features::eviction::challenge::{Entropy, challenge_target};
 use crate::features::eviction::fanout::fanout_eviction_votes;
 use crate::features::eviction::submit::{submit_eviction_proposal, submit_ready_eviction_votes};
 use crate::features::eviction::vote::create_eviction_votes;
@@ -32,9 +32,6 @@ pub struct EvictionManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     // Voting epoch of the last failed probe per target. A target is re-probed
     // once per epoch so a recovered node stops collecting votes.
     probe_failed: HashMap<Address, EpochNumber>,
-    // Newest finalized block seen, which seeds every challenge sample. None
-    // until the first block arrives, and no target is challenged before then.
-    entropy: Option<Entropy>,
 }
 
 impl<Db, Cluster, Blockchain> EvictionManager<Db, Cluster, Blockchain>
@@ -53,7 +50,6 @@ where
             block_rx,
             cancel,
             probe_failed: HashMap::new(),
-            entropy: None,
         }
     }
 
@@ -91,14 +87,6 @@ where
     /// the committee voting in step across the window, which is what lets the
     /// partial signatures accumulate into a landed eviction.
     async fn on_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
-        // Seeding from the newest finalized block is what keeps a sample
-        // unpredictable: a target cannot know which leaf it owes until the block
-        // it is drawn from exists.
-        self.entropy = Some(Entropy {
-            slot: block.slot,
-            hash: block.blockhash,
-        });
-
         for ix in &block.instructions {
             match ix {
                 ParsedInstruction::ProposeEviction { node, .. } => {
@@ -157,22 +145,24 @@ where
     /// epoch. A proposal alone never recruits a signature: only a target this
     /// node observes failing stays queued, and a recovered target is dropped.
     ///
-    /// A group-mate is judged by a storage challenge, which shows the target is
-    /// reachable and can still prove a sample of its assigned bytes. Everyone
-    /// else falls back to a health ping, because only a group-mate holds the
-    /// track list to draw a sample from.
+    /// A group-mate is judged by the challenge record this node has been keeping
+    /// for it, which is the accumulated evidence the mechanism produces. Everyone
+    /// else falls back to a health ping, because only a group-mate witnesses a
+    /// spool's rounds and so only a group-mate has a record to read.
     async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
         let epoch = state.epoch();
         if self.probe_failed.get(&node) == Some(&epoch) {
             return true;
         }
 
-        let healthy = match self.challenge(state, node).await {
-            Some(answered) => answered,
-            None => matches!(
+        let record = self.context.store.peer_record(node).unwrap_or_default();
+        let healthy = if record.opportunities > 0 {
+            !record.eviction_fires()
+        } else {
+            matches!(
                 self.context.api.get_health(node, &GetHealthReq).await,
                 Ok(GetHealthRes { ok: true })
-            ),
+            )
         };
         if healthy {
             debug!(node = %node, "eviction: target probed healthy, dropping");
@@ -184,14 +174,6 @@ where
         info!(node = %node, epoch = epoch.0, "eviction: target probe failed, voting to evict");
         self.probe_failed.insert(node, epoch);
         true
-    }
-
-    /// Challenge the target for one sample leaf, if we can pose the question.
-    ///
-    /// None means no judgement was reached, not a pass: no finalized block seen
-    /// yet, no shared group, or nothing stored to draw from.
-    async fn challenge(&self, state: &ProtocolState, node: Address) -> Option<bool> {
-        challenge_target(&self.context, state, node, self.entropy?).await
     }
 
     async fn run_round(

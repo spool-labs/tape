@@ -14,7 +14,7 @@ use tape_crypto::Address;
 use tape_crypto::hash::{Hash, hashv};
 
 use crate::erasure::sub_leaf_count;
-use crate::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits};
+use crate::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex, StorageUnits};
 
 /// Domain tag separating a round seed from every other hash in the protocol.
 const ROUND_SEED_DOMAIN: &[u8] = b"WHIRLWIND_ROUND";
@@ -42,21 +42,24 @@ pub struct Sample {
 
 /// Seed for one round against one spool.
 ///
-/// The entropy is a finalized block hash, so no owner can predict its sample
-/// before that block exists. Binding the spool means two owners challenged off
-/// the same block read different data, and binding epoch and slot means a
-/// response cannot be replayed into a later round.
+/// The entropy block's hash combined with the epoch, group, round and spool, as
+/// the mechanism specifies. No owner can predict its sample before the block
+/// exists, binding the spool means two owners challenged off the same block read
+/// different data, and binding the round means a response cannot be replayed into
+/// a later one.
 pub fn round_seed(
     entropy: &Hash,
     epoch: EpochNumber,
-    slot: SlotNumber,
+    group: GroupIndex,
+    round: RoundNumber,
     spool: SpoolIndex,
 ) -> Hash {
     hashv(&[
         ROUND_SEED_DOMAIN,
         entropy.as_ref(),
         &epoch.as_u64().to_le_bytes(),
-        &slot.as_u64().to_le_bytes(),
+        &group.as_u64().to_le_bytes(),
+        &round.as_u64().to_le_bytes(),
         &spool.as_u64().to_le_bytes(),
     ])
 }
@@ -125,7 +128,8 @@ mod tests {
         round_seed(
             &hashv(&[b"entropy", &round.to_le_bytes()]),
             EpochNumber(7),
-            SlotNumber(round),
+            GroupIndex(1),
+            RoundNumber(round),
             SpoolIndex(3),
         )
     }
@@ -133,11 +137,18 @@ mod tests {
     #[test]
     fn the_seed_binds_every_round_coordinate() {
         let entropy = hashv(&[b"block"]);
-        let base = round_seed(&entropy, EpochNumber(1), SlotNumber(2), SpoolIndex(3));
-        assert_ne!(base, round_seed(&hashv(&[b"other"]), EpochNumber(1), SlotNumber(2), SpoolIndex(3)));
-        assert_ne!(base, round_seed(&entropy, EpochNumber(2), SlotNumber(2), SpoolIndex(3)));
-        assert_ne!(base, round_seed(&entropy, EpochNumber(1), SlotNumber(3), SpoolIndex(3)));
-        assert_ne!(base, round_seed(&entropy, EpochNumber(1), SlotNumber(2), SpoolIndex(4)));
+        let base = round_seed(&entropy, EpochNumber(1), GroupIndex(2), RoundNumber(3), SpoolIndex(4));
+
+        let variants = [
+            round_seed(&hashv(&[b"other"]), EpochNumber(1), GroupIndex(2), RoundNumber(3), SpoolIndex(4)),
+            round_seed(&entropy, EpochNumber(9), GroupIndex(2), RoundNumber(3), SpoolIndex(4)),
+            round_seed(&entropy, EpochNumber(1), GroupIndex(9), RoundNumber(3), SpoolIndex(4)),
+            round_seed(&entropy, EpochNumber(1), GroupIndex(2), RoundNumber(9), SpoolIndex(4)),
+            round_seed(&entropy, EpochNumber(1), GroupIndex(2), RoundNumber(3), SpoolIndex(9)),
+        ];
+        for variant in variants {
+            assert_ne!(base, variant);
+        }
     }
 
     #[test]
@@ -167,7 +178,8 @@ mod tests {
                 let seed = round_seed(
                     &Hash::from([byte; 32]),
                     EpochNumber(7),
-                    SlotNumber(1_000),
+                    GroupIndex(1),
+                    RoundNumber(5),
                     SpoolIndex(3),
                 );
                 draw(&seed, &entries).unwrap().sub_leaf

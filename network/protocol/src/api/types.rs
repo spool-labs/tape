@@ -6,10 +6,12 @@ use tape_core::{
     bls::BlsSignature,
     erasure::{SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT},
     spooler::GroupIndex,
+    challenge::ProofOfAccess,
     track::blob::SubLeafProof,
 };
 pub use tape_core::system::VoteCandidate;
 use tape_core::prelude::{BlobData, EpochNumber, SpoolIndex, TrackNumber};
+use tape_core::types::RoundNumber;
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
 use tape_core::types::{ContentType, SlotNumber, SpoolBitmap, StorageUnits};
 use tape_crypto::prelude::{Address, Hash};
@@ -210,6 +212,70 @@ impl From<SampleProofPayload> for SubLeafProof {
             sub_proof: payload.sub_proof,
         }
     }
+}
+
+/// A challenged owner's broadcast answer for one round.
+///
+/// The coordinates travel so a mismatch is diagnosable, but a receiver derives
+/// the round's sample for itself and refuses an answer to a different question.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ProofOfAccessPayload {
+    pub epoch: EpochNumber,
+    pub group: GroupIndex,
+    pub round: RoundNumber,
+    pub spool: SpoolIndex,
+    pub block: Hash,
+    pub track: Address,
+    pub sub_leaf: u64,
+    pub proof: SampleProofPayload,
+    pub signature: BlsSignature,
+}
+
+impl From<ProofOfAccess> for ProofOfAccessPayload {
+    fn from(answer: ProofOfAccess) -> Self {
+        Self {
+            epoch: answer.epoch,
+            group: answer.group,
+            round: answer.round,
+            spool: answer.spool,
+            block: answer.block,
+            track: answer.track,
+            sub_leaf: answer.sub_leaf,
+            proof: answer.proof.into(),
+            signature: answer.signature,
+        }
+    }
+}
+
+impl From<ProofOfAccessPayload> for ProofOfAccess {
+    fn from(payload: ProofOfAccessPayload) -> Self {
+        Self {
+            epoch: payload.epoch,
+            group: payload.group,
+            round: payload.round,
+            spool: payload.spool,
+            block: payload.block,
+            track: payload.track,
+            sub_leaf: payload.sub_leaf,
+            proof: payload.proof.into(),
+            signature: payload.signature,
+        }
+    }
+}
+
+/// One observer's signature that it accepted a round's proof of access.
+///
+/// Every accepting owner signs identical bytes, so what travels is the signer's
+/// identity and the round it is about; the message itself is rebuilt from those.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct AttestationPayload {
+    pub epoch: EpochNumber,
+    pub group: GroupIndex,
+    pub round: RoundNumber,
+    pub spool: SpoolIndex,
+    pub block: Hash,
+    pub signer: Address,
+    pub signature: BlsSignature,
 }
 
 /// Payload for slice upload requests.

@@ -2,8 +2,9 @@
 
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
+use tape_core::types::RoundNumber;
 use tape_core::spooler::GroupIndex;
-use tape_core::track::blob::SubLeafProof;
+use tape_core::challenge::ProofOfAccess;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
@@ -199,22 +200,29 @@ pub struct VoteReq {
 #[derive(Clone, Debug)]
 pub struct VoteRes;
 
-/// Ask an owner to prove it holds one sample leaf of one slice.
-///
-/// The coordinates come from the challenger's own draw off a finalized block, so
-/// the owner learns which leaf only when it is asked and cannot retain that leaf
-/// alone. It is a plain read request: the owner does not need to know the round.
+/// Broadcast a challenged owner's answer to one member of its group.
 #[derive(Clone, Debug)]
-pub struct GetSampleReq {
-    pub track: Address,
-    pub spool: SpoolIndex,
-    pub sub_leaf: u64,
+pub struct ProofOfAccessReq {
+    pub answer: ProofOfAccess,
 }
 
 #[derive(Clone, Debug)]
-pub struct GetSampleRes {
-    pub proof: SubLeafProof,
+pub struct ProofOfAccessRes;
+
+/// Push one observer's attestation that it accepted a round's answer.
+#[derive(Clone, Debug)]
+pub struct AttestReq {
+    pub epoch: EpochNumber,
+    pub group: GroupIndex,
+    pub round: RoundNumber,
+    pub spool: SpoolIndex,
+    pub block: Hash,
+    pub signer: Address,
+    pub signature: BlsSignature,
 }
+
+#[derive(Clone, Debug)]
+pub struct AttestRes;
 
 #[derive(Clone, Debug)]
 pub struct GetHealthReq;
@@ -249,7 +257,8 @@ pub enum PeerReq {
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
     Vote(VoteReq),
-    GetSample(GetSampleReq),
+    ProofOfAccess(ProofOfAccessReq),
+    Attest(AttestReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -270,7 +279,8 @@ pub enum PeerRes {
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     Vote(Result<VoteRes, ApiError>),
-    GetSample(Result<GetSampleRes, ApiError>),
+    ProofOfAccess(Result<ProofOfAccessRes, ApiError>),
+    Attest(Result<AttestRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),
 }
