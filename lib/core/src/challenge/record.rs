@@ -45,7 +45,16 @@ pub struct PeerRecord {
     pub last_round: RoundNumber,
     /// Whether any outcome has been folded in at all.
     pub started: bool,
+    /// The most recent judged rounds, newest in the low bit, set for a success.
+    ///
+    /// One row of the challenge record grid: rounds across, spools down. Only
+    /// rounds this peer was actually judged in take a bit, so a void round leaves
+    /// the strip alone rather than reading as a miss against everyone.
+    pub recent: u64,
 }
+
+/// Judged rounds the recent strip remembers.
+pub const RECENT_ROUNDS: u32 = u64::BITS;
 
 impl PeerRecord {
     /// Fold in one round's outcome.
@@ -67,6 +76,7 @@ impl PeerRecord {
             self.consecutive_misses += 1;
         }
 
+        self.recent = (self.recent << 1) | u64::from(proved);
         self.last_epoch = epoch;
         self.last_round = round;
         self.started = true;
@@ -94,6 +104,18 @@ impl PeerRecord {
             return true;
         }
         self.opportunities >= MIN_OPPORTUNITIES && self.success_rate() < RATE_FLOOR
+    }
+
+    /// The recent strip oldest-first, for drawing one row of the grid.
+    ///
+    /// Shorter than `RECENT_ROUNDS` until the peer has been judged that many
+    /// times, so a fresh peer reads as a short row rather than a wall of misses.
+    pub fn recent_rounds(&self) -> Vec<bool> {
+        let judged = self.opportunities.min(RECENT_ROUNDS as u64) as u32;
+        (0..judged)
+            .rev()
+            .map(|bit| self.recent & (1 << bit) != 0)
+            .collect()
     }
 }
 
@@ -166,6 +188,33 @@ mod tests {
         record.record(EpochNumber(1), RoundNumber(40), false);
         assert!(record.success_rate() < RATE_FLOOR);
         assert!(record.eviction_fires());
+    }
+
+    #[test]
+    fn the_recent_strip_draws_one_row_of_the_grid() {
+        // Rounds across, newest last. A fresh peer reads as a short row, not as a
+        // wall of misses it never earned.
+        let mut record = PeerRecord::default();
+        assert!(record.recent_rounds().is_empty());
+
+        for (round, proved) in [true, true, false, true].into_iter().enumerate() {
+            record.record(EpochNumber(1), RoundNumber(round as u64), proved);
+        }
+        assert_eq!(record.recent_rounds(), vec![true, true, false, true]);
+    }
+
+    #[test]
+    fn the_strip_keeps_only_the_last_rounds_it_can_hold() {
+        let mut record = PeerRecord::default();
+        for round in 0..(RECENT_ROUNDS as u64 + 10) {
+            // Miss only the very first round, which falls off the end.
+            record.record(EpochNumber(1), RoundNumber(round), round != 0);
+        }
+
+        let strip = record.recent_rounds();
+        assert_eq!(strip.len(), RECENT_ROUNDS as usize);
+        assert!(strip.iter().all(|proved| *proved), "an aged-out miss lingered");
+        assert_eq!(record.opportunities, RECENT_ROUNDS as u64 + 10);
     }
 
     #[test]
