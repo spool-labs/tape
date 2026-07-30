@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::challenge::ProofOfAccess;
+use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_protocol::Api;
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tape_store::ops::ChallengeOps;
@@ -133,6 +133,33 @@ fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return;
     };
     if owner == state.context.node_address() {
+        return;
+    }
+
+    // Aggregate and check before recording anything. A quorum of accepted
+    // attestations should always combine, so a failure here means our own view
+    // is inconsistent and the round is put back rather than recorded.
+    let attestations = state.context.round_buffer.attestations(key);
+    let certificate = SuccessCertificate::aggregate(
+        round.epoch,
+        round.group,
+        round.round,
+        key.spool,
+        round.block,
+        attestations,
+    );
+    let stands = certificate.as_ref().is_some_and(|certificate| {
+        certificate
+            .verify(threshold, owner, |signer| {
+                protocol.peer(signer).map(|peer| peer.bls_pubkey)
+            })
+            .inspect_err(|rejection| {
+                debug!(spool = %key.spool, ?rejection, "challenge: certificate refused");
+            })
+            .is_ok()
+    });
+    if !stands {
+        state.context.round_buffer.release_certificate(key);
         return;
     }
 

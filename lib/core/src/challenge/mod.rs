@@ -5,11 +5,13 @@
 //! inside that window seeds the round, and the seed picks one sample leaf out of
 //! the challenged spool's holdings. Nothing here reads storage or the network.
 
+pub mod certificate;
 pub mod proof;
 pub mod record;
 pub mod sample;
 pub mod schedule;
 
+pub use certificate::{CertificateRejection, SuccessCertificate};
 pub use proof::{ProofOfAccess, ProofRejection};
 pub use record::PeerRecord;
 pub use sample::{Sample, SampleEntry, draw, round_seed, sort_entries};

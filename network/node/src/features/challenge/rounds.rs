@@ -87,10 +87,26 @@ impl RoundBuffer {
         signers
     }
 
-    /// One signer's signature for a round.
-    pub fn signature(&self, key: RoundKey, signer: Address) -> Option<BlsSignature> {
+    /// Every attestation gathered for a round, for aggregating.
+    pub fn attestations(&self, key: RoundKey) -> Vec<(Address, BlsSignature)> {
         let entries = self.entries.lock().expect("round buffer");
-        entries.get(&key)?.attestations.get(&signer).copied()
+        let Some(entry) = entries.get(&key) else {
+            return Vec::new();
+        };
+        entry
+            .attestations
+            .iter()
+            .map(|(signer, signature)| (*signer, *signature))
+            .collect()
+    }
+
+    /// Give a round back its unclaimed state, when a claimed certificate turned
+    /// out not to verify and the quorum should be allowed to re-form.
+    pub fn release_certificate(&self, key: RoundKey) {
+        let mut entries = self.entries.lock().expect("round buffer");
+        if let Some(entry) = entries.get_mut(&key) {
+            entry.certified = false;
+        }
     }
 
     /// Claim the right to certify a round, once and only once.
