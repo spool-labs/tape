@@ -9,6 +9,7 @@ use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_protocol::api::{GetHealthReq, GetHealthRes};
 use tape_protocol::{Api, ProtocolState};
+use tape_core::challenge::record::MIN_OPPORTUNITIES;
 use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -146,9 +147,13 @@ where
     /// node observes failing stays queued, and a recovered target is dropped.
     ///
     /// A group-mate is judged by the challenge record this node has been keeping
-    /// for it, which is the accumulated evidence the mechanism produces. Everyone
-    /// else falls back to a health ping, because only a group-mate witnesses a
-    /// spool's rounds and so only a group-mate has a record to read.
+    /// for it, once that record holds enough rounds to mean anything. Below that
+    /// it falls back to a health ping, which is also what a node outside the
+    /// target's group always does, since only a group-mate witnesses its rounds.
+    ///
+    /// The threshold matters. A record with one or two observations is thinner
+    /// evidence than a live probe, and an epoch whose active phase was short may
+    /// have held very few rounds.
     async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
         let epoch = state.epoch();
         if self.probe_failed.get(&node) == Some(&epoch) {
@@ -156,7 +161,7 @@ where
         }
 
         let record = self.context.store.peer_record(node).unwrap_or_default();
-        let healthy = if record.opportunities > 0 {
+        let healthy = if record.opportunities >= MIN_OPPORTUNITIES {
             !record.eviction_fires()
         } else {
             matches!(
