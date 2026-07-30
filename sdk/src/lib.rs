@@ -7,7 +7,6 @@ pub mod gateway;
 pub mod keys;
 pub mod metrics;
 pub mod object;
-pub mod read_options;
 pub mod staking;
 pub mod stream;
 pub mod tape;
@@ -18,5 +17,4 @@ pub mod write_options;
 
 pub use gateway::Gateway;
 pub use tapedrive::Tapedrive;
-pub use read_options::ReadOptions;
 pub use write_options::WriteOptions;
