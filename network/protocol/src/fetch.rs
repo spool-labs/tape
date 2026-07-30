@@ -1,5 +1,5 @@
 use rpc::{CommitmentLevel, Rpc, RpcError};
-use rpc_client::RpcClient;
+use rpc_client::{EpochBatch, RpcClient};
 use tape_api::state::Epoch;
 use tape_core::types::EpochNumber;
 
@@ -185,6 +185,80 @@ pub async fn fetch_state_scoped<R: Rpc>(
     })
 }
 
+
+/// A guess at which epoch is current, carried over from a previous run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EpochGuess {
+    pub epoch: EpochNumber,
+    pub total_groups: u64,
+}
+
+/// Fetch current state in one round trip when the guess is right.
+///
+/// Discovery normally costs three sequential rounds because epoch and
+/// committee addresses derive from the system row, and group addresses derive
+/// from the epoch row. A guess from the last run breaks that chain: everything
+/// is requested at once, and the system row in the reply says whether the guess
+/// held.
+///
+/// Nothing speculative is adopted unless the system row confirms the epoch, so
+/// a stale guess costs one wasted round and can never produce state from the
+/// wrong epoch. A miss falls back to the ordinary scoped fetch.
+pub async fn fetch_state_speculative<R: Rpc>(
+    rpc: &RpcClient<R>,
+    guess: EpochGuess,
+) -> Result<ProtocolState, RpcError> {
+    let commitment = rpc.rpc().commitment();
+    let batch = rpc
+        .get_epoch_batch_with_commitment(guess.epoch, guess.total_groups, commitment)
+        .await?;
+
+    match assemble_speculative(&batch, guess) {
+        Some(state) => Ok(state),
+        None => fetch_state_scoped(rpc, commitment, FetchScope::Current).await,
+    }
+}
+
+/// Build state from a speculative batch, or nothing if the guess missed.
+///
+/// Kept separate so the acceptance rules can be tested without an RPC.
+fn assemble_speculative(batch: &EpochBatch, guess: EpochGuess) -> Option<ProtocolState> {
+    // The whole safety argument sits on this line: cached addresses are only
+    // ever adopted when the freshly read system row agrees.
+    if batch.system.current_epoch != guess.epoch {
+        return None;
+    }
+
+    let epoch = batch.epoch?;
+    let committee = batch.committee.clone()?;
+    let (peer_capacity, peers) = batch.peer_set.clone()?;
+
+    // The group count is part of the guess, so it can be short or long even
+    // when the epoch is right. Anything less than complete is a miss.
+    if epoch.total_groups != guess.total_groups {
+        return None;
+    }
+    let groups: Option<Vec<_>> = batch.groups.iter().cloned().collect();
+    let groups = groups?;
+
+    Some(ProtocolState {
+        system: batch.system,
+        peers,
+        peer_capacity,
+        current: EpochBundle {
+            epoch,
+            committee,
+            groups,
+        },
+        previous: None,
+        next_epoch: None,
+        next_committee: None,
+        next_committee_capacity: None,
+        candidate_epoch: None,
+        candidate_committee_capacity: None,
+    })
+}
+
 pub async fn fetch_epoch_bundle<R: Rpc>(
     rpc: &RpcClient<R>,
     epoch: EpochNumber,
@@ -230,5 +304,82 @@ fn optional_account<T>(result: Result<T, RpcError>) -> Result<Option<T>, RpcErro
         Ok(value) => Ok(Some(value)),
         Err(RpcError::AccountNotFound(_)) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod speculative_tests {
+    use bytemuck::Zeroable;
+    use tape_api::state::{Epoch, Group, System};
+
+    use super::*;
+
+    fn batch(current: u64, epoch_id: u64, groups: u64) -> EpochBatch {
+        let mut system = System::zeroed();
+        system.current_epoch = EpochNumber(current);
+
+        let mut epoch = Epoch::zeroed();
+        epoch.id = EpochNumber(epoch_id);
+        epoch.total_groups = groups;
+
+        EpochBatch {
+            system,
+            epoch: Some(epoch),
+            committee: Some(Vec::new()),
+            peer_set: Some((0, Vec::new())),
+            groups: (0..groups).map(|_| Some(Group::zeroed())).collect(),
+        }
+    }
+
+    fn guess(epoch: u64, groups: u64) -> EpochGuess {
+        EpochGuess {
+            epoch: EpochNumber(epoch),
+            total_groups: groups,
+        }
+    }
+
+    // the happy path: the system row confirms the guess
+    #[test]
+    fn confirmed_guess_is_adopted() {
+        let state = assemble_speculative(&batch(7, 7, 3), guess(7, 3)).expect("adopted");
+        assert_eq!(state.current.epoch.id, EpochNumber(7));
+        assert_eq!(state.current.groups.len(), 3);
+        assert!(state.previous.is_none(), "speculation only ever yields the current bundle");
+    }
+
+    // the whole safety argument: a stale guess is never adopted
+    #[test]
+    fn epoch_advanced_since_the_guess() {
+        assert!(assemble_speculative(&batch(8, 7, 3), guess(7, 3)).is_none());
+    }
+
+    // the epoch can be right while the group count moved
+    #[test]
+    fn group_count_disagrees() {
+        assert!(assemble_speculative(&batch(7, 7, 4), guess(7, 3)).is_none());
+    }
+
+    // a partial reply is a miss, not a truncated state
+    #[test]
+    fn missing_group_is_a_miss() {
+        let mut partial = batch(7, 7, 3);
+        partial.groups[1] = None;
+        assert!(assemble_speculative(&partial, guess(7, 3)).is_none());
+    }
+
+    // an empty slot anywhere means the guessed address held nothing
+    #[test]
+    fn missing_accounts_are_a_miss() {
+        let mut no_epoch = batch(7, 7, 2);
+        no_epoch.epoch = None;
+        assert!(assemble_speculative(&no_epoch, guess(7, 2)).is_none());
+
+        let mut no_committee = batch(7, 7, 2);
+        no_committee.committee = None;
+        assert!(assemble_speculative(&no_committee, guess(7, 2)).is_none());
+
+        let mut no_peers = batch(7, 7, 2);
+        no_peers.peer_set = None;
+        assert!(assemble_speculative(&no_peers, guess(7, 2)).is_none());
     }
 }

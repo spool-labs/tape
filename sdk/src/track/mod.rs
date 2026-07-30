@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
-use tape_protocol::{Api, ProtocolState, fetch::fetch_state_current};
+use tape_protocol::fetch::{EpochGuess, fetch_state_current, fetch_state_speculative};
+use tape_protocol::{Api, ProtocolState};
 
-use crate::bootstrap::{NetworkKey, Prediction};
+use crate::bootstrap::{NetworkKey, Prediction, now_secs};
 use crate::error::TapedriveError;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
@@ -28,11 +29,11 @@ pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
     let state = match operation {
         Some(operation) => {
             let timer = client.timer(operation, Phase::Bootstrap);
-            let result = fetch_state_current(&client.rpc).await;
+            let result = discover(client).await;
             timer.finish_result(&result);
             result?
         }
-        None => fetch_state_current(&client.rpc).await?,
+        None => discover(client).await?,
     };
 
     match operation {
@@ -51,6 +52,26 @@ pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
 
     client.state.store(Arc::new(state));
     Ok(client.state())
+}
+
+/// Fetch protocol state, guessing the epoch when a previous run left one.
+///
+/// The guess only ever changes how many round trips this costs. Whether it was
+/// right is decided by the freshly read system row, inside the speculative
+/// fetch, so a stale or foreign guess falls back rather than misleading us.
+async fn discover<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+) -> Result<ProtocolState, TapedriveError> {
+    let guess = client.reputation.prediction().map(|prediction| EpochGuess {
+        epoch: prediction.epoch_at(now_secs()),
+        total_groups: prediction.total_groups,
+    });
+
+    let state = match guess {
+        Some(guess) => fetch_state_speculative(&client.rpc, guess).await?,
+        None => fetch_state_current(&client.rpc).await?,
+    };
+    Ok(state)
 }
 
 /// Record what this run learned, so the next one can skip discovery.

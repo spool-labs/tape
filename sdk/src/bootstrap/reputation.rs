@@ -77,48 +77,58 @@ impl Reputation {
     /// Attach a store before the chain is known.
     ///
     /// A client is built before any RPC call, so the genesis hash that
-    /// completes the cache key is not available yet. Start empty and adopt the
-    /// file once the first bootstrap reports which chain this is.
-    pub fn attach(store: BootstrapStore, program_id: Address) -> Self {
-        Self::load(
-            store,
-            NetworkKey {
-                program_id,
-                genesis: tape_crypto::hash::Hash([0u8; 32]),
-            },
-        )
-    }
-
-    /// Point reputation at the chain we turned out to be talking to.
+    /// completes the cache key is not available yet. The file is adopted on the
+    /// program id alone and the genesis is confirmed on the first bootstrap.
     ///
-    /// Re-keying reloads from disk, so a client that started with a placeholder
-    /// key picks up its real history. A cache belonging to another chain simply
-    /// does not load, which is the intended outcome.
-    pub fn rekey(&self, network: NetworkKey) {
-        let already = self
-            .state
-            .lock()
-            .ok()
-            .map(|state| state.network == network)
-            .unwrap_or(false);
-        if already {
-            return;
-        }
+    /// Speculating on a prediction that turns out to belong to another cluster
+    /// is harmless: account addresses are program derived, so the guess is
+    /// simply wrong and the epoch check rejects it. Reputation is a different
+    /// matter and is discarded the moment the genesis does not match.
+    pub fn attach(store: BootstrapStore, program_id: Address) -> Self {
+        let placeholder = NetworkKey {
+            program_id,
+            genesis: tape_crypto::hash::Hash([0u8; 32]),
+        };
+        let mut state = store
+            .load_any()
+            .filter(|state| state.network.program_id == program_id)
+            .unwrap_or_else(|| BootstrapState::new(placeholder));
 
-        let mut loaded = self
-            .store
-            .load(&network)
-            .unwrap_or_else(|| BootstrapState::new(network));
         let now = now_secs();
-        for record in &mut loaded.peers {
+        for record in &mut state.peers {
             record.reconcile_clock(now);
             record.expire_quarantine(now);
         }
 
-        if let Ok(mut state) = self.state.lock() {
-            *state = loaded;
+        Self {
+            state: Mutex::new(state),
+            store,
+            dirty: AtomicBool::new(false),
+            salt: u64::from(std::process::id()),
         }
-        self.dirty.store(false, Ordering::Relaxed);
+    }
+
+    /// Confirm which chain we turned out to be talking to.
+    ///
+    /// Anything loaded on the program id alone is only trustworthy once the
+    /// genesis agrees. When it does not, the peers and the prediction came from
+    /// a different cluster and are dropped: a node address means nothing across
+    /// chains.
+    pub fn rekey(&self, network: NetworkKey) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.network == network {
+            return;
+        }
+
+        let unconfirmed = state.network.genesis == tape_crypto::hash::Hash([0u8; 32]);
+        let same_chain = unconfirmed || state.network.genesis == network.genesis;
+        match same_chain {
+            true => state.network = network,
+            false => *state = BootstrapState::new(network),
+        }
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     pub fn network(&self) -> Option<NetworkKey> {
