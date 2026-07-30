@@ -1,7 +1,6 @@
 //! High-level SDK for tapedrive blob upload/download operations.
 
 pub mod balance;
-pub mod bootstrap;
 pub mod codec;
 pub mod error;
 pub mod gateway;

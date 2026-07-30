@@ -403,12 +403,6 @@ impl Rpc for LiteSvmRpc {
         Ok(inner.svm.latest_blockhash())
     }
 
-    /// An in-memory chain has no genesis block, so this is a fixed synthetic
-    /// value. It only has to be stable and distinct from a real cluster.
-    async fn get_genesis_hash(&self) -> Result<Hash, RpcError> {
-        Ok(Hash::new_from_array([0x51; 32]))
-    }
-
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
         let inner = self
             .inner

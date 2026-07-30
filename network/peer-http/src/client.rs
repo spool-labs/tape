@@ -635,6 +635,30 @@ impl Api for HttpApi {
         })
     }
 
+    async fn get_sample(
+        &self,
+        node: Address,
+        req: &GetSampleReq,
+    ) -> Result<GetSampleRes, ApiError> {
+        let (client, base) = self.resolve(node)?;
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", sample_url(&track_id, req.spool, req.sub_leaf));
+
+        let start = Instant::now();
+        let resp = client.get(&url).send().await.map_err(map_reqwest)?;
+
+        self.record(node, "get_sample", &resp, start, 0);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx(node, "get_sample", bytes.len() as u64);
+
+        let payload: SampleProofPayload = wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+        Ok(GetSampleRes {
+            proof: payload.into(),
+        })
+    }
+
     async fn get_health(
         &self,
         node: Address,
