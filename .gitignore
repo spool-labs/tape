@@ -4,7 +4,6 @@
 
 # tape-network operator state
 /settings.yaml
-/settings-burst.yaml
 /work/
 /.env
 

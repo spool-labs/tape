@@ -14,7 +14,7 @@ use tape_observe_api::{
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
     NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo, StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
-    SPOOL_STAGES,
+    SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGES, SPOOL_STAGE_FETCHED,
 };
 use tape_protocol::Api;
 
@@ -25,6 +25,11 @@ static STARTED: OnceLock<Instant> = OnceLock::new();
 /// Stamp the process start so the board can report uptime.
 pub fn init() {
     let _ = STARTED.get_or_init(Instant::now);
+}
+
+/// Unix seconds, for stamping what a payload was built from.
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// Fold one histogram's bucket counts into the running totals, seeding the
@@ -358,6 +363,7 @@ where
     let bootstrap = context.bootstrap.snapshot();
     let bootstrap_ready = context.bootstrap.is_ready();
 
+    let metrics = context.metrics.snapshot();
     let volumes = backend.disk_volumes().unwrap_or_default();
     let store_disk_bytes = volumes.iter().map(|v| v.used_bytes).sum();
     let slice_payload_bytes = volumes
@@ -378,7 +384,7 @@ where
         ingest_state: context.ingest_state().label().to_string(),
         ingest_lag_slots,
         reclaim_pending: context.is_reclaim_pending(),
-        blocks_processed: tape_metrics::metrics().blocks_processed_total.get(),
+        blocks_processed: metrics.blocks_processed_total,
         bootstrap_ready,
         bootstrap_behind_slots: if bootstrap_ready {
             0
@@ -386,14 +392,28 @@ where
             bootstrap.target_slot.saturating_sub(bootstrap.current_slot)
         },
         fee_payer_lamports: context.fee_payer_balance().map(|b| b.0),
+        sync_bytes: metrics.sync_bytes_fetched,
+        repair_bytes: metrics.repair_bytes_fetched,
+        recover_bytes: metrics.recover_bytes_fetched,
+        upload_bytes: metrics.bytes_uploaded,
     }
 }
 
 /// A lite board synthesized from a node's public stats, for peers that don't
 /// serve the full observe board.
 pub fn lite_board(address: String, stats: &NodeStats) -> Board {
+    let mut spool = Vec::with_capacity(SPOOL_OPS.len());
+    for (op, bytes) in [
+        (SPOOL_OP_SYNC, stats.sync_bytes),
+        (SPOOL_OP_REPAIR, stats.repair_bytes),
+        (SPOOL_OP_RECOVER, stats.recover_bytes),
+    ] {
+        spool.push(SpoolStat { op: op.to_string(), stage: SPOOL_STAGE_FETCHED.to_string(), bytes });
+    }
+
     Board {
         source: StatsSource::Public,
+        generated_at: now_secs(),
         node: NodeInfo {
             address,
             status: "active".to_string(),
@@ -429,8 +449,10 @@ pub fn lite_board(address: String, stats: &NodeStats) -> Board {
         },
         throughput: ThroughputTotals {
             blocks_processed: stats.blocks_processed,
+            bytes_uploaded: stats.upload_bytes,
             ..Default::default()
         },
+        spool,
         ..Default::default()
     }
 }
@@ -526,6 +548,7 @@ where
     let (slot, _, _) = context.ingest.progress().tip_and_lag();
 
     Network {
+        generated_at: now_secs(),
         epoch: state.epoch().0,
         phase: phase_name(u64::from(state.phase()) as u8).to_string(),
         phase_index: u64::from(state.phase()) as u8,
@@ -599,10 +622,7 @@ where
     Board {
         source: StatsSource::Observe,
         kind: super::board_kind(),
-        generated_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        generated_at: now_secs(),
         node: NodeInfo {
             address: context.node_address().to_string(),
             status: node_status_label(&context.node_status()).to_string(),
@@ -672,6 +692,7 @@ where
             blocks_processed: m.blocks_processed_total.get(),
             replay_events: m.replay_events_total.get(),
             repair_escalations: m.repair_escalations_total.get(),
+            bytes_uploaded: m.bytes_uploaded.get(),
         },
         http: http_stats(&gathered),
         peers: peer_stats(&gathered),

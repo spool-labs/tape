@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use rpc::Rpc;
 use store::Store;
 use tape_api::errors::TapeError;
-use tape_core::bft::has_honest_signer;
+use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
@@ -208,7 +208,7 @@ where
             partials.push(signature);
         }
 
-        if !has_honest_signer(partials.len() as u64, GROUP_SIZE as u64) {
+        if !is_supermajority(partials.len() as u64, GROUP_SIZE as u64) {
             continue;
         }
 

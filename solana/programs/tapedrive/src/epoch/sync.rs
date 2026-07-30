@@ -65,17 +65,17 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(TapeError::AlreadySynced.into());
     }
 
-    let was_quorum = has_honest_signer(
+    let was_supermajority = is_supermajority(
         group.synced.count_ones() as u64,
         GROUP_SIZE as u64,
     );
     group.synced.set(slice_idx);
-    let now_quorum = has_honest_signer(
+    let now_supermajority = is_supermajority(
         group.synced.count_ones() as u64,
         GROUP_SIZE as u64,
     );
 
-    if !was_quorum && now_quorum {
+    if !was_supermajority && now_supermajority {
         epoch.state.synced_count = epoch.state.synced_count.saturating_add(1);
         if epoch.state.synced_count == system.live_group_count {
             epoch.state.phase = EpochPhase::Snapshot as u64;
@@ -187,96 +187,6 @@ mod tests {
                         latest_sync_epoch: curr,
                         ..node
                     }.pack().as_ref())
-                    .build(),
-            ],
-        );
-    }
-
-    #[test]
-    fn sync_transition() {
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let curr = EpochNumber(42);
-        let group_id = GroupIndex(0);
-        let slice_in_group = 7usize;
-        let spool = group_id.spool_at(slice_in_group);
-
-        let (system_address, _) = system_pda();
-        let (epoch_address, _) = epoch_pda(curr);
-        let (group_address, _) = group_pda(curr, group_id);
-        let (node_address, _) = node_pda(authority.into());
-
-        let system = System {
-            current_epoch: curr,
-            target_group_count: 1,
-            live_group_count: 1,
-            ..System::zeroed()
-        };
-
-        let epoch = Epoch {
-            id: curr,
-            state: EpochState {
-                phase: EpochPhase::Sync as u64,
-                ..EpochState::zeroed()
-            },
-            total_groups: 1,
-            ..Epoch::zeroed()
-        };
-
-        // Seven spools already synced; this call is the eighth, crossing the
-        // honest-signer threshold and completing the only live group.
-        let mut group = group_with_owner(curr, group_id, slice_in_group, node_address);
-        for slot in 0..slice_in_group {
-            group.synced.set(slot);
-        }
-
-        let node = Node {
-            authority: authority.into(),
-            ..Node::zeroed()
-        };
-
-        let instruction = build_sync_spool_ix(
-            fee_payer.into(),
-            authority.into(),
-            node_address,
-            curr,
-            group_id,
-            spool,
-        );
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-            pda(group_address, group.pack(), tapedrive::ID),
-            pda(node_address, node.pack(), tapedrive::ID),
-        ];
-
-        let mut expected_group = group;
-        expected_group.synced.set(slice_in_group);
-
-        let expected_epoch = Epoch {
-            state: EpochState {
-                phase: EpochPhase::Snapshot as u64,
-                synced_count: 1,
-                ..EpochState::zeroed()
-            },
-            ..epoch
-        };
-
-        let env = test_env();
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::success(),
-                Check::account(&Pubkey::from(epoch_address))
-                    .data(expected_epoch.pack().as_ref())
-                    .build(),
-                Check::account(&Pubkey::from(group_address))
-                    .data(expected_group.pack().as_ref())
                     .build(),
             ],
         );

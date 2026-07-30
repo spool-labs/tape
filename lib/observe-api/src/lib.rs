@@ -117,6 +117,10 @@ pub struct NodeStats {
     #[serde(default)] pub bootstrap_ready: bool,
     #[serde(default)] pub bootstrap_behind_slots: u64,
     #[serde(default)] pub fee_payer_lamports: Option<u64>,
+    #[serde(default)] pub sync_bytes: u64,
+    #[serde(default)] pub repair_bytes: u64,
+    #[serde(default)] pub recover_bytes: u64,
+    #[serde(default)] pub upload_bytes: u64,
 }
 
 /// One committee member, as seen on-chain and optionally enriched with liveness
@@ -164,6 +168,8 @@ pub struct NetworkSpool {
 /// node's on-chain state.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Network {
+    #[serde(default)]
+    pub generated_at: u64,
     pub epoch: u64,
     pub phase: String,
     pub phase_index: u8,
@@ -209,11 +215,26 @@ pub const DECODE_SLICES_WASTED: &[&str] = &["rejected_leaf", "rejected_group", "
 /// All slice cache result labels.
 pub const CACHE_RESULTS: &[&str] = &["hit", "miss", "coalesced"];
 
+/// Filling a newly assigned spool.
+pub const SPOOL_OP_SYNC: &str = "sync";
+
+/// Refetching slices a spool is missing.
+pub const SPOOL_OP_REPAIR: &str = "repair";
+
+/// Rebuilding slices from the rest of their group.
+pub const SPOOL_OP_RECOVER: &str = "recover";
+
+/// Bytes that came in over the wire.
+pub const SPOOL_STAGE_FETCHED: &str = "fetched";
+
+/// Bytes that reached the store.
+pub const SPOOL_STAGE_PERSISTED: &str = "persisted";
+
 /// All spool pipeline operation labels.
-pub const SPOOL_OPS: &[&str] = &["sync", "repair", "recover"];
+pub const SPOOL_OPS: &[&str] = &[SPOOL_OP_SYNC, SPOOL_OP_REPAIR, SPOOL_OP_RECOVER];
 
 /// All spool pipeline stage labels.
-pub const SPOOL_STAGES: &[&str] = &["fetched", "persisted"];
+pub const SPOOL_STAGES: &[&str] = &[SPOOL_STAGE_FETCHED, SPOOL_STAGE_PERSISTED];
 
 /// Epoch phase names, in phase-index order.
 pub const EPOCH_PHASES: &[&str] = &["Unknown", "Sync", "Snapshot", "Active", "Closing", "Completed"];
@@ -347,6 +368,8 @@ pub struct ThroughputTotals {
     pub blocks_processed: u64,
     pub replay_events: u64,
     pub repair_escalations: u64,
+    #[serde(default)]
+    pub bytes_uploaded: u64,
 }
 
 /// Object decode breakdowns, plus the decode-duration histogram the dashboard
