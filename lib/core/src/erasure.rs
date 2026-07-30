@@ -48,18 +48,6 @@ pub fn slice_root(slice: &[u8]) -> Option<Hash> {
     Some(root_from_leaf_hashes::<SUB_TREE_HEIGHT>(&sub_leaf_hashes(slice)))
 }
 
-/// The slice position a spool holds within its group.
-///
-/// A spool index is network-wide while a commitment leaf index runs 0..GROUP_SIZE,
-/// so anything indexing `leaves` has to convert first. None when the spool is not
-/// a real network position.
-#[inline]
-pub fn leaf_position(spool: SpoolIndex) -> Option<SpoolIndex> {
-    group_for_spool(spool)
-        .position_of(spool)
-        .map(|position| SpoolIndex(position as u64))
-}
-
 /// Get the group index for a given spool.
 #[inline]
 pub fn group_for_spool(spool: SpoolIndex) -> GroupIndex {
@@ -97,22 +85,6 @@ mod tests {
     #[test]
     fn test_spool_group_size() {
         assert_eq!(GROUP_SIZE, 20);
-    }
-
-    #[test]
-    fn a_leaf_position_wraps_within_its_group() {
-        // The distinction that matters: a spool index runs network-wide while a
-        // leaf index runs 0..GROUP_SIZE, so anything past the first group has to
-        // wrap or it indexes off the end of the commitment.
-        assert_eq!(leaf_position(SpoolIndex(0)), Some(SpoolIndex(0)));
-        assert_eq!(leaf_position(SpoolIndex(19)), Some(SpoolIndex(19)));
-        assert_eq!(leaf_position(SpoolIndex(20)), Some(SpoolIndex(0)));
-        assert_eq!(leaf_position(SpoolIndex(137)), Some(SpoolIndex(17)));
-
-        for spool in [0u64, 1, 20, 137, 999] {
-            let position = leaf_position(SpoolIndex(spool)).expect("in a group");
-            assert!(position.as_usize() < GROUP_SIZE);
-        }
     }
 
     #[test]

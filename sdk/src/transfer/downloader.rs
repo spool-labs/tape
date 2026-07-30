@@ -13,6 +13,7 @@ use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::warn;
 
+use crate::bootstrap::Reputation;
 use crate::error::DownloadError;
 
 /// Parallel downloader for retrieving slices from storage nodes.
@@ -22,6 +23,7 @@ pub struct ParallelDownloader {
     concurrency: usize,
     min_slices: usize,
     exclude_slices: HashSet<SpoolIndex>,
+    reputation: Option<Arc<Reputation>>,
 }
 
 impl ParallelDownloader {
@@ -40,7 +42,53 @@ impl ParallelDownloader {
             concurrency,
             min_slices,
             exclude_slices: HashSet::new(),
+            reputation: None,
         }
+    }
+
+    /// Schedule slices by how their owning node has been behaving.
+    pub fn with_reputation(mut self, reputation: Arc<Reputation>) -> Self {
+        self.reputation = Some(reputation);
+        self
+    }
+
+    /// Slices to fetch, best owners first.
+    ///
+    /// Routing is fixed, since slice N lives on spool N's owner, so the only
+    /// freedom is what order the permits are handed out in. A dead owner used
+    /// to be able to take one of the in-flight slots and hold it through a full
+    /// retry ladder while healthy slices waited behind it. Ordering by owner
+    /// health means the slices that can finish start first.
+    ///
+    /// Quarantined owners are demoted, never dropped: a read needs k of the
+    /// group, so a slice may still be required even when its owner looks bad.
+    fn scheduled_slices(&self) -> Vec<(SpoolIndex, Address)> {
+        let mut entries: Vec<(SpoolIndex, Address)> = self
+            .slice_to_node
+            .iter()
+            .filter(|(slice_idx, _)| !self.exclude_slices.contains(slice_idx))
+            .map(|(&slice_idx, &node)| (slice_idx, node))
+            .collect();
+
+        let ranks: HashMap<Address, usize> = match &self.reputation {
+            Some(reputation) => {
+                let owners: Vec<Address> = entries.iter().map(|(_, node)| *node).collect();
+                reputation
+                    .order(&owners)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(position, node)| (node, position))
+                    .collect()
+            }
+            None => HashMap::new(),
+        };
+
+        // The slice index breaks ties so the order is stable rather than
+        // whatever the hash map happens to yield.
+        entries.sort_by_key(|(slice_idx, node)| {
+            (ranks.get(node).copied().unwrap_or(0), *slice_idx)
+        });
+        entries
     }
 
     /// Set slices to exclude from downloads.
@@ -69,17 +117,21 @@ impl ParallelDownloader {
 
         let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
 
-        for (&slice_idx, &node) in &self.slice_to_node {
-            if self.exclude_slices.contains(&slice_idx) {
-                continue;
-            }
-
+        for (slice_idx, node) in self.scheduled_slices() {
             let track = self.track;
             let sem = sem.clone();
+            let reputation = self.reputation.clone();
 
             futures.push(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
+                let started = Instant::now();
                 let result = download_slice_with_retry(peer_client, track, node, slice_idx).await;
+                if let Some(reputation) = reputation {
+                    match &result {
+                        Ok(_) => reputation.record_success(node, started.elapsed()),
+                        Err(_) => reputation.record_failure(node),
+                    }
+                }
                 (slice_idx, result)
             });
         }

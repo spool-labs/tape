@@ -5,6 +5,7 @@
 //! tape's own authority key, which the gateway never holds.
 
 use std::path::Path;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use rpc::Rpc;
@@ -13,6 +14,7 @@ use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::{Keypair, Pubkey};
 use tape_crypto::Hash;
+use tape_api::program::tapedrive::track_pda;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
@@ -21,8 +23,59 @@ use tape_sdk::keys::helpers::load_ed25519_keypair;
 use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::Tapedrive;
+use tape_store::ops::ObjectInfoOps;
 use tokio::io::AsyncRead;
 use zeroize::Zeroizing;
+
+
+/// How long a write waits for its object to become listable.
+///
+/// Generous, because the alternative to waiting is handing back a key that
+/// ListObjects does not show yet.
+const LISTABLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How often the local store is checked while waiting.
+const LISTABLE_POLL: Duration = Duration::from_millis(200);
+
+/// Block until a freshly written object is visible to listings.
+///
+/// The listing index is built by the node as it replays the chain, and an entry
+/// only counts as listable once its certify has replayed. Returning before that
+/// would advertise a key that a following ListObjects does not contain, which is
+/// the read-after-write behaviour S3 clients expect to hold.
+///
+/// A timeout does not fail the write. The object is on chain either way, and
+/// turning a durable write into a client error because an index lagged would be
+/// the worse outcome; the wait is about ordering, not durability.
+async fn await_listable<Db, Cluster, Blockchain>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    track: Address,
+) where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let deadline = tokio::time::Instant::now() + LISTABLE_TIMEOUT;
+    loop {
+        let certified = context
+            .store
+            .get_object_info(track)
+            .ok()
+            .flatten()
+            .is_some_and(|info| info.is_certified());
+        if certified {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(
+                %track,
+                "object not listable within the wait; the write landed but listings lag"
+            );
+            return;
+        }
+        tokio::time::sleep(LISTABLE_POLL).await;
+    }
+}
 
 /// Delegate signing context for the S3 write path.
 pub struct S3WriteContext {
@@ -84,6 +137,11 @@ impl S3WriteContext {
     }
 
     /// Write an in-memory object to `tape` as the delegate, returning its ETag.
+    ///
+    /// `existing` is the object's current track address, if the caller resolved
+    /// it (an S3 overwrite). A single-track write then resumes a matching
+    /// incomplete track, skips a matching complete one, or overwrites and
+    /// reclaims a differing one, instead of always appending a duplicate.
     pub async fn write_object<Db, Cluster, Blockchain>(
         &self,
         context: &NodeContext<Db, Cluster, Blockchain>,
@@ -91,6 +149,7 @@ impl S3WriteContext {
         name: &[u8],
         content_type: ContentType,
         data: &[u8],
+        existing: Option<Address>,
     ) -> Result<Hash, TapedriveError>
     where
         Db: Store,
@@ -102,13 +161,23 @@ impl S3WriteContext {
 
         if data.len() <= MAX_TRACK_SIZE {
             let track = client
-                .write_named_track_as(&operator, name, content_type, data)
+                .write_or_resume_track_as(&operator, name, content_type, data, existing)
                 .await?;
+            await_listable(context, track_pda(track.tape, track.track_number).0).await;
             Ok(track.value_hash)
         } else {
+            // A stream is written fresh (its manifest embeds per-chunk track
+            // numbers, so it cannot resume in place), then the prior object this
+            // overwrite orphaned is reclaimed whole via its manifest.
             let receipt = client
                 .write_named_bytes_as(&operator, name, content_type, data)
                 .await?;
+            if let Some(prior) = existing {
+                if let Err(error) = client.reclaim_object_as(&operator, prior).await {
+                    tracing::warn!(%error, %tape, %prior, "overwrite reclaim failed; prior object left for later sweep");
+                }
+            }
+            await_listable(context, receipt.manifest).await;
             Ok(receipt.manifest_value_hash)
         }
     }
@@ -134,6 +203,7 @@ impl S3WriteContext {
         let receipt = client
             .write_named_stream_as(&operator, name, content_type, size, reader)
             .await?;
+        await_listable(context, receipt.manifest).await;
         Ok(receipt.manifest_value_hash)
     }
 

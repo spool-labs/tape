@@ -3,8 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tape_protocol::api::{
     Api, ApiError, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes, GetHealthReq,
-    GetHealthRes, GetSampleReq, GetSampleRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes,
-    GetTrackByNumberReq,
+    GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes, GetTrackByNumberReq,
     GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
     GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
     ListTracksByTapeRes, ListObjectsReq, ListObjectsRes, PeerReq, PeerRes, PutSliceReq,
@@ -42,7 +41,6 @@ impl MemoryApi {
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
             PeerReq::Vote(_) => PeerRes::Vote(Err(not_impl())),
-            PeerReq::GetSample(_) => PeerRes::GetSample(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
@@ -148,10 +146,6 @@ impl Api for MemoryApi {
 
     async fn invalidate(&self, node: Address, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
         dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
-    }
-
-    async fn get_sample(&self, node: Address, req: &GetSampleReq) -> Result<GetSampleRes, ApiError> {
-        dispatch!(self, node, GetSampleReq { track: req.track, spool: req.spool, sub_leaf: req.sub_leaf }, GetSample)
     }
 
     async fn get_health(&self, node: Address, _req: &GetHealthReq) -> Result<GetHealthRes, ApiError> {
