@@ -72,7 +72,7 @@ const LOCALNET: GenesisConfig = GenesisConfig {
     min_epoch_duration: EpochDuration(60),         // 60 seconds
     max_epoch_duration: EpochDuration(1_209_600),  // 2 weeks
     epoch_duration: EpochDuration(100),            // 100 seconds
-    spool_groups: 10,
+    spool_groups: 5,
     subsidy_amount: TAPE(50_000 * ONE_TAPE),       // 50000 TAPE
     ..MAINNET
 };

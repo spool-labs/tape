@@ -18,6 +18,7 @@ use tape_protocol::ProtocolState;
 use crate::error::TapedriveError;
 use crate::metrics::{Metrics, Noop, Operation, Phase};
 use crate::tapedrive::Tapedrive;
+use crate::read_options::ReadOptions;
 use crate::write_options::WriteOptions;
 
 /// Read-only client for gateway-backed reads.
@@ -156,6 +157,7 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, GatewayApi> {
                 payer: None,
                 metrics: Arc::new(Noop),
                 write_options: WriteOptions::default(),
+                read_options: ReadOptions::default(),
             },
         })
     }
