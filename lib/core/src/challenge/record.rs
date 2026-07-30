@@ -217,6 +217,76 @@ mod tests {
         assert_eq!(record.opportunities, RECENT_ROUNDS as u64 + 10);
     }
 
+    /// Answer or miss in the given pattern, repeated until `rounds` are used.
+    fn run(pattern: &[bool], rounds: u64) -> PeerRecord {
+        let mut record = PeerRecord::default();
+        for round in 0..rounds {
+            let answered = pattern[(round as usize) % pattern.len()];
+            record.record(EpochNumber(1), RoundNumber(round), answered);
+        }
+        record
+    }
+
+    #[test]
+    fn a_node_that_stops_partway_is_caught_three_rounds_later() {
+        // Going quiet mid-epoch is the ordinary failure. It is caught by the
+        // consecutive arm, so detection does not wait for the lifetime rate to
+        // move and does not wait for the epoch to end.
+        let mut record = run(&[true], 40);
+        assert!(!record.eviction_fires());
+
+        for round in 40..42 {
+            record.record(EpochNumber(1), RoundNumber(round), false);
+            assert!(!record.eviction_fires(), "fired after {} misses", round - 39);
+        }
+        record.record(EpochNumber(1), RoundNumber(42), false);
+        assert!(record.eviction_fires(), "three misses in a row should fire");
+    }
+
+    #[test]
+    fn a_node_flapping_every_other_round_survives() {
+        // Worth being explicit about, because it is the boundary of the rule:
+        // alternating never reaches three in a row, and a rate of exactly half
+        // does not clear a floor of half. Such a node keeps its seat.
+        let record = run(&[true, false], 400);
+
+        assert_eq!(record.consecutive_misses, 1);
+        assert_eq!(record.success_rate(), RATE_FLOOR);
+        assert!(!record.eviction_fires());
+    }
+
+    #[test]
+    fn a_node_answering_less_than_half_is_caught_by_the_rate() {
+        // Two misses for every answer never reaches three in a row either, so
+        // the rate arm is the only thing that catches it.
+        let record = run(&[true, false, false], 60);
+
+        assert!(record.consecutive_misses < MAX_CONSECUTIVE_MISSES);
+        assert!(record.success_rate() < RATE_FLOOR);
+        assert!(record.eviction_fires());
+    }
+
+    #[test]
+    fn a_node_that_recovers_keeps_its_seat() {
+        // Two misses then an answer clears the run, so a brief outage that ends
+        // before the third round costs nothing.
+        let mut record = run(&[true], 20);
+        record.record(EpochNumber(1), RoundNumber(20), false);
+        record.record(EpochNumber(1), RoundNumber(21), false);
+        record.record(EpochNumber(1), RoundNumber(22), true);
+
+        assert_eq!(record.consecutive_misses, 0);
+        assert!(!record.eviction_fires());
+    }
+
+    #[test]
+    fn a_node_cannot_answer_just_enough_to_reset_the_run_forever() {
+        // The two arms together are what close this: answering once every three
+        // rounds dodges the consecutive arm but not the rate.
+        let record = run(&[true, false, false], 300);
+        assert!(record.eviction_fires());
+    }
+
     #[test]
     fn a_replayed_round_does_not_count_twice() {
         // Judging the same round twice must not manufacture opportunities, or a

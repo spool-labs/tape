@@ -152,6 +152,12 @@ where
             }
 
             let certified = self.context.round_buffer.is_certified(round.key(*spool));
+            debug!(
+                spool = %spool,
+                round = round.round.0,
+                certified,
+                "challenge: settling"
+            );
             self.record(owner, round.epoch, round.round, certified);
         }
     }
@@ -201,6 +207,15 @@ where
         if !record.record(epoch, round, certified) {
             return;
         }
+
+        debug!(
+            node = %peer,
+            round = round.0,
+            certified,
+            misses = record.consecutive_misses,
+            opportunities = record.opportunities,
+            "challenge: record advanced"
+        );
 
         if let Err(error) = self.context.store.put_peer_record(peer, record) {
             debug!(%error, node = %peer, "challenge: record not persisted");
