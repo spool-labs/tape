@@ -376,6 +376,57 @@ pub struct SpoolStat {
     pub bytes: u64,
 }
 
+/// One row of the challenge record: what this node has seen from one peer.
+///
+/// Rounds across, peers down. `recent` is oldest-first, one entry per round this
+/// peer was judged in, so a void round leaves no mark against anyone and a peer
+/// only just seen reads as a short row rather than a wall of misses.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChallengeRow {
+    /// Peer address, base58.
+    pub node: String,
+    /// Rounds this peer was challenged in.
+    pub opportunities: u64,
+    /// Rounds it answered with a valid proof.
+    pub successes: u64,
+    /// Misses since its last success.
+    pub consecutive_misses: u64,
+    /// Share of opportunities answered, in basis points.
+    pub success_rate_bps: u64,
+    /// Whether this node's local rule has fired on the peer.
+    pub rule_fired: bool,
+    /// The recent strip, oldest first, true for a success.
+    pub recent: Vec<bool>,
+}
+
+/// The challenge record this node keeps, one row per peer.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChallengeGrid {
+    /// Rounds the strip can hold, so a reader can size the grid.
+    pub recent_capacity: u64,
+    /// One row per peer, worst first so an outlier is the top row.
+    pub rows: Vec<ChallengeRow>,
+}
+
+/// Lifetime challenge round counters for this node.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChallengeRounds {
+    /// Rounds this node opened and answered for its own spool.
+    pub opened: u64,
+    /// Spool outcomes settled as certified.
+    pub settled_certified: u64,
+    /// Spool outcomes settled as local misses.
+    pub settled_missed: u64,
+    /// Incoming answers refused at the door.
+    pub answers_refused: u64,
+    /// Own slices a failed answer revealed missing and queued for splice.
+    #[serde(default)]
+    pub splices_queued: u64,
+    /// Slices rebuilt for a failed group-mate and accepted by it.
+    #[serde(default)]
+    pub splices_delivered: u64,
+}
+
 /// One cumulative histogram bucket.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Bucket {
@@ -532,6 +583,10 @@ pub struct Board {
     pub current_epoch: LastEpoch,
     #[serde(default)]
     pub lifetime: LastEpoch,
+    #[serde(default)]
+    pub challenge: ChallengeGrid,
+    #[serde(default)]
+    pub challenge_rounds: ChallengeRounds,
 }
 
 impl Board {

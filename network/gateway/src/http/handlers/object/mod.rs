@@ -1,6 +1,6 @@
 mod decode;
 mod manifest;
-pub mod response;
+mod response;
 mod routes;
 
 pub use response::{

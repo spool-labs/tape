@@ -5,7 +5,7 @@ use tape_core::types::EpochNumber;
 pub enum Action {
     Sync { spool: SpoolIndex, epoch: EpochNumber },
     Scan { spool: SpoolIndex, epoch: EpochNumber },
-    Repair { spool: SpoolIndex, epoch: EpochNumber },
+    Splice { spool: SpoolIndex, epoch: EpochNumber },
     Recover { spool: SpoolIndex, epoch: EpochNumber },
 }
 
@@ -31,8 +31,8 @@ pub enum ScanResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RepairResult {
-    Done { unrepairable: usize },
+pub enum SpliceResult {
+    Done { unspliceable: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub enum RecoverResult {
 pub enum TaskResult {
     Sync(SyncResult),
     Scan(ScanResult),
-    Repair(RepairResult),
+    Splice(SpliceResult),
     Recover(RecoverResult),
 }
 
@@ -53,7 +53,7 @@ impl Action {
         match self {
             Action::Sync { spool, .. }
             | Action::Scan { spool, .. }
-            | Action::Repair { spool, .. }
+            | Action::Splice { spool, .. }
             | Action::Recover { spool, .. } => spool,
         }
     }
@@ -62,7 +62,7 @@ impl Action {
         match self {
             Action::Sync { epoch, .. }
             | Action::Scan { epoch, .. }
-            | Action::Repair { epoch, .. }
+            | Action::Splice { epoch, .. }
             | Action::Recover { epoch, .. } => epoch,
         }
     }

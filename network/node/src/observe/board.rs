@@ -8,9 +8,12 @@ use store::{Column, Store, StoreVolume};
 use tape_core::system::NodeStatus;
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
-use tape_store::ops::{SliceOps, SpoolOps};
+use tape_core::challenge::record::RECENT_ROUNDS;
+use tape_store::ops::{ChallengeOps, SliceOps, SpoolOps};
 use tape_observe_api::{
-    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, DecodeStats, EpochInfo,
+    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
+    ChallengeRounds,
+    DecodeStats, EpochInfo,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
     NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo, StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
@@ -695,5 +698,56 @@ where
         last_epoch: super::last_epoch(),
         current_epoch: current_epoch.clone(),
         lifetime: super::epoch::lifetime_including(&current_epoch),
+        challenge: challenge_grid(context),
+        challenge_rounds: challenge_rounds(context),
+    }
+}
+
+/// Lifetime round counters, straight off the context atomics.
+fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeRounds {
+    use std::sync::atomic::Ordering;
+
+    let counters = &context.challenge_counters;
+    ChallengeRounds {
+        opened: counters.opened.load(Ordering::Relaxed),
+        settled_certified: counters.settled_certified.load(Ordering::Relaxed),
+        settled_missed: counters.settled_missed.load(Ordering::Relaxed),
+        answers_refused: counters.answers_refused.load(Ordering::Relaxed),
+        splices_queued: counters.splices_queued.load(Ordering::Relaxed),
+        splices_delivered: counters.splices_delivered.load(Ordering::Relaxed),
+    }
+}
+
+/// This node's challenge record, worst row first.
+///
+/// Its own observations, not anything the network agreed on: a row with gaps is
+/// a peer this node did not hear from, which is a reason to look rather than a
+/// verdict. Ordering by rate puts an outlier at the top.
+fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeGrid {
+    let mut rows: Vec<ChallengeRow> = context
+        .store
+        .iter_peer_records()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(node, record)| ChallengeRow {
+            node: node.to_string(),
+            opportunities: record.opportunities,
+            successes: record.successes,
+            consecutive_misses: record.consecutive_misses,
+            success_rate_bps: record.success_rate().0,
+            rule_fired: record.eviction_fires(),
+            recent: record.recent_rounds(),
+        })
+        .collect();
+
+    rows.sort_by_key(|row| (row.success_rate_bps, row.node.clone()));
+
+    ChallengeGrid {
+        recent_capacity: RECENT_ROUNDS as u64,
+        rows,
     }
 }
