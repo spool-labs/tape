@@ -22,7 +22,7 @@ use tape_core::challenge::elect_splicer;
 use tape_core::challenge::schedule::{SLOT_MS, Schedule};
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
-use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
@@ -40,6 +40,16 @@ use crate::features::challenge::audition::{
 use crate::features::challenge::fold::fold_outcome;
 use crate::features::spool::splice::splice_for_peer;
 
+// What settling needs from a round, captured when the round opened. Settling
+// runs epochs later when rounds outpace the boundary, and by then the schedule
+// that produced the round is no longer derivable from live state.
+struct OpenRound {
+    round: Round,
+    spools: Vec<SpoolIndex>,
+    mine: SpoolIndex,
+    base_slot: SlotNumber,
+}
+
 pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
@@ -47,10 +57,7 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     // The round this node last opened. A round's window spans several slots and
     // only its first finalized block seeds it, so the rest of the window is
     // ignored, and the previous round is settled when the next one opens.
-    // The round, the group's spools, and the spool this node answered from,
-    // captured at open: settling crosses epoch boundaries, where the live
-    // state may not name this node's spools for a moment.
-    last_run: Option<(Round, Vec<SpoolIndex>, SpoolIndex)>,
+    last_run: Option<OpenRound>,
     // Group splices in flight, so a repeated miss never doubles the work.
     splices: Arc<Mutex<HashSet<(SpoolIndex, Address)>>>,
 }
@@ -138,13 +145,18 @@ where
         if self
             .last_run
             .as_ref()
-            .is_some_and(|(open, _, _)| (open.epoch, open.round) == (round.epoch, round.round))
+            .is_some_and(|open| (open.round.epoch, open.round.round) == (round.epoch, round.round))
         {
             return Ok(());
         }
 
         self.settle_previous(&state);
-        self.last_run = Some((round, group_spools(&state, group), mine));
+        self.last_run = Some(OpenRound {
+            round,
+            spools: group_spools(&state, group),
+            mine,
+            base_slot: schedule.base_slot(number),
+        });
         self.context
             .challenge_counters
             .opened
@@ -164,11 +176,12 @@ where
     /// miss. Settling on the next round's opening is what gives a late certificate
     /// the whole interval to arrive and replace a miss before anyone acts on it.
     fn settle_previous(&self, state: &ProtocolState) {
-        let Some((round, spools, mine)) = self.last_run.as_ref() else {
+        let Some(open) = self.last_run.as_ref() else {
             return;
         };
+        let round = &open.round;
 
-        for spool in spools {
+        for spool in &open.spools {
             let Some(owner) = state.spool_owner(*spool) else {
                 continue;
             };
@@ -182,7 +195,7 @@ where
                 counters.settled_certified.fetch_add(1, Ordering::Relaxed);
             } else {
                 counters.settled_missed.fetch_add(1, Ordering::Relaxed);
-                self.maybe_splice(state, round, *spool, owner, *mine);
+                self.maybe_splice(state, round, *spool, owner, open.mine, open.base_slot);
             }
             debug!(
                 spool = %spool,
@@ -209,6 +222,7 @@ where
         failed: SpoolIndex,
         owner: Address,
         mine: SpoolIndex,
+        cutoff: SlotNumber,
     ) {
         let candidates: Vec<SpoolIndex> = group_spools(state, round.group)
             .into_iter()
@@ -228,11 +242,6 @@ where
             return;
         }
 
-        let Some(schedule) = schedule_for(state, round.epoch) else {
-            debug!(spool = %failed, epoch = round.epoch.0, "challenge: splice epoch out of reach");
-            return;
-        };
-        let cutoff = schedule.base_slot(round.round);
         let Some(sample) = sample_at_cutoff(&self.context, round, failed, mine, cutoff) else {
             debug!(spool = %failed, "challenge: splice sample underivable");
             return;
