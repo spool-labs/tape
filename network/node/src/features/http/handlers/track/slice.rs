@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
@@ -15,7 +15,6 @@ use tape_crypto::merkle::verify_proof_hash;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, SlicePayload};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::SliceWrite;
 use tracing::{debug, trace};
 
 use crate::features::blacklist::refuses_object;
@@ -174,10 +173,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("leaf hash mismatch".into()));
     }
 
-    // One hash of the slice serves both jobs: the root that settles the claim,
-    // and the sidecar the store keeps so a later challenge answers off one window.
-    let slice = SliceWrite::new(payload.data);
-    let Some(root) = slice.root() else {
+    let Some(root) = slice_root(&payload.data) else {
         return Err(RouteError::BadRequest("slice exceeds sub-leaf tree capacity".into()));
     };
     if root != payload.leaf_hash {
@@ -194,11 +190,11 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("invalid merkle proof".into()));
     }
 
-    let data_len = slice.data().len() as u64;
+    let data_len = payload.data.len() as u64;
     state
         .context
         .store
-        .put_slice(spool_id, track_key, slice)
+        .put_slice(spool_id, track_key, payload.data)
         .map_err(store_error)?;
     state.context.metrics.add_uploaded(data_len);
 

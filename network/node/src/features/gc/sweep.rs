@@ -156,7 +156,7 @@ fn cleanup_unowned_track_slices<Db: Store>(
             .map_err(store_error)?;
 
         store
-            .remove_pending_splice(spool_id, track)
+            .remove_pending_repair(spool_id, track)
             .map_err(store_error)?;
 
         store
@@ -736,7 +736,7 @@ mod tests {
             .unwrap();
         store.put_slice(owned_spool, track_stale, vec![1, 2, 3]).unwrap();
         store.put_slice(unowned_spool, track_stale, vec![3, 2, 1]).unwrap();
-        store.add_pending_splice(unowned_spool, track_stale).unwrap();
+        store.add_pending_repair(unowned_spool, track_stale).unwrap();
         store.add_pending_recovery(unowned_spool, track_stale).unwrap();
 
         // Recent uncertified: registered epoch 4, current epoch 5 -> age 1 < threshold 2
@@ -770,7 +770,7 @@ mod tests {
         assert!(store.get_object_info(track_stale).unwrap().is_some());
         assert!(store.get_slice(owned_spool, track_stale).unwrap().is_some());
         assert!(store.get_slice(unowned_spool, track_stale).unwrap().is_none());
-        assert!(!store.has_pending_splice(unowned_spool, track_stale).unwrap());
+        assert!(!store.has_pending_repair(unowned_spool, track_stale).unwrap());
         assert!(!store.has_pending_recovery(unowned_spool, track_stale).unwrap());
 
         // Recent track should remain

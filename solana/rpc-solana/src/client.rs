@@ -477,6 +477,16 @@ impl Rpc for SolanaRpc {
         .await
     }
 
+    async fn get_genesis_hash(&self) -> Result<Hash, RpcError> {
+        self.with_retry("getGenesisHash", |client| async move {
+            client
+                .get_genesis_hash()
+                .await
+                .map_err(|error| Self::convert_error(error, None))
+        })
+        .await
+    }
+
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
         self.with_retry("getBlock", move |client| async move {
             client

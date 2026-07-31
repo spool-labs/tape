@@ -497,7 +497,7 @@ recovery:
   max_workers: 42
   sync_batch: 99
   scan_batch: 77
-  splice_batch: 8
+  repair_batch: 8
   recover_batch: 6
 logging:
   filter: "debug"
@@ -572,7 +572,7 @@ metrics:
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.sync_batch, 99);
         assert_eq!(config.recovery.scan_batch, 77);
-        assert_eq!(config.recovery.splice_batch, 8);
+        assert_eq!(config.recovery.repair_batch, 8);
         assert_eq!(config.recovery.recover_batch, 6);
         assert_eq!(config.logging.filter, "debug");
         assert_eq!(config.logging.format, LoggingFormat::Json);
@@ -692,13 +692,13 @@ network:
   host: "test"
 recovery:
   max_workers: 42
-  splice_batch: 12
+  repair_batch: 12
 "#,
         )
         .unwrap();
 
         assert_eq!(config.recovery.max_workers, 42);
-        assert_eq!(config.recovery.splice_batch, 12);
+        assert_eq!(config.recovery.repair_batch, 12);
         assert_eq!(config.recovery.sync_batch, 100);
     }
 

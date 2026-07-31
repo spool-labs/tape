@@ -96,8 +96,8 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
             continue;
         }
 
-        let (has_splice, has_recovery) = has_pending_work(&ctx.store, *spool)?;
-        if !has_splice && !has_recovery {
+        let (has_repair, has_recovery) = has_pending_work(&ctx.store, *spool)?;
+        if !has_repair && !has_recovery {
             ready_count += 1;
         }
     }
@@ -144,7 +144,7 @@ mod tests {
             .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
         ctx.store
-            .add_pending_splice(spool, Address::from([1; 32]))
+            .add_pending_repair(spool, Address::from([1; 32]))
             .unwrap();
 
         let result = check_readiness(&ctx).unwrap();

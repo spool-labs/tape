@@ -38,7 +38,7 @@ use rocksdb;
 ///
 /// ## Spool Columns (NOT epoch-namespaced)
 /// - `spool_status` - 2-byte SpoolIndexKey
-/// - `spool_pending_splice` - 34-byte SliceKey with 2-byte spool prefix
+/// - `spool_pending_repair` - 34-byte SliceKey with 2-byte spool prefix
 /// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix
 /// - `spool_sync_cursor` - 2-byte SpoolIndexKey
 ///
@@ -88,11 +88,6 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Track registration slot - 32-byte track address, one slot number
-        ColumnFamilyConfig::new("track_slot")
-            .with_block_based()
-            .build(),
-
         // Object info - 32-byte Address keys, ObjectInfo values
         ColumnFamilyConfig::new("object_info")
             .with_block_based()
@@ -125,9 +120,9 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Spool pending splice - 34-byte SliceKey
+        // Spool pending repair - 34-byte SliceKey
         // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("spool_pending_splice")
+        ColumnFamilyConfig::new("spool_pending_repair")
             .with_block_based()
             .with_prefix_extractor(2)
             .build(),
@@ -152,27 +147,6 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
         ColumnFamilyConfig::new("slice_size")
             .with_block_based()
             .with_prefix_extractor(2)
-            .build(),
-
-        // Slice sidecar - 34-byte SliceKey, sub-leaf tree nodes for challenges
-        // 2-byte spool prefix for iteration by spool
-        // Never blob-backed: the point of the sidecar is answering without a
-        // slice read, which a blob indirection would put straight back
-        ColumnFamilyConfig::new("slice_sidecar")
-            .with_block_based()
-            .with_prefix_extractor(2)
-            .build(),
-
-        // Challenge record - 32-byte peer address, small counters
-        ColumnFamilyConfig::new("challenge_record")
-            .with_block_based()
-            .build(),
-
-        // Challenge rounds - 48-byte key, one byte per outcome
-        // 32-byte peer prefix so one node's history is a single scan
-        ColumnFamilyConfig::new("challenge_round")
-            .with_block_based()
-            .with_prefix_extractor(32)
             .build(),
 
         // Spool sync progress - 2-byte SpoolIndexKey
@@ -265,10 +239,8 @@ pub const BULK_SUBDIR: &str = "bulk";
 /// stored inline but can be large. Everything else is small metadata that
 /// stays on the fast volume. The slice size index is small, but it rides along
 /// on the bulk volume because a write batch cannot span the two databases.
-/// A slice, its recorded length and its sidecar are written in one batch, so
-/// they have to share a volume: a cross-volume batch is not atomic.
 pub const BULK_COLUMN_FAMILIES: &[&str] =
-    &["track_data", "slice", "slice_size", "slice_sidecar", "snapshot_artifact"];
+    &["track_data", "slice", "slice_size", "snapshot_artifact"];
 
 /// Column family configurations for the metadata (fast volume) store
 pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {
@@ -355,7 +327,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 32);
+        assert_eq!(configs.len(), 28);
     }
 
     #[test]
@@ -369,20 +341,16 @@ mod tests {
             "track",
             "track_lookup",
             "track_data",
-            "track_slot",
             "object_info",
             "object_metadata",
             "object_list",
             "sync_cursor",
             "gc",
             "spool_status",
-            "spool_pending_splice",
+            "spool_pending_repair",
             "spool_pending_recovery",
             "slice",
             "slice_size",
-            "slice_sidecar",
-            "challenge_record",
-            "challenge_round",
             "spool_sync_cursor",
             "event_log",
             "vote_sig",
@@ -421,10 +389,7 @@ mod tests {
 
         // The two volumes partition every column family with no overlap.
         assert_eq!(meta.len() + bulk.len(), create_tape_store_configs().len());
-        assert_eq!(
-            bulk,
-            vec!["track_data", "slice", "slice_size", "slice_sidecar", "snapshot_artifact"]
-        );
+        assert_eq!(bulk, vec!["track_data", "slice", "slice_size", "snapshot_artifact"]);
         assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
     }
 }

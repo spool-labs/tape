@@ -26,11 +26,7 @@ const GROUP_ROWS: usize = 3;
 pub enum Command {
     AddNode,
     RemoveNode,
-    StallNode,
-    FlapNode,
-    LoseSlices,
     UploadBlob,
-    DeleteUpload,
     Quit,
 }
 
@@ -61,20 +57,8 @@ pub fn run_tui(
                         KeyCode::Char('r') => {
                             let _ = cmd_tx.send(Command::RemoveNode);
                         }
-                        KeyCode::Char('j') => {
-                            let _ = cmd_tx.send(Command::StallNode);
-                        }
-                        KeyCode::Char('f') => {
-                            let _ = cmd_tx.send(Command::FlapNode);
-                        }
-                        KeyCode::Char('x') => {
-                            let _ = cmd_tx.send(Command::LoseSlices);
-                        }
                         KeyCode::Char('u') => {
                             let _ = cmd_tx.send(Command::UploadBlob);
-                        }
-                        KeyCode::Char('d') => {
-                            let _ = cmd_tx.send(Command::DeleteUpload);
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             let _ = cmd_tx.send(Command::Quit);
@@ -190,32 +174,8 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
         view.cluster.committee_next_size,
         phase,
     );
-    let rounds = view
-        .nodes
-        .iter()
-        .filter(|node| node.healthy)
-        .min_by_key(|node| node.local_id)
-        .and_then(|node| node.challenge_rounds.as_ref())
-        .map(|rounds| {
-            format!(
-                "R[o:{} c:{} m:{} x:{}]  ",
-                rounds.opened,
-                rounds.settled_certified,
-                rounds.settled_missed,
-                rounds.answers_refused,
-            )
-        })
-        .unwrap_or_default();
-    let rate = match (
-        view.cluster.honest_rate_min_bps,
-        view.cluster.honest_rate_med_bps,
-    ) {
-        (Some(min), Some(med)) => format!("rate[{}~{}%]  ", min / 100, med / 100),
-        _ => String::new(),
-    };
-
     let right = format!(
-        "{rounds}{rate}epoch:{}  registered:{}  slot:{} ",
+        "epoch:{}  registered:{}  slot:{} ",
         view.cluster.epoch,
         view.cluster.total_nodes_registered,
         view.cluster.slot,
@@ -327,54 +287,10 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     let mut nodes: Vec<&NodeView> = view.nodes.iter().collect();
     nodes.sort_by_key(|node| node.local_id);
 
-    // One node's record of everyone, which is what the record is: a local
-    // view, not a network verdict. The lowest healthy id keeps it stable.
-    let challenge_grid: std::collections::HashMap<&str, &tape_observe_api::ChallengeRow> = view
-        .nodes
-        .iter()
-        .filter(|node| node.healthy)
-        .min_by_key(|node| node.local_id)
-        .and_then(|node| node.challenge.as_ref())
-        .map(|grid| grid.rows.iter().map(|row| (row.node.as_str(), row)).collect())
-        .unwrap_or_default();
-
-    let epoch = view.cluster.epoch;
-    let rows = nodes.into_iter().map(move |node| {
+    let rows = nodes.into_iter().map(|node| {
         let stats = node.stats.as_ref();
-        // A stalled node that collects an eviction shows the eviction: that
-        // arrival is the whole point of watching.
-        let (health, health_style) = if node
-            .suspended_until
-            .is_some_and(|until| until > 0 && until >= epoch)
-        {
-            ("evct", Style::default().fg(Color::Red))
-        } else if node.stalled {
-            ("stall", Style::default().fg(Color::Yellow))
-        } else if node.flapping {
-            ("flap", Style::default().fg(Color::Cyan))
-        } else if node.healthy {
-            ("up", Style::default())
-        } else {
-            ("down", Style::default())
-        };
+        let healthy = if node.healthy { "up" } else { "down" };
         let metrics = if node.metrics_available { "yes" } else { "no" };
-
-        let judged = challenge_grid.get(node.node_address.as_str());
-        let miss = judged
-            .map(|row| row.consecutive_misses.to_string())
-            .unwrap_or_else(|| "-".into());
-        let rate = judged
-            .map(|row| format!("{}%", row.success_rate_bps / 100))
-            .unwrap_or_else(|| "-".into());
-        let strip = judged
-            .map(|row| {
-                let tail = row.recent.len().saturating_sub(16);
-                row.recent[tail..]
-                    .iter()
-                    .map(|proved| if *proved { '▮' } else { '·' })
-                    .collect::<String>()
-            })
-            .unwrap_or_else(|| "-".into());
 
         Row::new(vec![
             Cell::from("▌").style(Style::default().fg(node_color(node.local_id))),
@@ -391,11 +307,8 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
                     .to_string(),
             ),
             Cell::from(node.address.clone().unwrap_or_else(|| "-".into())),
-            Cell::from(health).style(health_style),
+            Cell::from(healthy),
             Cell::from(metrics),
-            Cell::from(miss),
-            Cell::from(rate),
-            Cell::from(strip),
             Cell::from(
                 stats.map(|s| s.owned_spools.to_string())
                     .unwrap_or_else(|| "-".into()),
@@ -429,9 +342,6 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
         Constraint::Length(17),
         Constraint::Length(6),
         Constraint::Length(7),
-        Constraint::Length(4),
-        Constraint::Length(5),
-        Constraint::Length(16),
         Constraint::Length(6),
         Constraint::Length(7),
         Constraint::Length(10),
@@ -453,9 +363,6 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
             "Address",
             "Health",
             "Metrics",
-            "Miss",
-            "Rate",
-            "Rounds",
             "Spools",
             "Tracks",
             "Payload",
@@ -474,19 +381,11 @@ fn render_help_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView, disco
     let status = if disconnected { "disconnected" } else { "ready" };
     let mut spans = vec![
         Span::styled(" a ", Style::default().fg(Color::Green)),
-        Span::raw("add  "),
+        Span::raw("add node  "),
         Span::styled(" r ", Style::default().fg(Color::Yellow)),
-        Span::raw("remove  "),
-        Span::styled(" j ", Style::default().fg(Color::Magenta)),
-        Span::raw("stall  "),
-        Span::styled(" f ", Style::default().fg(Color::Cyan)),
-        Span::raw("flap  "),
-        Span::styled(" x ", Style::default().fg(Color::LightYellow)),
-        Span::raw("lose slices  "),
-        Span::styled(" u ", Style::default().fg(Color::Blue)),
-        Span::raw("upload  "),
-        Span::styled(" d ", Style::default().fg(Color::LightRed)),
-        Span::raw("delete upload  "),
+        Span::raw("remove last node  "),
+        Span::styled(" u ", Style::default().fg(Color::Cyan)),
+        Span::raw("upload blob  "),
         Span::styled(" q ", Style::default().fg(Color::Red)),
         Span::raw("quit"),
         Span::raw(format!("  [{status}]")),
@@ -602,8 +501,8 @@ fn format_tape(value: u64) -> String {
 fn cert_style(status: &str) -> Style {
     match status {
         "yes" => Style::default().fg(Color::Green),
-        "pending" | "deleting" => Style::default().fg(Color::Yellow),
-        "failed" | "delfail" => Style::default().fg(Color::Red),
+        "pending" => Style::default().fg(Color::Yellow),
+        "failed" => Style::default().fg(Color::Red),
         _ => Style::default().fg(Color::DarkGray),
     }
 }

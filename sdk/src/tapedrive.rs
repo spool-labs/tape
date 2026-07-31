@@ -1,6 +1,8 @@
 //! High-level client for the Tapedrive storage network.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use peer_http::HttpApi;
@@ -10,15 +12,17 @@ use rpc_client::RpcClient;
 use tape_core::prelude::{CompressedTrack, StorageUnits};
 use tape_core::types::coin::{SOL, TAPE};
 use tape_core::types::ContentType;
+use tape_api::program::tapedrive;
 use tape_crypto::prelude::{Address, Keypair};
 use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::balance::{sol_balance_of, tape_balance_of};
+use crate::bootstrap::{BootstrapStore, Reputation};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
-use crate::metrics::{Metrics, Noop, Operation, Outcome, Phase, Timer};
+use crate::metrics::{Metrics, Noop, Operation, Phase, Timer};
 use crate::read_options::ReadOptions;
 use crate::write_options::WriteOptions;
 use crate::stream::{
@@ -26,13 +30,14 @@ use crate::stream::{
     receipt::StreamReceipt,
     write::{write_bytes as write_stream_bytes, write_stream as write_reader_stream},
 };
-use crate::track::write::{UNNAMED_TRACK, UNTYPED_TRACK};
+use crate::track::write::{write_or_resume, UNNAMED_TRACK, UNTYPED_TRACK};
 
 /// High-level client for the Tapedrive storage network.
 ///
 /// Generic over `Blockchain: Rpc` (on-chain) and `Cluster: Api` (storage nodes).
 pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub state: ArcSwap<ProtocolState>,
+    pub state_verified_at: AtomicU64,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub rpc: Arc<RpcClient<Blockchain>>,
@@ -40,6 +45,13 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub metrics: Arc<dyn Metrics>,
     pub write_options: WriteOptions,
     pub read_options: ReadOptions,
+    pub reputation: Arc<Reputation>,
+}
+
+/// Monotonic milliseconds since the first call in this process.
+fn monotonic_ms() -> u64 {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
 /// Default constructor using `HttpApi`.
@@ -57,16 +69,13 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
         let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
-        Self {
-            state: ArcSwap::from_pointee(ProtocolState::default()),
+        Self::from_parts(
+            ArcSwap::from_pointee(ProtocolState::default()),
             peer_manager,
             api,
-            rpc: rpc_client,
-            payer: None,
-            metrics: Arc::new(Noop),
-            write_options: WriteOptions::default(),
-            read_options: ReadOptions::default(),
-        }
+            rpc_client,
+            None,
+        )
     }
 }
 
@@ -81,6 +90,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ) -> Self {
         Self {
             state,
+            state_verified_at: AtomicU64::new(0),
             peer_manager,
             api,
             rpc,
@@ -88,7 +98,49 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
+            reputation: Arc::new(Reputation::detached()),
         }
+    }
+
+    /// Replace the cached network state and mark it freshly verified. The
+    /// pairing matters: a store without the freshness mark would leave the
+    /// new state distrusted, and a mark without the store would extend
+    /// trust in stale state.
+    pub fn store_state(&self, state: ProtocolState) {
+        self.state.store(Arc::new(state));
+        self.touch_state();
+    }
+
+    /// Age of the cached network state since its last fetch or verification.
+    pub fn state_age(&self) -> Duration {
+        let verified = self.state_verified_at.load(Ordering::Relaxed);
+        Duration::from_millis(monotonic_ms().saturating_sub(verified))
+    }
+
+    /// Mark the cached network state as freshly verified against the chain.
+    pub fn touch_state(&self) {
+        self.state_verified_at.store(monotonic_ms(), Ordering::Relaxed);
+    }
+
+    /// Force the next bootstrap to verify the cached state against the chain.
+    pub fn invalidate_state(&self) {
+        self.state_verified_at.store(0, Ordering::Relaxed);
+    }
+
+    /// Share an existing reputation table rather than starting a fresh one.
+    ///
+    /// A long-lived caller that rebuilds a client per request must pass its own
+    /// here, otherwise every request starts with an empty table and the peer
+    /// ordering never learns anything.
+    pub fn with_reputation(mut self, reputation: Arc<Reputation>) -> Self {
+        self.reputation = reputation;
+        self
+    }
+
+    /// Persist peer reputation and bootstrap hints to this store.
+    pub fn with_bootstrap_cache(mut self, store: BootstrapStore) -> Self {
+        self.reputation = Arc::new(Reputation::attach(store, tapedrive::id().into()));
+        self
     }
 
     /// Attach or replace the payer used for mutating operations.
@@ -146,18 +198,21 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     /// Write unnamed content-addressed data to the network in one call.
     ///
-    /// Creates a tape sized to fit `data` exactly, registers a track,
-    /// uploads erasure-coded slices to storage nodes, and certifies the
+    /// Reserves the tape controlled by `tape_key` sized to fit `data`, registers
+    /// a track, uploads erasure-coded slices to storage nodes, and certifies the
     /// track with BLS signatures. Unnamed tracks are excluded from object
     /// listings.
     ///
-    /// Returns the tape key (save it!) and the registered track.
+    /// The caller owns the tape key: generate and durably persist it before
+    /// calling, so an interrupted write leaves the reserved tape recoverable.
     pub async fn write(
         &self,
+        tape_key: &TapeKey,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
+    ) -> Result<CompressedTrack, TapedriveError> {
         self.write_named(
+            tape_key,
             UNNAMED_TRACK,
             UNTYPED_TRACK,
             data,
@@ -169,36 +224,24 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Write named data to the network in one call.
     ///
     /// Named tracks on non-system tapes are materialized into object listings.
+    /// The caller owns the tape key, same as write.
     pub async fn write_named(
         &self,
+        tape_key: &TapeKey,
         name: impl AsRef<[u8]>,
         content_type: ContentType,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
+    ) -> Result<CompressedTrack, TapedriveError> {
         let total = self
             .timer(Operation::Write, Phase::Total)
             .bytes(data.len() as u64);
 
-        let tape_key = TapeKey::generate();
-        let capacity = StorageUnits::from_bytes(data.len() as u64);
-        let reserve_capacity = capacity + StorageUnits::mb(1);
-
-        let reserve = self.timer(Operation::Write, Phase::Reserve);
-        let result = self.reserve(&tape_key, reserve_capacity, epochs).await;
-        reserve.finish_result(&result);
-        if let Err(error) = result {
-            total.finish(Outcome::Error);
-            return Err(error);
-        }
-
-        let result = self
-            .write_named_track(&tape_key, name, content_type, data)
-            .await;
+        let result =
+            write_or_resume(self, tape_key, name.as_ref(), content_type, data, epochs).await;
         total.finish_result(&result);
-        let track = result?;
 
-        Ok((tape_key, track))
+        result
     }
 
     /// Write unnamed in-memory bytes to an existing tape as a logical stream.

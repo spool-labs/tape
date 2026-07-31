@@ -32,7 +32,6 @@ pub fn delete_track_local<Db: Store>(
     }
 
     store.delete_track(track).map_err(store_error)?;
-    store.delete_track_slot(track).map_err(store_error)?;
     store.delete_track_data(track).map_err(store_error)?;
     store.delete_object_info(track).map_err(store_error)?;
     store.delete_object_metadata(track).map_err(store_error)?;
@@ -98,7 +97,7 @@ pub fn cleanup_track_slices<Db: Store>(
             .map_err(store_error)?;
 
         store
-            .remove_pending_splice(spool_id, track)
+            .remove_pending_repair(spool_id, track)
             .map_err(store_error)?;
 
         store
@@ -118,7 +117,7 @@ pub fn purge_spool_local<Db: Store>(
         .map_err(store_error)?;
 
     store
-        .clear_all_pending_splices(spool_id)
+        .clear_all_pending_repairs(spool_id)
         .map_err(store_error)?;
 
     store

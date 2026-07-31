@@ -3,9 +3,9 @@
 use tape_core::track::types::{CompressedTrack, PackedTrack};
 use store::{Column, Store};
 use tape_crypto::address::Address;
-use tape_core::types::{SlotNumber, TrackNumber};
+use tape_core::types::TrackNumber;
 
-use crate::columns::{TrackCol, TrackLookupCol, TrackSlotCol};
+use crate::columns::{TrackCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
 use crate::types::{TrackLookupKey, UnitKey};
 use crate::TapeStore;
@@ -20,15 +20,6 @@ pub trait TrackOps {
 
     /// Delete track metadata.
     fn delete_track(&self, track_address: Address) -> Result<()>;
-
-    /// The finalized slot the track's registration landed in, when recorded.
-    fn track_slot(&self, track_address: Address) -> Result<Option<SlotNumber>>;
-
-    /// Record the finalized slot a track's registration landed in.
-    fn put_track_slot(&self, track_address: Address, slot: SlotNumber) -> Result<()>;
-
-    /// Drop a track's registration slot.
-    fn delete_track_slot(&self, track_address: Address) -> Result<()>;
 
     /// Check if track metadata exists without loading data.
     fn has_track(&self, track_address: Address) -> Result<bool>;
@@ -72,20 +63,6 @@ impl<S: Store> TrackOps for TapeStore<S> {
             self.delete::<TrackLookupCol>(&lookup)?;
         }
         self.delete::<TrackCol>(&track_address)?;
-        Ok(())
-    }
-
-    fn track_slot(&self, track_address: Address) -> Result<Option<SlotNumber>> {
-        Ok(self.get::<TrackSlotCol>(&track_address)?)
-    }
-
-    fn put_track_slot(&self, track_address: Address, slot: SlotNumber) -> Result<()> {
-        self.put::<TrackSlotCol>(&track_address, &slot)?;
-        Ok(())
-    }
-
-    fn delete_track_slot(&self, track_address: Address) -> Result<()> {
-        self.delete::<TrackSlotCol>(&track_address)?;
         Ok(())
     }
 
@@ -237,20 +214,6 @@ mod tests {
 
         store.delete_track(track).unwrap();
         assert!(store.get_track(track).unwrap().is_none());
-    }
-
-    #[test]
-    fn a_tracks_slot_round_trips_and_deletes() {
-        let store = test_store();
-        let track = Address::new_unique();
-
-        assert_eq!(store.track_slot(track).unwrap(), None);
-
-        store.put_track_slot(track, SlotNumber(4_200)).unwrap();
-        assert_eq!(store.track_slot(track).unwrap(), Some(SlotNumber(4_200)));
-
-        store.delete_track_slot(track).unwrap();
-        assert_eq!(store.track_slot(track).unwrap(), None);
     }
 
     #[test]
