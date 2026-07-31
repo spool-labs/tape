@@ -30,7 +30,6 @@ use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
-use crate::features::challenge::RoundBuffer;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
 
@@ -48,8 +47,6 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub api: Arc<Cluster>,
     pub admission: Arc<AdmissionLimiter>,
     pub eviction_queue: Arc<EvictionQueue>,
-    /// Rounds this node is currently witnessing, in memory only.
-    pub round_buffer: Arc<RoundBuffer>,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -314,7 +311,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             api: self.api,
             admission,
             eviction_queue: Arc::new(EvictionQueue::default()),
-            round_buffer: Arc::new(RoundBuffer::default()),
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),

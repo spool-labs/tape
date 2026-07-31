@@ -494,59 +494,27 @@ fn create_merkle_proof_hashes(
     index: usize,
     height: usize,
 ) -> Result<Vec<Hash>, MerkleError> {
-    create_proof_from_level(hashes, index, 0, height)
-}
-
-/// Fold nodes that already stand `depth` levels above the leaves up `levels` more.
-///
-/// The empty subtree root an odd level pads with depends on how deep that level
-/// is, so folding from the middle of a tree has to be told where it starts.
-pub fn fold_level(nodes: &[Hash], depth: usize, levels: usize) -> Vec<Hash> {
-    let mut level: Vec<Hash> = Vec::with_capacity(nodes.len() + 1);
-    level.extend_from_slice(nodes);
-
-    for offset in 0..levels {
-        if !level.len().is_multiple_of(2) {
-            level.push(EMPTY_ROOTS[depth + offset].into());
-        }
-        level = hash_level(&level);
-    }
-
-    level
-}
-
-/// Create a proof for one node of a level that stands `depth` above the leaves.
-///
-/// At `depth` zero this is the ordinary leaf-to-root proof. Above zero it is the
-/// upper half of a path whose lower half was built from the leaves themselves,
-/// which is how a proof is served without rebuilding the whole tree.
-pub fn create_proof_from_level(
-    nodes: &[Hash],
-    index: usize,
-    depth: usize,
-    levels: usize,
-) -> Result<Vec<Hash>, MerkleError> {
-    if nodes.is_empty() {
+    if hashes.is_empty() {
         return Err(MerkleError::InvalidProof);
     }
-    if index >= nodes.len() {
+    if index >= hashes.len() {
         return Err(MerkleError::InvalidProof);
     }
-    if nodes.len() > (1usize << levels) {
+    if hashes.len() > (1usize << height) {
         return Err(MerkleError::InvalidProof);
     }
-    if depth + levels > MAX_MERKLE_TREE_HEIGHT {
+    if height > MAX_MERKLE_TREE_HEIGHT {
         return Err(MerkleError::InvalidProof);
     }
 
-    let empty: Vec<Hash> = (0..levels)
-        .map(|i| EMPTY_ROOTS[depth + i].into())
+    let empty: Vec<Hash> = (0..height)
+        .map(|i| EMPTY_ROOTS[i].into())
         .collect();
 
-    let mut layers = Vec::with_capacity(levels);
-    let mut current_layer: Vec<Hash> = nodes.to_vec();
+    let mut layers = Vec::with_capacity(height);
+    let mut current_layer: Vec<Hash> = hashes.to_vec();
 
-    for i in 0..levels {
+    for i in 0..height {
         if !current_layer.len().is_multiple_of(2) {
             current_layer.push(empty[i]);
         }
@@ -555,11 +523,11 @@ pub fn create_proof_from_level(
         current_layer = hash_level(&current_layer);
     }
 
-    let mut proof = Vec::with_capacity(levels);
+    let mut proof = Vec::with_capacity(height);
     let mut current_index = index;
     let mut layer_index = 0;
 
-    for _ in 0..levels {
+    for _ in 0..height {
         let sibling = if current_index.is_multiple_of(2) {
             layers[layer_index][current_index + 1]
         } else {

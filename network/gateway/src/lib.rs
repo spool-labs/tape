@@ -4,4 +4,5 @@ pub mod http;
 mod meter;
 pub(crate) mod metrics;
 pub mod runtime;
+pub mod staging;
 pub mod store;

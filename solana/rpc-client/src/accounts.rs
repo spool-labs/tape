@@ -662,6 +662,131 @@ impl<R: Rpc> RpcClient<R> {
             .map_err(|e| RpcError::Deserialization(e.to_string()))
     }
 
+    /// Read the system row and one epoch's accounts in a single round trip.
+    ///
+    /// The epoch here is a guess, because its accounts are addressed by epoch
+    /// number and that number is what the system row is for. Asking for both at
+    /// once turns the usual read-then-derive chain into one call. The caller
+    /// compares the returned system row against the guess and throws the rest
+    /// away if it missed, so a wrong guess costs a wasted response, never a
+    /// wrong answer.
+    ///
+    /// Accounts that do not exist come back as `None` rather than an error,
+    /// which is the normal shape of a miss.
+    pub async fn get_epoch_batch_with_commitment(
+        &self,
+        epoch: EpochNumber,
+        total_groups: u64,
+        commitment: CommitmentLevel,
+    ) -> Result<EpochBatch, RpcError> {
+        let group_count = usize::try_from(total_groups).map_err(|_| {
+            RpcError::Deserialization(format!("group count too large: {total_groups}"))
+        })?;
+
+        let mut addresses = Vec::with_capacity(4 + group_count);
+        addresses.push(SYSTEM_ADDRESS);
+        addresses.push(epoch_pda(epoch).0);
+        addresses.push(committee_pda(epoch).0);
+        addresses.push(PEER_SET_ADDRESS);
+        addresses.extend((0..total_groups).map(|idx| group_pda(epoch, GroupIndex(idx)).0));
+
+        let accounts = self
+            .rpc()
+            .get_multiple_accounts_with_commitment(&addresses, commitment)
+            .await?;
+
+        if accounts.len() != addresses.len() {
+            return Err(RpcError::Deserialization(format!(
+                "epoch batch returned {} accounts, expected {}",
+                accounts.len(),
+                addresses.len()
+            )));
+        }
+
+        let system = accounts[0]
+            .as_ref()
+            .ok_or(RpcError::AccountNotFound(SYSTEM_ADDRESS))
+            .and_then(|account| {
+                System::unpack_with_discriminator(&account.data)
+                    .copied()
+                    .map_err(|e| RpcError::Deserialization(e.to_string()))
+            })?;
+
+        // Nothing below is worth decoding when the guess already missed: the
+        // caller discards every speculative field the moment the epoch differs.
+        if system.current_epoch != epoch {
+            return Ok(EpochBatch {
+                system,
+                epoch: None,
+                committee: None,
+                peer_set: None,
+                groups: Vec::new(),
+            });
+        }
+
+        let epoch_row = match &accounts[1] {
+            None => None,
+            Some(account) => Some(
+                Epoch::unpack_with_discriminator(&account.data)
+                    .copied()
+                    .map_err(|e| RpcError::Deserialization(e.to_string()))?,
+            ),
+        };
+
+        let committee = match &accounts[2] {
+            None => None,
+            Some(account) => {
+                let (committee, members) =
+                    unpack_dynamic_entries::<Committee>(&account.data, "Committee")?;
+                match committee.epoch == epoch {
+                    true => Some(members),
+                    // Someone else's epoch in the slot we guessed. Treat it as
+                    // absent rather than as data.
+                    false => None,
+                }
+            }
+        };
+
+        let peer_set = match &accounts[3] {
+            None => None,
+            Some(account) => {
+                let (peer_set, peers) =
+                    unpack_dynamic_entries::<PeerSet>(&account.data, "PeerSet")?;
+                Some((peer_set.peers.capacity, peers))
+            }
+        };
+
+        let mut groups = Vec::with_capacity(group_count);
+        for (index, account) in accounts[4..].iter().enumerate() {
+            groups.push(match account {
+                None => None,
+                Some(account) => {
+                    Some(unpack_group(&account.data, epoch, GroupIndex(index as u64))?)
+                }
+            });
+        }
+
+        Ok(EpochBatch {
+            system,
+            epoch: epoch_row,
+            committee,
+            peer_set,
+            groups,
+        })
+    }
+
+}
+
+/// One speculative read of the system row plus an epoch's accounts.
+///
+/// Every field except the system row is optional, because the epoch was a
+/// guess and a miss simply yields empty slots.
+pub struct EpochBatch {
+    pub system: System,
+    pub epoch: Option<Epoch>,
+    pub committee: Option<Vec<Member>>,
+    pub peer_set: Option<(u64, Vec<Peer>)>,
+    pub groups: Vec<Option<Group>>,
 }
 
 fn unpack_group(data: &[u8], epoch: EpochNumber, group: GroupIndex) -> Result<Group, RpcError> {

@@ -21,8 +21,11 @@ use tape_sdk::keys::helpers::load_ed25519_keypair;
 use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::Tapedrive;
+use tape_sdk::bootstrap::Reputation;
+use std::sync::Arc;
 use tokio::io::AsyncRead;
 use zeroize::Zeroizing;
+
 
 /// Delegate signing context for the S3 write path.
 pub struct S3WriteContext {
@@ -30,6 +33,11 @@ pub struct S3WriteContext {
     delegate_bytes: Zeroizing<[u8; 64]>,
     /// Public key of the delegate.
     delegate_pubkey: Pubkey,
+    /// Peer reputation shared across requests.
+    ///
+    /// A client is rebuilt per S3 write, so without a shared table here every
+    /// request would order peers from an empty one and learn nothing.
+    reputation: Arc<Reputation>,
 }
 
 impl S3WriteContext {
@@ -40,6 +48,7 @@ impl S3WriteContext {
         Ok(Self {
             delegate_bytes: Zeroizing::new(keypair.to_keypair_bytes()),
             delegate_pubkey: keypair.pubkey(),
+            reputation: Arc::new(Reputation::detached()),
         })
     }
 
@@ -75,7 +84,8 @@ impl S3WriteContext {
             context.api.clone(),
             context.rpc.clone(),
             Some(self.delegate_keypair()?),
-        ))
+        )
+        .with_reputation(self.reputation.clone()))
     }
 
     /// Build the delegate operator bound to a specific target `tape`.
@@ -84,6 +94,11 @@ impl S3WriteContext {
     }
 
     /// Write an in-memory object to `tape` as the delegate, returning its ETag.
+    ///
+    /// `existing` is the object's current track address, if the caller resolved
+    /// it (an S3 overwrite). A single-track write then resumes a matching
+    /// incomplete track, skips a matching complete one, or overwrites and
+    /// reclaims a differing one, instead of always appending a duplicate.
     pub async fn write_object<Db, Cluster, Blockchain>(
         &self,
         context: &NodeContext<Db, Cluster, Blockchain>,
@@ -91,6 +106,7 @@ impl S3WriteContext {
         name: &[u8],
         content_type: ContentType,
         data: &[u8],
+        existing: Option<Address>,
     ) -> Result<Hash, TapedriveError>
     where
         Db: Store,
@@ -101,14 +117,25 @@ impl S3WriteContext {
         let operator = self.operator(tape)?;
 
         if data.len() <= MAX_TRACK_SIZE {
-            let track = client
-                .write_named_track_as(&operator, name, content_type, data)
+            // The canonical ETag, the same one the object index will record, so
+            // a client is never told one value now and served another once the
+            // index catches up.
+            let written = client
+                .write_or_resume_track_as(&operator, name, content_type, data, existing)
                 .await?;
-            Ok(track.value_hash)
+            Ok(written.etag)
         } else {
+            // A stream is written fresh (its manifest embeds per-chunk track
+            // numbers, so it cannot resume in place), then the prior object this
+            // overwrite orphaned is reclaimed whole via its manifest.
             let receipt = client
                 .write_named_bytes_as(&operator, name, content_type, data)
                 .await?;
+            if let Some(prior) = existing {
+                if let Err(error) = client.reclaim_object_as(&operator, prior).await {
+                    tracing::warn!(%error, %tape, %prior, "overwrite reclaim failed; prior object left for later sweep");
+                }
+            }
             Ok(receipt.manifest_value_hash)
         }
     }
