@@ -13,7 +13,6 @@ use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tracing::warn;
 
-use crate::bootstrap::{Reputation, counts_against_peer};
 use crate::error::DownloadError;
 
 /// Parallel downloader for retrieving slices from storage nodes.
@@ -23,7 +22,6 @@ pub struct ParallelDownloader {
     concurrency: usize,
     min_slices: usize,
     exclude_slices: HashSet<SpoolIndex>,
-    reputation: Option<Arc<Reputation>>,
 }
 
 impl ParallelDownloader {
@@ -42,53 +40,7 @@ impl ParallelDownloader {
             concurrency,
             min_slices,
             exclude_slices: HashSet::new(),
-            reputation: None,
         }
-    }
-
-    /// Schedule slices by how their owning node has been behaving.
-    pub fn with_reputation(mut self, reputation: Arc<Reputation>) -> Self {
-        self.reputation = Some(reputation);
-        self
-    }
-
-    /// Slices to fetch, best owners first.
-    ///
-    /// Routing is fixed, since slice N lives on spool N's owner, so the only
-    /// freedom is what order the permits are handed out in. A dead owner used
-    /// to be able to take one of the in-flight slots and hold it through a full
-    /// retry ladder while healthy slices waited behind it. Ordering by owner
-    /// health means the slices that can finish start first.
-    ///
-    /// Quarantined owners are demoted, never dropped: a read needs k of the
-    /// group, so a slice may still be required even when its owner looks bad.
-    fn scheduled_slices(&self) -> Vec<(SpoolIndex, Address)> {
-        let mut entries: Vec<(SpoolIndex, Address)> = self
-            .slice_to_node
-            .iter()
-            .filter(|(slice_idx, _)| !self.exclude_slices.contains(slice_idx))
-            .map(|(&slice_idx, &node)| (slice_idx, node))
-            .collect();
-
-        let ranks: HashMap<Address, usize> = match &self.reputation {
-            Some(reputation) => {
-                let owners: Vec<Address> = entries.iter().map(|(_, node)| *node).collect();
-                reputation
-                    .order(&owners)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(position, node)| (node, position))
-                    .collect()
-            }
-            None => HashMap::new(),
-        };
-
-        // The slice index breaks ties so the order is stable rather than
-        // whatever the hash map happens to yield.
-        entries.sort_by_key(|(slice_idx, node)| {
-            (ranks.get(node).copied().unwrap_or(0), *slice_idx)
-        });
-        entries
     }
 
     /// Set slices to exclude from downloads.
@@ -117,21 +69,17 @@ impl ParallelDownloader {
 
         let sem = Arc::new(Semaphore::new(self.concurrency.max(1)));
 
-        for (slice_idx, node) in self.scheduled_slices() {
+        for (&slice_idx, &node) in &self.slice_to_node {
+            if self.exclude_slices.contains(&slice_idx) {
+                continue;
+            }
+
             let track = self.track;
             let sem = sem.clone();
-            let reputation = self.reputation.clone();
 
             futures.push(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
-                let result = download_slice_with_retry(
-                    peer_client,
-                    track,
-                    node,
-                    slice_idx,
-                    reputation.as_deref(),
-                )
-                .await;
+                let result = download_slice_with_retry(peer_client, track, node, slice_idx).await;
                 (slice_idx, result)
             });
         }
@@ -169,14 +117,8 @@ impl ParallelDownloader {
         let &node = self.slice_to_node.get(&slice_idx)
             .ok_or(DownloadError::InvalidSliceIndex(slice_idx))?;
 
-        let res = download_slice_with_retry(
-            peer_client,
-            self.track,
-            node,
-            slice_idx,
-            self.reputation.as_deref(),
-        )
-        .await
+        let res = download_slice_with_retry(peer_client, self.track, node, slice_idx)
+            .await
             .map_err(|e| DownloadError::Node(e.to_string()))?;
 
         Ok(res.data)
@@ -188,7 +130,6 @@ async fn download_slice_with_retry<P: Api>(
     track: Address,
     node: Address,
     slice_idx: SpoolIndex,
-    reputation: Option<&Reputation>,
 ) -> Result<GetSliceRes, ApiError> {
     let req = GetSliceReq {
         track,
@@ -198,20 +139,7 @@ async fn download_slice_with_retry<P: Api>(
 
     loop {
         let started = Instant::now();
-        let outcome = peer_client.get_slice(node, &req).await;
-
-        // Scored per attempt. Scoring the ladder instead would record one
-        // success after nine failures, and a dead node would need three whole
-        // ladders before it was ever held out.
-        if let Some(reputation) = reputation {
-            match &outcome {
-                Ok(_) => reputation.record_success(node, started.elapsed()),
-                Err(error) if counts_against_peer(error) => reputation.record_failure(node),
-                Err(_) => {}
-            }
-        }
-
-        match outcome {
+        match peer_client.get_slice(node, &req).await {
             Ok(res) => return Ok(res),
             Err(error) if !error.is_retryable() => {
                 warn!(

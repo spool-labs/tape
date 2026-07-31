@@ -184,6 +184,10 @@ fn put_track_object<Db: Store>(
     store.put_track(track, replay.state)
         .map_err(store_error)?;
 
+    // The challenge sample set is cut at a round window's base slot, so every
+    // observer needs the same registration slot for the same track.
+    store.put_track_slot(track, slot).map_err(store_error)?;
+
     // We need to advance the track cursor so that merkle proofs for this tape don't break due to
     // using the wrong index when tracks are deleted.
     advance_track_cursor(
