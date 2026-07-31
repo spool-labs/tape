@@ -175,9 +175,6 @@ async fn async_main() -> ExitCode {
 
     let mut server = Box::pin(axum::serve(listener, app).into_future());
     let mut fatal_error: Option<String> = None;
-    // The operator crank for stalled nodes: their join and pool advance only
-    // have to land once per epoch, whenever each window is open.
-    let mut crank = tokio::time::interval(std::time::Duration::from_secs(10));
     let exit_code = loop {
         tokio::select! {
             result = &mut server => {
@@ -202,50 +199,12 @@ async fn async_main() -> ExitCode {
                             Err(error) => tracing::error!(error = %error, "remove node failed"),
                         }
                     }
-                    TuiCommand::StallNode => {
-                        let mut orch = orchestrator.lock().await;
-                        if let Err(error) = orch.stall_last_node().await {
-                            tracing::error!(error = %error, "stall node failed");
-                        }
-                    }
-                    TuiCommand::FlapNode => {
-                        let mut orch = orchestrator.lock().await;
-                        if let Err(error) = orch.toggle_flap_last_node() {
-                            tracing::error!(error = %error, "flap toggle failed");
-                        }
-                    }
-                    TuiCommand::LoseSlices => {
-                        let mut orch = orchestrator.lock().await;
-                        if let Err(error) = orch.lose_slices_last_node().await {
-                            tracing::error!(error = %error, "slice loss failed");
-                        }
-                    }
                     TuiCommand::UploadBlob => {
                         if let Err(error) = upload_manager.start_random_upload() {
                             tracing::error!(error = %error, "upload failed to start");
                         }
                     }
-                    TuiCommand::DeleteUpload => {
-                        if let Err(error) = upload_manager.delete_latest() {
-                            tracing::error!(error = %error, "delete failed to start");
-                        }
-                    }
                     TuiCommand::Quit => break ExitCode::SUCCESS,
-                }
-            }
-            _ = crank.tick() => {
-                let (chain, targets) = {
-                    let mut orch = orchestrator.lock().await;
-                    orch.crank_flapping();
-                    (orch.chain_handle(), orch.stalled_targets())
-                };
-                for (id, pubkey, keypair) in targets {
-                    if let Err(error) = chain.advance_pool(pubkey).await {
-                        tracing::debug!(id, error = %error, "stall crank: advance pool");
-                    }
-                    if let Err(error) = chain.join_committee(&keypair).await {
-                        tracing::debug!(id, error = %error, "stall crank: join committee");
-                    }
                 }
             }
             _ = tokio::signal::ctrl_c() => {

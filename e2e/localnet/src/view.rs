@@ -1,5 +1,4 @@
 use serde::Serialize;
-use tape_observe_api::{ChallengeGrid, ChallengeRounds};
 use tape_protocol::api::NodeStats;
 
 #[derive(Clone, Serialize, Default)]
@@ -15,10 +14,6 @@ pub struct ClusterView {
     pub committee_size: usize,
     pub committee_next_size: usize,
     pub total_nodes_registered: u64,
-    /// Lowest success rate any observer holds for a judged peer, in bps.
-    pub honest_rate_min_bps: Option<u64>,
-    /// Median of the same distribution, the RATE_FLOOR calibration input.
-    pub honest_rate_med_bps: Option<u64>,
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -29,16 +24,9 @@ pub struct NodeView {
     pub node_address: String,
     pub address: Option<String>,
     pub healthy: bool,
-    pub stalled: bool,
-    pub flapping: bool,
-    pub suspended_until: Option<u64>,
     pub metrics_available: bool,
     pub pool_stake: Option<u64>,
     pub stats: Option<NodeStats>,
-    /// This node's own challenge record of its group-mates.
-    pub challenge: Option<ChallengeGrid>,
-    /// This node's lifetime round counters.
-    pub challenge_rounds: Option<ChallengeRounds>,
 }
 
 #[derive(Clone, Serialize, Default)]
