@@ -143,14 +143,6 @@ impl TapeStore<SplitStore> {
             error::TapeStoreError::Store(err) => err,
             other => store::Error::Database(other.to_string()),
         })?;
-
-        // Same for the challenge sidecars. Until one exists a challenge still
-        // answers, by hashing the whole slice, so this is a cost fix rather than
-        // a correctness one.
-        store.ensure_slice_sidecars().map_err(|err| match err {
-            error::TapeStoreError::Store(err) => err,
-            other => store::Error::Database(other.to_string()),
-        })?;
         Ok(store)
     }
 
