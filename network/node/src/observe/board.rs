@@ -715,8 +715,6 @@ fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
         settled_certified: counters.settled_certified.load(Ordering::Relaxed),
         settled_missed: counters.settled_missed.load(Ordering::Relaxed),
         answers_refused: counters.answers_refused.load(Ordering::Relaxed),
-        splices_queued: counters.splices_queued.load(Ordering::Relaxed),
-        splices_delivered: counters.splices_delivered.load(Ordering::Relaxed),
     }
 }
 

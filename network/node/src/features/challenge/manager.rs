@@ -12,17 +12,15 @@
 //! sustained pattern proposes anything and the proposal still needs the group and
 //! then the network to agree.
 
-use std::collections::HashSet;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::challenge::elect_splicer;
 use tape_core::challenge::schedule::{SLOT_MS, Schedule};
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
-use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
@@ -34,20 +32,15 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::challenge::audition::{
-    Round, build_answer, group_members, note_unanswerable, sample_at_cutoff,
-};
+use crate::features::challenge::audition::{Round, build_answer, group_members};
 use crate::features::challenge::fold::fold_outcome;
-use crate::features::spool::splice::splice_for_peer;
 
 // What settling needs from a round, captured when the round opened. Settling
-// runs epochs later when rounds outpace the boundary, and by then the schedule
-// that produced the round is no longer derivable from live state.
+// lands on epoch boundaries where live state is mid-roll, so it never asks
+// live state about the round it is judging.
 struct OpenRound {
     round: Round,
     spools: Vec<SpoolIndex>,
-    mine: SpoolIndex,
-    base_slot: SlotNumber,
 }
 
 pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -58,8 +51,6 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     // only its first finalized block seeds it, so the rest of the window is
     // ignored, and the previous round is settled when the next one opens.
     last_run: Option<OpenRound>,
-    // Group splices in flight, so a repeated miss never doubles the work.
-    splices: Arc<Mutex<HashSet<(SpoolIndex, Address)>>>,
 }
 
 impl<Db, Cluster, Blockchain> ChallengeManager<Db, Cluster, Blockchain>
@@ -78,7 +69,6 @@ where
             block_rx,
             cancel,
             last_run: None,
-            splices: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -154,8 +144,6 @@ where
         self.last_run = Some(OpenRound {
             round,
             spools: group_spools(&state, group),
-            mine,
-            base_slot: schedule.base_slot(number),
         });
         self.context
             .challenge_counters
@@ -195,7 +183,6 @@ where
                 counters.settled_certified.fetch_add(1, Ordering::Relaxed);
             } else {
                 counters.settled_missed.fetch_add(1, Ordering::Relaxed);
-                self.maybe_splice(state, round, *spool, owner, open.mine, open.base_slot);
             }
             debug!(
                 spool = %spool,
@@ -207,69 +194,6 @@ where
         }
     }
 
-    /// How many group splices this node reconstructs at once.
-    const MAX_SPLICES_IN_FLIGHT: usize = 2;
-
-    /// Splice for the peer the group just watched fail, if elected.
-    ///
-    /// Every observer derives the same splicer from the entropy block, so one
-    /// node acts and the rest do nothing, with no election and no messages.
-    /// The observer's own column names the track the target was asked about.
-    fn maybe_splice(
-        &self,
-        state: &ProtocolState,
-        round: &Round,
-        failed: SpoolIndex,
-        owner: Address,
-        mine: SpoolIndex,
-        cutoff: SlotNumber,
-    ) {
-        let candidates: Vec<SpoolIndex> = group_spools(state, round.group)
-            .into_iter()
-            .filter(|spool| *spool != failed)
-            .collect();
-        let Some(pick) = elect_splicer(&round.block, failed, candidates.len()) else {
-            return;
-        };
-        let elected = candidates[pick];
-        if state.spool_owner(elected) != Some(self.context.node_address()) {
-            debug!(
-                spool = %failed,
-                elected = %elected,
-                round = round.round.0,
-                "challenge: splice elected elsewhere"
-            );
-            return;
-        }
-
-        let Some(sample) = sample_at_cutoff(&self.context, round, failed, mine, cutoff) else {
-            debug!(spool = %failed, "challenge: splice sample underivable");
-            return;
-        };
-
-        let key = (failed, sample.track);
-        {
-            let mut splices = self.splices.lock().expect("splice set");
-            if splices.len() >= Self::MAX_SPLICES_IN_FLIGHT || !splices.insert(key) {
-                debug!(spool = %failed, track = %sample.track, "challenge: splice slots full");
-                return;
-            }
-        }
-
-        info!(
-            spool = %failed,
-            node = %owner,
-            track = %sample.track,
-            "challenge: elected splicer, reconstructing"
-        );
-        let context = self.context.clone();
-        let splices = self.splices.clone();
-        tokio::spawn(async move {
-            splice_for_peer(context, failed, owner, sample.track).await;
-            splices.lock().expect("splice set").remove(&key);
-        });
-    }
-
     /// Answer this node's own challenge and push it to the group.
     async fn answer_and_broadcast(
         &self,
@@ -279,7 +203,6 @@ where
     ) {
         let Some(answer) = build_answer(&self.context, state, round, mine) else {
             debug!(spool = %mine, round = round.round.0, "challenge: no answer to give");
-            note_unanswerable(&self.context, state, round, mine);
             return;
         };
 

@@ -419,12 +419,6 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
-    /// Own slices a failed answer revealed missing and queued for splice.
-    #[serde(default)]
-    pub splices_queued: u64,
-    /// Slices rebuilt for a failed group-mate and accepted by it.
-    #[serde(default)]
-    pub splices_delivered: u64,
 }
 
 /// One cumulative histogram bucket.

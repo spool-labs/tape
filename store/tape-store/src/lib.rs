@@ -8,7 +8,7 @@
 //! - Track data: Locally stored track payloads
 //! - Object info: Tracked object status (blacklisted, invalid, valid)
 //! - Slice data: Raw erasure-coded data
-//! - Spool state: Spool status, sync progress, pending splice/recovery
+//! - Spool state: Spool status, sync progress, pending repair/recovery
 //!
 //! # Column Families
 //!
@@ -25,7 +25,7 @@
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status
-//! - `spool_pending_splice`: Pending splice queue
+//! - `spool_pending_repair`: Pending repair queue
 //! - `spool_pending_recovery`: Pending recovery queue
 //! - `spool_sync_cursor`: Sync cursor
 //!

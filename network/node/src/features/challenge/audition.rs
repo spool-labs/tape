@@ -22,8 +22,8 @@ use tape_crypto::hash::Hash;
 use tape_crypto::merkle::hash_leaf;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq};
 use tape_protocol::{Api, ProtocolState};
-use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tracing::{debug, info, trace};
+use tape_store::ops::{SliceOps, TrackDataOps, TrackOps};
+use tracing::{debug, trace};
 
 use crate::context::NodeContext;
 use crate::features::challenge::manager::challenge_schedule;
@@ -75,21 +75,7 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return None;
     }
     let cutoff = challenge_schedule(state)?.base_slot(round.round);
-    sample_at_cutoff(context, round, spool, from_spool, cutoff)
-}
 
-/// The sample for a round whose cutoff the caller already resolved.
-///
-/// Settling crosses epoch boundaries: the settled round's epoch may no longer
-/// be current, so the settle path resolves the schedule from the epoch the
-/// round belongs to rather than insisting on the live one.
-pub fn sample_at_cutoff<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    round: &Round,
-    spool: SpoolIndex,
-    from_spool: SpoolIndex,
-    cutoff: SlotNumber,
-) -> Option<Sample> {
     let mut entries: Vec<SampleEntry> = context
         .store
         .iter_slice_sizes_by_spool(from_spool)
@@ -181,35 +167,6 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
         proof,
         signature: context.bls_sign(&message.to_bytes()).ok()?,
     })
-}
-
-/// Queue a splice when this node cannot answer for a slice it should hold.
-///
-/// The round just sampled the track, so the miss the group is about to record
-/// doubles as this node's own loss detection: the queue drives the existing
-/// splice machinery and a later round finds the slice back. Detection lands at
-/// the sampling rate instead of waiting for the next scan.
-pub fn note_unanswerable<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
-    round: &Round,
-    spool: SpoolIndex,
-) {
-    let Some(sample) = expected_sample(context, state, round, spool, spool) else {
-        return;
-    };
-    if context.store.has_slice(spool, sample.track).unwrap_or(true) {
-        return;
-    }
-    if let Err(error) = context.store.add_pending_splice(spool, sample.track) {
-        debug!(%error, spool = %spool, track = %sample.track, "challenge: splice enqueue failed");
-        return;
-    }
-    context
-        .challenge_counters
-        .splices_queued
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    info!(spool = %spool, track = %sample.track, "challenge: sampled slice missing, queued splice");
 }
 
 /// Check an answer someone broadcast, against the question we derived ourselves.

@@ -17,7 +17,7 @@
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status (SpoolIndexKey -> SpoolStatus)
-//! - `spool_pending_splice`: Pending splice (SliceKey -> ())
+//! - `spool_pending_repair`: Pending repair (SliceKey -> ())
 //! - `spool_pending_recovery`: Pending recovery (SliceKey -> ())
 //! - `spool_sync_cursor`: Sync cursor (SpoolIndexKey -> Address)
 //!
@@ -101,7 +101,7 @@ pub use slice_sidecar::SliceSidecarCol;
 pub use slice_size::SliceSizeCol;
 pub use slice_tombstone::SliceTombstoneCol;
 pub use spool::{
-    SpoolPendingRecoveryCol, SpoolPendingSpliceCol, SpoolStatusCol, SpoolSyncCursorCol,
+    SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
 pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
@@ -124,13 +124,15 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "sync_cursor",
     "gc",
     "spool_status",
-    "spool_pending_splice",
+    "spool_pending_repair",
     "spool_pending_recovery",
     "slice",
     "slice_size",
     "slice_sidecar",
     "challenge_record",
     "challenge_round",
+    "track_slot",
+    "slice_tombstone",
     "spool_sync_cursor",
     "event_log",
     "vote_sig",

@@ -38,7 +38,7 @@ use rocksdb;
 ///
 /// ## Spool Columns (NOT epoch-namespaced)
 /// - `spool_status` - 2-byte SpoolIndexKey
-/// - `spool_pending_splice` - 34-byte SliceKey with 2-byte spool prefix
+/// - `spool_pending_repair` - 34-byte SliceKey with 2-byte spool prefix
 /// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix
 /// - `spool_sync_cursor` - 2-byte SpoolIndexKey
 ///
@@ -125,9 +125,9 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Spool pending splice - 34-byte SliceKey
+        // Spool pending repair - 34-byte SliceKey
         // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("spool_pending_splice")
+        ColumnFamilyConfig::new("spool_pending_repair")
             .with_block_based()
             .with_prefix_extractor(2)
             .build(),
@@ -383,7 +383,7 @@ mod tests {
             "sync_cursor",
             "gc",
             "spool_status",
-            "spool_pending_splice",
+            "spool_pending_repair",
             "spool_pending_recovery",
             "slice",
             "slice_size",

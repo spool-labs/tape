@@ -380,7 +380,7 @@ fn set_certified<Db: Store>(
             )
             .map_err(store_error)?;
 
-        enqueue_certified_splices(store, track)?;
+        enqueue_certified_repairs(store, track)?;
     } else if let ObjectInfo::System {
         kind,
         track_address,
@@ -405,7 +405,7 @@ fn set_certified<Db: Store>(
     Ok(())
 }
 
-fn enqueue_certified_splices<Db: Store>(
+fn enqueue_certified_repairs<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
 ) -> Result<(), NodeError> {
@@ -430,10 +430,10 @@ fn enqueue_certified_splices<Db: Store>(
             continue;
         }
 
-        store.add_pending_splice(spool, track).map_err(store_error)?;
+        store.add_pending_repair(spool, track).map_err(store_error)?;
 
         if state.status == SpoolStatus::Active {
-            state.set_status(SpoolStatus::Splice);
+            state.set_status(SpoolStatus::Repair);
             store.set_spool_state(spool, state).map_err(store_error)?;
         }
     }
@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn certify_enqueues_splice() {
+    fn certify_enqueues_repair() {
         let store = test_store();
         let slot = SlotNumber(10);
         let track = Address::new_unique();
@@ -1041,9 +1041,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(store.has_pending_splice(spool_id, track).unwrap());
+        assert!(store.has_pending_repair(spool_id, track).unwrap());
         let state = store.get_spool_state(spool_id).unwrap().unwrap();
-        assert_eq!(state.status, SpoolStatus::Splice);
+        assert_eq!(state.status, SpoolStatus::Repair);
     }
 
     #[test]
@@ -1083,7 +1083,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!store.has_pending_splice(spool_id, track).unwrap());
+        assert!(!store.has_pending_repair(spool_id, track).unwrap());
         assert_eq!(
             store.get_spool_state(spool_id).unwrap().unwrap().status,
             SpoolStatus::Active

@@ -198,13 +198,11 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
         .and_then(|node| node.challenge_rounds.as_ref())
         .map(|rounds| {
             format!(
-                "R[o:{} c:{} m:{} x:{} s:{}/{}]  ",
+                "R[o:{} c:{} m:{} x:{}]  ",
                 rounds.opened,
                 rounds.settled_certified,
                 rounds.settled_missed,
                 rounds.answers_refused,
-                rounds.splices_queued,
-                rounds.splices_delivered,
             )
         })
         .unwrap_or_default();

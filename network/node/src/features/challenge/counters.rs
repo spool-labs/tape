@@ -15,8 +15,4 @@ pub struct ChallengeCounters {
     pub settled_missed: AtomicU64,
     /// Incoming answers refused at the door.
     pub answers_refused: AtomicU64,
-    /// Own slices a failed answer revealed missing and queued for splice.
-    pub splices_queued: AtomicU64,
-    /// Slices rebuilt for a failed group-mate and accepted by it.
-    pub splices_delivered: AtomicU64,
 }
