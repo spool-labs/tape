@@ -57,7 +57,30 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         match outcome {
             TxOutcome::Confirmed(sig) => {
                 info!(epoch = epoch.0, %sig, "join_committee: confirmed");
-                return TaskDone::Done(Action::JoinCommittee, epoch);
+                // Hold Done until the membership shows up in ingested state.
+                // The planner replans the moment a task returns, and until the
+                // join is observed it still reads this node as absent, so
+                // returning on confirmation alone resubmits the join once per
+                // replan for as long as ingest lags the chain.
+                loop {
+                    let state = ctx.state();
+                    if state.epoch() != epoch {
+                        return TaskDone::Rejected(Action::JoinCommittee, epoch);
+                    }
+                    if state.find_member_next(ctx.node_address()).is_some() {
+                        return TaskDone::Done(Action::JoinCommittee, epoch);
+                    }
+                    tokio::select! {
+                        changed = state_rx.changed() => {
+                            if changed.is_err() {
+                                return TaskDone::Cancelled(Action::JoinCommittee, epoch);
+                            }
+                        }
+                        _ = cancel.cancelled() => {
+                            return TaskDone::Cancelled(Action::JoinCommittee, epoch);
+                        }
+                    }
+                }
             }
             TxOutcome::Rejected {
                 kind: TxRejectionKind::Program(

@@ -193,7 +193,7 @@ async fn challenge_eviction_inner() {
         );
     }
 
-    advance_with_spare(&harness, suspended, epoch_timeout).await;
+    advance_to_epoch(&harness, suspended, epoch_timeout).await;
     let node = scenario.read_node(SILENT_NODE).await.expect("read the dark node");
     assert!(
         node.latest_advance_epoch < EpochNumber(suspended.0 - 1),
@@ -216,7 +216,7 @@ async fn challenge_eviction_inner() {
         "the dark epoch paid nothing, expected a member share on top of {before}"
     );
 
-    advance_with_spare(&harness, EpochNumber(suspended.0 + 1), epoch_timeout).await;
+    advance_to_epoch(&harness, EpochNumber(suspended.0 + 1), epoch_timeout).await;
     let before = scenario
         .read_node(SILENT_NODE)
         .await
@@ -253,30 +253,6 @@ async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber, epoch_ti
             .self_advance_epoch(epoch_timeout)
             .await
             .expect("advance epoch toward target");
-    }
-}
-
-/// Advance to the target epoch with the spare's join cranked.
-///
-/// The eviction frees a seat at the committee floor and the commit cannot
-/// pass while the next committee is short, but the spare's lifecycle only
-/// retries its join on phase transitions the stuck commit never produces.
-/// The crank is the operator's side of that bargain, until the node retries
-/// joining on its own.
-async fn advance_with_spare(harness: &SimnetHarness, target: EpochNumber, epoch_timeout: Duration) {
-    let scenario = harness.scenario();
-    let start = Instant::now();
-    loop {
-        if scenario.current_epoch_number().await.expect("current epoch") >= target.0 {
-            return;
-        }
-        assert!(
-            start.elapsed() < epoch_timeout,
-            "the epoch never reached {} with the spare cranked",
-            target.0
-        );
-        let _ = scenario.join_committee(SPARE_NODE).await;
-        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 

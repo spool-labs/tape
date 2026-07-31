@@ -370,6 +370,18 @@ pub fn next_action(
                 return Some(Action::JoinCommittee);
             }
 
+            // A member the next committee lost after our first join resolved
+            // leaves it short with nobody retrying, and the commit cannot pass
+            // a committee under the group floor: whoever is unseated joins
+            // again while the commit is held, or the epoch wedges. An eviction
+            // landing late in the epoch is exactly this.
+            if !in_next
+                && commit_window_open(state, now)
+                && !next_committee_filled(state)
+            {
+                return Some(Action::JoinCommittee);
+            }
+
             // CommitEpoch: captures the next-epoch nonce and enters Closing.
             // Gated on the elapsed epoch duration so we never spawn a task that
             // would only submit TooSoon-rejected transactions until the window
