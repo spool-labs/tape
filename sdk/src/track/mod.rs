@@ -1,8 +1,13 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
-use tape_protocol::{Api, ProtocolState, fetch::fetch_state};
+use tape_api::program::tapedrive;
+use tape_crypto::hash::Hash;
+use tape_protocol::fetch::{EpochGuess, fetch_state_current, fetch_state_speculative};
+use tape_protocol::{Api, ProtocolState};
 
+use crate::bootstrap::{NetworkKey, Prediction, now_secs};
 use crate::error::TapedriveError;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
@@ -14,24 +19,40 @@ pub mod write;
 
 pub(crate) use query::{query_track_proof, queryable_peers};
 
+/// How long cached network state is trusted without checking the chain. Must
+/// stay below the shortest epoch so a client never acts on a stale committee.
+const STATE_TRUST_WINDOW: Duration = Duration::from_secs(15);
+
 pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     operation: Option<Operation>,
 ) -> Result<arc_swap::Guard<Arc<ProtocolState>>, TapedriveError> {
     let state = client.state();
-    if !state.current.committee.is_empty() {
+    let cached_epoch =
+        (!state.current.committee.is_empty()).then_some(state.system.current_epoch);
+    if cached_epoch.is_some() && client.state_age() < STATE_TRUST_WINDOW {
         return Ok(state);
     }
     drop(state);
 
+    // Trust expired: one system read decides. Same epoch means every
+    // cached bundle (committees, groups, peers) is still current.
+    if let Some(cached_epoch) = cached_epoch {
+        let system = client.rpc.get_system().await.map_err(TapedriveError::Rpc)?;
+        if system.current_epoch == cached_epoch {
+            client.touch_state();
+            return Ok(client.state());
+        }
+    }
+
     let state = match operation {
         Some(operation) => {
             let timer = client.timer(operation, Phase::Bootstrap);
-            let result = fetch_state(&client.rpc).await;
+            let result = discover(client).await;
             timer.finish_result(&result);
             result?
         }
-        None => fetch_state(&client.rpc).await?,
+        None => discover(client).await?,
     };
 
     match operation {
@@ -46,6 +67,68 @@ pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
         }
     }
 
-    client.state.store(Arc::new(state));
+    remember_for_next_run(client, &state).await;
+
+    client.store_state(state);
     Ok(client.state())
+}
+
+/// Fetch protocol state, guessing the epoch when a previous run left one.
+///
+/// The guess only ever changes how many round trips this costs. Whether it was
+/// right is decided by the freshly read system row, inside the speculative
+/// fetch, so a stale or foreign guess falls back rather than misleading us.
+async fn discover<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+) -> Result<ProtocolState, TapedriveError> {
+    let guess = client.reputation.prediction().map(|prediction| EpochGuess {
+        epoch: prediction.epoch_at(now_secs()),
+        total_groups: prediction.total_groups,
+    });
+
+    let state = match guess {
+        Some(guess) => fetch_state_speculative(&client.rpc, guess).await?,
+        None => fetch_state_current(&client.rpc).await?,
+    };
+    Ok(state)
+}
+
+/// Record what this run learned, so the next one can skip discovery.
+///
+/// Nothing here is load bearing. Every failure is swallowed, because a client
+/// that cannot write a hint file must still complete the command it was asked
+/// to run.
+async fn remember_for_next_run<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    state: &ProtocolState,
+) {
+    // Genesis hash completes the cache key, so ask the node once, on the run
+    // that lacks it, rather than on every bootstrap.
+    let is_network_unconfirmed = client
+        .reputation
+        .network()
+        .map(|network| network.genesis == Hash([0u8; 32]))
+        .unwrap_or(true);
+    if is_network_unconfirmed {
+        if let Ok(genesis) = client.rpc.rpc().get_genesis_hash().await {
+            client.reputation.rekey(NetworkKey {
+                program_id: tapedrive::id().into(),
+                genesis: Hash(genesis.to_bytes()),
+            });
+        }
+    }
+
+    client.reputation.set_prediction(Prediction {
+        epoch: state.current.epoch.id,
+        total_groups: state.current.epoch.total_groups,
+        // Negative only if the chain reports a pre-epoch timestamp, which
+        // would make the guess meaningless anyway, so clamp to zero.
+        epoch_start: state.current.epoch.start_time.max(0) as u64,
+        epoch_duration: state.current.epoch.preferences.epoch_duration,
+    });
+
+    // Peers that left the network should not linger in the file forever.
+    let known: Vec<_> = state.peers.iter().map(|peer| peer.node).collect();
+    client.reputation.prune(&known);
+    client.reputation.flush();
 }

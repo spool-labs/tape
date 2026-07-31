@@ -8,7 +8,7 @@
 //! - Track data: Locally stored track payloads
 //! - Object info: Tracked object status (blacklisted, invalid, valid)
 //! - Slice data: Raw erasure-coded data
-//! - Spool state: Spool status, sync progress, pending splice/recovery
+//! - Spool state: Spool status, sync progress, pending repair/recovery
 //!
 //! # Column Families
 //!
@@ -25,7 +25,7 @@
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status
-//! - `spool_pending_splice`: Pending splice queue
+//! - `spool_pending_repair`: Pending repair queue
 //! - `spool_pending_recovery`: Pending recovery queue
 //! - `spool_sync_cursor`: Sync cursor
 //!
@@ -140,14 +140,6 @@ impl TapeStore<SplitStore> {
         // A store written before the size index existed reports no slice totals
         // until the index is laid down.
         store.ensure_slice_size_index().map_err(|err| match err {
-            error::TapeStoreError::Store(err) => err,
-            other => store::Error::Database(other.to_string()),
-        })?;
-
-        // Same for the challenge sidecars. Until one exists a challenge still
-        // answers, by hashing the whole slice, so this is a cost fix rather than
-        // a correctness one.
-        store.ensure_slice_sidecars().map_err(|err| match err {
             error::TapeStoreError::Store(err) => err,
             other => store::Error::Database(other.to_string()),
         })?;

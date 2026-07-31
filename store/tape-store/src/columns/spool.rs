@@ -1,7 +1,7 @@
 //! Spool column families for spool tracking (NOT epoch-namespaced)
 //!
 //! - SpoolStatusCol: spool_id -> SpoolStatus
-//! - SpoolPendingSpliceCol: (spool_id, track_address) -> ()
+//! - SpoolPendingRepairCol: (spool_id, track_address) -> ()
 //! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
 //! - SpoolSyncCursorCol: spool_id -> Address (last synced track)
 
@@ -23,14 +23,14 @@ impl Column for SpoolStatusCol {
     type Value = SpoolState;
 }
 
-/// Pending splice queue (presence-only)
+/// Pending repair queue (presence-only)
 ///
 /// Key: SliceKey (34 bytes: spool_id BE + track_address)
 /// Value: () (presence indicates pending)
-pub struct SpoolPendingSpliceCol;
+pub struct SpoolPendingRepairCol;
 
-impl Column for SpoolPendingSpliceCol {
-    const CF_NAME: &'static str = "spool_pending_splice";
+impl Column for SpoolPendingRepairCol {
+    const CF_NAME: &'static str = "spool_pending_repair";
     type Key = SliceKey;
     type Value = ();
 }

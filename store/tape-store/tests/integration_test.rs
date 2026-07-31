@@ -261,7 +261,7 @@ fn pending_recovery_operations() {
 }
 
 #[test]
-fn pending_splice_operations() {
+fn pending_repair_operations() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test_db");
 
@@ -272,21 +272,21 @@ fn pending_splice_operations() {
     let track2 = Address::new_unique();
     let track3 = Address::new_unique();
 
-    store.add_pending_splice(spool_id, track1).unwrap();
-    store.add_pending_splice(spool_id, track2).unwrap();
-    store.add_pending_splice(spool_id, track3).unwrap();
+    store.add_pending_repair(spool_id, track1).unwrap();
+    store.add_pending_repair(spool_id, track2).unwrap();
+    store.add_pending_repair(spool_id, track3).unwrap();
 
-    assert!(store.has_pending_splice(spool_id, track1).unwrap());
-    assert!(store.has_pending_splice(spool_id, track2).unwrap());
-    assert!(store.has_pending_splice(spool_id, track3).unwrap());
+    assert!(store.has_pending_repair(spool_id, track1).unwrap());
+    assert!(store.has_pending_repair(spool_id, track2).unwrap());
+    assert!(store.has_pending_repair(spool_id, track3).unwrap());
 
-    let pending = store.iter_pending_splices(spool_id, 100).unwrap();
+    let pending = store.iter_pending_repairs(spool_id, 100).unwrap();
     assert_eq!(pending.len(), 3);
 
-    store.remove_pending_splice(spool_id, track1).unwrap();
-    assert!(!store.has_pending_splice(spool_id, track1).unwrap());
-    assert!(store.has_pending_splice(spool_id, track2).unwrap());
-    assert!(store.has_pending_splice(spool_id, track3).unwrap());
+    store.remove_pending_repair(spool_id, track1).unwrap();
+    assert!(!store.has_pending_repair(spool_id, track1).unwrap());
+    assert!(store.has_pending_repair(spool_id, track2).unwrap());
+    assert!(store.has_pending_repair(spool_id, track3).unwrap());
 }
 
 #[test]

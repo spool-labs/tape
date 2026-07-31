@@ -51,8 +51,9 @@ use solana_signer::Signer;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::types::{BasisPoints, StorageUnits};
+use tape_core::types::{BasisPoints, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
+use tape_sdk::error::TapedriveError;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, TestGateway, run_simnet_test,
 };
@@ -436,6 +437,27 @@ async fn read_write_inner() {
     // bucket's objects in the V1 `<Marker>` wire shape, including a known key.
     assert_s3_list_objects_v1(&s3_base, &bucket_label, mp_key).await;
     eprintln!("s3_gateway: ListObjects V1 listed the bucket (Marker shape) including {mp_key}");
+
+    // (2d) Overwrite reclaim: a PutObject over an existing key writes a new track
+    // and rebinds the name; the gateway then deletes the orphaned prior track. The
+    // object's original track number becomes unresolvable while GET serves v2.
+    let overwrite_key = "uploads/overwrite.bin";
+    let v1 = deterministic_bytes(20 * 1024);
+    let v2 = deterministic_bytes(24 * 1024);
+    assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v1, PUT_CONTENT_TYPE).await;
+    wait_sdk_object_listed(&harness, &bucket, "uploads/", overwrite_key, active_timeout).await;
+    let v1_track = sdk_object_track_number(&harness, &bucket, "uploads/", overwrite_key).await;
+
+    // The gateway ingests independently of the committee nodes, and the overwrite's
+    // reclaim resolves the prior track from the gateway's own index. Wait until the
+    // gateway has v1 before overwriting, or its PutObject sees no prior to reclaim.
+    wait_s3_head_ok(&s3_base, &bucket_label, overwrite_key, Duration::from_secs(180)).await;
+
+    assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
+    wait_track_reclaimed(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
+    wait_s3_get_size(&s3_base, &bucket_label, overwrite_key, v2.len(), Duration::from_secs(180)).await;
+    assert_s3_get_object(&s3_base, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
+    eprintln!("s3_gateway: overwrite reclaimed prior {v1_track} and served v2 ({} bytes)", v2.len());
 
     // (3) Revoke the credential; the same signed PutObject is now denied (the
     // credential resolves but is no longer usable — step 3 of the chokepoint).
@@ -1154,8 +1176,88 @@ async fn s3_complete_multipart(
 // SDK / read helpers (mirror gateway_read.rs)
 // =========================================================================
 
-/// Poll the SDK object listing (served by the storage nodes) until `key` appears
-/// under `prefix`, proving the named write was ingested and certified network-wide.
+/// The track number the named object currently resolves to via the SDK listing.
+async fn sdk_object_track_number(
+    harness: &SimnetHarness,
+    bucket: &Address,
+    prefix: &str,
+    key: &str,
+) -> TrackNumber {
+    let scenario = harness.scenario();
+    let sdk = scenario.sdk(harness.admin());
+    let page = sdk
+        .list_objects(bucket, ListObjectsQuery::new(prefix))
+        .await
+        .expect("sdk list objects");
+    page.objects
+        .iter()
+        .find(|object| object.name.as_slice() == key.as_bytes())
+        .unwrap_or_else(|| panic!("object {key} not listed"))
+        .track_number
+}
+
+/// Wait until `track_number` on `bucket` is reclaimed (no longer resolvable),
+/// confirming an overwrite deleted the orphaned prior track on the storage nodes.
+async fn wait_track_reclaimed(
+    harness: &SimnetHarness,
+    bucket: &Address,
+    track_number: TrackNumber,
+    timeout: Duration,
+) {
+    let scenario = harness.scenario();
+    let sdk = scenario.sdk(harness.admin());
+    let start = Instant::now();
+    loop {
+        if matches!(
+            sdk.get_track_by_number(bucket, track_number).await,
+            Err(TapedriveError::NotFound)
+        ) {
+            return;
+        }
+        if start.elapsed() >= timeout {
+            panic!("track {track_number} on {bucket} was not reclaimed within {timeout:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Wait until the gateway serves the object at `expected_len` bytes, confirming
+/// it has ingested the overwrite and rebound the name to the new track.
+async fn wait_s3_get_size(
+    base: &str,
+    bucket: &str,
+    key: &str,
+    expected_len: usize,
+    timeout: Duration,
+) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("build s3 client");
+    let url = format!("{base}/{bucket}/{key}");
+    let start = Instant::now();
+    loop {
+        if let Ok(response) = client.head(&url).send().await {
+            if response.status() == StatusCode::OK
+                && response
+                    .headers()
+                    .get(CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<usize>().ok())
+                    == Some(expected_len)
+            {
+                return;
+            }
+        }
+        if start.elapsed() >= timeout {
+            panic!("gateway never served {key} at {expected_len} bytes within {timeout:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Poll the SDK object listing until the key appears, proving the named write
+/// was ingested and certified network-wide.
 async fn wait_sdk_object_listed(
     harness: &SimnetHarness,
     bucket: &Address,

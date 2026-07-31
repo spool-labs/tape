@@ -2,9 +2,8 @@ use store::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{SlotNumber, SpoolIndex};
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
-use tape_store::types::SliceTombstone;
 use tape_store::ops::{
     ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
     TrackOps,
@@ -23,18 +22,15 @@ pub struct CleanupStats {
 pub fn delete_track_local<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    deleted_at: SlotNumber,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
 
     if let Some(info) = store.get_track(track).map_err(store_error)? {
         remove_object_listing_for_track(store, track, &info)?;
-        stats.slices_deleted += cleanup_track_slices(store, track, info.group, deleted_at)?;
+        stats.slices_deleted += cleanup_track_slices(store, track, info.group)?;
         stats.tracks_deleted += 1;
     }
 
-    // The registration slot stays: the tombstones below reference it until no
-    // round can, and a leftover row is a few bytes.
     store.delete_track(track).map_err(store_error)?;
     store.delete_track_data(track).map_err(store_error)?;
     store.delete_object_info(track).map_err(store_error)?;
@@ -47,7 +43,6 @@ pub fn delete_tape_local<Db: Store>(
     store: &TapeStore<Db>,
     tape: Address,
     track_batch: usize,
-    deleted_at: SlotNumber,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
     if store.get_tape(tape).map_err(store_error)?.is_some() {
@@ -67,7 +62,7 @@ pub fn delete_tape_local<Db: Store>(
         for (track, info) in &tracks {
             if info.tape == tape {
                 remove_object_listing_for_track(store, *track, info)?;
-                stats.slices_deleted += cleanup_track_slices(store, *track, info.group, deleted_at)?;
+                stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
                 store.delete_track(*track).map_err(store_error)?;
                 store.delete_track_data(*track).map_err(store_error)?;
                 store.delete_object_info(*track).map_err(store_error)?;
@@ -87,29 +82,14 @@ pub fn cleanup_track_slices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     group: GroupIndex,
-    deleted_at: SlotNumber,
 ) -> Result<usize, NodeError> {
     let mut deleted_slices = 0usize;
 
     for slice_index in 0..GROUP_SIZE {
         let spool_id = group.spool_at(slice_index);
 
-        // A round whose window opened before this deletion still samples the
-        // slice, so its length survives as a tombstone until no round can.
         if store.has_slice(spool_id, track).map_err(store_error)? {
             deleted_slices += 1;
-            if let Some(slice_len) = store.slice_size(spool_id, track).map_err(store_error)? {
-                store
-                    .put_slice_tombstone(
-                        spool_id,
-                        track,
-                        SliceTombstone {
-                            deleted_slot: deleted_at,
-                            slice_len,
-                        },
-                    )
-                    .map_err(store_error)?;
-            }
         }
 
         store
@@ -117,7 +97,7 @@ pub fn cleanup_track_slices<Db: Store>(
             .map_err(store_error)?;
 
         store
-            .remove_pending_splice(spool_id, track)
+            .remove_pending_repair(spool_id, track)
             .map_err(store_error)?;
 
         store
@@ -137,7 +117,7 @@ pub fn purge_spool_local<Db: Store>(
         .map_err(store_error)?;
 
     store
-        .clear_all_pending_splices(spool_id)
+        .clear_all_pending_repairs(spool_id)
         .map_err(store_error)?;
 
     store

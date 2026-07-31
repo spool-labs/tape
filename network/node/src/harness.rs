@@ -10,14 +10,8 @@ use store_memory::MemoryStore;
 use tape_chain_harness::{
     ChainHarness, ChainHarnessBuilder, HarnessNode, HarnessNodeSpec, IntoEpochNumber,
 };
-use tape_core::encoding::EncodingProfile;
-use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
 use tape_core::prelude::{EpochNumber, EpochPhase, SlotNumber, SpoolIndex, SpoolState, SpoolStatus};
-use tape_core::track::blob::BlobEncoding;
-use tape_core::types::{StorageUnits, StripeCount};
 use tape_crypto::ed25519::Keypair;
-use tape_crypto::merkle::root_from_leaf_hashes;
-use tape_slicer::{ErasureCoder, SliceMetadata, Slicer};
 use tape_store::TapeStore;
 use tape_store::ops::SpoolOps;
 
@@ -251,42 +245,6 @@ impl NodeHarnessBuilder {
 }
 
 pub use tape_chain_harness::{ChainFixture, HarnessSpec};
-
-/// Clay-encode a payload and build the encoding a track would register for it.
-///
-/// The fill is xorshift rather than a counter because a payload that repeats
-/// inside one sample leaf makes every leaf identical, and a merkle tree over
-/// identical leaves accepts any path at any index. Vary `seed` when a test needs
-/// two tracks whose bytes differ.
-pub fn coded_track(len: usize, seed: u64) -> (Vec<Vec<u8>>, BlobEncoding) {
-    let mut state = seed | 1;
-    let payload: Vec<u8> = (0..len)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 24) as u8
-        })
-        .collect();
-
-    let mut slicer = Slicer::clay_default();
-    let slices = slicer.encode(&payload).expect("clay encode");
-    let metadata = SliceMetadata::from_slice(&slices[0]).expect("slice metadata");
-    let stripe_size = metadata.stripe_size() as u64;
-    let leaves =
-        core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
-
-    let encoding = BlobEncoding {
-        size: StorageUnits::from_bytes(len as u64),
-        commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
-        profile: EncodingProfile::clay_default(),
-        stripe_size: StorageUnits::from_bytes(stripe_size),
-        stripe_count: StripeCount((len as u64).div_ceil(stripe_size)),
-        leaves,
-    };
-
-    (slices, encoding)
-}
 
 fn clone_keypair(keypair: &solana_keypair::Keypair) -> Keypair {
     Keypair::from_solana_keypair(keypair).expect("clone keypair")
