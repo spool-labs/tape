@@ -115,26 +115,23 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         data: &[u8],
     ) -> Result<CompressedTrack, TapedriveError> {
-        self.write_named_track_as(tape_key, name, content_type, data)
+        self.write_named_track_as(tape_key, name, content_type, data, None)
             .await
     }
 
-    /// Write a named track to an existing tape,.
+    /// Write a named track to an existing tape.
+    ///
+    /// `plan` lets a caller that already encoded these bytes, deciding whether
+    /// to write at all, hand that encode over instead of paying for it twice.
     pub async fn write_named_track_as(
         &self,
         operator: &impl TapeOperator,
         name: impl AsRef<[u8]>,
         content_type: ContentType,
         data: &[u8],
+        plan: Option<UploadPlan>,
     ) -> Result<CompressedTrack, TapedriveError> {
-        write_track_only(
-            self,
-            operator,
-            name.as_ref(),
-            content_type,
-            data,
-        )
-        .await
+        write_track_only(self, operator, name.as_ref(), content_type, data, plan).await
     }
 
     /// Write a named object track, resuming or overwriting an existing one.
@@ -329,18 +326,37 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
+/// An etag and, for coded sizes, the encode that produced it.
+///
+/// Carrying the plan lets a write of the same bytes skip a second encode.
+/// Inline-sized payloads hash directly and have no plan.
+pub struct ContentEtag {
+    pub etag: Hash,
+    pub plan: Option<UploadPlan>,
+}
+
 /// The etag content ends up with when written as a named object: the value
-/// hash for inline-sized payloads, the coded commitment otherwise. Encoding
-/// runs in full for coded sizes, so this trades CPU for detecting unchanged
-/// content before paying for a write; the encode runs on the blocking pool
-/// like the write path's own.
-pub async fn content_etag(data: &[u8]) -> Result<Hash, TapedriveError> {
+/// hash for inline-sized payloads, the coded commitment otherwise.
+///
+/// Encoding runs in full for coded sizes, so this trades CPU for detecting
+/// unchanged content before paying for a write. A caller that then writes can
+/// hand the returned plan back rather than encoding twice.
+pub async fn content_etag(data: &[u8]) -> Result<ContentEtag, TapedriveError> {
     if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
-        return Ok(hash(data));
+        return Ok(ContentEtag {
+            etag: hash(data),
+            plan: None,
+        });
     }
     let owned = data.to_vec();
     match tokio::task::spawn_blocking(move || prepare_plan(owned)).await {
-        Ok(plan) => Ok(plan?.commitment_hash),
+        Ok(plan) => {
+            let plan = plan?;
+            Ok(ContentEtag {
+                etag: plan.commitment_hash,
+                plan: Some(plan),
+            })
+        }
         Err(join) => Err(TapedriveError::Encoding(format!("etag encode task failed: {join}"))),
     }
 }
@@ -1114,8 +1130,9 @@ pub async fn write_track_only<Blockchain: Rpc, Cluster: Api>(
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
+    plan: Option<UploadPlan>,
 ) -> Result<CompressedTrack, TapedriveError> {
-    write_track(client, tape_key, name, content_type, data)
+    write_track(client, tape_key, name, content_type, data, plan)
         .await
         .map(|written| written.track)
 }
@@ -1124,12 +1141,17 @@ pub async fn write_track_only<Blockchain: Rpc, Cluster: Api>(
 ///
 /// Returns once certification is confirmed on-chain. Peers may lag briefly
 /// before reporting the track certified.
+///
+/// `plan` must be the encode of `data`; it only skips work, it does not change
+/// what is written. `prepare_plan` is a pure function of the bytes, so a plan
+/// from `content_etag` is identical to the one this would otherwise build.
 pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
+    plan: Option<UploadPlan>,
 ) -> Result<ObjectWrite, TapedriveError> {
     let timer = client
         .timer(Operation::WriteTrack, Phase::Total)
@@ -1154,7 +1176,10 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         let tape = client.get_tape(&tape_key.address()).await?;
         let mut mirror = ArchiveMirror::new(&tape.tracks);
 
-        let plan = encode_blob(client, data.to_vec(), Operation::WriteTrack).await?;
+        let plan = match plan {
+            Some(plan) => plan,
+            None => encode_blob(client, data.to_vec(), Operation::WriteTrack).await?,
+        };
         let sent = register_blob_processed(
             client,
             tape_key,
@@ -1214,7 +1239,7 @@ pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
             reserve.finish_result(&reserved);
             reserved?;
 
-            write_track_only(client, tape_key, name, content_type, data).await
+            write_track_only(client, tape_key, name, content_type, data, None).await
         }
         // An existing tape means a prior interrupted call. The one-call write
         // dedicates a fresh tape to one blob at track 0, and reusing its key for
@@ -1264,14 +1289,14 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
     on_conflict: OnConflict,
 ) -> Result<ObjectWrite, TapedriveError> {
     let Some(track_address) = existing else {
-        return write_track(client, operator, name, content_type, data).await;
+        return write_track(client, operator, name, content_type, data, None).await;
     };
 
     let existing_track = match client.get_track(&track_address).await {
         Ok(track) => track,
         // The located track is gone or never landed: write fresh.
         Err(TapedriveError::NotFound) => {
-            return write_track(client, operator, name, content_type, data).await;
+            return write_track(client, operator, name, content_type, data, None).await;
         }
         Err(other) => return Err(other),
     };
@@ -1311,7 +1336,7 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
             track_number: existing_track.track_number,
         }),
         OnConflict::Overwrite => {
-            let written = write_track(client, operator, name, content_type, data).await?;
+            let written = write_track(client, operator, name, content_type, data, None).await?;
             // Reclaim the stale track; best-effort, never fails the write that
             // already landed. A failure leaves it for a later overwrite or sweep.
             if let Err(error) = client.delete_as(operator, track_address).await {
@@ -1580,9 +1605,42 @@ mod tests {
 
     use crate::error::TapedriveError;
 
-    use super::should_retry_certification;
-    use super::{inline_write_fits, SDK_INLINE_RAW_MAX_BYTES};
+    use super::{
+        content_etag, hash, inline_write_fits, prepare_plan, should_retry_certification,
+        SDK_INLINE_RAW_MAX_BYTES,
+    };
     use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
+
+    fn blob(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 31 + 7) as u8).collect()
+    }
+
+    // a reused plan writes exactly what a fresh encode would have
+    #[tokio::test]
+    async fn plan_reuse() {
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES * 4);
+        let computed = content_etag(&data).await.expect("etag");
+        let plan = computed.plan.expect("coded payload carries its plan");
+        let fresh = prepare_plan(data).expect("fresh plan");
+
+        assert_eq!(plan.commitment_hash, fresh.commitment_hash);
+        assert_eq!(computed.etag, fresh.commitment_hash);
+        assert_eq!(plan.storage_units, fresh.storage_units);
+        assert_eq!(plan.stripe_size, fresh.stripe_size);
+        assert_eq!(plan.stripe_count, fresh.stripe_count);
+        assert_eq!(plan.leaves, fresh.leaves);
+        assert_eq!(plan.slices.len(), fresh.slices.len());
+    }
+
+    // inline payloads never encode, so they carry no plan
+    #[tokio::test]
+    async fn inline_no_plan() {
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES);
+        let computed = content_etag(&data).await.expect("etag");
+
+        assert!(computed.plan.is_none());
+        assert_eq!(computed.etag, hash(&data));
+    }
 
     // The SDK inline write limit must always remain below the program limit.
     #[test]

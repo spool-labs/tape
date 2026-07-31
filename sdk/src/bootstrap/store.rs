@@ -10,8 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use tape_core::types::EpochDuration;
-
 use super::{BootstrapState, NetworkKey};
 
 /// Rejects foreign or truncated files before the decoder ever sees them.
@@ -147,7 +145,7 @@ mod tests {
 
     use super::*;
     use crate::bootstrap::{PeerHealth, Prediction};
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{EpochDuration, EpochNumber};
 
     fn key() -> NetworkKey {
         NetworkKey {
