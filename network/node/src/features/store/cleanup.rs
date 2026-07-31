@@ -32,7 +32,6 @@ pub fn delete_track_local<Db: Store>(
     }
 
     store.delete_track(track).map_err(store_error)?;
-    store.delete_track_slot(track).map_err(store_error)?;
     store.delete_track_data(track).map_err(store_error)?;
     store.delete_object_info(track).map_err(store_error)?;
     store.delete_object_metadata(track).map_err(store_error)?;
