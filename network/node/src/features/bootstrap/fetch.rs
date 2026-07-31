@@ -63,7 +63,7 @@ where
 /// Mirrors `persist_snapshot_candidate` minus local slice data: the chunk tracks
 /// and their `BlobData::Coded` metadata are written as
 /// `ObjectInfo::System { Snapshot }` (always certified), and the generic spool
-/// sync/repair then fetches the slices for owned spools. `decoded.tracks` was
+/// sync/splice then fetches the slices for owned spools. `decoded.tracks` was
 /// verified against the committed merkle root before decode.
 pub fn persist_snapshot_metadata<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,

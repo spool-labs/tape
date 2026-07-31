@@ -16,8 +16,10 @@ use tape_protocol::api::{ApiError, FindTrackVersion};
 use tape_protocol::ProtocolState;
 
 use crate::error::TapedriveError;
-use crate::metrics::{Metrics, Operation, Phase};
+use crate::metrics::{Metrics, Noop, Operation, Phase};
 use crate::tapedrive::Tapedrive;
+use crate::read_options::ReadOptions;
+use crate::write_options::WriteOptions;
 
 /// Read-only client for gateway-backed reads.
 ///
@@ -147,13 +149,16 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, GatewayApi> {
         let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(GatewayApi::new(gateway_url)?);
         Ok(Gateway {
-            inner: Self::from_parts(
-                ArcSwap::from_pointee(ProtocolState::default()),
+            inner: Self {
+                state: ArcSwap::from_pointee(ProtocolState::default()),
                 peer_manager,
                 api,
-                rpc_client,
-                None,
-            ),
+                rpc: rpc_client,
+                payer: None,
+                metrics: Arc::new(Noop),
+                write_options: WriteOptions::default(),
+                read_options: ReadOptions::default(),
+            },
         })
     }
 }

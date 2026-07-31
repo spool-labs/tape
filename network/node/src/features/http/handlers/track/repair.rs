@@ -17,7 +17,7 @@ use crate::features::blacklist::refuses_object;
 use crate::features::http::auth::StakedPeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
-use crate::features::spool::repair::extract_repair_data;
+use crate::features::spool::splice::extract_splice_data;
 
 pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -81,7 +81,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
-    let output = extract_repair_data(
+    let output = extract_splice_data(
         &blob,
         &request.stripes, 
         &helper_slice
@@ -145,7 +145,7 @@ mod tests {
         let ctx = test_context().await;
 
         // Build a real Clay-encoded snapshot chunk: 20 slices, each carrying
-        // the per-slice metadata suffix that `extract_repair_data` parses.
+        // the per-slice metadata suffix that the splice extractor parses.
         let chunk = vec![0xCDu8; 2048];
         let group = GroupIndex(2);
         let mut slicer = Slicer::clay_default();
