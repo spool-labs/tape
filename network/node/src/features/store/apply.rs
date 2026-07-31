@@ -54,7 +54,7 @@ pub fn apply_event<Db: Store>(
             set_certified(store, *track, *epoch)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
-            delete_track_local(store, *track)?;
+            delete_track_local(store, *track, slot)?;
         }
         ReplayableEvent::InvalidateTrack { track, epoch } => {
             invalidate_track(store, *track, *epoch, slot)?;
@@ -79,7 +79,7 @@ pub fn apply_event<Db: Store>(
                 .map_err(store_error)?;
         }
         ReplayableEvent::DestroyTape { tape, .. } => {
-            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
+            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE, slot)?;
         }
         ReplayableEvent::ExtendTape {
             tape,
@@ -183,6 +183,10 @@ fn put_track_object<Db: Store>(
 
     store.put_track(track, replay.state)
         .map_err(store_error)?;
+
+    // The challenge sample set is cut at a round window's base slot, so every
+    // observer needs the same registration slot for the same track.
+    store.put_track_slot(track, slot).map_err(store_error)?;
 
     // We need to advance the track cursor so that merkle proofs for this tape don't break due to
     // using the wrong index when tracks are deleted.
@@ -376,7 +380,7 @@ fn set_certified<Db: Store>(
             )
             .map_err(store_error)?;
 
-        enqueue_certified_repairs(store, track)?;
+        enqueue_certified_splices(store, track)?;
     } else if let ObjectInfo::System {
         kind,
         track_address,
@@ -401,7 +405,7 @@ fn set_certified<Db: Store>(
     Ok(())
 }
 
-fn enqueue_certified_repairs<Db: Store>(
+fn enqueue_certified_splices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
 ) -> Result<(), NodeError> {
@@ -426,10 +430,10 @@ fn enqueue_certified_repairs<Db: Store>(
             continue;
         }
 
-        store.add_pending_repair(spool, track).map_err(store_error)?;
+        store.add_pending_splice(spool, track).map_err(store_error)?;
 
         if state.status == SpoolStatus::Active {
-            state.set_status(SpoolStatus::Repair);
+            state.set_status(SpoolStatus::Splice);
             store.set_spool_state(spool, state).map_err(store_error)?;
         }
     }
@@ -447,7 +451,7 @@ fn invalidate_track<Db: Store>(
         // Keep object_metadata across invalidation. Delete/GC still use it as
         // the track -> name reverse lookup when the track is eventually removed.
         remove_object_listing_for_track(store, track, &info)?;
-        let _ = cleanup_track_slices(store, track, info.group)?;
+        let _ = cleanup_track_slices(store, track, info.group, slot)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
     }
@@ -1002,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn certify_enqueues_repair() {
+    fn certify_enqueues_splice() {
         let store = test_store();
         let slot = SlotNumber(10);
         let track = Address::new_unique();
@@ -1037,9 +1041,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(store.has_pending_repair(spool_id, track).unwrap());
+        assert!(store.has_pending_splice(spool_id, track).unwrap());
         let state = store.get_spool_state(spool_id).unwrap().unwrap();
-        assert_eq!(state.status, SpoolStatus::Repair);
+        assert_eq!(state.status, SpoolStatus::Splice);
     }
 
     #[test]
@@ -1079,7 +1083,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!store.has_pending_repair(spool_id, track).unwrap());
+        assert!(!store.has_pending_splice(spool_id, track).unwrap());
         assert_eq!(
             store.get_spool_state(spool_id).unwrap().unwrap().status,
             SpoolStatus::Active

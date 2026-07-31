@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,11 +19,10 @@ use tape_crypto::Hash;
 use tape_protocol::api::{Api, ApiError, SlicePayload, PutSliceReq};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-use crate::bootstrap::Reputation;
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
 
@@ -65,7 +65,6 @@ pub struct DistributedUploader {
     group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
     concurrency_limit: Arc<Semaphore>,
-    reputation: Option<Arc<Reputation>>,
 }
 
 struct NodeUploadResult {
@@ -100,14 +99,7 @@ impl DistributedUploader {
             group_peers,
             group_member_count,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
-            reputation: None,
         })
-    }
-
-    /// Spend less time on owners already known to be down.
-    pub fn with_reputation(mut self, reputation: Arc<Reputation>) -> Self {
-        self.reputation = Some(reputation);
-        self
     }
 
     /// Upload all slices to the network via the Api trait.
@@ -139,10 +131,7 @@ impl DistributedUploader {
 
         let required_members = min_correct(self.group_member_count as u64) as usize;
         let required_slices = min_correct(GROUP_SIZE as u64) as usize;
-        // Straggler retries watch this: the send at quorum wakes any backoff
-        // sleep immediately, and the sender dropping on return means the
-        // outcome is decided either way, so no retry outlives its purpose.
-        let (quorum_tx, quorum_rx) = watch::channel(false);
+        let quorum_reached = Arc::new(AtomicBool::new(false));
 
         // Upload to each node in a detached task so a quorum can complete the
         // call while stragglers keep going. Before quorum, slice uploads use
@@ -152,7 +141,7 @@ impl DistributedUploader {
         for (node, spools) in node_groups {
             let track = self.track;
             let concurrency_limit = self.concurrency_limit.clone();
-            let quorum_rx = quorum_rx.clone();
+            let quorum_reached = quorum_reached.clone();
             let peer_client = peer_client.clone();
             let result_sender = result_sender.clone();
 
@@ -162,43 +151,18 @@ impl DistributedUploader {
                 .filter_map(|spool| slice_map.get(spool).map(|s| (*spool, (*s).clone())))
                 .collect();
 
-            // An owner already known to be down gets the same budget a
-            // straggler gets after quorum: one attempt, then recovery takes
-            // it. Upload routing is fixed, so the only saving available is not
-            // spending the full ladder on a node that will not answer.
-            let is_known_down = self
-                .reputation
-                .as_ref()
-                .map(|reputation| reputation.is_quarantined(&node))
-                .unwrap_or(false);
-            // A channel that starts decided. The retry loop reads it before
-            // ever sleeping, so it returns after one attempt and never waits
-            // on a sender that nobody holds.
-            let budget = match is_known_down {
-                true => watch::channel(true).1,
-                false => quorum_rx,
-            };
-            let reputation = self.reputation.clone();
-
             // Detached: stragglers finish after quorum returns, and anything they
             // fail to land is picked up by the recovery worker.
             tokio::spawn(async move {
-                let started = Instant::now();
                 let result = upload_node_slices(
                     peer_client.as_ref(),
                     node,
                     track,
                     slices,
-                    budget,
+                    quorum_reached.as_ref(),
                     concurrency_limit,
                 )
                 .await;
-                if let Some(reputation) = reputation {
-                    match result.as_ref().map(|outcome| outcome.failed.is_empty()) {
-                        Ok(true) => reputation.record_success(node, started.elapsed()),
-                        Ok(false) | Err(_) => reputation.record_failure(node),
-                    }
-                }
                 let _ = result_sender.send(result);
             });
         }
@@ -230,7 +194,7 @@ impl DistributedUploader {
             if fully_successful_members >= required_members
                 && stored_slices.len() >= required_slices
             {
-                let _ = quorum_tx.send(true);
+                quorum_reached.store(true, Ordering::Relaxed);
                 if total_failed_slices > 0 {
                     warn!(
                         failed_slices = total_failed_slices,
@@ -286,7 +250,7 @@ async fn upload_node_slices<P: Api>(
     node: Address,
     track: Address,
     slices: Vec<(SpoolIndex, SliceWithProof)>,
-    quorum: watch::Receiver<bool>,
+    quorum_reached: &AtomicBool,
     concurrency_limit: Arc<Semaphore>,
 ) -> Result<NodeUploadResult, UploadError> {
     let _permit = concurrency_limit
@@ -294,28 +258,25 @@ async fn upload_node_slices<P: Api>(
         .await
         .map_err(|_| UploadError::Semaphore)?;
 
-    let uploads = slices.into_iter().map(|(global_spool, slice)| {
-        let quorum = quorum.clone();
-        async move {
-            let payload = slice.to_payload();
-            let payload_bytes = payload.data.len();
-            let req = PutSliceReq {
-                track,
-                spool: global_spool,
-                payload,
-            };
+    let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
+        let payload = slice.to_payload();
+        let payload_bytes = payload.data.len();
+        let req = PutSliceReq {
+            track,
+            spool: global_spool,
+            payload,
+        };
 
-            let result = upload_slice_with_retry(
-                peer_client,
-                node,
-                track,
-                req,
-                payload_bytes,
-                quorum,
-            )
-            .await;
-            (global_spool, result)
-        }
+        let result = upload_slice_with_retry(
+            peer_client,
+            node,
+            track,
+            req,
+            payload_bytes,
+            quorum_reached,
+        )
+        .await;
+        (global_spool, result)
     });
 
     let mut stored = Vec::new();
@@ -345,21 +306,13 @@ async fn upload_node_slices<P: Api>(
     Ok(NodeUploadResult { stored, failed, not_responsible })
 }
 
-/// Whether a slice push should retry
-///
-/// Not-found is retryable here because the node rejects slices until it has
-/// ingested our confirmed register. It stays terminal everywhere else.
-fn should_retry_put_slice(error: &ApiError) -> bool {
-    matches!(error, ApiError::NotFound) || error.is_retryable()
-}
-
 async fn upload_slice_with_retry<P: Api>(
     peer_client: &P,
     node: Address,
     track: Address,
     req: PutSliceReq,
     payload_bytes: usize,
-    mut quorum: watch::Receiver<bool>,
+    quorum_reached: &AtomicBool,
 ) -> Result<(), ApiError> {
     let started = Instant::now();
     let mut backoff = Backoff::new(RetryConfig::ten());
@@ -368,7 +321,7 @@ async fn upload_slice_with_retry<P: Api>(
         match peer_client.put_slice(node, &req).await {
             Ok(_) => return Ok(()),
             Err(error) => {
-                if !should_retry_put_slice(&error) {
+                if !error.is_retryable() {
                     warn!(
                         track = %track,
                         node = %node,
@@ -381,7 +334,7 @@ async fn upload_slice_with_retry<P: Api>(
                     return Err(error);
                 }
 
-                if *quorum.borrow() {
+                if quorum_reached.load(Ordering::Relaxed) {
                     warn!(
                         track = %track,
                         node = %node,
@@ -425,23 +378,19 @@ async fn upload_slice_with_retry<P: Api>(
                     delay = delay.max((*wait).min(MAX_RATE_LIMIT_WAIT));
                 }
 
-                // The quorum watch wakes the sleep the moment the outcome is
-                // decided; a closed sender means the upload call has already
-                // returned, which decides it just the same.
-                tokio::select! {
-                    _ = sleep(delay) => {}
-                    _ = quorum.changed() => {
-                        warn!(
-                            track = %track,
-                            node = %node,
-                            slice = %req.spool,
-                            bytes = payload_bytes,
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            error = %error,
-                            "slice upload retry skipped after quorum"
-                        );
-                        return Err(error);
-                    }
+                sleep(delay).await;
+
+                if quorum_reached.load(Ordering::Relaxed) {
+                    warn!(
+                        track = %track,
+                        node = %node,
+                        slice = %req.spool,
+                        bytes = payload_bytes,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        error = %error,
+                        "slice upload retry skipped after quorum"
+                    );
+                    return Err(error);
                 }
             }
         }

@@ -46,7 +46,7 @@ use crate::features::spool::types::SyncResult;
 //
 // If the previous owner is unreachable we return after retrying.
 // The FSM treats unreachable the same as Done, it moves to Scan,
-// which will identify the gaps, and repair/recover will fetch from
+// which will identify the gaps, and splice/recover will fetch from
 // the rest of the spool group.
 
 struct SyncBatch {
@@ -126,8 +126,8 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         }
 
         // Optimistically pull a batch of slices from the previous owner. If the peer is
-        // unreachable, or any error occurs, we keep going, the repair/recovery will fill the gaps
-        // from the rest of the group.
+        // unreachable, or any error occurs, we keep going, the splice/recovery will
+        // fill the gaps from the rest of the group.
 
         match pull_batch(ctx.as_ref(), config, spool, prev_owner, cursor, token).await {
             Ok(batch) => {

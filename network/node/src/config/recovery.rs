@@ -15,9 +15,9 @@ pub struct RecoveryConfig {
     #[serde(default = "default_scan_batch")]
     pub scan_batch: usize,
 
-    /// Batch size for pending repair work.
-    #[serde(default = "default_repair_batch")]
-    pub repair_batch: usize,
+    /// Batch size for pending splice work.
+    #[serde(default = "default_splice_batch")]
+    pub splice_batch: usize,
 
     /// Batch size for pending recovery work.
     #[serde(default = "default_recover_batch")]
@@ -30,7 +30,7 @@ impl Default for RecoveryConfig {
             max_workers: default_max_workers(),
             sync_batch: default_sync_batch(),
             scan_batch: default_scan_batch(),
-            repair_batch: default_repair_batch(),
+            splice_batch: default_splice_batch(),
             recover_batch: default_recover_batch(),
         }
     }
@@ -48,7 +48,7 @@ fn default_scan_batch() -> usize {
     100
 }
 
-fn default_repair_batch() -> usize {
+fn default_splice_batch() -> usize {
     10
 }
 

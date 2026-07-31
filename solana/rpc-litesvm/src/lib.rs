@@ -34,9 +34,6 @@ use tokio::task::JoinHandle;
 
 const DEFAULT_FINALIZED_LAG_SLOTS: u64 = 1;
 
-/// Fixed genesis hash for the in-memory cluster.
-const LITESVM_GENESIS_HASH: Hash = Hash::new_from_array([0x51; 32]);
-
 struct Inner {
     /// The in-memory SVM instance that processes transactions and maintains
     svm: LiteSVM,
@@ -404,12 +401,6 @@ impl Rpc for LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
         Ok(inner.svm.latest_blockhash())
-    }
-
-    /// An in-memory chain has no genesis block, so this is a fixed synthetic
-    /// value. It only has to be stable and distinct from a real cluster.
-    async fn get_genesis_hash(&self) -> Result<Hash, RpcError> {
-        Ok(LITESVM_GENESIS_HASH)
     }
 
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {

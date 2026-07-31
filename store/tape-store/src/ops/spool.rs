@@ -6,7 +6,7 @@ use tape_crypto::address::Address;
 use store::{Column, Store};
 
 use crate::columns::{
-    SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
+    SpoolPendingRecoveryCol, SpoolPendingSpliceCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
 use crate::error::{Result, TapeStoreError};
 use crate::types::{SliceKey, SpoolIndexKey};
@@ -22,13 +22,13 @@ pub trait SpoolOps {
     // Iterate all spools
     fn iter_all_spools(&self) -> Result<Vec<(SpoolIndex, SpoolState)>>;
 
-    // Pending repair
-    fn add_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
-    fn remove_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
-    fn has_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool>;
+    // Pending splice
+    fn add_pending_splice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
+    fn remove_pending_splice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
+    fn has_pending_splice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool>;
 
-    // Iterate pending repairs for a spool (up to `limit`)
-    fn iter_pending_repairs( &self, spool_id: SpoolIndex, limit: usize,) -> Result<Vec<Address>>;
+    // Iterate pending splices for a spool (up to `limit`)
+    fn iter_pending_splices( &self, spool_id: SpoolIndex, limit: usize,) -> Result<Vec<Address>>;
 
     // Pending recovery
     fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
@@ -43,8 +43,8 @@ pub trait SpoolOps {
     fn set_spool_sync_cursor( &self, spool_id: SpoolIndex, last_synced_track: Address,) -> Result<()>;
     fn remove_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<()>;
 
-    // Bulk clear all pending repairs for a spool
-    fn clear_all_pending_repairs(&self, spool_id: SpoolIndex) -> Result<()>;
+    // Bulk clear all pending splices for a spool
+    fn clear_all_pending_splices(&self, spool_id: SpoolIndex) -> Result<()>;
 
     // Bulk clear all pending recoveries for a spool
     fn clear_all_pending_recoveries(&self, spool_id: SpoolIndex) -> Result<()>;
@@ -76,25 +76,25 @@ impl<S: Store> SpoolOps for TapeStore<S> {
             .collect())
     }
 
-    fn add_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
+    fn add_pending_splice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
-        self.put::<SpoolPendingRepairCol>(&key, &())?;
+        self.put::<SpoolPendingSpliceCol>(&key, &())?;
         Ok(())
     }
 
-    fn remove_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
+    fn remove_pending_splice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
-        self.delete::<SpoolPendingRepairCol>(&key)?;
+        self.delete::<SpoolPendingSpliceCol>(&key)?;
         Ok(())
     }
 
-    fn has_pending_repair(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool> {
+    fn has_pending_splice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool> {
         let key = SliceKey::new(spool_id, track_address);
-        Ok(self.contains::<SpoolPendingRepairCol>(&key)?)
+        Ok(self.contains::<SpoolPendingSpliceCol>(&key)?)
     }
 
-    fn iter_pending_repairs(&self, spool_id: SpoolIndex, limit: usize) -> Result<Vec<Address>> {
-        iter_pending_by_spool(self, SpoolPendingRepairCol::CF_NAME, spool_id, limit)
+    fn iter_pending_splices(&self, spool_id: SpoolIndex, limit: usize) -> Result<Vec<Address>> {
+        iter_pending_by_spool(self, SpoolPendingSpliceCol::CF_NAME, spool_id, limit)
     }
 
     fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
@@ -126,8 +126,8 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         iter_pending_by_spool(self, SpoolPendingRecoveryCol::CF_NAME, spool_id, limit)
     }
 
-    fn clear_all_pending_repairs(&self, spool_id: SpoolIndex) -> Result<()> {
-        clear_all_pending_by_spool(self, SpoolPendingRepairCol::CF_NAME, spool_id)
+    fn clear_all_pending_splices(&self, spool_id: SpoolIndex) -> Result<()> {
+        clear_all_pending_by_spool(self, SpoolPendingSpliceCol::CF_NAME, spool_id)
     }
 
     fn clear_all_pending_recoveries(&self, spool_id: SpoolIndex) -> Result<()> {
@@ -270,18 +270,18 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_repair() {
+    fn test_pending_splice() {
         let store = test_store();
         let spool_id = SpoolIndex(42);
         let track = Address::new_unique();
 
-        assert!(!store.has_pending_repair(spool_id, track).unwrap());
+        assert!(!store.has_pending_splice(spool_id, track).unwrap());
 
-        store.add_pending_repair(spool_id, track).unwrap();
-        assert!(store.has_pending_repair(spool_id, track).unwrap());
+        store.add_pending_splice(spool_id, track).unwrap();
+        assert!(store.has_pending_splice(spool_id, track).unwrap());
 
-        store.remove_pending_repair(spool_id, track).unwrap();
-        assert!(!store.has_pending_repair(spool_id, track).unwrap());
+        store.remove_pending_splice(spool_id, track).unwrap();
+        assert!(!store.has_pending_splice(spool_id, track).unwrap());
     }
 
     #[test]
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn test_iter_pending_repairs() {
+    fn test_iter_pending_splices() {
         let store = test_store();
         let spool_id = SpoolIndex(42);
 
@@ -315,13 +315,13 @@ mod tests {
         let track2 = Address::new_unique();
         let track3 = Address::new_unique();
 
-        store.add_pending_repair(spool_id, track1).unwrap();
-        store.add_pending_repair(spool_id, track2).unwrap();
-        store.add_pending_repair(spool_id, track3).unwrap();
+        store.add_pending_splice(spool_id, track1).unwrap();
+        store.add_pending_splice(spool_id, track2).unwrap();
+        store.add_pending_splice(spool_id, track3).unwrap();
 
-        store.add_pending_repair(SpoolIndex(99), Address::new_unique()).unwrap();
+        store.add_pending_splice(SpoolIndex(99), Address::new_unique()).unwrap();
 
-        let pending = store.iter_pending_repairs(spool_id, 100).unwrap();
+        let pending = store.iter_pending_splices(spool_id, 100).unwrap();
         assert_eq!(pending.len(), 3);
     }
 
@@ -344,21 +344,21 @@ mod tests {
     }
 
     #[test]
-    fn clear_all_pending_repairs() {
+    fn clear_all_pending_splices() {
         let store = test_store();
 
         let t1 = Address::new_unique();
         let t2 = Address::new_unique();
         let t3 = Address::new_unique();
 
-        store.add_pending_repair(SpoolIndex(42), t1).unwrap();
-        store.add_pending_repair(SpoolIndex(42), t2).unwrap();
-        store.add_pending_repair(SpoolIndex(99), t3).unwrap();
+        store.add_pending_splice(SpoolIndex(42), t1).unwrap();
+        store.add_pending_splice(SpoolIndex(42), t2).unwrap();
+        store.add_pending_splice(SpoolIndex(99), t3).unwrap();
 
-        store.clear_all_pending_repairs(SpoolIndex(42)).unwrap();
+        store.clear_all_pending_splices(SpoolIndex(42)).unwrap();
 
-        assert!(store.iter_pending_repairs(SpoolIndex(42), 100).unwrap().is_empty());
-        assert_eq!(store.iter_pending_repairs(SpoolIndex(99), 100).unwrap().len(), 1);
+        assert!(store.iter_pending_splices(SpoolIndex(42), 100).unwrap().is_empty());
+        assert_eq!(store.iter_pending_splices(SpoolIndex(99), 100).unwrap().len(), 1);
     }
 
     #[test]

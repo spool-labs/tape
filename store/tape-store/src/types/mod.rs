@@ -15,7 +15,7 @@ pub use enums::{
 };
 
 // Re-export key types
-pub use keys::{
+pub use keys::{ChallengeRoundKey, 
     AuditKey, EpochKey, EventLogKey, LedgerReservationKey, MultipartPartKey, ObjectListKey,
     PolicyRuleKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey, TrackLookupKey, UnitKey, VoteSigKey,
 };
@@ -24,5 +24,6 @@ pub use keys::{
 pub use values::{
     AuditEntry, AuthState, BudgetLimits, Credential, CredentialCaps, InvalidationProof,
     LedgerEntry, LedgerReservation, MultipartPart, MultipartPartData, MultipartUpload,
-    ObjectListEntry, ObjectMetadata, PolicyRule, SliceValue, SnapshotArtifact, TapeInfo,
+    ObjectListEntry, ObjectMetadata, PolicyRule, SliceTombstone, SliceValue, SliceWrite,
+    SnapshotArtifact, TapeInfo,
 };

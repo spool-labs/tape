@@ -119,7 +119,6 @@ pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
 pub mod metrics;
 
 // Public exports
-pub use accounts::EpochBatch;
 pub use client::RpcClient;
 
 #[cfg(test)]

@@ -21,17 +21,17 @@ use tracing::{debug, warn, Instrument};
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
-use crate::features::spool::repair::{GroupPeers, group_peers};
+use crate::features::spool::splice::{GroupPeers, group_peers};
 use crate::features::spool::types::RecoverResult;
 
 const RECOVER_FETCH_CONCURRENCY: usize = 4;
 
-// Purpose: Full erasure code recovery for slices that could not be Clay-repaired.
-//          Drains the pending_recoveries queue populated by the Repair task.
+// Purpose: Full erasure code recovery for slices that could not be spliced.
+//          Drains the pending_recoveries queue populated by the Splice task.
 //
 // Algorithm:
 // 1. Load spool state. Derive group and our slice index.
-//    Build two peer maps (previous, current), same as repair.
+//    Build two peer maps (previous, current), same as splice.
 //
 // 2. Batch loop over store.iter_pending_recoveries(spool, batch_size):
 //
