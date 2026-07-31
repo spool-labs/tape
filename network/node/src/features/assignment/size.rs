@@ -133,7 +133,7 @@ fn active_track_footprint<Db: Store>(
 ) -> Result<Option<ActiveTrackFootprint>, AssignmentSizeError> {
 
     // Only ObjectInfo::Valid is accounted user data. System-owned tracks are
-    // kept live for repair/GC without entering assignment sizing.
+    // kept live for splice/GC without entering assignment sizing.
     let info = store
         .get_object_info(track)
         .map_err(store_error)?;

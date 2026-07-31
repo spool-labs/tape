@@ -24,16 +24,16 @@ use tracing::{info, warn, Instrument};
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
-use crate::features::spool::types::RepairResult;
+use crate::features::spool::types::SpliceResult;
 
-const REPAIR_FETCH_CONCURRENCY: usize = 4;
+const SPLICE_FETCH_CONCURRENCY: usize = 4;
 
-// Purpose: Bandwidth-optimal Clay repair for missing slices.
-//          Drains the pending_repairs queue populated by Scan.
-//          Tracks that cannot be Clay-repaired are escalated to the
+// Purpose: Bandwidth-optimal Clay splice for missing slices.
+//          Drains the pending_splices queue populated by Scan.
+//          Tracks that cannot be spliced are escalated to the
 //          pending_recoveries queue for the Recover task.
 //
-// "Escalate" means: remove from pending_repairs, add to pending_recoveries.
+// "Escalate" means: remove from pending_splices, add to pending_recoveries.
 // Both queues are presence-based, so adds are idempotent.
 //
 // Algorithm:
@@ -42,12 +42,12 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 //    and protocol.group_peers(group) (current).
 //    Exclude our own spool from both maps.
 //
-// 2. Batch loop over store.iter_pending_repairs(spool, batch_size):
+// 2. Batch loop over store.iter_pending_splices(spool, batch_size):
 //
 //    For each track_address:
 //      a. Check cancellation.
-//      b. Skip if slice already present (has_slice). Remove from pending_repairs.
-//      c. Load track_info. If missing, remove from pending_repairs, continue.
+//      b. Skip if slice already present (has_slice). Remove from pending_splices.
+//      c. Load track_info. If missing, remove from pending_splices, continue.
 //      d. Validate encoding is Clay and stripe params are non-zero.
 //         If not → escalate, continue.
 //
@@ -76,9 +76,9 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 //         If invalid → escalate, continue.
 //
 //      j. Persist: store.put_slice(spool, track_address, data).
-//         Remove from pending_repairs.
+//         Remove from pending_splices.
 //
-// 3. Return Done { unrepairable }, count of tracks escalated.
+// 3. Return Done { unspliceable }, count of tracks escalated.
 //
 // NOTE:
 //
@@ -96,16 +96,16 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     config: &RecoveryConfig,
     spool: SpoolIndex,
     token: &CancellationToken,
-) -> RepairResult {
+) -> SpliceResult {
 
     let spool_state = match ctx.store.get_spool_state(spool) {
         Ok(Some(state)) => state,
-        _ => return RepairResult::Done { unrepairable: 0 },
+        _ => return SpliceResult::Done { unspliceable: 0 },
     };
 
     let peers = group_peers(ctx.as_ref(), &spool_state, spool);
 
-    let mut unrepairable = 0usize;
+    let mut unspliceable = 0usize;
 
     loop {
         if token.is_cancelled() {
@@ -114,11 +114,11 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
         let pending = match ctx
             .store
-            .iter_pending_repairs(spool, config.repair_batch.max(1))
+            .iter_pending_splices(spool, config.splice_batch.max(1))
         {
             Ok(pending) => pending,
             Err(error) => {
-                warn!(spool = %spool, %error, "iter_pending_repairs failed");
+                warn!(spool = %spool, %error, "iter_pending_splices failed");
                 break;
             }
         };
@@ -140,18 +140,18 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             };
 
-            // If slice already exists, just remove from pending_repairs and skip.
+            // If slice already exists, just remove from pending_splices and skip.
             if has_slice {
-                let _ = ctx.store.remove_pending_repair(spool, track);
+                let _ = ctx.store.remove_pending_splice(spool, track);
                 info!(spool = %spool, track = %track, "slice already present, skipping");
                 continue;
             }
 
-            // Load track_info. If missing, remove from pending_repairs and skip.
+            // Load track_info. If missing, remove from pending_splices and skip.
             let track_info = match ctx.store.get_track(track) {
                 Ok(Some(info)) => info,
                 Ok(None) => {
-                    let _ = ctx.store.remove_pending_repair(spool, track);
+                    let _ = ctx.store.remove_pending_splice(spool, track);
                     warn!(spool = %spool, track = %track, "track_info missing, removing");
                     continue;
                 }
@@ -162,7 +162,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             };
 
             if !track_info.is_coded() {
-                warn!(spool = %spool, track = %track, "non-blob track in repair queue");
+                warn!(spool = %spool, track = %track, "non-blob track in splice queue");
                 continue;
             }
 
@@ -182,47 +182,47 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             };
 
-            // Only repair certified tracks.
+            // Only splice certified tracks.
             match ctx.store.get_object_info(track) {
                 Ok(Some(info)) if info.is_certified() => {}
                 Ok(Some(_)) => {
-                    let _ = ctx.store.remove_pending_repair(spool, track);
+                    let _ = ctx.store.remove_pending_splice(spool, track);
                     continue;
                 }
                 Ok(None) | Err(_) => {
-                    warn!(spool = %spool, track = %track, "repair: skipping, state inconsistent or unreadable");
+                    warn!(spool = %spool, track = %track, "splice: skipping, state inconsistent or unreadable");
                     continue;
                 }
             }
 
-            match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_data, token).await {
+            match splice_track(ctx.as_ref(), config, spool, &peers, track, &track_data, token).await {
                 Ok(data) => {
-                    let repaired_len = data.len() as u64;
+                    let spliced_len = data.len() as u64;
                     if let Err(error) = ctx.store.put_slice(spool, track, data) {
                         warn!(spool = %spool, track = %track, %error, "put_slice failed");
                         continue;
                     }
-                    ctx.metrics.add_repair_persisted(repaired_len);
-                    let _ = ctx.store.remove_pending_repair(spool, track);
+                    ctx.metrics.add_repair_persisted(spliced_len);
+                    let _ = ctx.store.remove_pending_splice(spool, track);
                 }
                 Err(()) => {
-                    info!(spool = %spool, track = %track, "repair failed, escalating to recovery");
+                    info!(spool = %spool, track = %track, "splice failed, escalating to recovery");
                     match ctx.store.add_pending_recovery(spool, track) {
                         Ok(()) => {
-                            let _ = ctx.store.remove_pending_repair(spool, track);
+                            let _ = ctx.store.remove_pending_splice(spool, track);
                         }
                         Err(error) => {
-                            warn!(spool = %spool, track = %track, %error, "add_pending_recovery failed, keeping in repair");
+                            warn!(spool = %spool, track = %track, %error, "add_pending_recovery failed, keeping in splice queue");
                         }
                     }
                     ctx.metrics.inc_repair_escalations();
-                    unrepairable += 1;
+                    unspliceable += 1;
                 }
             }
         }
     }
 
-    RepairResult::Done { unrepairable }
+    SpliceResult::Done { unspliceable }
 }
 
 /// Two peer maps: previous epoch helpers and current committee assignments.
@@ -266,9 +266,9 @@ pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     GroupPeers { previous, current }
 }
 
-/// Attempt Clay repair for a single track.
-/// Returns Ok(repaired_data) or Err(()) to signal escalation.
-async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
+/// Attempt a Clay splice for a single track.
+/// Returns Ok(spliced_data) or Err(()) to signal escalation.
+async fn splice_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     _config: &RecoveryConfig,
     spool: SpoolIndex,
@@ -335,12 +335,12 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     )
     .to_bytes();
 
-    let repaired = slicer.repair(&plan, &helper_data, &metadata).map_err(|_| ())?;
-    if !track_data.verify_slice(SpoolIndex::from(position as u64), &repaired) {
+    let spliced = slicer.repair(&plan, &helper_data, &metadata).map_err(|_| ())?;
+    if !track_data.verify_slice(SpoolIndex::from(position as u64), &spliced) {
         return Err(());
     }
 
-    Ok(repaired)
+    Ok(spliced)
 }
 
 /// Fetch sub-chunk data from one helper using per-helper fallback.
@@ -372,7 +372,7 @@ async fn fetch_one_helper<Cluster: Api + 'static>(
 /// Fetch sub-chunk data from all helpers in the plan using bounded concurrency.
 ///
 /// For each helper, tries the previous peer map first, then the current.
-/// Runs up to REPAIR_FETCH_CONCURRENCY helper fetches in parallel.
+/// Runs up to SPLICE_FETCH_CONCURRENCY helper fetches in parallel.
 /// Returns Err if any required helper is unavailable in both maps.
 async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
@@ -391,7 +391,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     let mut join_set: JoinSet<Result<(SliceIndex, Vec<u8>), SliceIndex>> = JoinSet::new();
 
     // Seed initial batch.
-    for _ in 0..REPAIR_FETCH_CONCURRENCY {
+    for _ in 0..SPLICE_FETCH_CONCURRENCY {
         if token.is_cancelled() {
             return Err(());
         }
@@ -490,16 +490,16 @@ fn per_helper_reqs(
 }
 
 
-/// Extract sub-chunk data from a local slice to serve a repair request.
-/// Called by the HTTP handler when a peer asks for repair data.
-pub fn extract_repair_data(
+/// Extract sub-chunk data from a local slice to serve a helper request.
+/// Called by the HTTP handler when a peer asks for splice data.
+pub fn extract_splice_data(
     track_info: &BlobEncoding,
     stripes: &[StripeSubChunkRequest],
     slice_data: &[u8],
 ) -> Result<Vec<u8>, String> {
     let profile = track_info.profile;
     if !profile.is_clay() {
-        return Err("repair only supported for clay tracks".into());
+        return Err("splice only supported for clay tracks".into());
     }
 
     let coder = ClayCoder::from_params(profile.clay_params());
@@ -631,8 +631,8 @@ mod tests {
         }
     }
 
-    fn repair_state(epoch: EpochNumber) -> SpoolState {
-        let mut state = SpoolState::new(SpoolStatus::Repair, epoch);
+    fn splice_state(epoch: EpochNumber) -> SpoolState {
+        let mut state = SpoolState::new(SpoolStatus::Splice, epoch);
         for (slice, helper) in state.prev_helpers.iter_mut().enumerate() {
             *helper = Some(addr(100 + slice as u8));
         }
@@ -643,11 +643,11 @@ mod tests {
     async fn empty_queue() {
         let ctx = test_context().await;
         ctx.store
-            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .set_spool_state(SPOOL, splice_state(EpochNumber(3)))
             .unwrap();
 
         let result = run(ctx, &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+        assert_eq!(result, SpliceResult::Done { unspliceable: 0 });
     }
 
     #[tokio::test]
@@ -656,18 +656,18 @@ mod tests {
         let a = addr(1);
 
         ctx.store
-            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .set_spool_state(SPOOL, splice_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_slice(SPOOL, a, vec![0xAB; 64]).unwrap();
-        ctx.store.add_pending_repair(SPOOL, a).unwrap();
+        ctx.store.add_pending_splice(SPOOL, a).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
-        assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert_eq!(result, SpliceResult::Done { unspliceable: 0 });
+        assert!(!ctx.store.has_pending_splice(SPOOL, a).unwrap());
     }
 
     #[tokio::test]
-    async fn clay_repair() {
+    async fn clay_splice() {
         let profile = EncodingProfile::clay_default();
         let mut slicer = Slicer::with_profile(
             ClayCoder::from_params(profile.clay_params()),
@@ -689,7 +689,7 @@ mod tests {
             PeerReq::Repair(ref req) => {
                 let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap()];
 
-                let data = extract_repair_data(
+                let data = extract_splice_data(
                     &track_blob_for_api,
                     &req.stripes,
                     helper_slice,
@@ -702,17 +702,17 @@ mod tests {
         .await;
 
         ctx.store
-            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .set_spool_state(SPOOL, splice_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
         ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
-        ctx.store.add_pending_repair(SPOOL, track).unwrap();
+        ctx.store.add_pending_splice(SPOOL, track).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+        assert_eq!(result, SpliceResult::Done { unspliceable: 0 });
         assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
-        assert!(!ctx.store.has_pending_repair(SPOOL, track).unwrap());
+        assert!(!ctx.store.has_pending_splice(SPOOL, track).unwrap());
     }
 
     #[tokio::test]
@@ -729,30 +729,30 @@ mod tests {
         let track_blob = clay_blob(1024, &slices);
 
         ctx.store
-            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .set_spool_state(SPOOL, splice_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
         ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
-        ctx.store.add_pending_repair(SPOOL, a).unwrap();
+        ctx.store.add_pending_splice(SPOOL, a).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, RepairResult::Done { unrepairable: 1 });
+        assert_eq!(result, SpliceResult::Done { unspliceable: 1 });
         assert!(ctx.store.has_pending_recovery(SPOOL, a).unwrap());
-        assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert!(!ctx.store.has_pending_splice(SPOOL, a).unwrap());
     }
 
     #[tokio::test]
     async fn missing_track() {
         let ctx = test_context().await;
         ctx.store
-            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .set_spool_state(SPOOL, splice_state(EpochNumber(3)))
             .unwrap();
-        ctx.store.add_pending_repair(SPOOL, addr(1)).unwrap();
+        ctx.store.add_pending_splice(SPOOL, addr(1)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
-        assert!(!ctx.store.has_pending_repair(SPOOL, addr(1)).unwrap());
+        assert_eq!(result, SpliceResult::Done { unspliceable: 0 });
+        assert!(!ctx.store.has_pending_splice(SPOOL, addr(1)).unwrap());
     }
 
     #[tokio::test]
@@ -769,7 +769,7 @@ mod tests {
         let track_blob = clay_blob(1024, &slices);
 
         ctx.store
-            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .set_spool_state(SPOOL, splice_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
         ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
@@ -784,15 +784,15 @@ mod tests {
                 },
             )
             .unwrap();
-        ctx.store.add_pending_repair(SPOOL, a).unwrap();
+        ctx.store.add_pending_splice(SPOOL, a).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
-        assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert_eq!(result, SpliceResult::Done { unspliceable: 0 });
+        assert!(!ctx.store.has_pending_splice(SPOOL, a).unwrap());
     }
 
     /// Per-helper fallback can combine previous helpers from local spool state
-    /// with current helpers from protocol state and complete the repair.
+    /// with current helpers from protocol state and complete the splice.
     #[tokio::test]
     async fn split_peers() {
         let profile = EncodingProfile::clay_default();
@@ -815,7 +815,7 @@ mod tests {
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::Repair(ref req) => {
                 let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap()];
-                let data = extract_repair_data(
+                let data = extract_splice_data(
                     &track_blob_for_api,
                     &req.stripes,
                     helper_slice,
@@ -827,7 +827,7 @@ mod tests {
         .await;
 
         // Previous: positions 0..9 (excluding 5) → 9 helpers
-        let mut state = SpoolState::new(SpoolStatus::Repair, EpochNumber(3));
+        let mut state = SpoolState::new(SpoolStatus::Splice, EpochNumber(3));
         for pos in 0..10 {
             if pos != 5 {
                 state.prev_helpers[pos] = Some(addr(100 + pos as u8));
@@ -838,11 +838,11 @@ mod tests {
         ctx.store.put_track(track, track_info).unwrap();
         ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_object_info(track, certified(track)).unwrap();
-        ctx.store.add_pending_repair(SPOOL, track).unwrap();
+        ctx.store.add_pending_splice(SPOOL, track).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+        assert_eq!(result, SpliceResult::Done { unspliceable: 0 });
         assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
-        assert!(!ctx.store.has_pending_repair(SPOOL, track).unwrap());
+        assert!(!ctx.store.has_pending_splice(SPOOL, track).unwrap());
     }
 }

@@ -16,7 +16,7 @@ use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::spool::types::{Action, ScanResult, TaskDone, TaskResult};
-use crate::features::spool::{recover, repair, scan, sync};
+use crate::features::spool::{recover, scan, splice, sync};
 
 const SPOOL_MANAGER_HEARTBEAT: Duration = Duration::from_secs(1);
 const LOCKED_SPOOL_RETENTION_EPOCHS: u64 = 4;
@@ -159,9 +159,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
             // Active spools: check if pending work appeared (e.g. from CertifyTrack hook)
             if state.status == SpoolStatus::Active {
-                let (has_repair, has_recovery) = has_pending_work(&self.context.store, spool)?;
-                if has_repair {
-                    return Ok(Some(Action::Repair { spool, epoch }));
+                let (has_splice, has_recovery) = has_pending_work(&self.context.store, spool)?;
+                if has_splice {
+                    return Ok(Some(Action::Splice { spool, epoch }));
                 } else if has_recovery {
                     return Ok(Some(Action::Recover { spool, epoch }));
                 }
@@ -196,7 +196,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             {
                 if state.status == SpoolStatus::Active {
                     let next_status = match action {
-                        Action::Repair { .. } => SpoolStatus::Repair,
+                        Action::Splice { .. } => SpoolStatus::Splice,
                         Action::Recover { .. } => SpoolStatus::Recover,
                         _ => state.status,
                     };
@@ -227,8 +227,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         Action::Scan { spool, .. } => {
                             TaskResult::Scan(scan::run(ctx, &config, spool, &token).await)
                         }
-                        Action::Repair { spool, .. } => {
-                            TaskResult::Repair(repair::run(ctx, &config, spool, &token).await)
+                        Action::Splice { spool, .. } => {
+                            TaskResult::Splice(splice::run(ctx, &config, spool, &token).await)
                         }
                         Action::Recover { spool, .. } => {
                             TaskResult::Recover(recover::run(ctx, &config, spool, &token).await)
@@ -426,15 +426,15 @@ pub fn has_pending_work<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
 ) -> Result<(bool, bool), NodeError> {
-    let has_repair = !store
-        .iter_pending_repairs(spool, 1)
-        .map_err(|e| NodeError::Store(format!("iter_pending_repairs({spool}): {e}")))?
+    let has_splice = !store
+        .iter_pending_splices(spool, 1)
+        .map_err(|e| NodeError::Store(format!("iter_pending_splices({spool}): {e}")))?
         .is_empty();
     let has_recovery = !store
         .iter_pending_recoveries(spool, 1)
         .map_err(|e| NodeError::Store(format!("iter_pending_recoveries({spool}): {e}")))?
         .is_empty();
-    Ok((has_repair, has_recovery))
+    Ok((has_splice, has_recovery))
 }
 
 fn action_for_status(
@@ -445,7 +445,7 @@ fn action_for_status(
     match status {
         SpoolStatus::Sync => Some(Action::Sync { spool, epoch }),
         SpoolStatus::Scan => Some(Action::Scan { spool, epoch }),
-        SpoolStatus::Repair => Some(Action::Repair { spool, epoch }),
+        SpoolStatus::Splice => Some(Action::Splice { spool, epoch }),
         SpoolStatus::Recover => Some(Action::Recover { spool, epoch }),
         SpoolStatus::Active | SpoolStatus::LockedToMove => None,
     }
@@ -455,7 +455,7 @@ fn status_priority(status: SpoolStatus) -> u8 {
     match status {
         SpoolStatus::Sync => 0,
         SpoolStatus::Scan => 1,
-        SpoolStatus::Repair => 2,
+        SpoolStatus::Splice => 2,
         SpoolStatus::Recover => 3,
         SpoolStatus::Active => 4,
         SpoolStatus::LockedToMove => 5,
@@ -481,7 +481,7 @@ fn transition_status<Db: Store>(
             reconcile(store, spool).map(Some)
         }
 
-        (Action::Repair { .. }, TaskResult::Repair(_)) => {
+        (Action::Splice { .. }, TaskResult::Splice(_)) => {
             reconcile(store, spool).map(Some)
         }
 
@@ -497,9 +497,9 @@ fn reconcile<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
 ) -> Result<SpoolStatus, NodeError> {
-    let (has_repair, has_recovery) = has_pending_work(store, spool)?;
-    if has_repair {
-        Ok(SpoolStatus::Repair)
+    let (has_splice, has_recovery) = has_pending_work(store, spool)?;
+    if has_splice {
+        Ok(SpoolStatus::Splice)
     } else if has_recovery {
         Ok(SpoolStatus::Recover)
     } else {
@@ -530,8 +530,8 @@ fn reset_spool_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<(), NodeError> {
 
     ctx.store
-        .clear_all_pending_repairs(spool)
-        .map_err(|e| NodeError::Store(format!("clear_all_pending_repairs({spool}): {e}")))?;
+        .clear_all_pending_splices(spool)
+        .map_err(|e| NodeError::Store(format!("clear_all_pending_splices({spool}): {e}")))?;
 
     ctx.store
         .clear_all_pending_recoveries(spool)
@@ -583,7 +583,7 @@ mod tests {
     use super::SpoolManager;
     use crate::config::recovery::RecoveryConfig;
     use crate::features::spool::types::{
-        Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult,
+        Action, ScanResult, SpliceResult, SyncResult, TaskDone, TaskResult,
     };
     use crate::harness::{NodeHarness, TestContext};
 
@@ -624,12 +624,12 @@ mod tests {
         let ctx = test_context().await;
         let track = Address::from([7; 32]);
 
-        // Assigned spool persisted under a stale epoch, with detected repair work
+        // Assigned spool persisted under a stale epoch, with detected splice work
         // queued and a per-epoch sync cursor set.
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .unwrap();
-        ctx.store.add_pending_repair(SPOOL, track).unwrap();
+        ctx.store.add_pending_splice(SPOOL, track).unwrap();
         ctx.store.set_spool_sync_cursor(SPOOL, track).unwrap();
 
         let manager = SpoolManager::new(
@@ -641,19 +641,19 @@ mod tests {
         manager.advance(EPOCH).unwrap();
 
         // Re-entered Sync for the new epoch, the per-epoch cursor cleared, but the
-        // repair queue survives the refresh.
+        // splice queue survives the refresh.
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Sync);
         assert_eq!(state.epoch, EPOCH);
         assert_eq!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap(), None);
-        assert!(ctx.store.has_pending_repair(SPOOL, track).unwrap());
+        assert!(ctx.store.has_pending_splice(SPOOL, track).unwrap());
     }
 
     #[tokio::test]
     async fn next_action_prefers_sync_then_lowest_spool() {
         let ctx = test_context().await;
         ctx.store
-            .set_spool_state(SpoolIndex(7), SpoolState::new(SpoolStatus::Repair, EPOCH))
+            .set_spool_state(SpoolIndex(7), SpoolState::new(SpoolStatus::Splice, EPOCH))
             .unwrap();
         ctx.store
             .set_spool_state(SpoolIndex(6), SpoolState::new(SpoolStatus::Sync, EPOCH))
@@ -712,19 +712,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_pending_repair() {
+    async fn active_pending_splice() {
         let ctx = test_context().await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
         ctx.store
-            .add_pending_repair(SPOOL, Address::from([1; 32]))
+            .add_pending_splice(SPOOL, Address::from([1; 32]))
             .unwrap();
 
         let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
             manager.next_action(EPOCH).unwrap(),
-            Some(Action::Repair { spool: SPOOL, epoch: EPOCH })
+            Some(Action::Splice { spool: SPOOL, epoch: EPOCH })
         );
     }
 
@@ -746,13 +746,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_stays_repair_with_pending() {
+    async fn reconcile_stays_splice_with_pending() {
         let ctx = test_context().await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Scan, EPOCH))
             .unwrap();
         ctx.store
-            .add_pending_repair(SPOOL, Address::from([1; 32]))
+            .add_pending_splice(SPOOL, Address::from([1; 32]))
             .unwrap();
 
         let mut manager = SpoolManager::new(
@@ -772,7 +772,7 @@ mod tests {
             .unwrap();
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert_eq!(state.status, SpoolStatus::Repair);
+        assert_eq!(state.status, SpoolStatus::Splice);
     }
 
     #[tokio::test]
@@ -806,7 +806,7 @@ mod tests {
     async fn reconcile_active_when_empty() {
         let ctx = test_context().await;
         ctx.store
-            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Repair, EPOCH))
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Splice, EPOCH))
             .unwrap();
 
         let mut manager = SpoolManager::new(
@@ -818,8 +818,8 @@ mod tests {
         manager
             .handle_done(
                 TaskDone::Done(
-                    Action::Repair { spool: SPOOL, epoch: EPOCH },
-                    TaskResult::Repair(RepairResult::Done { unrepairable: 0 }),
+                    Action::Splice { spool: SPOOL, epoch: EPOCH },
+                    TaskResult::Splice(SpliceResult::Done { unspliceable: 0 }),
                 ),
                 EPOCH,
             )
@@ -830,13 +830,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_spawn_persists_repair_before_worker() {
+    async fn try_spawn_persists_splice_before_worker() {
         let ctx = test_context().await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
             .unwrap();
         ctx.store
-            .add_pending_repair(SPOOL, Address::from([1; 32]))
+            .add_pending_splice(SPOOL, Address::from([1; 32]))
             .unwrap();
 
         let mut manager = SpoolManager::new(
@@ -848,7 +848,7 @@ mod tests {
         manager.try_spawn(EPOCH).unwrap();
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert_eq!(state.status, SpoolStatus::Repair);
+        assert_eq!(state.status, SpoolStatus::Splice);
         assert!(manager.is_running(SPOOL));
     }
 }

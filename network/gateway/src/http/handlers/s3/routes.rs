@@ -3,11 +3,10 @@
 //! Hosts the per-route handlers (ListBuckets, ListObjectsV2, GetObject,
 //! HeadObject, PutObject, multipart upload, DeleteObject).
 
-use std::collections::HashSet;
 use std::io;
+use std::time::Duration;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes, to_bytes};
@@ -27,21 +26,17 @@ use tape_api::program::tapedrive::tape_pda;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
-use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::ApiError;
 use tape_sdk::error::{TapedriveError, UploadError};
-use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps};
-use tape_store::types::{CredentialScope, ObjectListEntry};
+use tape_store::ops::{CredentialOps, ObjectListOps, TapeOps};
+use tape_store::types::CredentialScope;
 
 use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
 };
 use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
-use crate::http::handlers::object::response::object_response_ranged;
-use crate::http::handlers::s3::response::head_response_parts;
-use crate::staging::StagedObject;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
 use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
@@ -317,197 +312,6 @@ const MAX_KEYS_LIMIT: u32 = 1000;
 /// renders the `ListBucketResult` XML, including `IsTruncated` and a
 /// `NextContinuationToken` (base64 of the store's raw-name cursor) when the
 /// listing is truncated.
-/// One listing page, merged from the on-chain index and read-after-write staging.
-struct MergedListing {
-    contents: Vec<ObjectEntry>,
-    common_prefixes: Vec<String>,
-    next: Option<Vec<u8>>,
-    is_truncated: bool,
-}
-
-/// First position of `needle` in `haystack`.
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-/// Render one indexed row.
-fn indexed_entry(name: &[u8], entry: &ObjectListEntry) -> ObjectEntry {
-    ObjectEntry {
-        key: String::from_utf8_lossy(name).into_owned(),
-        last_modified: entry.block_time,
-        etag: entry.etag.to_string(),
-        size: entry.size.to_bytes(),
-        storage_class: STORAGE_CLASS_STANDARD,
-    }
-}
-
-/// Render one staged row. Size comes from the staged bytes, since the object
-/// has no on-chain record to read it from yet.
-fn staged_entry(name: &[u8], staged: &StagedObject) -> ObjectEntry {
-    ObjectEntry {
-        key: String::from_utf8_lossy(name).into_owned(),
-        last_modified: Some(staged.block_time),
-        etag: staged.etag.to_string(),
-        size: staged.bytes.len() as u64,
-        storage_class: STORAGE_CLASS_STANDARD,
-    }
-}
-
-/// List a bucket, including objects that exist only in staging.
-///
-/// The index is authoritative and wins on every key it holds, which matches the
-/// GET path: that resolves on chain first and falls back to staging only on a
-/// miss. Listing has to agree, or the two surfaces disagree about the same key.
-///
-/// Without this a client that writes and then lists does not see its own key
-/// until the track certifies, seconds later.
-fn list_objects_merged<Db, Cluster, Blockchain>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    bucket: Address,
-    prefix: &[u8],
-    delimiter: Option<&[u8]>,
-    start: Option<&[u8]>,
-    max_keys: usize,
-) -> Result<MergedListing, S3Error>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    let page = state
-        .context
-        .store
-        .list_objects(bucket, prefix, delimiter, start, max_keys)
-        .map_err(|error| S3Error::Internal(error.to_string()))?;
-
-    // The index treats `start` as inclusive and never seeks before the prefix.
-    // Staged keys have to be filtered the same way or the two halves paginate
-    // differently.
-    let start_name: Vec<u8> = match start {
-        Some(seek) if seek > prefix => seek.to_vec(),
-        _ => prefix.to_vec(),
-    };
-    let staged = state.staging.staged_from(bucket, prefix, &start_name);
-    if staged.is_empty() {
-        return Ok(MergedListing {
-            contents: page.objects.iter().map(|(name, entry)| indexed_entry(name, entry)).collect(),
-            common_prefixes: page
-                .common_prefixes
-                .iter()
-                .map(|folder| String::from_utf8_lossy(folder).into_owned())
-                .collect(),
-            next: page.next,
-            is_truncated: page.is_truncated,
-        });
-    }
-
-    Ok(merge_listing(&page, &staged, prefix, delimiter, max_keys))
-}
-
-/// Merge staged rows into an index page.
-///
-/// Split out from the fetch so the ordering, folding and truncation rules can
-/// be tested without a store or a running gateway.
-fn merge_listing(
-    page: &ObjectListPage,
-    staged: &[(Vec<u8>, StagedObject)],
-    prefix: &[u8],
-    delimiter: Option<&[u8]>,
-    max_keys: usize,
-) -> MergedListing {
-    let mut contents: Vec<(Vec<u8>, ObjectEntry)> = page
-        .objects
-        .iter()
-        .map(|(name, entry)| (name.clone(), indexed_entry(name, entry)))
-        .collect();
-    let mut prefixes: Vec<Vec<u8>> = page.common_prefixes.clone();
-
-    if !staged.is_empty() {
-        let indexed: HashSet<&[u8]> = page
-            .objects
-            .iter()
-            .map(|(name, _)| name.as_slice())
-            .collect();
-
-        for (name, object) in staged {
-            if indexed.contains(name.as_slice()) {
-                continue;
-            }
-
-            // Fold into a folder exactly as the index would, so a staged key
-            // never shows up beside the prefix that should have hidden it.
-            let folder = delimiter.and_then(|delimiter| {
-                let rest = &name[prefix.len()..];
-                find_subslice(rest, delimiter)
-                    .map(|position| name[..prefix.len() + position + delimiter.len()].to_vec())
-            });
-            match folder {
-                Some(folder) => {
-                    if !prefixes.contains(&folder) {
-                        prefixes.push(folder);
-                    }
-                }
-                None => contents.push((name.clone(), staged_entry(name, object))),
-            }
-        }
-    }
-
-    contents.sort_by(|left, right| left.0.cmp(&right.0));
-    prefixes.sort();
-
-    // Objects and folders share the key budget, so the two sorted lists are
-    // walked together and the first row that does not fit becomes the cursor.
-    let mut merged = MergedListing {
-        contents: Vec::new(),
-        common_prefixes: Vec::new(),
-        next: page.next.clone(),
-        is_truncated: page.is_truncated,
-    };
-    let mut objects = contents.into_iter().peekable();
-    let mut folders = prefixes.into_iter().peekable();
-
-    loop {
-        let take_object = match (objects.peek(), folders.peek()) {
-            (None, None) => break,
-            (Some(_), None) => true,
-            (None, Some(_)) => false,
-            (Some((name, _)), Some(folder)) => name <= folder,
-        };
-
-        if merged.contents.len() + merged.common_prefixes.len() >= max_keys {
-            let next = match take_object {
-                true => objects.next().map(|(name, _)| name),
-                false => folders.next(),
-            };
-            merged.next = next;
-            merged.is_truncated = true;
-            break;
-        }
-
-        match take_object {
-            true => {
-                if let Some((_, entry)) = objects.next() {
-                    merged.contents.push(entry);
-                }
-            }
-            false => {
-                if let Some(folder) = folders.next() {
-                    merged
-                        .common_prefixes
-                        .push(String::from_utf8_lossy(&folder).into_owned());
-                }
-            }
-        }
-    }
-
-    merged
-}
-
 fn list_objects_v2<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket_label: String,
@@ -537,17 +341,32 @@ where
         None => start_after.as_ref().map(|start| start.as_bytes().to_vec()),
     };
 
-    let page = list_objects_merged(
-        state,
-        bucket,
-        prefix.as_bytes(),
-        delimiter.as_deref().map(str::as_bytes),
-        start.as_deref(),
-        max_keys as usize,
-    )?;
+    let page = state
+        .context
+        .store
+        .list_objects(
+            bucket,
+            prefix.as_bytes(),
+            delimiter.as_deref().map(str::as_bytes),
+            start.as_deref(),
+            max_keys as usize,
+        )
+        .map_err(|error| S3Error::Internal(error.to_string()))?;
 
-    let contents = page.contents;
-    let common_prefixes = page.common_prefixes;
+    let mut contents: Vec<ObjectEntry> = Vec::new();
+    for (name, entry) in &page.objects {
+        contents.push(ObjectEntry {
+            key: String::from_utf8_lossy(name).into_owned(),
+            last_modified: entry.block_time,
+            etag: entry.etag.to_string(),
+            size: entry.size.to_bytes(),
+            storage_class: STORAGE_CLASS_STANDARD,
+        });
+    }
+    let mut common_prefixes: Vec<String> = Vec::new();
+    for common_prefix in &page.common_prefixes {
+        common_prefixes.push(String::from_utf8_lossy(common_prefix).into_owned());
+    }
 
     let key_count = (contents.len() + common_prefixes.len()) as u32;
     let next_continuation_token = page
@@ -600,17 +419,32 @@ where
     // V1's `marker` is the raw key to resume after (no opaque token).
     let start: Option<Vec<u8>> = marker.as_ref().map(|marker| marker.as_bytes().to_vec());
 
-    let page = list_objects_merged(
-        state,
-        bucket,
-        prefix.as_bytes(),
-        delimiter.as_deref().map(str::as_bytes),
-        start.as_deref(),
-        max_keys as usize,
-    )?;
+    let page = state
+        .context
+        .store
+        .list_objects(
+            bucket,
+            prefix.as_bytes(),
+            delimiter.as_deref().map(str::as_bytes),
+            start.as_deref(),
+            max_keys as usize,
+        )
+        .map_err(|error| S3Error::Internal(error.to_string()))?;
 
-    let contents = page.contents;
-    let common_prefixes = page.common_prefixes;
+    let mut contents: Vec<ObjectEntry> = Vec::new();
+    for (name, entry) in &page.objects {
+        contents.push(ObjectEntry {
+            key: String::from_utf8_lossy(name).into_owned(),
+            last_modified: entry.block_time,
+            etag: entry.etag.to_string(),
+            size: entry.size.to_bytes(),
+            storage_class: STORAGE_CLASS_STANDARD,
+        });
+    }
+    let mut common_prefixes: Vec<String> = Vec::new();
+    for common_prefix in &page.common_prefixes {
+        common_prefixes.push(String::from_utf8_lossy(common_prefix).into_owned());
+    }
 
     // NextMarker (when truncated) is the resume cursor, reported as a plain key.
     let next_marker = page
@@ -750,33 +584,7 @@ where
 {
     check_request_rate(&state, &caller)?;
 
-    // On chain first, so once the index catches up the staged copy is never read
-    // again and its memory frees on eviction.
-    let tape = parse_bucket(&bucket)?;
-    let (resolved, track) = match resolve_readable(&state, &bucket, &key) {
-        Ok(readable) => readable,
-        Err(S3Error::NoSuchKey) => {
-            let Some(staged) = state.staging.get(tape, &key) else {
-                return Err(S3Error::NoSuchKey);
-            };
-            let metadata = ObjectResponseMetadata {
-                content_type: staged.content_type,
-                filename: None,
-                cache: CachePolicy::Immutable,
-            };
-            let mut response = object_response_ranged(
-                staged.bytes.to_vec(),
-                &metadata,
-                staged.etag,
-                range.as_deref(),
-                StatusCode::OK,
-            )
-            .map_err(S3Error::from)?;
-            set_last_modified(response.headers_mut(), Some(staged.block_time));
-            return Ok(response);
-        }
-        Err(error) => return Err(error),
-    };
+    let (resolved, track) = resolve_readable(&state, &bucket, &key)?;
     // The S3 content type comes from the object-list index; objects carry no
     // separate filename, so no Content-Disposition is set.
     let metadata = ObjectResponseMetadata {
@@ -836,23 +644,8 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     range: Option<&str>,
 ) -> Result<Response, S3Error> {
     check_request_rate(state, caller)?;
-    let tape = parse_bucket(bucket)?;
-    match resolve_readable(state, bucket, key) {
-        Ok((resolved, _track)) => head_response(&resolved, range),
-        Err(S3Error::NoSuchKey) => {
-            let Some(staged) = state.staging.get(tape, key) else {
-                return Err(S3Error::NoSuchKey);
-            };
-            head_response_parts(
-                staged.bytes.len() as u64,
-                staged.etag,
-                staged.content_type,
-                Some(staged.block_time),
-                range,
-            )
-        }
-        Err(error) => Err(error),
-    }
+    let (resolved, _track) = resolve_readable(state, bucket, key)?;
+    head_response(&resolved, range)
 }
 
 /// The metering identity for an S3 read: the resolved caller IP, plus the
@@ -958,11 +751,6 @@ where
     // (1..=MAX_NAME_LEN bytes) up front for a precise client error.
     validate_object_key(&key)?;
 
-    // The track this key is bound to now, if any. A PUT that overwrites it writes
-    // a new track and rebinds the name, orphaning this one; capture it so the
-    // write below can reclaim it once the rebinding lands.
-    let prior = resolve_object(&state, tape, &key)?;
-
     let content_type = content_type_from_headers(headers);
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
@@ -970,7 +758,7 @@ where
     // Streamed (bounded-memory) when a sentinel payload declares a size, else
     // buffered so the body can be hash-verified. Either way the write chokepoint
     // reserves before the write and commits/refunds after.
-    let (written_etag, buffered) = match streamed_object_size(signed_payload, headers)? {
+    let written_etag = match streamed_object_size(signed_payload, headers)? {
         Some(size) => {
             if size > max_object_bytes as u64 {
                 return Err(S3Error::EntityTooLarge(format!(
@@ -990,11 +778,7 @@ where
                 ),
                 producer,
             );
-            // A streamed body is never held whole, so there is nothing to stage.
-            (
-                settle_streamed(permit, &state, size, write_result, producer_result)?,
-                None,
-            )
+            settle_streamed(permit, &state, size, write_result, producer_result)?
         }
         None => {
             let data = buffer_object_body(body, max_buffered_bytes).await?;
@@ -1002,16 +786,9 @@ where
             let size = data.len() as u64;
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
             let result = write_ctx
-                .write_object(
-                    state.context.as_ref(),
-                    tape,
-                    key.as_bytes(),
-                    content_type,
-                    &data,
-                    prior.as_ref().map(|object| object.track_address),
-                )
+                .write_object(state.context.as_ref(), tape, key.as_bytes(), content_type, &data)
                 .await;
-            (settle_write(permit, &state, size, result)?, Some(data))
+            settle_write(permit, &state, size, result)?
         }
     };
 
@@ -1022,17 +799,6 @@ where
     let etag = resolve_object(&state, tape, &key)?
         .map(|resolved| resolved.etag)
         .unwrap_or(written_etag);
-
-    // Read-after-write: hold the object here until the ingestor tails the slot
-    // and the track certifies, so a read or a listing issued straight after this
-    // response does not miss the key it was just told about.
-    if let Some(data) = buffered {
-        state.staging.put(
-            tape,
-            key.clone(),
-            StagedObject::new(data, content_type, etag, now_unix()),
-        );
-    }
 
     put_response(etag)
 }
@@ -1194,7 +960,6 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
-        | TapedriveError::WriteConflict { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::Io(_)
         | TapedriveError::Stream(_)) => S3Error::Internal(other.to_string()),
@@ -1217,7 +982,6 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
-        | TapedriveError::WriteConflict { .. }
         | TapedriveError::NotFound
         | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }
@@ -1302,10 +1066,6 @@ where
     // Authorization chokepoint runs before the existence check so an
     // unauthorized caller cannot probe which keys exist via the response code.
     let permit = authorize_write(state, auth, tape, &key, WriteOp::Delete, 0).await?;
-
-    // Drop any staged copy first, so a delete is never shadowed by the
-    // read-after-write window still serving the object it just removed.
-    state.staging.remove(tape, &key);
 
     // S3 DeleteObject is idempotent: a key absent from the object-list index is
     // already "deleted", so report success without touching the chain. Nothing
@@ -1646,10 +1406,6 @@ where
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let assembled = multipart::assemble(store, &upload_id, bucket, &key, &requested, max_object_bytes)?;
 
-    // Prior binding for this key; a completed multipart that overwrites it
-    // orphans this track, reclaimed after the new write lands (see PutObject).
-    let prior = resolve_object(state, bucket, &assembled.key)?;
-
     // Authorization chokepoint.
     let size = assembled.data.len() as u64;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, size).await?;
@@ -1660,7 +1416,6 @@ where
             assembled.key.as_bytes(),
             assembled.content_type,
             &assembled.data,
-            prior.as_ref().map(|object| object.track_address),
         )
         .await;
     // On failure `?` returns before the upload is dropped, so it stays intact for
@@ -1678,20 +1433,6 @@ where
         .map(|resolved| resolved.etag)
         .unwrap_or(written_etag);
 
-    // Read-after-write, same as PutObject: a completed multipart upload is a
-    // finished object, so it has to be readable and listable the moment this
-    // returns rather than once the ingestor catches up.
-    state.staging.put(
-        bucket,
-        assembled.key.clone(),
-        StagedObject::new(
-            Bytes::from(assembled.data),
-            assembled.content_type,
-            etag,
-            now_unix(),
-        ),
-    );
-
     // Location is the configured public endpoint URL, else a path-style resource.
     let location = match &state.context.config.gateway.s3.public_endpoint {
         Some(endpoint) => format!("{}/{bucket_label}/{key}", endpoint.trim_end_matches('/')),
@@ -1708,7 +1449,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::types::StorageUnits;
 
     // query lookup returns the percent-decoded value
     #[test]
@@ -1792,104 +1532,5 @@ mod tests {
             s3_write_error(TapedriveError::CommitmentMismatch),
             S3Error::Internal(_)
         ));
-    }
-
-    fn staged(key: &str, size: usize) -> (Vec<u8>, StagedObject) {
-        (
-            key.as_bytes().to_vec(),
-            StagedObject::new(
-                axum::body::Bytes::from(vec![0u8; size]),
-                ContentType::Unknown,
-                Hash([9u8; 32]),
-                123,
-            ),
-        )
-    }
-
-    fn indexed(keys: &[&str]) -> ObjectListPage {
-        ObjectListPage {
-            objects: keys
-                .iter()
-                .map(|key| {
-                    (
-                        key.as_bytes().to_vec(),
-                        ObjectListEntry {
-                            size: StorageUnits::from_bytes(10),
-                            etag: Hash([1u8; 32]),
-                            block_time: Some(1),
-                            slot: Default::default(),
-                            data_tape: Address::default(),
-                            track_number: Default::default(),
-                            kind: 0,
-                            content_type: ContentType::Unknown,
-                        },
-                    )
-                })
-                .collect(),
-            common_prefixes: Vec::new(),
-            next: None,
-            is_truncated: false,
-        }
-    }
-
-    fn keys(listing: &MergedListing) -> Vec<String> {
-        listing.contents.iter().map(|row| row.key.clone()).collect()
-    }
-
-    // a key that only exists in staging still lists, in sorted position
-    #[test]
-    fn staged_only() {
-        let page = indexed(&["a.txt", "c.txt"]);
-        let merged = merge_listing(&page, &[staged("b.txt", 4)], b"", None, 100);
-        assert_eq!(keys(&merged), vec!["a.txt", "b.txt", "c.txt"]);
-    }
-
-    // the index is authoritative, matching how GET resolves
-    #[test]
-    fn index_wins() {
-        let page = indexed(&["dup.txt"]);
-        let merged = merge_listing(&page, &[staged("dup.txt", 4096)], b"", None, 100);
-        assert_eq!(keys(&merged), vec!["dup.txt"]);
-        assert_eq!(merged.contents[0].size, 10, "the indexed row survived");
-    }
-
-    // a staged key under a folder folds into the prefix, it does not sit beside it
-    #[test]
-    fn staged_folds() {
-        let page = indexed(&["top.txt"]);
-        let merged = merge_listing(&page, &[staged("logs/2026/a.log", 4)], b"", Some(b"/"), 100);
-        assert_eq!(keys(&merged), vec!["top.txt"]);
-        assert_eq!(merged.common_prefixes, vec!["logs/".to_string()]);
-    }
-
-    // a folder already rolled up by the index is not duplicated
-    #[test]
-    fn duplicate_prefix() {
-        let mut page = indexed(&[]);
-        page.common_prefixes = vec![b"logs/".to_vec()];
-        let merged = merge_listing(&page, &[staged("logs/b.log", 4)], b"", Some(b"/"), 100);
-        assert_eq!(merged.common_prefixes, vec!["logs/".to_string()]);
-    }
-
-    // objects and folders share the key budget, and the cursor is the first row dropped
-    #[test]
-    fn shared_budget() {
-        let page = indexed(&["a.txt", "b.txt"]);
-        let merged = merge_listing(&page, &[staged("c.txt", 4), staged("d.txt", 4)], b"", None, 3);
-        assert_eq!(keys(&merged), vec!["a.txt", "b.txt", "c.txt"]);
-        assert!(merged.is_truncated);
-        assert_eq!(merged.next.as_deref(), Some(b"d.txt".as_slice()));
-    }
-
-    // with nothing staged the page is passed through untouched
-    #[test]
-    fn empty_staging() {
-        let mut page = indexed(&["a.txt"]);
-        page.is_truncated = true;
-        page.next = Some(b"z.txt".to_vec());
-        let merged = merge_listing(&page, &[], b"", None, 100);
-        assert_eq!(keys(&merged), vec!["a.txt"]);
-        assert!(merged.is_truncated);
-        assert_eq!(merged.next.as_deref(), Some(b"z.txt".as_slice()));
     }
 }

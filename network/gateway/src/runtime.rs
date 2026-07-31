@@ -28,7 +28,6 @@ use crate::cache::GatewaySliceCache;
 use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::server::{GatewayHttpServer, GatewayS3AdminServer, GatewayS3Server};
 use crate::meter::GatewayMeter;
-use crate::staging::StagingStore;
 use crate::store::GatewayStoreManager;
 
 async fn drain_block_channel(
@@ -64,7 +63,6 @@ async fn supervise_with_context<Db, Cluster, Blockchain>(
     admission: Arc<dyn Admission>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
-    staging: Arc<StagingStore>,
     start_slot: SlotNumber,
     cancel: CancellationToken,
     http_server: JoinHandle<Result<(), NodeError>>,
@@ -76,7 +74,7 @@ where
 {
     // Destructure exhaustively: every downstream channel must be consumed or
     // drained, or the ingestor's fan-out fills its buffer and deadlocks.
-    let (senders, DownstreamReceivers { state, assignment, eviction, replay, snapshot }) =
+    let (senders, DownstreamReceivers { state, assignment, challenge, eviction, replay, snapshot }) =
         downstream_channels();
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
@@ -117,7 +115,6 @@ where
             context.clone(),
             slice_cache.clone(),
             meter.clone(),
-            staging.clone(),
             accounting.clone(),
             admission,
             config.gateway.s3.clone(),
@@ -175,6 +172,11 @@ where
     );
 
     supervisor.spawn(
+        ServiceName::ChallengeManager,
+        drain_block_channel(challenge, cancel.clone(), ChannelName::ChallengeManager),
+    );
+
+    supervisor.spawn(
         ServiceName::EvictionManager,
         drain_block_channel(eviction, cancel.clone(), ChannelName::EvictionManager),
     );
@@ -207,15 +209,11 @@ where
             .map_err(|error| NodeError::Store(error.to_string()))?,
     );
     let meter = Arc::new(GatewayMeter::new(context.config.gateway.metering.clone()));
-    // One staging store across both listeners, so an object written on the S3
-    // listener is readable and listable on the native one straight away.
-    let staging = Arc::new(StagingStore::new());
 
     let http_server = GatewayHttpServer::new(
         context.clone(),
         slice_cache.clone(),
         meter.clone(),
-        staging.clone(),
         config.http.clone(),
         cancel.clone(),
     );
@@ -232,7 +230,6 @@ where
         admission,
         slice_cache,
         meter,
-        staging,
         start_slot,
         cancel,
         http_server,

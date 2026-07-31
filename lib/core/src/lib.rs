@@ -3,6 +3,7 @@
 pub mod bft;
 pub mod bls;
 pub mod cert;
+pub mod challenge;
 pub mod encoding;
 pub mod erasure;
 pub mod object;

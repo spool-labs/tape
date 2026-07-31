@@ -14,7 +14,7 @@ use std::mem::MaybeUninit;
 use serde::{Deserialize, Serialize};
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{VoteCandidate, VoteKind};
-use tape_core::types::{EpochNumber, SpoolIndex, TrackNumber};
+use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::{
@@ -127,6 +127,63 @@ impl<'de> SchemaRead<'de> for SpoolIndexKey {
         let bytes: [u8; 2] = unsafe { reader.get_t()? };
         let spool_id = u16::from_be_bytes(bytes);
         dst.write(SpoolIndexKey(SpoolIndex(spool_id as u64)));
+        Ok(())
+    }
+}
+
+/// Key for one peer's outcome in one round (48 bytes)
+///
+/// Format: [peer 32 bytes][epoch BE 8 bytes][round BE 8 bytes]
+///
+/// Peer first so one node's whole history is a prefix scan, then epoch and round
+/// big-endian so that scan comes back in the order the rounds happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChallengeRoundKey {
+    pub peer: Address,
+    pub epoch: EpochNumber,
+    pub round: RoundNumber,
+}
+
+impl ChallengeRoundKey {
+    pub const SIZE: usize = 48;
+
+    pub fn new(peer: Address, epoch: EpochNumber, round: RoundNumber) -> Self {
+        Self { peer, epoch, round }
+    }
+
+    /// Prefix covering every round recorded for one peer.
+    pub fn peer_prefix(peer: Address) -> [u8; 32] {
+        peer.to_bytes()
+    }
+}
+
+impl SchemaWrite for ChallengeRoundKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.peer.as_ref())?;
+        writer.write_exact(&src.epoch.0.to_be_bytes())?;
+        writer.write_exact(&src.round.0.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for ChallengeRoundKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<ChallengeRoundKey>) -> ReadResult<()> {
+        let peer: [u8; 32] = unsafe { reader.get_t()? };
+        let epoch: [u8; 8] = unsafe { reader.get_t()? };
+        let round: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(ChallengeRoundKey {
+            peer: Address::from(peer),
+            epoch: EpochNumber(u64::from_be_bytes(epoch)),
+            round: RoundNumber(u64::from_be_bytes(round)),
+        });
         Ok(())
     }
 }

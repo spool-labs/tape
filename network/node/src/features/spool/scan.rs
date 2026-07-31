@@ -13,8 +13,8 @@ use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::features::spool::types::ScanResult;
 
-// Purpose: Audit local storage to find missing slices that need repair.
-//          Adds to the pending_repairs queue for the Repair task.
+// Purpose: Audit local storage to find missing slices that need splicing.
+//          Adds to the pending_splices queue for the Splice task.
 //
 // Scan is local-only (no remote calls) and fast. No cursor needed,
 // if interrupted, the next scan restarts from the beginning.
@@ -26,14 +26,14 @@ use crate::features::spool::types::ScanResult;
 //    b. For each (track_address, track_info) in the batch:
 //       - Skip if track's spool group doesn't include this spool.
 //       - Check if we have the slice locally via has_slice.
-//       - If missing → add_pending_repair(spool, track_address).
+//       - If missing → add_pending_splice(spool, track_address).
 //         Increment gap counter.
 //    c. Advance cursor to last track in the batch.
 //    d. Stop when batch is empty.
 // 2. Return Done { gaps }.
 //
-// Stale entries in pending_repairs (slice already obtained, or track
-// deleted) are harmless, repair skips and removes them.
+// Stale entries in pending_splices (slice already obtained, or track
+// deleted) are harmless, splice skips and removes them.
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -76,12 +76,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
-            // Raw tracks have no slice semantics and should never enter repair.
+            // Raw tracks have no slice semantics and never enter the splice queue.
             if !track_info.is_coded() {
                 continue;
             }
 
-            // Only consider certified tracks for repair
+            // Only consider certified tracks for splicing
             match ctx.store.get_object_info(*track_addr) {
                 Ok(Some(info)) if info.is_certified() => {}
                 Ok(Some(_)) => continue,
@@ -111,8 +111,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
-            if let Err(error) = ctx.store.add_pending_repair(spool, *track_addr) {
-                warn!(spool = %spool, track = %track_addr, %error, "scan add_pending_repair failed");
+            if let Err(error) = ctx.store.add_pending_splice(spool, *track_addr) {
+                warn!(spool = %spool, track = %track_addr, %error, "scan add_pending_splice failed");
                 had_error = true;
                 continue;
             }
@@ -230,7 +230,7 @@ mod tests {
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
 
-        assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert!(ctx.store.has_pending_splice(SPOOL, a).unwrap());
     }
 
     #[tokio::test]
@@ -279,7 +279,7 @@ mod tests {
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 0 });
-        assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert!(!ctx.store.has_pending_splice(SPOOL, a).unwrap());
     }
 
     #[tokio::test]
@@ -294,7 +294,7 @@ mod tests {
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
-        assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert!(ctx.store.has_pending_splice(SPOOL, a).unwrap());
     }
 
     #[tokio::test]
@@ -314,6 +314,6 @@ mod tests {
         )
         .await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
-        assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert!(ctx.store.has_pending_splice(SPOOL, a).unwrap());
     }
 }
