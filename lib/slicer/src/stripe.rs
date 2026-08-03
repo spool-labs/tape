@@ -5,6 +5,11 @@
 //! padding never exceeds one alignment unit per stripe, and the cap holds peak
 //! encode memory flat regardless of blob size.
 
+use tape_core::encoding::EncodingProfile;
+
+use crate::clay::ClayCoder;
+use crate::metadata::SliceMetadata;
+
 /// Largest stripe a writer emits. Encode throughput peaks here and flattens
 /// above it, so the cap buys nothing to raise and holds peak encode memory
 /// flat. The sweep behind that sits in tests/stripe_measure.rs.
@@ -54,5 +59,66 @@ mod tests {
         assert_eq!(num_stripes(100_000, 100_000), 1);
         assert_eq!(num_stripes(100_001, 100_000), 2);
         assert_eq!(num_stripes(250_000, 100_000), 3);
+    }
+}
+
+/// Byte length of one coded slice, from a track's registered encoding alone.
+///
+/// The challenge sample set has to be weighted by slice length, and every owner
+/// in a group must reach the same weights without measuring what it happens to
+/// hold. Every input here is chain-derived: the registered payload size, the
+/// stripe layout the writer committed to, and the coding profile.
+///
+/// Mirrors what `Slicer::encode` lays out, one chunk per stripe followed by the
+/// slice metadata, and `derived_length_matches_encoding` pins the two together.
+pub fn coded_slice_len(
+    profile: EncodingProfile,
+    size: usize,
+    stripe_size: usize,
+    stripe_count: usize,
+) -> usize {
+    let chunk = ClayCoder::from_params(profile.clay_params()).track_chunk_size(stripe_size, size);
+    stripe_count * chunk + SliceMetadata::SIZE
+}
+
+#[cfg(test)]
+mod slice_len_tests {
+    use super::*;
+    use crate::slicer::Slicer;
+    use crate::coder::ErasureCoder;
+
+    /// A deterministic non-trivial payload, so the codec never sees all zeros.
+    fn payload(len: usize) -> Vec<u8> {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    // the length derived from a registered encoding is the length the encoder
+    // actually produced, across the payload range a track can hold
+    #[test]
+    fn derived_length_matches_encoding() {
+        for size in [1usize, 1_000, 100_000, 1_000_001, 4 * 1024 * 1024] {
+            let mut slicer = Slicer::clay_default();
+            let slices = slicer.encode(&payload(size)).expect("encode");
+
+            let derived = coded_slice_len(
+                slicer.profile(),
+                size,
+                slicer.stripe_size(),
+                num_stripes(size, slicer.stripe_size()),
+            );
+
+            assert_eq!(derived, slices[0].len(), "size {size}");
+            for slice in &slices {
+                assert_eq!(slice.len(), derived, "size {size}, uneven slices");
+            }
+        }
     }
 }
