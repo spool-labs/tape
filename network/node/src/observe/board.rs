@@ -6,6 +6,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rpc::Rpc;
 use store::{Column, Store, StoreVolume};
+use tape_core::bft::has_honest_signer;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::types::bitmap::BitmapRead;
 use tape_core::challenge::record::{
     MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
 };
@@ -21,7 +24,7 @@ use tape_observe_api::{
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
     SPOOL_STAGES,
 };
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 
 use crate::context::NodeContext;
 
@@ -618,7 +621,7 @@ where
             number: state.epoch().0,
             phase: phase_name(u64::from(state.phase()) as u8).to_string(),
             phase_index: u64::from(state.phase()) as u8,
-            synced_count: state.current.epoch.state.synced_count,
+            synced_count: synced_groups(&state),
             committee_size: state.current.committee.len() as u64,
             groups: state.current.groups.len() as u64,
             peers: state.peers.len() as u64,
@@ -705,6 +708,24 @@ where
     }
 }
 
+/// Groups that have crossed their readiness quorum, counted from the bitmaps.
+///
+/// Not `epoch.state.synced_count`. The program keeps that counter and drives the
+/// Sync phase off it, but replay never mirrors it: `handle_sync_spool` sets the
+/// group's bit and applies the phase and nothing writes the count, so reading it
+/// here reports zero in every phase of every epoch. The bitmaps are the durable
+/// evidence, and the rule applied to them is the program's own.
+fn synced_groups(state: &ProtocolState) -> u64 {
+    state
+        .current
+        .groups
+        .iter()
+        .filter(|group| {
+            has_honest_signer(group.synced.count_ones() as u64, GROUP_SIZE as u64)
+        })
+        .count() as u64
+}
+
 /// Lifetime round counters, straight off the context atomics.
 fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
@@ -756,5 +777,42 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         rate_floor_bps: RATE_FLOOR.0,
         max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
         rows,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_core::types::SpoolBitmap;
+    use tape_core::types::bitmap::BitmapWrite;
+
+    use super::*;
+    use crate::harness::{NodeHarness, TestContext};
+
+    // the chain's counter never reaches replayed state, so the board counts the
+    // groups that crossed quorum from the bitmaps that do
+    #[tokio::test]
+    async fn synced_from_bitmaps() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx: TestContext = harness.ctx_for(0);
+        let mut state = (*ctx.state()).clone();
+
+        for group in &mut state.current.groups {
+            group.synced = SpoolBitmap::from_indices(&[]);
+        }
+        assert_eq!(synced_groups(&state), 0);
+
+        // The gate is a quorum, so one position short of it is not a synced group.
+        for position in 0..7 {
+            state.current.groups[0].synced.set(position);
+        }
+        assert_eq!(synced_groups(&state), 0);
+
+        state.current.groups[0].synced.set(7);
+        assert_eq!(synced_groups(&state), 1);
     }
 }
