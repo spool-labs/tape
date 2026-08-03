@@ -41,14 +41,16 @@ const SPARE_STAKE: u64 = 500;
 /// Successes banked before the run starts, in the thinnest record in the group.
 ///
 /// The rate arm fires below half, so a peer that has answered this many can miss
-/// as many again before its rate matters. Rounds settle in bursts and observers
-/// do not agree exactly, so the run has usually reached four or five by the time
-/// the slice goes back, and the margin has to cover that everywhere, not just at
-/// the observer being polled.
-const BANKED_SUCCESSES: u64 = 8;
+/// as many again before its rate matters. The run trips at three and settles in
+/// bursts, so it has reached three or four by the time the slices go back: five
+/// leaves a miss or two of headroom without paying for margin nobody uses.
+///
+/// The gate reads the weakest record in the group rather than one observer's, so
+/// this number does not also have to absorb how far apart the observers are.
+const BANKED_SUCCESSES: u64 = 5;
 
 /// One opportunity settles per epoch or so, so banking is most of the run.
-const BANK_TIMEOUT: Duration = Duration::from_secs(900);
+const BANK_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Three consecutive misses at roughly one round per epoch.
 const RUN_TIMEOUT: Duration = Duration::from_secs(420);
