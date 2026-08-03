@@ -154,16 +154,33 @@ impl PeerRecord {
         BasisPoints(self.successes * BasisPoints::MAX / self.opportunities)
     }
 
+    /// Whether a run of consecutive misses has reached the fast arm.
+    ///
+    /// This arm makes a claim about reachability: the peer has stopped answering.
+    /// It is the one a live probe can speak to, and the record cannot check it
+    /// for itself, since a run only grows while the peer is being judged and
+    /// clearing it needs a success the peer has no chance to earn once the rounds
+    /// have stopped.
+    pub fn run_fires(&self) -> bool {
+        self.consecutive_misses >= MAX_CONSECUTIVE_MISSES
+    }
+
+    /// Whether the lifetime rate has fallen through the floor.
+    ///
+    /// This arm makes no claim about reachability. A peer answering every round
+    /// with an invalid proof trips it while staying perfectly reachable, so no
+    /// amount of answering a probe clears it.
+    pub fn rate_fires(&self) -> bool {
+        self.opportunities >= MIN_OPPORTUNITIES && self.success_rate() < RATE_FLOOR
+    }
+
     /// Whether this history is enough to propose an eviction.
     ///
     /// Two arms, both from the paper's repeated-local-misses rule: a run of
     /// consecutive misses catches a node that stopped answering, and a rate floor
     /// over enough opportunities catches one that answers erratically.
     pub fn eviction_fires(&self) -> bool {
-        if self.consecutive_misses >= MAX_CONSECUTIVE_MISSES {
-            return true;
-        }
-        self.opportunities >= MIN_OPPORTUNITIES && self.success_rate() < RATE_FLOOR
+        self.run_fires() || self.rate_fires()
     }
 
     /// The recent strip oldest-first, for drawing one row of the grid.
@@ -314,6 +331,22 @@ mod tests {
         assert_eq!(record.consecutive_misses, 1);
         assert_eq!(record.success_rate(), RATE_FLOOR);
         assert!(!record.eviction_fires());
+    }
+
+    // the arms are separable, because only the run claims the peer stopped
+    // answering and only that claim is one a live probe can refute
+    #[test]
+    fn arms_apart() {
+        let mut stopped = run(&[true], 40);
+        for round in 40..43 {
+            stopped.record(EpochNumber(1), RoundNumber(round), false, None);
+        }
+        assert!(stopped.run_fires());
+        assert!(!stopped.rate_fires(), "a stopped peer's lifetime rate is still good");
+
+        let erratic = run(&[true, false, false], 60);
+        assert!(!erratic.run_fires(), "one answer in three never reaches three in a row");
+        assert!(erratic.rate_fires());
     }
 
     // two misses for every answer never reaches three in a row either, so the

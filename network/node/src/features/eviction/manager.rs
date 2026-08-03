@@ -154,6 +154,15 @@ where
     /// The threshold matters. A record with one or two observations is thinner
     /// evidence than a live probe, and an epoch whose active phase was short may
     /// have held very few rounds.
+    ///
+    /// The two arms of the rule are weighed differently, because only one of them
+    /// says anything a probe can answer. A run of misses claims the peer stopped
+    /// answering, and the record has no notion of recency, so a run left over from
+    /// an outage that has already ended keeps firing and only a success clears it,
+    /// which a queued peer has no chance to earn. A peer that answers now is
+    /// therefore dropped on that arm alone. The rate arm claims nothing about
+    /// reachability: a peer serving invalid proofs every round trips it while
+    /// answering every probe, so nothing it says can clear it.
     async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
         let epoch = state.epoch();
         if self.probe_failed.get(&node) == Some(&epoch) {
@@ -161,13 +170,14 @@ where
         }
 
         let record = self.context.store.peer_record(node).unwrap_or_default();
-        let healthy = if record.opportunities >= MIN_OPPORTUNITIES {
-            !record.eviction_fires()
+        let healthy = if record.opportunities < MIN_OPPORTUNITIES {
+            self.answers(node).await
+        } else if record.rate_fires() {
+            false
+        } else if record.run_fires() {
+            self.answers(node).await
         } else {
-            matches!(
-                self.context.api.get_health(node, &GetHealthReq).await,
-                Ok(GetHealthRes { ok: true })
-            )
+            true
         };
         if healthy {
             debug!(node = %node, "eviction: target probed healthy, dropping");
@@ -179,6 +189,14 @@ where
         info!(node = %node, epoch = epoch.0, "eviction: target probe failed, voting to evict");
         self.probe_failed.insert(node, epoch);
         true
+    }
+
+    /// Whether the target answers a health request right now.
+    async fn answers(&self, node: Address) -> bool {
+        matches!(
+            self.context.api.get_health(node, &GetHealthReq).await,
+            Ok(GetHealthRes { ok: true })
+        )
     }
 
     async fn run_round(
