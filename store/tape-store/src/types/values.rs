@@ -59,7 +59,7 @@ impl SliceWrite {
     }
 
     /// Split into the parts `put_slice` writes.
-    pub(crate) fn into_parts(self) -> (Vec<u8>, Option<Vec<Hash>>) {
+    pub fn into_parts(self) -> (Vec<u8>, Option<Vec<Hash>>) {
         (self.data, self.sidecar)
     }
 }

@@ -1,19 +1,21 @@
 //! Builds a node's board from live context and the metric set.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rpc::Rpc;
 use store::{Column, Store, StoreVolume};
+use tape_core::challenge::record::{
+    MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
+};
 use tape_core::system::NodeStatus;
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
-use tape_core::challenge::record::RECENT_ROUNDS;
 use tape_store::ops::{ChallengeOps, SliceOps, SpoolOps};
 use tape_observe_api::{
     phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
-    ChallengeRounds,
-    DecodeStats, EpochInfo,
+    ChallengeRounds, DecodeStats, EpochInfo,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
     NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo, StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
@@ -707,14 +709,14 @@ where
 fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> ChallengeRounds {
-    use std::sync::atomic::Ordering;
-
     let counters = &context.challenge_counters;
     ChallengeRounds {
         opened: counters.opened.load(Ordering::Relaxed),
         settled_certified: counters.settled_certified.load(Ordering::Relaxed),
         settled_missed: counters.settled_missed.load(Ordering::Relaxed),
         answers_refused: counters.answers_refused.load(Ordering::Relaxed),
+        own_certified: counters.own_certified.load(Ordering::Relaxed),
+        own_missed: counters.own_missed.load(Ordering::Relaxed),
     }
 }
 
@@ -726,6 +728,9 @@ fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> ChallengeGrid {
+    // A record only matters to an operator once it has turned into an action,
+    // so the row says whether this node is already pushing to evict the peer.
+    let queued = context.eviction_queue.snapshot();
     let mut rows: Vec<ChallengeRow> = context
         .store
         .iter_peer_records()
@@ -738,6 +743,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
             consecutive_misses: record.consecutive_misses,
             success_rate_bps: record.success_rate().0,
             rule_fired: record.eviction_fires(),
+            queued: queued.contains(&node),
             recent: record.recent_rounds(),
         })
         .collect();
@@ -746,6 +752,9 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     ChallengeGrid {
         recent_capacity: RECENT_ROUNDS as u64,
+        min_opportunities: MIN_OPPORTUNITIES,
+        rate_floor_bps: RATE_FLOOR.0,
+        max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
         rows,
     }
 }

@@ -2,15 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tape_protocol::api::{
-    Api, ApiError, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes, GetHealthReq,
-    AttestReq, AttestRes, GetHealthRes, GetSliceReq, GetSliceRes,
-    GetStatsReq, GetStatsRes, ProofOfAccessReq, ProofOfAccessRes,
-    GetTrackByNumberReq,
-    GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq, GetTrackProofRes,
-    GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListTracksByTapeReq,
-    ListTracksByTapeRes, ListObjectsReq, ListObjectsRes, PeerReq, PeerRes, PutSliceReq,
-    PutSliceRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes, SyncTracksReq, SyncTracksRes,
-    VoteReq, VoteRes,
+    Api, ApiError, AttestReq, AttestRes, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes,
+    GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes,
+    GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq,
+    GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListObjectsReq,
+    ListObjectsRes, ListTracksByTapeReq, ListTracksByTapeRes, PeerReq, PeerRes, ProofOfAccessReq,
+    ProofOfAccessRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes,
+    SyncTracksReq, SyncTracksRes, VoteReq, VoteRes,
 };
 use tape_crypto::Address;
 

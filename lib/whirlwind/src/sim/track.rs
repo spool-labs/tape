@@ -278,7 +278,8 @@ impl SpoolHoldings {
                 .iter()
                 .find(|candidate| candidate.number == track)
                 .is_some_and(|held| hash_leaf(payload) == held.commitment),
-            _ => false,
+            (Sample::Coded { .. }, SampleProof::Inline { .. }) => false,
+            (Sample::Inline { .. }, SampleProof::Coded(_)) => false,
         }
     }
 }
@@ -291,7 +292,7 @@ mod tests {
     // a real sub-leaf proof verifies and a flipped byte fails
     #[test]
     fn two_level_proof() {
-        let holdings = SpoolHoldings::build(120_000, GROUP_SIZE).unwrap();
+        let holdings = SpoolHoldings::build(120_000, GROUP_SIZE).expect("build holdings");
         // Walk several positions and tracks, proving and verifying each.
         for position in [0u64, 3, 7, 19] {
             let track = &holdings.coded[0];
@@ -302,7 +303,7 @@ mod tests {
                     slice: SpoolIndex(position),
                     sub_leaf,
                 };
-                let proof = holdings.prove(sample).unwrap();
+                let proof = holdings.prove(sample).expect("prove sample");
                 assert!(holdings.verify(sample, &proof));
 
                 // A flipped byte in the sampled sub-leaf must fail verification.
@@ -320,14 +321,14 @@ mod tests {
     fn wrong_position() {
         // The path anchors at the slice's own root, so replaying one owner's
         // response for another owner's slice has to fail.
-        let holdings = SpoolHoldings::build(120_000, GROUP_SIZE).unwrap();
+        let holdings = SpoolHoldings::build(120_000, GROUP_SIZE).expect("build holdings");
         let track = &holdings.coded[0];
         let sample = Sample::Coded {
             track: track.number,
             slice: SpoolIndex(4),
             sub_leaf: 1,
         };
-        let proof = holdings.prove(sample).unwrap();
+        let proof = holdings.prove(sample).expect("prove sample");
         let replayed = Sample::Coded {
             track: track.number,
             slice: SpoolIndex(5),
@@ -339,24 +340,24 @@ mod tests {
     // an inline sample verifies against the whole replicated payload
     #[test]
     fn inline_sample() {
-        let holdings = SpoolHoldings::build(120_000, GROUP_SIZE).unwrap();
+        let holdings = SpoolHoldings::build(120_000, GROUP_SIZE).expect("build holdings");
         let inline = &holdings.inline[0];
         let sample = Sample::Inline { track: inline.number };
-        let proof = holdings.prove(sample).unwrap();
+        let proof = holdings.prove(sample).expect("prove sample");
         assert!(holdings.verify(sample, &proof));
     }
 
     // the costing figure equals what a full coded response really carries
     #[test]
     fn response_size() {
-        let holdings = SpoolHoldings::build(200_000, GROUP_SIZE).unwrap();
+        let holdings = SpoolHoldings::build(200_000, GROUP_SIZE).expect("build holdings");
         // Every full coded response is one size, so the costing figure has to
         // equal what a real proof actually serialises to.
         let mut checked = 0;
         for round in 0..64u64 {
             let seed = tape_crypto::hash::hashv(&[b"size", &round.to_le_bytes()]);
             let sample = holdings.sample(GroupPosition::new(5), &seed);
-            let proof = holdings.prove(sample).unwrap();
+            let proof = holdings.prove(sample).expect("prove sample");
             if let SampleProof::Coded(coded) = &proof {
                 // Skip a short trailing sub-leaf, which is the one exception.
                 if coded.sub_leaf.len() == SUB_LEAF_BYTES {
@@ -371,7 +372,7 @@ mod tests {
     // the uniform leaf draw favours the largest track
     #[test]
     fn byte_weighted_draw() {
-        let holdings = SpoolHoldings::build(200_000, GROUP_SIZE).unwrap();
+        let holdings = SpoolHoldings::build(200_000, GROUP_SIZE).expect("build holdings");
         let mut coded_hits = [0u64; 3];
         let mut inline_hits = 0u64;
         for round in 0..4000u64 {
@@ -391,7 +392,7 @@ mod tests {
     // the flat leaf total is every held sub-leaf plus one entry per inline track
     #[test]
     fn leaf_enumeration() {
-        let holdings = SpoolHoldings::build(80_000, GROUP_SIZE).unwrap();
+        let holdings = SpoolHoldings::build(80_000, GROUP_SIZE).expect("build holdings");
         let first = holdings.coded[0].leaves_per_slice();
         let second = holdings.coded[1].leaves_per_slice();
         // Flat index zero is the first sub-leaf of the first track at the position.
@@ -404,7 +405,7 @@ mod tests {
     fn slicer_commitment() {
         // The sim must not build its own tree: the root here has to be the one
         // the slicer would register for the same slices.
-        let track = CodedTrack::build(TrackNumber(0), &deterministic_payload(150_000, 0)).unwrap();
+        let track = CodedTrack::build(TrackNumber(0), &deterministic_payload(150_000, 0)).expect("build track");
         assert_eq!(
             track.encoding.commitment,
             tape_slicer::blob_merkle_root(&track.slices)

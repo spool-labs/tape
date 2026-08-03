@@ -239,8 +239,9 @@ mod tests {
         assert!(store.get_track(track).unwrap().is_none());
     }
 
+    // a track's registration slot writes, reads and deletes
     #[test]
-    fn a_tracks_slot_round_trips_and_deletes() {
+    fn track_slot() {
         let store = test_store();
         let track = Address::new_unique();
 

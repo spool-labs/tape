@@ -187,15 +187,17 @@ mod tests {
         (EpochNumber(1), RoundNumber(round))
     }
 
+    // a record with nothing in it accuses nobody
     #[test]
-    fn a_fresh_record_accuses_nobody() {
+    fn fresh_record() {
         let record = PeerRecord::default();
         assert!(!record.eviction_fires());
         assert_eq!(record.success_rate(), BasisPoints(BasisPoints::MAX));
     }
 
+    // a peer that answers every round never trips either arm of the rule
     #[test]
-    fn an_answering_peer_never_trips_the_rule() {
+    fn always_answers() {
         let mut record = PeerRecord::default();
         for round in 0..500 {
             let (epoch, round) = at(round);
@@ -205,10 +207,10 @@ mod tests {
         assert!(!record.eviction_fires());
     }
 
+    // the fast arm catches a silent node in three rounds, long before its
+    // lifetime rate has moved
     #[test]
-    fn a_run_of_misses_fires_before_the_rate_could() {
-        // The fast arm: a node that goes silent is caught in three rounds, long
-        // before its lifetime rate has moved.
+    fn run_of_misses() {
         let mut record = PeerRecord::default();
         for round in 0..100 {
             record.record(EpochNumber(1), RoundNumber(round), true, None);
@@ -221,10 +223,10 @@ mod tests {
         assert!(record.eviction_fires());
     }
 
+    // one miss is not evidence: an honest answer can be late or lost, and a
+    // single gap has to be survivable or weather evicts the network
     #[test]
-    fn one_miss_is_not_evidence() {
-        // An honest response can be late or lost, so a single gap has to be
-        // survivable or weather would evict the network.
+    fn single_miss() {
         let mut record = PeerRecord::default();
         for round in 0..10 {
             record.record(EpochNumber(1), RoundNumber(round), round != 5, None);
@@ -232,10 +234,10 @@ mod tests {
         assert!(!record.eviction_fires());
     }
 
+    // a peer answering every other round never reaches three misses in a row,
+    // so only the rate arm can catch it
     #[test]
-    fn an_erratic_peer_trips_the_rate_arm() {
-        // Answers every other round, so it never reaches three in a row but its
-        // rate sits at the floor.
+    fn erratic_peer() {
         let mut record = PeerRecord::default();
         for round in 0..40 {
             record.record(EpochNumber(1), RoundNumber(round), round % 2 == 0, None);
@@ -250,10 +252,10 @@ mod tests {
         assert!(record.eviction_fires());
     }
 
+    // the strip reads oldest first, and a fresh peer draws a short row rather
+    // than a wall of misses it never earned
     #[test]
-    fn the_recent_strip_draws_one_row_of_the_grid() {
-        // Rounds across, newest last. A fresh peer reads as a short row, not as a
-        // wall of misses it never earned.
+    fn recent_strip() {
         let mut record = PeerRecord::default();
         assert!(record.recent_rounds().is_empty());
 
@@ -263,8 +265,9 @@ mod tests {
         assert_eq!(record.recent_rounds(), vec![true, true, false, true]);
     }
 
+    // the strip holds a fixed number of rounds and the oldest ages out of it
     #[test]
-    fn the_strip_keeps_only_the_last_rounds_it_can_hold() {
+    fn strip_ages_out() {
         let mut record = PeerRecord::default();
         for round in 0..(RECENT_ROUNDS as u64 + 10) {
             // Miss only the very first round, which falls off the end.
@@ -287,11 +290,10 @@ mod tests {
         record
     }
 
+    // going quiet mid-epoch is the ordinary failure, and the consecutive arm
+    // catches it three rounds later without waiting for the epoch to end
     #[test]
-    fn a_node_that_stops_partway_is_caught_three_rounds_later() {
-        // Going quiet mid-epoch is the ordinary failure. It is caught by the
-        // consecutive arm, so detection does not wait for the lifetime rate to
-        // move and does not wait for the epoch to end.
+    fn stops_partway() {
         let mut record = run(&[true], 40);
         assert!(!record.eviction_fires());
 
@@ -303,11 +305,10 @@ mod tests {
         assert!(record.eviction_fires(), "three misses in a row should fire");
     }
 
+    // the boundary of the rule: alternating never reaches three in a row, and a
+    // rate of exactly half does not clear a floor of half, so the node keeps its seat
     #[test]
-    fn a_node_flapping_every_other_round_survives() {
-        // Worth being explicit about, because it is the boundary of the rule:
-        // alternating never reaches three in a row, and a rate of exactly half
-        // does not clear a floor of half. Such a node keeps its seat.
+    fn flapping_survives() {
         let record = run(&[true, false], 400);
 
         assert_eq!(record.consecutive_misses, 1);
@@ -315,10 +316,10 @@ mod tests {
         assert!(!record.eviction_fires());
     }
 
+    // two misses for every answer never reaches three in a row either, so the
+    // rate arm is the only thing that catches it
     #[test]
-    fn a_node_answering_less_than_half_is_caught_by_the_rate() {
-        // Two misses for every answer never reaches three in a row either, so
-        // the rate arm is the only thing that catches it.
+    fn under_half() {
         let record = run(&[true, false, false], 60);
 
         assert!(record.consecutive_misses < MAX_CONSECUTIVE_MISSES);
@@ -326,10 +327,10 @@ mod tests {
         assert!(record.eviction_fires());
     }
 
+    // two misses then an answer clears the run, so a brief outage that ends
+    // before the third round costs nothing
     #[test]
-    fn a_node_that_recovers_keeps_its_seat() {
-        // Two misses then an answer clears the run, so a brief outage that ends
-        // before the third round costs nothing.
+    fn recovers() {
         let mut record = run(&[true], 20);
         record.record(EpochNumber(1), RoundNumber(20), false, None);
         record.record(EpochNumber(1), RoundNumber(21), false, None);
@@ -339,18 +340,18 @@ mod tests {
         assert!(!record.eviction_fires());
     }
 
+    // answering once every three rounds dodges the consecutive arm forever, and
+    // the rate arm is what closes that gap
     #[test]
-    fn a_node_cannot_answer_just_enough_to_reset_the_run_forever() {
-        // The two arms together are what close this: answering once every three
-        // rounds dodges the consecutive arm but not the rate.
+    fn resets_the_run() {
         let record = run(&[true, false, false], 300);
         assert!(record.eviction_fires());
     }
 
+    // judging one round twice manufactures no opportunities, or a peer could be
+    // evicted by repetition rather than by its answers
     #[test]
-    fn a_replayed_round_does_not_count_twice() {
-        // Judging the same round twice must not manufacture opportunities, or a
-        // peer could be evicted by repetition rather than by its answers.
+    fn replayed_round() {
         let mut record = PeerRecord::default();
         assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, None), Fold::Advanced);
         assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, Some(false)), Fold::Ignored);
@@ -359,8 +360,9 @@ mod tests {
         assert_eq!(record.consecutive_misses, 1);
     }
 
+    // a recorded success is never downgraded to a miss
     #[test]
-    fn a_recorded_success_is_never_downgraded() {
+    fn success_stands() {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(7), true, None);
         assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, Some(true)), Fold::Ignored);
@@ -370,10 +372,10 @@ mod tests {
         assert_eq!(record.consecutive_misses, 0);
     }
 
+    // certificates keep circulating after their round, so one that lands after
+    // the miss was recorded replaces it
     #[test]
-    fn a_late_certificate_upgrades_a_recorded_miss() {
-        // Step 5 of the mechanism: certificates continue circulating after their
-        // round, so one that arrives after the miss was recorded replaces it.
+    fn late_certificate() {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(7), false, None);
         record.record(EpochNumber(1), RoundNumber(8), false, None);
@@ -391,10 +393,10 @@ mod tests {
         assert_eq!(record.recent_rounds(), vec![true, false]);
     }
 
+    // a miss settles a full round late, so a certificate for the next round can
+    // land first, and the miss behind it still counts
     #[test]
-    fn a_miss_behind_the_newest_round_still_counts() {
-        // A miss settles a full round after the fact, so a certificate for the
-        // next round can land first. The late miss must not vanish behind it.
+    fn late_miss() {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(8), true, None);
 
@@ -410,8 +412,9 @@ mod tests {
         assert_eq!(record.recent_rounds(), vec![false, true]);
     }
 
+    // rebuilding the strip from stored rounds lands where folding in order did
     #[test]
-    fn rebuilding_recency_matches_folding_in_order() {
+    fn rebuild_matches() {
         let rounds: Vec<(EpochNumber, RoundNumber, bool)> = (0..100)
             .map(|round| (EpochNumber(1), RoundNumber(round), round % 3 != 0))
             .collect();
@@ -427,10 +430,10 @@ mod tests {
         assert_eq!(rebuilt, folded);
     }
 
+    // the record never resets, so a node that goes quiet late in one epoch is
+    // caught early in the next rather than starting over
     #[test]
-    fn the_record_carries_across_an_epoch_boundary() {
-        // Never reset, so a node that stops answering late in one epoch is caught
-        // at the next boundary rather than starting over.
+    fn across_epochs() {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(9), false, None);
         record.record(EpochNumber(2), RoundNumber(0), false, None);

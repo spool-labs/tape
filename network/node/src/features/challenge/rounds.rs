@@ -194,10 +194,10 @@ mod tests {
         BlsPrivateKey::from_random().sign(b"round buffer").expect("sign")
     }
 
+    // a second answer is a relay duplicate or an owner answering twice, and
+    // neither displaces what the group is already attesting to
     #[test]
-    fn the_first_answer_wins() {
-        // A second answer is a relay duplicate or an owner answering twice, and
-        // neither should displace what the group is already attesting to.
+    fn first_answer() {
         let buffer = RoundBuffer::default();
         let key = key(1, 4);
 
@@ -207,8 +207,9 @@ mod tests {
         assert_eq!(buffer.answer(key), Some(first));
     }
 
+    // a signer counts once however often it sends
     #[test]
-    fn a_signer_counts_once_however_often_it_sends() {
+    fn signer_once() {
         let buffer = RoundBuffer::default();
         let key = key(1, 4);
         let peer = Address::new_unique();
@@ -218,8 +219,10 @@ mod tests {
         assert_eq!(buffer.signers(key), vec![peer]);
     }
 
+    // a round is recorded once however many attestations arrive after the
+    // threshold, and not at all below it
     #[test]
-    fn a_round_certifies_once_and_only_once() {
+    fn certifies_once() {
         let buffer = RoundBuffer::default();
         let key = key(1, 4);
         buffer.accept_answer(key, answer(key));
@@ -238,10 +241,10 @@ mod tests {
         assert!(!buffer.claim_certificate(key, 4));
     }
 
+    // attestations alone are not evidence, because they attest to an answer
+    // this node has not seen
     #[test]
-    fn a_quorum_without_an_answer_does_not_certify() {
-        // Attestations alone are not evidence: they attest to an answer, and this
-        // node has not seen one.
+    fn quorum_no_answer() {
         let buffer = RoundBuffer::default();
         let key = key(1, 4);
 
@@ -251,8 +254,9 @@ mod tests {
         assert!(!buffer.claim_certificate(key, 4));
     }
 
+    // retiring drops the rounds before the cutoff and keeps the rest
     #[test]
-    fn retiring_drops_only_what_is_past() {
+    fn retire_past() {
         let buffer = RoundBuffer::default();
         for round in 0..5 {
             let key = key(round, 4);
@@ -266,10 +270,10 @@ mod tests {
         assert!(buffer.answer(key(2, 4)).is_none());
     }
 
+    // round numbers restart each epoch, so ordering is on the pair or a stale
+    // round from last epoch outlives this epoch's
     #[test]
-    fn an_earlier_epoch_retires_whatever_its_round_number() {
-        // Round numbers restart each epoch, so ordering has to be on the pair or
-        // a stale round from last epoch outlives this one's.
+    fn retire_epoch() {
         let buffer = RoundBuffer::default();
         let old = RoundKey {
             epoch: EpochNumber(2),
@@ -285,11 +289,10 @@ mod tests {
         assert!(buffer.answer(key(0, 4)).is_some());
     }
 
+    // signatures over different candidate blocks cannot aggregate, so evidence
+    // gathered under one is invisible to a lookup made under another
     #[test]
-    fn evidence_under_one_block_never_answers_for_another() {
-        // Signatures over different block candidates cannot aggregate, so a
-        // certificate gathered under one candidate must be invisible to a lookup
-        // made under another, or a stale grid placement reads as a success.
+    fn block_scoped() {
         let buffer = RoundBuffer::default();
         let mine = key(1, 4);
         let theirs = RoundKey { block: Hash([2; 32]), ..mine };

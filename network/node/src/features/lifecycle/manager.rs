@@ -449,7 +449,7 @@ fn commit_grace_over(state: &ProtocolState, now: i64) -> bool {
 /// the operator's intent for the serving set, so the commit waits (bounded by
 /// the grace) for every declared slot, including growth beyond the current
 /// membership.
-pub(crate) fn next_committee_filled(state: &ProtocolState) -> bool {
+pub fn next_committee_filled(state: &ProtocolState) -> bool {
     let capacity = state
         .next_committee_capacity
         .unwrap_or(state.system.committee_size);

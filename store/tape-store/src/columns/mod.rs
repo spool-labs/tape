@@ -26,7 +26,7 @@
 //! - `slice_size`: Slice payload lengths (SliceKey -> u64)
 //! - `slice_sidecar`: Sub-leaf tree nodes for challenge proofs (SliceKey -> Vec<Hash>)
 //!
-//! ## Challenge Column
+//! ## Challenge Columns
 //! - `challenge_record`: Per-peer challenge history (Address -> PeerRecord)
 //! - `challenge_round`: Per-round outcomes (peer + epoch + round -> bool)
 //! - `track_slot`: Finalized registration slot per track (Address -> SlotNumber)
@@ -54,6 +54,8 @@
 
 pub mod audit_log;
 pub mod auth_state;
+pub mod challenge_record;
+pub mod challenge_round;
 pub mod credential;
 pub mod event_log;
 pub mod gc;
@@ -66,23 +68,23 @@ pub mod policy;
 pub mod s3_multipart;
 pub mod snapshot;
 pub mod slice;
-pub mod challenge_record;
-pub mod challenge_round;
-pub mod slice_tombstone;
-pub mod track_slot;
 pub mod slice_sidecar;
 pub mod slice_size;
+pub mod slice_tombstone;
 pub mod spool;
 pub mod sync_cursor;
 pub mod tape;
 pub mod track;
 pub mod track_data;
 pub mod track_lookup;
+pub mod track_slot;
 pub mod vote;
 
 // Re-export all column types
 pub use audit_log::AuditLogCol;
 pub use auth_state::AuthStateCol;
+pub use challenge_record::ChallengeRecordCol;
+pub use challenge_round::ChallengeRoundCol;
 pub use credential::CredentialCol;
 pub use event_log::EventLogCol;
 pub use gc::GcCol;
@@ -95,8 +97,6 @@ pub use policy::PolicyRuleCol;
 pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
-pub use challenge_record::ChallengeRecordCol;
-pub use challenge_round::ChallengeRoundCol;
 pub use slice_sidecar::SliceSidecarCol;
 pub use slice_size::SliceSizeCol;
 pub use slice_tombstone::SliceTombstoneCol;

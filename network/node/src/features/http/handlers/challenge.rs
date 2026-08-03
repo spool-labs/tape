@@ -14,7 +14,8 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
-use tape_protocol::Api;
+use tape_core::erasure::group_for_spool;
+use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace};
 
@@ -45,14 +46,22 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
         return Ok(StatusCode::OK);
     }
 
+    // Our own position in the group the answer is about. The sample set is
+    // enumerated from it, and a spool held in some other group holds slices of
+    // other tracks entirely, so it would derive a different question and refuse
+    // an honest answer.
     let Some(mine) = protocol
         .member_spools(state.context.node_address())
-        .first()
-        .copied()
+        .into_iter()
+        .find(|spool| group_for_spool(*spool) == answer.group)
     else {
         return Err(RouteError::NotResponsible);
     };
 
+    // Timeliness is left to the round, not judged per response: an answer that
+    // has not certified by the time the next round opens is settled a miss
+    // whenever it arrived, and no schedulable sub-round deadline separates an
+    // adversary worth the honest nodes it evicts (see docs/whirlwind.md).
     if !accept_answer(&state.context, &protocol, &answer, mine, true) {
         state
             .context
@@ -125,7 +134,7 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
 /// makes a certificate mean at least `q - f` honest signers agreed.
 fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
-    protocol: &tape_protocol::ProtocolState,
+    protocol: &ProtocolState,
     round: &Round,
     key: RoundKey,
 ) {
@@ -184,10 +193,10 @@ mod tests {
     use super::*;
     use tape_core::erasure::GROUP_SIZE;
 
+    // at a full group the threshold is the mechanism's q, and it never drops to
+    // a simple majority where two Byzantine signers could carry a round
     #[test]
-    fn the_threshold_is_a_supermajority() {
-        // At a full group this is the mechanism's q, and it never drops to a
-        // simple majority where two Byzantine signers could carry a round.
+    fn supermajority() {
         assert_eq!(agreement_threshold(GROUP_SIZE), 14);
         assert!(agreement_threshold(GROUP_SIZE) > GROUP_SIZE / 2);
 

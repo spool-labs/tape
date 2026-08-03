@@ -335,7 +335,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         let mut batch = WriteBatch::new();
         let mut dropped = 0usize;
 
-        for (key_bytes, value_bytes) in raw.iter_prefix(SliceTombstoneCol::CF_NAME, &[])? {
+        for (key_bytes, value_bytes) in raw.iter(SliceTombstoneCol::CF_NAME)? {
             let tombstone: SliceTombstone = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("tombstone: {}", e)))?;
             if tombstone.deleted_slot < slot {
@@ -529,13 +529,15 @@ fn deserialize_size(bytes: &[u8]) -> Result<StorageUnits> {
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
+    use tape_core::erasure::slice_root;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
     }
 
+    // a tombstone outlives the slice it stands for, until a prune past its slot
     #[test]
-    fn a_tombstone_outlives_the_slice_until_pruned() {
+    fn tombstone_life() {
         let store = test_store();
         let spool = SpoolIndex(3);
         let track = Address::new_unique();
@@ -559,15 +561,14 @@ mod tests {
         assert!(store.iter_slice_tombstones_by_spool(spool).unwrap().is_empty());
     }
 
+    // the root the write path checks and the sidecar the store keeps both fall
+    // out of one hash of the slice, so a writer never hashes twice
     #[test]
-    fn one_pass_gives_the_writer_both_the_root_and_the_sidecar() {
-        // The write path checks the slice root before storing, and the store
-        // keeps the sidecar. Both fall out of the same hash of the slice, so a
-        // writer that builds a SliceWrite never hashes twice.
+    fn one_pass() {
         let data: Vec<u8> = (0..300_000).map(|byte| (byte * 13 % 249) as u8).collect();
         let write = SliceWrite::new(data.clone());
 
-        assert_eq!(write.root(), tape_core::erasure::slice_root(&data));
+        assert_eq!(write.root(), slice_root(&data));
         assert_eq!(write.data(), data.as_slice());
 
         let store = test_store();
@@ -577,13 +578,14 @@ mod tests {
 
         assert_eq!(
             store.get_slice_sidecar(spool, track).unwrap(),
-            tape_core::erasure::slice_sidecar(&data)
+            slice_sidecar(&data)
         );
         assert_eq!(store.get_slice(spool, track).unwrap(), Some(data));
     }
 
+    // a slice gets a sidecar when it is written and loses it when it is deleted
     #[test]
-    fn a_slice_carries_a_sidecar_through_its_whole_life() {
+    fn sidecar_life() {
         let store = test_store();
         let spool = SpoolIndex(3);
         let track = Address::new_unique();
@@ -592,7 +594,7 @@ mod tests {
         store.put_slice(spool, track, slice.clone()).unwrap();
         assert_eq!(
             store.get_slice_sidecar(spool, track).unwrap(),
-            tape_core::erasure::slice_sidecar(&slice)
+            slice_sidecar(&slice)
         );
 
         // Nothing left behind: a stale sidecar would prove a slice the node no
@@ -601,9 +603,10 @@ mod tests {
         assert!(store.get_slice_sidecar(spool, track).unwrap().is_none());
     }
 
+    // a missing sidecar is rebuilt from the slice on open, and a store with
+    // nothing missing writes nothing
     #[test]
-    fn a_missing_sidecar_is_rebuilt_from_the_slice() {
-        // What a store written before the sidecar existed goes through on open.
+    fn sidecar_rebuild() {
         let store = test_store();
         let spool = SpoolIndex(4);
         let track = Address::new_unique();
@@ -621,8 +624,9 @@ mod tests {
         assert_eq!(store.ensure_slice_sidecars().unwrap(), 0);
     }
 
+    // the size index pairs each track in a spool with its payload length
     #[test]
-    fn slice_sizes_pair_each_track_with_its_length() {
+    fn slice_sizes() {
         let store = test_store();
         let spool = SpoolIndex(7);
         let other = SpoolIndex(8);

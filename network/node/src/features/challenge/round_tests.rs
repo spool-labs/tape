@@ -12,9 +12,10 @@ use tape_core::cert::challenge::ChallengeRespondMessage;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_core::challenge::certificate::CertificateRejection;
 use tape_core::erasure::{
-    GROUP_SIZE, SUB_LEAF_BYTES, leaf_position, prove_sub_leaf_windowed, sample_window,
+    GROUP_SIZE, SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
+    sample_window, slice_sidecar, sub_leaf_count,
 };
-use tape_core::track::blob::{BlobEncoding, SubLeafProof};
+use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochDuration, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
 use tape_crypto::Address;
@@ -36,13 +37,16 @@ const BLOCK: Hash = Hash([0x7C; 32]);
 
 /// A group whose members all hold known keys, plus the slices they each store.
 struct Fixture {
+    /// This node, with the store the round reads from.
     ctx: TestContext,
+    /// The chain state every derivation in the round runs against.
     state: ProtocolState,
     /// This node's own spool.
     mine: SpoolIndex,
+    /// The group all of the fixture's spools sit in.
     group: GroupIndex,
+    /// One slice per group position, in position order.
     slices: Vec<Vec<u8>>,
-    encoding: BlobEncoding,
     /// Signing key per spool, so any owner's answer can be forged honestly.
     keys: HashMap<SpoolIndex, BlsPrivateKey>,
 }
@@ -65,7 +69,7 @@ async fn fixture() -> Fixture {
         .first()
         .copied()
         .expect("this node holds a spool");
-    let group = tape_core::erasure::group_for_spool(mine);
+    let group = group_for_spool(mine);
 
     // Give every owner in the group a key this test can sign with, standing in
     // for the keys they registered on chain.
@@ -95,7 +99,6 @@ async fn fixture() -> Fixture {
         mine,
         group,
         slices,
-        encoding,
         keys,
     }
 }
@@ -141,7 +144,7 @@ impl Fixture {
         let proof = SubLeafProof {
             sub_leaf: slice[start..(start + SUB_LEAF_BYTES).min(slice.len())].to_vec(),
             sub_proof: prove_sub_leaf_windowed(
-                &tape_core::erasure::slice_sidecar(slice).expect("sidecar"),
+                &slice_sidecar(slice).expect("sidecar"),
                 &slice[sample_window(sub_leaf, slice.len())],
                 sub_leaf,
             )
@@ -215,11 +218,11 @@ impl Fixture {
     }
 }
 
+// the whole path: an owner answers the question the group derived, every other
+// owner accepts it, and their attestations combine into a certificate that
+// stands against the registered keys
 #[tokio::test]
-async fn a_group_certifies_an_honest_round() {
-    // The whole path: an owner answers the question the group derived, every
-    // other owner accepts it, and their attestations combine into a certificate
-    // that stands against the registered keys.
+async fn honest_round() {
     let fixture = fixture().await;
     let target = fixture.other();
     let answer = fixture.answer_from(target);
@@ -237,10 +240,10 @@ async fn a_group_certifies_an_honest_round() {
     assert_eq!(fixture.check(target, &certificate), Ok(()));
 }
 
+// the seed binds the spool, so two owners challenged off one block read
+// different data, where otherwise one answer would serve the whole group
 #[tokio::test]
-async fn every_owner_is_asked_a_different_question() {
-    // The seed binds the spool, so two owners challenged off one block read
-    // different data. Without this a single answer would serve the whole group.
+async fn distinct_questions() {
     let fixture = fixture().await;
     let round = fixture.round();
 
@@ -257,17 +260,17 @@ async fn every_owner_is_asked_a_different_question() {
     assert!(distinct.len() > 1, "every spool drew the same leaf: {leaves:?}");
 }
 
+// a spool that kept only some of its data would answer about a leaf it still
+// holds, and the observer derived the question, so that does not pass
 #[tokio::test]
-async fn an_answer_to_an_easier_leaf_is_refused() {
-    // A spool that kept only some of its data would answer about a leaf it still
-    // holds. The observer derived the question, so that does not pass.
+async fn easier_leaf() {
     let fixture = fixture().await;
     let target = fixture.other();
     let asked = expected_sample(&fixture.ctx, &fixture.state, &fixture.round(), target, fixture.mine)
         .expect("sample");
 
     // Wrap, so a draw that lands on the last leaf still names a real neighbour.
-    let leaves = tape_core::erasure::sub_leaf_count(fixture.slices[0].len());
+    let leaves = sub_leaf_count(fixture.slices[0].len());
     let elsewhere = (asked.sub_leaf + 1) % leaves;
     assert_ne!(elsewhere, asked.sub_leaf);
 
@@ -289,12 +292,11 @@ async fn an_answer_to_an_easier_leaf_is_refused() {
     ));
 }
 
+// the set is cut at the round window's base slot, so a write finalizing inside
+// the round leaves the draw where it was, and observers that ingested it at
+// different moments still derive the same question
 #[tokio::test]
-async fn a_mid_round_registration_does_not_shift_the_question() {
-    // The set is cut at the round window's base slot, so a write finalizing
-    // inside the round leaves the weighted draw exactly where it was. Without
-    // the cut, observers that ingested the write at different moments derive
-    // different questions and refuse each other's honest answers.
+async fn mid_round_write() {
     let fixture = fixture().await;
     let round = fixture.round();
     let before = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine, fixture.mine)
@@ -328,11 +330,11 @@ async fn a_mid_round_registration_does_not_shift_the_question() {
     assert_eq!(again.track, before.track);
 }
 
+// the mirror of the registration cut: a slice deleted after the window opened
+// leaves a tombstone, so the set the draw runs over is the same whether or not
+// an observer has processed the delete yet
 #[tokio::test]
-async fn a_mid_round_deletion_does_not_shift_the_question() {
-    // The mirror of the registration cut: a slice deleted after the window
-    // opened leaves a tombstone, so the set the draw runs over is the same
-    // whether or not an observer has processed the delete yet.
+async fn mid_round_delete() {
     let fixture = fixture().await;
     let round = fixture.round();
     let cutoff = challenge_schedule(&fixture.state)
@@ -389,8 +391,9 @@ async fn a_mid_round_deletion_does_not_shift_the_question() {
     assert_ne!(out.track, extra, "a pre-window deletion stayed in the set");
 }
 
+// a leaf that does not hash into the track's commitment is refused
 #[tokio::test]
-async fn a_forged_leaf_is_refused() {
+async fn forged_leaf() {
     let fixture = fixture().await;
     let target = fixture.other();
     let mut answer = fixture.answer_from(target);
@@ -405,10 +408,10 @@ async fn a_forged_leaf_is_refused() {
     ));
 }
 
+// the signature is checked against the key registered for the spool being
+// challenged, so answering on another spool's behalf fails
 #[tokio::test]
-async fn an_answer_signed_by_the_wrong_owner_is_refused() {
-    // Answering on another spool's behalf fails: the signature is checked against
-    // the key registered for the spool being challenged.
+async fn wrong_owner() {
     let fixture = fixture().await;
     let target = fixture.other();
     let mut answer = fixture.answer_from(target);
@@ -425,8 +428,9 @@ async fn an_answer_signed_by_the_wrong_owner_is_refused() {
     ));
 }
 
+// an answer that arrives after the round's deadline is refused
 #[tokio::test]
-async fn a_late_answer_is_refused() {
+async fn late_answer() {
     let fixture = fixture().await;
     let target = fixture.other();
     let answer = fixture.answer_from(target);
@@ -440,10 +444,10 @@ async fn a_late_answer_is_refused() {
     ));
 }
 
+// nothing to attest to means nothing aggregates, which is the one thing the
+// mechanism catches: a spool that answers nobody
 #[tokio::test]
-async fn a_silent_spool_gathers_no_certificate() {
-    // Nothing to attest to means nothing aggregates, which is the only thing the
-    // mechanism catches: a spool that answers nobody.
+async fn silent_spool() {
     let fixture = fixture().await;
     let target = fixture.other();
 
@@ -455,8 +459,9 @@ async fn a_silent_spool_gathers_no_certificate() {
     );
 }
 
+// the challenged owner's own signature does not count toward its quorum
 #[tokio::test]
-async fn a_spool_cannot_certify_itself() {
+async fn self_certify() {
     let fixture = fixture().await;
     let target = fixture.other();
     let owner = fixture.state.spool_owner(target).expect("owner");
@@ -476,10 +481,10 @@ async fn a_spool_cannot_certify_itself() {
     );
 }
 
+// signers who saw different candidate blocks signed different bytes, so an
+// aggregate mixing them cannot claim a quorum agreed on one history
 #[tokio::test]
-async fn attestations_from_two_branches_do_not_combine() {
-    // Signers who saw different candidate blocks signed different bytes, so an
-    // aggregate mixing them cannot claim a quorum agreed on one history.
+async fn two_branches() {
     let fixture = fixture().await;
     let target = fixture.other();
 
@@ -509,12 +514,23 @@ async fn attestations_from_two_branches_do_not_combine() {
     );
 }
 
+// the group is in the round seed, so an owner free to name it could grind the
+// draw onto a leaf it kept; the group a spool belongs to is what binds it
 #[tokio::test]
-async fn acceptance_does_not_depend_on_who_delivered_the_answer() {
-    // Why withholding from a subset does not survive relaying: acceptance is a
-    // function of the answer and this node's own derivation, with no notion of a
-    // sender anywhere in it. A peer the target skipped accepts the same bytes
-    // forwarded by a peer it served. The transport itself is not exercised here.
+async fn stray_group() {
+    let fixture = fixture().await;
+    let target = fixture.other();
+    let mut answer = fixture.answer_from(target);
+    answer.group = GroupIndex(fixture.group.as_u64() + 1);
+
+    assert!(!accept_answer(&fixture.ctx, &fixture.state, &answer, fixture.mine, true));
+}
+
+// acceptance is a function of the answer and this node's own derivation, with
+// no notion of a sender in it, so a peer the target skipped accepts the same
+// bytes forwarded by a peer it served
+#[tokio::test]
+async fn any_deliverer() {
     let fixture = fixture().await;
     let target = fixture.other();
     let answer = fixture.answer_from(target);

@@ -51,6 +51,8 @@ const EVICT_TIMEOUT: Duration = Duration::from_secs(600);
 /// node is dark.
 const CRANK_INTERVAL: Duration = Duration::from_secs(2);
 
+// a seated node that answers nothing is caught by its group's challenge rounds
+// and voted off the committee
 #[test]
 fn challenge_eviction() {
     run_simnet_test(challenge_eviction_inner);

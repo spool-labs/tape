@@ -237,7 +237,7 @@ mod tests {
     // an honest observer signs only a valid proof that was delivered
     #[test]
     fn honest_signing() {
-        let (secret_key, public_key) = keypair().unwrap();
+        let (secret_key, public_key) = keypair().expect("keypair");
         let honest = Node {
             id: NodeId(0),
             behavior: Behavior::Honest,
@@ -256,7 +256,7 @@ mod tests {
     // a bloc observer signs for its own members and refuses outsiders
     #[test]
     fn bloc_signing() {
-        let (secret_key, public_key) = keypair().unwrap();
+        let (secret_key, public_key) = keypair().expect("keypair");
         let base = Node {
             id: NodeId(0),
             behavior: Behavior::Honest,

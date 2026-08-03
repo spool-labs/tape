@@ -88,20 +88,23 @@ mod tests {
         )
     }
 
+    // the message is always the declared size
     #[test]
-    fn the_message_is_a_fixed_size() {
+    fn fixed_size() {
         assert_eq!(ATTEST_MESSAGE_SIZE, 72);
         assert_eq!(message().to_bytes().len(), ATTEST_MESSAGE_SIZE);
     }
 
+    // a message parses back into what it was built from
     #[test]
-    fn a_message_survives_a_round_trip() {
+    fn round_trip() {
         let recovered = ChallengeAttestMessage::from_bytes(&message().to_bytes()).expect("parse");
         assert_eq!(recovered, message());
     }
 
+    // the tag and every coordinate sit at a fixed offset
     #[test]
-    fn the_layout_is_pinned() {
+    fn pinned_layout() {
         let bytes = message().to_bytes();
         assert_eq!(&bytes[0..8], ATTEST_DOMAIN_TAG);
         assert_eq!(&bytes[8..16], &7u64.to_le_bytes());
@@ -111,15 +114,17 @@ mod tests {
         assert_eq!(&bytes[40..72], &[0xAB; 32]);
     }
 
+    // two observers of one round sign the same bytes, which is what lets their
+    // signatures aggregate
     #[test]
-    fn two_observers_of_one_round_sign_the_same_bytes() {
-        // The property aggregation rests on: nothing observer-specific is in the
-        // message, so signatures over it combine.
+    fn same_bytes() {
         assert_eq!(message().to_bytes(), message().to_bytes());
     }
 
+    // a different candidate block gives different bytes, so signatures made
+    // against two branches cannot combine
     #[test]
-    fn signatures_against_different_branches_cannot_combine() {
+    fn branch_differs() {
         let other = ChallengeAttestMessage {
             block: Hash([0xAC; 32]),
             ..message()
@@ -127,8 +132,9 @@ mod tests {
         assert_ne!(other.to_bytes(), message().to_bytes());
     }
 
+    // changing any one coordinate changes the message
     #[test]
-    fn every_coordinate_changes_the_message() {
+    fn coordinates_matter() {
         let base = message().to_bytes();
         let variants = [
             ChallengeAttestMessage { epoch: EpochNumber(8), ..message() },
@@ -142,16 +148,18 @@ mod tests {
         }
     }
 
+    // the response domain tag is refused
     #[test]
-    fn a_response_tag_is_refused() {
+    fn response_tag() {
         let mut bytes = message().to_bytes();
         bytes[0..8].copy_from_slice(RESPOND_DOMAIN_TAG);
         assert!(ChallengeAttestMessage::from_bytes(&bytes).is_none());
     }
 
+    // a response message does not parse as an attestation, and length alone is
+    // not what separates them, which is why the tag check runs first
     #[test]
-    fn a_response_message_does_not_parse_as_an_attestation() {
-        // Length alone separates them, which is why the tag check runs first.
+    fn response_message() {
         let respond = ChallengeRespondMessage::new(
             EpochNumber(7),
             GroupIndex(3),
@@ -163,8 +171,9 @@ mod tests {
         assert!(ChallengeAttestMessage::from_bytes(&respond.to_bytes()).is_none());
     }
 
+    // a message of the wrong length is refused either way
     #[test]
-    fn a_wrong_length_is_refused() {
+    fn wrong_length() {
         assert!(ChallengeAttestMessage::from_bytes(&[0u8; ATTEST_MESSAGE_SIZE - 1]).is_none());
         assert!(ChallengeAttestMessage::from_bytes(&[0u8; ATTEST_MESSAGE_SIZE + 1]).is_none());
     }

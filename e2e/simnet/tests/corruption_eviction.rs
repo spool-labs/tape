@@ -42,6 +42,8 @@ const EVICT_TIMEOUT: Duration = Duration::from_secs(600);
 /// slice against the commitment, and rebuild it from the group.
 const HEAL_TIMEOUT: Duration = Duration::from_secs(420);
 
+// a node serving rotten slices is caught, evicted, and its spool healed by the
+// successor that takes it over
 #[test]
 fn corruption_eviction() {
     run_simnet_test(corruption_eviction_inner);
@@ -274,8 +276,9 @@ fn rot_slice(harness: &SimnetHarness, spool: SpoolIndex, track: Address) {
         .expect("slice bytes present");
 
     // Rot the whole payload, not a patch: a round samples one sub-leaf, so a
-    // small patch is found in 1/f rounds and f must be 1 for the first draw
-    // to hit. The leading bytes stay so the stored value still decodes.
+    // patch covering a fraction p of the slice is found in 1/p rounds, and only
+    // p = 1 is caught by the first draw. The leading bytes stay so the stored
+    // value still decodes.
     for byte in &mut bytes[16..] {
         *byte ^= 0xFF;
     }

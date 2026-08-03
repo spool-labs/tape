@@ -192,7 +192,7 @@ mod tests {
             board.record(NodeId(0), NodeId(1), false);
         }
         board.record(NodeId(0), NodeId(1), true);
-        let score = board.score(NodeId(0), NodeId(1)).copied().unwrap();
+        let score = board.score(NodeId(0), NodeId(1)).copied().expect("a score for the pair");
         assert_eq!(score.opportunities, 4);
         assert_eq!(score.successes, 1);
         assert_eq!(score.consecutive_misses, 0);

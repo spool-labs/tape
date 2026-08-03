@@ -446,7 +446,7 @@ metrics:
   enabled: true
 
 logging:
-  filter: "info,tape_node::features::lifecycle=debug"
+  filter: "info,tape_node::features::lifecycle=debug,tape_node::features::challenge=debug"
   format: compact
 "#,
         keypair = keypair_path.display(),

@@ -88,20 +88,23 @@ mod tests {
         )
     }
 
+    // the message is always the declared size
     #[test]
-    fn the_message_is_a_fixed_size() {
+    fn fixed_size() {
         assert_eq!(RESPOND_MESSAGE_SIZE, 104);
         assert_eq!(message().to_bytes().len(), RESPOND_MESSAGE_SIZE);
     }
 
+    // a message parses back into what it was built from
     #[test]
-    fn a_message_survives_a_round_trip() {
+    fn round_trip() {
         let recovered = ChallengeRespondMessage::from_bytes(&message().to_bytes()).expect("parse");
         assert_eq!(recovered, message());
     }
 
+    // the tag and every coordinate sit at a fixed offset
     #[test]
-    fn the_layout_is_pinned() {
+    fn pinned_layout() {
         let bytes = message().to_bytes();
         assert_eq!(&bytes[0..8], RESPOND_DOMAIN_TAG);
         assert_eq!(&bytes[8..16], &7u64.to_le_bytes());
@@ -112,10 +115,10 @@ mod tests {
         assert_eq!(&bytes[72..104], &[0xCD; 32]);
     }
 
+    // changing any one coordinate changes the message, so a response replays
+    // into no other round, spool, epoch or branch
     #[test]
-    fn every_coordinate_changes_the_message() {
-        // A response must not be replayable into another round, spool, epoch or
-        // branch, and must not survive its own bytes being swapped.
+    fn coordinates_matter() {
         let base = message().to_bytes();
         let variants = [
             ChallengeRespondMessage { epoch: EpochNumber(8), ..message() },
@@ -131,17 +134,18 @@ mod tests {
         }
     }
 
+    // the attestation domain tag is refused, which is what keeps a signature
+    // over one message from reading as a signature over the other
     #[test]
-    fn an_attestation_tag_is_refused() {
-        // The two messages are the same length family, so only the tag keeps a
-        // signature over one from reading as a signature over the other.
+    fn attest_tag() {
         let mut bytes = message().to_bytes();
         bytes[0..8].copy_from_slice(ATTEST_DOMAIN_TAG);
         assert!(ChallengeRespondMessage::from_bytes(&bytes).is_none());
     }
 
+    // a message of the wrong length is refused either way
     #[test]
-    fn a_wrong_length_is_refused() {
+    fn wrong_length() {
         assert!(ChallengeRespondMessage::from_bytes(&[0u8; RESPOND_MESSAGE_SIZE - 1]).is_none());
         assert!(ChallengeRespondMessage::from_bytes(&[0u8; RESPOND_MESSAGE_SIZE + 1]).is_none());
     }

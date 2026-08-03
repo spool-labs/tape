@@ -543,7 +543,7 @@ mod tests {
     fn projection_consistency() {
         let measure = measurement_config(4, 16);
         let scale = mainnet_scale();
-        let projection = Projection::compute_with_costs(ping_data(), &measure, &scale, test_costs()).unwrap();
+        let projection = Projection::compute_with_costs(ping_data(), &measure, &scale, test_costs()).expect("project");
 
         // Rounds across all groups are the per-group cadence times the groups.
         assert_eq!(
@@ -573,7 +573,7 @@ mod tests {
     fn response_bytes() {
         let measure = measurement_config(2, 8);
         let scale = mainnet_scale();
-        let projection = Projection::compute_with_costs(ping_data(), &measure, &scale, test_costs()).unwrap();
+        let projection = Projection::compute_with_costs(ping_data(), &measure, &scale, test_costs()).expect("project");
 
         // The response is the sampled sub-leaf plus both merkle paths.
         assert_eq!(projection.proof_bytes, SpoolHoldings::coded_response_bytes());

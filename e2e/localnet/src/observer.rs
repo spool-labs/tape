@@ -13,7 +13,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
-use tape_observe_api::{Board, ChallengeGrid, ChallengeRounds};
+use tape_observe_api::{BOARD_PATH, Board, ChallengeGrid, ChallengeRounds};
 use tape_protocol::api::NodeStats;
 
 use crate::view::{ClusterView, NodeView, SpoolView, LocalnetView};
@@ -163,7 +163,7 @@ impl Observer {
         let metrics_fut = self.http.get(format!("{base}/v1/metrics")).send();
         let board_fut = self
             .http
-            .get(format!("{base}{}", tape_observe_api::BOARD_PATH))
+            .get(format!("{base}{BOARD_PATH}"))
             .send();
 
         let (health_res, stats_res, metrics_res, board_res) =

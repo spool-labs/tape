@@ -12,6 +12,7 @@
 //! sustained pattern proposes anything and the proposal still needs the group and
 //! then the network to agree.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -47,10 +48,13 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
-    // The round this node last opened. A round's window spans several slots and
+    // The round this node last opened in each group it holds a spool in. A node
+    // may own one spool in each of several groups and owes an answer in every
+    // one of them, and a group is the only unit that can check its own answers,
+    // so the rounds are tracked apart. A round's window spans several slots and
     // only its first finalized block seeds it, so the rest of the window is
-    // ignored, and the previous round is settled when the next one opens.
-    last_run: Option<OpenRound>,
+    // ignored, and a group's previous round settles when its next one opens.
+    open_rounds: HashMap<GroupIndex, OpenRound>,
 }
 
 impl<Db, Cluster, Blockchain> ChallengeManager<Db, Cluster, Blockchain>
@@ -68,7 +72,7 @@ where
             context,
             block_rx,
             cancel,
-            last_run: None,
+            open_rounds: HashMap::new(),
         }
     }
 
@@ -115,42 +119,55 @@ where
         };
 
         let epoch = state.epoch();
-        let Some(mine) = state.member_spools(self.context.node_address()).first().copied() else {
-            return Ok(());
-        };
-        let group = group_for_spool(mine);
-        let round = Round {
-            epoch,
-            group,
-            round: number,
-            block: block.blockhash,
-        };
-
-        // Match on the round, not on the block. A window spans several slots and
-        // each carries a different hash, so comparing whole rounds would treat
-        // every slot in the window as a new round: it would re-open the round
-        // three more times and settle the previous one a slot after it opened,
-        // before any attestation could have arrived. The first block in the
-        // window seeds the round and the rest of the window is already answered.
-        if self
-            .last_run
-            .as_ref()
-            .is_some_and(|open| (open.round.epoch, open.round.round) == (round.epoch, round.round))
-        {
+        let mine = state.member_spools(self.context.node_address());
+        if mine.is_empty() {
             return Ok(());
         }
 
-        self.settle_previous(&state);
-        self.last_run = Some(OpenRound {
-            round,
-            spools: group_spools(&state, group),
-        });
-        self.context
-            .challenge_counters
-            .opened
-            .fetch_add(1, Ordering::Relaxed);
+        // A spool this node no longer holds is one it can no longer judge, so
+        // its group's pending round is dropped rather than settled.
+        let held: Vec<GroupIndex> = mine.iter().map(|spool| group_for_spool(*spool)).collect();
+        self.open_rounds.retain(|group, _| held.contains(group));
 
-        self.answer_and_broadcast(&state, &round, mine).await;
+        for spool in mine {
+            let group = group_for_spool(spool);
+            let round = Round {
+                epoch,
+                group,
+                round: number,
+                block: block.blockhash,
+            };
+
+            // Match on the round, not on the block. A window spans several slots
+            // and each carries a different hash, so comparing whole rounds would
+            // treat every slot in the window as a new round: it would re-open the
+            // round three more times and settle the previous one a slot after it
+            // opened, before any attestation could have arrived. The first block
+            // in the window seeds the round and the rest is already answered.
+            let reopening = self.open_rounds.get(&group).is_some_and(|open| {
+                (open.round.epoch, open.round.round) == (round.epoch, round.round)
+            });
+            if reopening {
+                continue;
+            }
+
+            self.settle_previous(&state, group);
+            self.open_rounds.insert(
+                group,
+                OpenRound {
+                    round,
+                    spools: group_spools(&state, group),
+                },
+            );
+            self.context
+                .challenge_counters
+                .opened
+                .fetch_add(1, Ordering::Relaxed);
+
+            self.answer_and_broadcast(&state, &round, spool).await;
+        }
+
+        // Every group runs the same grid, so one cutoff retires them all.
         self.context
             .round_buffer
             .retire_before(epoch, RoundNumber(number.as_u64().saturating_sub(1)));
@@ -158,13 +175,13 @@ where
         Ok(())
     }
 
-    /// Record how the previous round went for every spool in the group.
+    /// Record how one group's previous round went for every spool in it.
     ///
     /// A spool whose answer certified is a success; one that did not is a local
     /// miss. Settling on the next round's opening is what gives a late certificate
     /// the whole interval to arrive and replace a miss before anyone acts on it.
-    fn settle_previous(&self, state: &ProtocolState) {
-        let Some(open) = self.last_run.as_ref() else {
+    fn settle_previous(&self, state: &ProtocolState, group: GroupIndex) {
+        let Some(open) = self.open_rounds.get(&group) else {
             return;
         };
         let round = &open.round;
@@ -173,12 +190,22 @@ where
             let Some(owner) = state.spool_owner(*spool) else {
                 continue;
             };
-            if owner == self.context.node_address() {
-                continue;
-            }
 
             let certified = self.context.round_buffer.is_certified(round.key(*spool));
             let counters = &self.context.challenge_counters;
+
+            // Our own spool keeps no record here, but the quorum our answer
+            // gathered is the only local read of what the group made of it, and
+            // an operator has nothing else to watch its own standing by.
+            if owner == self.context.node_address() {
+                if certified {
+                    counters.own_certified.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    counters.own_missed.fetch_add(1, Ordering::Relaxed);
+                }
+                continue;
+            }
+
             if certified {
                 counters.settled_certified.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -260,10 +287,11 @@ pub fn schedule_for(state: &ProtocolState, epoch: EpochNumber) -> Option<Schedul
     let bundle = if state.current.epoch.id == epoch {
         &state.current.epoch
     } else {
-        match state.previous.as_ref() {
-            Some(previous) if previous.epoch.id == epoch => &previous.epoch,
-            _ => return None,
+        let previous = state.previous.as_ref()?;
+        if previous.epoch.id != epoch {
+            return None;
         }
+        &previous.epoch
     };
 
     let seconds = bundle.preferences.epoch_duration.0;
@@ -319,14 +347,15 @@ mod tests {
         Address::from(harness.node(index).node_address.to_bytes())
     }
 
+    // a node challenges everyone else holding a position in its group, once
+    // each, and never itself
     #[tokio::test]
-    async fn a_node_challenges_its_group_and_not_itself() {
+    async fn group_not_self() {
         let harness = harness().await;
         let ctx: TestContext = harness.ctx_for(0);
         let me = ctx.node_address();
         let mates = group_mates(&ctx.state(), me);
 
-        // Everyone else holding a position in the group, counted once each.
         assert_eq!(mates.len(), GROUP_SIZE - 1);
         assert!(!mates.contains(&me), "a node cannot challenge itself");
 
@@ -336,10 +365,40 @@ mod tests {
         assert_eq!(sorted.len(), mates.len(), "a peer appears twice");
     }
 
+    // a node may hold one spool in each of several groups and owes an answer in
+    // every one of them, so a round has to open per group rather than once
     #[tokio::test]
-    async fn a_node_holding_no_spool_is_not_challenged() {
-        // The harness seats 25 nodes into a 20-wide group, so some own nothing
-        // and there is no question to ask them.
+    async fn spools_across_groups() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .current_group_count(2)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx: TestContext = harness.ctx_for(0);
+        let state = ctx.state();
+
+        let mut groups: Vec<GroupIndex> = state
+            .member_spools(ctx.node_address())
+            .into_iter()
+            .map(group_for_spool)
+            .collect();
+        let spread = groups.len();
+        groups.sort_unstable();
+        groups.dedup();
+
+        assert_eq!(groups.len(), spread, "two spools in one group");
+        assert!(spread > 1, "the harness seated this node in one group only");
+        for group in groups {
+            assert_eq!(group_spools(&state, group).len(), GROUP_SIZE);
+        }
+    }
+
+    // the harness seats 25 nodes into a 20-wide group, so some hold nothing and
+    // there is no question to ask them
+    #[tokio::test]
+    async fn no_spool() {
         let harness = harness().await;
         let ctx: TestContext = harness.ctx_for(0);
         let state = ctx.state();
@@ -354,8 +413,9 @@ mod tests {
         assert!(mates.iter().all(|peer| !state.member_spools(*peer).is_empty()));
     }
 
+    // the grid is derived from the epoch's own start slot and duration
     #[tokio::test]
-    async fn the_schedule_comes_from_the_epoch_on_chain() {
+    async fn schedule_from_chain() {
         let harness = harness().await;
         let ctx: TestContext = harness.ctx_for(0);
         let mut state = (*ctx.state()).clone();
@@ -369,10 +429,10 @@ mod tests {
         assert!(schedule.validate().is_ok());
     }
 
+    // a zero-length epoch is what a node sees before one is set up, and a grid
+    // derived from it would challenge on every block
     #[tokio::test]
-    async fn an_epoch_with_no_duration_schedules_nothing() {
-        // What the node sees before an epoch is set up. Firing rounds off a grid
-        // derived from a zero-length epoch would challenge on every block.
+    async fn zero_duration() {
         let harness = harness().await;
         let ctx: TestContext = harness.ctx_for(0);
         let mut state = (*ctx.state()).clone();

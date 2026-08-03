@@ -3,7 +3,6 @@
 //! Key structure: peer address, epoch, round
 
 use store::Column;
-use tape_crypto::address::Address;
 
 use crate::types::ChallengeRoundKey;
 
@@ -23,9 +22,4 @@ impl Column for ChallengeRoundCol {
     const CF_NAME: &'static str = "challenge_round";
     type Key = ChallengeRoundKey;
     type Value = bool;
-}
-
-/// Peer the key belongs to, for reading a row back out.
-pub fn peer_of(key: &ChallengeRoundKey) -> Address {
-    key.peer
 }

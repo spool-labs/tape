@@ -168,7 +168,7 @@ mod tests {
     // a built spool holds one slice per group position
     #[test]
     fn slice_count() {
-        let spool = Spool::build(100_000).unwrap();
+        let spool = Spool::build(100_000).expect("build spool");
         assert_eq!(spool.slices.len(), LEAF_COUNT);
         assert_eq!(spool.group_size, LEAF_COUNT);
     }
@@ -176,7 +176,7 @@ mod tests {
     // every slice of a spool has the same length
     #[test]
     fn slice_layout() {
-        let spool = Spool::build(100_000).unwrap();
+        let spool = Spool::build(100_000).expect("build spool");
         let expected = spool.num_stripes * spool.chunk_size + 48;
         for slice in &spool.slices {
             assert_eq!(slice.len(), expected);
@@ -186,7 +186,7 @@ mod tests {
     // the chunk size divides evenly into clay sub-chunks
     #[test]
     fn chunk_divides() {
-        let spool = Spool::build(250_000).unwrap();
+        let spool = Spool::build(250_000).expect("build spool");
         assert_eq!(spool.chunk_size % spool.alpha, 0);
     }
 }

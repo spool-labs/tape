@@ -143,10 +143,10 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
+    // never challenged is not never answered, so a peer nobody has asked reads
+    // as clean rather than as one that failed
     #[test]
-    fn an_unknown_peer_reads_as_a_clean_record() {
-        // Never challenged is not the same as never answered, so a peer nobody
-        // has asked must not read as a peer that failed.
+    fn unknown_peer() {
         let store = test_store();
         let record = store.peer_record(Address::new_unique()).unwrap();
 
@@ -154,10 +154,10 @@ mod tests {
         assert!(!record.eviction_fires());
     }
 
+    // the key orders by epoch then round, so a peer's history comes back in the
+    // order it happened and one peer never picks up another's
     #[test]
-    fn a_peers_rounds_come_back_in_the_order_they_happened() {
-        // What the counters cannot answer: which rounds a node failed. The key
-        // orders by epoch then round, so the scan needs no sorting.
+    fn rounds_ordered() {
         let store = test_store();
         let peer = Address::new_unique();
         let other = Address::new_unique();
@@ -190,9 +190,10 @@ mod tests {
         assert_eq!(store.peer_rounds(other).unwrap().len(), 1);
     }
 
+    // an outcome reads back and a late certificate overwrites the miss it
+    // supersedes in place
     #[test]
-    fn one_rounds_outcome_can_be_read_back_and_replaced() {
-        // A late certificate overwrites the miss it supersedes, in place.
+    fn outcome_replaced() {
         let store = test_store();
         let peer = Address::new_unique();
         let (epoch, round) = (EpochNumber(4), RoundNumber(7));
@@ -207,9 +208,10 @@ mod tests {
         assert_eq!(store.peer_rounds(peer).unwrap().len(), 1);
     }
 
+    // the stored rounds name which ones a node failed, which is the report an
+    // operator wants and the counters cannot give
     #[test]
-    fn the_failed_rounds_can_be_named() {
-        // The report the operator wants: this node failed these rounds.
+    fn failed_rounds() {
         let store = test_store();
         let peer = Address::new_unique();
         for round in 0..6u64 {
@@ -228,8 +230,9 @@ mod tests {
         assert_eq!(failed, vec![0, 3]);
     }
 
+    // pruning drops the epochs before the cutoff and keeps the rest
     #[test]
-    fn pruning_drops_only_earlier_epochs() {
+    fn pruning_epochs() {
         let store = test_store();
         let peer = Address::new_unique();
         for epoch in 1..=4u64 {
@@ -248,8 +251,9 @@ mod tests {
         assert_eq!(left, vec![3, 4]);
     }
 
+    // a record writes, reads, lists and deletes
     #[test]
-    fn a_record_survives_a_round_trip() {
+    fn record_round_trip() {
         let store = test_store();
         let peer = Address::new_unique();
 

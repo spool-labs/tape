@@ -5,6 +5,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
+use tape_core::challenge::schedule::{
+    ATTESTATION_WINDOW_SLOTS, CERTIFICATE_GOSSIP_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS,
+    SLOT_MS, SPAN_SLOTS,
+};
 use whirlwind::network::simulated::ping_data::PingData;
 use whirlwind::sim::epoch::{
     run_continuous, simulate_epochs, simulate_epochs_with_costs, Behavior, BehaviorConfig, BlsMode,
@@ -55,22 +59,22 @@ struct EngineArgs {
     #[arg(long, default_value_t = AGREEMENT_THRESHOLD)]
     threshold: usize,
     /// Solana slot time in milliseconds.
-    #[arg(long, default_value_t = 400)]
+    #[arg(long, default_value_t = SLOT_MS)]
     slot_ms: u64,
     /// Slots between round starts, derived from the epoch length when unset
     #[arg(long)]
     round_interval_slots: Option<u64>,
     /// Slots in each round's entropy span.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = SPAN_SLOTS)]
     span_slots: u64,
     /// Slots after production at which signing opens on confirmation.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = CONFIRMATION_SLOTS)]
     confirmation_slots: u64,
     /// Slots the signature period stays open after confirmation.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = ATTESTATION_WINDOW_SLOTS)]
     attestation_window_slots: u64,
     /// Slots for an aggregated certificate to gossip to the group.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = CERTIFICATE_GOSSIP_SLOTS)]
     certificate_gossip_slots: u64,
     /// Probability a scheduled slot produces a finalized block.
     #[arg(long, default_value_t = 0.95)]
@@ -161,7 +165,7 @@ struct HistogramArgs {
     #[arg(long, default_value_t = 500)]
     rounds: usize,
     /// Solana slot time, which fixes where the schedulable deadlines are drawn.
-    #[arg(long, default_value_t = 400)]
+    #[arg(long, default_value_t = SLOT_MS)]
     slot_ms: u64,
     /// Payload the measured proof and decode costs are taken against.
     #[arg(long, default_value_t = 1_000_000)]
@@ -193,7 +197,7 @@ struct EpochArgs {
     #[arg(long, default_value_t = 1_000_000)]
     blob_bytes: usize,
     /// Slots after the entropy block by which a proof must arrive.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = PROOF_DEADLINE_SLOTS)]
     proof_deadline_slots: u64,
     /// How much real BLS to run for certificates.
     #[arg(long, value_enum, default_value_t = BlsModeArg::Full)]
@@ -219,7 +223,7 @@ struct ExportArgs {
     #[arg(long, default_value_t = 256_000)]
     blob_bytes: usize,
     /// Slots after the entropy block by which a proof must arrive.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = PROOF_DEADLINE_SLOTS)]
     proof_deadline_slots: u64,
     /// How much real BLS to run for certificates.
     #[arg(long, value_enum, default_value_t = BlsModeArg::Off)]
@@ -259,7 +263,7 @@ struct ProjectArgs {
     #[arg(long, default_value_t = 1_000_000)]
     blob_bytes: usize,
     /// Slots after the entropy block by which a proof must arrive.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = PROOF_DEADLINE_SLOTS)]
     proof_deadline_slots: u64,
     /// Shared engine knobs.
     #[command(flatten)]

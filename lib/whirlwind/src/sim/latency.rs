@@ -196,7 +196,11 @@ pub fn simulate(
     }
 
     let divisor = rounds.max(1) as f64;
-    let average = |values: &mut Vec<f64>| values.iter_mut().for_each(|value| *value /= divisor);
+    let average = |values: &mut Vec<f64>| {
+        for value in values.iter_mut() {
+            *value /= divisor;
+        }
+    };
     average(&mut network_ms);
     average(&mut proof_ms);
     average(&mut attest_ms);

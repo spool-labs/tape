@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn empirical_mean() {
         let report = DetectionReport::simulate(0.1, 60, 50_000);
-        let empirical = report.empirical_rounds.unwrap();
+        let empirical = report.empirical_rounds.expect("empirical rounds");
         assert!((empirical - report.expected_rounds).abs() / report.expected_rounds < 0.1);
     }
 }

@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicU64;
 
 #[derive(Default)]
 pub struct ChallengeCounters {
-    /// Rounds this node opened and answered for its own spool.
+    /// Rounds this node opened and answered, one per spool it holds per round.
     pub opened: AtomicU64,
     /// Spool outcomes settled as certified.
     pub settled_certified: AtomicU64,
@@ -15,4 +15,9 @@ pub struct ChallengeCounters {
     pub settled_missed: AtomicU64,
     /// Incoming answers refused at the door.
     pub answers_refused: AtomicU64,
+    /// This node's own rounds that reached a quorum here.
+    pub own_certified: AtomicU64,
+    /// This node's own rounds that did not, which is the miss its group-mates
+    /// each recorded against it.
+    pub own_missed: AtomicU64,
 }

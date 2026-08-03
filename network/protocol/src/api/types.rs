@@ -4,7 +4,7 @@ use core::mem::size_of;
 
 use tape_core::{
     bls::BlsSignature,
-    erasure::{SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT},
+    erasure::{SLICE_TREE_HEIGHT, SUB_LEAF_BYTES},
     spooler::GroupIndex,
     challenge::ProofOfAccess,
     track::blob::SubLeafProof,
@@ -412,7 +412,7 @@ pub struct TrackProofResponse {
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::{GROUP_SIZE, SUB_TREE_HEIGHT};
     use tape_core::system::VoteKind;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{StorageUnits, StripeCount};
@@ -427,8 +427,9 @@ mod tests {
             .collect()
     }
 
+    // a sample proof comes back off the wire as what went on it
     #[test]
-    fn a_sample_proof_survives_the_wire() {
+    fn proof_round_trip() {
         let proof = SubLeafProof {
             sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
             sub_proof: path(),
@@ -438,11 +439,10 @@ mod tests {
         assert_eq!(SubLeafProof::from(decoded), proof);
     }
 
+    // the oversize claim comes from a peer, so a leaf longer than one chunk is
+    // refused on decode, before anything allocates
     #[test]
-    fn a_sample_leaf_longer_than_one_chunk_is_refused() {
-        // The bound belongs on decode, because the oversize claim comes from a
-        // peer. Overstate the leaf length in a valid encoding and it must fail
-        // before anything allocates.
+    fn oversize_leaf() {
         let mut encoded = wincode::serialize(&SampleProofPayload {
             sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
             sub_proof: path(),

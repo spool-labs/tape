@@ -395,6 +395,9 @@ pub struct ChallengeRow {
     pub success_rate_bps: u64,
     /// Whether this node's local rule has fired on the peer.
     pub rule_fired: bool,
+    /// Whether this node currently has the peer queued for eviction.
+    #[serde(default)]
+    pub queued: bool,
     /// The recent strip, oldest first, true for a success.
     pub recent: Vec<bool>,
 }
@@ -404,6 +407,15 @@ pub struct ChallengeRow {
 pub struct ChallengeGrid {
     /// Rounds the strip can hold, so a reader can size the grid.
     pub recent_capacity: u64,
+    /// Rounds a peer has to be judged on before the rate arm applies.
+    #[serde(default)]
+    pub min_opportunities: u64,
+    /// Success rate the rate arm fires below, in basis points.
+    #[serde(default)]
+    pub rate_floor_bps: u64,
+    /// Consecutive misses the fast arm fires at.
+    #[serde(default)]
+    pub max_consecutive_misses: u64,
     /// One row per peer, worst first so an outlier is the top row.
     pub rows: Vec<ChallengeRow>,
 }
@@ -419,6 +431,13 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
+    /// This node's own rounds that the group certified.
+    #[serde(default)]
+    pub own_certified: u64,
+    /// This node's own rounds that gathered no certificate, which is what its
+    /// group-mates each recorded as a miss against it.
+    #[serde(default)]
+    pub own_missed: u64,
 }
 
 /// One cumulative histogram bucket.

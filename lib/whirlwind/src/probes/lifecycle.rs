@@ -9,7 +9,7 @@
 use anyhow::{anyhow, Result};
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::SLICE_TREE_HEIGHT;
-use tape_crypto::hash::Hash;
+use tape_crypto::hash::{Hash, hash};
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf};
 
 use crate::crypto::{
@@ -45,7 +45,7 @@ impl LifecycleReport {
         let owner = OWNER_INDEX.min(group_size - 1);
         let threshold = threshold.min(group_size);
 
-        let entropy = tape_crypto::hash::hash(b"whirlwind-entropy-block");
+        let entropy = hash(b"whirlwind-entropy-block");
 
         // Seed derivation and sample selection.
         let seed_nanos = median_nanos(iterations, || {
@@ -128,8 +128,8 @@ mod tests {
     // the honest round certifies and every compute phase is measured
     #[test]
     fn honest_round() {
-        let spool = Spool::build(1_000_000).unwrap();
-        let report = LifecycleReport::measure(&spool, 14, 9).unwrap();
+        let spool = Spool::build(1_000_000).expect("build spool");
+        let report = LifecycleReport::measure(&spool, 14, 9).expect("measure lifecycle");
         assert!(report.cert_ok);
         // The whole compute path is well under a millisecond of medians summed;
         // it is not the bottleneck, the network is.

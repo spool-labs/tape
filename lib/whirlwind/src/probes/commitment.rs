@@ -122,8 +122,8 @@ mod tests {
         // The finding that motivates the sub-leaf level: a path against the top
         // tree proves possession of a 32-byte root, not of the slice. An owner
         // that cached the root and path answers forever without storing bytes.
-        let spool = Spool::build(1_000_000).unwrap();
-        let report = CommitmentReport::measure(&spool).unwrap();
+        let spool = Spool::build(1_000_000).expect("build spool");
+        let report = CommitmentReport::measure(&spool).expect("measure commitment");
         assert!(report.slice_root_passes);
         assert!(report.full_slice_verifies);
         assert_eq!(report.slice_root_bytes, (TREE_HEIGHT + 1) * Hash::LEN);
@@ -133,16 +133,16 @@ mod tests {
     #[test]
     fn whole_slice_reading() {
         // If the top level is read with the bytes, the "small proof" is a slice.
-        let spool = Spool::build(4_000_000).unwrap();
-        let report = CommitmentReport::measure(&spool).unwrap();
+        let spool = Spool::build(4_000_000).expect("build spool");
+        let report = CommitmentReport::measure(&spool).expect("measure commitment");
         assert!(report.full_slice_bytes > report.slice_root_bytes * 100);
     }
 
     // the sampled sub-leaf carries bytes and does not verify at a neighbour
     #[test]
     fn sampled_sub_leaf() {
-        let spool = Spool::build(1_000_000).unwrap();
-        let report = CommitmentReport::measure(&spool).unwrap();
+        let spool = Spool::build(1_000_000).expect("build spool");
+        let report = CommitmentReport::measure(&spool).expect("measure commitment");
         assert!(report.sub_leaf_verifies);
         // The path anchors at this slice's own root, so a neighbour's challenge
         // cannot be answered with it.
@@ -158,8 +158,8 @@ mod tests {
     fn bounded_response() {
         // The property the two-level commitment buys: the challenge response is
         // bounded, while a whole-slice response tracks the payload.
-        let small = CommitmentReport::measure(&Spool::build(1_000_000).unwrap()).unwrap();
-        let large = CommitmentReport::measure(&Spool::build(16_000_000).unwrap()).unwrap();
+        let small = CommitmentReport::measure(&Spool::build(1_000_000).expect("build spool")).expect("measure commitment");
+        let large = CommitmentReport::measure(&Spool::build(16_000_000).expect("build spool")).expect("measure commitment");
         assert!(large.slice_bytes > small.slice_bytes * 4);
         assert!(large.sub_leaves_per_slice > small.sub_leaves_per_slice * 4);
         assert_eq!(large.sub_leaf_bytes, small.sub_leaf_bytes);

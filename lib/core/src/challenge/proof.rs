@@ -13,13 +13,15 @@ use tape_crypto::merkle::hash_leaf;
 use crate::bls::{BlsPubkey, BlsSignature};
 use crate::cert::challenge::ChallengeRespondMessage;
 use crate::challenge::sample::Sample;
-use crate::erasure::leaf_position;
+use crate::erasure::{group_for_spool, leaf_position};
 use crate::track::blob::{BlobEncoding, SubLeafProof};
 use crate::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 
 /// Why an observer would not accept a proof of access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProofRejection {
+    /// The named group is not the one the answering spool belongs to.
+    WrongGroup,
     /// It answers a different question than the round asked.
     WrongSample,
     /// The sub-leaf path does not reach the slice's registered root.
@@ -80,6 +82,13 @@ impl ProofOfAccess {
     ) -> Result<(), ProofRejection> {
         if !in_time {
             return Err(ProofRejection::Late);
+        }
+
+        // The group is in the round seed, so an owner free to name it could grind
+        // it until the draw landed on a leaf it kept. A spool's group is fixed by
+        // the spool, and nothing the sender says stands for it.
+        if self.group != group_for_spool(self.spool) {
+            return Err(ProofRejection::WrongGroup);
         }
 
         if self.track != expected.track || self.sub_leaf != expected.sub_leaf as u64 {
@@ -186,8 +195,9 @@ mod tests {
         }
     }
 
+    // an honest answer to the question the observer derived is accepted
     #[test]
-    fn an_honest_answer_is_accepted() {
+    fn honest_answer() {
         let (encoding, slices) = encoding_and_slices();
         let track = Address::new_unique();
         let signer = key();
@@ -199,10 +209,10 @@ mod tests {
         );
     }
 
+    // an answer about another leaf is refused, which is what stops an owner
+    // picking the one leaf it happened to keep
     #[test]
-    fn an_answer_to_a_different_leaf_is_refused() {
-        // The property that stops an owner picking a leaf it happened to keep:
-        // the observer derived the question and checks the answer matches it.
+    fn other_leaf() {
         let (encoding, slices) = encoding_and_slices();
         let track = Address::new_unique();
         let signer = key();
@@ -218,8 +228,9 @@ mod tests {
         );
     }
 
+    // an answer about another track is refused
     #[test]
-    fn an_answer_about_another_track_is_refused() {
+    fn other_track() {
         let (encoding, slices) = encoding_and_slices();
         let signer = key();
         let answer = signed(&signer, &encoding, &slices, Address::new_unique());
@@ -230,8 +241,25 @@ mod tests {
         );
     }
 
+    // the group is part of the round seed, so an owner naming one its spool does
+    // not belong to could grind the draw onto a leaf it kept
     #[test]
-    fn a_tampered_leaf_is_refused() {
+    fn other_group() {
+        let (encoding, slices) = encoding_and_slices();
+        let track = Address::new_unique();
+        let signer = key();
+        let mut answer = signed(&signer, &encoding, &slices, track);
+        answer.group = GroupIndex(4);
+
+        assert_eq!(
+            answer.verify(&sample(track), &encoding, &signer.public_key().expect("pubkey"), true),
+            Err(ProofRejection::WrongGroup)
+        );
+    }
+
+    // a leaf that does not hash into the tree is refused
+    #[test]
+    fn tampered_leaf() {
         let (encoding, slices) = encoding_and_slices();
         let track = Address::new_unique();
         let signer = key();
@@ -244,8 +272,9 @@ mod tests {
         );
     }
 
+    // an answer signed by anyone but the spool owner is refused
     #[test]
-    fn another_owners_signature_is_refused() {
+    fn wrong_signer() {
         let (encoding, slices) = encoding_and_slices();
         let track = Address::new_unique();
         let signer = key();
@@ -258,10 +287,10 @@ mod tests {
         );
     }
 
+    // the signature covers the round coordinates, so an honest answer replayed
+    // into another round breaks
     #[test]
-    fn a_response_replayed_into_another_round_is_refused() {
-        // The signature covers the round coordinates, so moving an answer to a
-        // different round breaks it even though the bytes are honest.
+    fn replayed_round() {
         let (encoding, slices) = encoding_and_slices();
         let track = Address::new_unique();
         let signer = key();
@@ -274,8 +303,9 @@ mod tests {
         );
     }
 
+    // an answer moved onto another candidate block breaks the same way
     #[test]
-    fn a_response_moved_to_another_branch_is_refused() {
+    fn moved_branch() {
         let (encoding, slices) = encoding_and_slices();
         let track = Address::new_unique();
         let signer = key();
@@ -288,8 +318,9 @@ mod tests {
         );
     }
 
+    // a late answer is refused before any hashing is done
     #[test]
-    fn a_late_answer_is_refused_before_anything_is_hashed() {
+    fn late_answer() {
         let (encoding, slices) = encoding_and_slices();
         let track = Address::new_unique();
         let signer = key();

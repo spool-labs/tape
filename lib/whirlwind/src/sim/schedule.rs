@@ -20,11 +20,9 @@ const ENTROPY_DOMAIN: &[u8] = b"WHRLWEB1";
 /// Domain tag for the per-slot block production coin.
 const PRODUCE_DOMAIN: &[u8] = b"WHRLWPR1";
 
-/// Cadence on an epoch long enough not to constrain it, 60 s at the real slot time
-pub const MAINNET_CADENCE_SLOTS: u64 = 150;
-
-/// Rounds an epoch needs for the eviction rule to engage inside it
-pub const TARGET_ROUNDS_PER_EPOCH: u64 = 4;
+/// The cadence bounds the node itself runs on, so a change there moves the model
+/// with it rather than leaving two copies of one number to drift apart.
+pub use tape_core::challenge::schedule::{MAINNET_CADENCE_SLOTS, TARGET_ROUNDS_PER_EPOCH};
 
 /// The cadence for an epoch of the given length
 ///

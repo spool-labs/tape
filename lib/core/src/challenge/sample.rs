@@ -134,8 +134,9 @@ mod tests {
         )
     }
 
+    // the seed changes with every round coordinate it binds
     #[test]
-    fn the_seed_binds_every_round_coordinate() {
+    fn seed_binds() {
         let entropy = hashv(&[b"block"]);
         let base = round_seed(&entropy, EpochNumber(1), GroupIndex(2), RoundNumber(3), SpoolIndex(4));
 
@@ -151,26 +152,28 @@ mod tests {
         }
     }
 
+    // a spool holding nothing, or nothing with bytes in it, draws no question
     #[test]
-    fn an_empty_spool_draws_nothing() {
+    fn empty_spool() {
         assert!(draw(&seed_for(0), &[]).is_none());
         assert!(draw(&seed_for(0), &[entry(1, 0)]).is_none());
     }
 
+    // every draw names a leaf the drawn track actually holds
     #[test]
-    fn every_draw_lands_inside_its_track() {
+    fn draw_in_range() {
         let entries = [entry(1, 10), entry(2, 5), entry(3, 1)];
         for round in 0..500u64 {
-            let sample = draw(&seed_for(round), &entries).unwrap();
-            let held = entries.iter().find(|e| e.track == sample.track).unwrap();
+            let sample = draw(&seed_for(round), &entries).expect("a drawn sample");
+            let held = entries.iter().find(|entry| entry.track == sample.track).expect("the drawn entry");
             assert!(sample.sub_leaf < sub_leaf_count(held.slice_len.as_usize()));
         }
     }
 
+    // a different block asks a different question, or a target could keep one
+    // leaf and answer forever
     #[test]
-    fn the_sample_follows_the_entropy() {
-        // A different block has to ask a different question, or a target could
-        // retain one leaf and answer forever.
+    fn follows_entropy() {
         let entries = [entry(1, 10), entry(2, 5)];
         let asked: Vec<usize> = [1u8, 2, 3, 4]
             .into_iter()
@@ -182,29 +185,29 @@ mod tests {
                     RoundNumber(5),
                     SpoolIndex(3),
                 );
-                draw(&seed, &entries).unwrap().sub_leaf
+                draw(&seed, &entries).expect("a drawn sample").sub_leaf
             })
             .collect();
         assert!(asked.iter().any(|leaf| *leaf != asked[0]), "asked {asked:?}");
     }
 
+    // a track with ten times the leaves is drawn about ten times as often
     #[test]
-    fn the_draw_is_byte_weighted() {
-        // A track with ten times the leaves is drawn about ten times as often.
+    fn byte_weighted() {
         let entries = [entry(1, 100), entry(2, 10)];
         let mut hits = [0u32; 2];
         for round in 0..4_000u64 {
-            let sample = draw(&seed_for(round), &entries).unwrap();
+            let sample = draw(&seed_for(round), &entries).expect("a drawn sample");
             hits[usize::from(sample.track == track(2))] += 1;
         }
         let ratio = hits[0] as f64 / hits[1] as f64;
         assert!(ratio > 7.0 && ratio < 14.0, "ratio {ratio}");
     }
 
+    // the short last leaf of a slice is sampled like any other, or the tail of
+    // every slice goes uninspected
     #[test]
-    fn a_trailing_partial_leaf_is_still_drawable() {
-        // The last leaf of a slice is short, and it must be sampled like any
-        // other or the tail of every slice goes uninspected.
+    fn partial_leaf() {
         let short = SampleEntry {
             track: track(9),
             slice_len: StorageUnits::from_bytes((SUB_LEAF_BYTES * 2 + 1) as u64),
@@ -212,17 +215,17 @@ mod tests {
         assert_eq!(sample_space(&[short]), 3);
         let mut saw_last = false;
         for round in 0..200u64 {
-            if draw(&seed_for(round), &[short]).unwrap().sub_leaf == 2 {
+            if draw(&seed_for(round), &[short]).expect("a drawn sample").sub_leaf == 2 {
                 saw_last = true;
             }
         }
         assert!(saw_last);
     }
 
+    // reordering the entries changes the draw, which is why two challengers of
+    // one spool have to sort before they enumerate
     #[test]
-    fn the_order_of_entries_decides_the_answer() {
-        // Two challengers of the same spool must enumerate the same way, so this
-        // pins that reordering the input changes the draw.
+    fn entry_order() {
         let mut forward = [entry(1, 10), entry(2, 10)];
         let mut reversed = [entry(2, 10), entry(1, 10)];
         let seed = seed_for(1);

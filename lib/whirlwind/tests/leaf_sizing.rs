@@ -65,15 +65,19 @@ fn measure<const HEIGHT: usize>(label: &str, slice: &[u8], leaf_bytes: usize) {
     // Round side: produce a proof for one sampled sub-leaf.
     let index = chunks.len() / 3;
     let start = Instant::now();
-    let sub_proof = create_proof_from_leaf_hashes::<HEIGHT>(&hashes, index).unwrap();
-    let top_proof = create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&roots, 0).unwrap();
+    let sub_proof = create_proof_from_leaf_hashes::<HEIGHT>(&hashes, index).expect("sub proof");
+    let top_proof = create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&roots, 0).expect("top proof");
     let prove_us = micros(start);
 
     // Round side: verify it, the work every observer repeats.
     let start = Instant::now();
     let leaf = hash_leaf(chunks[index]);
-    let reached_root = *compute_path(&sub_proof, leaf, index as u64, HEIGHT).last().unwrap();
-    let reached_commitment = *compute_path(&top_proof, reached_root, 0, SLICE_TREE_HEIGHT).last().unwrap();
+    let reached_root = *compute_path(&sub_proof, leaf, index as u64, HEIGHT)
+        .last()
+        .expect("path");
+    let reached_commitment = *compute_path(&top_proof, reached_root, 0, SLICE_TREE_HEIGHT)
+        .last()
+        .expect("path");
     let verify_us = micros(start);
     assert_eq!(reached_root, slice_root);
     assert_eq!(reached_commitment, commitment);

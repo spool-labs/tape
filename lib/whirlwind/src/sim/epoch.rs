@@ -988,11 +988,11 @@ impl SimulationReport {
                 Some(bloc) => format!("bloc {bloc}"),
                 None => "solo".to_string(),
             };
-            let status = match (outcome.evicted_epoch, outcome.reason) {
-                (Some(epoch), Some(reason)) => {
+            let status = match outcome.evicted_epoch.zip(outcome.reason) {
+                Some((epoch, reason)) => {
                     format!("evicted e{} ({})", epoch.as_u64(), reason.label())
                 }
-                _ => "survived".to_string(),
+                None => "survived".to_string(),
             };
             let rate = match outcome.final_rate {
                 Some(rate) => format!("{rate:.2}"),
@@ -1196,7 +1196,7 @@ mod tests {
     // a spool that answers nobody is caught, and both fetch free-riders are not
     #[test]
     fn offline_evicted() {
-        let report = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).unwrap();
+        let report = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).expect("run epochs");
 
         let offline = find_behavior(&report, Behavior::Offline);
         assert!(offline.evicted_epoch.is_some());
@@ -1218,13 +1218,13 @@ mod tests {
     fn relay_beats_withholding() {
         let mut direct = fast_config();
         direct.relay = RelayPolicy::Direct;
-        let caught = simulate_epochs_with_costs(ping_data(), &direct, test_costs()).unwrap();
+        let caught = simulate_epochs_with_costs(ping_data(), &direct, test_costs()).expect("run epochs");
         assert!(find_behavior(&caught, Behavior::Selective).evicted_epoch.is_some());
 
         // One hop is enough: peers it skipped receive the proof the long way.
         let mut relayed = fast_config();
         relayed.relay = RelayPolicy::SingleHop;
-        let survives = simulate_epochs_with_costs(ping_data(), &relayed, test_costs()).unwrap();
+        let survives = simulate_epochs_with_costs(ping_data(), &relayed, test_costs()).expect("run epochs");
         assert!(find_behavior(&survives, Behavior::Selective).evicted_epoch.is_none());
     }
 
@@ -1232,7 +1232,7 @@ mod tests {
     #[test]
     fn scoreboard_persists() {
         let config = fast_config();
-        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).unwrap();
+        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).expect("run epochs");
 
         // Two original honest survivors accumulate opportunities across every epoch.
         let opportunities = report
@@ -1259,7 +1259,7 @@ mod tests {
     // no observer ever scores itself over a whole run
     #[test]
     fn no_self_scores() {
-        let report = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).unwrap();
+        let report = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).expect("run epochs");
         for (observer, target, _) in report.scoreboard.iter() {
             assert_ne!(observer, target);
         }
@@ -1276,7 +1276,7 @@ mod tests {
             span_slots: SlotCount::new(1),
             ..config.schedule
         };
-        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).unwrap();
+        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).expect("run epochs");
         assert!(report.void_count > 0, "expected some void rounds");
 
         let mut challenged = 0u64;
@@ -1300,10 +1300,10 @@ mod tests {
         config.schedule.proof_deadline = ProofDeadline::Slots(SlotCount::new(6));
 
         let mut rng = SmallRng::seed_from_u64(config.seed);
-        let committee = build_initial_committee(data, &config, &mut rng).unwrap();
+        let committee = build_initial_committee(data, &config, &mut rng).expect("build committee");
         let server_ids: Vec<usize> = committee.iter().map(|node| node.server_id).collect();
-        let group = Group::place(data, &server_ids).unwrap();
-        let holdings = SpoolHoldings::build(config.blob_bytes, config.group_size).unwrap();
+        let group = Group::place(data, &server_ids).expect("place group");
+        let holdings = SpoolHoldings::build(config.blob_bytes, config.group_size).expect("build holdings");
         let entropy = config
             .schedule
             .entropy_block(config.seed, EpochNumber(0), GROUP_ID, RoundNumber::new(0), config.rounds_per_epoch)
@@ -1312,12 +1312,12 @@ mod tests {
         let honest_position = committee
             .iter()
             .position(|node| node.behavior == Behavior::Honest && node.bloc.is_none())
-            .unwrap();
+            .expect("an unaligned honest position");
         let honest = run_round(
             &committee, &group, &holdings, &costs, &entropy, EpochNumber(0),
             RoundNumber::new(0), GroupPosition::new(honest_position), &config,
         )
-        .unwrap();
+        .expect("run the honest round");
         assert!(honest.signer_count >= config.threshold);
         assert!(honest.certificate_formed);
 
@@ -1326,12 +1326,12 @@ mod tests {
         let free_position = committee
             .iter()
             .position(|node| node.behavior == Behavior::CollusiveFreeRider)
-            .unwrap();
+            .expect("a free-rider position");
         let free = run_round(
             &committee, &group, &holdings, &costs, &entropy, EpochNumber(0),
             RoundNumber::new(0), GroupPosition::new(free_position), &config,
         )
-        .unwrap();
+        .expect("run the free-rider round");
         assert!(!free.certificate_formed);
         assert!(free.signer_count < config.threshold);
     }
@@ -1340,7 +1340,7 @@ mod tests {
     #[test]
     fn free_rider_evicted() {
         let config = fast_config();
-        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).unwrap();
+        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).expect("run epochs");
         let free_rider = find_behavior(&report, Behavior::CollusiveFreeRider);
         assert!(free_rider.evicted_epoch.is_some());
 
@@ -1367,7 +1367,7 @@ mod tests {
             offline: 1,
             colluders: 6,
         };
-        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).unwrap();
+        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).expect("run epochs");
 
         // The victim is the lowest-position honest solo node, id 0.
         let victim = NodeId(0);
@@ -1385,7 +1385,7 @@ mod tests {
             }
         }
         assert!(report.final_committee.iter().any(|node| node.id == victim));
-        let victim_outcome = report.outcomes.iter().find(|outcome| outcome.id == victim).unwrap();
+        let victim_outcome = report.outcomes.iter().find(|outcome| outcome.id == victim).expect("the victim outcome");
         assert!(victim_outcome.evicted_epoch.is_none());
     }
 
@@ -1393,7 +1393,7 @@ mod tests {
     #[test]
     fn committee_size() {
         let config = fast_config();
-        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).unwrap();
+        let report = simulate_epochs_with_costs(ping_data(), &config, test_costs()).expect("run epochs");
         for summary in &report.per_epoch {
             assert_eq!(summary.committee.len(), config.group_size);
             let mut seen = HashSet::new();
@@ -1406,8 +1406,8 @@ mod tests {
     // the same inputs replay to the same epochs and the same event log
     #[test]
     fn deterministic_run() {
-        let first = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).unwrap();
-        let second = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).unwrap();
+        let first = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).expect("run epochs");
+        let second = simulate_epochs_with_costs(ping_data(), &fast_config(), test_costs()).expect("run epochs");
         assert_eq!(first.per_epoch.len(), second.per_epoch.len());
         for (left, right) in first.per_epoch.iter().zip(second.per_epoch.iter()) {
             assert_eq!(left.certificates, right.certificates);
@@ -1421,8 +1421,8 @@ mod tests {
                 right.evicted.iter().map(|eviction| (eviction.node, eviction.reason)).collect();
             assert_eq!(left_evicted, right_evicted);
         }
-        let left_json = serde_json::to_string(&first.timeline.events()).unwrap();
-        let right_json = serde_json::to_string(&second.timeline.events()).unwrap();
+        let left_json = serde_json::to_string(&first.timeline.events()).expect("serialize timeline");
+        let right_json = serde_json::to_string(&second.timeline.events()).expect("serialize timeline");
         assert_eq!(left_json, right_json);
     }
 

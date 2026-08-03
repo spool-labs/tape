@@ -141,11 +141,11 @@ mod tests {
         let mut pubkeys = Vec::new();
         let mut partials = Vec::new();
         for _ in 0..threshold {
-            let (secret, public) = keypair().unwrap();
-            partials.push(sign(&secret, &message).unwrap());
+            let (secret, public) = keypair().expect("keypair");
+            partials.push(sign(&secret, &message).expect("sign"));
             pubkeys.push(public);
         }
-        let cert = aggregate(&partials).unwrap();
+        let cert = aggregate(&partials).expect("aggregate");
         assert!(verify_certificate(&cert, &message, &pubkeys));
         // A different message must not verify.
         let other = attestation_message(7, 0, 2, 3, 512, &entropy);
@@ -160,15 +160,15 @@ mod tests {
         let mut pubkeys = Vec::new();
         let mut partials = Vec::new();
         for _ in 0..threshold {
-            let (secret, public) = keypair().unwrap();
-            partials.push(sign(&secret, &message).unwrap());
+            let (secret, public) = keypair().expect("keypair");
+            partials.push(sign(&secret, &message).expect("sign"));
             pubkeys.push(public);
         }
-        let certificate = aggregate(&partials).unwrap();
+        let certificate = aggregate(&partials).expect("aggregate");
         assert!(verify_certificate(&certificate, &message, &pubkeys));
 
         // A tampered voter set, dropping one signer and adding a stranger, fails.
-        let (_, stranger) = keypair().unwrap();
+        let (_, stranger) = keypair().expect("keypair");
         let mut tampered = pubkeys.clone();
         tampered.pop();
         tampered.push(stranger);

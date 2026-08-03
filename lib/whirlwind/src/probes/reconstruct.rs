@@ -203,9 +203,9 @@ mod tests {
     fn exact_rebuild() {
         // Proves the free-rider genuinely recovers the owner's bytes from d
         // helpers, so it can answer any sub-leaf challenge in that stripe.
-        let spool = Spool::build(1_000_000).unwrap();
+        let spool = Spool::build(1_000_000).expect("build spool");
         let report =
-            ReconstructReport::measure(&spool, 1024, &[1.0, 10.0, 50.0], 1_000.0, 5_000.0).unwrap();
+            ReconstructReport::measure(&spool, 1024, &[1.0, 10.0, 50.0], 1_000.0, 5_000.0).expect("measure reconstruct");
         assert!(report.reconstruct_is_correct);
         assert_eq!(report.helper_count, spool.helper_count);
     }
@@ -216,9 +216,9 @@ mod tests {
         // Repair moves d/(d-k+1) chunk-equivalents, 1.6 at the Clay defaults.
         // That is far below a full recovery but above the chunk it restores, so
         // rebuilding is the cheap path only relative to recovery.
-        let spool = Spool::build(1_000_000).unwrap();
+        let spool = Spool::build(1_000_000).expect("build spool");
         let report =
-            ReconstructReport::measure(&spool, 1024, &[10.0], 1_000.0, 5_000.0).unwrap();
+            ReconstructReport::measure(&spool, 1024, &[10.0], 1_000.0, 5_000.0).expect("measure reconstruct");
         let expected = repair_chunk_equivalents(spool.data_shards, spool.helper_count);
         assert!((report.chunk_equivalents - expected).abs() < 0.01);
         assert!(report.bytes_fetched < report.recovery_bytes);
@@ -231,9 +231,9 @@ mod tests {
         // The cheapest fake is not repair at all: one peer holds the chunk, and
         // asking for it moves fewer bytes over fewer links than d helpers do.
         // This is the free-rider the deadline sweep cannot catch.
-        let spool = Spool::build(1_000_000).unwrap();
+        let spool = Spool::build(1_000_000).expect("build spool");
         let report =
-            ReconstructReport::measure(&spool, 1024, &[10.0], 1_000.0, 5_000.0).unwrap();
+            ReconstructReport::measure(&spool, 1024, &[10.0], 1_000.0, 5_000.0).expect("measure reconstruct");
         assert!(report.chunk_size < report.bytes_fetched);
     }
 }

@@ -69,13 +69,13 @@ mod tests {
             .rows
             .iter()
             .find(|row| row.threshold == 14 && row.slow_honest == 1)
-            .unwrap();
+            .expect("the n-f row");
         assert!(!safety_slow.can_certify);
         let one_honest_slow = report
             .rows
             .iter()
             .find(|row| row.threshold == 7 && row.slow_honest == 1)
-            .unwrap();
+            .expect("the f+1 row");
         assert!(one_honest_slow.can_certify);
     }
 }

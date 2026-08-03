@@ -178,18 +178,20 @@ impl Orchestrator {
             return Ok(());
         }
 
-        // Advance pool to activate stake
-        chain
-            .advance_pool(setup.authority_pubkey)
-            .await
-            .context("advance pool")?;
-        info!(id, "pool advanced");
-
-        chain
-            .join_committee(&setup.authority_keypair)
-            .await
-            .context("join committee")?;
-        info!(id, "joined committee");
+        // Both of these are the node's own work, done here only to get a fresh
+        // node seated within the epoch it was added rather than the next one.
+        // Restarting a running fleet lands in whatever phase the chain is in,
+        // where the chain refuses one or both, and a node that cannot be helped
+        // along still joins on its own lifecycle. Failing the setup there would
+        // tear down a healthy node for being early.
+        match chain.advance_pool(setup.authority_pubkey).await {
+            Ok(()) => info!(id, "pool advanced"),
+            Err(error) => info!(id, %error, "pool advance left to the node"),
+        }
+        match chain.join_committee(&setup.authority_keypair).await {
+            Ok(()) => info!(id, "joined committee"),
+            Err(error) => info!(id, %error, "join left to the node"),
+        }
 
         Ok(())
     }

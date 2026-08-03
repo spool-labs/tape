@@ -35,8 +35,11 @@ pub enum CertificateRejection {
 /// A quorum's agreement that one spool answered one round in time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SuccessCertificate {
+    /// Epoch the round belongs to.
     pub epoch: EpochNumber,
+    /// Group whose members signed it.
     pub group: GroupIndex,
+    /// Round within the epoch.
     pub round: RoundNumber,
     /// The spool the certificate is about.
     pub spool: SpoolIndex,
@@ -175,8 +178,9 @@ mod tests {
         .expect("aggregate")
     }
 
+    // a quorum of other members certifies the round
     #[test]
-    fn a_quorum_certifies() {
+    fn quorum_certifies() {
         let group = group_of(THRESHOLD, 0xAA);
         let certificate = certificate(&group, 0xAA);
 
@@ -186,10 +190,10 @@ mod tests {
         );
     }
 
+    // two nodes gathering the same attestations in different orders produce the
+    // same certificate, or neither can be compared with the other
     #[test]
-    fn the_signers_are_ordered_so_two_aggregators_agree() {
-        // Two nodes gathering the same attestations in different orders have to
-        // produce the same certificate, or neither can be compared with the other.
+    fn ordered_signers() {
         let group = group_of(THRESHOLD, 0xAA);
         let mut reversed = group.signed.clone();
         reversed.reverse();
@@ -209,8 +213,9 @@ mod tests {
         assert!(one.signers.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
+    // one signature short of the threshold is refused
     #[test]
-    fn one_signature_short_is_refused() {
+    fn below_quorum() {
         let group = group_of(THRESHOLD - 1, 0xAA);
         let certificate = certificate(&group, 0xAA);
 
@@ -220,10 +225,9 @@ mod tests {
         );
     }
 
+    // the owner may sign, but a roster it appears in is not a quorum of others
     #[test]
-    fn a_spool_cannot_certify_itself() {
-        // The owner may contribute one signature, but a roster it appears in is
-        // not a quorum of other members.
+    fn self_certified() {
         let mut group = group_of(THRESHOLD - 1, 0xAA);
         let key = BlsPrivateKey::from_random();
         group.keys.insert(group.owner, key.public_key().expect("pubkey"));
@@ -238,9 +242,10 @@ mod tests {
         );
     }
 
+    // a signer counted twice is refused, or one peer reaches the threshold by
+    // repeating itself
     #[test]
-    fn one_signer_counted_twice_is_refused() {
-        // Otherwise a single peer reaches the threshold by repeating itself.
+    fn duplicate_signer() {
         let group = group_of(THRESHOLD, 0xAA);
         let mut doubled = certificate(&group, 0xAA);
         doubled.signers[1] = doubled.signers[0];
@@ -251,8 +256,9 @@ mod tests {
         );
     }
 
+    // a signer with no registered key is refused
     #[test]
-    fn a_signer_with_no_registered_key_is_refused() {
+    fn unknown_signer() {
         let group = group_of(THRESHOLD, 0xAA);
         let certificate = certificate(&group, 0xAA);
         let stranger = certificate.signers[0];
@@ -269,10 +275,10 @@ mod tests {
         );
     }
 
+    // signers who saw different candidate blocks signed different bytes, so
+    // their aggregate verifies against neither round
     #[test]
-    fn signatures_from_different_branches_do_not_combine() {
-        // Signers who saw different candidate blocks signed different bytes, so
-        // their aggregate cannot verify against either round.
+    fn mixed_branches() {
         let mut group = group_of(THRESHOLD - 1, 0xAA);
         let other = group_of(1, 0xBB);
         group.keys.extend(other.keys);
@@ -285,8 +291,9 @@ mod tests {
         );
     }
 
+    // a certificate moved to another round is refused
     #[test]
-    fn a_certificate_moved_to_another_round_is_refused() {
+    fn moved_round() {
         let group = group_of(THRESHOLD, 0xAA);
         let mut moved = certificate(&group, 0xAA);
         moved.round = RoundNumber(6);

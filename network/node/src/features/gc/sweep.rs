@@ -9,7 +9,7 @@ use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_store::{
     TapeStore,
-    ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+    ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
     types::{ObjectInfo, SliceTombstone},
 };
 use tracing::debug;
@@ -22,6 +22,13 @@ use crate::features::store::cleanup::{
 };
 
 const UNCERTIFIED_RETENTION_EPOCHS: u64 = 2;
+
+/// Closed epochs of per-round challenge outcomes kept behind the current one.
+///
+/// A record's recency is rebuilt from the rounds as stored and a run of misses
+/// can cross a boundary, so the epoch that just closed has to stay readable.
+/// Anything older is history: nothing folds into it and no eviction reads it.
+const ROUND_RETENTION_EPOCHS: u64 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GcSweepStats {
@@ -53,6 +60,13 @@ pub async fn sweep_epoch<Db: Store>(
     store
         .prune_slice_tombstones_before(epoch_start_slot)
         .map_err(store_error)?;
+
+    let keep_from = EpochNumber(
+        current_epoch
+            .as_u64()
+            .saturating_sub(ROUND_RETENTION_EPOCHS),
+    );
+    store.prune_rounds_before(keep_from).map_err(store_error)?;
 
     Ok(stats)
 }
@@ -392,12 +406,12 @@ mod tests {
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
-        EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
+        EpochNumber, RoundNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::{
-        ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+        ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
         types::{ObjectInfo, SystemObjectKind, TapeInfo},
         TapeStore,
     };
@@ -842,5 +856,39 @@ mod tests {
         store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
 
         assert!(!should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
+    }
+
+    // the sweep drops per-round outcomes older than the epoch that just closed,
+    // and keeps that one, since a run of misses can cross the boundary
+    #[tokio::test]
+    async fn prunes_old_rounds() {
+        let store = test_store();
+        let peer = Address::new_unique();
+
+        for epoch in 1..=3u64 {
+            store
+                .put_round_outcome(peer, EpochNumber(epoch), RoundNumber(0), false)
+                .unwrap();
+        }
+
+        sweep_epoch(
+            &store,
+            &test_config(),
+            EpochNumber(3),
+            SlotNumber(100),
+            &owned_spools(&[]),
+            &PendingTracks::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let kept: Vec<EpochNumber> = store
+            .peer_rounds(peer)
+            .unwrap()
+            .into_iter()
+            .map(|(epoch, _, _)| epoch)
+            .collect();
+        assert_eq!(kept, vec![EpochNumber(2), EpochNumber(3)]);
     }
 }

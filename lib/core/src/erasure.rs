@@ -89,8 +89,8 @@ pub fn sample_window(sub_leaf: usize, slice_len: usize) -> Range<usize> {
 /// Path from a sample leaf to its slice root, built from one window and the sidecar.
 ///
 /// The lower `SAMPLE_WINDOW_HEIGHT` siblings come from rehashing the window the
-/// leaf sits in; the rest come from the sidecar. Identical to the path a full
-/// rebuild produces, which `sidecar_path_matches_a_full_rebuild` pins.
+/// leaf sits in; the rest come from the sidecar. The path is byte-identical to
+/// the one a full rebuild of the slice produces.
 pub fn prove_sub_leaf_windowed(
     sidecar: &[Hash],
     window: &[u8],
@@ -174,11 +174,10 @@ mod tests {
         assert_eq!(GROUP_SIZE, 20);
     }
 
+    // a spool index runs network-wide while a leaf index runs within the group,
+    // so anything past the first group wraps or it indexes off the commitment
     #[test]
-    fn a_leaf_position_wraps_within_its_group() {
-        // The distinction that matters: a spool index runs network-wide while a
-        // leaf index runs 0..GROUP_SIZE, so anything past the first group has to
-        // wrap or it indexes off the end of the commitment.
+    fn leaf_position_wraps() {
         assert_eq!(leaf_position(SpoolIndex(0)), SpoolIndex(0));
         assert_eq!(leaf_position(SpoolIndex(19)), SpoolIndex(19));
         assert_eq!(leaf_position(SpoolIndex(20)), SpoolIndex(0));
@@ -207,11 +206,10 @@ mod tests {
             .collect()
     }
 
+    // serving from one window gives byte-identical paths to hashing the whole
+    // slice, or an owner taking the cheap path would fail every challenge
     #[test]
-    fn a_sidecar_path_matches_a_full_rebuild() {
-        // The whole point of the sidecar: serving from one window has to produce
-        // byte-identical paths to hashing the entire slice, or an owner that took
-        // the cheap path would fail every challenge.
+    fn sidecar_path() {
         for (leaves, tail) in [(1usize, 0usize), (1, 5), (255, 0), (256, 0), (257, 0), (900, 33)] {
             let slice = slice_of(leaves, tail);
             let sidecar = slice_sidecar(&slice).expect("within capacity");
@@ -235,11 +233,10 @@ mod tests {
         }
     }
 
+    // folding the sidecar gives the same root as hashing the slice, so a writer
+    // that built one does not have to do both
     #[test]
-    fn a_root_folds_out_of_the_sidecar() {
-        // A writer builds the sidecar and needs the root to check what it is
-        // about to store. Folding has to agree with hashing the slice, or the
-        // write path would have to do both.
+    fn folded_root() {
         for (leaves, tail) in [(0usize, 0usize), (0, 9), (1, 0), (255, 0), (256, 0), (900, 33)] {
             let slice = slice_of(leaves, tail);
             let sidecar = slice_sidecar(&slice).expect("within capacity");
@@ -251,10 +248,10 @@ mod tests {
         }
     }
 
+    // one node per window puts the sidecar orders of magnitude under both the
+    // slice and its leaf hashes, which is what makes keeping it free
     #[test]
-    fn a_sidecar_is_a_rounding_of_the_slice() {
-        // One node per window, so the sidecar is orders of magnitude smaller than
-        // both the slice and its leaf hashes. This is what makes keeping it free.
+    fn sidecar_size() {
         let slice = slice_of(900, 0);
         let sidecar = slice_sidecar(&slice).expect("within capacity");
 
@@ -262,8 +259,9 @@ mod tests {
         assert!(sidecar.len() * Hash::LEN * 1_000 < slice.len());
     }
 
+    // a window contains the leaf it was asked for and stops at the slice end
     #[test]
-    fn a_window_covers_its_leaf_and_stops_at_the_slice() {
+    fn window_bounds() {
         let slice_len = 900 * SUB_LEAF_BYTES + 7;
         for sub_leaf in [0usize, 255, 256, 899] {
             let window = sample_window(sub_leaf, slice_len);

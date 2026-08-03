@@ -194,6 +194,10 @@ impl Schedule {
     }
 
     /// Slot by which a proof must have arrived, counted from the entropy block.
+    ///
+    /// Sizes the round rather than gating a response: no observer rejects a late
+    /// answer today, because a round settles when the next one opens and that is
+    /// the bound a response actually runs against.
     pub fn deadline_slot(&self, entropy_slot: SlotNumber) -> SlotNumber {
         SlotNumber(entropy_slot.as_u64() + PROOF_DEADLINE_SLOTS)
     }
@@ -234,17 +238,17 @@ mod tests {
         Hash([byte; 32])
     }
 
+    // a round is span, then the signing window that cannot open before
+    // confirmation, then certificate gossip
     #[test]
-    fn a_round_is_eleven_slots_wide() {
-        // Span, then the signing window which cannot open before confirmation,
-        // then certificate gossip. The deadline sits inside the signing window.
+    fn round_width() {
         assert_eq!(round_width_slots(), 11);
     }
 
+    // the cadence the knobs document publishes, pinned here so a preset that
+    // changes its epoch duration cannot quietly fall off it
     #[test]
-    fn every_preset_gets_a_workable_cadence() {
-        // The table the knobs document publishes, pinned in code so a preset that
-        // changes its epoch duration cannot quietly fall off it.
+    fn preset_cadence() {
         let expected = [
             (MAINNET, 150u64, 10_080u64),
             (DEVNET, 150, 60),
@@ -262,18 +266,19 @@ mod tests {
         }
     }
 
+    // at the shortest votable epoch the interval falls to the round width and
+    // the epoch still fits more than one round
     #[test]
-    fn the_shortest_votable_epoch_still_holds_rounds() {
-        // Simnet's floor is the tight one: the interval falls to the round width
-        // and the epoch still has to fit more than one round.
+    fn shortest_epoch() {
         let schedule = Schedule::for_epoch(SlotNumber(0), epoch_slots(10), &nonce(0));
         assert_eq!(schedule.interval_slots, round_width_slots());
         assert_eq!(schedule.rounds(), 2);
         assert!(schedule.validate().is_ok());
     }
 
+    // an epoch too short for a single round schedules none at all
     #[test]
-    fn an_epoch_too_short_for_one_round_schedules_none() {
+    fn epoch_too_short() {
         let schedule = Schedule::for_epoch(SlotNumber(0), 10, &nonce(0));
         assert_eq!(schedule.rounds(), 0);
         assert_eq!(
@@ -285,8 +290,9 @@ mod tests {
         );
     }
 
+    // one round finishes before the next one opens
     #[test]
-    fn rounds_never_overlap_their_neighbours() {
+    fn no_overlap() {
         let schedule = Schedule::for_epoch(SlotNumber(1_000), epoch_slots(SIMNET), &nonce(0));
         for round in 0..schedule.rounds() {
             let window = schedule.entropy_window(RoundNumber(round));
@@ -297,10 +303,10 @@ mod tests {
         }
     }
 
+    // a round still gossiping when its epoch ends belongs to nobody, so the
+    // last one scheduled finishes inside the epoch
     #[test]
-    fn the_last_round_finishes_inside_its_epoch() {
-        // A round still gossiping when the epoch ends belongs to nobody, so it is
-        // not scheduled in the first place.
+    fn last_round_fits() {
         for (seconds, byte) in [
             (MAINNET, 0u8), (MAINNET, 200), (DEVNET, 3), (LOCALNET, 7),
             (SIMNET, 11), (10, 13), (200, 17),
@@ -318,12 +324,11 @@ mod tests {
         }
     }
 
+    // an epoch ends when the committee advances it, not when its nominal length
+    // elapses, and a grid that stopped counting would leave the tail of a long
+    // epoch unchallenged
     #[test]
-    fn an_epoch_that_runs_long_keeps_challenging() {
-        // An epoch ends when the committee advances it, not when its nominal
-        // length elapses. A grid that stopped at the nominal count would leave
-        // the tail of a long epoch unchallenged, which is when a node is most
-        // likely to have gone quiet unnoticed.
+    fn long_epoch() {
         let schedule = Schedule::for_epoch(SlotNumber(0), epoch_slots(SIMNET), &nonce(0));
         let nominal = schedule.rounds();
 
@@ -337,11 +342,10 @@ mod tests {
         );
     }
 
+    // with a fixed anchor, whichever round lands in a phase that does not
+    // challenge is lost in that position every epoch, so the nonce moves it
     #[test]
-    fn the_nonce_moves_the_grid_between_epochs() {
-        // The reason this exists: with a fixed anchor, whichever round lands in a
-        // phase that does not challenge is lost in that position every epoch. A
-        // nonce-placed grid loses different rounds instead.
+    fn nonce_moves_grid() {
         let slots = epoch_slots(DEVNET);
         let offsets: Vec<u64> = (0..8u8)
             .map(|byte| Schedule::for_epoch(SlotNumber(0), slots, &nonce(byte)).grid_offset)
@@ -354,10 +358,10 @@ mod tests {
         );
     }
 
+    // every owner reaches the same schedule without coordinating, so placement
+    // is a pure function of the nonce
     #[test]
-    fn one_nonce_always_gives_one_grid() {
-        // Every owner has to reach the same schedule without coordinating, so the
-        // placement has to be a pure function of the nonce.
+    fn nonce_is_pure() {
         let slots = epoch_slots(DEVNET);
         let once = Schedule::for_epoch(SlotNumber(77), slots, &nonce(9));
         let again = Schedule::for_epoch(SlotNumber(77), slots, &nonce(9));
@@ -366,8 +370,9 @@ mod tests {
         assert_eq!(once.base_slot(RoundNumber(3)), again.base_slot(RoundNumber(3)));
     }
 
+    // the grid never opens before its epoch, and moving it costs no round
     #[test]
-    fn the_grid_never_starts_before_its_epoch() {
+    fn grid_inside_epoch() {
         let slots = epoch_slots(SIMNET);
         for byte in 0..32u8 {
             let schedule = Schedule::for_epoch(SlotNumber(500), slots, &nonce(byte));
@@ -380,8 +385,10 @@ mod tests {
         }
     }
 
+    // a slot inside a window maps back to the round that owns it, and the gaps
+    // between windows map to none
     #[test]
-    fn a_slot_maps_back_to_the_round_that_owns_it() {
+    fn slot_to_round() {
         let start = SlotNumber(9_000);
         let schedule = Schedule::for_epoch(start, epoch_slots(DEVNET), &nonce(0));
 
