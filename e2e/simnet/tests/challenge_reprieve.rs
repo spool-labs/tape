@@ -15,6 +15,7 @@
 //! the difference between those two runs is the whole point of judging the arms
 //! apart.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use store::{Column, Store};
@@ -33,20 +34,21 @@ const COMMITTEE_NODES: usize = GROUP_SIZE;
 const NODE_COUNT: usize = COMMITTEE_NODES + 1;
 const SPARE_NODE: usize = COMMITTEE_NODES;
 const VICTIM: usize = 1;
-const OBSERVER: usize = 0;
 const TARGET_GROUPS: u64 = 1;
 const SEATED_STAKE: u64 = 1_000;
 const SPARE_STAKE: u64 = 500;
 
-/// Successes banked before the run starts.
+/// Successes banked before the run starts, in the thinnest record in the group.
 ///
-/// The rate arm fires below half, so a run of three costs nothing while the
-/// peer has answered at least that many. Five leaves room for two more misses
-/// to settle between the run landing and the slice going back.
-const BANKED_SUCCESSES: u64 = 5;
+/// The rate arm fires below half, so a peer that has answered this many can miss
+/// as many again before its rate matters. Rounds settle in bursts and observers
+/// do not agree exactly, so the run has usually reached four or five by the time
+/// the slice goes back, and the margin has to cover that everywhere, not just at
+/// the observer being polled.
+const BANKED_SUCCESSES: u64 = 8;
 
 /// One opportunity settles per epoch or so, so banking is most of the run.
-const BANK_TIMEOUT: Duration = Duration::from_secs(600);
+const BANK_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Three consecutive misses at roughly one round per epoch.
 const RUN_TIMEOUT: Duration = Duration::from_secs(420);
@@ -126,33 +128,60 @@ async fn challenge_reprieve_inner() {
 
     // Bank successes first. Without them the run and the rate fire together and
     // the probe is never consulted, which is the case corruption_eviction covers.
+    // The gate is on the thinnest record in the group, since every member votes
+    // on its own and the margin has to hold for all of them.
     await_record(&harness, victim, BANK_TIMEOUT, "banked successes", |record| {
         record.successes >= BANKED_SUCCESSES
     })
     .await;
 
-    // Two copies: the stored bytes to put back verbatim, and the decoded slice
-    // to check the rot took and then undid. Mutation stays in raw space, since
-    // writing a decoded value back through the column kills the node.
-    let stored = raw_slice(&harness, spool, track);
+    // Rot the whole spool and keep rotting it. One pass is not enough: every
+    // epoch's snapshot writes fresh tracks into the same spool, and a draw
+    // weighted by bytes landing on one of those answers cleanly and resets the
+    // run. Re-rotting each pass keeps the misses consecutive whatever the draw
+    // picks, and remembering the first sight of each track is what allows all of
+    // it to be put back.
+    //
+    // Mutation stays in raw space, since writing a decoded value back through
+    // the column kills the node. `served` is the decoded slice of the uploaded
+    // track, kept only to check the rot took and then undid.
     let served = node_slice(&harness, VICTIM, spool, track).expect("victim holds its slice");
+    let mut stored: HashMap<Address, Vec<u8>> = HashMap::new();
 
-    write_raw_slice(&harness, spool, track, &rotted(&stored));
+    let start = Instant::now();
+    let fired = loop {
+        for (held, bytes) in raw_spool(&harness, spool) {
+            if stored.contains_key(&held) {
+                continue;
+            }
+            write_raw_slice(&harness, spool, held, &rotted(&bytes));
+            stored.insert(held, bytes);
+        }
+
+        // The state the reprieve is defined on: the peer has stopped answering
+        // and its lifetime rate is still good, so the rule fires on the run alone.
+        let record = observer_record(&harness, victim);
+        if record.run_fires() && !record.rate_fires() {
+            break record;
+        }
+        assert!(
+            start.elapsed() < RUN_TIMEOUT,
+            "no run-only rule within {RUN_TIMEOUT:?}, weakest record {record:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+
+    assert!(stored.len() > 1, "expected the spool to hold more than one track");
     assert_ne!(
         node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
         served,
         "the corruption did not take"
     );
 
-    // The state the reprieve is defined on: the peer has stopped answering and
-    // its lifetime rate is still good, so the rule fires on the run alone.
-    let fired = await_record(&harness, victim, RUN_TIMEOUT, "a run-only rule", |record| {
-        record.run_fires() && !record.rate_fires()
-    })
-    .await;
-
     // Put the bytes back before the misses can carry the rate through the floor.
-    write_raw_slice(&harness, spool, track, &stored);
+    for (held, bytes) in &stored {
+        write_raw_slice(&harness, spool, *held, bytes);
+    }
     assert_eq!(
         node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
         served,
@@ -220,14 +249,30 @@ async fn await_record(
     }
 }
 
+/// The thinnest record any group-mate holds for the victim.
+///
+/// Every member judges on its own record and votes on its own, so what decides
+/// whether the rate arm stays quiet is the weakest record in the group, not a
+/// sample of one. Polling the minimum makes every gate hold group-wide.
+///
+/// Ordering on successes then rate reads correctly in both phases of the test.
+/// While the peer is answering, every rate is full and the key sorts on banked
+/// successes; once it stops, successes hold still and the key sorts on the rate
+/// closest to the floor.
 fn observer_record(harness: &SimnetHarness, victim: Address) -> PeerRecord {
-    harness
-        .node(OBSERVER)
-        .expect("observer node")
-        .context()
-        .store
-        .peer_record(victim)
-        .expect("peer record")
+    (0..COMMITTEE_NODES)
+        .filter(|node| *node != VICTIM)
+        .map(|node| {
+            harness
+                .node(node)
+                .expect("observer node")
+                .context()
+                .store
+                .peer_record(victim)
+                .expect("peer record")
+        })
+        .min_by_key(|record| (record.successes, record.success_rate().0))
+        .expect("a group-mate")
 }
 
 fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {
@@ -254,24 +299,32 @@ fn node_address(harness: &SimnetHarness, index: usize) -> Address {
 /// one sampled sub-leaf is certain to land on it, and the value still decodes.
 fn rotted(slice: &[u8]) -> Vec<u8> {
     let mut bytes = slice.to_vec();
-    for byte in &mut bytes[16..] {
+    // Snapshot slices are far smaller than an uploaded track's. One too short
+    // to keep a header is rotted whole, since a slice left intact would answer
+    // a draw and break the run.
+    let head = if bytes.len() > 16 { 16 } else { 0 };
+    for byte in &mut bytes[head..] {
         *byte ^= 0xFF;
     }
     bytes
 }
 
-/// The victim's stored slice value, exactly as the column holds it.
-fn raw_slice(harness: &SimnetHarness, spool: SpoolIndex, track: Address) -> Vec<u8> {
+/// Every slice the victim holds for a spool, exactly as the column holds them.
+fn raw_spool(harness: &SimnetHarness, spool: SpoolIndex) -> Vec<(Address, Vec<u8>)> {
     let node = harness.node(VICTIM).expect("victim node");
     let store = node.context().store.clone();
-    let key = wincode::serialize(&SliceKey::new(spool, track)).expect("slice key");
+    let raw = store.inner().inner();
 
     store
-        .inner()
-        .inner()
-        .get(SliceCol::CF_NAME, &key)
-        .expect("raw get")
-        .expect("slice bytes present")
+        .iter_slice_sizes_by_spool(spool)
+        .expect("iter slice sizes")
+        .into_iter()
+        .filter_map(|(track, _)| {
+            let key = wincode::serialize(&SliceKey::new(spool, track)).expect("slice key");
+            let bytes = raw.get(SliceCol::CF_NAME, &key).expect("raw get")?;
+            Some((track, bytes))
+        })
+        .collect()
 }
 
 /// Write a stored slice value back, leaving the sidecar and the size index
