@@ -10,13 +10,16 @@ use tape_core::tape::{
 };
 use tape_core::track::data::BlobData;
 use tape_core::track::types::TrackState;
-use tape_core::types::{EpochNumber, SlotNumber, TapeNumber, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
+use tape_slicer::coded_slice_len;
 use tape_store::ops::{
-    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
-    TrackOps,
+    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SampleOps, SliceOps, SpoolOps, TapeOps,
+    TrackDataOps, TrackOps,
 };
-use tape_store::types::{ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo};
+use tape_store::types::{
+    ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo, TrackSample,
+};
 use tape_store::TapeStore;
 use tracing::warn;
 
@@ -184,9 +187,23 @@ fn put_track_object<Db: Store>(
     store.put_track(track, replay.state)
         .map_err(store_error)?;
 
-    // The challenge sample set is cut at a round window's base slot, so every
-    // observer needs the same registration slot for the same track.
-    store.put_track_slot(track, slot).map_err(store_error)?;
+    // The challenge sample set, from the registration rather than from what
+    // this node stored. Inline tracks have no slices and are not sampled.
+    if let Some(blob) = replay.blob {
+        let sample = TrackSample {
+            slice_len: StorageUnits::from_bytes(coded_slice_len(
+                blob.profile,
+                blob.size.as_usize(),
+                blob.stripe_size.as_usize(),
+                blob.stripe_count.0 as usize,
+            ) as u64),
+            registered_slot: slot,
+            deleted_slot: None,
+        };
+        store
+            .put_track_sample(replay.state.group, track, sample)
+            .map_err(store_error)?;
+    }
 
     // We need to advance the track cursor so that merkle proofs for this tape don't break due to
     // using the wrong index when tracks are deleted.

@@ -46,31 +46,11 @@ pub fn stripe_size_accepted(
     stripe_size == derive_stripe_size(blob_len, alignment, cap)
 }
 
-// Alignment and padding bounds are pinned over the full track range by the
-// conformance battery in tests/conformance.rs.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_num_stripes() {
-        assert_eq!(num_stripes(0, 100_000), 1);
-        assert_eq!(num_stripes(1, 100_000), 1);
-        assert_eq!(num_stripes(100_000, 100_000), 1);
-        assert_eq!(num_stripes(100_001, 100_000), 2);
-        assert_eq!(num_stripes(250_000, 100_000), 3);
-    }
-}
-
-/// Byte length of one coded slice, from a track's registered encoding alone.
+/// Byte length of one coded slice, from a registered encoding alone.
 ///
-/// The challenge sample set has to be weighted by slice length, and every owner
-/// in a group must reach the same weights without measuring what it happens to
-/// hold. Every input here is chain-derived: the registered payload size, the
-/// stripe layout the writer committed to, and the coding profile.
-///
-/// Mirrors what `Slicer::encode` lays out, one chunk per stripe followed by the
-/// slice metadata, and `derived_length_matches_encoding` pins the two together.
+/// Lets a caller weight a slice without holding it. Mirrors what `encode` lays
+/// out, one chunk per stripe then the metadata, pinned by
+/// `derived_length_matches_encoding`.
 pub fn coded_slice_len(
     profile: EncodingProfile,
     size: usize,
@@ -81,11 +61,13 @@ pub fn coded_slice_len(
     stripe_count * chunk + SliceMetadata::SIZE
 }
 
+// Alignment and padding bounds are pinned over the full track range by the
+// conformance battery in tests/conformance.rs.
 #[cfg(test)]
-mod slice_len_tests {
+mod tests {
     use super::*;
-    use crate::slicer::Slicer;
     use crate::coder::ErasureCoder;
+    use crate::slicer::Slicer;
 
     /// A deterministic non-trivial payload, so the codec never sees all zeros.
     fn payload(len: usize) -> Vec<u8> {
@@ -120,5 +102,14 @@ mod slice_len_tests {
                 assert_eq!(slice.len(), derived, "size {size}, uneven slices");
             }
         }
+    }
+
+    #[test]
+    fn test_num_stripes() {
+        assert_eq!(num_stripes(0, 100_000), 1);
+        assert_eq!(num_stripes(1, 100_000), 1);
+        assert_eq!(num_stripes(100_000, 100_000), 1);
+        assert_eq!(num_stripes(100_001, 100_000), 2);
+        assert_eq!(num_stripes(250_000, 100_000), 3);
     }
 }

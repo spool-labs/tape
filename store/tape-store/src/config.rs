@@ -88,9 +88,11 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Track registration slot - 32-byte track address, one slot number
-        ColumnFamilyConfig::new("track_slot")
+        // Challenge sample set - 40-byte key, small chain-derived row
+        // 8-byte group prefix so one group's set is a prefix scan
+        ColumnFamilyConfig::new("track_sample")
             .with_block_based()
+            .with_prefix_extractor(8)
             .build(),
 
         // Object info - 32-byte Address keys, ObjectInfo values
@@ -159,13 +161,6 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
         // Never blob-backed: the point of the sidecar is answering without a
         // slice read, which a blob indirection would put straight back
         ColumnFamilyConfig::new("slice_sidecar")
-            .with_block_based()
-            .with_prefix_extractor(2)
-            .build(),
-
-        // Slice tombstone - 34-byte SliceKey, deletion slot and length
-        // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("slice_tombstone")
             .with_block_based()
             .with_prefix_extractor(2)
             .build(),
@@ -362,7 +357,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 33);
+        assert_eq!(configs.len(), 32);
     }
 
     #[test]
@@ -376,7 +371,7 @@ mod tests {
             "track",
             "track_lookup",
             "track_data",
-            "track_slot",
+            "track_sample",
             "object_info",
             "object_metadata",
             "object_list",
@@ -388,7 +383,6 @@ mod tests {
             "slice",
             "slice_size",
             "slice_sidecar",
-            "slice_tombstone",
             "challenge_record",
             "challenge_round",
             "spool_sync_cursor",

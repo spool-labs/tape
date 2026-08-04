@@ -29,8 +29,7 @@
 //! ## Challenge Columns
 //! - `challenge_record`: Per-peer challenge history (Address -> PeerRecord)
 //! - `challenge_round`: Per-round outcomes (peer + epoch + round -> bool)
-//! - `track_slot`: Finalized registration slot per track (Address -> SlotNumber)
-//! - `slice_tombstone`: Deleted-slice remains for the sample set (SliceKey -> SliceTombstone)
+//! - `track_sample`: The sample set per group (group + track -> TrackSample)
 //!
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
@@ -70,14 +69,13 @@ pub mod snapshot;
 pub mod slice;
 pub mod slice_sidecar;
 pub mod slice_size;
-pub mod slice_tombstone;
 pub mod spool;
 pub mod sync_cursor;
 pub mod tape;
 pub mod track;
 pub mod track_data;
 pub mod track_lookup;
-pub mod track_slot;
+pub mod track_sample;
 pub mod vote;
 
 // Re-export all column types
@@ -99,7 +97,6 @@ pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
 pub use slice_sidecar::SliceSidecarCol;
 pub use slice_size::SliceSizeCol;
-pub use slice_tombstone::SliceTombstoneCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
@@ -108,7 +105,7 @@ pub use tape::TapeCol;
 pub use track::TrackCol;
 pub use track_data::TrackDataCol;
 pub use track_lookup::TrackLookupCol;
-pub use track_slot::TrackSlotCol;
+pub use track_sample::TrackSampleCol;
 pub use vote::VoteSigCol;
 
 /// List of all column family names in the store.
@@ -131,8 +128,7 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "slice_sidecar",
     "challenge_record",
     "challenge_round",
-    "track_slot",
-    "slice_tombstone",
+    "track_sample",
     "spool_sync_cursor",
     "event_log",
     "vote_sig",

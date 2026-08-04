@@ -4,10 +4,8 @@ use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{SlotNumber, SpoolIndex};
 use tape_crypto::address::Address;
-use tape_store::types::SliceTombstone;
 use tape_store::ops::{
-    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
-    TrackOps,
+    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
 };
 use tape_store::TapeStore;
 
@@ -91,25 +89,17 @@ pub fn cleanup_track_slices<Db: Store>(
 ) -> Result<usize, NodeError> {
     let mut deleted_slices = 0usize;
 
+    // A round whose window opened before the deletion still asks about the
+    // track, so the row outlives the payload carrying the deletion slot.
+    store
+        .mark_track_sample_deleted(group, track, deleted_at)
+        .map_err(store_error)?;
+
     for slice_index in 0..GROUP_SIZE {
         let spool_id = group.spool_at(slice_index);
 
-        // A round whose window opened before this deletion still samples the
-        // slice, so its length survives as a tombstone until no round can.
         if store.has_slice(spool_id, track).map_err(store_error)? {
             deleted_slices += 1;
-            if let Some(slice_len) = store.slice_size(spool_id, track).map_err(store_error)? {
-                store
-                    .put_slice_tombstone(
-                        spool_id,
-                        track,
-                        SliceTombstone {
-                            deleted_slot: deleted_at,
-                            slice_len,
-                        },
-                    )
-                    .map_err(store_error)?;
-            }
         }
 
         store

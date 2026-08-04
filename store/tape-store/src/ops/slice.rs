@@ -2,13 +2,13 @@
 
 use store::{Column, Store, WriteBatch};
 use tape_core::erasure::slice_sidecar;
-use tape_core::types::{SlotNumber, SpoolIndex, StorageUnits};
+use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 
-use crate::columns::{SliceCol, SliceSidecarCol, SliceSizeCol, SliceTombstoneCol};
+use crate::columns::{SliceCol, SliceSidecarCol, SliceSizeCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{SliceKey, SliceTombstone, SliceValue, SliceWrite};
+use crate::types::{SliceKey, SliceValue, SliceWrite};
 use crate::TapeStore;
 
 /// Entries staged before a rebuild flushes its batch
@@ -70,23 +70,6 @@ pub trait SliceOps {
     /// Byte length of one slice, from the size index.
     fn slice_size(&self, spool_id: SpoolIndex, track_address: Address)
         -> Result<Option<StorageUnits>>;
-
-    /// Keep a deleted slice's length and deletion slot for the sample set.
-    fn put_slice_tombstone(
-        &self,
-        spool_id: SpoolIndex,
-        track_address: Address,
-        tombstone: SliceTombstone,
-    ) -> Result<()>;
-
-    /// Tombstones for a spool, ordered by track address.
-    fn iter_slice_tombstones_by_spool(
-        &self,
-        spool_id: SpoolIndex,
-    ) -> Result<Vec<(Address, SliceTombstone)>>;
-
-    /// Drop tombstones whose deletion no round can reference any more.
-    fn prune_slice_tombstones_before(&self, slot: SlotNumber) -> Result<usize>;
 
     /// Sub-leaf tree nodes kept beside a slice, for answering a storage challenge.
     ///
@@ -298,58 +281,6 @@ impl<S: Store> SliceOps for TapeStore<S> {
         }
     }
 
-    fn put_slice_tombstone(
-        &self,
-        spool_id: SpoolIndex,
-        track_address: Address,
-        tombstone: SliceTombstone,
-    ) -> Result<()> {
-        let key = SliceKey::new(spool_id, track_address);
-        self.put::<SliceTombstoneCol>(&key, &tombstone)?;
-        Ok(())
-    }
-
-    fn iter_slice_tombstones_by_spool(
-        &self,
-        spool_id: SpoolIndex,
-    ) -> Result<Vec<(Address, SliceTombstone)>> {
-        let prefix = SliceKey::spool_prefix(spool_id);
-        let iter = self
-            .inner()
-            .inner()
-            .iter_prefix(SliceTombstoneCol::CF_NAME, &prefix)?;
-
-        let mut tombstones = Vec::new();
-        for (key_bytes, value_bytes) in iter {
-            let key: SliceKey = wincode::deserialize(&key_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("tombstone key: {}", e)))?;
-            let tombstone: SliceTombstone = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("tombstone: {}", e)))?;
-            tombstones.push((key.track_address, tombstone));
-        }
-        Ok(tombstones)
-    }
-
-    fn prune_slice_tombstones_before(&self, slot: SlotNumber) -> Result<usize> {
-        let raw = self.inner().inner();
-        let mut batch = WriteBatch::new();
-        let mut dropped = 0usize;
-
-        for (key_bytes, value_bytes) in raw.iter(SliceTombstoneCol::CF_NAME)? {
-            let tombstone: SliceTombstone = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("tombstone: {}", e)))?;
-            if tombstone.deleted_slot < slot {
-                batch.delete_owned(SliceTombstoneCol::CF_NAME, key_bytes);
-                dropped += 1;
-            }
-        }
-
-        if dropped > 0 {
-            raw.write_batch(batch)?;
-        }
-        Ok(dropped)
-    }
-
     fn get_slice_sidecar(
         &self,
         spool_id: SpoolIndex,
@@ -533,32 +464,6 @@ mod tests {
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
-    }
-
-    // a tombstone outlives the slice it stands for, until a prune past its slot
-    #[test]
-    fn tombstone_life() {
-        let store = test_store();
-        let spool = SpoolIndex(3);
-        let track = Address::new_unique();
-
-        store.put_slice(spool, track, vec![7u8; 2048]).unwrap();
-        let len = store.slice_size(spool, track).unwrap().expect("size indexed");
-        store.delete_slice(spool, track).unwrap();
-
-        let tombstone = SliceTombstone {
-            deleted_slot: SlotNumber(90),
-            slice_len: len,
-        };
-        store.put_slice_tombstone(spool, track, tombstone).unwrap();
-        assert_eq!(
-            store.iter_slice_tombstones_by_spool(spool).unwrap(),
-            vec![(track, tombstone)]
-        );
-
-        assert_eq!(store.prune_slice_tombstones_before(SlotNumber(90)).unwrap(), 0);
-        assert_eq!(store.prune_slice_tombstones_before(SlotNumber(91)).unwrap(), 1);
-        assert!(store.iter_slice_tombstones_by_spool(spool).unwrap().is_empty());
     }
 
     // the root the write path checks and the sidecar the store keeps both fall

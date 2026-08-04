@@ -17,13 +17,15 @@ use tape_core::erasure::{
 };
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
-use tape_core::types::{EpochDuration, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
+use tape_core::types::{
+    EpochDuration, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, StorageUnits,
+};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::hash_leaf;
 use tape_protocol::ProtocolState;
-use tape_store::ops::{SliceOps, TrackDataOps, TrackOps};
-use tape_store::types::SliceTombstone;
+use tape_store::types::TrackSample;
+use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
 
 use crate::features::challenge::audition::{
     Round, accept_answer, attest_message, expected_sample,
@@ -92,6 +94,7 @@ async fn fixture() -> Fixture {
     ctx.store
         .put_slice(mine, track, slices[leaf_position(mine).as_usize()].clone())
         .expect("put slice");
+    put_sample(&ctx, group, track, slices[0].len(), SlotNumber(0));
 
     Fixture {
         ctx,
@@ -101,6 +104,27 @@ async fn fixture() -> Fixture {
         slices,
         keys,
     }
+}
+
+/// Put a track into a group's sample set, as a replayed registration would.
+fn put_sample(
+    ctx: &TestContext,
+    group: GroupIndex,
+    track: Address,
+    slice_len: usize,
+    registered_slot: SlotNumber,
+) {
+    ctx.store
+        .put_track_sample(
+            group,
+            track,
+            TrackSample {
+                slice_len: StorageUnits::from_bytes(slice_len as u64),
+                registered_slot,
+                deleted_slot: None,
+            },
+        )
+        .expect("sample row");
 }
 
 fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
@@ -135,7 +159,7 @@ impl Fixture {
     fn answer_from_leaf(&self, spool: SpoolIndex, leaf: Option<usize>) -> ProofOfAccess {
         let round = self.round();
         let asked =
-            expected_sample(&self.ctx, &self.state, &round, spool, self.mine).expect("a sample");
+            expected_sample(&self.ctx, &self.state, &round, spool).expect("a sample");
         let sub_leaf = leaf.unwrap_or(asked.sub_leaf);
 
         let position = leaf_position(spool);
@@ -231,7 +255,6 @@ async fn honest_round() {
         &fixture.ctx,
         &fixture.state,
         &answer,
-        fixture.mine,
         true
     ));
 
@@ -250,7 +273,7 @@ async fn distinct_questions() {
     let leaves: Vec<usize> = group_spools(&fixture.state, fixture.group)
         .into_iter()
         .filter_map(|spool| {
-            expected_sample(&fixture.ctx, &fixture.state, &round, spool, fixture.mine)
+            expected_sample(&fixture.ctx, &fixture.state, &round, spool)
         })
         .map(|sample| sample.sub_leaf)
         .collect();
@@ -266,7 +289,7 @@ async fn distinct_questions() {
 async fn easier_leaf() {
     let fixture = fixture().await;
     let target = fixture.other();
-    let asked = expected_sample(&fixture.ctx, &fixture.state, &fixture.round(), target, fixture.mine)
+    let asked = expected_sample(&fixture.ctx, &fixture.state, &fixture.round(), target)
         .expect("sample");
 
     // Wrap, so a draw that lands on the last leaf still names a real neighbour.
@@ -280,14 +303,12 @@ async fn easier_leaf() {
         &fixture.ctx,
         &fixture.state,
         &fixture.answer_from(target),
-        fixture.mine,
         true
     ));
     assert!(!accept_answer(
         &fixture.ctx,
         &fixture.state,
         &fixture.answer_from_leaf(target, Some(elsewhere)),
-        fixture.mine,
         true
     ));
 }
@@ -299,40 +320,41 @@ async fn easier_leaf() {
 async fn mid_round_write() {
     let fixture = fixture().await;
     let round = fixture.round();
-    let before = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine, fixture.mine)
+    let before = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
 
     let cutoff = challenge_schedule(&fixture.state)
         .expect("schedule")
         .base_slot(round.round);
     let late = Address::new_unique();
-    fixture
-        .ctx
-        .store
-        .put_slice(fixture.mine, late, vec![0xA5; 4 * SUB_LEAF_BYTES])
-        .expect("late slice");
-    fixture.ctx.store.put_track_slot(late, cutoff).expect("late slot");
+    put_sample(&fixture.ctx, fixture.group, late, 4 * SUB_LEAF_BYTES, cutoff);
 
-    let after = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine, fixture.mine)
+    let after = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
     assert_eq!(after.track, before.track, "a mid-round write shifted the draw");
     assert_eq!(after.sub_leaf, before.sub_leaf);
 
-    // A registration final before the window stays in the set, and a track
-    // with no recorded slot predates the record and is grandfathered.
-    fixture
-        .ctx
-        .store
-        .put_track_slot(before.track, SlotNumber(0))
-        .expect("early slot");
-    let again = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine, fixture.mine)
+    // One slot earlier and the registration is inside the window, which does
+    // move the draw.
+    put_sample(
+        &fixture.ctx,
+        fixture.group,
+        late,
+        4 * SUB_LEAF_BYTES,
+        SlotNumber(cutoff.as_u64() - 1),
+    );
+    let inside = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
-    assert_eq!(again.track, before.track);
+    assert_ne!(
+        (inside.track, inside.sub_leaf),
+        (before.track, before.sub_leaf),
+        "a registration before the window stayed out of the set"
+    );
 }
 
-// the mirror of the registration cut: a slice deleted after the window opened
-// leaves a tombstone, so the set the draw runs over is the same whether or not
-// an observer has processed the delete yet
+// the mirror of the registration cut: a track deleted after the window opened
+// stays in the set, so an observer that has processed the delete and one that
+// has not still draw the same question
 #[tokio::test]
 async fn mid_round_delete() {
     let fixture = fixture().await;
@@ -342,51 +364,29 @@ async fn mid_round_delete() {
         .base_slot(round.round);
 
     let extra = Address::new_unique();
-    fixture
-        .ctx
-        .store
-        .put_slice(fixture.mine, extra, vec![0x5A; 4 * SUB_LEAF_BYTES])
-        .expect("extra slice");
-    fixture.ctx.store.put_track_slot(extra, SlotNumber(0)).expect("extra slot");
-    let before = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine, fixture.mine)
+    put_sample(&fixture.ctx, fixture.group, extra, 4 * SUB_LEAF_BYTES, SlotNumber(0));
+    let before = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
 
-    let len = fixture
-        .ctx
-        .store
-        .slice_size(fixture.mine, extra)
-        .expect("size read")
-        .expect("size indexed");
-    fixture.ctx.store.delete_slice(fixture.mine, extra).expect("delete");
     fixture
         .ctx
         .store
-        .put_slice_tombstone(
-            fixture.mine,
-            extra,
-            SliceTombstone { deleted_slot: cutoff, slice_len: len },
-        )
-        .expect("tombstone");
+        .mark_track_sample_deleted(fixture.group, extra, cutoff)
+        .expect("delete at the cut");
 
-    let after = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine, fixture.mine)
+    let after = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
     assert_eq!(after.track, before.track, "a mid-round deletion shifted the draw");
     assert_eq!(after.sub_leaf, before.sub_leaf);
 
     // Once the deletion predates the window, the entry is out of the set.
+    put_sample(&fixture.ctx, fixture.group, extra, 4 * SUB_LEAF_BYTES, SlotNumber(0));
     fixture
         .ctx
         .store
-        .put_slice_tombstone(
-            fixture.mine,
-            extra,
-            SliceTombstone {
-                deleted_slot: SlotNumber(cutoff.as_u64() - 1),
-                slice_len: len,
-            },
-        )
-        .expect("tombstone");
-    let out = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine, fixture.mine)
+        .mark_track_sample_deleted(fixture.group, extra, SlotNumber(cutoff.as_u64() - 1))
+        .expect("delete before the cut");
+    let out = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
     assert_ne!(out.track, extra, "a pre-window deletion stayed in the set");
 }
@@ -403,7 +403,6 @@ async fn forged_leaf() {
         &fixture.ctx,
         &fixture.state,
         &answer,
-        fixture.mine,
         true
     ));
 }
@@ -423,7 +422,6 @@ async fn wrong_owner() {
         &fixture.ctx,
         &fixture.state,
         &answer,
-        fixture.mine,
         true
     ));
 }
@@ -439,7 +437,6 @@ async fn late_answer() {
         &fixture.ctx,
         &fixture.state,
         &answer,
-        fixture.mine,
         false
     ));
 }
@@ -523,7 +520,7 @@ async fn stray_group() {
     let mut answer = fixture.answer_from(target);
     answer.group = GroupIndex(fixture.group.as_u64() + 1);
 
-    assert!(!accept_answer(&fixture.ctx, &fixture.state, &answer, fixture.mine, true));
+    assert!(!accept_answer(&fixture.ctx, &fixture.state, &answer, true));
 }
 
 // acceptance is a function of the answer and this node's own derivation, with
@@ -538,7 +535,7 @@ async fn any_deliverer() {
     // Byte-identical copies, as a relay would forward them.
     let forwarded = answer.clone();
     assert_eq!(forwarded, answer);
-    assert!(accept_answer(&fixture.ctx, &fixture.state, &forwarded, fixture.mine, true));
+    assert!(accept_answer(&fixture.ctx, &fixture.state, &forwarded, true));
 
     let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
     let certificate = fixture.certify(target, signed);

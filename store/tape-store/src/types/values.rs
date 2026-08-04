@@ -145,17 +145,30 @@ pub struct ObjectListEntry {
     pub content_type: ContentType,
 }
 
-/// What remains of a deleted slice, for the challenge sample set.
+/// One track's standing in the challenge sample set for its group
 ///
-/// A deletion that finalizes mid-round must not shrink the set before the
-/// round settles, so the length and the deletion slot outlive the payload
-/// until no round can reference them.
+/// Every field is chain-derived, so each owner writes the same row at the same
+/// point in replay. The slice length is the one the registered encoding
+/// produces, not the one a stored slice measures.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
-pub struct SliceTombstone {
-    /// Slot the deletion finalized at
-    pub deleted_slot: SlotNumber,
-    /// Byte length the slice had
+pub struct TrackSample {
+    /// Byte length of one slice under the registered encoding
     pub slice_len: StorageUnits,
+    /// Slot the registration finalized at
+    pub registered_slot: SlotNumber,
+    /// Slot a deletion finalized at, while rounds can still reference it
+    pub deleted_slot: Option<SlotNumber>,
+}
+
+impl TrackSample {
+    /// Whether this track is in the set a round cut at `cutoff` draws from.
+    ///
+    /// A deletion at or after the cut still belongs to the round, so observers
+    /// either side of a mid-round delete ask the same question.
+    pub fn in_set_at(&self, cutoff: SlotNumber) -> bool {
+        self.registered_slot < cutoff
+            && self.deleted_slot.is_none_or(|deleted| deleted >= cutoff)
+    }
 }
 
 /// Name metadata keyed by object track address

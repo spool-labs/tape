@@ -9,8 +9,8 @@ use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_store::{
     TapeStore,
-    ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
-    types::{ObjectInfo, SliceTombstone},
+    ops::{ChallengeOps, ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+    types::ObjectInfo,
 };
 use tracing::debug;
 
@@ -51,14 +51,14 @@ pub async fn sweep_epoch<Db: Store>(
     stats += sweep_expired_tapes(store, config, current_epoch, epoch_start_slot, at_tip).await?;
     stats += sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip).await?;
     stats += sweep_orphan_tracks(store, config, epoch_start_slot, at_tip).await?;
-    stats += sweep_orphan_slices(store, config, pending, epoch_start_slot, at_tip).await?;
+    stats += sweep_orphan_slices(store, config, pending, at_tip).await?;
 
     sweep_stale_recoveries(store, pending, at_tip).await?;
 
     // A round from before this epoch has settled or been retired, so nothing
     // can reference an older deletion any more.
     store
-        .prune_slice_tombstones_before(epoch_start_slot)
+        .prune_track_samples_before(epoch_start_slot)
         .map_err(store_error)?;
 
     let keep_from = EpochNumber(
@@ -246,7 +246,6 @@ async fn sweep_orphan_slices<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     pending: &PendingTracks,
-    epoch_start_slot: SlotNumber,
     at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
@@ -265,22 +264,8 @@ async fn sweep_orphan_slices<Db: Store>(
 
             for (track, _) in &slices {
                 if should_delete_slice(store, pending, at_tip, spool_id, *track)? {
-                    // An orphan slice was still enumerable, so it leaves a
-                    // tombstone like any other deletion.
-                    if let Some(slice_len) =
-                        store.slice_size(spool_id, *track).map_err(store_error)?
-                    {
-                        store
-                            .put_slice_tombstone(
-                                spool_id,
-                                *track,
-                                SliceTombstone {
-                                    deleted_slot: epoch_start_slot,
-                                    slice_len,
-                                },
-                            )
-                            .map_err(store_error)?;
-                    }
+                    // An orphan slice has no track record, so it was never in
+                    // the sample set and leaves nothing behind.
                     store.delete_slice(spool_id, *track).map_err(store_error)?;
                     stats.slices_deleted += 1;
                 }

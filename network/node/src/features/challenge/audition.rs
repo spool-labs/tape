@@ -1,10 +1,10 @@
 //! Answering a round, and auditioning the answers the rest of the group gave.
 //!
 //! Every owner derives its own sample, reads the bytes, signs, and broadcasts. An
-//! owner that receives someone else's answer derives the same question from its
-//! own view, checks the answer against it, and only then relays it onward and
-//! signs an attestation. Relaying is what stops a spool choosing who hears it:
-//! a peer it skipped receives the answer from a peer it served.
+//! owner that receives someone else's answer derives the same question from
+//! replayed state, checks the answer against it, and only then relays it onward
+//! and signs an attestation. Relaying is what stops a spool choosing who hears
+//! it: a peer it skipped receives the answer from a peer it served.
 
 use std::sync::Arc;
 
@@ -17,13 +17,13 @@ use tape_core::challenge::sample::Sample;
 use tape_core::erasure::{SUB_LEAF_BYTES, prove_sub_leaf_windowed, sample_window};
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
-use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_crypto::merkle::hash_leaf;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq};
 use tape_protocol::{Api, ProtocolState};
-use tape_store::ops::{SliceOps, TrackDataOps, TrackOps};
+use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
 use tracing::{debug, trace};
 
 use crate::context::NodeContext;
@@ -63,76 +63,41 @@ impl Round {
     }
 }
 
-/// The sample a spool owes this round, derived from local state alone.
+/// The sample a spool owes this round, from replayed state.
 ///
-/// Every member of a group holds a slice of the same tracks, so any of them
-/// reaches the same enumeration and therefore the same question. Nothing an
-/// answering owner sends is used to arrive at it.
+/// Rows are written when a registration replays, so every owner enumerates the
+/// same entries. Reading local holdings diverged instead: a write certifies at
+/// q of n, so some members hold no slice and drew a different question.
 ///
-/// The set is cut at the round window's base slot. A registration that
-/// finalizes mid-round must not shift the weighted draw, or observers that
-/// ingested the write at different moments derive different questions and
-/// refuse honest answers. The paper fixes the set on the block's ancestry, and
-/// the registration slot is the same on every node, so the cut converges.
+/// Cut at the round window's base slot, on the two slots the chain records.
 pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     state: &ProtocolState,
     round: &Round,
     spool: SpoolIndex,
-    from_spool: SpoolIndex,
 ) -> Option<Sample> {
     if round.epoch != state.epoch() {
         return None;
     }
     let cutoff = challenge_schedule(state)?.base_slot(round.round);
 
-    let mut entries: Vec<SampleEntry> = context
+    // Already in track order: the rows are keyed group-then-track, so the scan
+    // arrives in the canonical order the draw is defined over.
+    let entries: Vec<SampleEntry> = context
         .store
-        .iter_slice_sizes_by_spool(from_spool)
+        .iter_track_samples_by_group(round.group)
         .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
         .ok()?
         .into_iter()
-        .filter(|(track, _)| registered_before(context, *track, cutoff))
-        .map(|(track, slice_len)| SampleEntry { track, slice_len })
+        .filter(|(_, sample)| sample.in_set_at(cutoff))
+        .map(|(track, sample)| SampleEntry {
+            track,
+            slice_len: sample.slice_len,
+        })
         .collect();
-
-    // A slice deleted after the window opened is still this round's question,
-    // so its tombstone stands in for the payload it outlived. An observer that
-    // has not processed the delete holds the live row instead, and sorting
-    // makes both arrive at the same order.
-    let tombstones = context
-        .store
-        .iter_slice_tombstones_by_spool(from_spool)
-        .map_err(|error| debug!(%error, "challenge: tombstones unavailable"))
-        .ok()?;
-    for (track, tombstone) in tombstones {
-        if tombstone.deleted_slot >= cutoff && registered_before(context, track, cutoff) {
-            entries.push(SampleEntry {
-                track,
-                slice_len: tombstone.slice_len,
-            });
-        }
-    }
-    challenge::sort_entries(&mut entries);
 
     let seed = challenge::round_seed(&round.block, round.epoch, round.group, round.round, spool);
     challenge::draw(&seed, &entries)
-}
-
-/// Whether a track's registration was final before the round's window opened.
-///
-/// A track with no recorded slot predates the record and is grandfathered in.
-fn registered_before<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    track: Address,
-    cutoff: SlotNumber,
-) -> bool {
-    context
-        .store
-        .track_slot(track)
-        .ok()
-        .flatten()
-        .is_none_or(|slot| slot < cutoff)
 }
 
 /// Build this node's own answer for a round.
@@ -142,7 +107,7 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<ProofOfAccess> {
-    let sample = expected_sample(context, state, round, spool, spool)?;
+    let sample = expected_sample(context, state, round, spool)?;
     let slice = context.store.get_slice(spool, sample.track).ok().flatten()?;
     let sidecar = context.store.get_slice_sidecar(spool, sample.track).ok().flatten()?;
 
@@ -184,12 +149,11 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     state: &ProtocolState,
     answer: &ProofOfAccess,
-    mine: SpoolIndex,
     in_time: bool,
 ) -> bool {
     // Every refusal below costs the answering owner a miss it may not have
     // earned, so each one says which of them it was.
-    let Some(expected) = expected_sample(context, state, &round_of(answer), answer.spool, mine)
+    let Some(expected) = expected_sample(context, state, &round_of(answer), answer.spool)
     else {
         debug!(spool = %answer.spool, "challenge: no question of our own to check against");
         return false;

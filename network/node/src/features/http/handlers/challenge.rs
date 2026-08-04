@@ -46,23 +46,21 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
         return Ok(StatusCode::OK);
     }
 
-    // Our own position in the group the answer is about. The sample set is
-    // enumerated from it, and a spool held in some other group holds slices of
-    // other tracks entirely, so it would derive a different question and refuse
-    // an honest answer.
-    let Some(mine) = protocol
+    // Only a group-mate can audition an answer: nobody else settles the round
+    // or holds a stake in it.
+    let holds_a_spool = protocol
         .member_spools(state.context.node_address())
         .into_iter()
-        .find(|spool| group_for_spool(*spool) == answer.group)
-    else {
+        .any(|spool| group_for_spool(spool) == answer.group);
+    if !holds_a_spool {
         return Err(RouteError::NotResponsible);
-    };
+    }
 
     // Timeliness is left to the round, not judged per response: an answer that
     // has not certified by the time the next round opens is settled a miss
     // whenever it arrived, and no schedulable sub-round deadline separates an
     // adversary worth the honest nodes it evicts (see docs/whirlwind.md).
-    if !accept_answer(&state.context, &protocol, &answer, mine, true) {
+    if !accept_answer(&state.context, &protocol, &answer, true) {
         state
             .context
             .challenge_counters

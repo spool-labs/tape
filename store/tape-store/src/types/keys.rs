@@ -223,6 +223,60 @@ impl SliceKey {
     }
 }
 
+/// Key for the challenge sample set, by group then track (40 bytes).
+///
+/// Format: [group BE 8 bytes][track 32 bytes]
+///
+/// Group-first ordering enumerates one group's tracks with a prefix scan, and
+/// track ordering inside it is the canonical order every owner must draw
+/// against, so the scan needs no sort of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TrackSampleKey {
+    pub group: GroupIndex,
+    pub track: Address,
+}
+
+impl TrackSampleKey {
+    pub const SIZE: usize = 40;
+
+    pub fn new(group: GroupIndex, track: Address) -> Self {
+        Self { group, track }
+    }
+
+    /// Prefix covering every track assigned to one group.
+    pub fn group_prefix(group: GroupIndex) -> [u8; 8] {
+        group.as_u64().to_be_bytes()
+    }
+}
+
+impl SchemaWrite for TrackSampleKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.group.as_u64().to_be_bytes())?;
+        writer.write_exact(src.track.as_ref())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for TrackSampleKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<TrackSampleKey>) -> ReadResult<()> {
+        let group: [u8; 8] = unsafe { reader.get_t()? };
+        let track: [u8; 32] = unsafe { reader.get_t()? };
+        dst.write(TrackSampleKey {
+            group: GroupIndex(u64::from_be_bytes(group)),
+            track: Address::from(track),
+        });
+        Ok(())
+    }
+}
+
 /// Key for tape-local ordered track lookup (72 bytes).
 ///
 /// Format: [tape 32 bytes][track_number BE 8 bytes][key 32 bytes]

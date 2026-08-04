@@ -18,13 +18,13 @@ pub use enums::{
 pub use keys::{
     AuditKey, ChallengeRoundKey, EpochKey, EventLogKey, LedgerReservationKey, MultipartPartKey,
     ObjectListKey, PolicyRuleKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey, TrackLookupKey,
-    UnitKey, VoteSigKey,
+    TrackSampleKey, UnitKey, VoteSigKey,
 };
 
 // Re-export value types
 pub use values::{
     AuditEntry, AuthState, BudgetLimits, Credential, CredentialCaps, InvalidationProof,
     LedgerEntry, LedgerReservation, MultipartPart, MultipartPartData, MultipartUpload,
-    ObjectListEntry, ObjectMetadata, PolicyRule, SliceTombstone, SliceValue, SliceWrite,
-    SnapshotArtifact, TapeInfo,
+    ObjectListEntry, ObjectMetadata, PolicyRule, SliceValue, SliceWrite,
+    SnapshotArtifact, TapeInfo, TrackSample,
 };
