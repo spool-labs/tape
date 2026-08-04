@@ -10,7 +10,7 @@ use tape_node::core::channels::{downstream_channels, store_channel, DownstreamRe
 use tape_node::core::error::NodeError;
 use tape_node::core::types::{ChannelName, ServiceName};
 use tape_node::features::block::ingest_monitor;
-use tape_node::features::block::ingestor::{BlockIngestor, ParsedBlock};
+use tape_node::features::block::ingestor::BlockIngestor;
 use tape_node::features::bootstrap;
 use tape_node::features::replay::manager::ReplayManager;
 use tape_node::features::state::manager::StateManager;
@@ -30,8 +30,11 @@ use crate::http::server::{GatewayHttpServer, GatewayS3AdminServer, GatewayS3Serv
 use crate::meter::GatewayMeter;
 use crate::store::GatewayStoreManager;
 
-async fn drain_block_channel(
-    mut rx: mpsc::Receiver<Arc<ParsedBlock>>,
+/// A gateway runs none of the block consumers, so every downstream lane is
+/// drained. Generic because the challenge lane carries chain events rather
+/// than blocks.
+async fn drain_block_channel<Item>(
+    mut rx: mpsc::Receiver<Item>,
     cancel: CancellationToken,
     channel: ChannelName,
 ) -> Result<(), NodeError> {
@@ -39,19 +42,15 @@ async fn drain_block_channel(
         tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             received = rx.recv() => {
-                let Some(block) = received else {
+                if received.is_none() {
                     return if cancel.is_cancelled() {
                         Ok(())
                     } else {
                         Err(NodeError::ChannelClosed { channel })
                     };
-                };
+                }
 
-                debug!(
-                    slot = block.slot.0,
-                    channel = ?channel,
-                    "gateway drained unused block channel"
-                );
+                debug!(channel = ?channel, "gateway drained unused block channel");
             }
         }
     }
