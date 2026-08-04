@@ -179,10 +179,21 @@ where
             self.answer_and_broadcast(&state, &round, spool).await;
         }
 
-        // Every group runs the same grid, so one cutoff retires them all.
-        self.context
-            .round_buffer
-            .retire_before(epoch, RoundNumber(number.as_u64().saturating_sub(1)));
+        // Retire behind the oldest round any group still has open, not behind
+        // this one. Groups settle independently, so a cutoff taken from the
+        // group that just opened would drop another group's evidence before it
+        // settles, and that round would read as a miss its owner never earned.
+        // It shows at epoch boundaries, where round numbers restart and one
+        // group's first round of the new epoch outranks every pending round of
+        // the old one.
+        if let Some((epoch, round)) = self
+            .open_rounds
+            .values()
+            .map(|open| (open.round.epoch, open.round.round))
+            .min()
+        {
+            self.context.round_buffer.retire_before(epoch, round);
+        }
 
         Ok(())
     }

@@ -283,6 +283,34 @@ mod tests {
         assert!(buffer.answer(key(2, 4)).is_none());
     }
 
+    // a round still open in one group must keep its evidence when another
+    // group opens its first round of a new epoch, or it settles as a miss its
+    // owner never earned
+    #[test]
+    fn retire_spares_the_pending() {
+        let buffer = RoundBuffer::default();
+        let pending = RoundKey {
+            epoch: EpochNumber(3),
+            round: RoundNumber(3),
+            spool: SpoolIndex(4),
+            block: Hash([1; 32]),
+        };
+        buffer.accept_answer(pending, answer(pending));
+        for _ in 0..4 {
+            buffer.accept_attestation(pending, Address::new_unique(), signature());
+        }
+        assert!(buffer.claim_certificate(pending, 4));
+
+        // The oldest round still open is the pending one, so retiring behind it
+        // keeps it even though another group has moved to the next epoch.
+        buffer.retire_before(EpochNumber(3), RoundNumber(3));
+        assert!(buffer.is_certified(pending), "evidence retired before it settled");
+
+        // Once nothing is open behind it, it goes.
+        buffer.retire_before(EpochNumber(4), RoundNumber(0));
+        assert!(!buffer.is_certified(pending));
+    }
+
     // round numbers restart each epoch, so ordering is on the pair or a stale
     // round from last epoch outlives this epoch's
     #[test]
