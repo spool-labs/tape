@@ -587,4 +587,53 @@ mod tests {
 
         assert!(result.is_ok());
     }
+
+    // a track registered but not yet finalized resolves through the pending
+    // overlay, while the tape it names is read from the durable store only, so
+    // a fresh tape's first track is not found on any peer until it finalizes
+    #[tokio::test]
+    async fn pending_track_on_pending_tape() {
+        let ctx = test_context().await;
+        let tape = Address::new_unique();
+        let track_addr = track_pda(tape, TrackNumber(0)).0;
+        let track = CompressedTrack {
+            tape,
+            track_number: TrackNumber(0),
+            key: Hash::from([1u8; 32]),
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(64),
+            group: GroupIndex(0),
+            value_hash: Hash::from([2u8; 32]),
+        };
+
+        // The registration is confirmed but not finalized, which is exactly
+        // where a just-uploaded track sits.
+        ctx.pending.apply_register(
+            tape_core::types::SlotNumber(10),
+            track_addr,
+            track,
+            tape_core::track::data::BlobData::Inline(vec![]),
+        );
+
+        let result = call_get_track_proof(&ctx, track_addr, None).await;
+        assert!(
+            matches!(result, Err(RouteError::NotFound)),
+            "the overlay resolved the track but the tape read did not"
+        );
+
+        // The same track once its tape is durable.
+        ctx.store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
+                    end_epoch: EpochNumber(100),
+                    next_track_number: TrackNumber(1),
+                },
+            )
+            .expect("put tape");
+        assert!(call_get_track_proof(&ctx, track_addr, None).await.is_ok());
+    }
 }
