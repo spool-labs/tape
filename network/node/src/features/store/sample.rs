@@ -1,9 +1,9 @@
-//! The row a coded track contributes to its group's challenge sample set.
+//! The row a track contributes to its group's challenge sample set.
 //!
-//! Every path that installs a coded track locally has to write it, or the group
+//! Every path that installs a track locally has to write it, or the group
 //! disagrees about what a round asks for. Replay is one such path; the snapshot
 //! build and the bootstrap fetch are the others, and a track installed without a
-//! row is one its owner holds a slice of and can never be asked about.
+//! row is one its owner holds the bytes of and can never be asked about.
 
 use store::Store;
 use tape_core::challenge::sample::EntryKind;

@@ -1,8 +1,9 @@
 //! What a node holds in flight for the rounds it currently has open.
 //!
-//! One entry per challenged spool per round: the answer that owner broadcast, and
-//! the attestations gathered from owners that accepted it. An entry certifies once
-//! it holds a quorum, and is dropped once the round can no longer matter.
+//! One entry per challenged spool per round, pinned to the candidate block that
+//! seeded it: the answer that owner broadcast, and the attestations gathered from
+//! owners that accepted it. An entry certifies once it holds a quorum. It is
+//! dropped when its candidate loses, or once every group has settled past it.
 //!
 //! Everything here is in memory. A certificate is standing evidence only while its
 //! entropy block stands, and a node that restarts mid-round has simply missed that

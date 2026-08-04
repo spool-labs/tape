@@ -3,9 +3,10 @@
 //! Round times sit on a fixed slot grid computed from the epoch, so every owner
 //! reaches the same schedule with no coordination and nobody can move a round
 //! nearer or further from its own convenience. Each round opens a short window of
-//! slots; the first block in that window to reach finalized history is the round's
-//! entropy block. If no block in the window finalizes the round is void, which
-//! counts against nobody.
+//! slots and the first block produced in it seeds the round, so the request is
+//! unpredictable and the answer is due while that branch is live. A candidate
+//! that does not survive to finality voids its round, as does a window that
+//! produces nothing. Neither counts against anybody.
 
 use core::ops::Range;
 
