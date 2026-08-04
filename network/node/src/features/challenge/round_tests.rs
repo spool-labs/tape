@@ -325,7 +325,7 @@ async fn mid_round_write() {
 
     let cutoff = challenge_schedule(&fixture.state)
         .expect("schedule")
-        .base_slot(round.round);
+        .sample_cutoff(round.round);
     let late = Address::new_unique();
     put_sample(&fixture.ctx, fixture.group, late, 4 * SUB_LEAF_BYTES, cutoff);
 
@@ -361,7 +361,7 @@ async fn mid_round_delete() {
     let round = fixture.round();
     let cutoff = challenge_schedule(&fixture.state)
         .expect("schedule")
-        .base_slot(round.round);
+        .sample_cutoff(round.round);
 
     let extra = Address::new_unique();
     put_sample(&fixture.ctx, fixture.group, extra, 4 * SUB_LEAF_BYTES, SlotNumber(0));

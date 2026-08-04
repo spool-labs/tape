@@ -25,6 +25,20 @@ pub const SLOT_MS: u64 = 400;
 /// four voids about six rounds per million, where one slot voids one in twenty.
 pub const SPAN_SLOTS: u64 = 4;
 
+/// Slots before a round's window that the sample set is cut at.
+///
+/// A round opens on a produced block, so the slot it names is ahead of what any
+/// owner has applied: rows land on the finalized path, and each owner's frontier
+/// sits a finality window back by a slightly different amount. Cutting at the
+/// window itself would put every write in that gap on one owner's side of the
+/// question and not another's, which is the divergence the chain-derived set
+/// exists to remove. Cutting behind it puts the whole gap on everyone's side.
+///
+/// Wide enough for Solana finality plus the spread between owners, which
+/// `AT_TIP_THRESHOLD_SLOTS` bounds at five. A track registered inside the
+/// lookback is simply not asked about until the next round.
+pub const SAMPLE_LOOKBACK_SLOTS: u64 = 64;
+
 /// Slots after the entropy block by which a proof must arrive.
 ///
 /// Sized to clear honest global propagation, not to catch a fetch. The measured
@@ -180,6 +194,15 @@ impl Schedule {
     /// grid: an epoch that runs past its nominal length keeps challenging.
     pub fn rounds(&self) -> u64 {
         rounds_in(self.epoch_slots, self.interval_slots)
+    }
+
+    /// Slot the round's sample set is cut at.
+    ///
+    /// Behind the window by `SAMPLE_LOOKBACK_SLOTS`, so the cut falls inside
+    /// the range every owner has applied rather than inside the gap between
+    /// their frontiers.
+    pub fn sample_cutoff(&self, round: RoundNumber) -> SlotNumber {
+        SlotNumber(self.base_slot(round).as_u64().saturating_sub(SAMPLE_LOOKBACK_SLOTS))
     }
 
     /// First slot of a round's entropy window.

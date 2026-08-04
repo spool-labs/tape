@@ -15,6 +15,10 @@ pub struct ChallengeCounters {
     pub settled_missed: AtomicU64,
     /// Incoming answers refused at the door.
     pub answers_refused: AtomicU64,
+    /// Rounds whose entropy block never finalized, charged to nobody.
+    pub voided: AtomicU64,
+    /// Rounds dropped because their candidate block lost.
+    pub discarded: AtomicU64,
     /// This node's own rounds that reached a quorum here.
     pub own_certified: AtomicU64,
     /// This node's own rounds that did not, which is the miss its group-mates

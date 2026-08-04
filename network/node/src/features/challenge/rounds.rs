@@ -139,6 +139,16 @@ impl RoundBuffer {
         entries.get(&key).is_some_and(|entry| entry.certified)
     }
 
+    /// Drop every round a losing candidate seeded.
+    ///
+    /// Signatures made against different candidates never aggregate, so this
+    /// only removes evidence that could not have certified anyway. It matters
+    /// because the entry would otherwise sit until it aged out.
+    pub fn discard_block(&self, block: Hash) {
+        let mut entries = self.entries.lock().expect("round buffer");
+        entries.retain(|key, _| key.block != block);
+    }
+
     /// Drop every round older than the given one, once they can no longer certify.
     pub fn retire_before(&self, epoch: EpochNumber, round: RoundNumber) {
         let mut entries = self.entries.lock().expect("round buffer");

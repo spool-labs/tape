@@ -6,6 +6,23 @@ use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::replay::types::ReplayBatch;
+use tape_crypto::hash::Hash;
+
+/// What the challenge lane sees of the chain.
+///
+/// Rounds run on produced blocks, so this lane carries a block the moment it is
+/// confirmed rather than when it finalizes, plus the two later verdicts on it.
+/// A round's evidence is only standing once its entropy block finalizes, and
+/// evidence gathered under a candidate that lost has to go rather than settle.
+#[derive(Debug)]
+pub enum ChainEvent {
+    /// A confirmed block, which may seed a round.
+    Produced(Arc<ParsedBlock>),
+    /// Blocks that lost, newest first. Any round they seeded is void.
+    Rolled(Vec<Hash>),
+    /// A block that survived to finality.
+    Finalized(Hash),
+}
 
 const PARSED_BLOCK_CHANNEL_CAPACITY: usize = 256;
 const REPLAY_BATCH_CHANNEL_CAPACITY: usize = 256;
@@ -14,7 +31,7 @@ const REPLAY_BATCH_CHANNEL_CAPACITY: usize = 256;
 pub struct DownstreamSenders {
     pub state: mpsc::Sender<Arc<ParsedBlock>>,
     pub assignment: mpsc::Sender<Arc<ParsedBlock>>,
-    pub challenge: mpsc::Sender<Arc<ParsedBlock>>,
+    pub challenge: mpsc::Sender<ChainEvent>,
     pub eviction: mpsc::Sender<Arc<ParsedBlock>>,
     pub replay: mpsc::Sender<Arc<ParsedBlock>>,
     pub snapshot: mpsc::Sender<Arc<ParsedBlock>>,
@@ -23,7 +40,7 @@ pub struct DownstreamSenders {
 pub struct DownstreamReceivers {
     pub state: mpsc::Receiver<Arc<ParsedBlock>>,
     pub assignment: mpsc::Receiver<Arc<ParsedBlock>>,
-    pub challenge: mpsc::Receiver<Arc<ParsedBlock>>,
+    pub challenge: mpsc::Receiver<ChainEvent>,
     pub eviction: mpsc::Receiver<Arc<ParsedBlock>>,
     pub replay: mpsc::Receiver<Arc<ParsedBlock>>,
     pub snapshot: mpsc::Receiver<Arc<ParsedBlock>>,

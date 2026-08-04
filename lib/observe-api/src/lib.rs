@@ -431,6 +431,12 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
+    /// Rounds whose entropy block never finalized, charged to nobody.
+    #[serde(default)]
+    pub voided: u64,
+    /// Rounds dropped because their candidate block lost.
+    #[serde(default)]
+    pub discarded: u64,
     /// This node's own rounds that the group certified.
     #[serde(default)]
     pub own_certified: u64,

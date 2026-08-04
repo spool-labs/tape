@@ -1,10 +1,11 @@
 //! Runs this node's challenge rounds and keeps its record of every group-mate.
 //!
 //! Rounds sit on a slot grid derived from finalized epoch state, so the whole
-//! group reaches the same schedule without coordinating. A round opens a short
-//! window; the first finalized block to land inside it is the round's entropy
-//! block, and a window that finalizes no block is a void round that counts
-//! against nobody.
+//! group reaches the same schedule without coordinating. A round opens on the
+//! first produced block to land in its window, as the paper has it, so the
+//! request is unpredictable and the answer is due while the branch is live.
+//! A candidate that loses voids its round, and a window that finalizes no block
+//! is a void round too. Neither counts against anybody.
 //!
 //! When a round opens this node answers its own challenge and broadcasts, and
 //! settles the previous round: any spool whose answer did not certify by then is
@@ -31,6 +32,7 @@ use tracing::{debug, info, trace};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
+use crate::core::channels::ChainEvent;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::challenge::audition::{Round, build_answer, group_members, spawn_attest};
@@ -42,11 +44,17 @@ use crate::features::challenge::fold::fold_outcome;
 struct OpenRound {
     round: Round,
     spools: Vec<SpoolIndex>,
+    /// Whether the entropy block survived to finality.
+    ///
+    /// A round is only evidence once its block is part of history. Settling one
+    /// that never finalized would charge every spool in the group a miss for a
+    /// branch that lost, and three of those queue the whole group for eviction.
+    finalized: bool,
 }
 
 pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
+    chain_rx: mpsc::Receiver<ChainEvent>,
     cancel: CancellationToken,
     // The round this node last opened in each group it holds a spool in. A node
     // may own one spool in each of several groups and owes an answer in every
@@ -65,12 +73,12 @@ where
 {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        block_rx: mpsc::Receiver<Arc<ParsedBlock>>,
+        chain_rx: mpsc::Receiver<ChainEvent>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            block_rx,
+            chain_rx,
             cancel,
             open_rounds: HashMap::new(),
         }
@@ -80,26 +88,29 @@ where
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
-                received = self.block_rx.recv() => {
-                    let Some(block) = received else {
+                received = self.chain_rx.recv() => {
+                    let Some(event) = received else {
                         return if self.cancel.is_cancelled() {
                             Ok(())
                         } else {
                             Err(NodeError::ChannelClosed { channel: ChannelName::ChallengeManager })
                         };
                     };
-                    self.on_block(block).await?;
+                    match event {
+                        ChainEvent::Produced(block) => self.on_produced(block).await?,
+                        ChainEvent::Rolled(hashes) => self.on_rolled(&hashes),
+                        ChainEvent::Finalized(hash) => self.on_finalized(hash),
+                    }
                 }
             }
         }
     }
 
-    /// Open a round when a finalized block lands in one's entropy window.
+    /// Open a round when a produced block lands in one's entropy window.
     ///
-    /// There is no timer here on purpose. The schedule is expressed in slots and
-    /// the entropy has to come from a block that finalized, so a block arriving is
-    /// the only thing that can open a round.
-    async fn on_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
+    /// There is no timer here on purpose. The schedule is expressed in slots, so
+    /// a block arriving is the only thing that can open a round.
+    async fn on_produced(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         // Never take part off stale state: a node still catching up would read an
         // old committee and answer for spools nobody owns any more.
         if !self.context.is_at_tip() {
@@ -157,6 +168,7 @@ where
                 OpenRound {
                     round,
                     spools: group_spools(&state, group),
+                    finalized: false,
                 },
             );
             self.context
@@ -184,6 +196,18 @@ where
         let Some(open) = self.open_rounds.get(&group) else {
             return;
         };
+
+        // A round whose entropy block never finalized is void. Nobody owed an
+        // answer on a branch that lost, so nobody is charged for one.
+        if !open.finalized {
+            self.context
+                .challenge_counters
+                .voided
+                .fetch_add(1, Ordering::Relaxed);
+            debug!(group = group.0, "challenge: round voided, entropy block never finalized");
+            return;
+        }
+
         let round = &open.round;
 
         for spool in &open.spools {
@@ -218,6 +242,31 @@ where
                 "challenge: settling"
             );
             self.record(owner, round.epoch, round.round, certified);
+        }
+    }
+
+    /// Drop any round a losing candidate seeded, without settling it.
+    ///
+    /// The evidence goes too: signatures made against a block that lost cannot
+    /// aggregate with the replacement's, so keeping them only risks a stale
+    /// lookup answering for the new round.
+    fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {
+        for hash in hashes {
+            self.context.round_buffer.discard_block(*hash);
+            self.open_rounds.retain(|_, open| open.round.block != *hash);
+            self.context
+                .challenge_counters
+                .discarded
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Mark the round a block seeded as standing evidence.
+    fn on_finalized(&mut self, hash: tape_crypto::hash::Hash) {
+        for open in self.open_rounds.values_mut() {
+            if open.round.block == hash {
+                open.finalized = true;
+            }
         }
     }
 

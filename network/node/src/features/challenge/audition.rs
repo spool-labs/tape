@@ -79,7 +79,7 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if round.epoch != state.epoch() {
         return None;
     }
-    let cutoff = challenge_schedule(state)?.base_slot(round.round);
+    let cutoff = challenge_schedule(state)?.sample_cutoff(round.round);
 
     // Already in track order: the rows are keyed group-then-track, so the scan
     // arrives in the canonical order the draw is defined over.
