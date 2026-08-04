@@ -116,15 +116,10 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
 
     let owned_spools = context.my_spools();
     let at_tip = at_durable_tip(context.as_ref())?;
-    // Tombstones from this sweep carry the live epoch's start slot even when
-    // catching up an older epoch: a later slot only keeps an entry in the
-    // sample set longer, which is the safe direction.
-    let epoch_start_slot = context.state().current.epoch.start_slot;
     let sweep_stats = sweep_epoch(
         store,
         config,
         epoch,
-        epoch_start_slot,
         &owned_spools,
         context.pending.as_ref(),
         at_tip,

@@ -10,8 +10,6 @@
 //! - `ObjectMetadataOps`: Named-object reverse lookup
 //! - `SpoolOps`: Spool status, sync progress, pending recovery (NOT epoch-namespaced)
 //! - `SliceOps`: Slice data storage
-//! - `ChallengeOps`: Per-peer record of answers to storage challenges
-//! - `SampleOps`: The per-group sample set a challenge round draws from
 //! - `CredentialOps`: S3 write credentials (put/get/revoke/list)
 //! - `PolicyOps`: Write-authorization policy engine (rule CRUD + evaluate)
 //! - `AuthStateOps`: Write-authorization control state (kill switch, policy version)
@@ -21,7 +19,6 @@
 
 mod audit_log;
 mod auth_state;
-mod challenge;
 mod credential;
 mod event_log;
 mod ledger;
@@ -31,7 +28,6 @@ mod object_list;
 mod object_metadata;
 mod policy;
 mod s3_multipart;
-mod sample;
 mod snapshot;
 mod slice;
 mod spool;
@@ -43,7 +39,6 @@ mod vote;
 // Re-export operation traits
 pub use audit_log::AuditOps;
 pub use auth_state::AuthStateOps;
-pub use challenge::ChallengeOps;
 pub use credential::CredentialOps;
 pub use event_log::EventLogOps;
 pub use ledger::{LedgerOps, ReserveOutcome, ReserveRequest};
@@ -53,7 +48,6 @@ pub use object_list::{ObjectListOps, ObjectListPage};
 pub use object_metadata::ObjectMetadataOps;
 pub use policy::{PolicyDecision, PolicyOps};
 pub use s3_multipart::MultipartOps;
-pub use sample::SampleOps;
 pub use snapshot::SnapshotOps;
 pub use slice::SliceOps;
 pub use spool::SpoolOps;
