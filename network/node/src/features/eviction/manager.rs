@@ -9,6 +9,8 @@ use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_protocol::api::{GetHealthReq, GetHealthRes};
 use tape_protocol::{Api, ProtocolState};
+use tape_core::challenge::record::MIN_OPPORTUNITIES;
+use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -122,7 +124,7 @@ where
         }
 
         for node in self.context.eviction_queue.snapshot() {
-            if !self.judge_target(node, state.epoch()).await {
+            if !self.judge_target(&state, node).await {
                 continue;
             }
 
@@ -143,15 +145,46 @@ where
     /// Judge the target with this node's own probe, at most once per voting
     /// epoch. A proposal alone never recruits a signature: only a target this
     /// node observes failing stays queued, and a recovered target is dropped.
-    async fn judge_target(&mut self, node: Address, epoch: EpochNumber) -> bool {
+    ///
+    /// A group-mate is judged by the challenge record this node has been keeping
+    /// for it, once that record holds enough rounds to mean anything. Below that
+    /// it falls back to a health ping, which is also what a node outside the
+    /// target's group always does, since only a group-mate auditions its rounds.
+    ///
+    /// The threshold matters. A record with one or two observations is thinner
+    /// evidence than a live probe, and an epoch whose active phase was short may
+    /// have held very few rounds.
+    ///
+    /// The two arms of the rule are weighed differently, because only one of them
+    /// says anything a probe can answer. A run of misses claims the peer stopped
+    /// answering, and the record has no notion of recency, so a run left over from
+    /// an outage that has already ended keeps firing and only a success clears it,
+    /// which a queued peer has no chance to earn. A peer that answers now is
+    /// therefore dropped on that arm alone. The rate arm claims nothing about
+    /// reachability: a peer serving invalid proofs every round trips it while
+    /// answering every probe, so nothing it says can clear it.
+    async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
+        let epoch = state.epoch();
         if self.probe_failed.get(&node) == Some(&epoch) {
             return true;
         }
 
-        let healthy = matches!(
-            self.context.api.get_health(node, &GetHealthReq).await,
-            Ok(GetHealthRes { ok: true })
-        );
+        // A record per spool, but the proposal is against the node, so the
+        // worst spool decides: one dropped spool is one too many, and a peer
+        // answering its other four does not clear it.
+        let records = self.context.store.records_for_peer(node).unwrap_or_default();
+        let judged = records.iter().map(|(_, r)| r.opportunities).max().unwrap_or_default();
+        let rate_fires = records.iter().any(|(_, record)| record.rate_fires());
+        let run_fires = records.iter().any(|(_, record)| record.run_fires());
+        let healthy = if judged < MIN_OPPORTUNITIES {
+            self.answers(node).await
+        } else if rate_fires {
+            false
+        } else if run_fires {
+            self.answers(node).await
+        } else {
+            true
+        };
         if healthy {
             debug!(node = %node, "eviction: target probed healthy, dropping");
             self.context.eviction_queue.remove(&node);
@@ -162,6 +195,14 @@ where
         info!(node = %node, epoch = epoch.0, "eviction: target probe failed, voting to evict");
         self.probe_failed.insert(node, epoch);
         true
+    }
+
+    /// Whether the target answers a health request right now.
+    async fn answers(&self, node: Address) -> bool {
+        matches!(
+            self.context.api.get_health(node, &GetHealthReq).await,
+            Ok(GetHealthRes { ok: true })
+        )
     }
 
     async fn run_round(

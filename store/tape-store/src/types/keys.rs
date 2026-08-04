@@ -14,7 +14,7 @@ use std::mem::MaybeUninit;
 use serde::{Deserialize, Serialize};
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{VoteCandidate, VoteKind};
-use tape_core::types::{EpochNumber, SpoolIndex, TrackNumber};
+use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::{
@@ -131,6 +131,121 @@ impl<'de> SchemaRead<'de> for SpoolIndexKey {
     }
 }
 
+/// Key for one spool's outcome in one round (50 bytes)
+///
+/// Format: [peer 32 bytes][spool BE 2 bytes][epoch BE 8 bytes][round BE 8 bytes]
+///
+/// The spool is part of the key because a certificate is per spool: a peer
+/// holding several of them owes an answer for each, and collapsing them onto one
+/// key lets a success on one erase a miss on another. Peer then spool first so
+/// one spool's whole history is a prefix scan, then epoch and round big-endian so
+/// that scan comes back in the order the rounds happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChallengeRoundKey {
+    pub peer: Address,
+    pub spool: SpoolIndex,
+    pub epoch: EpochNumber,
+    pub round: RoundNumber,
+}
+
+impl ChallengeRoundKey {
+    pub const SIZE: usize = 50;
+
+    pub fn new(peer: Address, spool: SpoolIndex, epoch: EpochNumber, round: RoundNumber) -> Self {
+        Self { peer, spool, epoch, round }
+    }
+
+    /// Prefix covering every round recorded for one of a peer's spools.
+    pub fn spool_prefix(peer: Address, spool: SpoolIndex) -> [u8; 34] {
+        let mut prefix = [0u8; 34];
+        prefix[..32].copy_from_slice(&peer.to_bytes());
+        prefix[32..].copy_from_slice(&(spool.as_u64() as u16).to_be_bytes());
+        prefix
+    }
+}
+
+/// Key for one spool's record under one owner (34 bytes)
+///
+/// Format: [peer 32 bytes][spool BE 2 bytes]
+///
+/// One record per spool rather than per peer, which is the grid the paper draws:
+/// rounds across, spools down. The node-level rule reads across a peer's spools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PeerRecordKey {
+    pub peer: Address,
+    pub spool: SpoolIndex,
+}
+
+impl PeerRecordKey {
+    pub const SIZE: usize = 34;
+
+    pub fn new(peer: Address, spool: SpoolIndex) -> Self {
+        Self { peer, spool }
+    }
+}
+
+impl SchemaWrite for PeerRecordKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.peer.as_ref())?;
+        writer.write_exact(&(src.spool.as_u64() as u16).to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for PeerRecordKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<PeerRecordKey>) -> ReadResult<()> {
+        let peer: [u8; 32] = unsafe { reader.get_t()? };
+        let spool: [u8; 2] = unsafe { reader.get_t()? };
+        dst.write(PeerRecordKey {
+            peer: Address::from(peer),
+            spool: SpoolIndex(u16::from_be_bytes(spool) as u64),
+        });
+        Ok(())
+    }
+}
+
+impl SchemaWrite for ChallengeRoundKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.peer.as_ref())?;
+        writer.write_exact(&(src.spool.as_u64() as u16).to_be_bytes())?;
+        writer.write_exact(&src.epoch.0.to_be_bytes())?;
+        writer.write_exact(&src.round.0.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for ChallengeRoundKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<ChallengeRoundKey>) -> ReadResult<()> {
+        let peer: [u8; 32] = unsafe { reader.get_t()? };
+        let spool: [u8; 2] = unsafe { reader.get_t()? };
+        let epoch: [u8; 8] = unsafe { reader.get_t()? };
+        let round: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(ChallengeRoundKey {
+            peer: Address::from(peer),
+            spool: SpoolIndex(u16::from_be_bytes(spool) as u64),
+            epoch: EpochNumber(u64::from_be_bytes(epoch)),
+            round: RoundNumber(u64::from_be_bytes(round)),
+        });
+        Ok(())
+    }
+}
+
 /// Key for slice data and pending recovery (34 bytes)
 ///
 /// Format: [spool_id BE 2 bytes][track_address 32 bytes]
@@ -163,6 +278,60 @@ impl SliceKey {
     pub fn spool_key_range(spool_id: SpoolIndex) -> ([u8; 2], Option<[u8; 2]>) {
         let spool = spool_id.as_u64() as u16;
         (spool.to_be_bytes(), spool.checked_add(1).map(u16::to_be_bytes))
+    }
+}
+
+/// Key for the challenge sample set, by group then track (40 bytes).
+///
+/// Format: [group BE 8 bytes][track 32 bytes]
+///
+/// Group-first ordering enumerates one group's tracks with a prefix scan, and
+/// track ordering inside it is the canonical order every owner must draw
+/// against, so the scan needs no sort of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TrackSampleKey {
+    pub group: GroupIndex,
+    pub track: Address,
+}
+
+impl TrackSampleKey {
+    pub const SIZE: usize = 40;
+
+    pub fn new(group: GroupIndex, track: Address) -> Self {
+        Self { group, track }
+    }
+
+    /// Prefix covering every track assigned to one group.
+    pub fn group_prefix(group: GroupIndex) -> [u8; 8] {
+        group.as_u64().to_be_bytes()
+    }
+}
+
+impl SchemaWrite for TrackSampleKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.group.as_u64().to_be_bytes())?;
+        writer.write_exact(src.track.as_ref())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for TrackSampleKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<TrackSampleKey>) -> ReadResult<()> {
+        let group: [u8; 8] = unsafe { reader.get_t()? };
+        let track: [u8; 32] = unsafe { reader.get_t()? };
+        dst.write(TrackSampleKey {
+            group: GroupIndex(u64::from_be_bytes(group)),
+            track: Address::from(track),
+        });
+        Ok(())
     }
 }
 
