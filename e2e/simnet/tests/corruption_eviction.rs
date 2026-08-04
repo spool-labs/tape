@@ -15,12 +15,13 @@ use std::time::{Duration, Instant};
 
 use store::{Column, Store};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
 use tape_store::columns::SliceCol;
-use tape_store::ops::{SliceOps, SpoolOps};
+use tape_core::track::data::BlobData;
+use tape_store::ops::{SampleOps, SliceOps, SpoolOps, TrackDataOps};
 use tape_store::types::SliceKey;
 
 // The committee holds exactly the group floor, plus a spare to backfill the
@@ -286,12 +287,28 @@ fn spool_successor(
 fn rot_spool(harness: &SimnetHarness, spool: SpoolIndex) -> usize {
     let node = harness.node(VICTIM).expect("victim node");
     let store = node.context().store.clone();
-    let held = store.iter_slice_sizes_by_spool(spool).expect("iter slices");
+    let mut rotted = 0usize;
 
-    for (track, _) in &held {
-        rot_slice(&store, spool, *track);
+    for (track, _) in store.iter_slice_sizes_by_spool(spool).expect("iter slices") {
+        rot_slice(&store, spool, track);
+        rotted += 1;
     }
-    held.len()
+
+    // Inline tracks answer from the payload rather than a slice, and a group's
+    // set holds plenty of them, so leaving them intact lets the victim answer
+    // honestly whenever the draw lands on one and the run of misses never builds.
+    for (track, _) in store
+        .iter_track_samples_by_group(group_for_spool(spool))
+        .expect("iter sample rows")
+    {
+        if let Ok(Some(BlobData::Inline(payload))) = store.get_track_data(track) {
+            store
+                .put_track_data(track, BlobData::Inline(vec![0x5A; payload.len().max(1)]))
+                .expect("rot inline");
+            rotted += 1;
+        }
+    }
+    rotted
 }
 
 fn rot_slice<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, track: Address) {
