@@ -150,11 +150,15 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .apply_to_track(track_addr, in_store)
         .ok_or(RouteError::NotFound)?;
 
+    // The reservation is folded in too. A track resolved from the overlay whose
+    // tape was only read from disk is not-found on every peer at once until the
+    // reservation finalizes, which is a whole finality window of refused deletes
+    // on any freshly reserved tape.
+    let in_store = state.context.store.get_tape(track.tape).map_err(store_error)?;
     let tape = state
         .context
-        .store
-        .get_tape(track.tape)
-        .map_err(store_error)?
+        .pending
+        .apply_to_tape(track.tape, in_store)
         .ok_or(RouteError::NotFound)?;
 
     if local_access_threshold(&state).0 > 0
@@ -588,9 +592,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // a track registered but not yet finalized resolves through the pending
-    // overlay, while the tape it names is read from the durable store only, so
-    // a fresh tape's first track is not found on any peer until it finalizes
+    // a track and the tape it names both resolve through the pending overlay,
+    // so a fresh tape's first track is servable at confirmed latency
     #[tokio::test]
     async fn pending_track_on_pending_tape() {
         let ctx = test_context().await;
@@ -616,24 +619,35 @@ mod tests {
             tape_core::track::data::BlobData::Inline(vec![]),
         );
 
-        let result = call_get_track_proof(&ctx, track_addr, None).await;
+        // Neither the track nor the tape is durable yet.
         assert!(
-            matches!(result, Err(RouteError::NotFound)),
-            "the overlay resolved the track but the tape read did not"
+            matches!(
+                call_get_track_proof(&ctx, track_addr, None).await,
+                Err(RouteError::NotFound)
+            ),
+            "a track with no tape anywhere should not resolve"
         );
 
-        // The same track once its tape is durable.
-        ctx.store
-            .put_tape(
-                tape,
-                TapeInfo {
-                    id: TapeNumber(1),
-                    flags: 0,
-                    end_epoch: EpochNumber(100),
-                    next_track_number: TrackNumber(1),
-                },
-            )
-            .expect("put tape");
-        assert!(call_get_track_proof(&ctx, track_addr, None).await.is_ok());
+        ctx.pending.apply_reserve(
+            tape_core::types::SlotNumber(10),
+            tape,
+            TapeInfo {
+                id: TapeNumber(1),
+                flags: 0,
+                end_epoch: EpochNumber(100),
+                next_track_number: TrackNumber(0),
+            },
+        );
+        assert!(
+            call_get_track_proof(&ctx, track_addr, None).await.is_ok(),
+            "the overlay resolved the track but not its reservation"
+        );
+
+        // Dropping the slot takes the reservation with it.
+        ctx.pending.drop_slot(tape_core::types::SlotNumber(10));
+        assert!(matches!(
+            call_get_track_proof(&ctx, track_addr, None).await,
+            Err(RouteError::NotFound)
+        ));
     }
 }
