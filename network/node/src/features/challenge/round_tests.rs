@@ -456,14 +456,24 @@ async fn silent_spool() {
     );
 }
 
-// the challenged owner's own signature does not count toward its quorum
+// the challenged owner's own signature counts toward its quorum: the
+// threshold counts it among the group's members, so a group at the fault
+// bound has thirteen other honest signers against a threshold of fourteen
 #[tokio::test]
-async fn self_certify() {
+async fn owner_counts() {
     let fixture = fixture().await;
     let target = fixture.other();
     let owner = fixture.state.spool_owner(target).expect("owner");
 
-    let mut signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE) - 1);
+    let short = fixture.attestations(target, agreement_threshold(GROUP_SIZE) - 1);
+    let certificate = fixture.certify(target, short.clone());
+    assert_eq!(
+        fixture.check(target, &certificate),
+        Err(CertificateRejection::BelowQuorum),
+        "one short of the threshold is not a quorum"
+    );
+
+    let mut signed = short;
     signed.push((
         owner,
         fixture.keys[&target]
@@ -472,10 +482,7 @@ async fn self_certify() {
     ));
 
     let certificate = fixture.certify(target, signed);
-    assert_eq!(
-        fixture.check(target, &certificate),
-        Err(CertificateRejection::SelfCertified)
-    );
+    assert_eq!(fixture.check(target, &certificate), Ok(()));
 }
 
 // signers who saw different candidate blocks signed different bytes, so an

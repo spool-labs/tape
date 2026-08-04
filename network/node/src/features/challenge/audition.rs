@@ -193,6 +193,22 @@ pub fn spawn_relay_and_attest<Db: Store + 'static, Cluster: Api + 'static, Block
     state: &ProtocolState,
     answer: &ProofOfAccess,
 ) {
+    spawn_attest(context, state, answer, true)
+}
+
+/// Sign and fan out this node's attestation for an answer it holds.
+///
+/// The challenged owner calls this for its own round with `relay` off: it has
+/// already broadcast to the whole group, and its own signature is one of the q
+/// the certificate needs. Excluding it costs a position the threshold cannot
+/// spare, since the threshold counts the owner among the members but can never
+/// count it among the signers.
+pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
+    answer: &ProofOfAccess,
+    relay: bool,
+) {
     let me = context.node_address();
     let round = round_of(answer);
 
@@ -223,9 +239,10 @@ pub fn spawn_relay_and_attest<Db: Store + 'static, Cluster: Api + 'static, Block
         // Relay to a few, attest to all. An attestation is a hundred bytes and
         // every peer needs a quorum of them to certify; the answer is kilobytes
         // and only the skipped need another copy.
+        let fanout = if relay { RELAY_FANOUT } else { 0 };
         let relays = peers
             .iter()
-            .take(RELAY_FANOUT)
+            .take(fanout)
             .map(|peer| relay_answer(&context, *peer, answer.clone()));
         let attestations = peers
             .iter()

@@ -22,8 +22,8 @@ use crate::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 pub enum CertificateRejection {
     /// Fewer signatures than the group's agreement threshold.
     BelowQuorum,
-    /// The challenged owner is among the signers.
-    SelfCertified,
+    /// Nobody but the challenged owner signed.
+    OwnerOnly,
     /// A signer appears more than once.
     DuplicateSigner,
     /// A signer has no registered key.
@@ -102,10 +102,12 @@ impl SuccessCertificate {
             return Err(CertificateRejection::BelowQuorum);
         }
 
-        // A spool may contribute one signature but cannot certify itself, so a
-        // roster containing the challenged owner is refused outright.
-        if self.signers.contains(&owner) {
-            return Err(CertificateRejection::SelfCertified);
+        // The owner may contribute one signature but cannot certify itself. Its
+        // own is one of the q, since the threshold counts it among the members
+        // and a group at the fault bound has no position to spare, but a roster
+        // of nobody else is not a witness.
+        if self.signers.iter().all(|signer| *signer == owner) {
+            return Err(CertificateRejection::OwnerOnly);
         }
 
         if self.signers.windows(2).any(|pair| pair[0] >= pair[1]) {
@@ -225,9 +227,10 @@ mod tests {
         );
     }
 
-    // the owner may sign, but a roster it appears in is not a quorum of others
+    // the owner's own signature counts toward the quorum, or a group at the
+    // fault bound has no position to spare and can never certify
     #[test]
-    fn self_certified() {
+    fn owner_counts() {
         let mut group = group_of(THRESHOLD - 1, 0xAA);
         let key = BlsPrivateKey::from_random();
         group.keys.insert(group.owner, key.public_key().expect("pubkey"));
@@ -238,7 +241,24 @@ mod tests {
         let certificate = certificate(&group, 0xAA);
         assert_eq!(
             certificate.verify(THRESHOLD, group.owner, |s| group.keys.get(&s).copied()),
-            Err(CertificateRejection::SelfCertified)
+            Ok(())
+        );
+    }
+
+    // but the owner alone is not a witness to anything
+    #[test]
+    fn owner_only() {
+        let mut group = group_of(0, 0xAA);
+        let key = BlsPrivateKey::from_random();
+        group.keys.insert(group.owner, key.public_key().expect("pubkey"));
+        group
+            .signed
+            .push((group.owner, key.sign(message(0xAA).to_bytes()).expect("sign")));
+
+        let certificate = certificate(&group, 0xAA);
+        assert_eq!(
+            certificate.verify(1, group.owner, |s| group.keys.get(&s).copied()),
+            Err(CertificateRejection::OwnerOnly)
         );
     }
 

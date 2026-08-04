@@ -33,7 +33,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::challenge::audition::{Round, build_answer, group_members};
+use crate::features::challenge::audition::{Round, build_answer, group_members, spawn_attest};
 use crate::features::challenge::fold::fold_outcome;
 
 // What settling needs from a round, captured when the round opened. Settling
@@ -236,6 +236,12 @@ where
         // Hold our own answer, so a peer relaying it back is a duplicate rather
         // than something to verify again.
         self.context.round_buffer.accept_answer(round.key(mine), answer.clone());
+
+        // Attest to it as well. The threshold counts this node among the
+        // group's members, so leaving its own signature out costs a position
+        // the quorum cannot spare. No relaying: the broadcast below reaches
+        // everyone already.
+        spawn_attest(&self.context, state, &answer, false);
 
         let members = group_members(state, round.group);
         trace!(round = round.round.0, peers = members.len(), "challenge: broadcasting");

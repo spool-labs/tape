@@ -97,12 +97,6 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
     };
     let key = round.key(payload.spool);
 
-    // The challenged owner may contribute one signature but cannot certify
-    // itself, so its own attestation is refused outright.
-    if protocol.spool_owner(payload.spool) == Some(payload.signer) {
-        return Err(RouteError::BadRequest("a spool cannot certify itself".into()));
-    }
-
     let Some(peer) = protocol.peer(payload.signer) else {
         return Err(RouteError::BadRequest("unknown signer".into()));
     };
