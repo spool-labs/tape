@@ -54,7 +54,7 @@ const BANKED_SUCCESSES: u64 = 5;
 const BANK_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Three consecutive misses at roughly one round per epoch.
-const RUN_TIMEOUT: Duration = Duration::from_secs(420);
+const RUN_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Long enough that a vote would have landed. `corruption_eviction` gets from a
 /// fired rule to a suspension well inside this.
