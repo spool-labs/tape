@@ -101,9 +101,8 @@ async fn corruption_eviction_inner() {
         .await
         .expect("committee active");
 
-    // A coded track big enough to dominate the byte-weighted draw, so the
-    // first miss almost surely names it. The run crosses many epochs, so the
-    // lease has to outlive any plausible arc.
+    // One coded track to check the healing against. The run crosses many
+    // epochs, so the lease has to outlive any plausible arc.
     let payload: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
     let (_, track, _) = harness
         .scenario()
@@ -118,7 +117,12 @@ async fn corruption_eviction_inner() {
     let spool = node_spool(&harness, VICTIM);
     let original = node_slice(&harness, VICTIM, spool, track).expect("victim holds its slice");
 
-    rot_slice(&harness, spool, track);
+    // Rot every slice the spool holds, not just the uploaded track's. The
+    // sample set spans the whole group, so one rotten track is drawn only in
+    // proportion to its share of the bytes and detection follows 1/p. This
+    // test is about a node serving rotten data being caught, not about how
+    // long a small p takes, so it puts p at 1.
+    rot_spool(&harness, spool);
     assert_ne!(
         node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
         original,
@@ -262,11 +266,20 @@ fn spool_successor(
     })
 }
 
-/// Flip bytes in the middle of the stored slice, straight through the raw
-/// column so the sidecar and size index stay exactly as they were.
-fn rot_slice(harness: &SimnetHarness, spool: SpoolIndex, track: Address) {
+/// Flip bytes in every slice the spool holds, straight through the raw column
+/// so the sidecars and size index stay exactly as they were.
+fn rot_spool(harness: &SimnetHarness, spool: SpoolIndex) {
     let node = harness.node(VICTIM).expect("victim node");
     let store = node.context().store.clone();
+    let held = store.iter_slice_sizes_by_spool(spool).expect("iter slices");
+    assert!(!held.is_empty(), "the victim holds nothing to rot");
+
+    for (track, _) in held {
+        rot_slice(&store, spool, track);
+    }
+}
+
+fn rot_slice<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, track: Address) {
     let raw = store.inner().inner();
 
     let key = wincode::serialize(&SliceKey::new(spool, track)).expect("slice key");
