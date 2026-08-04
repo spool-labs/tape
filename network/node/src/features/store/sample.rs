@@ -6,9 +6,11 @@
 //! row is one its owner holds a slice of and can never be asked about.
 
 use store::Store;
-use tape_core::track::blob::BlobEncoding;
+use tape_core::challenge::sample::EntryKind;
+use tape_core::track::data::BlobData;
 use tape_core::types::{SlotNumber, StorageUnits};
 use tape_crypto::address::Address;
+use tape_crypto::hash::Hash;
 use tape_slicer::coded_slice_len;
 use tape_store::ops::SampleOps;
 use tape_store::types::TrackSample;
@@ -24,27 +26,38 @@ use crate::core::error::NodeError;
 /// can see it.
 pub const SNAPSHOT_REGISTERED_SLOT: SlotNumber = SlotNumber(0);
 
-/// Record a coded track in its group's sample set.
+/// Record a track in its group's sample set.
+///
+/// A coded track weighs its slice length, derived from the registered encoding
+/// rather than measured, so an owner that never received its slice still
+/// enumerates it. An inline track is one bounded entry.
 pub fn put_sample<Db: Store>(
     store: &TapeStore<Db>,
     group: tape_core::types::GroupIndex,
     track: Address,
-    blob: &BlobEncoding,
+    data: &BlobData,
+    value_hash: Hash,
     registered_slot: SlotNumber,
 ) -> Result<(), NodeError> {
-    let slice_len = coded_slice_len(
-        blob.profile,
-        blob.size.as_usize(),
-        blob.stripe_size.as_usize(),
-        blob.stripe_count.0 as usize,
-    );
+    let kind = match data {
+        BlobData::Coded(blob) => EntryKind::Coded {
+            slice_len: StorageUnits::from_bytes(coded_slice_len(
+                blob.profile,
+                blob.size.as_usize(),
+                blob.stripe_size.as_usize(),
+                blob.stripe_count.0 as usize,
+            ) as u64),
+        },
+        BlobData::Inline(_) => EntryKind::Inline,
+    };
 
     store
         .put_track_sample(
             group,
             track,
             TrackSample {
-                slice_len: StorageUnits::from_bytes(slice_len as u64),
+                kind,
+                value_hash,
                 registered_slot,
                 deleted_slot: None,
             },

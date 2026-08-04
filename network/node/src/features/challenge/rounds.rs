@@ -169,6 +169,7 @@ impl RoundBuffer {
 mod tests {
     use super::*;
     use tape_core::bls::BlsPrivateKey;
+    use tape_core::challenge::proof::SampleProof;
     use tape_core::track::blob::SubLeafProof;
     use tape_core::types::GroupIndex;
 
@@ -189,10 +190,12 @@ mod tests {
             spool: key.spool,
             block: key.block,
             track: Address::new_unique(),
-            sub_leaf: 0,
-            proof: SubLeafProof {
-                sub_leaf: vec![0u8; 8],
-                sub_proof: Vec::new(),
+            proof: SampleProof::Coded {
+                sub_leaf: 0,
+                proof: SubLeafProof {
+                    sub_leaf: vec![0u8; 8],
+                    sub_proof: Vec::new(),
+                },
             },
             signature: signature(),
         }

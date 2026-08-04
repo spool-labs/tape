@@ -210,7 +210,8 @@ where
             &ctx.store,
             track.track.group,
             track_address,
-            &track.blob,
+            &BlobData::Coded(track.blob),
+            track.track.value_hash,
             SNAPSHOT_REGISTERED_SLOT,
         )?;
         ctx.store

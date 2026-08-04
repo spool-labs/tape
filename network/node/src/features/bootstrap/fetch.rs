@@ -111,7 +111,8 @@ pub fn persist_snapshot_metadata_to_store<Db: Store>(
             store,
             track.group,
             track_address,
-            &snapshot_track.blob,
+            &BlobData::Coded(snapshot_track.blob),
+            track.value_hash,
             SNAPSHOT_REGISTERED_SLOT,
         )?;
 

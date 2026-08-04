@@ -13,6 +13,8 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::cert::challenge::{ChallengeAttestMessage, ChallengeRespondMessage};
 use tape_core::challenge::{self, ProofOfAccess, SampleEntry};
+use tape_core::challenge::proof::{Registered, SampleProof};
+use tape_core::challenge::sample::SampleLeaf;
 use tape_core::challenge::sample::Sample;
 use tape_core::erasure::{SUB_LEAF_BYTES, prove_sub_leaf_windowed, sample_window};
 use tape_core::track::blob::SubLeafProof;
@@ -20,7 +22,6 @@ use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
-use tape_crypto::merkle::hash_leaf;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq};
 use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
@@ -75,7 +76,7 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &ProtocolState,
     round: &Round,
     spool: SpoolIndex,
-) -> Option<Sample> {
+) -> Option<(Sample, Hash)> {
     if round.epoch != state.epoch() {
         return None;
     }
@@ -83,21 +84,33 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // Already in track order: the rows are keyed group-then-track, so the scan
     // arrives in the canonical order the draw is defined over.
-    let entries: Vec<SampleEntry> = context
+    let rows = context
         .store
         .iter_track_samples_by_group(round.group)
         .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
-        .ok()?
+        .ok()?;
+    let rows: Vec<_> = rows
         .into_iter()
         .filter(|(_, sample)| sample.in_set_at(cutoff))
+        .collect();
+    let entries: Vec<SampleEntry> = rows
+        .iter()
         .map(|(track, sample)| SampleEntry {
-            track,
-            slice_len: sample.slice_len,
+            track: *track,
+            kind: sample.kind,
         })
         .collect();
 
     let seed = challenge::round_seed(&round.block, round.epoch, round.group, round.round, spool);
-    challenge::draw(&seed, &entries)
+    let sample = challenge::draw(&seed, &entries)?;
+
+    // The row's own value hash travels with the draw: an inline answer is
+    // checked against it, and the track record it came from may be gone.
+    let value_hash = rows
+        .iter()
+        .find(|(track, _)| *track == sample.track)
+        .map(|(_, row)| row.value_hash)?;
+    Some((sample, value_hash))
 }
 
 /// Build this node's own answer for a round.
@@ -107,19 +120,37 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<ProofOfAccess> {
-    let sample = expected_sample(context, state, round, spool)?;
-    let slice = context.store.get_slice(spool, sample.track).ok().flatten()?;
-    let sidecar = context.store.get_slice_sidecar(spool, sample.track).ok().flatten()?;
+    let (sample, _) = expected_sample(context, state, round, spool)?;
+    let proof = match sample.leaf {
+        SampleLeaf::Coded { sub_leaf } => {
+            let slice = context.store.get_slice(spool, sample.track).ok().flatten()?;
+            let sidecar = context.store.get_slice_sidecar(spool, sample.track).ok().flatten()?;
 
-    let start = sample.sub_leaf * SUB_LEAF_BYTES;
-    let proof = SubLeafProof {
-        sub_leaf: slice[start..(start + SUB_LEAF_BYTES).min(slice.len())]
-            .to_vec(),
-        sub_proof: prove_sub_leaf_windowed(
-            &sidecar,
-            &slice[sample_window(sample.sub_leaf, slice.len())],
-            sample.sub_leaf,
-        )?,
+            let start = sub_leaf * SUB_LEAF_BYTES;
+            SampleProof::Coded {
+                sub_leaf: sub_leaf as u64,
+                proof: SubLeafProof {
+                    sub_leaf: slice[start..(start + SUB_LEAF_BYTES).min(slice.len())].to_vec(),
+                    sub_proof: prove_sub_leaf_windowed(
+                        &sidecar,
+                        &slice[sample_window(sub_leaf, slice.len())],
+                        sub_leaf,
+                    )?,
+                },
+            }
+        }
+        // An inline write is kept whole by every owner in the group, so the
+        // payload is what there is to show. A node that has not caught up on
+        // the bytes cannot answer, exactly as it cannot for a slice it lacks.
+        SampleLeaf::Inline => {
+            let BlobData::Inline(payload) =
+                context.store.get_track_data(sample.track).ok().flatten()?
+            else {
+                debug!(track = %sample.track, "challenge: inline payload not held");
+                return None;
+            };
+            SampleProof::Inline { payload }
+        }
     };
 
     let message = ChallengeRespondMessage::new(
@@ -128,7 +159,7 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
         round.round,
         spool,
         round.block,
-        hash_leaf(&proof.sub_leaf),
+        proof.signed_leaf(),
     );
 
     Some(ProofOfAccess {
@@ -138,7 +169,6 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
         spool,
         block: round.block,
         track: sample.track,
-        sub_leaf: sample.sub_leaf as u64,
         proof,
         signature: context.bls_sign(&message.to_bytes()).ok()?,
     })
@@ -153,16 +183,24 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> bool {
     // Every refusal below costs the answering owner a miss it may not have
     // earned, so each one says which of them it was.
-    let Some(expected) = expected_sample(context, state, &round_of(answer), answer.spool)
+    let Some((expected, value_hash)) = expected_sample(context, state, &round_of(answer), answer.spool)
     else {
         debug!(spool = %answer.spool, "challenge: no question of our own to check against");
         return false;
     };
 
-    let Some(BlobData::Coded(encoding)) = context.store.get_track_data(expected.track).ok().flatten()
-    else {
-        debug!(spool = %answer.spool, track = %expected.track, "challenge: track encoding not held");
-        return false;
+    // What the answer is checked against comes from the row the draw came from
+    // for an inline track, and from the registered encoding for a coded one. A
+    // deleted track keeps its row while its record is gone, so reading the hash
+    // back off the record would refuse an honest answer mid-round.
+    let coded = context.store.get_track_data(expected.track).ok().flatten();
+    let registered = match (expected.leaf, &coded) {
+        (SampleLeaf::Coded { .. }, Some(BlobData::Coded(encoding))) => Registered::Coded(encoding),
+        (SampleLeaf::Inline, _) => Registered::Inline(value_hash),
+        _ => {
+            debug!(spool = %answer.spool, track = %expected.track, "challenge: track encoding not held");
+            return false;
+        }
     };
 
     let Some(owner) = state.spool_owner(answer.spool) else {
@@ -174,7 +212,7 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return false;
     };
 
-    match answer.verify(&expected, &encoding, &peer.bls_pubkey, in_time) {
+    match answer.verify(&expected, registered, &peer.bls_pubkey, in_time) {
         Ok(()) => true,
         Err(rejection) => {
             debug!(node = %owner, spool = %answer.spool, ?rejection, "challenge: answer refused");

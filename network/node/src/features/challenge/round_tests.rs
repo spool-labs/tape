@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::cert::challenge::ChallengeRespondMessage;
-use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
+use tape_core::challenge::{ProofOfAccess, Sample, SuccessCertificate};
 use tape_core::challenge::certificate::CertificateRejection;
 use tape_core::erasure::{
     GROUP_SIZE, SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
@@ -21,9 +21,11 @@ use tape_core::types::{
     EpochDuration, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, StorageUnits,
 };
 use tape_crypto::Address;
-use tape_crypto::hash::Hash;
+use tape_crypto::hash::{Hash, hash};
 use tape_crypto::merkle::hash_leaf;
 use tape_protocol::ProtocolState;
+use tape_core::challenge::proof::SampleProof;
+use tape_core::challenge::sample::{EntryKind, SampleLeaf};
 use tape_store::types::TrackSample;
 use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
 
@@ -119,12 +121,23 @@ fn put_sample(
             group,
             track,
             TrackSample {
-                slice_len: StorageUnits::from_bytes(slice_len as u64),
+                kind: EntryKind::Coded {
+                    slice_len: StorageUnits::from_bytes(slice_len as u64),
+                },
+                value_hash: Hash::from([0u8; 32]),
                 registered_slot,
                 deleted_slot: None,
             },
         )
         .expect("sample row");
+}
+
+/// The coded leaf a round asks a spool for, for tests whose fixture is coded.
+fn asked_leaf(sample: &Sample) -> usize {
+    match sample.leaf {
+        SampleLeaf::Coded { sub_leaf } => sub_leaf,
+        SampleLeaf::Inline => panic!("the fixture holds coded tracks only"),
+    }
 }
 
 fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
@@ -158,9 +171,12 @@ impl Fixture {
     /// The same, optionally answering a leaf other than the one it was asked.
     fn answer_from_leaf(&self, spool: SpoolIndex, leaf: Option<usize>) -> ProofOfAccess {
         let round = self.round();
-        let asked =
+        let (asked, _) =
             expected_sample(&self.ctx, &self.state, &round, spool).expect("a sample");
-        let sub_leaf = leaf.unwrap_or(asked.sub_leaf);
+        let SampleLeaf::Coded { sub_leaf: drawn } = asked.leaf else {
+            panic!("the fixture holds coded tracks only");
+        };
+        let sub_leaf = leaf.unwrap_or(drawn);
 
         let position = leaf_position(spool);
         let slice = &self.slices[position.as_usize()];
@@ -191,8 +207,10 @@ impl Fixture {
             spool,
             block: round.block,
             track: asked.track,
-            sub_leaf: sub_leaf as u64,
-            proof,
+            proof: SampleProof::Coded {
+                sub_leaf: sub_leaf as u64,
+                proof,
+            },
             signature: self.keys[&spool].sign(message.to_bytes()).expect("sign"),
         }
     }
@@ -275,7 +293,7 @@ async fn distinct_questions() {
         .filter_map(|spool| {
             expected_sample(&fixture.ctx, &fixture.state, &round, spool)
         })
-        .map(|sample| sample.sub_leaf)
+        .map(|(sample, _)| asked_leaf(&sample))
         .collect();
 
     assert_eq!(leaves.len(), GROUP_SIZE);
@@ -289,13 +307,13 @@ async fn distinct_questions() {
 async fn easier_leaf() {
     let fixture = fixture().await;
     let target = fixture.other();
-    let asked = expected_sample(&fixture.ctx, &fixture.state, &fixture.round(), target)
+    let (asked, _) = expected_sample(&fixture.ctx, &fixture.state, &fixture.round(), target)
         .expect("sample");
 
     // Wrap, so a draw that lands on the last leaf still names a real neighbour.
     let leaves = sub_leaf_count(fixture.slices[0].len());
-    let elsewhere = (asked.sub_leaf + 1) % leaves;
-    assert_ne!(elsewhere, asked.sub_leaf);
+    let elsewhere = (asked_leaf(&asked) + 1) % leaves;
+    assert_ne!(elsewhere, asked_leaf(&asked));
 
     // The same fixture accepts the leaf it did ask for, so this is refusing the
     // substitution rather than failing for some unrelated reason.
@@ -320,7 +338,7 @@ async fn easier_leaf() {
 async fn mid_round_write() {
     let fixture = fixture().await;
     let round = fixture.round();
-    let before = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+    let (before, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
 
     let cutoff = challenge_schedule(&fixture.state)
@@ -329,10 +347,10 @@ async fn mid_round_write() {
     let late = Address::new_unique();
     put_sample(&fixture.ctx, fixture.group, late, 4 * SUB_LEAF_BYTES, cutoff);
 
-    let after = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+    let (after, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
     assert_eq!(after.track, before.track, "a mid-round write shifted the draw");
-    assert_eq!(after.sub_leaf, before.sub_leaf);
+    assert_eq!(asked_leaf(&after), asked_leaf(&before));
 
     // One slot earlier and the registration is inside the window, which does
     // move the draw.
@@ -343,11 +361,11 @@ async fn mid_round_write() {
         4 * SUB_LEAF_BYTES,
         SlotNumber(cutoff.as_u64() - 1),
     );
-    let inside = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+    let (inside, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
     assert_ne!(
-        (inside.track, inside.sub_leaf),
-        (before.track, before.sub_leaf),
+        (inside.track, asked_leaf(&inside)),
+        (before.track, asked_leaf(&before)),
         "a registration before the window stayed out of the set"
     );
 }
@@ -365,7 +383,7 @@ async fn mid_round_delete() {
 
     let extra = Address::new_unique();
     put_sample(&fixture.ctx, fixture.group, extra, 4 * SUB_LEAF_BYTES, SlotNumber(0));
-    let before = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+    let (before, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
 
     fixture
@@ -374,10 +392,10 @@ async fn mid_round_delete() {
         .mark_track_sample_deleted(fixture.group, extra, cutoff)
         .expect("delete at the cut");
 
-    let after = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+    let (after, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
     assert_eq!(after.track, before.track, "a mid-round deletion shifted the draw");
-    assert_eq!(after.sub_leaf, before.sub_leaf);
+    assert_eq!(asked_leaf(&after), asked_leaf(&before));
 
     // Once the deletion predates the window, the entry is out of the set.
     put_sample(&fixture.ctx, fixture.group, extra, 4 * SUB_LEAF_BYTES, SlotNumber(0));
@@ -386,9 +404,89 @@ async fn mid_round_delete() {
         .store
         .mark_track_sample_deleted(fixture.group, extra, SlotNumber(cutoff.as_u64() - 1))
         .expect("delete before the cut");
-    let out = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+    let (out, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
         .expect("a sample");
     assert_ne!(out.track, extra, "a pre-window deletion stayed in the set");
+}
+
+// an inline track is answered with its payload, and the group accepts it
+#[tokio::test]
+async fn inline_round() {
+    let fixture = fixture().await;
+    let target = fixture.other();
+    let round = fixture.round();
+
+    // A track every owner keeps whole, and a group whose set holds only it, so
+    // the draw is bound to land there.
+    let payload = b"a small object that rides inside the write".to_vec();
+    let track = Address::new_unique();
+    fixture
+        .ctx
+        .store
+        .put_track_data(track, BlobData::Inline(payload.clone()))
+        .expect("inline data");
+    for (held, _) in fixture
+        .ctx
+        .store
+        .iter_track_samples_by_group(fixture.group)
+        .expect("rows")
+    {
+        fixture
+            .ctx
+            .store
+            .mark_track_sample_deleted(fixture.group, held, SlotNumber(0))
+            .expect("clear the coded rows");
+    }
+    fixture
+        .ctx
+        .store
+        .put_track_sample(
+            fixture.group,
+            track,
+            TrackSample {
+                kind: EntryKind::Inline,
+                value_hash: hash(&payload),
+                registered_slot: SlotNumber(0),
+                deleted_slot: None,
+            },
+        )
+        .expect("inline row");
+
+    let (asked, _) = expected_sample(&fixture.ctx, &fixture.state, &round, target)
+        .expect("a sample");
+    assert_eq!(asked.track, track);
+    assert_eq!(asked.leaf, SampleLeaf::Inline);
+
+    let proof = SampleProof::Inline {
+        payload: payload.clone(),
+    };
+    let message = ChallengeRespondMessage::new(
+        round.epoch,
+        round.group,
+        round.round,
+        target,
+        round.block,
+        proof.signed_leaf(),
+    );
+    let answer = ProofOfAccess {
+        epoch: round.epoch,
+        group: round.group,
+        round: round.round,
+        spool: target,
+        block: round.block,
+        track,
+        proof,
+        signature: fixture.keys[&target].sign(message.to_bytes()).expect("sign"),
+    };
+
+    assert!(accept_answer(&fixture.ctx, &fixture.state, &answer, true));
+
+    // A payload that does not hash to the registered value is refused.
+    let mut rotten = answer.clone();
+    rotten.proof = SampleProof::Inline {
+        payload: b"not what was written".to_vec(),
+    };
+    assert!(!accept_answer(&fixture.ctx, &fixture.state, &rotten, true));
 }
 
 // a leaf that does not hash into the track's commitment is refused
@@ -397,7 +495,9 @@ async fn forged_leaf() {
     let fixture = fixture().await;
     let target = fixture.other();
     let mut answer = fixture.answer_from(target);
-    answer.proof.sub_leaf[0] ^= 0xFF;
+    if let SampleProof::Coded { proof, .. } = &mut answer.proof {
+        proof.sub_leaf[0] ^= 0xFF;
+    }
 
     assert!(!accept_answer(
         &fixture.ctx,

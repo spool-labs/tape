@@ -129,7 +129,9 @@ impl<S: Store> SampleOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
+    use tape_core::challenge::sample::EntryKind;
     use tape_core::types::StorageUnits;
+    use tape_crypto::Hash;
 
     use super::*;
 
@@ -139,7 +141,10 @@ mod tests {
 
     fn sample(registered: u64) -> TrackSample {
         TrackSample {
-            slice_len: StorageUnits::from_bytes(1_024),
+            kind: EntryKind::Coded {
+                slice_len: StorageUnits::from_bytes(1_024),
+            },
+            value_hash: Hash::from([7u8; 32]),
             registered_slot: SlotNumber(registered),
             deleted_slot: None,
         }

@@ -185,11 +185,21 @@ fn put_track_object<Db: Store>(
     store.put_track(track, replay.state)
         .map_err(store_error)?;
 
-    // The challenge sample set, from the registration rather than from what
-    // this node stored. Inline tracks have no slices and are not sampled.
-    if let Some(blob) = replay.blob {
-        put_sample(store, replay.state.group, track, &blob, slot)?;
-    }
+    // The challenge sample set, from the registration rather than from what this
+    // node stored. Both kinds are sampled: a coded track by its slice, an inline
+    // track as one bounded entry whose payload every owner keeps.
+    let data = match replay.blob {
+        Some(blob) => BlobData::Coded(blob),
+        None => BlobData::Inline(Vec::new()),
+    };
+    put_sample(
+        store,
+        replay.state.group,
+        track,
+        &data,
+        replay.state.value_hash,
+        slot,
+    )?;
 
     // We need to advance the track cursor so that merkle proofs for this tape don't break due to
     // using the wrong index when tracks are deleted.
