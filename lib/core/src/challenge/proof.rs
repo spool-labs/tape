@@ -7,12 +7,12 @@
 //! challenged owner would simply pick a leaf it happened to keep.
 
 use tape_crypto::Address;
-use tape_crypto::hash::Hash;
+use tape_crypto::hash::{Hash, hash};
 use tape_crypto::merkle::hash_leaf;
 
 use crate::bls::{BlsPubkey, BlsSignature};
 use crate::cert::challenge::ChallengeRespondMessage;
-use crate::challenge::sample::Sample;
+use crate::challenge::sample::{Sample, SampleLeaf};
 use crate::erasure::{group_for_spool, leaf_position};
 use crate::track::blob::{BlobEncoding, SubLeafProof};
 use crate::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
@@ -32,6 +32,37 @@ pub enum ProofRejection {
     Late,
 }
 
+/// What an owner produces for a sample.
+///
+/// A coded track answers with one leaf and its path to the slice root. An inline
+/// track has no slice to index: every owner keeps the whole payload, so the
+/// payload is the proof, checked against the value hash the write registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SampleProof {
+    /// The sampled leaf, its index, and its path to the slice root.
+    Coded { sub_leaf: u64, proof: SubLeafProof },
+    /// The complete replicated payload.
+    Inline { payload: Vec<u8> },
+}
+
+impl SampleProof {
+    /// The bytes the owner signs over, whichever shape the answer took.
+    pub fn signed_leaf(&self) -> Hash {
+        match self {
+            SampleProof::Coded { proof, .. } => hash_leaf(&proof.sub_leaf),
+            SampleProof::Inline { payload } => hash_leaf(payload),
+        }
+    }
+}
+
+/// What an observer checks an answer against, from its own state.
+pub enum Registered<'source> {
+    /// The track's registered encoding, for a coded slice.
+    Coded(&'source BlobEncoding),
+    /// The value hash the inline write registered.
+    Inline(Hash),
+}
+
 /// One owner's answer for one round, as it goes out to the group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProofOfAccess {
@@ -47,10 +78,8 @@ pub struct ProofOfAccess {
     pub block: Hash,
     /// Track the sampled leaf belongs to, carried so a mismatch is diagnosable.
     pub track: Address,
-    /// Index of the sampled leaf inside the slice.
-    pub sub_leaf: u64,
-    /// The leaf and its path to the slice root.
-    pub proof: SubLeafProof,
+    /// What the owner produced for the sample it was asked.
+    pub proof: SampleProof,
     /// The owner's signature over the round coordinates and the leaf it served.
     pub signature: BlsSignature,
 }
@@ -64,7 +93,7 @@ impl ProofOfAccess {
             self.round,
             self.spool,
             self.block,
-            hash_leaf(&self.proof.sub_leaf),
+            self.proof.signed_leaf(),
         )
     }
 
@@ -76,7 +105,7 @@ impl ProofOfAccess {
     pub fn verify(
         &self,
         expected: &Sample,
-        encoding: &BlobEncoding,
+        registered: Registered<'_>,
         signer: &BlsPubkey,
         in_time: bool,
     ) -> Result<(), ProofRejection> {
@@ -91,13 +120,30 @@ impl ProofOfAccess {
             return Err(ProofRejection::WrongGroup);
         }
 
-        if self.track != expected.track || self.sub_leaf != expected.sub_leaf as u64 {
+        if self.track != expected.track {
             return Err(ProofRejection::WrongSample);
         }
 
-        let position = leaf_position(self.spool);
-        if !encoding.verify_sub_leaf(position, expected.sub_leaf, &self.proof) {
-            return Err(ProofRejection::BadProof);
+        match (&self.proof, expected.leaf, registered) {
+            (
+                SampleProof::Coded { sub_leaf, proof },
+                SampleLeaf::Coded { sub_leaf: asked },
+                Registered::Coded(encoding),
+            ) => {
+                if *sub_leaf != asked as u64 {
+                    return Err(ProofRejection::WrongSample);
+                }
+                if !encoding.verify_sub_leaf(leaf_position(self.spool), asked, proof) {
+                    return Err(ProofRejection::BadProof);
+                }
+            }
+            (SampleProof::Inline { payload }, SampleLeaf::Inline, Registered::Inline(value_hash)) => {
+                if hash(payload) != value_hash {
+                    return Err(ProofRejection::BadProof);
+                }
+            }
+            // An answer of the other shape is an answer to another question.
+            _ => return Err(ProofRejection::WrongSample),
         }
 
         self.signature
@@ -158,7 +204,38 @@ mod tests {
     fn sample(track: Address) -> Sample {
         Sample {
             track,
-            sub_leaf: SUB_LEAF,
+            leaf: SampleLeaf::Coded { sub_leaf: SUB_LEAF },
+        }
+    }
+
+    fn inline_sample(track: Address) -> Sample {
+        Sample {
+            track,
+            leaf: SampleLeaf::Inline,
+        }
+    }
+
+    /// An inline answer: the whole payload, signed like any other.
+    fn signed_inline(signer: &BlsPrivateKey, track: Address, payload: Vec<u8>) -> ProofOfAccess {
+        let proof = SampleProof::Inline { payload };
+        let message = ChallengeRespondMessage::new(
+            EpochNumber(4),
+            GroupIndex(1),
+            RoundNumber(6),
+            SPOOL,
+            Hash([0x5A; 32]),
+            proof.signed_leaf(),
+        );
+
+        ProofOfAccess {
+            epoch: message.epoch,
+            group: message.group,
+            round: message.round,
+            spool: message.spool,
+            block: message.block,
+            track,
+            proof,
+            signature: signer.sign(message.to_bytes()).expect("sign"),
         }
     }
 
@@ -189,8 +266,10 @@ mod tests {
             spool: message.spool,
             block: message.block,
             track,
-            sub_leaf: SUB_LEAF as u64,
-            proof,
+            proof: SampleProof::Coded {
+                sub_leaf: SUB_LEAF as u64,
+                proof,
+            },
             signature: signer.sign(message.to_bytes()).expect("sign"),
         }
     }
@@ -204,7 +283,7 @@ mod tests {
         let answer = signed(&signer, &encoding, &slices, track);
 
         assert_eq!(
-            answer.verify(&sample(track), &encoding, &signer.public_key().expect("pubkey"), true),
+            answer.verify(&sample(track), Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), true),
             Ok(())
         );
     }
@@ -220,10 +299,12 @@ mod tests {
 
         let elsewhere = Sample {
             track,
-            sub_leaf: SUB_LEAF + 1,
+            leaf: SampleLeaf::Coded {
+                sub_leaf: SUB_LEAF + 1,
+            },
         };
         assert_eq!(
-            answer.verify(&elsewhere, &encoding, &signer.public_key().expect("pubkey"), true),
+            answer.verify(&elsewhere, Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), true),
             Err(ProofRejection::WrongSample)
         );
     }
@@ -236,7 +317,7 @@ mod tests {
         let answer = signed(&signer, &encoding, &slices, Address::new_unique());
 
         assert_eq!(
-            answer.verify(&sample(Address::new_unique()), &encoding, &signer.public_key().expect("pubkey"), true),
+            answer.verify(&sample(Address::new_unique()), Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), true),
             Err(ProofRejection::WrongSample)
         );
     }
@@ -252,7 +333,7 @@ mod tests {
         answer.group = GroupIndex(4);
 
         assert_eq!(
-            answer.verify(&sample(track), &encoding, &signer.public_key().expect("pubkey"), true),
+            answer.verify(&sample(track), Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), true),
             Err(ProofRejection::WrongGroup)
         );
     }
@@ -264,10 +345,12 @@ mod tests {
         let track = Address::new_unique();
         let signer = key();
         let mut answer = signed(&signer, &encoding, &slices, track);
-        answer.proof.sub_leaf[0] ^= 0xFF;
+        if let SampleProof::Coded { proof, .. } = &mut answer.proof {
+            proof.sub_leaf[0] ^= 0xFF;
+        }
 
         assert_eq!(
-            answer.verify(&sample(track), &encoding, &signer.public_key().expect("pubkey"), true),
+            answer.verify(&sample(track), Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), true),
             Err(ProofRejection::BadProof)
         );
     }
@@ -282,7 +365,7 @@ mod tests {
         let impostor = BlsPrivateKey::from_random();
 
         assert_eq!(
-            answer.verify(&sample(track), &encoding, &impostor.public_key().expect("pubkey"), true),
+            answer.verify(&sample(track), Registered::Coded(&encoding), &impostor.public_key().expect("pubkey"), true),
             Err(ProofRejection::BadSignature)
         );
     }
@@ -298,7 +381,7 @@ mod tests {
         answer.round = RoundNumber(7);
 
         assert_eq!(
-            answer.verify(&sample(track), &encoding, &signer.public_key().expect("pubkey"), true),
+            answer.verify(&sample(track), Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), true),
             Err(ProofRejection::BadSignature)
         );
     }
@@ -313,7 +396,99 @@ mod tests {
         answer.block = Hash([0x5B; 32]);
 
         assert_eq!(
-            answer.verify(&sample(track), &encoding, &signer.public_key().expect("pubkey"), true),
+            answer.verify(&sample(track), Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), true),
+            Err(ProofRejection::BadSignature)
+        );
+    }
+
+    // an honest inline answer is the payload itself, checked against the value
+    // hash the write registered
+    #[test]
+    fn honest_inline() {
+        let track = Address::new_unique();
+        let signer = key();
+        let payload = b"a small object that fits in one write".to_vec();
+        let answer = signed_inline(&signer, track, payload.clone());
+
+        assert_eq!(
+            answer.verify(
+                &inline_sample(track),
+                Registered::Inline(hash(&payload)),
+                &signer.public_key().expect("pubkey"),
+                true
+            ),
+            Ok(())
+        );
+    }
+
+    // a payload that does not hash to the registered value is refused
+    #[test]
+    fn tampered_payload() {
+        let track = Address::new_unique();
+        let signer = key();
+        let payload = b"a small object that fits in one write".to_vec();
+        let mut rotten = payload.clone();
+        rotten[0] ^= 0xFF;
+        let answer = signed_inline(&signer, track, rotten);
+
+        assert_eq!(
+            answer.verify(
+                &inline_sample(track),
+                Registered::Inline(hash(&payload)),
+                &signer.public_key().expect("pubkey"),
+                true
+            ),
+            Err(ProofRejection::BadProof)
+        );
+    }
+
+    // an answer of the other shape answers another question, both ways round
+    #[test]
+    fn crossed_shapes() {
+        let (encoding, slices) = encoding_and_slices();
+        let track = Address::new_unique();
+        let signer = key();
+        let payload = b"inline".to_vec();
+
+        let coded = signed(&signer, &encoding, &slices, track);
+        assert_eq!(
+            coded.verify(
+                &inline_sample(track),
+                Registered::Inline(hash(&payload)),
+                &signer.public_key().expect("pubkey"),
+                true
+            ),
+            Err(ProofRejection::WrongSample)
+        );
+
+        let inline = signed_inline(&signer, track, payload);
+        assert_eq!(
+            inline.verify(
+                &sample(track),
+                Registered::Coded(&encoding),
+                &signer.public_key().expect("pubkey"),
+                true
+            ),
+            Err(ProofRejection::WrongSample)
+        );
+    }
+
+    // the signature covers an inline answer's payload the same way
+    #[test]
+    fn replayed_inline() {
+        let track = Address::new_unique();
+        let signer = key();
+        let payload = b"a small object".to_vec();
+        let mut answer = signed_inline(&signer, track, payload.clone());
+        answer.round = RoundNumber(7);
+
+        assert_eq!(
+            answer.verify(
+                &inline_sample(track),
+                Registered::Inline(hash(&payload)),
+                &signer.public_key().expect("pubkey"),
+                true
+            ),
             Err(ProofRejection::BadSignature)
         );
     }
@@ -327,7 +502,7 @@ mod tests {
         let answer = signed(&signer, &encoding, &slices, track);
 
         assert_eq!(
-            answer.verify(&sample(track), &encoding, &signer.public_key().expect("pubkey"), false),
+            answer.verify(&sample(track), Registered::Coded(&encoding), &signer.public_key().expect("pubkey"), false),
             Err(ProofRejection::Late)
         );
     }

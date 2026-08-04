@@ -10,7 +10,11 @@
 //! inspected. Entries must arrive in track-address order; `sort_entries` puts them
 //! there for a caller whose source does not already guarantee it.
 
+use serde::{Deserialize, Serialize};
 use tape_crypto::Address;
+
+#[cfg(feature = "wincode")]
+use wincode_derive::{SchemaRead, SchemaWrite};
 use tape_crypto::hash::{Hash, hashv};
 
 use crate::erasure::sub_leaf_count;
@@ -19,13 +23,38 @@ use crate::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex, StorageUnit
 /// Domain tag separating a round seed from every other hash in the protocol.
 const ROUND_SEED_DOMAIN: &[u8] = b"WHIRLWIND_ROUND";
 
-/// One track a spool is responsible for, and the length of the slice it holds.
+/// What a track contributes to its group's sample set.
+///
+/// A coded track contributes one entry per sample leaf of the slice at this
+/// spool's position, so the draw over coded data is byte-weighted. An inline
+/// track is one bounded entry however large it is: every owner keeps the whole
+/// payload rather than a slice, so there is nothing inside it to index.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
+pub enum EntryKind {
+    /// A slice of a coded track, of this byte length.
+    Coded { slice_len: StorageUnits },
+    /// A complete inline payload.
+    Inline,
+}
+
+impl EntryKind {
+    /// Sample leaves this entry puts into the draw.
+    pub fn leaves(&self) -> u64 {
+        match self {
+            EntryKind::Coded { slice_len } => sub_leaf_count(slice_len.as_usize()) as u64,
+            EntryKind::Inline => 1,
+        }
+    }
+}
+
+/// One track a spool is responsible for, and what it weighs in the draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SampleEntry {
-    /// Address of the track the slice belongs to.
+    /// Address of the track.
     pub track: Address,
-    /// Byte length of the slice at this spool's position.
-    pub slice_len: StorageUnits,
+    /// What the track contributes.
+    pub kind: EntryKind,
 }
 
 /// The sample leaf a round asks one spool for.
@@ -34,10 +63,19 @@ pub struct SampleEntry {
 /// and carrying it here only creates a value that can disagree with that seed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sample {
-    /// Track the sampled leaf belongs to.
+    /// Track the sample belongs to.
     pub track: Address,
-    /// Index of the sample leaf inside that slice.
-    pub sub_leaf: usize,
+    /// What the round is asking for.
+    pub leaf: SampleLeaf,
+}
+
+/// The thing an owner has to produce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleLeaf {
+    /// One sample leaf of the slice, by index.
+    Coded { sub_leaf: usize },
+    /// The whole inline payload.
+    Inline,
 }
 
 /// Seed for one round against one spool.
@@ -71,10 +109,7 @@ pub fn sort_entries(entries: &mut [SampleEntry]) {
 
 /// Total sample leaves across every entry, the space the draw is uniform over.
 fn sample_space(entries: &[SampleEntry]) -> u64 {
-    entries
-        .iter()
-        .map(|entry| sub_leaf_count(entry.slice_len.as_usize()) as u64)
-        .sum()
+    entries.iter().map(|entry| entry.kind.leaves()).sum()
 }
 
 /// Draw one sample leaf for a spool from the round seed.
@@ -94,11 +129,16 @@ pub fn draw(seed: &Hash, entries: &[SampleEntry]) -> Option<Sample> {
     let mut index = u64::from_le_bytes(head) % total;
 
     for entry in entries {
-        let leaves = sub_leaf_count(entry.slice_len.as_usize()) as u64;
+        let leaves = entry.kind.leaves();
         if index < leaves {
             return Some(Sample {
                 track: entry.track,
-                sub_leaf: index as usize,
+                leaf: match entry.kind {
+                    EntryKind::Coded { .. } => SampleLeaf::Coded {
+                        sub_leaf: index as usize,
+                    },
+                    EntryKind::Inline => SampleLeaf::Inline,
+                },
             });
         }
         index -= leaves;
@@ -120,7 +160,16 @@ mod tests {
     fn entry(byte: u8, leaves: usize) -> SampleEntry {
         SampleEntry {
             track: track(byte),
-            slice_len: StorageUnits::from_bytes((leaves * SUB_LEAF_BYTES) as u64),
+            kind: EntryKind::Coded {
+                slice_len: StorageUnits::from_bytes((leaves * SUB_LEAF_BYTES) as u64),
+            },
+        }
+    }
+
+    fn inline_entry(byte: u8) -> SampleEntry {
+        SampleEntry {
+            track: track(byte),
+            kind: EntryKind::Inline,
         }
     }
 
@@ -166,7 +215,10 @@ mod tests {
         for round in 0..500u64 {
             let sample = draw(&seed_for(round), &entries).expect("a drawn sample");
             let held = entries.iter().find(|entry| entry.track == sample.track).expect("the drawn entry");
-            assert!(sample.sub_leaf < sub_leaf_count(held.slice_len.as_usize()));
+            let SampleLeaf::Coded { sub_leaf } = sample.leaf else {
+                panic!("a coded entry drew an inline sample");
+            };
+            assert!(sub_leaf < held.kind.leaves() as usize);
         }
     }
 
@@ -185,10 +237,40 @@ mod tests {
                     RoundNumber(5),
                     SpoolIndex(3),
                 );
-                draw(&seed, &entries).expect("a drawn sample").sub_leaf
+                match draw(&seed, &entries).expect("a drawn sample").leaf {
+                    SampleLeaf::Coded { sub_leaf } => sub_leaf,
+                    SampleLeaf::Inline => usize::MAX,
+                }
             })
             .collect();
         assert!(asked.iter().any(|leaf| *leaf != asked[0]), "asked {asked:?}");
+    }
+
+    // an inline track is one entry whatever it holds, since every owner keeps
+    // the whole payload and there is nothing inside it to index
+    #[test]
+    fn inline_weighs_one() {
+        assert_eq!(sample_space(&[inline_entry(1)]), 1);
+        assert_eq!(sample_space(&[inline_entry(1), inline_entry(2)]), 2);
+        assert_eq!(sample_space(&[entry(3, 10), inline_entry(1)]), 11);
+
+        let drawn = draw(&seed_for(0), &[inline_entry(1)]).expect("a drawn sample");
+        assert_eq!(drawn.leaf, SampleLeaf::Inline);
+        assert_eq!(drawn.track, track(1));
+    }
+
+    // a coded track of ten leaves outdraws one inline entry about ten to one
+    #[test]
+    fn coded_outweighs_inline() {
+        let entries = [entry(1, 10), inline_entry(2)];
+        let mut coded = 0u32;
+        for round in 0..2_000u64 {
+            if draw(&seed_for(round), &entries).expect("a drawn sample").track == track(1) {
+                coded += 1;
+            }
+        }
+        let ratio = coded as f64 / (2_000 - coded) as f64;
+        assert!(ratio > 7.0 && ratio < 14.0, "ratio {ratio}");
     }
 
     // a track with ten times the leaves is drawn about ten times as often
@@ -210,12 +292,16 @@ mod tests {
     fn partial_leaf() {
         let short = SampleEntry {
             track: track(9),
-            slice_len: StorageUnits::from_bytes((SUB_LEAF_BYTES * 2 + 1) as u64),
+            kind: EntryKind::Coded {
+                slice_len: StorageUnits::from_bytes((SUB_LEAF_BYTES * 2 + 1) as u64),
+            },
         };
         assert_eq!(sample_space(&[short]), 3);
         let mut saw_last = false;
         for round in 0..200u64 {
-            if draw(&seed_for(round), &[short]).expect("a drawn sample").sub_leaf == 2 {
+            if draw(&seed_for(round), &[short]).expect("a drawn sample").leaf
+                == (SampleLeaf::Coded { sub_leaf: 2 })
+            {
                 saw_last = true;
             }
         }

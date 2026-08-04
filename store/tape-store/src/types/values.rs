@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::{slice_root_from_sidecar, slice_sidecar};
+use tape_core::challenge::sample::EntryKind;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::types::{
     ContentType, EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
@@ -152,8 +153,13 @@ pub struct ObjectListEntry {
 /// produces, not the one a stored slice measures.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
 pub struct TrackSample {
-    /// Byte length of one slice under the registered encoding
-    pub slice_len: StorageUnits,
+    /// What the track contributes to the draw
+    pub kind: EntryKind,
+    /// The value hash the write registered
+    ///
+    /// Carried rather than read back off the track, because a track deleted
+    /// mid-round is still in the set while its record is gone.
+    pub value_hash: Hash,
     /// Slot the registration finalized at
     pub registered_slot: SlotNumber,
     /// Slot a deletion finalized at, while rounds can still reference it
@@ -440,7 +446,8 @@ pub struct MultipartPartData {
 mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
-    use tape_core::track::blob::BlobEncoding;
+    use tape_core::challenge::sample::EntryKind;
+use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::merkle::root_from_leaf_hashes;
