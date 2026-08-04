@@ -169,12 +169,18 @@ where
             return true;
         }
 
-        let record = self.context.store.peer_record(node).unwrap_or_default();
-        let healthy = if record.opportunities < MIN_OPPORTUNITIES {
+        // A record per spool, but the proposal is against the node, so the
+        // worst spool decides: one dropped spool is one too many, and a peer
+        // answering its other four does not clear it.
+        let records = self.context.store.records_for_peer(node).unwrap_or_default();
+        let judged = records.iter().map(|(_, r)| r.opportunities).max().unwrap_or_default();
+        let rate_fires = records.iter().any(|(_, record)| record.rate_fires());
+        let run_fires = records.iter().any(|(_, record)| record.run_fires());
+        let healthy = if judged < MIN_OPPORTUNITIES {
             self.answers(node).await
-        } else if record.rate_fires() {
+        } else if rate_fires {
             false
-        } else if record.run_fires() {
+        } else if run_fires {
             self.answers(node).await
         } else {
             true

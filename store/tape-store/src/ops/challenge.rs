@@ -1,83 +1,125 @@
-//! Per-peer challenge history
+//! Per-spool challenge history
 
 use store::{Column, Store};
 use tape_core::challenge::PeerRecord;
-use tape_core::types::{EpochNumber, RoundNumber};
+use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
 use tape_crypto::address::Address;
 
 use crate::columns::{ChallengeRecordCol, ChallengeRoundCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::ChallengeRoundKey;
+use crate::types::{ChallengeRoundKey, PeerRecordKey};
 use crate::TapeStore;
 
 /// Operations for the local record of peer answers
+///
+/// Everything here is keyed by spool as well as by peer. A success certificate
+/// is issued per spool, so a peer holding several owes an answer for each of
+/// them in the same round, and one record per peer would let a success on one
+/// spool erase a miss on another.
 pub trait ChallengeOps {
-    /// This node's record of one peer, default when it has never been challenged.
-    fn peer_record(&self, peer: Address) -> Result<PeerRecord>;
+    /// This node's record of one of a peer's spools, default when never asked.
+    fn peer_record(&self, peer: Address, spool: SpoolIndex) -> Result<PeerRecord>;
 
-    /// Store a peer's record.
-    fn put_peer_record(&self, peer: Address, record: PeerRecord) -> Result<()>;
+    /// Store one spool's record.
+    fn put_peer_record(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+        record: PeerRecord,
+    ) -> Result<()>;
 
-    /// Every peer this node holds a record for, for reporting and outliers.
-    fn iter_peer_records(&self) -> Result<Vec<(Address, PeerRecord)>>;
+    /// Every spool record this node holds, for reporting and outliers.
+    fn iter_peer_records(&self) -> Result<Vec<((Address, SpoolIndex), PeerRecord)>>;
+
+    /// Every record this node keeps about one peer, across its spools.
+    fn records_for_peer(&self, peer: Address) -> Result<Vec<(SpoolIndex, PeerRecord)>>;
 
     /// Forget a peer, once it is gone from the network rather than merely quiet.
     fn delete_peer_record(&self, peer: Address) -> Result<()>;
 
-    /// Note how one peer fared in one round.
+    /// Note how one spool fared in one round.
     fn put_round_outcome(
         &self,
         peer: Address,
+        spool: SpoolIndex,
         epoch: EpochNumber,
         round: RoundNumber,
         certified: bool,
     ) -> Result<()>;
 
-    /// The outcome recorded for one peer in one round, if any.
+    /// The outcome recorded for one spool in one round, if any.
     fn round_outcome(
         &self,
         peer: Address,
+        spool: SpoolIndex,
         epoch: EpochNumber,
         round: RoundNumber,
     ) -> Result<Option<bool>>;
 
-    /// One peer's rounds in the order they happened, oldest first.
+    /// One spool's rounds in the order they happened, oldest first.
     ///
-    /// Answers which rounds a node failed, where the counters on `PeerRecord`
+    /// Answers which rounds a spool failed, where the counters on `PeerRecord`
     /// only answer how many.
-    fn peer_rounds(&self, peer: Address) -> Result<Vec<(EpochNumber, RoundNumber, bool)>>;
+    fn peer_rounds(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+    ) -> Result<Vec<(EpochNumber, RoundNumber, bool)>>;
 
     /// Drop every round recorded before an epoch, once nobody can dispute them.
     fn prune_rounds_before(&self, epoch: EpochNumber) -> Result<usize>;
 }
 
 impl<S: Store> ChallengeOps for TapeStore<S> {
-    fn peer_record(&self, peer: Address) -> Result<PeerRecord> {
-        Ok(self.get::<ChallengeRecordCol>(&peer)?.unwrap_or_default())
+    fn peer_record(&self, peer: Address, spool: SpoolIndex) -> Result<PeerRecord> {
+        let key = PeerRecordKey::new(peer, spool);
+        Ok(self.get::<ChallengeRecordCol>(&key)?.unwrap_or_default())
     }
 
-    fn put_peer_record(&self, peer: Address, record: PeerRecord) -> Result<()> {
-        self.put::<ChallengeRecordCol>(&peer, &record)?;
+    fn put_peer_record(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+        record: PeerRecord,
+    ) -> Result<()> {
+        let key = PeerRecordKey::new(peer, spool);
+        self.put::<ChallengeRecordCol>(&key, &record)?;
         Ok(())
     }
 
-    fn iter_peer_records(&self) -> Result<Vec<(Address, PeerRecord)>> {
-        Ok(self.iter::<ChallengeRecordCol>()?)
+    fn iter_peer_records(&self) -> Result<Vec<((Address, SpoolIndex), PeerRecord)>> {
+        Ok(self
+            .iter::<ChallengeRecordCol>()?
+            .into_iter()
+            .map(|(key, record)| ((key.peer, key.spool), record))
+            .collect())
+    }
+
+    fn records_for_peer(&self, peer: Address) -> Result<Vec<(SpoolIndex, PeerRecord)>> {
+        Ok(self
+            .iter::<ChallengeRecordCol>()?
+            .into_iter()
+            .filter(|(key, _)| key.peer == peer)
+            .map(|(key, record)| (key.spool, record))
+            .collect())
     }
 
     fn delete_peer_record(&self, peer: Address) -> Result<()> {
-        self.delete::<ChallengeRecordCol>(&peer)?;
+        for (spool, _) in self.records_for_peer(peer)? {
+            self.delete::<ChallengeRecordCol>(&PeerRecordKey::new(peer, spool))?;
+        }
         Ok(())
     }
 
     fn put_round_outcome(
         &self,
         peer: Address,
+        spool: SpoolIndex,
         epoch: EpochNumber,
         round: RoundNumber,
         certified: bool,
     ) -> Result<()> {
-        let key = ChallengeRoundKey::new(peer, epoch, round);
+        let key = ChallengeRoundKey::new(peer, spool, epoch, round);
         self.put::<ChallengeRoundCol>(&key, &certified)?;
         Ok(())
     }
@@ -85,22 +127,27 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
     fn round_outcome(
         &self,
         peer: Address,
+        spool: SpoolIndex,
         epoch: EpochNumber,
         round: RoundNumber,
     ) -> Result<Option<bool>> {
-        let key = ChallengeRoundKey::new(peer, epoch, round);
+        let key = ChallengeRoundKey::new(peer, spool, epoch, round);
         Ok(self.get::<ChallengeRoundCol>(&key)?)
     }
 
-    fn peer_rounds(&self, peer: Address) -> Result<Vec<(EpochNumber, RoundNumber, bool)>> {
-        let prefix = ChallengeRoundKey::peer_prefix(peer);
+    fn peer_rounds(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+    ) -> Result<Vec<(EpochNumber, RoundNumber, bool)>> {
+        let prefix = ChallengeRoundKey::spool_prefix(peer, spool);
         let iter = self
             .inner()
             .inner()
             .iter_prefix(ChallengeRoundCol::CF_NAME, &prefix)?;
 
-        // The key is peer then epoch then round, all big-endian, so the scan is
-        // already in the order the rounds happened.
+        // The key is peer, spool, epoch then round, all big-endian, so the scan
+        // is already in the order the rounds happened.
         let mut rounds = Vec::new();
         for (key_bytes, value_bytes) in iter {
             let key: ChallengeRoundKey = wincode::deserialize(&key_bytes)
@@ -139,6 +186,8 @@ mod tests {
 
     use super::*;
 
+    const SPOOL: SpoolIndex = SpoolIndex(3);
+
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
     }
@@ -148,14 +197,14 @@ mod tests {
     #[test]
     fn unknown_peer() {
         let store = test_store();
-        let record = store.peer_record(Address::new_unique()).unwrap();
+        let record = store.peer_record(Address::new_unique(), SPOOL).unwrap();
 
         assert_eq!(record, PeerRecord::default());
         assert!(!record.eviction_fires());
     }
 
-    // the key orders by epoch then round, so a peer's history comes back in the
-    // order it happened and one peer never picks up another's
+    // the key orders by epoch then round, so a spool's history comes back in the
+    // order it happened and one spool never picks up another's
     #[test]
     fn rounds_ordered() {
         let store = test_store();
@@ -169,15 +218,15 @@ mod tests {
             (3, 1, false),
         ] {
             store
-                .put_round_outcome(peer, EpochNumber(epoch), RoundNumber(round), certified)
+                .put_round_outcome(peer, SPOOL, EpochNumber(epoch), RoundNumber(round), certified)
                 .unwrap();
         }
         store
-            .put_round_outcome(other, EpochNumber(2), RoundNumber(0), false)
+            .put_round_outcome(other, SPOOL, EpochNumber(2), RoundNumber(0), false)
             .unwrap();
 
         assert_eq!(
-            store.peer_rounds(peer).unwrap(),
+            store.peer_rounds(peer, SPOOL).unwrap(),
             vec![
                 (EpochNumber(2), RoundNumber(1), true),
                 (EpochNumber(2), RoundNumber(9), true),
@@ -187,7 +236,7 @@ mod tests {
         );
 
         // One peer's history never picks up another's.
-        assert_eq!(store.peer_rounds(other).unwrap().len(), 1);
+        assert_eq!(store.peer_rounds(other, SPOOL).unwrap().len(), 1);
     }
 
     // an outcome reads back and a late certificate overwrites the miss it
@@ -198,14 +247,14 @@ mod tests {
         let peer = Address::new_unique();
         let (epoch, round) = (EpochNumber(4), RoundNumber(7));
 
-        assert_eq!(store.round_outcome(peer, epoch, round).unwrap(), None);
+        assert_eq!(store.round_outcome(peer, SPOOL, epoch, round).unwrap(), None);
 
-        store.put_round_outcome(peer, epoch, round, false).unwrap();
-        assert_eq!(store.round_outcome(peer, epoch, round).unwrap(), Some(false));
+        store.put_round_outcome(peer, SPOOL, epoch, round, false).unwrap();
+        assert_eq!(store.round_outcome(peer, SPOOL, epoch, round).unwrap(), Some(false));
 
-        store.put_round_outcome(peer, epoch, round, true).unwrap();
-        assert_eq!(store.round_outcome(peer, epoch, round).unwrap(), Some(true));
-        assert_eq!(store.peer_rounds(peer).unwrap().len(), 1);
+        store.put_round_outcome(peer, SPOOL, epoch, round, true).unwrap();
+        assert_eq!(store.round_outcome(peer, SPOOL, epoch, round).unwrap(), Some(true));
+        assert_eq!(store.peer_rounds(peer, SPOOL).unwrap().len(), 1);
     }
 
     // the stored rounds name which ones a node failed, which is the report an
@@ -216,12 +265,12 @@ mod tests {
         let peer = Address::new_unique();
         for round in 0..6u64 {
             store
-                .put_round_outcome(peer, EpochNumber(4), RoundNumber(round), round % 3 != 0)
+                .put_round_outcome(peer, SPOOL, EpochNumber(4), RoundNumber(round), round % 3 != 0)
                 .unwrap();
         }
 
         let failed: Vec<u64> = store
-            .peer_rounds(peer)
+            .peer_rounds(peer, SPOOL)
             .unwrap()
             .into_iter()
             .filter(|(_, _, certified)| !certified)
@@ -237,13 +286,13 @@ mod tests {
         let peer = Address::new_unique();
         for epoch in 1..=4u64 {
             store
-                .put_round_outcome(peer, EpochNumber(epoch), RoundNumber(0), true)
+                .put_round_outcome(peer, SPOOL, EpochNumber(epoch), RoundNumber(0), true)
                 .unwrap();
         }
 
         assert_eq!(store.prune_rounds_before(EpochNumber(3)).unwrap(), 2);
         let left: Vec<u64> = store
-            .peer_rounds(peer)
+            .peer_rounds(peer, SPOOL)
             .unwrap()
             .into_iter()
             .map(|(epoch, _, _)| epoch.0)
@@ -259,12 +308,43 @@ mod tests {
 
         let mut record = PeerRecord::default();
         record.record(EpochNumber(4), RoundNumber(9), false, None);
-        store.put_peer_record(peer, record).unwrap();
+        store.put_peer_record(peer, SPOOL, record).unwrap();
 
-        assert_eq!(store.peer_record(peer).unwrap(), record);
-        assert_eq!(store.iter_peer_records().unwrap(), vec![(peer, record)]);
+        assert_eq!(store.peer_record(peer, SPOOL).unwrap(), record);
+        assert_eq!(
+            store.iter_peer_records().unwrap(),
+            vec![((peer, SPOOL), record)]
+        );
 
         store.delete_peer_record(peer).unwrap();
-        assert_eq!(store.peer_record(peer).unwrap(), PeerRecord::default());
+        assert_eq!(store.peer_record(peer, SPOOL).unwrap(), PeerRecord::default());
+    }
+
+    // a peer holding several spools keeps a record for each, so a success on one
+    // never stands in for a miss on another
+    #[test]
+    fn spools_keep_their_own_record() {
+        let store = test_store();
+        let peer = Address::new_unique();
+        let (kept, dropped) = (SpoolIndex(11), SpoolIndex(12));
+        let (epoch, round) = (EpochNumber(4), RoundNumber(2));
+
+        store.put_round_outcome(peer, kept, epoch, round, true).unwrap();
+        store.put_round_outcome(peer, dropped, epoch, round, false).unwrap();
+
+        assert_eq!(store.round_outcome(peer, kept, epoch, round).unwrap(), Some(true));
+        assert_eq!(store.round_outcome(peer, dropped, epoch, round).unwrap(), Some(false));
+
+        let mut answered = PeerRecord::default();
+        answered.record(epoch, round, true, None);
+        let mut missed = PeerRecord::default();
+        missed.record(epoch, round, false, None);
+        store.put_peer_record(peer, kept, answered).unwrap();
+        store.put_peer_record(peer, dropped, missed).unwrap();
+
+        let mut records = store.records_for_peer(peer).unwrap();
+        records.sort_by_key(|(spool, _)| *spool);
+        assert_eq!(records, vec![(kept, answered), (dropped, missed)]);
+        assert!(records.iter().any(|(_, record)| record.consecutive_misses == 1));
     }
 }

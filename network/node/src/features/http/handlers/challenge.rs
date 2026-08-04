@@ -175,7 +175,7 @@ fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // late certificate that replaces a recorded miss, and a miss is what
     // evicts. `settle_previous` refuses to charge a miss for a round that never
     // finalized, which is the half that has teeth.
-    fold_outcome(&state.context.store, owner, round.epoch, round.round, true);
+    fold_outcome(&state.context.store, owner, key.spool, round.epoch, round.round, true);
 }
 
 /// Signatures a certificate needs, given how many positions the group holds.

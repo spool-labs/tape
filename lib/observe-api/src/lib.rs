@@ -385,6 +385,13 @@ pub struct SpoolStat {
 pub struct ChallengeRow {
     /// Peer address, base58.
     pub node: String,
+    /// The spool this record is about.
+    ///
+    /// One row per spool rather than per peer, which is the grid the paper
+    /// draws: rounds across, spools down. A peer holding several appears once
+    /// per spool, since each owes its own answer every round.
+    #[serde(default)]
+    pub spool: u64,
     /// Rounds this peer was challenged in.
     pub opportunities: u64,
     /// Rounds it answered with a valid proof.
@@ -418,6 +425,20 @@ pub struct ChallengeGrid {
     pub max_consecutive_misses: u64,
     /// One row per peer, worst first so an outlier is the top row.
     pub rows: Vec<ChallengeRow>,
+    /// Which rounds the strip's columns stand for, right-aligned with them.
+    ///
+    /// Every member of a group is judged in the same rounds, so one axis labels
+    /// every row. Shorter than the widest strip when the round store has been
+    /// swept behind it, in which case the oldest columns go unlabelled.
+    #[serde(default)]
+    pub axis: Vec<RoundId>,
+}
+
+/// One round's place in the timeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoundId {
+    pub epoch: u64,
+    pub round: u64,
 }
 
 /// Lifetime challenge round counters for this node.

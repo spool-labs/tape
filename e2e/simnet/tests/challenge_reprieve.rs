@@ -133,7 +133,7 @@ async fn challenge_reprieve_inner() {
     // the probe is never consulted, which is the case corruption_eviction covers.
     // The gate is on the thinnest record in the group, since every member votes
     // on its own and the margin has to hold for all of them.
-    await_record(&harness, victim, BANK_TIMEOUT, "banked successes", |record| {
+    await_record(&harness, victim, spool, BANK_TIMEOUT, "banked successes", |record| {
         record.successes >= BANKED_SUCCESSES
     })
     .await;
@@ -174,7 +174,7 @@ async fn challenge_reprieve_inner() {
 
         // The state the reprieve is defined on: the peer has stopped answering
         // and its lifetime rate is still good, so the rule fires on the run alone.
-        let record = observer_record(&harness, victim);
+        let record = observer_record(&harness, victim, spool);
         if record.run_fires() && !record.rate_fires() {
             break record;
         }
@@ -248,13 +248,14 @@ async fn challenge_reprieve_inner() {
 async fn await_record(
     harness: &SimnetHarness,
     victim: Address,
+    spool: SpoolIndex,
     timeout: Duration,
     wanted: &str,
     ready: impl Fn(&PeerRecord) -> bool,
 ) -> PeerRecord {
     let start = Instant::now();
     loop {
-        let record = observer_record(harness, victim);
+        let record = observer_record(harness, victim, spool);
         if ready(&record) {
             return record;
         }
@@ -276,7 +277,10 @@ async fn await_record(
 /// While the peer is answering, every rate is full and the key sorts on banked
 /// successes; once it stops, successes hold still and the key sorts on the rate
 /// closest to the floor.
-fn observer_record(harness: &SimnetHarness, victim: Address) -> PeerRecord {
+fn observer_record(harness: &SimnetHarness, victim: Address, spool: SpoolIndex) -> PeerRecord {
+    // The record for the spool this test actually corrupted. Records are per
+    // spool, so reading the weakest of the victim's would answer about one the
+    // rot never touched.
     (0..COMMITTEE_NODES)
         .filter(|node| *node != VICTIM)
         .map(|node| {
@@ -285,11 +289,11 @@ fn observer_record(harness: &SimnetHarness, victim: Address) -> PeerRecord {
                 .expect("observer node")
                 .context()
                 .store
-                .peer_record(victim)
+                .peer_record(victim, spool)
                 .expect("peer record")
         })
         .min_by_key(|record| (record.successes, record.success_rate().0))
-        .expect("a group-mate")
+        .unwrap_or_default()
 }
 
 fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {

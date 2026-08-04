@@ -64,6 +64,30 @@ impl Round {
     }
 }
 
+/// Whether the group holds anything a round can ask about.
+///
+/// An empty set is not a failure to answer. No owner can draw from it, and every
+/// observer derives the same emptiness from the same replayed rows, so the round
+/// has nothing to settle rather than twenty misses to charge. Unknown counts as
+/// empty: the cost of voiding a round nobody owed is nothing, and the cost of
+/// charging one is the whole group.
+pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    round: &Round,
+) -> bool {
+    let Some(schedule) = challenge_schedule(state) else {
+        return false;
+    };
+    let cutoff = schedule.sample_cutoff(round.round);
+
+    context
+        .store
+        .iter_track_samples_by_group(round.group)
+        .map(|rows| rows.iter().any(|(_, sample)| sample.in_set_at(cutoff)))
+        .unwrap_or(false)
+}
+
 /// The sample a spool owes this round, from replayed state.
 ///
 /// Rows are written when a registration replays, so every owner enumerates the

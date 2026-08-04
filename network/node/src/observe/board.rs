@@ -9,10 +9,12 @@ use store::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::bitmap::BitmapRead;
+use tape_core::types::SpoolIndex;
 use tape_core::challenge::record::{
     MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
 };
 use tape_core::system::NodeStatus;
+use tape_crypto::Address;
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
 use tape_store::ops::{ChallengeOps, SliceOps, SpoolOps};
@@ -20,7 +22,8 @@ use tape_observe_api::{
     phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
     ChallengeRounds, DecodeStats, EpochInfo,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
-    NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo, StorageVolume,
+    NodeStats, ResourceInfo, RoundId, SpoolStat, StatsSource, StorageContents, StorageInfo,
+    StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
     SPOOL_STAGES,
 };
@@ -759,8 +762,9 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .iter_peer_records()
         .unwrap_or_default()
         .into_iter()
-        .map(|(node, record)| ChallengeRow {
+        .map(|((node, spool), record)| ChallengeRow {
             node: node.to_string(),
+            spool: spool.as_u64(),
             opportunities: record.opportunities,
             successes: record.successes,
             consecutive_misses: record.consecutive_misses,
@@ -771,15 +775,52 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         })
         .collect();
 
-    rows.sort_by_key(|row| (row.success_rate_bps, row.node.clone()));
+    rows.sort_by_key(|row| (row.success_rate_bps, row.node.clone(), row.spool));
 
     ChallengeGrid {
         recent_capacity: RECENT_ROUNDS as u64,
         min_opportunities: MIN_OPPORTUNITIES,
         rate_floor_bps: RATE_FLOOR.0,
         max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
+        axis: round_axis(context, &rows),
         rows,
     }
+}
+
+/// The rounds the strip's columns stand for, newest last.
+///
+/// Read from the fullest ledger rather than assembled per row: settling judges
+/// every spool in the group together, so the rounds are the same for all of
+/// them and a spool assigned later just has fewer of them.
+fn round_axis<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    rows: &[ChallengeRow],
+) -> Vec<RoundId> {
+    let span = rows.iter().map(|row| row.recent.len()).max().unwrap_or_default();
+    if span == 0 {
+        return Vec::new();
+    }
+
+    let Some((widest, spool)) = rows
+        .iter()
+        .max_by_key(|row| row.recent.len())
+        .and_then(|row| row.node.parse::<Address>().ok().map(|node| (node, row.spool)))
+    else {
+        return Vec::new();
+    };
+
+    let rounds = context
+        .store
+        .peer_rounds(widest, SpoolIndex(spool))
+        .unwrap_or_default();
+    let tail = rounds.len().saturating_sub(span);
+    rounds[tail..]
+        .iter()
+        .map(|(epoch, round, _)| RoundId {
+            epoch: epoch.0,
+            round: round.0,
+        })
+        .collect()
 }
 
 #[cfg(test)]

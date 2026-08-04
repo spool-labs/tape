@@ -35,7 +35,9 @@ use crate::core::error::NodeError;
 use crate::core::channels::ChainEvent;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::challenge::audition::{Round, build_answer, group_members, spawn_attest};
+use crate::features::challenge::audition::{
+    Round, build_answer, group_members, has_sample_set, spawn_attest,
+};
 use crate::features::challenge::fold::fold_outcome;
 
 // What settling needs from a round, captured when the round opened. Settling
@@ -50,6 +52,11 @@ struct OpenRound {
     /// that never finalized would charge every spool in the group a miss for a
     /// branch that lost, and three of those queue the whole group for eviction.
     finalized: bool,
+    /// Whether the group had anything to be asked about when the round opened.
+    ///
+    /// Read at open rather than at settle, for the same reason as the rest of
+    /// this struct: by settling time the set has moved on.
+    askable: bool,
 }
 
 pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -169,6 +176,7 @@ where
                     round,
                     spools: group_spools(&state, group),
                     finalized: false,
+                    askable: has_sample_set(&self.context, &state, &round),
                 },
             );
             self.context
@@ -219,6 +227,18 @@ where
             return;
         }
 
+        // Nor did anyone owe an answer to a question the group had no data to
+        // ask. Every owner declines the draw and every observer would otherwise
+        // charge every one of them a miss, which is the whole group at once.
+        if !open.askable {
+            self.context
+                .challenge_counters
+                .voided
+                .fetch_add(1, Ordering::Relaxed);
+            debug!(group = group.0, "challenge: round voided, group had an empty sample set");
+            return;
+        }
+
         let round = &open.round;
 
         for spool in &open.spools {
@@ -241,7 +261,12 @@ where
                 continue;
             }
 
-            if certified {
+            // Count what the record ends up holding, not what the buffer still
+            // has. A certificate folded when it formed is gone from the buffer
+            // by the time its round settles, and counting the buffer's silence
+            // reports a miss against a peer this node already accepted.
+            let stands = self.record(owner, *spool, round.epoch, round.round, certified);
+            if stands {
                 counters.settled_certified.fetch_add(1, Ordering::Relaxed);
             } else {
                 counters.settled_missed.fetch_add(1, Ordering::Relaxed);
@@ -249,10 +274,9 @@ where
             debug!(
                 spool = %spool,
                 round = round.round.0,
-                certified,
+                certified = stands,
                 "challenge: settling"
             );
-            self.record(owner, round.epoch, round.round, certified);
         }
     }
 
@@ -322,21 +346,37 @@ where
     }
 
     /// Fold one outcome into a peer's record, and queue it if the rule fires.
-    fn record(&self, peer: Address, epoch: EpochNumber, round: RoundNumber, certified: bool) {
-        let Some(record) = fold_outcome(&self.context.store, peer, epoch, round, certified)
-        else {
-            return;
+    /// Fold one outcome, reporting what the record stands behind for that round.
+    ///
+    /// The record is per spool but the rule is about a node, as the paper has it:
+    /// repeated local misses lead spool owners to propose evicting the *node*. So
+    /// any one of a peer's spools failing is enough to propose, and a peer that
+    /// answers four spools and drops the fifth no longer hides behind the four.
+    fn record(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        certified: bool,
+    ) -> bool {
+        let folded = fold_outcome(&self.context.store, peer, spool, epoch, round, certified);
+        let Some(record) = folded.record else {
+            return folded.certified;
         };
 
         if record.eviction_fires() {
             info!(
                 node = %peer,
+                spool = spool.0,
                 misses = record.consecutive_misses,
                 rate = record.success_rate().0,
                 "challenge: peer failed the local rule, queuing for eviction"
             );
             self.context.eviction_queue.insert(peer);
         }
+
+        folded.certified
     }
 }
 

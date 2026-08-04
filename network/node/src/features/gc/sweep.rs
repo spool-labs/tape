@@ -849,10 +849,11 @@ mod tests {
     async fn prunes_old_rounds() {
         let store = test_store();
         let peer = Address::new_unique();
+        let spool = SpoolIndex(7);
 
         for epoch in 1..=3u64 {
             store
-                .put_round_outcome(peer, EpochNumber(epoch), RoundNumber(0), false)
+                .put_round_outcome(peer, spool, EpochNumber(epoch), RoundNumber(0), false)
                 .unwrap();
         }
 
@@ -869,7 +870,7 @@ mod tests {
         .unwrap();
 
         let kept: Vec<EpochNumber> = store
-            .peer_rounds(peer)
+            .peer_rounds(peer, spool)
             .unwrap()
             .into_iter()
             .map(|(epoch, _, _)| epoch)

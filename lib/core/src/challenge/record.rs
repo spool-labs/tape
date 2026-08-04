@@ -68,6 +68,12 @@ pub struct PeerRecord {
     /// rounds this peer was actually judged in take a bit, so a void round leaves
     /// the strip alone rather than reading as a miss against everyone.
     pub recent: u64,
+    /// Bits of `recent` that stand for a round, rather than for nothing yet.
+    ///
+    /// Not `opportunities`: that counts every round for the peer's whole life,
+    /// while a rebuild can only see the rounds the store still holds. Reading the
+    /// strip off the lifetime count draws the pruned ones as misses.
+    pub recent_len: u64,
 }
 
 /// Judged rounds the recent strip remembers.
@@ -114,6 +120,7 @@ impl PeerRecord {
             self.consecutive_misses += 1;
         }
         self.recent = (self.recent << 1) | u64::from(proved);
+        self.recent_len = (self.recent_len + 1).min(RECENT_ROUNDS as u64);
         self.last_epoch = epoch;
         self.last_round = round;
         self.started = true;
@@ -135,6 +142,7 @@ impl PeerRecord {
         for (_, _, proved) in &rounds[tail..] {
             self.recent = (self.recent << 1) | u64::from(*proved);
         }
+        self.recent_len = (rounds.len() - tail) as u64;
 
         if let Some((epoch, round, _)) = rounds.last() {
             self.last_epoch = *epoch;
@@ -185,10 +193,11 @@ impl PeerRecord {
 
     /// The recent strip oldest-first, for drawing one row of the grid.
     ///
-    /// Shorter than `RECENT_ROUNDS` until the peer has been judged that many
-    /// times, so a fresh peer reads as a short row rather than a wall of misses.
+    /// Only the rounds still remembered, so a fresh peer reads as a short row
+    /// rather than a wall of misses, and so does one whose older rounds have
+    /// been pruned out from under a rebuild.
     pub fn recent_rounds(&self) -> Vec<bool> {
-        let judged = self.opportunities.min(RECENT_ROUNDS as u64) as u32;
+        let judged = self.recent_len.min(RECENT_ROUNDS as u64) as u32;
         (0..judged)
             .rev()
             .map(|bit| self.recent & (1 << bit) != 0)
@@ -295,6 +304,29 @@ mod tests {
         assert_eq!(strip.len(), RECENT_ROUNDS as usize);
         assert!(strip.iter().all(|proved| *proved), "an aged-out miss lingered");
         assert_eq!(record.opportunities, RECENT_ROUNDS as u64 + 10);
+    }
+
+    // a rebuild sees only the rounds the store still holds, so the strip gets
+    // shorter rather than drawing the pruned ones as misses the peer never made
+    #[test]
+    fn strip_survives_pruned_rounds() {
+        let mut record = PeerRecord::default();
+        for round in 0..5 {
+            record.record(EpochNumber(1), RoundNumber(round), true, None);
+        }
+
+        // A late outcome behind the newest round, with everything before epoch 2
+        // already swept out of the round store.
+        let fold = record.record(EpochNumber(1), RoundNumber(4), true, None);
+        assert_eq!(fold, Fold::Rebuild);
+        record.rebuild_recency(&[at_round(2, 0, true), at_round(2, 1, true)]);
+
+        assert_eq!(record.opportunities, 6);
+        assert_eq!(record.recent_rounds(), vec![true, true]);
+    }
+
+    fn at_round(epoch: u64, round: u64, proved: bool) -> (EpochNumber, RoundNumber, bool) {
+        (EpochNumber(epoch), RoundNumber(round), proved)
     }
 
     /// Answer or miss in the given pattern, repeated until `rounds` are used.

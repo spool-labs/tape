@@ -446,8 +446,7 @@ pub struct MultipartPartData {
 mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
-    use tape_core::challenge::sample::EntryKind;
-use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::merkle::root_from_leaf_hashes;

@@ -131,29 +131,84 @@ impl<'de> SchemaRead<'de> for SpoolIndexKey {
     }
 }
 
-/// Key for one peer's outcome in one round (48 bytes)
+/// Key for one spool's outcome in one round (50 bytes)
 ///
-/// Format: [peer 32 bytes][epoch BE 8 bytes][round BE 8 bytes]
+/// Format: [peer 32 bytes][spool BE 2 bytes][epoch BE 8 bytes][round BE 8 bytes]
 ///
-/// Peer first so one node's whole history is a prefix scan, then epoch and round
-/// big-endian so that scan comes back in the order the rounds happened.
+/// The spool is part of the key because a certificate is per spool: a peer
+/// holding several of them owes an answer for each, and collapsing them onto one
+/// key lets a success on one erase a miss on another. Peer then spool first so
+/// one spool's whole history is a prefix scan, then epoch and round big-endian so
+/// that scan comes back in the order the rounds happened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChallengeRoundKey {
     pub peer: Address,
+    pub spool: SpoolIndex,
     pub epoch: EpochNumber,
     pub round: RoundNumber,
 }
 
 impl ChallengeRoundKey {
-    pub const SIZE: usize = 48;
+    pub const SIZE: usize = 50;
 
-    pub fn new(peer: Address, epoch: EpochNumber, round: RoundNumber) -> Self {
-        Self { peer, epoch, round }
+    pub fn new(peer: Address, spool: SpoolIndex, epoch: EpochNumber, round: RoundNumber) -> Self {
+        Self { peer, spool, epoch, round }
     }
 
-    /// Prefix covering every round recorded for one peer.
-    pub fn peer_prefix(peer: Address) -> [u8; 32] {
-        peer.to_bytes()
+    /// Prefix covering every round recorded for one of a peer's spools.
+    pub fn spool_prefix(peer: Address, spool: SpoolIndex) -> [u8; 34] {
+        let mut prefix = [0u8; 34];
+        prefix[..32].copy_from_slice(&peer.to_bytes());
+        prefix[32..].copy_from_slice(&(spool.as_u64() as u16).to_be_bytes());
+        prefix
+    }
+}
+
+/// Key for one spool's record under one owner (34 bytes)
+///
+/// Format: [peer 32 bytes][spool BE 2 bytes]
+///
+/// One record per spool rather than per peer, which is the grid the paper draws:
+/// rounds across, spools down. The node-level rule reads across a peer's spools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PeerRecordKey {
+    pub peer: Address,
+    pub spool: SpoolIndex,
+}
+
+impl PeerRecordKey {
+    pub const SIZE: usize = 34;
+
+    pub fn new(peer: Address, spool: SpoolIndex) -> Self {
+        Self { peer, spool }
+    }
+}
+
+impl SchemaWrite for PeerRecordKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.peer.as_ref())?;
+        writer.write_exact(&(src.spool.as_u64() as u16).to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for PeerRecordKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<PeerRecordKey>) -> ReadResult<()> {
+        let peer: [u8; 32] = unsafe { reader.get_t()? };
+        let spool: [u8; 2] = unsafe { reader.get_t()? };
+        dst.write(PeerRecordKey {
+            peer: Address::from(peer),
+            spool: SpoolIndex(u16::from_be_bytes(spool) as u64),
+        });
+        Ok(())
     }
 }
 
@@ -166,6 +221,7 @@ impl SchemaWrite for ChallengeRoundKey {
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
         writer.write_exact(src.peer.as_ref())?;
+        writer.write_exact(&(src.spool.as_u64() as u16).to_be_bytes())?;
         writer.write_exact(&src.epoch.0.to_be_bytes())?;
         writer.write_exact(&src.round.0.to_be_bytes())?;
         Ok(())
@@ -177,10 +233,12 @@ impl<'de> SchemaRead<'de> for ChallengeRoundKey {
 
     fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<ChallengeRoundKey>) -> ReadResult<()> {
         let peer: [u8; 32] = unsafe { reader.get_t()? };
+        let spool: [u8; 2] = unsafe { reader.get_t()? };
         let epoch: [u8; 8] = unsafe { reader.get_t()? };
         let round: [u8; 8] = unsafe { reader.get_t()? };
         dst.write(ChallengeRoundKey {
             peer: Address::from(peer),
+            spool: SpoolIndex(u16::from_be_bytes(spool) as u64),
             epoch: EpochNumber(u64::from_be_bytes(epoch)),
             round: RoundNumber(u64::from_be_bytes(round)),
         });
