@@ -122,7 +122,7 @@ async fn corruption_eviction_inner() {
     // proportion to its share of the bytes and detection follows 1/p. This
     // test is about a node serving rotten data being caught, not about how
     // long a small p takes, so it puts p at 1.
-    rot_spool(&harness, spool);
+    assert!(rot_spool(&harness, spool) > 0, "the victim holds nothing to rot");
     assert_ne!(
         node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
         original,
@@ -131,7 +131,7 @@ async fn corruption_eviction_inner() {
 
     // From here nothing touches the victim. Its own runtime keeps its seat,
     // answers every round with rotten proofs, and collects the misses.
-    let suspended = wait_eviction(&harness, EVICT_TIMEOUT).await;
+    let suspended = wait_eviction(&harness, spool, EVICT_TIMEOUT).await;
     assert_ne!(
         suspended,
         EpochNumber(0),
@@ -204,11 +204,21 @@ async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber, epoch_ti
     }
 }
 
-/// Poll for the suspension. The victim needs no crank: its own runtime keeps
-/// the seat, which is exactly the adversary this test is about.
-async fn wait_eviction(harness: &SimnetHarness, timeout: Duration) -> EpochNumber {
+/// Poll for the suspension, keeping the spool rotten while it runs.
+///
+/// The victim needs no crank: its own runtime keeps the seat, which is exactly
+/// the adversary this test is about. It does need the rot held, because each
+/// epoch boundary writes fresh snapshot slices into the spool and a draw landing
+/// on a clean one breaks the run of misses.
+async fn wait_eviction(
+    harness: &SimnetHarness,
+    spool: SpoolIndex,
+    timeout: Duration,
+) -> EpochNumber {
     let start = Instant::now();
     loop {
+        rot_spool(harness, spool);
+
         let suspended = harness
             .scenario()
             .read_node(VICTIM)
@@ -266,17 +276,22 @@ fn spool_successor(
     })
 }
 
-/// Flip bytes in every slice the spool holds, straight through the raw column
-/// so the sidecars and size index stay exactly as they were.
-fn rot_spool(harness: &SimnetHarness, spool: SpoolIndex) {
+/// Make every slice the spool holds disagree with its commitment, straight
+/// through the raw column so the sidecars and size index stay exactly as they
+/// were.
+///
+/// Idempotent, because it runs repeatedly while the spool keeps receiving new
+/// slices: it writes a fixed pattern rather than flipping, so a slice already
+/// rotten stays rotten instead of being restored by a second pass.
+fn rot_spool(harness: &SimnetHarness, spool: SpoolIndex) -> usize {
     let node = harness.node(VICTIM).expect("victim node");
     let store = node.context().store.clone();
     let held = store.iter_slice_sizes_by_spool(spool).expect("iter slices");
-    assert!(!held.is_empty(), "the victim holds nothing to rot");
 
-    for (track, _) in held {
-        rot_slice(&store, spool, track);
+    for (track, _) in &held {
+        rot_slice(&store, spool, *track);
     }
+    held.len()
 }
 
 fn rot_slice<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, track: Address) {
@@ -288,12 +303,13 @@ fn rot_slice<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, tr
         .expect("raw get")
         .expect("slice bytes present");
 
-    // Rot the whole payload, not a patch: a round samples one sub-leaf, so a
-    // patch covering a fraction p of the slice is found in 1/p rounds, and only
-    // p = 1 is caught by the first draw. The leading bytes stay so the stored
-    // value still decodes.
+    // Overwrite the whole payload, not a patch: a round samples one sub-leaf,
+    // so a patch covering a fraction p of the slice is found in 1/p rounds and
+    // only p = 1 is caught by the first draw. A fixed pattern rather than a
+    // flip keeps this idempotent. The leading bytes stay so the stored value
+    // still decodes.
     for byte in &mut bytes[16..] {
-        *byte ^= 0xFF;
+        *byte = 0x5A;
     }
     raw.put(SliceCol::CF_NAME, &key, &bytes).expect("raw put");
 }
