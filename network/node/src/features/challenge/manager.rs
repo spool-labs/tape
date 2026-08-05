@@ -1,23 +1,17 @@
 //! Runs this node's challenge rounds and keeps its record of every group-mate.
 //!
-//! Rounds sit on a slot grid derived from finalized epoch state, so the whole
-//! group reaches the same schedule without coordinating. A round opens on the
-//! first produced block to land in its window, as the paper has it, so the
-//! request is unpredictable and the answer is due while the branch is live.
-//! A candidate that loses voids its round, and a window that finalizes no block
-//! is a void round too. Neither counts against anybody.
+//! Rounds sit on a slot grid derived from finalized epoch state, so the group
+//! agrees on the schedule without coordinating, and open on the first produced
+//! block in the window so the request is unpredictable. A round nobody could
+//! answer is void and counts against nobody.
 //!
-//! When a round opens this node answers its own challenge and broadcasts, and
-//! settles the previous round: any spool whose answer did not certify by then is
-//! a local miss. What comes out is a record per peer, not a verdict, so only a
-//! sustained pattern proposes anything and the proposal still needs the group and
-//! then the network to agree.
+//! Opening a round answers this node's own challenge and settles the previous
+//! one. The result is a record per spool, not a verdict.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use futures::future::join_all;
 use rpc::Rpc;
 use store::Store;
 use tape_core::challenge::schedule::{SLOT_MS, Schedule};
@@ -338,25 +332,21 @@ where
         let members = group_members(state, round.group);
         trace!(round = round.round.0, peers = members.len(), "challenge: broadcasting");
 
-        // Off the chain-event loop. Every peer call carries a three second
-        // timeout, so a group that has gone quiet would hold this task for
-        // minutes while blocks keep arriving, and the lane feeding it is
-        // bounded: a slow broadcast eventually stalls block ingest itself.
+        // Off the loop so a quiet group cannot stall ingest, one at a time so
+        // the burst does not trip the peers' rate limits.
         let context = self.context.clone();
         let me = self.context.node_address();
         let answer = answer.clone();
         tokio::spawn(async move {
-            let sends = members.into_iter().filter(|peer| *peer != me).map(|peer| {
-                let context = context.clone();
-                let answer = answer.clone();
-                async move {
-                    let req = ProofOfAccessReq { answer };
-                    if let Err(error) = context.api.proof_of_access(peer, &req).await {
-                        trace!(node = %peer, %error, "challenge: broadcast failed");
-                    }
+            for peer in members {
+                if peer == me {
+                    continue;
                 }
-            });
-            join_all(sends).await;
+                let req = ProofOfAccessReq { answer: answer.clone() };
+                if let Err(error) = context.api.proof_of_access(peer, &req).await {
+                    debug!(node = %peer, %error, "challenge: broadcast failed");
+                }
+            }
         });
     }
 
