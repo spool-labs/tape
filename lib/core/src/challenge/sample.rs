@@ -108,7 +108,7 @@ pub fn sort_entries(entries: &mut [SampleEntry]) {
 }
 
 /// Total sample leaves across every entry, the space the draw is uniform over.
-fn sample_space(entries: &[SampleEntry]) -> u64 {
+pub fn sample_space(entries: &[SampleEntry]) -> u64 {
     entries.iter().map(|entry| entry.kind.leaves()).sum()
 }
 

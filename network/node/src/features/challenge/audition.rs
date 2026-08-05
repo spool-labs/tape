@@ -15,7 +15,7 @@ use tape_core::cert::challenge::{ChallengeAttestMessage, ChallengeRespondMessage
 use tape_core::challenge::{self, ProofOfAccess, SampleEntry};
 use tape_core::challenge::proof::{Registered, SampleProof};
 use tape_core::challenge::sample::SampleLeaf;
-use tape_core::challenge::sample::Sample;
+use tape_core::challenge::sample::{Sample, sample_space};
 use tape_core::erasure::{SUB_LEAF_BYTES, prove_sub_leaf_windowed, sample_window};
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
@@ -24,6 +24,7 @@ use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq};
 use tape_protocol::{Api, ProtocolState};
+use tape_store::types::TrackSample;
 use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
 use tracing::{debug, trace};
 
@@ -35,7 +36,7 @@ use crate::features::challenge::rounds::RoundKey;
 ///
 /// The owner already broadcast to the whole group, so relaying exists only to
 /// reach members it deliberately skipped. One hop from a handful of accepting
-/// peers covers those; flooding every acceptance to every peer turns one round
+/// peers covers those. Flooding every acceptance to every peer turns one round
 /// into hundreds of forwards per spool and adds nothing, which the simulation
 /// measured before this was built.
 const RELAY_FANOUT: usize = 3;
@@ -76,16 +77,42 @@ pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &ProtocolState,
     round: &Round,
 ) -> bool {
+    sample_space(&set_entries(context, state, round).1) > 0
+}
+
+/// The group's sample set at a round's cut, and the entries a draw runs over.
+///
+/// One definition, so the question of whether a round can be asked and the
+/// question of what it asks cannot drift apart. A row whose kind weighs nothing
+/// is in the set but not in the space, and it is the space a draw needs.
+fn set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    round: &Round,
+) -> (Vec<(Address, TrackSample)>, Vec<SampleEntry>) {
     let Some(schedule) = schedule_for(state, round.epoch) else {
-        return false;
+        return (Vec::new(), Vec::new());
     };
     let cutoff = schedule.sample_cutoff(round.round);
 
-    context
+    // Already in track order: the rows are keyed group-then-track, so the scan
+    // arrives in the canonical order the draw is defined over.
+    let rows: Vec<(Address, TrackSample)> = context
         .store
         .iter_track_samples_by_group(round.group)
-        .map(|rows| rows.iter().any(|(_, sample)| sample.in_set_at(cutoff)))
-        .unwrap_or(false)
+        .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, sample)| sample.in_set_at(cutoff))
+        .collect();
+    let entries = rows
+        .iter()
+        .map(|(track, sample)| SampleEntry {
+            track: *track,
+            kind: sample.kind,
+        })
+        .collect();
+    (rows, entries)
 }
 
 /// The sample a spool owes this round, from replayed state.
@@ -106,26 +133,7 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<(Sample, Hash)> {
-    let cutoff = schedule_for(state, round.epoch)?.sample_cutoff(round.round);
-
-    // Already in track order: the rows are keyed group-then-track, so the scan
-    // arrives in the canonical order the draw is defined over.
-    let rows = context
-        .store
-        .iter_track_samples_by_group(round.group)
-        .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
-        .ok()?;
-    let rows: Vec<_> = rows
-        .into_iter()
-        .filter(|(_, sample)| sample.in_set_at(cutoff))
-        .collect();
-    let entries: Vec<SampleEntry> = rows
-        .iter()
-        .map(|(track, sample)| SampleEntry {
-            track: *track,
-            kind: sample.kind,
-        })
-        .collect();
+    let (rows, entries) = set_entries(context, state, round);
 
     let seed = challenge::round_seed(&round.block, round.epoch, round.group, round.round, spool);
     let sample = challenge::draw(&seed, &entries)?;
@@ -133,9 +141,9 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // The row's own value hash travels with the draw: an inline answer is
     // checked against it, and the track record it came from may be gone.
     let value_hash = rows
-        .iter()
-        .find(|(track, _)| *track == sample.track)
-        .map(|(_, row)| row.value_hash)?;
+        .binary_search_by_key(&sample.track, |(track, _)| *track)
+        .ok()
+        .map(|index| rows[index].1.value_hash)?;
     Some((sample, value_hash))
 }
 
@@ -301,7 +309,7 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
 
     tokio::spawn(async move {
         // Relay to a few, attest to all. An attestation is a hundred bytes and
-        // every peer needs a quorum of them to certify; the answer is kilobytes
+        // every peer needs a quorum of them to certify. The answer is kilobytes
         // and only the skipped need another copy.
         let fanout = if relay { RELAY_FANOUT } else { 0 };
         let relays = peers

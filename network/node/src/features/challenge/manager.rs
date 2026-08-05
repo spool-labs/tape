@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use futures::future::join_all;
 use rpc::Rpc;
 use store::Store;
 use tape_core::challenge::schedule::{SLOT_MS, Schedule};
@@ -41,21 +42,20 @@ use crate::features::challenge::audition::{
 use crate::features::challenge::fold::fold_outcome;
 
 // What settling needs from a round, captured when the round opened. Settling
-// lands on epoch boundaries where live state is mid-roll, so it never asks
-// live state about the round it is judging.
+// lands on epoch boundaries where live state is mid-roll, so it never asks live
+// state about the round it is judging.
+//
+// A round that never finalized, or that the group had nothing to be asked
+// about, is void: settling either would charge every spool in the group a miss,
+// and three of those queue the whole group for eviction.
 struct OpenRound {
+    /// The round this stands for.
     round: Round,
+    /// Every spool in the group, which is what settling walks.
     spools: Vec<SpoolIndex>,
     /// Whether the entropy block survived to finality.
-    ///
-    /// A round is only evidence once its block is part of history. Settling one
-    /// that never finalized would charge every spool in the group a miss for a
-    /// branch that lost, and three of those queue the whole group for eviction.
     finalized: bool,
-    /// Whether the group had anything to be asked about when the round opened.
-    ///
-    /// Read at open rather than at settle, for the same reason as the rest of
-    /// this struct: by settling time the set has moved on.
+    /// Whether the group had anything to be asked about.
     askable: bool,
 }
 
@@ -208,7 +208,7 @@ where
 
     /// Record how one group's previous round went for every spool in it.
     ///
-    /// A spool whose answer certified is a success; one that did not is a local
+    /// A spool whose answer certified is a success. One that did not is a local
     /// miss. Settling on the next round's opening is what gives a late certificate
     /// the whole interval to arrive and replace a miss before anyone acts on it.
     fn settle_previous(&self, state: &ProtocolState, group: GroupIndex) {
@@ -288,11 +288,19 @@ where
     fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {
         for hash in hashes {
             self.context.round_buffer.discard_block(*hash);
-            self.open_rounds.retain(|_, open| open.round.block != *hash);
+        }
+
+        // Count the rounds dropped, not the blocks rolled. A window is four
+        // slots of an interval a hundred times longer, so almost no rolled
+        // block seeded one.
+        let before = self.open_rounds.len();
+        self.open_rounds.retain(|_, open| !hashes.contains(&open.round.block));
+        let dropped = before - self.open_rounds.len();
+        if dropped > 0 {
             self.context
                 .challenge_counters
                 .discarded
-                .fetch_add(1, Ordering::Relaxed);
+                .fetch_add(dropped as u64, Ordering::Relaxed);
         }
     }
 
@@ -330,22 +338,28 @@ where
         let members = group_members(state, round.group);
         trace!(round = round.round.0, peers = members.len(), "challenge: broadcasting");
 
-        for peer in members {
-            if peer == self.context.node_address() {
-                continue;
-            }
-            let sent = self
-                .context
-                .api
-                .proof_of_access(peer, &ProofOfAccessReq { answer: answer.clone() })
-                .await;
-            if let Err(error) = sent {
-                trace!(node = %peer, %error, "challenge: broadcast failed");
-            }
-        }
+        // Off the chain-event loop. Every peer call carries a three second
+        // timeout, so a group that has gone quiet would hold this task for
+        // minutes while blocks keep arriving, and the lane feeding it is
+        // bounded: a slow broadcast eventually stalls block ingest itself.
+        let context = self.context.clone();
+        let me = self.context.node_address();
+        let answer = answer.clone();
+        tokio::spawn(async move {
+            let sends = members.into_iter().filter(|peer| *peer != me).map(|peer| {
+                let context = context.clone();
+                let answer = answer.clone();
+                async move {
+                    let req = ProofOfAccessReq { answer };
+                    if let Err(error) = context.api.proof_of_access(peer, &req).await {
+                        trace!(node = %peer, %error, "challenge: broadcast failed");
+                    }
+                }
+            });
+            join_all(sends).await;
+        });
     }
 
-    /// Fold one outcome into a peer's record, and queue it if the rule fires.
     /// Fold one outcome, reporting what the record stands behind for that round.
     ///
     /// The record is per spool but the rule is about a node, as the paper has it:

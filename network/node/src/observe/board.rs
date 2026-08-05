@@ -781,7 +781,9 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         })
         .collect();
 
-    rows.sort_by_key(|row| (row.success_rate_bps, row.node.clone(), row.spool));
+    rows.sort_by(|a, b| {
+        (a.success_rate_bps, &a.node, a.spool).cmp(&(b.success_rate_bps, &b.node, b.spool))
+    });
 
     ChallengeGrid {
         recent_capacity: RECENT_ROUNDS as u64,

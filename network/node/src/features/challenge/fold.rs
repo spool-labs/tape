@@ -63,7 +63,7 @@ pub fn fold_outcome<Db: Store>(
         return Folded { record: None, certified: stands };
     }
 
-    // The counters say how often; this says which rounds, so a report can name
+    // The counters say how often. This says which rounds, so a report can name
     // the ones a node failed rather than only count them.
     if let Err(error) = store.put_round_outcome(peer, spool, epoch, round, certified) {
         debug!(%error, node = %peer, "challenge: round outcome not persisted");

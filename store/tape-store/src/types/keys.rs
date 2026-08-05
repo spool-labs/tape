@@ -182,6 +182,11 @@ impl PeerRecordKey {
     pub fn new(peer: Address, spool: SpoolIndex) -> Self {
         Self { peer, spool }
     }
+
+    /// Prefix covering every record kept for one peer.
+    pub fn peer_prefix(peer: Address) -> [u8; 32] {
+        peer.to_bytes()
+    }
 }
 
 impl SchemaWrite for PeerRecordKey {

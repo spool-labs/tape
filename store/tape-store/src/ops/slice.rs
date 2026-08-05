@@ -67,13 +67,9 @@ pub trait SliceOps {
         spool_id: SpoolIndex,
     ) -> Result<Vec<(Address, StorageUnits)>>;
 
-    /// Byte length of one slice, from the size index.
-    fn slice_size(&self, spool_id: SpoolIndex, track_address: Address)
-        -> Result<Option<StorageUnits>>;
-
     /// Sub-leaf tree nodes kept beside a slice, for answering a storage challenge.
     ///
-    /// None when the slice is absent or predates the sidecar; a caller that needs
+    /// None when the slice is absent or predates the sidecar. A caller that needs
     /// one either rebuilds from the slice or runs `ensure_slice_sidecars`.
     fn get_slice_sidecar(
         &self,
@@ -83,7 +79,7 @@ pub trait SliceOps {
 
     /// Drop a slice's sidecar, leaving the slice itself in place.
     ///
-    /// Only the rebuild path and its tests need this; a live node deletes the
+    /// Only the rebuild path and its tests need this. A live node deletes the
     /// slice and its sidecar together.
     fn delete_slice_sidecar(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
 
@@ -267,18 +263,6 @@ impl<S: Store> SliceOps for TapeStore<S> {
             results.push((key.track_address, deserialize_size(&value_bytes)?));
         }
         Ok(results)
-    }
-
-    fn slice_size(
-        &self,
-        spool_id: SpoolIndex,
-        track_address: Address,
-    ) -> Result<Option<StorageUnits>> {
-        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
-        match self.inner().inner().get(SliceSizeCol::CF_NAME, &key)? {
-            Some(value) => Ok(Some(deserialize_size(&value)?)),
-            None => Ok(None),
-        }
     }
 
     fn get_slice_sidecar(

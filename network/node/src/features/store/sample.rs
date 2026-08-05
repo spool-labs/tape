@@ -1,7 +1,7 @@
 //! The row a track contributes to its group's challenge sample set.
 //!
 //! Every path that installs a track locally has to write it, or the group
-//! disagrees about what a round asks for. Replay is one such path; the snapshot
+//! disagrees about what a round asks for. Replay is one such path. The snapshot
 //! build and the bootstrap fetch are the others, and a track installed without a
 //! row is one its owner holds the bytes of and can never be asked about.
 

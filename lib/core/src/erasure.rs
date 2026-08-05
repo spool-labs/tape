@@ -43,7 +43,7 @@ pub fn sub_leaf_hashes(slice: &[u8]) -> Vec<Hash> {
 ///
 /// Everything above this comes from the sidecar an owner keeps beside the slice,
 /// so answering reads one window rather than the whole slice. The paper's premise
-/// is that reading retained data is fast; rebuilding a megabyte-scale tree per
+/// is that reading retained data is fast. Rebuilding a megabyte-scale tree per
 /// response is not, and a deadline widened to cover it is a deadline a fetching
 /// free-rider fits inside.
 pub const SAMPLE_WINDOW_HEIGHT: usize = 8;
@@ -89,7 +89,7 @@ pub fn sample_window(sub_leaf: usize, slice_len: usize) -> Range<usize> {
 /// Path from a sample leaf to its slice root, built from one window and the sidecar.
 ///
 /// The lower `SAMPLE_WINDOW_HEIGHT` siblings come from rehashing the window the
-/// leaf sits in; the rest come from the sidecar. The path is byte-identical to
+/// leaf sits in. The rest come from the sidecar. The path is byte-identical to
 /// the one a full rebuild of the slice produces.
 pub fn prove_sub_leaf_windowed(
     sidecar: &[Hash],

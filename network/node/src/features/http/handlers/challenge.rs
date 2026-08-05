@@ -171,7 +171,7 @@ fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // Folded now rather than waiting for the block to finalize. A certificate
     // under a candidate that loses records a success the owner may not have
-    // earned, which is the harmless direction; waiting instead would lose the
+    // earned, which is the harmless direction. Waiting instead would lose the
     // late certificate that replaces a recorded miss, and a miss is what
     // evicts. `settle_previous` refuses to charge a miss for a round that never
     // finalized, which is the half that has teeth.

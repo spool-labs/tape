@@ -677,7 +677,7 @@ async fn two_branches() {
 }
 
 // the group is in the round seed, so an owner free to name it could grind the
-// draw onto a leaf it kept; the group a spool belongs to is what binds it
+// draw onto a leaf it kept. The group a spool belongs to is what binds it
 #[tokio::test]
 async fn stray_group() {
     let fixture = fixture().await;

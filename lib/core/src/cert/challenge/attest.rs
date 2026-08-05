@@ -19,7 +19,7 @@ pub const ATTEST_MESSAGE_SIZE: usize = 72;
 /// a quorum that never agreed on one history.
 ///
 /// It deliberately omits the sampled leaf. The leaf is in the response the owner
-/// itself signed; carrying it here would make two observers who saw the same
+/// itself signed. Carrying it here would make two observers who saw the same
 /// round sign different bytes if either mis-derived the sample.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]

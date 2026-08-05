@@ -13,7 +13,7 @@
 //! it forms, while a miss folds only when the next round opens, so a fold is
 //! judged against what is already recorded for that round rather than against a
 //! high-water mark. A late certificate may replace a recorded miss, which the
-//! paper requires; nothing ever replaces a recorded success.
+//! paper requires. Nothing ever replaces a recorded success.
 
 use serde::{Deserialize, Serialize};
 
@@ -84,7 +84,7 @@ impl PeerRecord {
     ///
     /// `prior` is the outcome the caller has stored for this exact round, so a
     /// repeat never counts twice and a peer cannot be talked into an eviction by
-    /// repetition alone. A success is never downgraded; a recorded miss is
+    /// repetition alone. A success is never downgraded. A recorded miss is
     /// upgraded when its certificate arrives late. A fold behind the newest
     /// round still counts, but the caller must rebuild recency from the stored
     /// rounds, since only they know the order.

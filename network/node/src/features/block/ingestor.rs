@@ -303,7 +303,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     async fn fanout(&self, block: &Arc<ParsedBlock>) -> Result<(), NodeError> {
         let slot = block.slot;
 
-        // The challenge lane already saw this block when it was produced; what
+        // The challenge lane already saw this block when it was produced. What
         // it needs now is that the block survived, which is what makes a round's
         // evidence standing.
         self.send_chain(ChainEvent::Finalized(block.blockhash)).await?;

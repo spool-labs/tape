@@ -165,12 +165,14 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_prefix_extractor(2)
             .build(),
 
-        // Challenge record - 32-byte peer address, small counters
+        // Challenge record - 34-byte key, small counters
+        // 32-byte peer prefix so one node's spools are a single scan
         ColumnFamilyConfig::new("challenge_record")
             .with_block_based()
+            .with_prefix_extractor(32)
             .build(),
 
-        // Challenge rounds - 48-byte key, one byte per outcome
+        // Challenge rounds - 50-byte key, one byte per outcome
         // 32-byte peer prefix so one node's history is a single scan
         ColumnFamilyConfig::new("challenge_round")
             .with_block_based()

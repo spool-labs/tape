@@ -250,7 +250,7 @@ mod tests {
         assert!(buffer.claim_certificate(key, 4));
         assert!(buffer.is_certified(key));
 
-        // Attestations keep arriving after the threshold; the round is recorded once.
+        // Attestations keep arriving after the threshold. The round is recorded once.
         buffer.accept_attestation(key, Address::new_unique(), signature());
         assert!(!buffer.claim_certificate(key, 4));
     }

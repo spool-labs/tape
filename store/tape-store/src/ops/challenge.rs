@@ -99,12 +99,24 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
     }
 
     fn records_for_peer(&self, peer: Address) -> Result<Vec<(SpoolIndex, PeerRecord)>> {
-        Ok(self
-            .iter::<ChallengeRecordCol>()?
-            .into_iter()
-            .filter(|(key, _)| key.peer == peer)
-            .map(|(key, record)| (key.spool, record))
-            .collect())
+        // The key leads with the peer, so this is a prefix scan rather than a
+        // walk of every peer's every spool. The eviction judge runs it per
+        // queued target per block.
+        let prefix = PeerRecordKey::peer_prefix(peer);
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(ChallengeRecordCol::CF_NAME, &prefix)?;
+
+        let mut records = Vec::new();
+        for (key_bytes, value_bytes) in iter {
+            let key: PeerRecordKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("record key: {e}")))?;
+            let record: PeerRecord = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("peer record: {e}")))?;
+            records.push((key.spool, record));
+        }
+        Ok(records)
     }
 
     fn delete_peer_record(&self, peer: Address) -> Result<()> {
