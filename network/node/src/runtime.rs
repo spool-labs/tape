@@ -11,7 +11,7 @@ use tape_retry::{retry_if, RetryConfig};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn, Instrument};
+use tracing::{debug, warn, Instrument, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::node::NodeConfig;
@@ -383,15 +383,17 @@ where
         .run(),
     );
 
-    supervisor.spawn(
-        ServiceName::EvictionManager,
-        EvictionManager::new(
-            context.clone(),
-            receivers.eviction,
-            cancel.clone(),
-        )
-        .run(),
-    );
+    // An operator that does not want to act on its records says so here. The
+    // records are still kept and still shown, but nothing is proposed and no
+    // peer's proposal is signed.
+    if config.eviction.enabled {
+        supervisor.spawn(
+            ServiceName::EvictionManager,
+            EvictionManager::new(context.clone(), receivers.eviction, cancel.clone()).run(),
+        );
+    } else {
+        info!("eviction disabled by config: proposing nothing, signing no eviction vote");
+    }
 
     supervisor.spawn(
         ServiceName::SnapshotManager,

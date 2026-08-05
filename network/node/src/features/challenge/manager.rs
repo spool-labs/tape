@@ -375,9 +375,13 @@ where
                 spool = spool.0,
                 misses = record.consecutive_misses,
                 rate = record.success_rate().0,
-                "challenge: peer failed the local rule, queuing for eviction"
+                "challenge: peer failed the local rule"
             );
-            self.context.eviction_queue.insert(peer);
+            // With eviction off there is no manager draining the queue, so
+            // leave it empty. The record is kept either way.
+            if self.context.config.eviction.enabled {
+                self.context.eviction_queue.insert(peer);
+            }
         }
 
         folded.certified
