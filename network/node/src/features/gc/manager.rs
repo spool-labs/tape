@@ -9,12 +9,14 @@ use tracing::{debug, warn};
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_protocol::Api;
-use tape_store::{TapeStore, ops::MetaOps};
+use tape_crypto::Address;
+use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps}};
 
 use crate::config::store::GcConfig;
 use crate::context::NodeContext;
+use crate::features::challenge::fold::holds_spool;
 use crate::core::error::NodeError;
 use crate::core::ingest::{AT_TIP_THRESHOLD_SLOTS, IngestState};
 use crate::core::types::ServiceName;
@@ -116,15 +118,21 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
 
     let owned_spools = context.my_spools();
     let at_tip = at_durable_tip(context.as_ref())?;
+    // Tombstones from this sweep carry the live epoch's start slot even when
+    // catching up an older epoch: a later slot only keeps an entry in the
+    // sample set longer, which is the safe direction.
+    let epoch_start_slot = context.state().current.epoch.start_slot;
     let sweep_stats = sweep_epoch(
         store,
         config,
         epoch,
+        epoch_start_slot,
         &owned_spools,
         context.pending.as_ref(),
         at_tip,
     )
     .await?;
+    prune_handed_off_records(context.as_ref())?;
     debug!(
         node_id = context.node_id().0,
         epoch = epoch.0,
@@ -209,6 +217,36 @@ fn next_pending_epoch<Db: Store>(
 
 fn should_reclaim(config: &GcConfig, deleted_slices: usize) -> bool {
     deleted_slices >= config.reclaim_min_deleted_slices
+}
+
+/// Drop the records of spools their owners have handed on.
+///
+/// A record is keyed by spool, so a reassignment leaves the old owner's history
+/// behind. Reads already ignore those, but nothing would ever remove them, and
+/// the column would grow by a row per spool per owner it ever had.
+fn prune_handed_off_records<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> Result<(), NodeError> {
+    let state = context.state();
+    let stale: Vec<(Address, SpoolIndex)> = context
+        .store
+        .iter_peer_records()
+        .map_err(|error| NodeError::Store(format!("iter_peer_records: {error}")))?
+        .into_iter()
+        .map(|((peer, spool), _)| (peer, spool))
+        .filter(|(peer, spool)| !holds_spool(&state, *peer, *spool))
+        .collect();
+
+    for (peer, spool) in &stale {
+        context
+            .store
+            .delete_spool_record(*peer, *spool)
+            .map_err(|error| NodeError::Store(format!("delete_spool_record: {error}")))?;
+    }
+    if !stale.is_empty() {
+        debug!(dropped = stale.len(), "gc: dropped records for handed-off spools");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

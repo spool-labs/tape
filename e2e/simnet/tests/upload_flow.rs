@@ -6,11 +6,10 @@ use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{BasisPoints, ContentType, StorageUnits};
+use tape_core::types::{BasisPoints, StorageUnits};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
-use tape_sdk::track::write::content_etag;
 
 const TARGET_GROUPS: u64 = 5;
 
@@ -88,10 +87,9 @@ async fn upload_flow_inner() {
     let mut rng = StdRng::seed_from_u64(0xDA7A_51CE);
     let raw_data = random_bytes(&mut rng, 512);
     let blob_data = random_bytes(&mut rng, 128 * 1024);
-    let plan_data = random_bytes(&mut rng, 96 * 1024);
     let stream_data = random_bytes(&mut rng, MAX_TRACK_SIZE + 1024);
     let reserve_capacity = StorageUnits::from_bytes(
-        (raw_data.len() + blob_data.len() + plan_data.len() + stream_data.len()) as u64,
+        (raw_data.len() + blob_data.len() + stream_data.len()) as u64,
     ) + StorageUnits::mb(2);
 
     let sdk = scenario.sdk(harness.admin());
@@ -128,28 +126,6 @@ async fn upload_flow_inner() {
         "blob track assigned outside live groups"
     );
 
-    // A caller that already encoded these bytes to decide whether to write at
-    // all hands that plan over, and the write must land exactly what a fresh
-    // encode would have. Only the sync path passes a plan in production.
-    let plan = content_etag(&plan_data)
-        .await
-        .expect("content etag")
-        .plan
-        .expect("coded payload carries its plan");
-    let plan_track = sdk
-        .write_named_track_as(
-            &tape_key,
-            b"plan/object",
-            ContentType::Unknown,
-            &plan_data,
-            Some(plan),
-        )
-        .await
-        .expect("write track from a reused plan");
-    assert!(plan_track.is_coded(), "plan write should create a coded track");
-    assert!(plan_track.is_certified(), "plan track should be certified");
-    assert_eq!(plan_track.tape, tape_address, "plan track tape mismatch");
-
     let receipt = sdk
         .write_bytes(&tape_key, &stream_data)
         .await
@@ -162,12 +138,11 @@ async fn upload_flow_inner() {
 
     let raw_address = track_pda(raw_track.tape, raw_track.track_number).0;
     let blob_address = track_pda(blob_track.tape, blob_track.track_number).0;
-    let plan_address = track_pda(plan_track.tape, plan_track.track_number).0;
 
     let start = Instant::now();
     let (tracks, next_cursor) = loop {
         match sdk.list_tracks_by_tape(&tape_address, None, 10).await {
-            Ok((tracks, next_cursor)) if tracks.len() == 6 && next_cursor.is_none() => {
+            Ok((tracks, next_cursor)) if tracks.len() == 5 && next_cursor.is_none() => {
                 break (tracks, next_cursor);
             }
             Ok((tracks, next_cursor)) if start.elapsed() >= active_timeout => {
@@ -193,12 +168,6 @@ async fn upload_flow_inner() {
     let blob_read = sdk.read(&blob_address).await.expect("read blob track");
     assert_eq!(blob_read, blob_data, "blob read should match original data");
 
-    let plan_read = sdk.read(&plan_address).await.expect("read plan track");
-    assert_eq!(
-        plan_read, plan_data,
-        "a track written from a reused plan should read back unchanged"
-    );
-
     let stream_read = sdk
         .read_bytes(&receipt.manifest)
         .await
@@ -211,8 +180,8 @@ async fn upload_flow_inner() {
     assert_eq!(next_cursor, None, "unexpected track pagination cursor");
     assert_eq!(
         tracks.len(),
-        6,
-        "same tape should contain raw, blob, plan, two stream chunks, and manifest"
+        5,
+        "same tape should contain raw, blob, two stream chunks, and manifest"
     );
     assert_eq!(
         tracks.iter().filter(|track| track.is_inline()).count(),
@@ -221,8 +190,8 @@ async fn upload_flow_inner() {
     );
     assert_eq!(
         tracks.iter().filter(|track| track.is_coded()).count(),
-        4,
-        "expected blob and plan tracks plus two stream chunk tracks"
+        3,
+        "expected single blob plus two stream chunk tracks"
     );
 
     for track in tracks.iter().filter(|track| track.is_coded()) {

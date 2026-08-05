@@ -37,6 +37,25 @@ pub const fn has_honest_signer(weight: u64, total: u64) -> bool {
     weight > tolerated
 }
 
+/// Owners that must report ready before a group completes its Sync phase.
+///
+/// Section 11's max(k, f+1): k so the owners that did report can reconstruct
+/// every coded track between them, f+1 so at least one of them is honest.
+///
+/// Deliberately low, and not `has_honest_signer`. That one derives f from the
+/// intersecting-quorum bound, which is a looser f than the parameter set uses,
+/// and it lands a position higher. A higher gate is the wrong direction here:
+/// owners that left can never report, so it lets the owners a handoff is
+/// replacing block the handoff itself.
+pub const fn sync_ready_threshold(total: u64, reconstruct_k: u64) -> u64 {
+    let honest = max_faulty(total) + 1;
+    if reconstruct_k > honest {
+        reconstruct_k
+    } else {
+        honest
+    }
+}
+
 /// Finds the highest value where the cumulative weight of all votes for that value and higher
 /// achieves a supermajority. If no such value exists, it returns 0.
 ///
@@ -179,5 +198,19 @@ mod tests {
         assert!(hp > 0);
         assert!(lf > 0);
         assert!(lf >= hp);
+    }
+
+    // the gate the paper puts a group's Sync completion behind, max(k, f+1),
+    // which sits one position below the intersecting-quorum reading of f
+    #[test]
+    fn sync_gate() {
+        let k = 7;
+        assert_eq!(sync_ready_threshold(20, k), 7);
+        assert!(has_honest_signer(8, 20));
+        assert!(!has_honest_signer(7, 20), "the old gate needed one more");
+
+        // k carries the gate when reconstruction needs more than one honest.
+        assert_eq!(sync_ready_threshold(20, 9), 9);
+        assert_eq!(sync_ready_threshold(4, 2), 2);
     }
 }

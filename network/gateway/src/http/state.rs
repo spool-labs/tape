@@ -6,7 +6,6 @@ use tape_node::context::NodeContext;
 use tape_protocol::Api;
 
 use crate::admission::Admission;
-use crate::staging::StagingStore;
 use crate::cache::GatewaySliceCache;
 use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::handlers::s3::write::S3WriteContext;
@@ -30,11 +29,6 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// TXT-proven host bindings for self-serve site domains. `None` when
     /// txt domains are disabled or no system resolver is available.
     pub site_hosts: Option<Arc<SiteHostBindings>>,
-    /// Objects written but not yet resolvable on chain.
-    ///
-    /// Reads and listings serve from here until the ingestor tails the slot and
-    /// the track certifies, which is what gives an S3 client read-after-write.
-    pub staging: Arc<StagingStore>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, Blockchain> {
@@ -47,7 +41,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, B
             accounting: self.accounting.clone(),
             admission: self.admission.clone(),
             site_hosts: self.site_hosts.clone(),
-            staging: self.staging.clone(),
         }
     }
 }

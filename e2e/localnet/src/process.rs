@@ -121,6 +121,8 @@ impl ProcessSupervisor {
                 port: h.port,
                 plaintext_port: h.plaintext_port,
                 authority: h.authority.pubkey(),
+                stalled: false,
+                flapping: false,
             })
             .collect()
     }
@@ -245,6 +247,24 @@ impl ProcessSupervisor {
             })?;
 
         handle.child = Some(child);
+        Ok(())
+    }
+
+    /// Pause or resume a running node's process without stopping it.
+    ///
+    /// The flap crank sends SIGSTOP and SIGCONT in turns, which is a node that
+    /// keeps its process, its seat, and its data, and answers only half the
+    /// rounds: the boundary case of the eviction rule.
+    pub fn signal_node(
+        &self,
+        id: usize,
+        signal: nix::sys::signal::Signal,
+    ) -> Result<()> {
+        let handle = &self.nodes[id];
+        let child = handle.child.as_ref().context("node not running")?;
+        let pid = child.id().context("child has no pid")?;
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), signal)
+            .with_context(|| format!("{signal} node {id}"))?;
         Ok(())
     }
 
@@ -426,7 +446,7 @@ metrics:
   enabled: true
 
 logging:
-  filter: "info,tape_node::features::lifecycle=debug"
+  filter: "info,tape_node::features::lifecycle=debug,tape_node::features::challenge=debug"
   format: compact
 "#,
         keypair = keypair_path.display(),
