@@ -150,11 +150,15 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .apply_to_track(track_addr, in_store)
         .ok_or(RouteError::NotFound)?;
 
+    // The reservation is folded in too. A track resolved from the overlay whose
+    // tape was only read from disk is not-found on every peer at once until the
+    // reservation finalizes, which is a whole finality window of refused deletes
+    // on any freshly reserved tape.
+    let in_store = state.context.store.get_tape(track.tape).map_err(store_error)?;
     let tape = state
         .context
-        .store
-        .get_tape(track.tape)
-        .map_err(store_error)?
+        .pending
+        .apply_to_tape(track.tape, in_store)
         .ok_or(RouteError::NotFound)?;
 
     if local_access_threshold(&state).0 > 0
@@ -586,5 +590,64 @@ mod tests {
         let result = call_get_track_proof(&ctx, track, Some(staked_peer)).await;
 
         assert!(result.is_ok());
+    }
+
+    // a track and the tape it names both resolve through the pending overlay,
+    // so a fresh tape's first track is servable at confirmed latency
+    #[tokio::test]
+    async fn pending_track_on_pending_tape() {
+        let ctx = test_context().await;
+        let tape = Address::new_unique();
+        let track_addr = track_pda(tape, TrackNumber(0)).0;
+        let track = CompressedTrack {
+            tape,
+            track_number: TrackNumber(0),
+            key: Hash::from([1u8; 32]),
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Certified as u64,
+            size: StorageUnits::from_bytes(64),
+            group: GroupIndex(0),
+            value_hash: Hash::from([2u8; 32]),
+        };
+
+        // The registration is confirmed but not finalized, which is exactly
+        // where a just-uploaded track sits.
+        ctx.pending.apply_register(
+            tape_core::types::SlotNumber(10),
+            track_addr,
+            track,
+            tape_core::track::data::BlobData::Inline(vec![]),
+        );
+
+        // Neither the track nor the tape is durable yet.
+        assert!(
+            matches!(
+                call_get_track_proof(&ctx, track_addr, None).await,
+                Err(RouteError::NotFound)
+            ),
+            "a track with no tape anywhere should not resolve"
+        );
+
+        ctx.pending.apply_reserve(
+            tape_core::types::SlotNumber(10),
+            tape,
+            TapeInfo {
+                id: TapeNumber(1),
+                flags: 0,
+                end_epoch: EpochNumber(100),
+                next_track_number: TrackNumber(0),
+            },
+        );
+        assert!(
+            call_get_track_proof(&ctx, track_addr, None).await.is_ok(),
+            "the overlay resolved the track but not its reservation"
+        );
+
+        // Dropping the slot takes the reservation with it.
+        ctx.pending.drop_slot(tape_core::types::SlotNumber(10));
+        assert!(matches!(
+            call_get_track_proof(&ctx, track_addr, None).await,
+            Err(RouteError::NotFound)
+        ));
     }
 }

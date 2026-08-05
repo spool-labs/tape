@@ -13,7 +13,7 @@ use tape_crypto::Hash;
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 
-use crate::core::channels::{DownstreamSenders, send_block};
+use crate::core::channels::{DownstreamSenders, send_block, ChainEvent};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
@@ -127,7 +127,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         let mut since_promote = 0usize;
         while let Some((_, fetched)) = blocks.next().await {
             if let Some(block) = fetched? {
-                self.enqueue(block);
+                self.enqueue(block).await?;
             }
             since_promote += 1;
             if since_promote >= FETCH_PIPELINE_DEPTH {
@@ -161,7 +161,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             let fetched =
                 fetch_and_parse_block(self.context.clone(), self.cancel.clone(), slot).await?;
             if let Some(block) = fetched {
-                self.enqueue(block);
+                self.enqueue(block).await?;
             }
             slot.next()
         };
@@ -192,7 +192,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     /// pending in-memory state. On a confirmed reorg the rolled-back pending
     /// entries are removed; on a chain break beyond queue depth the queue is
     /// cleared and the new block becomes the start of a new chain.
-    fn enqueue(&mut self, block: Arc<ParsedBlock>) {
+    async fn enqueue(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         let slot = block.slot;
         let finalized_when_fetched = slot <= self.finalized_tip;
         let outcome = self.queue.append(Arc::clone(&block), finalized_when_fetched);
@@ -209,6 +209,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                     dropped = dropped.len(),
                     "block_ingestor: confirmed reorg, rolled back forked entries"
                 );
+                // Ahead of the replacement, so a round seeded by a losing
+                // candidate is voided before its successor opens.
+                self.rolled(dropped.iter().map(|entry| entry.blockhash).collect())
+                    .await?;
                 self.context.pending.apply_block(&block);
             }
             AppendOutcome::ChainBroken => {
@@ -216,6 +220,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 for entry in &stale {
                     self.context.pending.drop_slot(entry.slot);
                 }
+                self.rolled(stale.iter().map(|entry| entry.blockhash).collect())
+                    .await?;
                 warn!(
                     slot = slot.0,
                     cleared = stale.len(),
@@ -230,6 +236,27 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             .ingest
             .progress()
             .record_queue_len(self.queue.len() as u64);
+
+        self.send_chain(ChainEvent::Produced(block)).await
+    }
+
+    /// Tell the challenge lane which candidates lost.
+    async fn rolled(&self, hashes: Vec<Hash>) -> Result<(), NodeError> {
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        self.send_chain(ChainEvent::Rolled(hashes)).await
+    }
+
+    /// One ordered lane, so a rollback always precedes what replaced it.
+    async fn send_chain(&self, event: ChainEvent) -> Result<(), NodeError> {
+        self.senders
+            .challenge
+            .send(event)
+            .await
+            .map_err(|_| NodeError::ChannelClosed {
+                channel: ChannelName::ChallengeManager,
+            })
     }
 
     /// Promote every queue head whose slot is at or below the finalized tip,
@@ -275,6 +302,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
     async fn fanout(&self, block: &Arc<ParsedBlock>) -> Result<(), NodeError> {
         let slot = block.slot;
+
+        // The challenge lane already saw this block when it was produced; what
+        // it needs now is that the block survived, which is what makes a round's
+        // evidence standing.
+        self.send_chain(ChainEvent::Finalized(block.blockhash)).await?;
 
         if let Err(error) = send_block(
             &self.senders.state,
