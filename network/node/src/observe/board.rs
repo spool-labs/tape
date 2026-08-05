@@ -1,5 +1,6 @@
 //! Builds a node's board from live context and the metric set.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -11,6 +12,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::bitmap::BitmapRead;
 use tape_core::types::SpoolIndex;
 use tape_core::challenge::record::{
+    NodeVerdict, PeerRecord, node_tally, node_verdict,
     MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
 };
 use tape_core::system::NodeStatus;
@@ -22,7 +24,7 @@ use tape_observe_api::{
     phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
     ChallengeRounds, DecodeStats, EpochInfo,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
-    NodeStats, ResourceInfo, RoundId, SpoolStat, StatsSource, StorageContents, StorageInfo,
+    ChallengeOwner, NodeStats, OwnerVerdict, ResourceInfo, RoundId, SpoolStat, StatsSource, StorageContents, StorageInfo,
     StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
     SPOOL_STAGES,
@@ -791,8 +793,50 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         rate_floor_bps: RATE_FLOOR.0,
         max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
         axis: round_axis(context, &rows),
+        owners: owner_rows(context, &state, &queued),
         rows,
     }
+}
+
+/// Every owner this node keeps records for, judged by its own rule.
+///
+/// Sent already judged so a reader draws the verdict rather than inventing one:
+/// the rule lives in core and a pooled rate is not one of its inputs.
+fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    queued: &[Address],
+) -> Vec<ChallengeOwner> {
+    let mut by_peer: BTreeMap<Address, Vec<PeerRecord>> = BTreeMap::new();
+    for ((node, spool), record) in context.store.iter_peer_records().unwrap_or_default() {
+        if holds_spool(state, node, spool) {
+            by_peer.entry(node).or_default().push(record);
+        }
+    }
+
+    let mut owners: Vec<ChallengeOwner> = by_peer
+        .into_iter()
+        .map(|(node, records)| {
+            let tally = node_tally(&records);
+            ChallengeOwner {
+                node: node.to_string(),
+                spools: tally.spools,
+                opportunities: tally.opportunities,
+                successes: tally.successes,
+                rate_bps: tally.rate().0,
+                worst_run: tally.worst_run,
+                verdict: match node_verdict(&records) {
+                    NodeVerdict::Healthy => OwnerVerdict::Healthy,
+                    NodeVerdict::Unproven => OwnerVerdict::Unproven,
+                    NodeVerdict::RunFailed => OwnerVerdict::RunFailed,
+                    NodeVerdict::RateFailed => OwnerVerdict::RateFailed,
+                },
+                queued: queued.contains(&node),
+            }
+        })
+        .collect();
+    owners.sort_by(|a, b| (a.rate_bps, &a.node).cmp(&(b.rate_bps, &b.node)));
+    owners
 }
 
 /// The rounds the strip's columns stand for, newest last.

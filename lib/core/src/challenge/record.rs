@@ -198,9 +198,159 @@ impl PeerRecord {
     }
 }
 
+/// What a node's spools say about it, as one answer.
+///
+/// The record is per spool but a proposal is against the node, so the arms are
+/// read across every spool it answers for. Kept here rather than at each caller:
+/// the eviction judge, the observe board and the dashboard were each deriving
+/// their own, and had already drifted apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeVerdict {
+    /// No spool has been judged enough times to mean anything.
+    Unproven,
+    /// A spool's lifetime rate is through the floor. It says nothing about
+    /// reachability, so answering a probe cannot clear it.
+    RateFailed,
+    /// A spool has stopped answering. A live probe can clear it.
+    RunFailed,
+    /// Nothing has fired.
+    Healthy,
+}
+
+/// Judge a node on every spool it still answers for.
+///
+/// The rate arm outranks the run arm because only the run arm makes a claim a
+/// probe can settle, so a node failing both is not let off by answering.
+pub fn node_verdict<'a>(records: impl IntoIterator<Item = &'a PeerRecord>) -> NodeVerdict {
+    let mut judged = 0;
+    let mut rate = false;
+    let mut run = false;
+    for record in records {
+        judged = judged.max(record.opportunities);
+        rate |= record.rate_fires();
+        run |= record.run_fires();
+    }
+
+    if rate {
+        NodeVerdict::RateFailed
+    } else if judged < MIN_OPPORTUNITIES {
+        // Below the floor a run is thinner evidence than a live probe, and a
+        // short active phase can leave a spool with only a handful of rounds.
+        NodeVerdict::Unproven
+    } else if run {
+        NodeVerdict::RunFailed
+    } else {
+        NodeVerdict::Healthy
+    }
+}
+
+/// A node's spools counted together, for reporting rather than for judging.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NodeTally {
+    /// Spools this node keeps a record for.
+    pub spools: u64,
+    /// Rounds judged, summed over them.
+    pub opportunities: u64,
+    /// Rounds answered, summed the same way.
+    pub successes: u64,
+    /// The longest run any one spool is on, which is the one that would fire.
+    pub worst_run: u64,
+}
+
+impl NodeTally {
+    /// Answered over judged, pooled across the spools.
+    ///
+    /// For display only. No arm of the rule reads a pooled rate: a node failing
+    /// one spool of five still shows four fifths here while `node_verdict` has
+    /// already failed it.
+    pub fn rate(&self) -> BasisPoints {
+        if self.opportunities == 0 {
+            return BasisPoints(BasisPoints::MAX);
+        }
+        BasisPoints(self.successes * BasisPoints::MAX / self.opportunities)
+    }
+}
+
+/// Count a node's spools together.
+pub fn node_tally<'a>(records: impl IntoIterator<Item = &'a PeerRecord>) -> NodeTally {
+    let mut tally = NodeTally::default();
+    for record in records {
+        tally.spools += 1;
+        tally.opportunities += record.opportunities;
+        tally.successes += record.successes;
+        tally.worst_run = tally.worst_run.max(record.consecutive_misses);
+    }
+    tally
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spool(opportunities: u64, successes: u64, run: u64) -> PeerRecord {
+        PeerRecord {
+            opportunities,
+            successes,
+            consecutive_misses: run,
+            ..PeerRecord::default()
+        }
+    }
+
+    // one dead spool fails the node, however healthy the others look pooled
+    #[test]
+    fn one_dead_spool_fails_the_node() {
+        let healthy = spool(20, 20, 0);
+        let dead = spool(20, 0, MAX_CONSECUTIVE_MISSES);
+        let records = [healthy, healthy, healthy, healthy, dead];
+
+        assert_eq!(node_verdict(&records), NodeVerdict::RateFailed);
+
+        // The pooled rate the board shows is comfortably above the floor, which
+        // is why it must never be what the rule reads.
+        let tally = node_tally(&records);
+        assert_eq!(tally.spools, 5);
+        assert!(tally.rate() > RATE_FLOOR);
+        assert_eq!(tally.worst_run, MAX_CONSECUTIVE_MISSES);
+    }
+
+    // the rate arm outranks the run arm, since a probe cannot clear it
+    #[test]
+    fn rate_outranks_run() {
+        let both = spool(MIN_OPPORTUNITIES, 0, MAX_CONSECUTIVE_MISSES);
+        assert!(both.rate_fires() && both.run_fires());
+        assert_eq!(node_verdict(&[both]), NodeVerdict::RateFailed);
+    }
+
+    // a run on too few rounds is thinner than a probe, so it stays unproven
+    #[test]
+    fn a_short_run_is_unproven() {
+        let short = spool(MAX_CONSECUTIVE_MISSES, 0, MAX_CONSECUTIVE_MISSES);
+        assert!(short.run_fires());
+        assert!(!short.rate_fires(), "too few rounds for the rate arm");
+        assert_eq!(node_verdict(&[short]), NodeVerdict::Unproven);
+    }
+
+    // past the floor, a run is the node's verdict
+    #[test]
+    fn a_long_run_fails_the_node() {
+        let stalled = spool(MIN_OPPORTUNITIES + 4, MIN_OPPORTUNITIES + 1, MAX_CONSECUTIVE_MISSES);
+        assert!(!stalled.rate_fires());
+        assert_eq!(node_verdict(&[stalled]), NodeVerdict::RunFailed);
+    }
+
+    // a node nobody has judged is unproven, not healthy and not failed
+    #[test]
+    fn no_records_is_unproven() {
+        assert_eq!(node_verdict(&[]), NodeVerdict::Unproven);
+        assert_eq!(node_tally(&[]).rate(), BasisPoints(BasisPoints::MAX));
+    }
+
+    // answering every round on every spool passes
+    #[test]
+    fn every_spool_answering_is_healthy() {
+        let good = spool(MIN_OPPORTUNITIES + 2, MIN_OPPORTUNITIES + 2, 0);
+        assert_eq!(node_verdict(&[good, good, good]), NodeVerdict::Healthy);
+    }
 
     fn at(round: u64) -> (EpochNumber, RoundNumber) {
         (EpochNumber(1), RoundNumber(round))

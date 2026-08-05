@@ -9,7 +9,7 @@ use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_protocol::api::{GetHealthReq, GetHealthRes};
 use tape_protocol::{Api, ProtocolState};
-use tape_core::challenge::record::MIN_OPPORTUNITIES;
+use tape_core::challenge::record::{NodeVerdict, PeerRecord, node_verdict};
 use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -156,29 +156,22 @@ where
             return true;
         }
 
-        // A record per spool, but the proposal is against the node, so the
-        // worst spool decides: one dropped spool is one too many, and a peer
-        // answering its other four does not clear it. Only the spools it still
-        // answers for, or a handoff would hand its successor the old owner's run.
-        let records: Vec<_> = self
+        // Only the spools it still answers for, or a handoff would hand its
+        // successor the old owner's run.
+        let records: Vec<PeerRecord> = self
             .context
             .store
             .records_for_peer(node)
             .unwrap_or_default()
             .into_iter()
             .filter(|(spool, _)| holds_spool(state, node, *spool))
+            .map(|(_, record)| record)
             .collect();
-        let judged = records.iter().map(|(_, r)| r.opportunities).max().unwrap_or_default();
-        let rate_fires = records.iter().any(|(_, record)| record.rate_fires());
-        let run_fires = records.iter().any(|(_, record)| record.run_fires());
-        let healthy = if judged < MIN_OPPORTUNITIES {
-            self.answers(node).await
-        } else if rate_fires {
-            false
-        } else if run_fires {
-            self.answers(node).await
-        } else {
-            true
+
+        let healthy = match node_verdict(&records) {
+            NodeVerdict::RateFailed => false,
+            NodeVerdict::Unproven | NodeVerdict::RunFailed => self.answers(node).await,
+            NodeVerdict::Healthy => true,
         };
         if healthy {
             debug!(node = %node, "eviction: target probed healthy, dropping");

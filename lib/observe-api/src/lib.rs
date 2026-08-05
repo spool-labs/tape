@@ -425,6 +425,9 @@ pub struct ChallengeGrid {
     pub max_consecutive_misses: u64,
     /// One row per peer, worst first so an outlier is the top row.
     pub rows: Vec<ChallengeRow>,
+    /// One row per owner, judged by this node's own rule.
+    #[serde(default)]
+    pub owners: Vec<ChallengeOwner>,
     /// Which rounds the strip's columns stand for, right-aligned with them.
     ///
     /// Every member of a group is judged in the same rounds, so one axis labels
@@ -432,6 +435,52 @@ pub struct ChallengeGrid {
     /// swept behind it, in which case the oldest columns go unlabelled.
     #[serde(default)]
     pub axis: Vec<RoundId>,
+}
+
+/// One owner's spools judged together, as the node judged them.
+///
+/// The rule lives in the node, so a reader draws this rather than deriving its
+/// own. `rate` is pooled across the spools and is for display: a node failing
+/// one spool of five still shows four fifths here while `verdict` has failed it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChallengeOwner {
+    /// Peer address, base58.
+    pub node: String,
+    /// Spools this node keeps a record for.
+    pub spools: u64,
+    /// Rounds judged, summed over them.
+    pub opportunities: u64,
+    /// Rounds answered, summed the same way.
+    pub successes: u64,
+    /// Answered over judged, pooled, in basis points.
+    pub rate_bps: u64,
+    /// The longest run any one spool is on.
+    pub worst_run: u64,
+    /// What the node's own rule makes of it.
+    pub verdict: OwnerVerdict,
+    /// Whether this node has it queued for eviction.
+    pub queued: bool,
+}
+
+/// What a node's rule makes of one owner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OwnerVerdict {
+    /// Nothing has fired.
+    #[default]
+    Healthy,
+    /// Too few rounds on every spool to judge.
+    Unproven,
+    /// A spool has stopped answering. A probe can clear it.
+    RunFailed,
+    /// A spool's lifetime rate is through the floor. A probe cannot.
+    RateFailed,
+}
+
+impl OwnerVerdict {
+    /// Whether the rule has fired, either arm.
+    pub fn fired(self) -> bool {
+        matches!(self, OwnerVerdict::RunFailed | OwnerVerdict::RateFailed)
+    }
 }
 
 /// One round's place in the timeline.
