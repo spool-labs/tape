@@ -1,3 +1,3 @@
 mod types;
 
-pub use types::{EpochBundle, ProtocolState};
+pub use types::{EpochBundle, Freshness, ProtocolState};

@@ -181,28 +181,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         admission::slice_admission::<Db, Cluster, Blockchain>,
                     )),
             )
-            // Challenge traffic: an answer and the attestations over it. Both
-            // are verified in the handler before anything is kept, and both must
-            // reach every group member, so they sit behind the peer body limit
-            // and the ordinary peer admission rather than a staking gate.
-            .route(
-                api_routes::CHALLENGE_PROOF_PATH,
-                post(handlers::challenge::proof_of_access::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit)
-                    .layer(from_fn_with_state(
-                        state.clone(),
-                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
-                    )),
-            )
-            .route(
-                api_routes::CHALLENGE_ATTEST_PATH,
-                post(handlers::challenge::attest::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit)
-                    .layer(from_fn_with_state(
-                        state.clone(),
-                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
-                    )),
-            )
             // Staked-peer gated POSTs. Snapshot/system tape catalogs are also
             // listable for bootstrap catch-up.
             .route(

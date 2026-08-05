@@ -38,11 +38,13 @@ use crate::http::handlers::s3::{
 };
 use crate::http::handlers::{health, object, site, track};
 use crate::meter::GatewayMeter;
+use crate::staging::StagingStore;
 
 pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
+    staging: Arc<StagingStore>,
     http_config: HttpConfig,
     cancel: CancellationToken,
 }
@@ -60,6 +62,7 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
+        staging: Arc<StagingStore>,
         http_config: HttpConfig,
         cancel: CancellationToken,
     ) -> Self {
@@ -67,6 +70,7 @@ where
             context,
             slice_cache,
             meter,
+            staging,
             http_config,
             cancel,
         }
@@ -84,6 +88,7 @@ where
             accounting: Arc::new(Accounting::new()),
             admission: Arc::new(AdmitAll),
             site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
+            staging: self.staging.clone(),
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
@@ -227,6 +232,7 @@ pub struct GatewayS3Server<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
+    staging: Arc<StagingStore>,
     write_ctx: Option<Arc<S3WriteContext>>,
     accounting: Arc<Accounting>,
     admission: Arc<dyn Admission>,
@@ -247,6 +253,7 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
+        staging: Arc<StagingStore>,
         accounting: Arc<Accounting>,
         admission: Arc<dyn Admission>,
         s3_config: S3Config,
@@ -276,6 +283,7 @@ where
             context,
             slice_cache,
             meter,
+            staging,
             write_ctx,
             accounting,
             admission,
@@ -294,6 +302,7 @@ where
             admission: self.admission.clone(),
             // The S3 listener never serves site hosts.
             site_hosts: None,
+            staging: self.staging.clone(),
         };
 
         let verifier = verifier_from_config(&self.s3_config);

@@ -13,7 +13,6 @@ use tracing::{debug, info, warn};
 use crate::chain::submit_join_committee;
 use crate::core::chain_tx::{submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind};
 use crate::context::NodeContext;
-use crate::features::lifecycle::manager::next_committee_filled;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Submit a JoinCommittee transaction to volunteer for the next
@@ -58,39 +57,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         match outcome {
             TxOutcome::Confirmed(sig) => {
                 info!(epoch = epoch.0, %sig, "join_committee: confirmed");
-                // Hold Done until the membership shows up in ingested state.
-                // The planner replans the moment a task returns, and until the
-                // join is observed it still reads this node as absent, so
-                // returning on confirmation alone resubmits the join once per
-                // replan for as long as ingest lags the chain.
-                loop {
-                    let state = ctx.state();
-                    if state.epoch() != epoch {
-                        return TaskDone::Rejected(Action::JoinCommittee, epoch);
-                    }
-                    if state.find_member_next(ctx.node_address()).is_some() {
-                        return TaskDone::Done(Action::JoinCommittee, epoch);
-                    }
-                    // A confirmed join does not promise a seat: a full committee
-                    // seats by stake, so a later higher-stake join can bump this
-                    // node back out. Once the committee reads full without us
-                    // the wait would never end, and holding the task here starves
-                    // the very replan that rejoins when an eviction frees a seat.
-                    if next_committee_filled(&state) {
-                        info!(epoch = epoch.0, "join_committee: outcompeted, seated members all outrank us");
-                        return TaskDone::Done(Action::JoinCommittee, epoch);
-                    }
-                    tokio::select! {
-                        changed = state_rx.changed() => {
-                            if changed.is_err() {
-                                return TaskDone::Cancelled(Action::JoinCommittee, epoch);
-                            }
-                        }
-                        _ = cancel.cancelled() => {
-                            return TaskDone::Cancelled(Action::JoinCommittee, epoch);
-                        }
-                    }
-                }
+                return TaskDone::Done(Action::JoinCommittee, epoch);
             }
             TxOutcome::Rejected {
                 kind: TxRejectionKind::Program(

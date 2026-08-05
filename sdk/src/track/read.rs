@@ -108,7 +108,8 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
             slice_to_node,
             k,
             client.read_options.slice_concurrency,
-        );
+        )
+        .with_reputation(client.reputation.clone());
         let download = client.timer(operation, Phase::Download);
 
         let slices = downloader

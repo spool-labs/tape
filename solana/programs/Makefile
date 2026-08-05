@@ -8,7 +8,6 @@
 # Usage:
 #   make build - Build all programs as SBPFv3 (cargo build-sbf --arch v3)
 #   make local - Start a local solana-test-validator with all programs loaded
-#                (LEDGER_SHREDS=n to change how much history it keeps)
 #   make reset-ledger - Remove the local validator ledger directory
 #   make test  - Test all programs (cargo test-sbf)
 #   make clean - Clean all program build artifacts
@@ -18,11 +17,6 @@ ROOT_TARGET_DEPLOY = ../../target/deploy
 ROOT_TEST_ELFS ?= ../../test/elfs
 LEDGER_DIR = test-ledger
 SBF_ARCH ?= v3
-
-# Shreds the validator keeps in root slots. Its own default is 10,000, which is
-# minutes of history: once it prunes, a node that fell behind can no longer fetch
-# the blocks it needs and never catches up. Override for a shorter or longer run.
-LEDGER_SHREDS ?= 50000000
 
 # Default target
 .PHONY: all
@@ -50,7 +44,6 @@ test: $(PROGRAMS)
 .PHONY: local
 local:
 	solana-test-validator \
-		--limit-ledger-size $(LEDGER_SHREDS) \
 		--bpf-program 8to76GbzdszBPa4MrHB51THLMPHhCQqBn6QMnkV39SeJ $(ROOT_TARGET_DEPLOY)/tapedrive.so \
 		--bpf-program 9TKqqrY8fycneWmB4faVnaHAHhPoh4bqab6ZHns2Th3D $(ROOT_TARGET_DEPLOY)/token.so \
 		--bpf-program DFjY8Dqcovw4oJG5ynAHrBFqjoEXLhAnbFymCMGoX9jZ $(ROOT_TARGET_DEPLOY)/exchange.so \

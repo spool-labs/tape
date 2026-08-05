@@ -1,11 +1,9 @@
-pub mod challenge;
 pub mod error;
 pub mod track;
 pub mod snapshot;
 pub mod assignment;
 pub mod node;
 
-pub use challenge::*;
 pub use error::*;
 pub use track::*;
 pub use snapshot::*;

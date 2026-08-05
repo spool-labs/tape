@@ -7,6 +7,7 @@ use peer_http::HttpApi;
 use peer_manager::PeerManager;
 use rpc::Rpc;
 use rpc_client::RpcClient;
+use tape_api::program::tapedrive;
 use tape_core::prelude::{CompressedTrack, StorageUnits};
 use tape_core::types::coin::{SOL, TAPE};
 use tape_core::types::ContentType;
@@ -15,10 +16,11 @@ use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::balance::{sol_balance_of, tape_balance_of};
+use crate::bootstrap::{BootstrapStore, Reputation};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
-use crate::metrics::{Metrics, Noop, Operation, Outcome, Phase, Timer};
+use crate::metrics::{Metrics, Noop, Operation, Phase, Timer};
 use crate::read_options::ReadOptions;
 use crate::write_options::WriteOptions;
 use crate::stream::{
@@ -26,7 +28,7 @@ use crate::stream::{
     receipt::StreamReceipt,
     write::{write_bytes as write_stream_bytes, write_stream as write_reader_stream},
 };
-use crate::track::write::{UNNAMED_TRACK, UNTYPED_TRACK};
+use crate::track::write::{write_or_resume, UNNAMED_TRACK, UNTYPED_TRACK};
 
 /// High-level client for the Tapedrive storage network.
 ///
@@ -40,6 +42,7 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub metrics: Arc<dyn Metrics>,
     pub write_options: WriteOptions,
     pub read_options: ReadOptions,
+    pub reputation: Arc<Reputation>,
 }
 
 /// Default constructor using `HttpApi`.
@@ -57,16 +60,13 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
         let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
-        Self {
-            state: ArcSwap::from_pointee(ProtocolState::default()),
+        Self::from_parts(
+            ArcSwap::from_pointee(ProtocolState::default()),
             peer_manager,
             api,
-            rpc: rpc_client,
-            payer: None,
-            metrics: Arc::new(Noop),
-            write_options: WriteOptions::default(),
-            read_options: ReadOptions::default(),
-        }
+            rpc_client,
+            None,
+        )
     }
 }
 
@@ -88,7 +88,33 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             metrics: Arc::new(Noop),
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
+            reputation: Arc::new(Reputation::detached()),
         }
+    }
+
+    /// Replace the cached network state, freshly verified.
+    ///
+    /// The mark goes on before the store, so the state is never visible in the
+    /// distrusted window between the two.
+    pub fn store_state(&self, state: ProtocolState) {
+        state.touch();
+        self.state.store(Arc::new(state));
+    }
+
+    /// Share an existing reputation table rather than starting a fresh one.
+    ///
+    /// A long-lived caller that rebuilds a client per request must pass its own
+    /// here, otherwise every request starts with an empty table and the peer
+    /// ordering never learns anything.
+    pub fn with_reputation(mut self, reputation: Arc<Reputation>) -> Self {
+        self.reputation = reputation;
+        self
+    }
+
+    /// Persist peer reputation and bootstrap hints to this store.
+    pub fn with_bootstrap_cache(mut self, store: BootstrapStore) -> Self {
+        self.reputation = Arc::new(Reputation::attach(store, tapedrive::id().into()));
+        self
     }
 
     /// Attach or replace the payer used for mutating operations.
@@ -146,18 +172,21 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     /// Write unnamed content-addressed data to the network in one call.
     ///
-    /// Creates a tape sized to fit `data` exactly, registers a track,
-    /// uploads erasure-coded slices to storage nodes, and certifies the
+    /// Reserves the tape controlled by `tape_key` sized to fit `data`, registers
+    /// a track, uploads erasure-coded slices to storage nodes, and certifies the
     /// track with BLS signatures. Unnamed tracks are excluded from object
     /// listings.
     ///
-    /// Returns the tape key (save it!) and the registered track.
+    /// The caller owns the tape key: generate and durably persist it before
+    /// calling, so an interrupted write leaves the reserved tape recoverable.
     pub async fn write(
         &self,
+        tape_key: &TapeKey,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
+    ) -> Result<CompressedTrack, TapedriveError> {
         self.write_named(
+            tape_key,
             UNNAMED_TRACK,
             UNTYPED_TRACK,
             data,
@@ -169,36 +198,24 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Write named data to the network in one call.
     ///
     /// Named tracks on non-system tapes are materialized into object listings.
+    /// The caller owns the tape key, same as write.
     pub async fn write_named(
         &self,
+        tape_key: &TapeKey,
         name: impl AsRef<[u8]>,
         content_type: ContentType,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, CompressedTrack), TapedriveError> {
+    ) -> Result<CompressedTrack, TapedriveError> {
         let total = self
             .timer(Operation::Write, Phase::Total)
             .bytes(data.len() as u64);
 
-        let tape_key = TapeKey::generate();
-        let capacity = StorageUnits::from_bytes(data.len() as u64);
-        let reserve_capacity = capacity + StorageUnits::mb(1);
-
-        let reserve = self.timer(Operation::Write, Phase::Reserve);
-        let result = self.reserve(&tape_key, reserve_capacity, epochs).await;
-        reserve.finish_result(&result);
-        if let Err(error) = result {
-            total.finish(Outcome::Error);
-            return Err(error);
-        }
-
-        let result = self
-            .write_named_track(&tape_key, name, content_type, data)
-            .await;
+        let result =
+            write_or_resume(self, tape_key, name.as_ref(), content_type, data, epochs).await;
         total.finish_result(&result);
-        let track = result?;
 
-        Ok((tape_key, track))
+        result
     }
 
     /// Write unnamed in-memory bytes to an existing tape as a logical stream.
@@ -332,7 +349,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         result
     }
 }
-
 
 #[cfg(test)]
 mod tests {
