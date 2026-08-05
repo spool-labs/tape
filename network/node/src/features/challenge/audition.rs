@@ -117,16 +117,9 @@ fn set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// The sample a spool owes this round, from replayed state.
 ///
-/// Rows are written when a registration replays, so every owner enumerates the
-/// same entries. Reading local holdings diverged instead: a write certifies at
-/// q of n, so some members hold no slice and drew a different question.
-///
-/// Cut at the round window's base slot, on the two slots the chain records.
-///
-/// Read off the round's own epoch, not the node's current one. A round opened
-/// late in an epoch settles after the boundary, and deriving its question from
-/// the new epoch's grid answers about the wrong rounds, so nobody attests and
-/// every owner is charged for a question no observer could put.
+/// Every owner enumerates the same rows, where local holdings diverge: a write
+/// certifies at q of n, so some members hold no slice. Cut on the round's own
+/// epoch, since a round opened late settles after the boundary.
 pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     state: &ProtocolState,

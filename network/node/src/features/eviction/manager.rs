@@ -144,26 +144,12 @@ where
     }
 
     /// Judge the target with this node's own probe, at most once per voting
-    /// epoch. A proposal alone never recruits a signature: only a target this
-    /// node observes failing stays queued, and a recovered target is dropped.
+    /// epoch, so a recovered target is dropped rather than voted out.
     ///
-    /// A group-mate is judged by the challenge record this node has been keeping
-    /// for it, once that record holds enough rounds to mean anything. Below that
-    /// it falls back to a health ping, which is also what a node outside the
-    /// target's group always does, since only a group-mate auditions its rounds.
-    ///
-    /// The threshold matters. A record with one or two observations is thinner
-    /// evidence than a live probe, and an epoch whose active phase was short may
-    /// have held very few rounds.
-    ///
-    /// The two arms of the rule are weighed differently, because only one of them
-    /// says anything a probe can answer. A run of misses claims the peer stopped
-    /// answering, and the record has no notion of recency, so a run left over from
-    /// an outage that has already ended keeps firing and only a success clears it,
-    /// which a queued peer has no chance to earn. A peer that answers now is
-    /// therefore dropped on that arm alone. The rate arm claims nothing about
-    /// reachability: a peer serving invalid proofs every round trips it while
-    /// answering every probe, so nothing it says can clear it.
+    /// Judged on the challenge record once it holds enough rounds, on a health
+    /// ping below that. The arms differ: a run claims the peer stopped
+    /// answering, so answering now clears it. The rate arm claims nothing about
+    /// reachability, so a probe cannot clear it.
     async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
         let epoch = state.epoch();
         if self.probe_failed.get(&node) == Some(&epoch) {

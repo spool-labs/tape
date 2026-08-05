@@ -1,14 +1,11 @@
 //! The sample one storage challenge round draws from a spool's assigned data.
 //!
-//! Only the challenger runs this. The target answers bare coordinates and never
-//! re-derives the draw, so what has to agree is two challengers of the same spool,
-//! not the two sides of one round. Nothing here touches storage, so an owner
-//! cannot shrink its own sample set by dropping the data it lost.
+//! Only the challenger runs this, so what has to agree is two challengers of the
+//! same spool. Nothing here touches storage, so an owner cannot shrink its own
+//! sample set by dropping what it lost.
 //!
-//! The draw is uniform over sample leaves rather than over tracks, which makes it
-//! byte-weighted: a track spanning more leaves is proportionally more likely to be
-//! inspected. Entries must arrive in track-address order; `sort_entries` puts them
-//! there for a caller whose source does not already guarantee it.
+//! Uniform over leaves rather than tracks, which makes it byte-weighted. Entries
+//! must arrive in track-address order.
 
 use serde::{Deserialize, Serialize};
 use tape_crypto::Address;

@@ -28,16 +28,13 @@ pub const SPAN_SLOTS: u64 = 4;
 
 /// Slots before a round's window that the sample set is cut at.
 ///
-/// A round opens on a produced block, so the slot it names is ahead of what any
-/// owner has applied: rows land on the finalized path, and each owner's frontier
-/// sits a finality window back by a slightly different amount. Cutting at the
-/// window itself would put every write in that gap on one owner's side of the
-/// question and not another's, which is the divergence the chain-derived set
-/// exists to remove. Cutting behind it puts the whole gap on everyone's side.
+/// A round opens on a produced block, ahead of what any owner has applied, and
+/// owners' frontiers sit a finality window back by differing amounts. Cutting at
+/// the window would put writes in that gap on one owner's side and not another's.
+/// Cutting behind it puts the whole gap on everyone's side.
 ///
-/// Wide enough for Solana finality plus the spread between owners, which
-/// `AT_TIP_THRESHOLD_SLOTS` bounds at five. A track registered inside the
-/// lookback is simply not asked about until the next round.
+/// Wide enough for finality plus the spread, which `AT_TIP_THRESHOLD_SLOTS`
+/// bounds at five.
 pub const SAMPLE_LOOKBACK_SLOTS: u64 = 64;
 
 /// Slots after the entropy block by which a proof must arrive.

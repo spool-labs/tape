@@ -1,19 +1,12 @@
 //! What one owner remembers about a peer's answers.
 //!
-//! The record is local and private: it is this node's own history of a peer, not
-//! anything the network agrees on. A missing answer is a local miss rather than
-//! proof of failure, since an honest response can be late or lost, so the record
-//! accumulates and only a sustained pattern means anything.
+//! Local and private, never anything the network agrees on. A missing answer is
+//! a local miss, not proof of failure, so only a sustained pattern means
+//! anything. Never reset at a boundary, or a rule could never fire across one.
 //!
-//! It is never reset at an epoch boundary. A node that stops answering keeps
-//! accumulating across the boundary, which is what lets a rule fire on the next
-//! one rather than starting over each time.
-//!
-//! Outcomes do not always arrive in round order: a certificate folds the moment
-//! it forms, while a miss folds only when the next round opens, so a fold is
-//! judged against what is already recorded for that round rather than against a
-//! high-water mark. A late certificate may replace a recorded miss, which the
-//! paper requires. Nothing ever replaces a recorded success.
+//! Outcomes arrive out of round order, since a certificate folds when it forms
+//! and a miss folds when the next round opens. A late certificate replaces a
+//! recorded miss, which the paper requires. Nothing replaces a success.
 
 use serde::{Deserialize, Serialize};
 
