@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::types::{EpochNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
 use tape_protocol::Api;
 use tape_crypto::Address;
 use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps}};
@@ -17,6 +17,7 @@ use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps}};
 use crate::config::store::GcConfig;
 use crate::context::NodeContext;
 use crate::features::challenge::fold::holds_spool;
+use crate::features::store::cleanup::sweep_deleted_slices;
 use crate::core::error::NodeError;
 use crate::core::ingest::{AT_TIP_THRESHOLD_SLOTS, IngestState};
 use crate::core::types::ServiceName;
@@ -66,6 +67,21 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
                 _ = self.cancel.cancelled() => return Ok(()),
                 _ = ticker.tick() => {
                     let current_epoch = self.context.state().epoch();
+
+                    // On the tick, not the epoch sweep. A deleted track's slices
+                    // only have to outlive the rounds that can still ask for
+                    // them, and waiting for the sweep would hold them for an
+                    // epoch, which on mainnet is a week.
+                    let slot = SlotNumber(self.context.ingest.progress().last_dispatched_slot());
+                    match sweep_deleted_slices(self.context.store.as_ref(), slot) {
+                        Ok(swept) if swept.tracks > 0 => debug!(
+                            tracks = swept.tracks,
+                            slices = swept.slices,
+                            "gc: forgot deleted tracks past the round horizon"
+                        ),
+                        Ok(_) => {}
+                        Err(error) => warn!(%error, "gc: deleted-track sweep failed"),
+                    }
 
                     if next_pending_epoch(self.context.store.as_ref(), current_epoch)?.is_some() {
                         catch_up_epochs(&self.context, &self.config, current_epoch).await?;

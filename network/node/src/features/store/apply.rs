@@ -787,12 +787,14 @@ mod tests {
 
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
+        // The slices outlive the deletion: a round whose window opened before it
+        // still asks about the track, and the sweep drops both together.
         for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
                     .get_slice(group.spool_at(slice_index), track)
                     .unwrap()
-                    .is_none()
+                    .is_some()
             );
         }
     }
@@ -842,12 +844,14 @@ mod tests {
                 slot: SlotNumber(55),
             })
         );
+        // The slices outlive the deletion: a round whose window opened before it
+        // still asks about the track, and the sweep drops both together.
         for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
                     .get_slice(group.spool_at(slice_index), track)
                     .unwrap()
-                    .is_none()
+                    .is_some()
             );
         }
     }
@@ -936,12 +940,13 @@ mod tests {
         for track in [track_a, track_b] {
             assert!(store.get_track(track).unwrap().is_none());
             assert!(store.get_object_info(track).unwrap().is_none());
+            // Slices outlive the deletion, as above.
             for slice_index in 0..GROUP_SIZE {
                 assert!(
                     store
                         .get_slice(group.spool_at(slice_index), track)
                         .unwrap()
-                        .is_none()
+                        .is_some()
                 );
             }
         }

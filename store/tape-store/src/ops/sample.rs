@@ -39,7 +39,17 @@ pub trait SampleOps {
         -> Result<Vec<(Address, TrackSample)>>;
 
     /// Drop rows whose deletion no round can reference any more.
-    fn prune_track_samples_before(&self, slot: SlotNumber) -> Result<usize>;
+    /// Forget one track's row, once nothing can draw it any more.
+    fn delete_track_sample(&self, group: GroupIndex, track: Address) -> Result<()>;
+
+    /// Tracks marked deleted before a slot, whichever group they sit in.
+    ///
+    /// The caller drops the slices those rows stood for once no live round can
+    /// still draw them, which is a round horizon rather than an epoch.
+    fn track_samples_deleted_before(
+        &self,
+        slot: SlotNumber,
+    ) -> Result<Vec<(GroupIndex, Address)>>;
 }
 
 impl<S: Store> SampleOps for TapeStore<S> {
@@ -105,24 +115,30 @@ impl<S: Store> SampleOps for TapeStore<S> {
         Ok(entries)
     }
 
-    fn prune_track_samples_before(&self, slot: SlotNumber) -> Result<usize> {
-        let raw = self.inner().inner();
-        let mut batch = store::WriteBatch::new();
-        let mut dropped = 0usize;
+    fn delete_track_sample(&self, group: GroupIndex, track: Address) -> Result<()> {
+        self.delete::<TrackSampleCol>(&TrackSampleKey::new(group, track))?;
+        Ok(())
+    }
 
-        for (key_bytes, value_bytes) in raw.iter_prefix(TrackSampleCol::CF_NAME, &[])? {
+    fn track_samples_deleted_before(
+        &self,
+        slot: SlotNumber,
+    ) -> Result<Vec<(GroupIndex, Address)>> {
+        let mut found = Vec::new();
+        for (key_bytes, value_bytes) in self
+            .inner()
+            .inner()
+            .iter_prefix(TrackSampleCol::CF_NAME, &[])?
+        {
             let sample: TrackSample = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("sample row: {e}")))?;
             if sample.deleted_slot.is_some_and(|deleted| deleted < slot) {
-                batch.delete_owned(TrackSampleCol::CF_NAME, key_bytes);
-                dropped += 1;
+                let key: TrackSampleKey = wincode::deserialize(&key_bytes)
+                    .map_err(|e| TapeStoreError::Serialization(format!("sample key: {e}")))?;
+                found.push((key.group, key.track));
             }
         }
-
-        if dropped > 0 {
-            raw.write_batch(batch)?;
-        }
-        Ok(dropped)
+        Ok(found)
     }
 }
 
@@ -242,7 +258,11 @@ mod tests {
         store.mark_track_sample_deleted(GroupIndex(1), old, SlotNumber(10)).unwrap();
         store.mark_track_sample_deleted(GroupIndex(1), recent, SlotNumber(90)).unwrap();
 
-        assert_eq!(store.prune_track_samples_before(SlotNumber(50)).unwrap(), 1);
+        assert_eq!(
+            store.track_samples_deleted_before(SlotNumber(50)).unwrap(),
+            vec![(GroupIndex(1), old)]
+        );
+        store.delete_track_sample(GroupIndex(1), old).unwrap();
         assert!(store.track_sample(GroupIndex(1), old).unwrap().is_none());
         assert!(store.track_sample(GroupIndex(1), live).unwrap().is_some());
         assert!(store.track_sample(GroupIndex(1), recent).unwrap().is_some());

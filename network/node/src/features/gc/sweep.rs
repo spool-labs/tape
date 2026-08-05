@@ -9,7 +9,7 @@ use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_store::{
     TapeStore,
-    ops::{ChallengeOps, ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+    ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
     types::ObjectInfo,
 };
 use tracing::debug;
@@ -54,12 +54,6 @@ pub async fn sweep_epoch<Db: Store>(
     stats += sweep_orphan_slices(store, config, pending, at_tip).await?;
 
     sweep_stale_recoveries(store, pending, at_tip).await?;
-
-    // A round from before this epoch has settled or been retired, so nothing
-    // can reference an older deletion any more.
-    store
-        .prune_track_samples_before(epoch_start_slot)
-        .map_err(store_error)?;
 
     let keep_from = EpochNumber(
         current_epoch
@@ -395,13 +389,20 @@ mod tests {
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
+    use tape_core::challenge::sample::EntryKind;
     use tape_store::{
-        ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
-        types::{ObjectInfo, SystemObjectKind, TapeInfo},
+        ops::{
+            ChallengeOps, ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
+            TrackOps,
+        },
+        types::{ObjectInfo, SystemObjectKind, TapeInfo, TrackSample},
         TapeStore,
     };
 
     use super::{should_delete_slice, sweep_epoch, PendingTracks};
+    use crate::features::store::cleanup::{
+        cleanup_track_slices, sweep_deleted_slices, DELETED_SLICE_HORIZON_SLOTS,
+    };
     use crate::config::store::GcConfig;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -841,6 +842,58 @@ mod tests {
         store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
 
         assert!(!should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
+    }
+
+    // a deleted track keeps its slices while a round can still draw it, and only
+    // that long: tying them to the epoch sweep would hold them for a week on
+    // mainnet
+    #[tokio::test]
+    async fn slices_outlive_the_delete_by_a_round_horizon() {
+        let store = test_store();
+        let track = Address::new_unique();
+        let group = GroupIndex(0);
+        let spool = group.spool_at(0);
+
+        store.put_slice(spool, track, vec![7u8; 32]).unwrap();
+        store
+            .put_track_data(track, tape_core::track::data::BlobData::Inline(vec![1, 2, 3]))
+            .unwrap();
+        store
+            .put_track_sample(
+                group,
+                track,
+                TrackSample {
+                    kind: EntryKind::Inline,
+                    value_hash: Hash::default(),
+                    registered_slot: SlotNumber(1),
+                    deleted_slot: None,
+                },
+            )
+            .unwrap();
+
+        cleanup_track_slices(&store, track, group, SlotNumber(10)).unwrap();
+        assert!(
+            store.get_slice(spool, track).unwrap().is_some(),
+            "the delete took bytes a live round still asks for"
+        );
+        assert!(
+            store.get_track_data(track).unwrap().is_some(),
+            "the delete took the encoding an observer verifies against"
+        );
+
+        // Inside the horizon a round can still draw it, so the bytes stay.
+        let inside = SlotNumber(10 + DELETED_SLICE_HORIZON_SLOTS);
+        assert_eq!(sweep_deleted_slices(&store, inside).unwrap().tracks, 0);
+        assert!(store.get_slice(spool, track).unwrap().is_some());
+
+        // Past it, nothing can, and the row goes with its slices and encoding.
+        // One horizon owns all three, or whichever went first strands the rest.
+        let past = SlotNumber(11 + DELETED_SLICE_HORIZON_SLOTS);
+        let swept = sweep_deleted_slices(&store, past).unwrap();
+        assert_eq!((swept.tracks, swept.slices), (1, 1));
+        assert!(store.get_slice(spool, track).unwrap().is_none());
+        assert!(store.get_track_data(track).unwrap().is_none());
+        assert!(store.track_sample(group, track).unwrap().is_none());
     }
 
     // the sweep drops per-round outcomes older than the epoch that just closed,
