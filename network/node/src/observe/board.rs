@@ -169,6 +169,57 @@ fn request_stats(
     }
 }
 
+/// Serving totals only, skipping the per-route breakdown a tick never reads
+pub(super) fn serving_totals(families: &[MetricFamily]) -> HttpStats {
+    request_stats(
+        families,
+        "tape_http_request_duration_seconds",
+        "status_class",
+        None,
+        "tape_http_response_bytes_total",
+        "tape_http_request_bytes_total",
+    )
+}
+
+/// Peer-client totals, already free of a route breakdown
+pub(super) fn peer_totals(families: &[MetricFamily]) -> HttpStats {
+    peer_stats(families)
+}
+
+/// Chain counters only, skipping the latency histograms a tick never reads
+pub(super) fn chain_totals(families: &[MetricFamily]) -> ChainStats {
+    let mut c = ChainStats::default();
+    for family in families {
+        match family.get_name() {
+            "rpc_requests_total" => c.rpc_total += counter_sum(family),
+            "rpc_errors_total" => {
+                let (rpc, tx) = split_rpc_errors(family);
+                c.rpc_errors += rpc;
+                c.tx_errors += tx;
+            }
+            "tape_client_transactions_total" => c.tx_total += counter_sum(family),
+            _ => {}
+        }
+    }
+    c
+}
+
+/// Store totals only, skipping the per-operation breakdown a tick never reads
+pub(super) fn store_io_totals(families: &[MetricFamily]) -> (u64, u64, u64) {
+    let mut ops = 0;
+    let mut read = 0;
+    let mut written = 0;
+    for family in families {
+        match family.get_name() {
+            "tape_store_operations_total" => ops += counter_sum(family),
+            "tape_store_bytes_read_total" => read += counter_sum(family),
+            "tape_store_bytes_written_total" => written += counter_sum(family),
+            _ => {}
+        }
+    }
+    (ops, read, written)
+}
+
 /// This node's own serving stats.
 pub(super) fn http_stats(families: &[MetricFamily]) -> HttpStats {
     request_stats(
@@ -218,7 +269,7 @@ fn resource_extras(families: &[MetricFamily]) -> (f64, u64, Vec<Labeled>) {
     for fam in families {
         match fam.get_name() {
             "process_cpu_seconds_total" => {
-                cpu = fam.get_metric().iter().map(|m| m.get_counter().value()).sum();
+                cpu = family_counter_f64(std::slice::from_ref(fam), "process_cpu_seconds_total");
             }
             "process_open_fds" => {
                 fds = fam.get_metric().iter().map(|m| m.get_gauge().value() as u64).sum();

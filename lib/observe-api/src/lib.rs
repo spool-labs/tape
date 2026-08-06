@@ -55,8 +55,6 @@ pub const STREAM_PROTOCOL: u32 = 1;
 pub struct Hello {
     pub protocol: u32,
     pub tick_ms: u64,
-    pub board_ms: u64,
-    pub kind: BoardKind,
     pub address: String,
 }
 
@@ -110,11 +108,8 @@ pub struct Tick {
 
     /// Bytes per second persisted and fetched, in spool op order
     pub spool_persisted_per_s: Vec<f32>,
-    pub spool_fetched_per_s: Vec<f32>,
 
     pub decode_per_s: f32,
-    pub decode_fail_per_s: f32,
-    pub decode_p50_ms: f32,
     pub decode_p95_ms: f32,
     pub cache_hit_pct: f32,
 }
@@ -514,6 +509,35 @@ pub struct ChainStats {
 }
 
 impl HttpStats {
+    /// Quantile in milliseconds over the samples between two cumulative readings
+    ///
+    /// A window with nothing in it has no percentile to report and reads as zero.
+    pub fn quantile_ms(newer: &[Bucket], older: &[Bucket], count: u64, q: f64) -> f32 {
+        if count == 0 {
+            return 0.0;
+        }
+        let delta = Self::bucket_delta(newer, older);
+        (Self::quantile(&delta, count, q) * 1000.0) as f32
+    }
+
+    /// Requests whose status class counts as a serving error
+    pub fn error_total(&self) -> u64 {
+        self.by_status
+            .iter()
+            .filter(|l| l.label == "4xx" || l.label == "5xx")
+            .map(|l| l.value)
+            .sum()
+    }
+
+    /// Peer-client responses of 400 and above
+    pub fn peer_error_total(&self) -> u64 {
+        self.by_status
+            .iter()
+            .filter(|l| l.label.parse::<u16>().map(|c| c >= 400).unwrap_or(false))
+            .map(|l| l.value)
+            .sum()
+    }
+
     /// The counts accumulated between two cumulative snapshots of the same
     /// histogram, for windowed quantiles.
     pub fn bucket_delta(newer: &[Bucket], older: &[Bucket]) -> Vec<Bucket> {
@@ -638,9 +662,191 @@ impl Board {
         self.decode.results.iter().map(|l| l.value).sum()
     }
 
+    /// Sum of the decode result counters that count as failures
+    pub fn decode_failures(&self) -> u64 {
+        DECODE_FAILURES.iter().map(|f| Self::lookup(&self.decode.results, f)).sum()
+    }
+
     /// Look up a labeled value, defaulting to 0.
     pub fn lookup(series: &[Labeled], label: &str) -> u64 {
         series.iter().find(|l| l.label == label).map(|l| l.value).unwrap_or(0)
+    }
+}
+
+/// Everything a tick is derived from, as cumulative totals
+///
+/// Both producers fill this and hand it to `diff`, so the streamed tick and the
+/// one derived from two polled boards cannot drift apart.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Counters {
+    pub http: HttpStats,
+    pub peers: HttpStats,
+    pub chain: ChainStats,
+    pub store_ops: u64,
+    pub store_read: u64,
+    pub store_written: u64,
+    pub decode_buckets: Vec<Bucket>,
+    pub decode_latency_total: u64,
+    pub decode_ok: u64,
+    pub decode_failed: u64,
+    pub cache_hits: u64,
+    pub cache_lookups: u64,
+    pub blocks: u64,
+    pub replay_events: u64,
+    pub spool_persisted: Vec<u64>,
+    pub spool_fetched: Vec<u64>,
+    pub cpu_seconds: f64,
+}
+
+/// Gauges read at the instant of a tick rather than differenced
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Gauges {
+    pub lag_slots: u64,
+    pub tip_slot: u64,
+    pub dispatched_slot: u64,
+    pub rss_bytes: u64,
+    pub queue_depth: u64,
+}
+
+impl Counters {
+    /// The cumulative totals a board already carries
+    pub fn from_board(board: &Board) -> Self {
+        Self {
+            http: board.http.clone(),
+            peers: board.peers.clone(),
+            chain: board.chain.clone(),
+            store_ops: board.store_io.total_ops,
+            store_read: board.store_io.bytes_read,
+            store_written: board.store_io.bytes_written,
+            decode_buckets: board.decode.latency_buckets.clone(),
+            decode_latency_total: board.decode.latency_total,
+            decode_ok: Board::lookup(&board.decode.results, "ok"),
+            decode_failed: board.decode_failures(),
+            cache_hits: Board::lookup(&board.cache.results, "hit"),
+            cache_lookups: CACHE_RESULTS
+                .iter()
+                .map(|r| Board::lookup(&board.cache.results, r))
+                .sum(),
+            blocks: board.throughput.blocks_processed,
+            replay_events: board.throughput.replay_events,
+            spool_persisted: spool_bytes(board, "persisted"),
+            spool_fetched: spool_bytes(board, "fetched"),
+            cpu_seconds: board.resources.cpu_seconds,
+        }
+    }
+}
+
+impl Gauges {
+    /// The instantaneous figures a board already carries
+    pub fn from_board(board: &Board) -> Self {
+        Self {
+            lag_slots: if board.bootstrap.ready {
+                board.ingest.lag_slots
+            } else {
+                board.bootstrap.behind_slots()
+            },
+            tip_slot: board.ingest.tip_slot,
+            dispatched_slot: board.ingest.dispatched_slot,
+            rss_bytes: board.resources.rss_bytes,
+            queue_depth: board.resources.queues.iter().map(|q| q.value).max().unwrap_or(0),
+        }
+    }
+}
+
+/// Spool pipeline bytes for one stage, in spool op order
+fn spool_bytes(board: &Board, stage: &str) -> Vec<u64> {
+    SPOOL_OPS
+        .iter()
+        .map(|op| {
+            board
+                .spool
+                .iter()
+                .find(|s| s.op == *op && s.stage == stage)
+                .map(|s| s.bytes)
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+/// Per-second rate between two cumulative readings
+fn rate(now: u64, before: u64, interval: f32) -> f32 {
+    now.saturating_sub(before) as f32 / interval
+}
+
+/// Per-second rates for each entry of two equal-length readings
+fn rates(now: &[u64], before: &[u64], interval: f32) -> Vec<f32> {
+    now.iter().zip(before).map(|(n, b)| rate(*n, *b, interval)).collect()
+}
+
+/// Difference two readings into the frame a dashboard plots
+///
+/// The interval is the time between the readings, which the caller knows more
+/// precisely than either reading does.
+pub fn diff(before: &Counters, now: &Counters, gauges: Gauges, at_ms: u64, interval: f32) -> Tick {
+    let interval = interval.max(1e-3);
+    let http_count = now.http.total.saturating_sub(before.http.total);
+    let peer_count = now.peers.total.saturating_sub(before.peers.total);
+    let decode_count = now.decode_latency_total.saturating_sub(before.decode_latency_total);
+    let lookups = now.cache_lookups.saturating_sub(before.cache_lookups);
+
+    Tick {
+        at_ms,
+        interval_secs: interval,
+
+        req_per_s: rate(now.http.total, before.http.total, interval),
+        egress_per_s: rate(now.http.response_bytes, before.http.response_bytes, interval),
+        ingress_per_s: rate(now.http.request_bytes, before.http.request_bytes, interval),
+        err_per_s: rate(now.http.error_total(), before.http.error_total(), interval),
+        serving_p50_ms: HttpStats::quantile_ms(&now.http.buckets, &before.http.buckets, http_count, 0.50),
+        serving_p95_ms: HttpStats::quantile_ms(&now.http.buckets, &before.http.buckets, http_count, 0.95),
+        serving_p99_ms: HttpStats::quantile_ms(&now.http.buckets, &before.http.buckets, http_count, 0.99),
+
+        peer_req_per_s: rate(now.peers.total, before.peers.total, interval),
+        peer_ingress_per_s: rate(now.peers.response_bytes, before.peers.response_bytes, interval),
+        peer_egress_per_s: rate(now.peers.request_bytes, before.peers.request_bytes, interval),
+        peer_err_per_s: rate(now.peers.peer_error_total(), before.peers.peer_error_total(), interval),
+        peer_p50_ms: HttpStats::quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.50),
+        peer_p95_ms: HttpStats::quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.95),
+        peer_p99_ms: HttpStats::quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.99),
+
+        store_ops_per_s: rate(now.store_ops, before.store_ops, interval),
+        store_read_per_s: rate(now.store_read, before.store_read, interval),
+        store_write_per_s: rate(now.store_written, before.store_written, interval),
+
+        rpc_per_s: rate(now.chain.rpc_total, before.chain.rpc_total, interval),
+        rpc_err_per_s: rate(now.chain.rpc_errors, before.chain.rpc_errors, interval),
+        tx_per_s: rate(now.chain.tx_total, before.chain.tx_total, interval),
+        tx_err_per_s: rate(now.chain.tx_errors, before.chain.tx_errors, interval),
+
+        blocks_per_s: rate(now.blocks, before.blocks, interval),
+        replay_per_s: rate(now.replay_events, before.replay_events, interval),
+        lag_slots: gauges.lag_slots,
+        tip_slot: gauges.tip_slot,
+        dispatched_slot: gauges.dispatched_slot,
+
+        // per-core-second, so the rate is a core fraction
+        cpu_pct: ((now.cpu_seconds - before.cpu_seconds) / interval as f64 * 100.0).max(0.0) as f32,
+        rss_bytes: gauges.rss_bytes,
+        queue_depth: gauges.queue_depth,
+
+        spool_persisted_per_s: rates(&now.spool_persisted, &before.spool_persisted, interval),
+
+        decode_per_s: rate(
+            now.decode_ok + now.decode_failed,
+            before.decode_ok + before.decode_failed,
+            interval,
+        ),
+        decode_p95_ms: HttpStats::quantile_ms(
+            &now.decode_buckets,
+            &before.decode_buckets,
+            decode_count,
+            0.95,
+        ),
+        cache_hit_pct: if lookups == 0 {
+            0.0
+        } else {
+            now.cache_hits.saturating_sub(before.cache_hits) as f32 / lookups as f32 * 100.0
+        },
     }
 }
 
@@ -679,6 +885,36 @@ mod tests {
         };
         let text = serde_json::to_string(&tick).unwrap();
         assert_eq!(serde_json::from_str::<Tick>(&text).unwrap(), tick);
+    }
+
+    // rates divide by the interval, so a two-second window halves a per-second figure
+    #[test]
+    fn diff_rates() {
+        let before = Counters {
+            http: HttpStats { total: 100, response_bytes: 1_000, ..Default::default() },
+            blocks: 10,
+            ..Default::default()
+        };
+        let now = Counters {
+            http: HttpStats { total: 140, response_bytes: 9_000, ..Default::default() },
+            blocks: 15,
+            ..Default::default()
+        };
+        let tick = diff(&before, &now, Gauges::default(), 0, 2.0);
+        assert_eq!(tick.req_per_s, 20.0);
+        assert_eq!(tick.egress_per_s, 4_000.0);
+        assert_eq!(tick.blocks_per_s, 2.5);
+    }
+
+    // a counter that goes backwards across a restart reads as zero, not as a spike
+    #[test]
+    fn diff_survives_reset() {
+        let before = Counters {
+            http: HttpStats { total: 900, ..Default::default() },
+            ..Default::default()
+        };
+        let now = Counters { http: HttpStats { total: 5, ..Default::default() }, ..Default::default() };
+        assert_eq!(diff(&before, &now, Gauges::default(), 0, 1.0).req_per_s, 0.0);
     }
 
     // ready clears the replay distance; replaying reports remaining slots
