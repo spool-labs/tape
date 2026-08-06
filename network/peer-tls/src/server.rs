@@ -36,12 +36,13 @@ pub fn build_server_config(
 ) -> Result<Arc<ServerConfig>, TlsError> {
     let signed = self_signed_cert(keypair, san_ips)?;
 
-    let config = ServerConfig::builder_with_provider(ring_provider())
+    let mut config = ServerConfig::builder_with_provider(ring_provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| TlsError::BuildServer(e.to_string()))?
         .with_no_client_auth()
         .with_single_cert(vec![signed.cert], signed.key)
         .map_err(|e| TlsError::BuildServer(e.to_string()))?;
+    config.alpn_protocols = crate::alpn_protocols();
 
     Ok(Arc::new(config))
 }
@@ -56,12 +57,13 @@ pub fn build_server_config_with_peer_auth(
     let signed = self_signed_cert(keypair, san_ips)?;
     let verifier = Arc::new(PeerClientVerifier::new());
 
-    let config = ServerConfig::builder_with_provider(ring_provider())
+    let mut config = ServerConfig::builder_with_provider(ring_provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| TlsError::BuildServer(e.to_string()))?
         .with_client_cert_verifier(verifier)
         .with_single_cert(vec![signed.cert], signed.key)
         .map_err(|e| TlsError::BuildServer(e.to_string()))?;
+    config.alpn_protocols = crate::alpn_protocols();
 
     Ok(Arc::new(config))
 }

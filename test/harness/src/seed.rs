@@ -282,6 +282,7 @@ pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         next_committee_capacity: Some(committee_capacity),
         candidate_epoch: candidate_epoch_account,
         candidate_committee_capacity,
+        ..ProtocolState::default()
     };
 
     let mut epochs = vec![

@@ -1,4 +1,7 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use bytemuck::Zeroable;
 use tape_api::state::{Epoch, Group, System};
@@ -32,6 +35,21 @@ pub struct ProtocolState {
     pub next_committee_capacity: Option<u64>,
     pub candidate_epoch: Option<Epoch>,
     pub candidate_committee_capacity: Option<u64>,
+    pub verified_at: Freshness,
+}
+
+/// When a snapshot was last verified against the chain.
+///
+/// Interior mutability, because verification re-confirms the snapshot already
+/// in hand: a holder marks it fresh in place rather than swapping in a copy
+/// that differs only by a timestamp.
+#[derive(Debug, Default)]
+pub struct Freshness(AtomicU64);
+
+impl Clone for Freshness {
+    fn clone(&self) -> Self {
+        Self(AtomicU64::new(self.0.load(Ordering::Relaxed)))
+    }
 }
 
 impl Default for EpochBundle {
@@ -57,11 +75,33 @@ impl Default for ProtocolState {
             next_committee_capacity: None,
             candidate_epoch: None,
             candidate_committee_capacity: None,
+            verified_at: Freshness::default(),
         }
     }
 }
 
 impl ProtocolState {
+    /// Age since this state was last verified against the chain.
+    ///
+    /// State that was never verified is infinitely old, so a default snapshot
+    /// can never pass a freshness check.
+    pub fn age(&self) -> Duration {
+        match self.verified_at.0.load(Ordering::Relaxed) {
+            0 => Duration::MAX,
+            verified => Duration::from_millis(monotonic_ms().saturating_sub(verified)),
+        }
+    }
+
+    /// Mark this state as freshly verified against the chain.
+    pub fn touch(&self) {
+        self.verified_at.0.store(monotonic_ms(), Ordering::Relaxed);
+    }
+
+    /// Drop the freshness mark, forcing the next reader to verify against the chain.
+    pub fn invalidate(&self) {
+        self.verified_at.0.store(0, Ordering::Relaxed);
+    }
+
     /// The current epoch number.
     pub fn epoch(&self) -> EpochNumber {
         self.current.epoch.id
@@ -291,6 +331,13 @@ fn assigned_node(node: Address) -> Option<Address> {
     (node != Address::default()).then_some(node)
 }
 
+/// Monotonic milliseconds since the first call in this process, offset by one
+/// so that zero stays available to mean never verified.
+fn monotonic_ms() -> u64 {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,5 +492,29 @@ mod tests {
         let state = state_with_groups();
         let member = state.find_member_next(address(9)).unwrap();
         assert_eq!(member.node, address(9));
+    }
+
+    // unverified state is infinitely old however early in the process it is read
+    #[test]
+    fn freshness_starts_expired() {
+        let state = ProtocolState::default();
+        assert_eq!(state.age(), Duration::MAX);
+
+        state.touch();
+        assert!(state.age() < Duration::from_secs(1));
+
+        state.invalidate();
+        assert_eq!(state.age(), Duration::MAX);
+    }
+
+    // a clone carries the mark rather than reading as freshly verified
+    #[test]
+    fn freshness_survives_a_clone() {
+        let state = ProtocolState::default();
+        state.touch();
+        assert!(state.clone().age() < Duration::from_secs(1));
+
+        state.invalidate();
+        assert_eq!(state.clone().age(), Duration::MAX);
     }
 }

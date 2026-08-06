@@ -53,3 +53,17 @@ pub use provider::install_default as install_default_provider;
 pub use server::{build_server_config, build_server_config_with_peer_auth, cert_san_ips};
 pub use spki::{ED25519_SPKI_LEN, decode_ed25519_spki, encode_ed25519_spki};
 pub use verifier::{PeerClientVerifier, PinnedVerifier, TlsVerifier};
+
+/// Protocols offered when a TLS session is negotiated.
+///
+/// Peer traffic fans out across a group, and HTTP/1.1 carries one request per
+/// socket, so a fan-out costs a socket per request and a busy host runs out of
+/// ephemeral ports. HTTP/2 multiplexes the same fan-out onto one connection per
+/// peer. `http/1.1` stays as the fallback so a peer that has not negotiated h2
+/// still connects.
+pub const ALPN_PROTOCOLS: [&[u8]; 2] = [b"h2", b"http/1.1"];
+
+/// The offered protocols as rustls wants them.
+pub fn alpn_protocols() -> Vec<Vec<u8>> {
+    ALPN_PROTOCOLS.iter().map(|p| p.to_vec()).collect()
+}

@@ -291,6 +291,19 @@ impl Api for GatewayApi {
         Err(unsupported("vote"))
     }
 
+    /// A gateway holds no spool, so it neither answers a round nor auditions one.
+    async fn proof_of_access(
+        &self,
+        _node: Address,
+        _req: &ProofOfAccessReq,
+    ) -> Result<ProofOfAccessRes, ApiError> {
+        Err(unsupported("proof_of_access"))
+    }
+
+    async fn attest(&self, _node: Address, _req: &AttestReq) -> Result<AttestRes, ApiError> {
+        Err(unsupported("attest"))
+    }
+
     async fn get_health(
         &self,
         _node: Address,

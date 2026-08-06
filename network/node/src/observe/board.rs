@@ -1,30 +1,49 @@
 //! Builds a node's board from live context and the metric set.
 
+use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rpc::Rpc;
 use store::{Column, Store, StoreVolume};
+use tape_core::bft::has_honest_signer;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::types::bitmap::BitmapRead;
+use tape_core::types::SpoolIndex;
+use tape_core::challenge::record::{
+    NodeVerdict, PeerRecord, node_tally, node_verdict,
+    MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
+};
 use tape_core::system::NodeStatus;
+use tape_crypto::Address;
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
-use tape_store::ops::{SliceOps, SpoolOps};
+use tape_store::ops::{ChallengeOps, SliceOps, SpoolOps};
 use tape_observe_api::{
-    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, DecodeStats, EpochInfo,
+    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
+    ChallengeRounds, DecodeStats, EpochInfo,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
-    NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo, StorageVolume,
+    ChallengeOwner, NodeStats, OwnerVerdict, ResourceInfo, RoundId, SpoolStat, StatsSource, StorageContents, StorageInfo,
+    StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
-    SPOOL_STAGES,
+    SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGES, SPOOL_STAGE_FETCHED,
 };
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 
 use crate::context::NodeContext;
+use crate::features::challenge::fold::holds_spool;
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
 
 /// Stamp the process start so the board can report uptime.
 pub fn init() {
     let _ = STARTED.get_or_init(Instant::now);
+}
+
+/// Unix seconds, for stamping what a payload was built from.
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// Fold one histogram's bucket counts into the running totals, seeding the
@@ -102,19 +121,6 @@ pub fn family_counter(families: &[MetricFamily], name: &str) -> u64 {
     families.iter().filter(|family| family.get_name() == name).map(counter_sum).sum()
 }
 
-/// Sum of one named counter family at full precision
-///
-/// The integer sum truncates, which turns a sub-second CPU delta into zero.
-#[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub fn family_counter_f64(families: &[MetricFamily], name: &str) -> f64 {
-    families
-        .iter()
-        .filter(|family| family.get_name() == name)
-        .flat_map(|family| family.get_metric())
-        .map(|metric| metric.get_counter().value())
-        .sum()
-}
-
 /// Largest gauge of one named family, zero when absent.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
 pub fn family_gauge(families: &[MetricFamily], name: &str) -> u64 {
@@ -130,7 +136,6 @@ fn request_stats(
     status_label: &str,
     route_label: Option<&str>,
     bytes_family: &str,
-    request_bytes_family: &str,
 ) -> HttpStats {
     let mut les: Vec<f64> = Vec::new();
     let mut sums: Vec<u64> = Vec::new();
@@ -165,76 +170,23 @@ fn request_stats(
         by_route: by_route.into_iter().map(|(label, value)| Labeled { label, value }).collect(),
         total,
         response_bytes: family_counter(families, bytes_family),
-        request_bytes: family_counter(families, request_bytes_family),
     }
-}
-
-/// Serving totals only, skipping the per-route breakdown a tick never reads
-pub(super) fn serving_totals(families: &[MetricFamily]) -> HttpStats {
-    request_stats(
-        families,
-        "tape_http_request_duration_seconds",
-        "status_class",
-        None,
-        "tape_http_response_bytes_total",
-        "tape_http_request_bytes_total",
-    )
-}
-
-/// Peer-client totals, already free of a route breakdown
-pub(super) fn peer_totals(families: &[MetricFamily]) -> HttpStats {
-    peer_stats(families)
-}
-
-/// Chain counters only, skipping the latency histograms a tick never reads
-pub(super) fn chain_totals(families: &[MetricFamily]) -> ChainStats {
-    let mut c = ChainStats::default();
-    for family in families {
-        match family.get_name() {
-            "rpc_requests_total" => c.rpc_total += counter_sum(family),
-            "rpc_errors_total" => {
-                let (rpc, tx) = split_rpc_errors(family);
-                c.rpc_errors += rpc;
-                c.tx_errors += tx;
-            }
-            "tape_client_transactions_total" => c.tx_total += counter_sum(family),
-            _ => {}
-        }
-    }
-    c
-}
-
-/// Store totals only, skipping the per-operation breakdown a tick never reads
-pub(super) fn store_io_totals(families: &[MetricFamily]) -> (u64, u64, u64) {
-    let mut ops = 0;
-    let mut read = 0;
-    let mut written = 0;
-    for family in families {
-        match family.get_name() {
-            "tape_store_operations_total" => ops += counter_sum(family),
-            "tape_store_bytes_read_total" => read += counter_sum(family),
-            "tape_store_bytes_written_total" => written += counter_sum(family),
-            _ => {}
-        }
-    }
-    (ops, read, written)
 }
 
 /// This node's own serving stats.
-pub(super) fn http_stats(families: &[MetricFamily]) -> HttpStats {
+fn http_stats(families: &[MetricFamily]) -> HttpStats {
     request_stats(
         families,
         "tape_http_request_duration_seconds",
         "status_class",
         Some("route"),
         "tape_http_response_bytes_total",
-        "tape_http_request_bytes_total",
     )
 }
 
 /// Aggregate Solana RPC and transaction-submission metrics into chain health.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn chain_stats(families: &[MetricFamily]) -> ChainStats {
+fn chain_stats(families: &[MetricFamily]) -> ChainStats {
     let mut c = ChainStats::default();
     for family in families {
         match family.get_name() {
@@ -269,7 +221,7 @@ fn resource_extras(families: &[MetricFamily]) -> (f64, u64, Vec<Labeled>) {
     for fam in families {
         match fam.get_name() {
             "process_cpu_seconds_total" => {
-                cpu = family_counter_f64(std::slice::from_ref(fam), "process_cpu_seconds_total");
+                cpu = fam.get_metric().iter().map(|m| m.get_counter().value()).sum();
             }
             "process_open_fds" => {
                 fds = fam.get_metric().iter().map(|m| m.get_gauge().value() as u64).sum();
@@ -294,27 +246,25 @@ fn resource_extras(families: &[MetricFamily]) -> (f64, u64, Vec<Labeled>) {
 
 /// Aggregate the object-decode duration histogram into cumulative buckets and a
 /// total, for decode-latency quantiles.
-pub(super) fn decode_latency(families: &[MetricFamily]) -> (Vec<Bucket>, u64) {
+fn decode_latency(families: &[MetricFamily]) -> (Vec<Bucket>, u64) {
     histogram_snapshot(families, "tape_gw_decode_duration_seconds")
 }
 
 /// This node's outbound calls to other nodes, as inter-node latency.
-pub(super) fn peer_stats(families: &[MetricFamily]) -> HttpStats {
+fn peer_stats(families: &[MetricFamily]) -> HttpStats {
     request_stats(
         families,
         "peer_client_request_duration_seconds",
         "status",
         None,
         "peer_client_bytes_received_total",
-        // what this node pushed to peers, which is outbound
-        "peer_client_bytes_sent_total",
     )
 }
 
 /// Aggregate the store metrics from the gathered registry into store-engine
 /// I/O figures.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-pub(super) fn store_io_stats(families: &[MetricFamily]) -> StoreIo {
+fn store_io_stats(families: &[MetricFamily]) -> StoreIo {
     let mut ops: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     let mut io = StoreIo::default();
     let (mut get_sum, mut get_cnt, mut put_sum, mut put_cnt) = (0.0_f64, 0u64, 0.0_f64, 0u64);
@@ -427,6 +377,7 @@ where
     let bootstrap = context.bootstrap.snapshot();
     let bootstrap_ready = context.bootstrap.is_ready();
 
+    let metrics = context.metrics.snapshot();
     let volumes = backend.disk_volumes().unwrap_or_default();
     let store_disk_bytes = volumes.iter().map(|v| v.used_bytes).sum();
     let slice_payload_bytes = volumes
@@ -447,7 +398,7 @@ where
         ingest_state: context.ingest_state().label().to_string(),
         ingest_lag_slots,
         reclaim_pending: context.is_reclaim_pending(),
-        blocks_processed: tape_metrics::metrics().blocks_processed_total.get(),
+        blocks_processed: metrics.blocks_processed_total,
         bootstrap_ready,
         bootstrap_behind_slots: if bootstrap_ready {
             0
@@ -455,14 +406,28 @@ where
             bootstrap.target_slot.saturating_sub(bootstrap.current_slot)
         },
         fee_payer_lamports: context.fee_payer_balance().map(|b| b.0),
+        sync_bytes: metrics.sync_bytes_fetched,
+        repair_bytes: metrics.repair_bytes_fetched,
+        recover_bytes: metrics.recover_bytes_fetched,
+        upload_bytes: metrics.bytes_uploaded,
     }
 }
 
 /// A lite board synthesized from a node's public stats, for peers that don't
 /// serve the full observe board.
 pub fn lite_board(address: String, stats: &NodeStats) -> Board {
+    let mut spool = Vec::with_capacity(SPOOL_OPS.len());
+    for (op, bytes) in [
+        (SPOOL_OP_SYNC, stats.sync_bytes),
+        (SPOOL_OP_REPAIR, stats.repair_bytes),
+        (SPOOL_OP_RECOVER, stats.recover_bytes),
+    ] {
+        spool.push(SpoolStat { op: op.to_string(), stage: SPOOL_STAGE_FETCHED.to_string(), bytes });
+    }
+
     Board {
         source: StatsSource::Public,
+        generated_at: now_secs(),
         node: NodeInfo {
             address,
             status: "active".to_string(),
@@ -498,8 +463,10 @@ pub fn lite_board(address: String, stats: &NodeStats) -> Board {
         },
         throughput: ThroughputTotals {
             blocks_processed: stats.blocks_processed,
+            bytes_uploaded: stats.upload_bytes,
             ..Default::default()
         },
+        spool,
         ..Default::default()
     }
 }
@@ -595,6 +562,7 @@ where
     let (slot, _, _) = context.ingest.progress().tip_and_lag();
 
     Network {
+        generated_at: now_secs(),
         epoch: state.epoch().0,
         phase: phase_name(u64::from(state.phase()) as u8).to_string(),
         phase_index: u64::from(state.phase()) as u8,
@@ -668,10 +636,7 @@ where
     Board {
         source: StatsSource::Observe,
         kind: super::board_kind(),
-        generated_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        generated_at: now_secs(),
         node: NodeInfo {
             address: context.node_address().to_string(),
             status: node_status_label(&context.node_status()).to_string(),
@@ -682,7 +647,7 @@ where
             number: state.epoch().0,
             phase: phase_name(u64::from(state.phase()) as u8).to_string(),
             phase_index: u64::from(state.phase()) as u8,
-            synced_count: state.current.epoch.state.synced_count,
+            synced_count: synced_groups(&state),
             committee_size: state.current.committee.len() as u64,
             groups: state.current.groups.len() as u64,
             peers: state.peers.len() as u64,
@@ -741,6 +706,7 @@ where
             blocks_processed: m.blocks_processed_total.get(),
             replay_events: m.replay_events_total.get(),
             repair_escalations: m.repair_escalations_total.get(),
+            bytes_uploaded: m.bytes_uploaded.get(),
         },
         http: http_stats(&gathered),
         peers: peer_stats(&gathered),
@@ -764,5 +730,279 @@ where
         last_epoch: super::last_epoch(),
         current_epoch: current_epoch.clone(),
         lifetime: super::epoch::lifetime_including(&current_epoch),
+        challenge: challenge_grid(context),
+        challenge_rounds: challenge_rounds(context),
+    }
+}
+
+/// Groups that have crossed their readiness quorum, counted from the bitmaps.
+///
+/// Not `epoch.state.synced_count`. The program keeps that counter and drives the
+/// Sync phase off it, but replay never mirrors it: `handle_sync_spool` sets the
+/// group's bit and applies the phase and nothing writes the count, so reading it
+/// here reports zero in every phase of every epoch. The bitmaps are the durable
+/// evidence, and the rule applied to them is the program's own.
+fn synced_groups(state: &ProtocolState) -> u64 {
+    state
+        .current
+        .groups
+        .iter()
+        .filter(|group| {
+            has_honest_signer(group.synced.count_ones() as u64, GROUP_SIZE as u64)
+        })
+        .count() as u64
+}
+
+/// Lifetime round counters, straight off the context atomics.
+fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeRounds {
+    let counters = &context.challenge_counters;
+    ChallengeRounds {
+        opened: counters.opened.load(Ordering::Relaxed),
+        settled_certified: counters.settled_certified.load(Ordering::Relaxed),
+        settled_missed: counters.settled_missed.load(Ordering::Relaxed),
+        answers_refused: counters.answers_refused.load(Ordering::Relaxed),
+        voided: counters.voided.load(Ordering::Relaxed),
+        discarded: counters.discarded.load(Ordering::Relaxed),
+        own_certified: counters.own_certified.load(Ordering::Relaxed),
+        own_missed: counters.own_missed.load(Ordering::Relaxed),
+    }
+}
+
+/// This node's challenge record, worst row first.
+///
+/// Its own observations, not anything the network agreed on: a row with gaps is
+/// a peer this node did not hear from, which is a reason to look rather than a
+/// verdict. Ordering by rate puts an outlier at the top.
+fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeGrid {
+    // A record only matters to an operator once it has turned into an action,
+    // so the row says whether this node is already pushing to evict the peer.
+    let queued = context.eviction_queue.snapshot();
+    // Only the spools their owners still answer for. A record outlives a handoff,
+    // and showing one against the peer that gave the spool up reads as a failure
+    // on data it is no longer asked about.
+    let state = context.state();
+    let mut rows: Vec<ChallengeRow> = context
+        .store
+        .iter_peer_records()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|((node, spool), _)| holds_spool(&state, *node, *spool))
+        .map(|((node, spool), record)| ChallengeRow {
+            node: node.to_string(),
+            spool: spool.as_u64(),
+            opportunities: record.opportunities,
+            successes: record.successes,
+            consecutive_misses: record.consecutive_misses,
+            success_rate_bps: record.success_rate().0,
+            rule_fired: record.eviction_fires(),
+            queued: queued.contains(&node),
+            recent: record.recent_rounds(),
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        (a.success_rate_bps, &a.node, a.spool).cmp(&(b.success_rate_bps, &b.node, b.spool))
+    });
+
+    ChallengeGrid {
+        recent_capacity: RECENT_ROUNDS as u64,
+        min_opportunities: MIN_OPPORTUNITIES,
+        rate_floor_bps: RATE_FLOOR.0,
+        max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
+        axis: round_axis(context, &rows),
+        owners: owner_rows(context, &state, &queued),
+        rows,
+    }
+}
+
+/// Every owner this node keeps records for, judged by its own rule.
+///
+/// Sent already judged so a reader draws the verdict rather than inventing one:
+/// the rule lives in core and a pooled rate is not one of its inputs.
+fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    queued: &[Address],
+) -> Vec<ChallengeOwner> {
+    let mut by_peer: BTreeMap<Address, Vec<PeerRecord>> = BTreeMap::new();
+    for ((node, spool), record) in context.store.iter_peer_records().unwrap_or_default() {
+        if holds_spool(state, node, spool) {
+            by_peer.entry(node).or_default().push(record);
+        }
+    }
+
+    let mut owners: Vec<ChallengeOwner> = by_peer
+        .into_iter()
+        .map(|(node, records)| {
+            let tally = node_tally(&records);
+            ChallengeOwner {
+                node: node.to_string(),
+                spools: tally.spools,
+                opportunities: tally.opportunities,
+                successes: tally.successes,
+                rate_bps: tally.rate().0,
+                worst_run: tally.worst_run,
+                verdict: match node_verdict(&records) {
+                    NodeVerdict::Healthy => OwnerVerdict::Healthy,
+                    NodeVerdict::Unproven => OwnerVerdict::Unproven,
+                    NodeVerdict::RunFailed => OwnerVerdict::RunFailed,
+                    NodeVerdict::RateFailed => OwnerVerdict::RateFailed,
+                },
+                queued: queued.contains(&node),
+            }
+        })
+        .collect();
+    owners.sort_by(|a, b| (a.rate_bps, &a.node).cmp(&(b.rate_bps, &b.node)));
+    owners
+}
+
+/// The rounds the strip's columns stand for, newest last.
+///
+/// Read from the fullest ledger rather than assembled per row: settling judges
+/// every spool in the group together, so the rounds are the same for all of
+/// them and a spool assigned later just has fewer of them.
+fn round_axis<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    rows: &[ChallengeRow],
+) -> Vec<RoundId> {
+    let span = rows.iter().map(|row| row.recent.len()).max().unwrap_or_default();
+    if span == 0 {
+        return Vec::new();
+    }
+
+    let Some((widest, spool)) = rows
+        .iter()
+        .max_by_key(|row| row.recent.len())
+        .and_then(|row| row.node.parse::<Address>().ok().map(|node| (node, row.spool)))
+    else {
+        return Vec::new();
+    };
+
+    let rounds = context
+        .store
+        .peer_rounds(widest, SpoolIndex(spool))
+        .unwrap_or_default();
+    let tail = rounds.len().saturating_sub(span);
+    rounds[tail..]
+        .iter()
+        .map(|(epoch, round, _)| RoundId {
+            epoch: epoch.0,
+            round: round.0,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_core::types::SpoolBitmap;
+    use tape_core::types::bitmap::BitmapWrite;
+
+    use super::*;
+    use crate::harness::{NodeHarness, TestContext};
+
+    // the chain's counter never reaches replayed state, so the board counts the
+    // groups that crossed quorum from the bitmaps that do
+    #[tokio::test]
+    async fn synced_from_bitmaps() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx: TestContext = harness.ctx_for(0);
+        let mut state = (*ctx.state()).clone();
+
+        for group in &mut state.current.groups {
+            group.synced = SpoolBitmap::from_indices(&[]);
+        }
+        assert_eq!(synced_groups(&state), 0);
+
+        // The gate is a quorum, so one position short of it is not a synced group.
+        for position in 0..7 {
+            state.current.groups[0].synced.set(position);
+        }
+        assert_eq!(synced_groups(&state), 0);
+
+        state.current.groups[0].synced.set(7);
+        assert_eq!(synced_groups(&state), 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_observe_api::{
+        NodeStats, SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGE_FETCHED,
+    };
+
+    use super::{build, build_network, lite_board};
+    use crate::harness::{NodeHarness, TestContext};
+
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
+
+    // the network view carries the clock the charts bucket by
+    #[tokio::test]
+    async fn network_is_stamped() {
+        let context = test_context().await;
+
+        let network = build_network(&context);
+
+        assert!(network.generated_at > 0);
+        assert!(!network.committee.is_empty());
+    }
+
+    // repair bytes reach both this node's board and its row in the network view
+    #[tokio::test]
+    async fn repair_bytes_surface() {
+        let context = test_context().await;
+        let before = build(&context).spool_bytes(SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED);
+        let uploaded = build(&context).throughput.bytes_uploaded;
+
+        context.metrics.add_repair_fetched(4_096);
+        context.metrics.add_uploaded(512);
+
+        let board = build(&context);
+        assert_eq!(board.spool_bytes(SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED), before + 4_096);
+        assert_eq!(board.throughput.bytes_uploaded, uploaded + 512);
+        let network = build_network(&context);
+        let local = network
+            .committee
+            .iter()
+            .find_map(|node| node.stats.as_ref())
+            .expect("local node stats");
+        assert!(local.repair_bytes >= 4_096);
+        assert!(local.upload_bytes >= 512);
+    }
+
+    // a peer reachable only over public stats still charts every transfer path
+    #[tokio::test]
+    async fn lite_board_transfer() {
+        let stats = NodeStats {
+            sync_bytes: 11,
+            repair_bytes: 22,
+            recover_bytes: 33,
+            upload_bytes: 44,
+            ..NodeStats::default()
+        };
+
+        let board = lite_board("peer".to_string(), &stats);
+
+        assert_eq!(board.spool_bytes(SPOOL_OP_SYNC, SPOOL_STAGE_FETCHED), 11);
+        assert_eq!(board.spool_bytes(SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED), 22);
+        assert_eq!(board.spool_bytes(SPOOL_OP_RECOVER, SPOOL_STAGE_FETCHED), 33);
+        assert_eq!(board.throughput.bytes_uploaded, 44);
+        assert!(board.generated_at > 0);
     }
 }

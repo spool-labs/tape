@@ -145,7 +145,7 @@ mod tests {
         let ctx = test_context().await;
 
         // Build a real Clay-encoded snapshot chunk: 20 slices, each carrying
-        // the per-slice metadata suffix that `extract_repair_data` parses.
+        // the per-slice metadata suffix that the repair extractor parses.
         let chunk = vec![0xCDu8; 2048];
         let group = GroupIndex(2);
         let mut slicer = Slicer::clay_default();

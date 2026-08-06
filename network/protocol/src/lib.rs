@@ -7,4 +7,4 @@ pub use api::{Api, ApiError};
 pub use snapshot::{
     read_snapshot_epoch, DecodedSnapshot, DecodedSnapshotTrack, SnapshotReaderError,
 };
-pub use state::{EpochBundle, ProtocolState};
+pub use state::{EpochBundle, Freshness, ProtocolState};

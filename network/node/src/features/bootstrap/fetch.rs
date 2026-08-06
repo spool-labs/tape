@@ -17,6 +17,7 @@ use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 
+use crate::features::store::sample::{put_sample, SNAPSHOT_REGISTERED_SLOT};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
@@ -106,6 +107,14 @@ pub fn persist_snapshot_metadata_to_store<Db: Store>(
         store
             .put_track_data(track_address, BlobData::Coded(snapshot_track.blob))
             .map_err(store_err)?;
+        put_sample(
+            store,
+            track.group,
+            track_address,
+            &BlobData::Coded(snapshot_track.blob),
+            track.value_hash,
+            SNAPSHOT_REGISTERED_SLOT,
+        )?;
 
         store
             .put_object_info(

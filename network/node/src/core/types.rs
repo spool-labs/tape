@@ -7,6 +7,7 @@ pub enum ServiceName {
     BlockIngestor,
     IngestMonitor,
     AssignmentManager,
+    ChallengeManager,
     EvictionManager,
     LifecycleManager,
     SpoolManager,
@@ -18,7 +19,6 @@ pub enum ServiceName {
     PeerAggregator,
     AtlasObserve,
     BalanceMonitor,
-    ObserveStream,
 }
 
 impl ServiceName {
@@ -31,6 +31,7 @@ impl ServiceName {
             Self::BlockIngestor => "BlockIngestor",
             Self::IngestMonitor => "IngestMonitor",
             Self::AssignmentManager => "AssignmentManager",
+            Self::ChallengeManager => "ChallengeManager",
             Self::EvictionManager => "EvictionManager",
             Self::LifecycleManager => "LifecycleManager",
             Self::SpoolManager => "SpoolManager",
@@ -42,7 +43,6 @@ impl ServiceName {
             Self::PeerAggregator => "PeerAggregator",
             Self::AtlasObserve => "AtlasObserve",
             Self::BalanceMonitor => "BalanceMonitor",
-            Self::ObserveStream => "ObserveStream",
         }
     }
 }
@@ -51,6 +51,7 @@ impl ServiceName {
 pub enum ChannelName {
     StateManager,
     AssignmentManager,
+    ChallengeManager,
     EvictionManager,
     SpoolManager,
     SnapshotManager,
