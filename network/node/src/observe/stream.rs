@@ -39,10 +39,13 @@ const BACKLOG: usize = 64;
 ///
 /// Differencing one sampling interval aliases badly at low request rates: a
 /// node serving one request a second puts it in a single 250 ms bucket, which
-/// reads as 4/s with three zeroes after it, and the trace draws a comb. A
-/// trailing second reports the same average as a steady line, and the frames
-/// still go out four times a second so the motion is unchanged.
-const RATE_WINDOW_MS: u64 = 1_000;
+/// reads as 4/s with three zeroes after it, and the trace draws a comb.
+///
+/// The window also sets the resolution of a whole-number counter. Blocks arrive
+/// about 2.5 a second, so a one-second window can only ever report 2 or 3 and
+/// the trace saws between them; two seconds halves that step. Frames still go
+/// out four times a second, so the motion is unchanged either way.
+const RATE_WINDOW_MS: u64 = 2_000;
 
 /// One encoded event, ready to write to any number of sockets.
 #[derive(Clone)]
@@ -340,6 +343,7 @@ where
 
         peer_req_per_s: rate(now.peers.total, before.peers.total, interval),
         peer_ingress_per_s: rate(now.peers.response_bytes, before.peers.response_bytes, interval),
+        peer_egress_per_s: rate(now.peers.request_bytes, before.peers.request_bytes, interval),
         peer_err_per_s: rate(peer_errors(&now.peers), peer_errors(&before.peers), interval),
         peer_p50_ms: quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.50),
         peer_p95_ms: quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.95),

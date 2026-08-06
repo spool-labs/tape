@@ -94,6 +94,8 @@ pub struct Tick {
 
     pub peer_req_per_s: f32,
     pub peer_ingress_per_s: f32,
+    /// Request body bytes pushed to peers, the outbound half of peer traffic.
+    pub peer_egress_per_s: f32,
     pub peer_err_per_s: f32,
     pub peer_p50_ms: f32,
     pub peer_p95_ms: f32,
