@@ -35,6 +35,15 @@ use crate::core::error::NodeError;
 /// Frames retained for a subscriber that falls behind before it is dropped.
 const BACKLOG: usize = 64;
 
+/// Window each tick's rates are averaged over.
+///
+/// Differencing one sampling interval aliases badly at low request rates: a
+/// node serving one request a second puts it in a single 250 ms bucket, which
+/// reads as 4/s with three zeroes after it, and the trace draws a comb. A
+/// trailing second reports the same average as a steady line, and the frames
+/// still go out four times a second so the motion is unchanged.
+const RATE_WINDOW_MS: u64 = 1_000;
+
 /// One encoded event, ready to write to any number of sockets.
 #[derive(Clone)]
 pub struct Frame {
@@ -405,7 +414,9 @@ where
         let hub = hub().clone();
         hub.publish_hello(&self.context);
 
-        let mut previous: Option<Sample> = None;
+        // Samples spanning RATE_WINDOW_MS; the front is what each tick is
+        // differenced against.
+        let mut history: std::collections::VecDeque<Sample> = std::collections::VecDeque::new();
         let mut since_board = Duration::ZERO;
         let mut idle = Duration::ZERO;
         let mut last_topology: Option<Bytes> = None;
@@ -420,7 +431,7 @@ where
                     // Sampling continues with nobody watching only for as long as
                     // the backfill needs; past that an idle node does no work.
                     if !hub.has_subscribers() && idle > Duration::from_millis(BACKFILL_SPAN_MS) {
-                        previous = None;
+                        history.clear();
                         since_board = Duration::ZERO;
                         continue;
                     }
@@ -432,7 +443,16 @@ where
 
                     let families = tape_metrics::prometheus::gather();
                     let sample = Sample::take(&families);
-                    if let Some(before) = previous.as_ref() {
+                    // Drop samples that have fallen out of the rate window, so
+                    // the front sits just outside it and each tick is averaged
+                    // over a trailing second.
+                    while history.len() > 1
+                        && sample.taken.duration_since(history[1].taken)
+                            >= Duration::from_millis(RATE_WINDOW_MS)
+                    {
+                        history.pop_front();
+                    }
+                    if let Some(before) = history.front() {
                         let tick = diff(&self.context, before, &sample);
                         hub.remember(&tick);
                         if let Some(frame) = Frame::new(EVENT_TICK, &tick) {
@@ -440,7 +460,7 @@ where
                         }
                     }
                     since_board += Duration::from_millis(TICK_PERIOD_MS);
-                    previous = Some(sample);
+                    history.push_back(sample);
 
                     if since_board >= Duration::from_millis(BOARD_PERIOD_MS) {
                         since_board = Duration::ZERO;
