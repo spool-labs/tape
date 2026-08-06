@@ -77,12 +77,6 @@ pub struct Tick {
     /// Interval this frame's rates were measured over.
     pub interval_secs: f32,
 
-    /// Every byte arriving: request bodies served plus responses pulled from
-    /// peers. This is the figure the throughput instrument reads as "in".
-    pub bytes_in_per_s: f32,
-    /// Every byte leaving: responses served plus request bodies sent to peers.
-    pub bytes_out_per_s: f32,
-
     pub req_per_s: f32,
     pub egress_per_s: f32,
     /// Request body bytes received by the serving path, so uploads register.

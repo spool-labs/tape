@@ -322,17 +322,6 @@ where
             .unwrap_or(0),
         interval_secs: interval,
 
-        bytes_in_per_s: rate(
-            now.http.request_bytes + now.peers.response_bytes,
-            before.http.request_bytes + before.peers.response_bytes,
-            interval,
-        ),
-        bytes_out_per_s: rate(
-            now.http.response_bytes + now.peers.request_bytes,
-            before.http.response_bytes + before.peers.request_bytes,
-            interval,
-        ),
-
         req_per_s: rate(now.http.total, before.http.total, interval),
         egress_per_s: rate(now.http.response_bytes, before.http.response_bytes, interval),
         ingress_per_s: rate(now.http.request_bytes, before.http.request_bytes, interval),
