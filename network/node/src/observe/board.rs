@@ -130,6 +130,7 @@ fn request_stats(
     status_label: &str,
     route_label: Option<&str>,
     bytes_family: &str,
+    request_bytes_family: &str,
 ) -> HttpStats {
     let mut les: Vec<f64> = Vec::new();
     let mut sums: Vec<u64> = Vec::new();
@@ -164,6 +165,7 @@ fn request_stats(
         by_route: by_route.into_iter().map(|(label, value)| Labeled { label, value }).collect(),
         total,
         response_bytes: family_counter(families, bytes_family),
+        request_bytes: family_counter(families, request_bytes_family),
     }
 }
 
@@ -175,6 +177,7 @@ pub(super) fn http_stats(families: &[MetricFamily]) -> HttpStats {
         "status_class",
         Some("route"),
         "tape_http_response_bytes_total",
+        "tape_http_request_bytes_total",
     )
 }
 
@@ -252,6 +255,8 @@ pub(super) fn peer_stats(families: &[MetricFamily]) -> HttpStats {
         "status",
         None,
         "peer_client_bytes_received_total",
+        // what this node pushed to peers, which is outbound
+        "peer_client_bytes_sent_total",
     )
 }
 
