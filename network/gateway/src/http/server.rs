@@ -110,6 +110,10 @@ where
                     tape_protocol::api::OBSERVE_BOARD_PATH,
                     get(observe_board::<Db, Cluster, Blockchain>),
                 )
+                .route(
+                    tape_protocol::api::OBSERVE_STREAM_PATH,
+                    get(tape_node::observe::stream::sse),
+                )
         } else {
             status_router
         };

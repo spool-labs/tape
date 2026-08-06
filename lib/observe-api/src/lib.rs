@@ -24,6 +24,101 @@ pub const PEER_BOARD_PATH: &str = "/v1/observe/peer/{addr}/board";
 /// collector. Gated to configured observer identities over mTLS.
 pub const ATLAS_PATH: &str = "/v1/observe/atlas";
 
+/// Path the node streams live board updates from, as server-sent events
+pub const STREAM_PATH: &str = "/v1/observe/stream";
+
+/// Event names on the stream, so a client dispatches on the event name rather
+/// than sniffing the body
+pub const EVENT_HELLO: &str = "hello";
+pub const EVENT_TICK: &str = "tick";
+pub const EVENT_BOARD: &str = "board";
+pub const EVENT_TOPOLOGY: &str = "topology";
+/// One frame of recent history, so a chart opens full
+pub const EVENT_BACKFILL: &str = "backfill";
+
+/// How often the node samples counters into a tick
+pub const TICK_PERIOD_MS: u64 = 250;
+
+/// How often the node repeats the full board
+pub const BOARD_PERIOD_MS: u64 = 5_000;
+
+/// How much recent history a connecting client is sent, and how coarsely
+pub const BACKFILL_SPAN_MS: u64 = 90_000;
+pub const BACKFILL_STEP_MS: u64 = 1_000;
+
+/// Bumped when a frame changes shape in a way an older client cannot read
+pub const STREAM_PROTOCOL: u32 = 1;
+
+/// Opening frame, so a client can size its interpolation window from the
+/// producer's own cadences rather than hardcoding them
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Hello {
+    pub protocol: u32,
+    pub tick_ms: u64,
+    pub board_ms: u64,
+    pub kind: BoardKind,
+    pub address: String,
+}
+
+/// Per-second rates and fast-moving gauges, sampled by the node
+///
+/// The node owns the differencing because it knows the exact interval between
+/// samples. Rates are per second whatever the sampling period.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tick {
+    /// Node wall clock in milliseconds, the x axis for every series
+    pub at_ms: u64,
+    /// Interval this frame's rates were measured over
+    pub interval_secs: f32,
+
+    pub req_per_s: f32,
+    pub egress_per_s: f32,
+    /// Upload bytes received by the serving path
+    pub ingress_per_s: f32,
+    pub err_per_s: f32,
+    pub serving_p50_ms: f32,
+    pub serving_p95_ms: f32,
+    pub serving_p99_ms: f32,
+
+    pub peer_req_per_s: f32,
+    pub peer_ingress_per_s: f32,
+    /// Bytes pushed to peers, the outbound half of peer traffic
+    pub peer_egress_per_s: f32,
+    pub peer_err_per_s: f32,
+    pub peer_p50_ms: f32,
+    pub peer_p95_ms: f32,
+    pub peer_p99_ms: f32,
+
+    pub store_ops_per_s: f32,
+    pub store_read_per_s: f32,
+    pub store_write_per_s: f32,
+
+    pub rpc_per_s: f32,
+    pub rpc_err_per_s: f32,
+    pub tx_per_s: f32,
+    pub tx_err_per_s: f32,
+
+    pub blocks_per_s: f32,
+    pub replay_per_s: f32,
+    pub lag_slots: u64,
+    pub tip_slot: u64,
+    pub dispatched_slot: u64,
+
+    pub cpu_pct: f32,
+    pub rss_bytes: u64,
+    pub queue_depth: u64,
+
+    /// Bytes per second persisted and fetched, in spool op order
+    pub spool_persisted_per_s: Vec<f32>,
+    pub spool_fetched_per_s: Vec<f32>,
+
+    pub decode_per_s: f32,
+    pub decode_fail_per_s: f32,
+    pub decode_p50_ms: f32,
+    pub decode_p95_ms: f32,
+    pub cache_hit_pct: f32,
+}
+
 /// One peer call that moved payload bytes, from the serving node's view.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AtlasTransfer {
@@ -376,146 +471,6 @@ pub struct SpoolStat {
     pub bytes: u64,
 }
 
-/// One row of the challenge record: what this node has seen from one peer.
-///
-/// Rounds across, peers down. `recent` is oldest-first, one entry per round this
-/// peer was judged in, so a void round leaves no mark against anyone and a peer
-/// only just seen reads as a short row rather than a wall of misses.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ChallengeRow {
-    /// Peer address, base58.
-    pub node: String,
-    /// The spool this record is about.
-    ///
-    /// One row per spool rather than per peer, which is the grid the paper
-    /// draws: rounds across, spools down. A peer holding several appears once
-    /// per spool, since each owes its own answer every round.
-    #[serde(default)]
-    pub spool: u64,
-    /// Rounds this peer was challenged in.
-    pub opportunities: u64,
-    /// Rounds it answered with a valid proof.
-    pub successes: u64,
-    /// Misses since its last success.
-    pub consecutive_misses: u64,
-    /// Share of opportunities answered, in basis points.
-    pub success_rate_bps: u64,
-    /// Whether this node's local rule has fired on the peer.
-    pub rule_fired: bool,
-    /// Whether this node currently has the peer queued for eviction.
-    #[serde(default)]
-    pub queued: bool,
-    /// The recent strip, oldest first, true for a success.
-    pub recent: Vec<bool>,
-}
-
-/// The challenge record this node keeps, one row per peer.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ChallengeGrid {
-    /// Rounds the strip can hold, so a reader can size the grid.
-    pub recent_capacity: u64,
-    /// Rounds a peer has to be judged on before the rate arm applies.
-    #[serde(default)]
-    pub min_opportunities: u64,
-    /// Success rate the rate arm fires below, in basis points.
-    #[serde(default)]
-    pub rate_floor_bps: u64,
-    /// Consecutive misses the fast arm fires at.
-    #[serde(default)]
-    pub max_consecutive_misses: u64,
-    /// One row per peer, worst first so an outlier is the top row.
-    pub rows: Vec<ChallengeRow>,
-    /// One row per owner, judged by this node's own rule.
-    #[serde(default)]
-    pub owners: Vec<ChallengeOwner>,
-    /// Which rounds the strip's columns stand for, right-aligned with them.
-    ///
-    /// Every member of a group is judged in the same rounds, so one axis labels
-    /// every row. Shorter than the widest strip when the round store has been
-    /// swept behind it, in which case the oldest columns go unlabelled.
-    #[serde(default)]
-    pub axis: Vec<RoundId>,
-}
-
-/// One owner's spools judged together, as the node judged them.
-///
-/// The rule lives in the node, so a reader draws this rather than deriving its
-/// own. `rate` is pooled across the spools and is for display: a node failing
-/// one spool of five still shows four fifths here while `verdict` has failed it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ChallengeOwner {
-    /// Peer address, base58.
-    pub node: String,
-    /// Spools this node keeps a record for.
-    pub spools: u64,
-    /// Rounds judged, summed over them.
-    pub opportunities: u64,
-    /// Rounds answered, summed the same way.
-    pub successes: u64,
-    /// Answered over judged, pooled, in basis points.
-    pub rate_bps: u64,
-    /// The longest run any one spool is on.
-    pub worst_run: u64,
-    /// What the node's own rule makes of it.
-    pub verdict: OwnerVerdict,
-    /// Whether this node has it queued for eviction.
-    pub queued: bool,
-}
-
-/// What a node's rule makes of one owner.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OwnerVerdict {
-    /// Nothing has fired.
-    #[default]
-    Healthy,
-    /// Too few rounds on every spool to judge.
-    Unproven,
-    /// A spool has stopped answering. A probe can clear it.
-    RunFailed,
-    /// A spool's lifetime rate is through the floor. A probe cannot.
-    RateFailed,
-}
-
-impl OwnerVerdict {
-    /// Whether the rule has fired, either arm.
-    pub fn fired(self) -> bool {
-        matches!(self, OwnerVerdict::RunFailed | OwnerVerdict::RateFailed)
-    }
-}
-
-/// One round's place in the timeline.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoundId {
-    pub epoch: u64,
-    pub round: u64,
-}
-
-/// Lifetime challenge round counters for this node.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ChallengeRounds {
-    /// Rounds this node opened and answered for its own spool.
-    pub opened: u64,
-    /// Spool outcomes settled as certified.
-    pub settled_certified: u64,
-    /// Spool outcomes settled as local misses.
-    pub settled_missed: u64,
-    /// Incoming answers refused at the door.
-    pub answers_refused: u64,
-    /// Rounds whose entropy block never finalized, charged to nobody.
-    #[serde(default)]
-    pub voided: u64,
-    /// Rounds dropped because their candidate block lost.
-    #[serde(default)]
-    pub discarded: u64,
-    /// This node's own rounds that the group certified.
-    #[serde(default)]
-    pub own_certified: u64,
-    /// This node's own rounds that gathered no certificate, which is what its
-    /// group-mates each recorded as a miss against it.
-    #[serde(default)]
-    pub own_missed: u64,
-}
-
 /// One cumulative histogram bucket.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Bucket {
@@ -538,6 +493,9 @@ pub struct HttpStats {
     pub total: u64,
     /// Response body bytes served.
     pub response_bytes: u64,
+    /// Request body bytes: uploads received when serving, bytes sent when a client
+    #[serde(default)]
+    pub request_bytes: u64,
 }
 
 /// Solana RPC and transaction-submission health.
@@ -672,10 +630,6 @@ pub struct Board {
     pub current_epoch: LastEpoch,
     #[serde(default)]
     pub lifetime: LastEpoch,
-    #[serde(default)]
-    pub challenge: ChallengeGrid,
-    #[serde(default)]
-    pub challenge_rounds: ChallengeRounds,
 }
 
 impl Board {
@@ -699,6 +653,32 @@ mod tests {
     fn peer_board_path_matches_prefix() {
         assert!(PEER_BOARD_PATH.starts_with(PEER_BOARD_PREFIX));
         assert!(PEER_BOARD_PATH.ends_with("/board"));
+    }
+
+    // the backfill thins ticks to its step, and must still cover its span
+    #[test]
+    fn backfill_shape() {
+        assert!(BACKFILL_STEP_MS >= TICK_PERIOD_MS);
+        assert_eq!(BACKFILL_SPAN_MS % BACKFILL_STEP_MS, 0);
+        let frames = BACKFILL_SPAN_MS / BACKFILL_STEP_MS;
+        assert_eq!(frames * BACKFILL_STEP_MS, BACKFILL_SPAN_MS);
+    }
+
+    // a renamed tick field would leave the client silently reading zeros
+    #[test]
+    fn tick_roundtrip() {
+        let tick = Tick {
+            at_ms: 1_760_000_000_000,
+            interval_secs: 0.25,
+            req_per_s: 142.5,
+            egress_per_s: 8_900_000.0,
+            lag_slots: 4,
+            tip_slot: 312_456_789,
+            spool_persisted_per_s: vec![1.0, 2.0, 3.0],
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&tick).unwrap();
+        assert_eq!(serde_json::from_str::<Tick>(&text).unwrap(), tick);
     }
 
     // ready clears the replay distance; replaying reports remaining slots

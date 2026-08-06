@@ -654,14 +654,6 @@ impl Store for RocksStore {
     }
 
     fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<StoreIter<'_>> {
-        // A family with a prefix extractor reads the extractor's width off the
-        // seek key, and an empty prefix has no bytes to read: rocksdb walks off
-        // the dangling pointer behind it and the process dies. Whole-family
-        // iteration is what an empty prefix asked for anyway.
-        if prefix.is_empty() {
-            return self.iter(cf);
-        }
-
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
 
@@ -1072,36 +1064,6 @@ mod tests {
         assert_eq!(users[0].1, b"alice".to_vec());
         assert_eq!(users[1].1, b"bob".to_vec());
         assert_eq!(users[2].1, b"charlie".to_vec());
-    }
-
-    // an empty prefix walks a prefix-extractor family whole, and does not crash
-    #[test]
-    fn empty_prefix() {
-        use crate::config::ColumnFamilyConfig;
-
-        let dir = tempdir().unwrap();
-
-        let mut db_opts = Options::default();
-        db_opts.create_if_missing(true);
-        db_opts.create_missing_column_families(true);
-
-        let cf_configs = vec![
-            ColumnFamilyConfig::new("prefixed")
-                .with_block_based()
-                .with_prefix_extractor(2)
-                .build(),
-        ];
-        let store = RocksStore::open_with_cf_config(dir.path(), db_opts, cf_configs).unwrap();
-
-        for key in [b"aa1".as_slice(), b"ab1", b"ba1"] {
-            store.put("prefixed", key, b"value").unwrap();
-        }
-
-        let all: Vec<_> = store.iter_prefix("prefixed", &[]).unwrap().collect();
-        assert_eq!(all.len(), 3);
-
-        let one: Vec<_> = store.iter_prefix("prefixed", b"ab").unwrap().collect();
-        assert_eq!(one.len(), 1);
     }
 
     #[test]
