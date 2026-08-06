@@ -16,13 +16,12 @@ use crate::verifier::TlsVerifier;
 /// from the peer's on-chain `network_tls` field.
 pub fn pinned_client(expected: NetworkTlsPubkey) -> Result<reqwest::Client, TlsError> {
     let verifier = Arc::new(TlsVerifier::pinned(expected));
-    let mut tls = ClientConfig::builder_with_provider(ring_provider())
+    let tls = ClientConfig::builder_with_provider(ring_provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| TlsError::BuildServer(e.to_string()))?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    tls.alpn_protocols = crate::alpn_protocols();
 
     reqwest::Client::builder()
         .use_preconfigured_tls(tls)
@@ -38,13 +37,12 @@ pub fn apply_pinned_tls(
     expected: NetworkTlsPubkey,
 ) -> Result<reqwest::ClientBuilder, TlsError> {
     let verifier = Arc::new(TlsVerifier::pinned(expected));
-    let mut tls = ClientConfig::builder_with_provider(ring_provider())
+    let tls = ClientConfig::builder_with_provider(ring_provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| TlsError::BuildServer(e.to_string()))?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    tls.alpn_protocols = crate::alpn_protocols();
 
     Ok(builder
         .use_preconfigured_tls(tls)
@@ -60,13 +58,12 @@ pub fn apply_webpki_tls(
         TlsVerifier::webpki_with_mozilla_roots()
             .map_err(|e| TlsError::BuildServer(e.to_string()))?,
     );
-    let mut tls = ClientConfig::builder_with_provider(ring_provider())
+    let tls = ClientConfig::builder_with_provider(ring_provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| TlsError::BuildServer(e.to_string()))?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    tls.alpn_protocols = crate::alpn_protocols();
 
     Ok(builder.use_preconfigured_tls(tls))
 }
@@ -88,14 +85,13 @@ pub fn apply_pinned_tls_with_identity(
     )?;
 
     let verifier = Arc::new(TlsVerifier::pinned(expected));
-    let mut tls = ClientConfig::builder_with_provider(ring_provider())
+    let tls = ClientConfig::builder_with_provider(ring_provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| TlsError::BuildServer(e.to_string()))?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(vec![client_cert.cert], client_cert.key)
         .map_err(|e| TlsError::BuildServer(e.to_string()))?;
-    tls.alpn_protocols = crate::alpn_protocols();
 
     Ok(builder
         .use_preconfigured_tls(tls)

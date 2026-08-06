@@ -1,0 +1,1216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Whirlwind — storage challenge signal</title>
+<style>
+  :root {
+    --bg:        #0d1218;
+    --bg-deep:   #090d12;
+    --panel:     #141a22;
+    --panel-2:   #182029;
+    --panel-3:   #1c2531;
+    --edge:      #26313d;
+    --edge-soft: #1d2732;
+    --ink:       #eaf1f7;
+    --ink-dim:   #9aa8b6;
+    --ink-faint: #5e6d7c;
+    --derive:    #4aa8ff;   /* derive: entropy ready + hash */
+    --prove:     #fe8f3a;   /* prove: proof built */
+    --attest:    #37d67a;   /* attestation received + signed */
+    --cert:      #34e37b;   /* certificate: 14 matching sigs */
+    --amber:     #ffc24b;   /* entropy block outline */
+    --void:      #ff4d5e;   /* void round band */
+    --evict:     #ff2fa1;   /* eviction */
+    --skip:      #4a586a;   /* skipped slot */
+    --teal:      #16e0be;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 620px at 18% -12%, rgba(74,168,255,.06), transparent 60%),
+      radial-gradient(900px 520px at 108% 8%, rgba(155,123,255,.045), transparent 55%),
+      var(--bg-deep);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  .frame { max-width: 1640px; margin: 0 auto; padding: 18px clamp(12px, 2.4vw, 30px) 44px; }
+
+  /* masthead */
+  .masthead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px 22px; padding-bottom: 12px; border-bottom: 1px solid var(--edge-soft); }
+  .brand { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  .wordmark { font-family: var(--font-mono); font-weight: 700; font-size: clamp(20px, 3vw, 30px); letter-spacing: .32em; margin: 0; color: var(--ink); text-transform: uppercase; }
+  .wordmark .a { color: var(--derive); }
+  .subtitle { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .04em; color: var(--ink-faint); max-width: 640px; }
+  .subtitle b { color: var(--ink-dim); font-weight: 600; }
+
+  /* controls */
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  button, select { font-family: var(--font-mono); font-size: 12px; color: var(--ink); background: var(--panel); border: 1px solid var(--edge); border-radius: 7px; padding: 7px 11px; cursor: pointer; transition: background .12s, border-color .12s, color .12s; }
+  button:hover, select:hover { background: var(--panel-2); border-color: #33414f; }
+  button:active { transform: translateY(1px); }
+  button.pri { color: #071018; background: var(--derive); border-color: var(--derive); font-weight: 600; }
+  button.pri:hover { filter: brightness(1.08); background: var(--derive); }
+  button.on { border-color: var(--derive); color: var(--derive); }
+  select { padding-right: 6px; }
+  .icobtn { min-width: 38px; text-align: center; }
+  .sep { width: 1px; height: 22px; background: var(--edge-soft); margin: 0 2px; }
+
+  /* status line */
+  .statusbar { display: flex; align-items: center; gap: 0; flex-wrap: wrap; margin-top: 12px; border: 1px solid var(--edge-soft); border-radius: 9px; background: linear-gradient(180deg, var(--panel), var(--bg)); overflow: hidden; }
+  .stat { padding: 7px 15px; border-right: 1px solid var(--edge-soft); min-width: 82px; }
+  .stat:last-child { border-right: 0; }
+  .stat .k { font-family: var(--font-mono); font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); }
+  .stat .v { font-family: var(--font-mono); font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); line-height: 1.25; }
+  .stat .v.d { color: var(--derive); }
+  .stat .v.g { color: var(--attest); }
+  .stat .v small { font-size: 10.5px; color: var(--ink-faint); font-weight: 400; letter-spacing: 0; }
+  .stat.grow { flex: 1; border-right: 0; text-align: right; color: var(--ink-faint); font-family: var(--font-mono); font-size: 10.5px; }
+
+  /* how it works */
+  .howto { margin-top: 12px; border: 1px solid var(--edge-soft); border-radius: 10px; background: var(--panel); overflow: hidden; display: none; }
+  .howto.open { display: block; }
+  .howto-in { padding: 16px 20px 18px; display: grid; grid-template-columns: 1.35fr 1fr; gap: 20px 30px; }
+  @media (max-width: 900px) { .howto-in { grid-template-columns: 1fr; } }
+  .howto h3 { font-family: var(--font-mono); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--derive); margin: 0 0 8px; }
+  .howto p { font-size: 12.5px; color: var(--ink-dim); margin: 0 0 9px; }
+  .howto p b { color: var(--ink); font-weight: 600; }
+  .howto .why { border-left: 2px solid var(--amber); padding-left: 11px; color: var(--ink-dim); font-size: 12px; }
+  .howto .honest { border-left: 2px solid var(--teal); padding-left: 11px; color: var(--ink-dim); font-size: 12px; margin-top: 10px; }
+  .howto code { font-family: var(--font-mono); color: var(--teal); font-size: 11.5px; }
+  .legend { display: flex; flex-direction: column; gap: 7px; }
+  .legrow { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--ink-dim); }
+  .legrow .sw { width: 16px; height: 16px; border-radius: 4px; flex: none; position: relative; }
+  .legrow .lab b { color: var(--ink); font-weight: 600; }
+  .sw.derive { background: var(--derive); } .sw.prove { background: var(--prove); }
+  .sw.attest { background: var(--attest); } .sw.cert { background: var(--cert); box-shadow: 0 0 8px var(--cert); }
+  .sw.amber { background: transparent; border: 2px solid var(--amber); } .sw.void { background: var(--void); }
+  .sw.evict { background: var(--evict); } .sw.miss { background: transparent; border: 2px solid var(--prove); }
+  .sw.skip { background: repeating-linear-gradient(45deg, var(--skip), var(--skip) 2px, transparent 2px, transparent 4px); border: 1px solid var(--skip); }
+
+  /* stage */
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; margin-top: 13px; align-items: start; }
+  @media (max-width: 1120px) { .stage { grid-template-columns: minmax(0,1fr); } }
+  .canvas-wrap { position: relative; border: 1px solid var(--edge-soft); border-radius: 11px; background: linear-gradient(180deg, #0c1117, var(--bg-deep)); overflow: hidden; }
+  #tl { display: block; width: 100%; height: 704px; cursor: crosshair; }
+  #tl.panning { cursor: grabbing; }
+  .hint { position: absolute; right: 14px; bottom: 9px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); letter-spacing: .04em; pointer-events: none; opacity: .7; background: linear-gradient(90deg, transparent, rgba(11,15,21,.85) 24%); padding: 3px 4px 3px 30px; border-radius: 4px; }
+
+  /* tooltip */
+  .tip { position: fixed; z-index: 40; pointer-events: none; background: rgba(10,14,19,.97); border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--ink); max-width: 280px; box-shadow: 0 10px 30px rgba(0,0,0,.5); display: none; line-height: 1.5; }
+  .tip .th { color: var(--derive); font-weight: 600; margin-bottom: 3px; }
+  .tip .r { color: var(--ink-dim); } .tip .r b { color: var(--ink); font-weight: 600; }
+  .tip .g { color: var(--attest); } .tip .o { color: var(--prove); } .tip .p { color: var(--evict); }
+
+  /* inspector */
+  .inspector { border: 1px solid var(--edge-soft); border-radius: 11px; background: var(--panel); min-height: 704px; max-height: 704px; display: flex; flex-direction: column; overflow: hidden; }
+  .insp-head { padding: 13px 16px 11px; border-bottom: 1px solid var(--edge-soft); }
+  .insp-head .t { font-family: var(--font-mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); }
+  .insp-head .h { font-family: var(--font-mono); font-size: 15px; font-weight: 600; color: var(--ink); margin-top: 2px; }
+  .insp-body { padding: 13px 16px; overflow-y: auto; font-size: 12.5px; }
+  .insp-empty { color: var(--ink-faint); font-size: 12px; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid rgba(38,49,61,.5); font-family: var(--font-mono); font-size: 11.5px; }
+  .kv .k { color: var(--ink-faint); } .kv .v { color: var(--ink); text-align: right; }
+  .kv .v.g { color: var(--attest); } .kv .v.o { color: var(--prove); } .kv .v.p { color: var(--evict); } .kv .v.d { color: var(--derive); }
+  .badge { display: inline-block; font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--edge); color: var(--ink-dim); margin: 2px 4px 2px 0; }
+  .badge.cert { border-color: var(--cert); color: var(--cert); }
+  .badge.miss { border-color: var(--prove); color: var(--prove); }
+  .badge.void { border-color: var(--void); color: var(--void); }
+  .insp-section { margin-top: 14px; }
+  .insp-section .t { font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 7px; }
+  .peerline { display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; padding: 2px 0; color: var(--ink-dim); }
+  .peerline .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .peerline .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .peerline .tm { font-variant-numeric: tabular-nums; }
+  .roleglyph { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:5px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <header class="masthead">
+    <div class="brand">
+      <h1 class="wordmark">WHIRL<span class="a">WIND</span></h1>
+      <div class="subtitle">Leaderless possession sampling, one spool group. <b>n=20, q=14, f&nbsp;at&nbsp;most&nbsp;6.</b> One Solana slot = 400&nbsp;ms.</div>
+    </div>
+    <div class="controls">
+      <button id="btn-how">How it works</button>
+      <div class="sep"></div>
+      <button id="btn-play" class="pri icobtn" title="Play / pause (space)">Pause</button>
+      <select id="sel-speed" title="Playback speed">
+        <option value="0.5">0.5&times;</option>
+        <option value="1">1&times;</option>
+        <option value="2" selected>2&times;</option>
+        <option value="4">4&times;</option>
+        <option value="8">8&times;</option>
+      </select>
+      <div class="sep"></div>
+      <select id="sel-relay" title="How far a proof travels after the owner sends it">
+        <option value="direct">relay: direct</option>
+        <option value="single">relay: single-hop</option>
+        <option value="flood" selected>relay: flood</option>
+      </select>
+      <select id="sel-deadline" title="Response deadline from block production. Only whole slots are schedulable; the sub-slot value is a counterfactual the slot clock cannot express.">
+        <option value="ms200">deadline: 200 ms (not schedulable)</option>
+        <option value="1">deadline: 1 slot (400 ms)</option>
+        <option value="2" selected>deadline: 2 slots (800 ms)</option>
+        <option value="3">deadline: 3 slots (1200 ms)</option>
+      </select>
+      <select id="sel-faults" title="Transient faults, which a local eviction rule cannot tell apart from a spool that is gone">
+        <option value="calm" selected>faults: calm</option>
+        <option value="jitter">faults: jitter</option>
+        <option value="outages">faults: outages</option>
+        <option value="regional">faults: regional</option>
+      </select>
+      <div class="sep"></div>
+      <button id="btn-replay" title="Replay this seed">Replay</button>
+      <button id="btn-seed" title="Generate a new seed">New seed</button>
+    </div>
+  </header>
+
+  <div class="statusbar">
+    <div class="stat"><div class="k">Slot</div><div class="v d" id="s-slot">0</div></div>
+    <div class="stat"><div class="k">Epoch</div><div class="v" id="s-epoch">0</div></div>
+    <div class="stat"><div class="k">Round</div><div class="v" id="s-round">—</div></div>
+    <div class="stat"><div class="k">Seed</div><div class="v" id="s-seed">—</div></div>
+    <div class="stat"><div class="k">Time</div><div class="v" id="s-time">0.0<small> s</small></div></div>
+    <div class="stat"><div class="k">Certs</div><div class="v g" id="s-certs">0</div></div>
+    <div class="stat"><div class="k">Evicted</div><div class="v" id="s-evict">0</div></div>
+    <div class="stat grow" id="s-phase">warming up</div>
+  </div>
+
+  <section class="howto" id="howto">
+    <div class="howto-in">
+      <div>
+        <h3>What this shows</h3>
+        <p>Whirlwind is a <b>signal, not a consensus</b>. Owners of one spool group repeatedly challenge one another to prove they still hold the bytes they were assigned. There is no leader and no cross-round chain: each round stands alone, and <b>each node keeps its own local score</b>.</p>
+        <p>Every round draws <b>one byte-weighted, fixed-size sub-leaf</b> of each spool's stored data, enumerated by track number. A large track spans many leaves, so inspection follows stored bytes, not object count. The challenged owner reads that leaf and broadcasts a signed Merkle proof of access.</p>
+        <p>Two clocks. The <b>response deadline runs from block production</b> — the seed is visible the moment the entropy block is produced, well before finality. <b>Signing opens on confirmation</b>, once a supermajority has voted for that block. A peer signs only if it received a valid proof before the deadline; at <b>14 matching signatures</b> anyone aggregates a BLS success certificate for that one spool. A challenged spool may self-attest for liveness but <b>cannot self-certify</b>.</p>
+        <p>A <b>void round counts against nobody</b>: if no block in the round's span reaches finalized history, there is no entropy, so the round is discarded. No certificate is a local miss, never a proof of failure; a late certificate can turn a miss back into a success.</p>
+        <div class="why"><b>Why fourteen.</b> Any two 14-signature quorums out of 20 intersect in at least 8 owners, and with at most 6 Byzantine that intersection holds at least 2 honest. So conflicting certificates cannot both stand — 14 forces honest overlap.</div>
+        <div class="honest"><b>Honest data note.</b> City-to-city <code>pings</code> and per-box <code>sha256 / bls / clay</code> compute are <b>real measurements</b>. Disk is deliberately <b>not modeled</b>, because on the target hardware the proof path is network-bound. Blockhashes, keys, and signatures are <b>illustrative</b>. Rounds sit <b>150 slots apart (60 s)</b> and each one is over in a few seconds, so playback <b>skips the idle gap</b> between them. Block production is set to <b>0.78 per slot</b> rather than mainnet's ~0.95 so that a <b>void round</b> appears in a run short enough to watch. The <b>relay</b> and <b>deadline</b> controls rebuild the run on the same seed, so whatever moves is the knob and not a different draw. At every <b>schedulable</b> deadline, meaning any whole number of 400 ms slots, the <b>nearby-fetch free-rider, the reconstruct free-rider and the selective spool all certify and survive</b>, and only a spool that answers <b>nobody</b> or can never produce a valid proof is caught. The 200 ms setting is a <b>counterfactual</b>: it is offered to show that the reconstruct free-rider is separable in principle, but the slot clock has no way to express a deadline inside a slot, so the network cannot run it. Under <b>direct</b> relay the selective spool is caught, and a single hop of forwarding is enough to carry its proof to the peers it skipped and save it. The <b>faults</b> control injects weather, which a local rule cannot tell apart from a spool that is gone. Over 150 seeds it shows the trade the deadline really makes: at 2 slots almost no honest node is ever evicted by weather but no free-rider is caught, while at 200 ms the reconstruct free-rider is caught every time and a <b>sustained regional degradation evicts an honest node in 60% of runs</b>. The tight deadline is not merely unschedulable, it is unsafe. Fault rates here are a chosen scenario, not a measurement.</div>
+      </div>
+      <div>
+        <h3>Legend</h3>
+        <div class="legend">
+          <div class="legrow"><span class="sw derive"></span><span class="lab"><b>Derive</b> — entropy ready, seed hashed</span></div>
+          <div class="legrow"><span class="sw prove"></span><span class="lab"><b>Prove</b> — Merkle proof built, broadcast</span></div>
+          <div class="legrow"><span class="sw attest"></span><span class="lab"><b>Attest</b> — peer received & signed</span></div>
+          <div class="legrow"><span class="sw cert"></span><span class="lab"><b>Certificate</b> — 14 matching sigs</span></div>
+          <div class="legrow"><span class="sw miss"></span><span class="lab"><b>Miss</b> — no certificate this round</span></div>
+          <div class="legrow"><span class="sw amber"></span><span class="lab"><b>Entropy block</b> — seeds the round</span></div>
+          <div class="legrow"><span class="sw skip"></span><span class="lab"><b>Skipped slot</b> — no block produced</span></div>
+          <div class="legrow"><span class="sw void"></span><span class="lab"><b>Void round</b> — no entropy, scores nobody</span></div>
+          <div class="legrow"><span class="sw evict"></span><span class="lab"><b>Eviction</b> — removed from next committee</span></div>
+        </div>
+        <h3 style="margin-top:18px">Controls</h3>
+        <p style="font-size:12px"><b>Space</b> play/pause &nbsp;·&nbsp; <b>drag</b> to pan time &nbsp;·&nbsp; <b>wheel</b> to zoom &nbsp;·&nbsp; <b>click a prove</b> to arc proofs out to peers (green in time, orange late) &nbsp;·&nbsp; <b>click a certificate</b> to arc its fourteen signers.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="stage">
+    <div class="canvas-wrap">
+      <canvas id="tl"></canvas>
+      <div class="hint">space · drag · wheel · click a prove or certificate</div>
+    </div>
+    <aside class="inspector">
+      <div class="insp-head"><div class="t">Inspector</div><div class="h" id="insp-title">Nothing selected</div></div>
+      <div class="insp-body" id="insp-body"><div class="insp-empty">Click a prove tick or a certificate on the timeline to trace its proof paths. Hover any mark for detail.</div></div>
+    </aside>
+  </section>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+//__WW_CORE_START__
+// Real measurements embedded inline. Nothing here is fetched.
+// PING: 40 cities + pairwise round-trip milliseconds. CPU: per-box sha256 MB/s
+// plus a bls / clay / merkle baseline in milliseconds at a reference rate.
+const PING = {"cities": [{"name": "Honolulu", "country": "United States", "lat": 21.3, "lon": -157.817}, {"name": "Seattle", "country": "United States", "lat": 47.61, "lon": -122.333}, {"name": "Las Vegas", "country": "United States", "lat": 36.08, "lon": -115.152}, {"name": "Denver", "country": "United States", "lat": 39.739, "lon": -104.984}, {"name": "Oklahoma City", "country": "United States", "lat": 35.482, "lon": -97.535}, {"name": "St Paul", "country": "United States", "lat": 45.558, "lon": -94.163}, {"name": "New Orleans", "country": "United States", "lat": 29.967, "lon": -90.05}, {"name": "Indianapolis", "country": "United States", "lat": 39.768, "lon": -86.158}, {"name": "Detroit", "country": "United States", "lat": 42.331, "lon": -83.046}, {"name": "Savannah", "country": "United States", "lat": 32.084, "lon": -81.1}, {"name": "Buffalo", "country": "United States", "lat": 42.886, "lon": -78.879}, {"name": "Baltimore", "country": "United States", "lat": 39.283, "lon": -76.617}, {"name": "Bogota", "country": "Colombia", "lat": 4.598, "lon": -74.076}, {"name": "Cromwell", "country": "United States", "lat": 41.595, "lon": -72.645}, {"name": "Caracas", "country": "Venezuela", "lat": 10.481, "lon": -66.904}, {"name": "Sao Paulo", "country": "Brazil", "lat": -23.55, "lon": -46.633}, {"name": "Belfast", "country": "United Kingdom", "lat": 54.597, "lon": -5.93}, {"name": "Bristol", "country": "United Kingdom", "lat": 51.455, "lon": -2.588}, {"name": "Valencia", "country": "Spain", "lat": 39.477, "lon": -0.374}, {"name": "Algiers", "country": "Algeria", "lat": 36.754, "lon": 3.059}, {"name": "Antwerp", "country": "Belgium", "lat": 51.219, "lon": 4.402}, {"name": "Bergen", "country": "Norway", "lat": 60.38, "lon": 5.34}, {"name": "Groningen", "country": "Netherlands", "lat": 53.217, "lon": 6.567}, {"name": "Zurich", "country": "Switzerland", "lat": 47.369, "lon": 8.538}, {"name": "Oslo", "country": "Norway", "lat": 59.95, "lon": 10.75}, {"name": "Rome", "country": "Italy", "lat": 41.9, "lon": 12.5}, {"name": "Prague", "country": "Czech Republic", "lat": 50.083, "lon": 14.417}, {"name": "Brno", "country": "Czech Republic", "lat": 49.2, "lon": 16.617}, {"name": "Tirana", "country": "Albania", "lat": 41.326, "lon": 19.816}, {"name": "Sofia", "country": "Bulgaria", "lat": 42.7, "lon": 23.333}, {"name": "Bucharest", "country": "Romania", "lat": 44.417, "lon": 26.1}, {"name": "St Petersburg", "country": "Russia", "lat": 59.95, "lon": 30.3}, {"name": "Tel Aviv", "country": "Israel", "lat": 32.083, "lon": 34.883}, {"name": "Tbilisi", "country": "Georgia", "lat": 41.714, "lon": 44.827}, {"name": "Lahore", "country": "Pakistan", "lat": 31.55, "lon": 74.344}, {"name": "Novosibirsk", "country": "Russia", "lat": 55.017, "lon": 82.933}, {"name": "Hanoi", "country": "Vietnam", "lat": 21.041, "lon": 105.798}, {"name": "Perth", "country": "Australia", "lat": -31.952, "lon": 115.859}, {"name": "Seoul", "country": "South Korea", "lat": 37.566, "lon": 126.978}, {"name": "Sapporo", "country": "Japan", "lat": 43.067, "lon": 141.35}], "rtt": [[0.0, 70.9, 53.2, 74.6, 97.1, 94.8, 96.8, 99.7, 100.0, 116.9, 119.5, 114.2, 180.1, 112.6, 149.6, 217.6, 171.1, 175.8, 200.5, 233.6, 190.8, 210.5, 188.2, 191.8, 210.1, 193.9, 209.8, 196.8, 224.4, 215.2, 216.3, 225.2, 237.8, 268.2, 244.8, 240.0, 199.3, 211.1, 179.4, 94.9], [75.5, 0.0, 38.7, 33.2, 50.7, 61.5, 73.0, 67.0, 56.5, 86.5, 64.9, 71.2, 144.8, 79.8, 129.8, 183.5, 124.8, 143.7, 176.6, 178.6, 140.6, 162.5, 140.4, 162.7, 162.9, 166.8, 175.2, 171.9, 197.5, 192.9, 184.2, 189.9, 193.8, 232.0, 258.8, 229.6, 219.6, 224.6, 155.0, 140.2], [53.2, 38.7, 0.0, 31.1, 56.7, 66.1, 55.1, 57.3, 45.4, 82.8, 76.0, 74.6, 142.3, 80.7, 112.5, 187.3, 123.5, 136.5, 144.5, 186.2, 148.8, 168.9, 151.6, 156.5, 174.1, 159.4, 172.6, 162.4, 196.5, 170.9, 175.2, 190.8, 188.2, 220.0, 284.8, 221.2, 189.2, 210.4, 142.5, 134.8], [74.7, 33.2, 31.2, 0.0, 20.7, 32.3, 43.7, 39.8, 29.5, 61.1, 37.2, 53.8, 123.6, 51.6, 96.5, 155.3, 104.2, 112.7, 128.0, 148.7, 114.8, 149.2, 124.9, 133.5, 148.4, 136.4, 145.7, 142.7, 168.7, 154.7, 158.2, 161.8, 167.1, 210.9, 268.0, 200.8, 208.4, 228.4, 165.0, 156.4], [97.1, 50.7, 56.7, 20.8, 0.0, 32.5, 22.5, 52.1, 26.9, 54.4, 32.3, 40.9, 105.2, 45.9, 79.1, 147.6, 103.0, 107.6, 121.4, 143.0, 125.8, 151.1, 128.5, 139.1, 135.7, 129.6, 139.1, 143.8, 162.0, 157.8, 152.0, 150.0, 178.4, 197.2, 233.7, 201.9, 224.6, 247.8, 174.4, 162.8], [94.9, 61.6, 66.0, 32.4, 32.6, 0.0, 41.2, 32.3, 16.8, 52.4, 32.8, 35.6, 112.4, 97.1, 91.3, 144.4, 114.5, 102.8, 132.3, 136.9, 115.1, 144.7, 118.5, 132.4, 128.9, 121.9, 136.8, 133.4, 147.8, 149.2, 146.2, 139.4, 162.8, 190.8, 287.9, 191.2, 218.0, 269.1, 191.4, 175.0], [96.7, 73.1, 55.2, 43.5, 22.5, 41.2, 0.0, 46.4, 38.6, 57.2, 53.5, 49.9, 104.6, 53.2, 82.3, 147.3, 117.3, 117.4, 128.2, 171.9, 127.5, 159.2, 137.7, 129.1, 149.5, 135.5, 149.6, 131.4, 162.2, 160.0, 163.9, 144.4, 179.9, 204.9, 261.8, 205.3, 309.3, 250.9, 182.8, 180.7], [99.7, 67.1, 57.3, 39.8, 52.2, 32.2, 45.4, 0.0, 14.4, 55.0, 28.4, 25.1, 107.3, 25.4, 85.2, 139.1, 90.0, 97.5, 124.4, 136.4, 163.2, 139.3, 102.5, 122.9, 185.9, 119.3, 124.2, 120.2, 137.1, 145.3, 146.1, 131.3, 155.9, 249.2, 273.9, 187.7, 212.8, 250.2, 191.2, 153.4], [99.9, 56.8, 45.5, 29.5, 26.9, 16.8, 38.7, 14.5, 0.0, 47.4, 23.7, 20.4, 108.5, 23.3, 90.4, 128.9, 85.9, 88.2, 107.9, 133.6, 106.0, 126.8, 100.4, 112.8, 121.1, 114.9, 120.4, 116.0, 140.2, 132.8, 127.5, 133.8, 153.2, 169.4, 272.1, 182.0, 253.2, 249.3, 189.7, 159.3], [115.3, 85.0, 81.2, 59.6, 53.3, 50.8, 55.6, 53.8, 45.7, 0.0, 56.4, 38.9, 87.6, 51.7, 83.3, 132.7, 124.2, 111.7, 138.4, 156.2, 122.2, 155.6, 133.3, 142.4, 139.6, 130.8, 141.8, 138.6, 159.8, 153.0, 161.8, 155.0, 171.6, 211.9, 253.1, 206.6, 302.1, 263.4, 198.2, 202.9], [119.6, 65.9, 76.0, 37.3, 32.3, 32.6, 53.5, 28.1, 23.6, 57.8, 0.0, 19.8, 99.2, 16.0, 86.4, 136.1, 78.7, 76.2, 121.6, 111.7, 92.3, 115.6, 96.4, 109.5, 110.7, 100.8, 112.1, 119.4, 131.3, 112.2, 130.1, 116.3, 136.9, 170.9, 233.7, 170.7, 267.4, 264.5, 190.8, 176.4], [113.3, 71.7, 74.7, 53.8, 41.0, 35.5, 49.9, 25.3, 20.4, 40.6, 19.5, 0.0, 85.8, 13.1, 70.1, 119.8, 90.8, 80.6, 105.7, 127.2, 90.0, 123.1, 99.4, 106.0, 106.1, 96.9, 106.9, 110.9, 126.7, 114.6, 121.0, 114.4, 136.1, 168.5, 211.3, 167.1, 276.4, 249.8, 197.8, 191.1], [178.3, 138.7, 140.7, 122.8, 104.0, 110.9, 103.6, 106.4, 107.2, 87.6, 96.5, 84.2, 0.0, 102.9, 96.8, 162.7, 163.3, 171.1, 187.9, 196.0, 177.9, 188.6, 169.0, 182.6, 186.4, 180.4, 192.6, 187.8, 201.3, 216.1, 204.2, 199.3, 221.7, 244.2, 339.3, 244.3, 342.4, 341.3, 265.3, 248.7], [112.6, 79.9, 80.7, 51.6, 46.0, 96.9, 53.2, 25.4, 23.2, 53.1, 16.0, 13.1, 103.8, 0.0, 81.9, 116.3, 72.4, 73.9, 103.3, 122.6, 80.8, 112.4, 98.3, 104.5, 105.1, 93.5, 100.1, 98.9, 123.9, 109.3, 203.4, 128.7, 213.1, 165.7, 221.3, 166.4, 252.6, 262.8, 203.7, 178.4], [149.6, 130.0, 111.9, 96.5, 79.2, 91.3, 82.5, 84.8, 89.8, 85.3, 85.8, 69.7, 99.3, 81.7, 0.0, 147.7, 152.1, 147.0, 173.8, 194.9, 154.8, 181.5, 157.1, 166.9, 180.2, 158.1, 165.9, 173.3, 178.5, 188.9, 181.4, 195.0, 203.6, 228.4, 304.5, 236.2, 318.4, 294.2, 233.0, 228.1], [217.5, 183.4, 185.7, 155.5, 147.7, 144.3, 147.3, 139.2, 128.8, 133.9, 136.0, 119.5, 162.8, 116.3, 147.7, 0.0, 191.5, 184.3, 220.4, 241.5, 203.6, 226.7, 198.9, 229.2, 221.7, 197.9, 219.5, 215.2, 221.3, 226.0, 231.8, 222.0, 248.3, 270.7, 335.8, 273.6, 362.6, 359.3, 298.9, 303.4], [171.2, 124.9, 123.5, 104.2, 103.0, 114.4, 117.3, 90.0, 85.8, 125.6, 78.7, 90.7, 164.5, 72.5, 152.2, 191.6, 0.0, 4.1, 35.1, 45.0, 16.4, 39.9, 11.2, 19.3, 37.3, 22.0, 30.3, 21.5, 49.3, 39.6, 44.7, 45.8, 61.2, 93.5, 214.7, 93.0, 268.9, 255.9, 258.9, 222.4], [175.2, 143.8, 136.5, 112.8, 107.7, 102.6, 117.4, 97.5, 88.2, 113.0, 76.2, 80.6, 171.6, 73.9, 146.3, 184.3, 4.2, 0.0, 44.6, 43.1, 14.9, 42.4, 13.7, 27.2, 38.3, 28.3, 33.8, 42.6, 52.6, 45.3, 51.3, 41.9, 62.3, 81.7, 211.2, 99.3, 270.3, 282.9, 267.7, 254.8], [200.7, 176.7, 144.5, 127.9, 121.5, 132.2, 128.2, 124.5, 107.9, 139.9, 121.6, 105.6, 188.8, 103.3, 174.0, 220.5, 35.1, 48.7, 0.0, 56.8, 38.7, 68.5, 45.3, 43.8, 57.5, 55.5, 44.8, 49.4, 73.1, 59.3, 69.4, 69.1, 83.7, 106.6, 255.5, 120.9, 206.0, 203.6, 274.8, 242.5], [234.4, 185.4, 187.7, 150.4, 144.8, 137.7, 173.5, 142.5, 135.5, 162.1, 115.0, 130.9, 198.9, 125.7, 196.8, 244.2, 47.5, 48.3, 61.3, 0.0, 41.3, 70.4, 52.9, 49.3, 70.2, 42.0, 47.4, 53.0, 62.4, 60.7, 70.7, 100.7, 70.8, 95.1, 308.2, 129.0, 414.3, 291.8, 322.5, 252.2], [190.7, 140.4, 148.2, 114.9, 126.0, 115.3, 127.6, 163.5, 106.2, 123.7, 92.3, 90.0, 179.2, 80.7, 155.4, 203.6, 16.3, 14.9, 38.7, 41.1, 0.0, 31.9, 9.4, 17.6, 24.9, 24.1, 27.8, 23.9, 45.3, 36.9, 34.6, 38.9, 71.6, 73.9, 200.4, 93.6, 294.1, 285.2, 273.2, 237.1], [210.2, 162.6, 169.0, 149.3, 151.2, 144.6, 159.1, 139.3, 126.6, 157.3, 115.5, 122.9, 189.0, 112.3, 182.4, 226.7, 39.9, 42.3, 68.6, 69.1, 32.0, 0.0, 30.4, 31.0, 10.0, 51.6, 40.3, 47.6, 69.0, 63.1, 79.9, 27.2, 83.2, 94.4, 223.5, 77.0, 221.7, 295.4, 297.3, 284.4], [188.1, 141.2, 151.7, 124.8, 128.6, 118.4, 137.7, 102.5, 100.3, 135.0, 96.4, 99.4, 169.5, 98.3, 156.9, 198.9, 11.3, 13.7, 45.3, 52.1, 9.4, 30.4, 0.0, 26.6, 23.4, 29.3, 25.8, 27.3, 57.5, 49.8, 39.9, 35.2, 68.2, 86.0, 212.9, 96.8, 319.6, 281.1, 282.8, 269.5], [191.8, 162.7, 156.5, 134.0, 139.1, 132.4, 129.1, 122.9, 112.6, 143.4, 109.5, 105.9, 183.6, 104.5, 167.2, 229.2, 19.3, 27.3, 43.8, 45.4, 17.7, 31.1, 26.6, 0.0, 30.8, 18.9, 14.7, 19.5, 38.7, 45.5, 30.5, 35.7, 70.6, 73.0, 196.7, 96.6, 231.6, 295.6, 291.5, 248.6], [210.3, 163.0, 174.1, 148.6, 135.7, 128.8, 149.4, 185.9, 121.2, 141.0, 111.0, 106.2, 188.0, 105.1, 179.8, 221.6, 37.2, 38.3, 57.4, 66.0, 24.9, 10.0, 23.3, 30.7, 0.0, 29.3, 122.0, 40.4, 56.2, 50.8, 49.6, 22.8, 91.7, 76.4, 164.2, 72.0, 220.6, 286.4, 290.0, 237.7], [193.6, 166.9, 159.4, 136.4, 129.6, 121.8, 135.5, 119.3, 114.8, 132.1, 101.0, 96.7, 181.6, 93.4, 158.1, 197.9, 22.0, 28.3, 55.5, 40.7, 24.0, 51.5, 29.2, 18.8, 29.4, 0.0, 17.7, 21.4, 31.0, 48.6, 39.5, 57.7, 61.3, 80.1, 199.0, 95.4, 211.1, 278.6, 296.4, 298.8], [209.7, 175.2, 172.6, 145.6, 139.1, 136.4, 149.6, 124.0, 120.3, 143.3, 112.0, 106.9, 193.0, 100.0, 165.7, 219.3, 30.2, 33.6, 44.7, 46.4, 27.7, 40.4, 25.7, 14.6, 121.7, 17.5, 0.0, 10.6, 19.0, 14.6, 27.5, 45.8, 78.8, 61.6, 138.8, 92.8, 355.8, 210.1, 294.7, 295.9], [196.8, 172.4, 162.5, 142.7, 144.0, 133.4, 131.5, 120.4, 116.0, 140.3, 118.0, 112.3, 188.8, 98.9, 173.0, 215.3, 21.6, 42.7, 49.5, 50.5, 23.9, 47.6, 27.3, 19.5, 40.5, 21.5, 11.2, 0.0, 34.8, 23.5, 27.6, 40.2, 70.2, 75.0, 209.8, 96.3, 200.1, 286.9, 286.9, 182.5], [224.4, 197.5, 196.5, 168.7, 161.9, 147.8, 162.3, 137.1, 140.2, 161.1, 131.5, 126.7, 201.9, 123.8, 178.2, 221.4, 49.2, 52.6, 73.1, 56.5, 45.2, 69.0, 57.6, 38.7, 56.1, 31.1, 19.2, 35.2, 0.0, 13.2, 44.2, 68.4, 112.2, 76.7, 172.2, 122.7, 224.0, 230.4, 280.3, 221.0], [214.7, 193.0, 170.8, 154.6, 157.8, 148.9, 160.1, 145.3, 132.9, 154.6, 112.2, 114.8, 218.1, 109.4, 188.7, 226.1, 39.7, 45.2, 59.2, 58.4, 36.9, 63.1, 49.7, 45.3, 50.5, 48.5, 14.6, 23.4, 13.1, 0.0, 15.8, 57.1, 87.1, 71.4, 211.3, 109.3, 225.4, 305.2, 272.4, 233.5], [216.0, 184.2, 175.1, 158.1, 152.0, 146.2, 163.9, 146.1, 127.4, 163.4, 129.4, 121.0, 204.2, 203.4, 181.8, 231.8, 44.7, 51.3, 69.5, 66.6, 34.6, 79.9, 39.9, 30.6, 49.6, 39.5, 27.5, 27.5, 44.2, 15.8, 0.0, 62.7, 89.5, 99.1, 226.8, 111.8, 237.7, 300.5, 312.6, 300.7], [225.3, 189.9, 190.9, 158.5, 150.0, 139.4, 144.6, 131.3, 133.8, 156.7, 115.3, 114.2, 201.4, 128.5, 195.7, 221.8, 45.8, 41.9, 69.2, 98.2, 39.0, 27.3, 35.2, 35.8, 22.8, 58.0, 45.6, 40.2, 68.4, 57.2, 62.7, 0.0, 89.8, 104.1, 220.3, 49.2, 229.7, 315.3, 270.3, 188.6], [238.2, 193.8, 188.6, 167.3, 178.4, 162.2, 179.6, 155.8, 153.0, 173.1, 137.3, 136.2, 222.3, 212.6, 204.0, 248.3, 61.2, 62.3, 83.7, 68.4, 71.7, 83.3, 68.2, 70.6, 91.7, 61.3, 78.9, 70.0, 112.2, 87.2, 89.6, 89.8, 0.0, 147.9, 276.7, 145.1, 321.8, 255.9, 297.7, 303.2], [267.9, 232.1, 220.2, 211.1, 197.3, 190.8, 204.9, 249.1, 169.6, 213.2, 171.2, 168.5, 244.9, 165.9, 228.6, 270.8, 93.4, 82.0, 106.6, 91.1, 73.5, 94.2, 85.8, 73.0, 76.5, 80.3, 62.0, 75.3, 76.7, 71.6, 99.0, 104.3, 147.9, 0.0, 204.8, 76.9, 282.1, 338.5, 359.1, 342.7], [244.6, 259.7, 284.7, 267.8, 234.7, 288.1, 262.0, 273.5, 271.9, 255.6, 231.2, 212.9, 341.4, 221.2, 306.8, 336.9, 215.6, 212.5, 255.9, 308.4, 200.8, 224.6, 212.9, 197.2, 164.5, 199.6, 139.1, 211.1, 172.3, 211.2, 227.8, 220.3, 276.6, 204.7, 0.0, 282.9, 151.2, 146.1, 301.3, 186.7], [240.3, 229.7, 221.5, 200.1, 202.0, 191.2, 205.3, 187.6, 181.9, 207.7, 171.0, 165.8, 245.6, 165.4, 236.0, 273.8, 92.8, 99.8, 120.6, 126.5, 93.4, 77.0, 96.4, 97.7, 72.0, 95.4, 92.8, 94.6, 122.0, 109.1, 112.5, 49.2, 145.4, 76.9, 282.9, 0.0, 204.8, 354.5, 145.8, 132.8], [199.3, 219.6, 189.3, 208.6, 224.7, 218.0, 309.4, 212.9, 253.3, 298.5, 267.4, 276.3, 343.9, 252.6, 321.5, 361.6, 269.2, 271.3, 205.9, 411.3, 298.5, 222.1, 319.4, 231.7, 222.3, 211.1, 351.8, 200.0, 224.5, 225.8, 237.9, 230.3, 321.9, 282.0, 151.7, 206.7, 0.0, 104.0, 216.3, 280.5], [211.1, 224.6, 210.4, 228.4, 247.8, 268.9, 251.0, 250.2, 249.0, 264.7, 264.5, 249.8, 341.6, 262.7, 293.8, 359.3, 256.0, 282.7, 203.5, 287.0, 285.2, 295.3, 281.5, 295.6, 286.4, 278.6, 210.3, 287.0, 230.3, 305.1, 300.5, 315.3, 255.8, 338.4, 145.4, 354.6, 104.3, 0.0, 250.4, 129.5], [179.2, 155.0, 142.4, 165.5, 174.3, 191.2, 182.8, 189.7, 189.5, 199.5, 193.1, 197.4, 267.1, 203.6, 233.2, 298.9, 257.2, 267.6, 274.6, 317.7, 274.0, 297.1, 282.9, 291.8, 289.2, 295.8, 294.4, 286.8, 280.6, 272.5, 312.3, 271.1, 297.7, 359.0, 299.6, 145.6, 216.2, 250.3, 0.0, 149.4], [94.8, 140.1, 134.8, 156.5, 162.3, 175.0, 180.7, 153.5, 159.2, 204.4, 176.4, 190.5, 248.5, 178.5, 227.5, 303.2, 222.4, 254.3, 242.4, 250.4, 237.1, 284.7, 269.4, 248.6, 237.7, 298.7, 295.5, 181.6, 221.6, 233.5, 300.8, 188.6, 303.2, 342.5, 185.8, 132.8, 280.3, 129.5, 149.4, 0.0]]};
+const CPU = {"sha256_mbps": {"milan": 161, "axion": 397, "m4": 572, "icelake": 1274, "sapphire": 1453, "zen3": 1577, "zen4": 1675, "zen5": 2022, "m4max": 2100}, "baseline": {"ref_mbps": 2100, "bls_sign_ms": 0.1, "bls_verify14_ms": 5.0, "bls_aggregate14_ms": 1.2, "clay_decode_ms": 0.022, "merkle_gen_ms": 0.006, "merkle_verify_ms": 0.0015, "sha_per_mib_ms_ref": 0.47619047619047616}};
+
+// protocol / sim parameters
+const P = {
+  SLOT_MS: 400,
+  N: 20, Q: 14, F: 6,
+  SPAN: 4,               // slots searched for the entropy block
+  ROUND_STRIDE: 150,     // slots between round starts, 150 slots is 60 s
+  ROUNDS_PER_EPOCH: 10,
+  NUM_EPOCHS: 4,
+  DEADLINE_SLOTS: 2,     // response deadline, from production
+  DEADLINE_MS: null,     // sub-slot deadline the slot clock cannot schedule,
+                         // null means use DEADLINE_SLOTS
+  RELAY: 'flood',        // direct | single | flood, how far a proof travels
+  FAULTS: 'calm',        // calm | jitter | outages | regional
+  SIGN_OPEN_SLOTS: 1,    // signing opens on confirmation
+  PROD_OFFSET: 55,       // ms into the slot the block is produced
+  PRODUCE_PROB: 0.78,    // per-slot block production, LOWERED for visibility:
+                         // mainnet runs near 0.95, which over a four-slot span
+                         // voids a round about six times in a million. At 0.78
+                         // a void shows up in a run short enough to watch.
+  EDGE_RTT: 20,          // nearby metro edge fetch (nearby-fetch)
+  HELPERS: 16,           // group helpers needed to reconstruct
+  SELECTIVE_FANOUT: 8,   // peers a selective spool bothers to serve
+  SELECTIVE_DELAY: 520,  // ms a selective spool stalls its proof
+  EVICT_CONSEC: 3,       // consecutive misses that trip eviction
+  EVICT_MIN: 4,          // rounds before a low-rate eviction can fire
+  EVICT_RATE: 0.5,       // success rate floor
+};
+const BOXES = Object.keys(CPU.sha256_mbps);
+const REF = CPU.baseline.ref_mbps;
+const BL = CPU.baseline;
+const SEED_MiB = 96 / (1024 * 1024);
+const LEAF_MiB = 1 / 1024;            // 1 KiB sub-leaf
+const DECODE_UNITS = 64;             // clay decode blocks for a slice rebuild
+
+// seeded rng
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function rint(rng, n) { return Math.floor(rng() * n); }
+function shuffle(arr, rng) { for (let i = arr.length - 1; i > 0; i--) { const j = rint(rng, i + 1);[arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
+function fnvHex(str) {
+  let h = 0x811c9dc5 >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+function hashHex(str, len) { let out = ''; let s = str; while (out.length < len) { out += fnvHex(s); s = out; } return out.slice(0, len); }
+
+// cost model (real measurements)
+function rate(box) { return CPU.sha256_mbps[box]; }
+function scaleOf(box) { return REF / rate(box); }
+function hashMs(box, mib) { return mib * 1000 / rate(box); }
+function signMs(box) { return BL.bls_sign_ms * scaleOf(box); }
+function verifyOneMs(box) { return (BL.bls_verify14_ms / P.Q) * scaleOf(box); }
+function aggMs(box) { return BL.bls_aggregate14_ms * scaleOf(box); }
+function decodeMs(box) { return BL.clay_decode_ms * DECODE_UNITS * scaleOf(box); }
+function merkleMs(box) { return BL.merkle_gen_ms * scaleOf(box); }
+function oneWay(ci, cj) { return PING.rtt[ci][cj] / 2; }
+
+const ROLE_LABEL = {
+  honest: 'honest', nearby: 'nearby-fetch', reconstruct: 'reconstruct',
+  selective: 'selective', offline: 'offline', colluder: 'colluder'
+};
+// What the defaults should produce: a whole-slot deadline separates nobody who
+// answers, and relaying carries a withheld proof to the peers it skipped, so
+// only a spool that answers nobody or cannot prove is caught. Both sets move if
+// the relay or deadline knob moves, which is the point of having them.
+// Weather. A spool that misses because its region browned out looks exactly
+// like a spool that discarded its data: the scoreboard sees an absent
+// certificate either way. Regional is the correlated case the paper's
+// durability estimate explicitly does not price.
+const FAULT_SCENARIOS = {
+  calm:     { outage: 0,    spikeP: 0,    spikeX: 1, busyP: 0,    busyMs: 0,  regionP: 0,    regionX: 1 },
+  jitter:   { outage: 0,    spikeP: 0.10, spikeX: 3, busyP: 0.10, busyMs: 60, regionP: 0,    regionX: 1 },
+  outages:  { outage: 0.03, spikeP: 0.05, spikeX: 2, busyP: 0,    busyMs: 0,  regionP: 0,    regionX: 1 },
+  regional: { outage: 0,    spikeP: 0,    spikeX: 1, busyP: 0,    busyMs: 0,  regionP: 0.06, regionX: 5, regionRounds: 6 },
+};
+
+const SURVIVE_ROLES = new Set(['honest', 'nearby', 'reconstruct', 'selective']);
+const CAUGHT_ROLES = new Set(['offline', 'colluder']);
+
+// buildSim(seed): a DOM-free, reseedable, multi-epoch event record.
+// No outcome is scripted; certification falls out of real timing.
+function buildSim(seed) {
+  seed = seed >>> 0;
+  const rng = mulberry32(seed);
+  // Faults draw from a stream of their own, so turning weather on does not
+  // shift the placement or the roles and the knob is the only thing that moved.
+  const frng = mulberry32((seed ^ 0x9E3779B9) >>> 0);
+  const fx = FAULT_SCENARIOS[P.FAULTS] || FAULT_SCENARIOS.calm;
+  // A regional fault lasts. An outage that cleared every round could never
+  // produce the run of consecutive misses that actually evicts anyone, which
+  // is the whole reason correlated failure is worth modelling separately.
+  let regionState = null;
+  let occGid = 1;
+  const totalSlots = P.NUM_EPOCHS * P.ROUNDS_PER_EPOCH * P.ROUND_STRIDE;
+
+  // per-slot block production
+  const slots = [];
+  for (let s = 0; s < totalSlots; s++) slots.push({ slot: s, produced: rng() < P.PRODUCE_PROB });
+
+  const usedCities = new Set();
+  function freshCity() {
+    // pick a city not currently seated
+    let guard = 0;
+    while (guard++ < 400) { const c = rint(rng, PING.cities.length); if (!usedCities.has(c)) { usedCities.add(c); return c; } }
+    return rint(rng, PING.cities.length);
+  }
+  function freeCity(c) { usedCities.delete(c); }
+  function freshBox() { return BOXES[rint(rng, BOXES.length)]; }
+
+  function makeOcc(role, seat, epoch, cityIdx, box) {
+    return {
+      occId: occGid++, role, seat, epochBorn: epoch,
+      cityIdx, cityName: PING.cities[cityIdx].name, box,
+      certs: 0, misses: 0, consec: 0, played: 0, epochChallenged: 0,
+      evicted: false, evictMs: null, evictSlot: null, evictEpoch: null,
+      cutoff: role === 'offline' ? 2 + rint(rng, 3) : null,
+      partnerOcc: null,
+    };
+  }
+
+  // epoch 0 roster: 14 honest, 1 nearby, 1 reconstruct, 1 selective,
+  //      1 offline, 2 colluder (a bloc). Seats shuffled so layout varies.
+  const roles = ['nearby', 'reconstruct', 'selective', 'offline', 'colluder', 'colluder'];
+  while (roles.length < P.N) roles.push('honest');
+  const seatOrder = shuffle([...Array(P.N).keys()], rng);
+  const committee = new Array(P.N);
+  let cA = null, cB = null;
+  for (let i = 0; i < P.N; i++) {
+    const seat = seatOrder[i];
+    const role = roles[i];
+    const occ = makeOcc(role, seat, 0, freshCity(), freshBox());
+    if (role === 'colluder') { if (!cA) cA = occ; else cB = occ; }
+    committee[seat] = occ;
+  }
+  if (cA && cB) { cA.partnerOcc = cB.occId; cB.partnerOcc = cA.occId; }
+
+  const rounds = [];
+  const evictions = [];
+  const graveyard = [];
+  const seatTimeline = Array.from({ length: P.N }, () => []);
+
+  function pairColluders() {
+    const cs = committee.filter(o => o.role === 'colluder');
+    if (cs.length >= 2) { cs[0].partnerOcc = cs[1].occId; cs[1].partnerOcc = cs[0].occId; }
+  }
+
+  for (let epoch = 0; epoch < P.NUM_EPOCHS; epoch++) {
+    const epochStartSlot = epoch * P.ROUNDS_PER_EPOCH * P.ROUND_STRIDE;
+    for (const o of committee) o.epochChallenged = 0;
+
+    for (let ri = 0; ri < P.ROUNDS_PER_EPOCH; ri++) {
+      const spanStart = epochStartSlot + ri * P.ROUND_STRIDE;
+      let entropySlot = null;
+      for (let k = 0; k < P.SPAN; k++) { if (slots[spanStart + k] && slots[spanStart + k].produced) { entropySlot = spanStart + k; break; } }
+      const round = {
+        idx: rounds.length, epoch, roundInEpoch: ri, spanStartSlot: spanStart,
+        entropySlot, isVoid: entropySlot === null, challenges: [],
+      };
+      if (round.isVoid) {
+        round.bandStartMs = spanStart * P.SLOT_MS;
+        round.bandEndMs = (spanStart + P.SPAN) * P.SLOT_MS;
+        rounds.push(round);
+        continue;
+      }
+      // This round's weather, drawn once and shared by every challenge in it.
+      const faultOffline = new Array(P.N).fill(false);
+      const faultLat = new Array(P.N).fill(1);
+      const faultBusy = new Array(P.N).fill(0);
+      const roundIndex = epoch * P.ROUNDS_PER_EPOCH + ri;
+      if (regionState && roundIndex >= regionState.until) regionState = null;
+      if (!regionState && fx.regionP > 0 && frng() < fx.regionP) {
+        const countries = [...new Set(committee.map(o => PING.cities[o.cityIdx].country))];
+        if (countries.length) {
+          regionState = {
+            country: countries[rint(frng, countries.length)],
+            until: roundIndex + (fx.regionRounds || 1),
+          };
+        }
+      }
+      const faultRegion = regionState ? regionState.country : null;
+      for (let s = 0; s < P.N; s++) {
+        if (fx.outage > 0 && frng() < fx.outage) faultOffline[s] = true;
+        if (fx.spikeP > 0 && frng() < fx.spikeP) faultLat[s] *= fx.spikeX;
+        if (fx.busyP > 0 && frng() < fx.busyP) faultBusy[s] += fx.busyMs;
+        if (faultRegion && PING.cities[committee[s].cityIdx].country === faultRegion) faultLat[s] *= fx.regionX;
+      }
+      // A degraded endpoint slows the hop, so the worse of the two governs.
+      const linkX = (a, b) => Math.max(faultLat[a], faultLat[b]);
+
+      const prodMs = entropySlot * P.SLOT_MS + P.PROD_OFFSET;
+      const signOpenMs = (entropySlot + P.SIGN_OPEN_SLOTS) * P.SLOT_MS;
+      // A slot deadline lands on the slot grid; a sub-slot one is counted from
+      // production, because the grid cannot express it.
+      const deadlineMs = P.DEADLINE_MS != null
+        ? prodMs + P.DEADLINE_MS
+        : (entropySlot + P.DEADLINE_SLOTS) * P.SLOT_MS;
+      round.prodMs = prodMs; round.signOpenMs = signOpenMs; round.deadlineMs = deadlineMs;
+      round.entropyHash = hashHex('blk' + seed + ':' + entropySlot, 16);
+
+      for (let seat = 0; seat < P.N; seat++) {
+        const X = committee[seat];
+        // does X broadcast a valid proof?
+        let broadcast = true, validProof = true;
+        if (X.role === 'offline') { if (X.epochChallenged >= X.cutoff) { broadcast = false; validProof = false; } }
+        else if (X.role === 'colluder') { broadcast = false; validProof = false; }
+        // A transient outage looks identical to a spool that is gone for good.
+        if (faultOffline[seat]) broadcast = false;
+
+        const deriveMs = prodMs + hashMs(X.box, SEED_MiB);
+        let accessCost = 0;
+        if (X.role === 'nearby') accessCost = P.EDGE_RTT + decodeMs(X.box);
+        else if (X.role === 'reconstruct') {
+          const rl = [];
+          for (let j = 0; j < P.N; j++) if (j !== seat) rl.push(oneWay(X.cityIdx, committee[j].cityIdx) * 2 * linkX(seat, j));
+          rl.sort((a, b) => a - b);
+          const gather = rl[Math.min(P.HELPERS - 1, rl.length - 1)];
+          accessCost = gather + decodeMs(X.box);
+        }
+        const proofCompute = hashMs(X.box, LEAF_MiB) + merkleMs(X.box);
+        const proveMs = broadcast ? deriveMs + accessCost + proofCompute + faultBusy[seat] : null;
+
+        const broadcastDelay = X.role === 'selective' ? P.SELECTIVE_DELAY : 0;
+        let peerSeats = [];
+        for (let j = 0; j < P.N; j++) if (j !== seat) peerSeats.push(j);
+        if (X.role === 'selective') peerSeats = shuffle(peerSeats, rng).slice(0, P.SELECTIVE_FANOUT);
+
+        const peers = [];
+        const attesters = [];
+        if (broadcast) {
+          // The owner sends where it chooses. Under direct that is the end of
+          // it, so a peer it skipped never sees the proof. Single-hop lets each
+          // recipient forward once. Flood keeps forwarding until no route
+          // shortens, so every peer gets the shortest path through the group.
+          const arrival = new Array(P.N).fill(Infinity);
+          for (const j of peerSeats) {
+            arrival[j] = proveMs + broadcastDelay + oneWay(X.cityIdx, committee[j].cityIdx) * linkX(seat, j);
+          }
+          const passes = P.RELAY === 'direct' ? 0 : (P.RELAY === 'single' ? 1 : P.N);
+          for (let pass = 0; pass < passes; pass++) {
+            const holders = arrival.slice();
+            let changed = false;
+            for (let r = 0; r < P.N; r++) {
+              if (r === seat || !isFinite(holders[r])) continue;
+              for (let j = 0; j < P.N; j++) {
+                if (j === seat || j === r) continue;
+                const relayed = holders[r] + oneWay(committee[r].cityIdx, committee[j].cityIdx) * linkX(r, j);
+                if (relayed < arrival[j]) { arrival[j] = relayed; changed = true; }
+              }
+            }
+            if (!changed) break;
+          }
+          for (let j = 0; j < P.N; j++) {
+            if (j === seat || !isFinite(arrival[j])) continue;
+            const Y = committee[j];
+            const arrivalMs = arrival[j];
+            const late = arrivalMs > deadlineMs;
+            let willSign = false;
+            if (!late) {
+              if (Y.role === 'colluder') willSign = (X.role === 'colluder' && Y.partnerOcc === X.occId);
+              else if (Y.role === 'offline') willSign = (Y.epochChallenged < Y.cutoff) && validProof;
+              else willSign = validProof;
+            }
+            const sMs = willSign ? Math.max(arrivalMs, signOpenMs) + verifyOneMs(Y.box) + signMs(Y.box) : null;
+            peers.push({ seat: j, arrivalMs, late, signed: willSign, signMs: sMs });
+            if (willSign) attesters.push({ seat: j, arrivalMs, signMs: sMs, self: false });
+          }
+          // self-attest (liveness only; cannot self-certify a group of one)
+          attesters.push({ seat, arrivalMs: proveMs, signMs: proveMs + signMs(X.box), self: true });
+        }
+        attesters.sort((a, b) => a.signMs - b.signMs);
+        const certified = attesters.length >= P.Q;
+        const certMs = certified ? attesters[P.Q - 1].signMs + aggMs(committee[attesters[P.Q - 1].seat].box) : null;
+        const missed = !certified;
+
+        round.challenges.push({
+          seat, occId: X.occId, role: X.role, cityIdx: X.cityIdx, cityName: X.cityName, box: X.box,
+          broadcast, deriveMs, proveMs, peers, attesterSeats: attesters.map(a => a.seat),
+          selfSigned: broadcast, certified, certMs, attCount: attesters.length, missed,
+          deadlineMs, signOpenMs, prodMs, entropySlot,
+        });
+
+        X.epochChallenged++; X.played++;
+        if (certified) { X.certs++; X.consec = 0; } else { X.misses++; X.consec++; }
+        if (!X.evicted) {
+          const rateNow = X.certs / X.played;
+          if (X.consec >= P.EVICT_CONSEC || (X.played >= P.EVICT_MIN && rateNow < P.EVICT_RATE)) {
+            X.evicted = true; X.evictMs = deadlineMs; X.evictSlot = entropySlot; X.evictEpoch = epoch;
+            evictions.push({ seat, occId: X.occId, role: X.role, epoch, evictMs: deadlineMs, evictSlot: entropySlot, cityName: X.cityName, box: X.box });
+          }
+        }
+      }
+      rounds.push(round);
+    }
+
+    // record this epoch's seat occupants
+    for (let seat = 0; seat < P.N; seat++) {
+      const o = committee[seat];
+      seatTimeline[seat].push({
+        epoch, occId: o.occId, role: o.role, cityIdx: o.cityIdx, cityName: o.cityName, box: o.box,
+        certs: o.certs, misses: o.misses, played: o.played, evicted: o.evicted, evictMs: o.evictMs, evictSlot: o.evictSlot,
+      });
+    }
+
+    // boundary: replace evicted with fresh honest, then narrative injection
+    if (epoch < P.NUM_EPOCHS - 1) {
+      for (let seat = 0; seat < P.N; seat++) {
+        const o = committee[seat];
+        if (o.evicted) { graveyard.push(o); freeCity(o.cityIdx); committee[seat] = makeOcc('honest', seat, epoch + 1, freshCity(), freshBox()); }
+        else { o.epochChallenged = 0; }
+      }
+      // epoch 2: inject a fresh wave of adversaries so the mechanism is seen
+      // catching a second cohort. Convert honest seats only.
+      if (epoch + 1 === 2) {
+        const honestSeats = shuffle(committee.map((o, s) => (o.role === 'honest' ? s : -1)).filter(s => s >= 0), rng);
+        const inject = ['selective', 'offline', 'colluder', 'colluder'];
+        for (let i = 0; i < inject.length && i < honestSeats.length; i++) {
+          const seat = honestSeats[i];
+          freeCity(committee[seat].cityIdx);
+          committee[seat] = makeOcc(inject[i], seat, epoch + 1, freshCity(), freshBox());
+        }
+        pairColluders();
+      }
+    }
+  }
+
+  const finalOccs = committee.slice();
+  const allOccs = graveyard.concat(finalOccs);
+
+  return {
+    seed, params: P, totalSlots, slots, rounds, evictions, seatTimeline,
+    occupants: allOccs.map(o => ({
+      occId: o.occId, role: o.role, seat: o.seat, epochBorn: o.epochBorn,
+      cityName: o.cityName, box: o.box, certs: o.certs, misses: o.misses, played: o.played,
+      evicted: o.evicted, evictEpoch: o.evictEpoch,
+    })),
+    committeeFinal: finalOccs.map(o => o.occId),
+  };
+}
+
+// Headless self-test. Runs under node (window undefined). Builds one multi-
+// epoch run and prints a per-occupant line, then asserts the honest outcome.
+function runSelfTest(seed) {
+  seed = (seed == null) ? 0xC0FFEE : seed;
+  const sim = buildSim(seed);
+  const pad = (s, n) => String(s).padEnd(n);
+  const padl = (s, n) => String(s).padStart(n);
+  console.log('Whirlwind self-test  seed=' + sim.seed + '  epochs=' + P.NUM_EPOCHS + '  rounds/epoch=' + P.ROUNDS_PER_EPOCH + '  n=' + P.N + ' q=' + P.Q);
+  const voids = sim.rounds.filter(r => r.isVoid).length;
+  console.log('rounds=' + sim.rounds.length + '  void=' + voids + '  evictions=' + sim.evictions.length + '  occupants=' + sim.occupants.length);
+  console.log('');
+  console.log(pad('occ', 5) + pad('role', 13) + pad('city', 15) + pad('box', 9) + padl('certs', 6) + padl('miss', 6) + padl('played', 7) + '  status');
+  const byRole = {};
+  for (const o of sim.occupants) {
+    (byRole[o.role] = byRole[o.role] || []).push(o);
+    const status = o.evicted ? ('EVICTED e' + o.evictEpoch) : 'survived';
+    console.log(pad('#' + o.occId, 5) + pad(ROLE_LABEL[o.role], 13) + pad(o.cityName, 15) + pad(o.box, 9) + padl(o.certs, 6) + padl(o.misses, 6) + padl(o.played, 7) + '  ' + status);
+  }
+  console.log('');
+  // assertions
+  const problems = [];
+  for (const o of sim.occupants) {
+    if (SURVIVE_ROLES.has(o.role)) {
+      if (o.evicted) problems.push('SURVIVE role ' + ROLE_LABEL[o.role] + ' #' + o.occId + ' was evicted');
+      if (o.role !== 'honest' && o.certs < 1) problems.push('SURVIVE role ' + ROLE_LABEL[o.role] + ' #' + o.occId + ' never certified');
+    }
+    if (CAUGHT_ROLES.has(o.role)) {
+      if (!o.evicted) problems.push('CAUGHT role ' + ROLE_LABEL[o.role] + ' #' + o.occId + ' was NOT evicted (played=' + o.played + ')');
+    }
+  }
+  const nearby = sim.occupants.filter(o => o.role === 'nearby');
+  const recon = sim.occupants.filter(o => o.role === 'reconstruct');
+  const caught = sim.occupants.filter(o => CAUGHT_ROLES.has(o.role));
+  console.log('nearby-fetch survivors: ' + nearby.length + '  reconstruct survivors: ' + recon.length + '  adversaries caught: ' + caught.filter(o => o.evicted).length + '/' + caught.length);
+  if (nearby.length) console.log('  nearby-fetch certified ' + nearby.map(o => o.certs).join(',') + ' rounds, evicted=' + nearby.map(o => o.evicted).join(','));
+  if (recon.length) console.log('  reconstruct  certified ' + recon.map(o => o.certs).join(',') + ' rounds, evicted=' + recon.map(o => o.evicted).join(','));
+  console.log('');
+  if (problems.length) { console.log('FAIL (' + problems.length + '):'); for (const p of problems) console.log('  - ' + p); }
+  else console.log('PASS: ' + [...SURVIVE_ROLES].map(r => ROLE_LABEL[r]).join(', ') + ' survive; ' + [...CAUGHT_ROLES].map(r => ROLE_LABEL[r]).join(', ') + ' evicted.');
+  return { sim, problems };
+}
+
+if (typeof window === 'undefined') {
+  let bad = 0;
+  const seeds = (typeof process !== 'undefined' && process.argv && process.argv.length > 2)
+    ? process.argv.slice(2).map(x => parseInt(x, 10))
+    : [0xC0FFEE];
+  for (const s of seeds) { const r = runSelfTest(s); if (r.problems.length) bad++; console.log('\n' + '-'.repeat(72) + '\n'); }
+  if (typeof process !== 'undefined') process.exit(bad ? 1 : 0);
+} else {
+  window.WW = { PING, CPU, P, buildSim, ROLE_LABEL, SURVIVE_ROLES, CAUGHT_ROLES };
+}
+//__WW_CORE_END__
+</script>
+<script>
+// Canvas timeline player. All positions are real time in ms: network hops from
+// the ping matrix, compute from the cpu table. Slow nodes visibly lag.
+(function () {
+  const WW = window.WW; const P = WW.P;
+  const C = {
+    ink: '#eaf1f7', dim: '#9aa8b6', faint: '#5e6d7c', edge: '#26313d', edgeSoft: '#1d2732',
+    panel: '#141a22', bg: '#0b0f15', grid: '#161e28', gridStrong: '#223040',
+    derive: '#4aa8ff', prove: '#fe8f3a', attest: '#37d67a', cert: '#34e37b',
+    amber: '#ffc24b', void: '#ff4d5e', evict: '#ff2fa1', skip: '#4a586a',
+    block: '#2a3a4e', blockEdge: '#3a4c62', teal: '#16e0be', electric: '#9b7bff',
+  };
+  const ROLE_COLOR = { honest: '#6f7f8f', nearby: '#16e0be', reconstruct: '#9b7bff', selective: '#fe8f3a', offline: '#ff4d5e', colluder: '#ff2fa1' };
+  const ROLE_TAG = { honest: 'HON', nearby: 'FETCH', reconstruct: 'RECON', selective: 'SEL', offline: 'OFF', colluder: 'COLL' };
+
+  const cv = document.getElementById('tl');
+  const ctx = cv.getContext('2d');
+  const tip = document.getElementById('tip');
+  const el = id => document.getElementById(id);
+
+  // sim state
+  // Rounds sit 60 s apart and each is over in seconds. Playback races through
+  // the idle gap and eases back to real time as the next round comes up, so the
+  // wait is visible as fast-forward rather than cut away.
+  const PRE_ROLL_MS = 600, POST_ROLL_MS = 1400;
+  const GAP_BOOST = 40, GAP_EASE_MS = 2600;
+  let sim, totalMs, epochMs, ffBoost = 1;
+  function newSim(seed) {
+    // resample so the first view usually shows the void mechanic
+    let s = (seed == null) ? ((Math.random() * 2 ** 31) >>> 0) : (seed >>> 0);
+    let tries = 0, built = WW.buildSim(s);
+    if (seed == null) { while (built.rounds.filter(r => r.isVoid).length < 1 && tries < 12) { s = (Math.random() * 2 ** 31) >>> 0; built = WW.buildSim(s); tries++; } }
+    sim = built;
+    epochMs = P.ROUNDS_PER_EPOCH * P.ROUND_STRIDE * P.SLOT_MS;
+    totalMs = (sim.totalSlots + P.DEADLINE_SLOTS + 2) * P.SLOT_MS;
+    // Rounds sit 60 s apart but each one is over in a few seconds, so playback
+    // fast-forwards the idle gap between them. These are the windows it keeps.
+    sim.activeSpans = sim.rounds.map(r => {
+      const start = r.spanStartSlot * P.SLOT_MS - PRE_ROLL_MS;
+      let end = r.isVoid ? r.bandEndMs : r.deadlineMs;
+      for (const c of r.challenges) end = Math.max(end, c.certMs != null ? c.certMs : c.deadlineMs);
+      return [Math.max(0, start), end + POST_ROLL_MS];
+    });
+    el('s-seed').textContent = sim.seed.toString(16);
+  }
+
+  // Start of the next round window, or null when t is already inside one.
+  function nextSpanStart(t) {
+    for (const [start, end] of sim.activeSpans) {
+      if (t < start) return start;
+      if (t <= end) return null;
+    }
+    return null;
+  }
+
+  // Playback rate at t: real time inside a round, accelerating across the gap
+  // and easing back down over the last stretch before the next round opens.
+  function playbackBoost(t) {
+    const start = nextSpanStart(t);
+    if (start == null) return 1;
+    const ease = Math.min(1, (start - t) / GAP_EASE_MS);
+    return 1 + (GAP_BOOST - 1) * ease;
+  }
+
+  // view state
+  let now = 0, playing = true, speed = 2, windowMs = 5200, viewStart = -600, manual = false, selection = null, hover = null;
+
+  // layout
+  let W = 0, H = 0, dpr = 1;
+  const GUTTER = 214, AXIS_H = 20, BLK_TOP = 24, BLK_H = 26, ROWS_TOP = 60, ROWS_BOT_PAD = 10;
+  function resize() {
+    const r = cv.getBoundingClientRect(); dpr = Math.max(1, window.devicePixelRatio || 1);
+    W = r.width; H = r.height; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  const innerW = () => W - GUTTER;
+  const pxPerMs = () => innerW() / windowMs;
+  const rowsTop = () => ROWS_TOP;
+  const rowsBot = () => H - ROWS_BOT_PAD;
+  const rowH = () => (rowsBot() - rowsTop()) / P.N;
+  const seatY = i => rowsTop() + i * rowH() + rowH() / 2;
+  const tX = t => GUTTER + (t - viewStart) * pxPerMs();
+  const xT = x => viewStart + (x - GUTTER) / pxPerMs();
+
+  function clampView() {
+    const minV = -windowMs * 0.12, maxV = Math.max(minV, totalMs - windowMs * 0.4);
+    if (viewStart < minV) viewStart = minV; if (viewStart > maxV) viewStart = maxV;
+  }
+  function follow() {
+    // The view tracks harder while fast-forwarding so the playhead stays put
+    // and the timeline streams past it instead of the playhead running away.
+    if (!manual) {
+      const target = now - 0.60 * windowMs;
+      viewStart += (target - viewStart) * (ffBoost > 1 ? 0.5 : 0.10);
+    }
+    clampView();
+  }
+
+  // drawing
+  let hits = [];
+  function line(x1, y1, x2, y2, col, w) { ctx.strokeStyle = col; ctx.lineWidth = w || 1; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+
+  function draw() {
+    hits = [];
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+    const pm = pxPerMs();
+    const vT0 = xT(GUTTER) - 200, vT1 = xT(W) + 200;
+    const curEpoch = Math.max(0, Math.min(P.NUM_EPOCHS - 1, Math.floor(now / epochMs)));
+
+    // clip to plot area for scrolling content
+    ctx.save();
+    ctx.beginPath(); ctx.rect(GUTTER, 0, innerW(), H); ctx.clip();
+
+    // vertical slot grid + epoch shading
+    const s0 = Math.max(0, Math.floor(vT0 / P.SLOT_MS)), s1 = Math.min(sim.totalSlots + P.DEADLINE_SLOTS + 2, Math.ceil(vT1 / P.SLOT_MS));
+    for (let e = 0; e < P.NUM_EPOCHS; e++) {
+      const x0 = tX(e * epochMs), x1 = tX((e + 1) * epochMs);
+      if (e % 2 === 1) { ctx.fillStyle = 'rgba(255,255,255,0.012)'; ctx.fillRect(x0, rowsTop() - 4, x1 - x0, rowsBot() - rowsTop() + 4); }
+    }
+    // Slot ticks only while they are far enough apart to read as slots.
+    if (P.SLOT_MS * pm >= 3) {
+      for (let s = s0; s <= s1; s++) {
+        const x = tX(s * P.SLOT_MS);
+        const strong = s % 5 === 0;
+        line(x, rowsTop() - 2, x, rowsBot(), strong ? C.gridStrong : C.grid, 1);
+      }
+    }
+
+    // void bands (drawn under rows)
+    for (const r of sim.rounds) {
+      if (!r.isVoid) continue;
+      if (r.bandEndMs < vT0 || r.bandStartMs > vT1) continue;
+      const revealed = now >= r.bandStartMs;
+      const x0 = tX(r.bandStartMs), x1 = tX(r.bandEndMs);
+      ctx.fillStyle = revealed ? 'rgba(255,77,94,0.10)' : 'rgba(255,77,94,0.03)';
+      ctx.fillRect(x0, rowsTop() - 4, x1 - x0, rowsBot() - rowsTop() + 4);
+      ctx.strokeStyle = revealed ? 'rgba(255,77,94,0.5)' : 'rgba(255,77,94,0.16)';
+      ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+      ctx.strokeRect(x0 + .5, rowsTop() - 4, x1 - x0 - 1, rowsBot() - rowsTop() + 4); ctx.setLineDash([]);
+      if (revealed) { ctx.fillStyle = C.void; ctx.font = '600 9px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.fillText('VOID', (x0 + x1) / 2, rowsTop() + 10); }
+      hits.push({ kind: 'void', x: (x0 + x1) / 2, y: rowsBot() - 12, r: 40, wide: [x0, x1], round: r });
+    }
+
+    // blocks row
+    // Skipped when zoomed out past the point a slot is a readable block.
+    for (let s = s0; P.SLOT_MS * pm >= 2 && s <= s1; s++) {
+      const sl = sim.slots[s]; if (!sl) continue;
+      const x = tX(s * P.SLOT_MS), w = Math.max(4, P.SLOT_MS * pm - 3);
+      const revealed = now >= s * P.SLOT_MS + (sl.produced ? P.PROD_OFFSET : 0);
+      const a = revealed ? 1 : 0.28;
+      ctx.globalAlpha = a;
+      if (sl.produced) { ctx.fillStyle = C.block; ctx.fillRect(x + 1, BLK_TOP, w, BLK_H); ctx.strokeStyle = C.blockEdge; ctx.lineWidth = 1; ctx.strokeRect(x + 1.5, BLK_TOP + .5, w - 1, BLK_H - 1); }
+      else { ctx.strokeStyle = C.skip; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.strokeRect(x + 1.5, BLK_TOP + .5, w - 1, BLK_H - 1); ctx.setLineDash([]); }
+      ctx.globalAlpha = 1;
+      hits.push({ kind: 'block', x: x + 1 + w / 2, y: BLK_TOP + BLK_H / 2, r: Math.max(8, w / 2), slot: s, produced: sl.produced });
+    }
+    // entropy outlines (amber)
+    for (const r of sim.rounds) {
+      if (r.isVoid || r.entropySlot == null) continue;
+      const t = r.entropySlot * P.SLOT_MS; if (t < vT0 || t > vT1) continue;
+      const x = tX(t), w = Math.max(4, P.SLOT_MS * pm - 3);
+      const revealed = now >= r.prodMs; ctx.globalAlpha = revealed ? 1 : 0.32;
+      ctx.strokeStyle = C.amber; ctx.lineWidth = 2; ctx.strokeRect(x + 1, BLK_TOP - 1, w + 1, BLK_H + 2);
+      if (revealed) { ctx.fillStyle = 'rgba(255,194,75,0.14)'; ctx.fillRect(x + 1, BLK_TOP, w + 1, BLK_H); }
+      ctx.globalAlpha = 1;
+      hits.push({ kind: 'entropy', x: x + 1 + w / 2, y: BLK_TOP + BLK_H / 2, r: Math.max(9, w / 2), round: r });
+    }
+
+    // spool rows
+    const rh = rowH();
+    for (let seat = 0; seat < P.N; seat++) {
+      const y = seatY(seat);
+      line(GUTTER, y + rh / 2, W, y + rh / 2, C.edgeSoft, 1);
+    }
+
+    // per-round per-seat cascades
+    const markR = Math.min(5.5, Math.max(3.2, rh * 0.18));
+    for (const r of sim.rounds) {
+      if (r.isVoid) continue;
+      if (r.prodMs > vT1 || (r.deadlineMs + 400) < vT0) continue;
+      // deadline guide within round span
+      for (let seat = 0; seat < P.N; seat++) {
+        const ch = r.challenges[seat]; const y = seatY(seat);
+        // attestation gather bar + ticks
+        if (ch.broadcast && ch.proveMs != null) {
+          const px = tX(ch.proveMs);
+          // gather window bar (prove -> cert or deadline)
+          const endT = ch.certified ? ch.certMs : ch.deadlineMs;
+          const bx0 = px, bx1 = tX(endT);
+          if (now >= ch.proveMs) {
+            ctx.strokeStyle = 'rgba(55,214,122,0.28)'; ctx.lineWidth = 1;
+            line(bx0, y, Math.min(bx1, tX(now)), y, 'rgba(55,214,122,0.22)', 2);
+          }
+          // attester arrival ticks
+          for (const pr of ch.peers) {
+            if (!pr.signed) continue;
+            if (now < pr.arrivalMs) continue;
+            const ax = tX(pr.arrivalMs);
+            if (ax < GUTTER - 4 || ax > W + 4) continue;
+            ctx.strokeStyle = pr.late ? C.prove : 'rgba(55,214,122,0.85)';
+            line(ax, y - markR * 0.7, ax, y + markR * 0.7, ctx.strokeStyle, 1.4);
+          }
+        }
+        // derive tick (blue)
+        if (now >= ch.deriveMs) {
+          const dx = tX(ch.deriveMs);
+          if (dx >= GUTTER - 4 && dx <= W + 4) {
+            ctx.strokeStyle = C.derive; ctx.lineWidth = 2; line(dx, y - markR, dx, y + markR, C.derive, 2);
+            hits.push({ kind: 'derive', x: dx, y, r: 5, round: r, seat });
+          }
+        }
+        // prove tick (orange)
+        if (ch.broadcast && ch.proveMs != null && now >= ch.proveMs) {
+          const px = tX(ch.proveMs);
+          if (px >= GUTTER - 4 && px <= W + 4) {
+            ctx.fillStyle = C.prove; ctx.beginPath(); ctx.arc(px, y, markR * 0.82, 0, 7); ctx.fill();
+            ctx.fillStyle = '#0b0f15'; ctx.beginPath(); ctx.arc(px, y, markR * 0.34, 0, 7); ctx.fill();
+            hits.push({ kind: 'prove', x: px, y, r: markR + 2, round: r, seat });
+          }
+        }
+        // certificate (glowing green diamond) or miss (hollow orange square)
+        if (ch.certified && ch.certMs != null && now >= ch.certMs) {
+          const cx = tX(ch.certMs);
+          if (cx >= GUTTER - 6 && cx <= W + 6) {
+            const sel = selection && selection.kind === 'cert' && selection.round === r.idx && selection.seat === seat;
+            ctx.save(); ctx.translate(cx, y); ctx.rotate(Math.PI / 4);
+            const g = markR * (sel ? 1.35 : 1.05);
+            ctx.shadowColor = C.cert; ctx.shadowBlur = sel ? 16 : 9;
+            ctx.fillStyle = C.cert; ctx.fillRect(-g, -g, g * 2, g * 2);
+            ctx.restore();
+            hits.push({ kind: 'cert', x: cx, y, r: markR + 3, round: r, seat });
+          }
+        } else if (ch.missed && now >= ch.deadlineMs) {
+          const mx = tX(ch.deadlineMs);
+          if (mx >= GUTTER - 6 && mx <= W + 6) {
+            ctx.strokeStyle = C.prove; ctx.lineWidth = 1.6; const g = markR * 0.95;
+            ctx.strokeRect(mx - g, y - g, g * 2, g * 2);
+            hits.push({ kind: 'miss', x: mx, y, r: markR + 2, round: r, seat });
+          }
+        }
+      }
+    }
+
+    // eviction marks
+    for (const ev of sim.evictions) {
+      if (now < ev.evictMs) continue;
+      const x = tX(ev.evictMs), y = seatY(ev.seat);
+      if (x < GUTTER - 6 || x > W + 6) continue;
+      ctx.strokeStyle = C.evict; ctx.lineWidth = 2; const g = markR * 1.1;
+      line(x - g, y - g, x + g, y + g, C.evict, 2); line(x - g, y + g, x + g, y - g, C.evict, 2);
+      hits.push({ kind: 'evict', x, y, r: markR + 3, ev });
+    }
+
+    // inspector arcs
+    if (selection) drawArcs();
+
+    // playhead
+    const phx = tX(now);
+    if (phx >= GUTTER && phx <= W) {
+      ctx.strokeStyle = 'rgba(74,168,255,0.9)'; ctx.lineWidth = 1.5; line(phx, BLK_TOP - 4, phx, rowsBot(), 'rgba(74,168,255,0.85)', 1.5);
+      ctx.fillStyle = C.derive; ctx.beginPath(); ctx.moveTo(phx, BLK_TOP - 8); ctx.lineTo(phx - 4, BLK_TOP - 14); ctx.lineTo(phx + 4, BLK_TOP - 14); ctx.closePath(); ctx.fill();
+    }
+
+    ctx.restore(); // unclip
+
+    // gutter
+    drawGutter(curEpoch);
+    // axis labels + epoch tags (over gutter clip area, but in plot region)
+    drawAxis(s0, s1);
+
+    updateStatus(curEpoch);
+    if (hover) positionTip();
+  }
+
+  function drawAxis(s0, s1) {
+    ctx.save(); ctx.beginPath(); ctx.rect(GUTTER, 0, innerW(), H); ctx.clip();
+    ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    for (let s = s0; s <= s1; s++) { if (s % 5 !== 0) continue; const x = tX(s * P.SLOT_MS); ctx.fillStyle = C.faint; ctx.fillText('slot ' + s, x, AXIS_H - 6); }
+    for (let e = 0; e < P.NUM_EPOCHS; e++) {
+      const x = tX(e * epochMs);
+      ctx.strokeStyle = C.electric; ctx.globalAlpha = 0.5; line(x, AXIS_H - 2, x, rowsBot(), C.electric, 1); ctx.globalAlpha = 1;
+      ctx.fillStyle = C.electric; ctx.textAlign = 'left'; ctx.font = '700 9px ui-monospace, monospace';
+      ctx.fillText('EPOCH ' + e, x + 5, AXIS_H - 6);
+    }
+    ctx.restore();
+  }
+
+  function occAt(seat, epoch) { const tl = sim.seatTimeline[seat]; return tl[Math.min(epoch, tl.length - 1)]; }
+  // progressive cert/miss for a seat within its current epoch up to `now`
+  function progress(seat, epoch) {
+    let c = 0, m = 0;
+    for (const r of sim.rounds) {
+      if (r.epoch !== epoch || r.isVoid) continue; const ch = r.challenges[seat];
+      if (now < ch.deadlineMs) continue;
+      if (ch.certified && now >= ch.certMs) c++; else if (ch.missed) m++;
+    }
+    return { c, m };
+  }
+
+  function drawGutter(curEpoch) {
+    ctx.fillStyle = C.panel; ctx.fillRect(0, 0, GUTTER, H);
+    ctx.strokeStyle = C.edge; line(GUTTER, 0, GUTTER, H, C.edge, 1);
+    // header cells
+    ctx.fillStyle = C.faint; ctx.font = '700 9px ui-monospace, monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('SOLANA BLOCKS', 12, BLK_TOP + 16);
+    const rh = rowH();
+    for (let seat = 0; seat < P.N; seat++) {
+      const o = occAt(seat, curEpoch); const y = seatY(seat); const top = y - rh / 2;
+      // role glyph
+      ctx.fillStyle = ROLE_COLOR[o.role]; ctx.fillRect(10, y - 4, 8, 8);
+      // label: seat + city
+      ctx.fillStyle = C.ink; ctx.font = '600 10.5px ui-monospace, monospace'; ctx.textAlign = 'left';
+      const nm = o.cityName.length > 13 ? o.cityName.slice(0, 12) + '…' : o.cityName;
+      ctx.fillText('s' + String(seat).padStart(2, '0') + ' ' + nm, 24, y - 1);
+      // box + role tag
+      ctx.fillStyle = C.faint; ctx.font = '9px ui-monospace, monospace';
+      ctx.fillText(o.box, 24, y + 9);
+      ctx.fillStyle = ROLE_COLOR[o.role]; ctx.textAlign = 'right'; ctx.font = '700 8.5px ui-monospace, monospace';
+      ctx.fillText(ROLE_TAG[o.role], GUTTER - 40, y + 9); ctx.textAlign = 'left';
+      // score bar
+      const pr = progress(seat, curEpoch); const tot = pr.c + pr.m; const rate = tot ? pr.c / tot : 1;
+      const bx = GUTTER - 36, bw = 26, byy = y - 3, bh = 6;
+      ctx.fillStyle = C.edge; ctx.fillRect(bx, byy, bw, bh);
+      ctx.fillStyle = rate > 0.66 ? C.attest : rate > 0.33 ? C.amber : C.void;
+      ctx.fillRect(bx, byy, bw * rate, bh);
+      // eviction cross
+      const evicted = o.evicted && o.evictMs != null && now >= o.evictMs;
+      if (evicted) {
+        ctx.strokeStyle = C.evict; ctx.lineWidth = 1.6; const cxp = 4, g = 4, cy = y;
+        line(cxp, cy - g, cxp + g * 2, cy + g, C.evict, 1.6); line(cxp, cy + g, cxp + g * 2, cy - g, C.evict, 1.6);
+        ctx.fillStyle = 'rgba(255,47,161,0.06)'; ctx.fillRect(0, top, GUTTER, rh);
+      }
+    }
+  }
+
+  function ctrlPt(x1, y1, x2, y2) { const mx = (x1 + x2) / 2, dy = (y2 - y1); return [mx, y1 + dy * 0.5 - Math.min(60, Math.abs(x2 - x1) * 0.28)]; }
+  function drawArcs() {
+    const r = sim.rounds[selection.round]; if (!r || r.isVoid) return; const ch = r.challenges[selection.seat];
+    ctx.save(); ctx.beginPath(); ctx.rect(GUTTER, 0, innerW(), H); ctx.clip();
+    const oy = seatY(selection.seat);
+    if (selection.kind === 'prove') {
+      const ox = tX(ch.proveMs);
+      for (const pr of ch.peers) {
+        const px = tX(pr.arrivalMs), py = seatY(pr.seat);
+        const col = pr.late ? 'rgba(254,143,58,0.8)' : 'rgba(55,214,122,0.75)';
+        const [cpx, cpy] = ctrlPt(ox, oy, px, py);
+        ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.quadraticCurveTo(cpx, cpy, px, py); ctx.stroke();
+        ctx.fillStyle = col; ctx.beginPath(); ctx.arc(px, py, 2.4, 0, 7); ctx.fill();
+      }
+      ctx.fillStyle = C.prove; ctx.beginPath(); ctx.arc(ox, oy, 4, 0, 7); ctx.fill();
+      // deadline line
+      const dx = tX(ch.deadlineMs); ctx.strokeStyle = 'rgba(255,77,94,0.6)'; ctx.setLineDash([5, 4]); line(dx, rowsTop() - 4, dx, rowsBot(), 'rgba(255,77,94,0.6)', 1.4); ctx.setLineDash([]);
+      ctx.fillStyle = C.void; ctx.font = '700 8px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.fillText('DEADLINE', dx, rowsTop() + 8);
+    } else if (selection.kind === 'cert') {
+      const cx = tX(ch.certMs);
+      const signers = ch.attesterSeats.slice(0, P.Q);
+      for (const s of signers) {
+        let sMs = ch.proveMs; if (s !== selection.seat) { const pr = ch.peers.find(p => p.seat === s); if (pr && pr.signMs != null) sMs = pr.signMs; }
+        const sx = tX(sMs), sy = seatY(s);
+        const [cpx, cpy] = ctrlPt(sx, sy, cx, oy);
+        ctx.strokeStyle = 'rgba(52,227,123,0.7)'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(cpx, cpy, cx, oy); ctx.stroke();
+        ctx.fillStyle = 'rgba(52,227,123,0.9)'; ctx.beginPath(); ctx.arc(sx, sy, 2.4, 0, 7); ctx.fill();
+      }
+      ctx.shadowColor = C.cert; ctx.shadowBlur = 14; ctx.fillStyle = C.cert; ctx.beginPath(); ctx.arc(cx, oy, 4.5, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+    }
+    ctx.restore();
+  }
+
+  // status line
+  function updateStatus(curEpoch) {
+    const slot = Math.max(0, Math.floor(now / P.SLOT_MS));
+    el('s-slot').textContent = slot;
+    el('s-epoch').textContent = curEpoch;
+    // current / most recent round
+    let cur = null; for (const r of sim.rounds) { if (r.spanStartSlot * P.SLOT_MS <= now) cur = r; else break; }
+    el('s-round').textContent = cur ? (cur.epoch + '·' + cur.roundInEpoch) : '—';
+    el('s-time').innerHTML = (now / 1000).toFixed(1) + '<small> s</small>';
+    let certs = 0; for (const r of sim.rounds) { if (r.isVoid) continue; for (const ch of r.challenges) if (ch.certified && now >= ch.certMs) certs++; }
+    el('s-certs').textContent = certs;
+    let ev = 0; for (const e of sim.evictions) if (now >= e.evictMs) ev++;
+    el('s-evict').textContent = ev;
+    let phase = 'epoch ' + curEpoch + ' committee';
+    if (cur) {
+      if (cur.isVoid) phase = 'round ' + cur.epoch + '·' + cur.roundInEpoch + ' VOID — no block produced, scores nobody';
+      else if (now < cur.prodMs) phase = 'awaiting entropy block';
+      else if (now < cur.signOpenMs) phase = 'entropy produced — deriving & proving (deadline runs)';
+      else if (now < cur.deadlineMs) phase = 'confirmed — signing window open';
+      else phase = 'round ' + cur.epoch + '·' + cur.roundInEpoch + ' settled';
+    }
+    const ff = ffBoost > 1.5 ? ' · fast-forward ×' + Math.round(ffBoost) + ' through the 60 s gap' : '';
+    el('s-phase').textContent = phase + ff + (playing ? '' : ' · paused') + (manual ? ' · manual' : '');
+  }
+
+  // interaction
+  function nearestHit(mx, my) {
+    let best = null, bestD = 1e9;
+    const order = { cert: 0, prove: 1, evict: 1.5, miss: 2, derive: 3, entropy: 4, block: 5, void: 6 };
+    for (const h of hits) {
+      let dx, dy;
+      if (h.wide) { dx = (mx < h.wide[0]) ? h.wide[0] - mx : (mx > h.wide[1] ? mx - h.wide[1] : 0); dy = Math.abs(my - h.y); }
+      else { dx = mx - h.x; dy = my - h.y; }
+      const d = Math.hypot(dx, dy) + (order[h.kind] || 0) * 0.6;
+      const rr = h.r + 3;
+      if ((h.wide ? (Math.abs(dx) < 6 && dy < (rowsBot() - rowsTop()) / 2) : Math.hypot(mx - h.x, my - h.y) <= rr) && d < bestD) { bestD = d; best = h; }
+    }
+    return best;
+  }
+
+  function fmt(t) { return (t / 1000).toFixed(3) + 's'; }
+  function tipHTML(h) {
+    const r = h.round; const ch = (r && !r.isVoid && h.seat != null) ? r.challenges[h.seat] : null;
+    if (h.kind === 'block') return `<div class="th">Slot ${h.slot}</div><div class="r">${h.produced ? 'block <b>produced</b>' : '<b>skipped</b> — no block'}</div><div class="r">${(h.slot * P.SLOT_MS / 1000).toFixed(1)}s from epoch 0</div>`;
+    if (h.kind === 'entropy') return `<div class="th">Entropy block · slot ${r.entropySlot}</div><div class="r">round <b>${r.epoch}·${r.roundInEpoch}</b> · hash <b>${r.entropyHash}</b></div><div class="r">seed = H(blockhash, epoch, group, round, spool)</div><div class="r">deadline runs from production; signing on confirmation</div>`;
+    if (h.kind === 'void') return `<div class="th">Void round ${r.epoch}·${r.roundInEpoch}</div><div class="r">no block in the span reached finality</div><div class="r"><b>counts against nobody</b></div>`;
+    if (h.kind === 'evict') { const e = h.ev; return `<div class="th p">Eviction · seat s${String(e.seat).padStart(2, '0')}</div><div class="r">${WW.ROLE_LABEL[e.role]} at <b>${e.cityName}</b> (${e.box})</div><div class="r">cause-free vote — removed from next committee</div>`; }
+    if (!ch) return '';
+    const head = `s${String(h.seat).padStart(2, '0')} ${ch.cityName} · ${ch.box} · <span style="color:${ROLE_COLOR[ch.role]}">${WW.ROLE_LABEL[ch.role]}</span>`;
+    if (h.kind === 'derive') return `<div class="th">Derive · ${head}</div><div class="r">entropy hashed at <b>${fmt(ch.deriveMs)}</b></div><div class="r">round ${r.epoch}·${r.roundInEpoch}, slot ${r.entropySlot}</div>`;
+    if (h.kind === 'prove') return `<div class="th o">Prove · ${head}</div><div class="r">proof built at <b>${fmt(ch.proveMs)}</b> (+${(ch.proveMs - ch.deriveMs).toFixed(0)}ms access)</div><div class="r">broadcast to <b>${ch.peers.length}</b> peers · deadline ${fmt(ch.deadlineMs)}</div><div class="r">${ch.certified ? '<span class="g">certified</span>' : '<span class="p">missed</span>'} · click to trace arcs</div>`;
+    if (h.kind === 'cert') return `<div class="th g">Certificate · ${head}</div><div class="r">14 matching sigs aggregated at <b>${fmt(ch.certMs)}</b></div><div class="r">margin vs deadline: <b>${(ch.deadlineMs - ch.certMs).toFixed(0)}ms</b> · ${ch.attCount} attesters</div><div class="r">click to trace the fourteen signers</div>`;
+    if (h.kind === 'miss') return `<div class="th p">Miss · ${head}</div><div class="r">only <b>${ch.attCount}/14</b> attestations before deadline</div><div class="r">local miss — not a proof of failure</div>`;
+    return '';
+  }
+  function positionTip() {
+    const html = tipHTML(hover); if (!html) { tip.style.display = 'none'; return; }
+    tip.innerHTML = html; tip.style.display = 'block';
+    let x = mouse.cx + 14, y = mouse.cy + 14;
+    const r = tip.getBoundingClientRect();
+    if (x + r.width > window.innerWidth - 8) x = mouse.cx - r.width - 12;
+    if (y + r.height > window.innerHeight - 8) y = mouse.cy - r.height - 12;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  }
+
+  const mouse = { x: 0, y: 0, cx: 0, cy: 0, down: false, dragged: false, downX: 0, downY: 0 };
+  cv.addEventListener('mousemove', e => {
+    const r = cv.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.cx = e.clientX; mouse.cy = e.clientY;
+    if (mouse.down) {
+      const dx = e.clientX - mouse.downX; if (Math.abs(dx) > 3) mouse.dragged = true;
+      viewStart -= (e.movementX) / pxPerMs(); manual = true; cv.classList.add('panning'); tip.style.display = 'none'; hover = null; clampView(); return;
+    }
+    hover = (mouse.x > GUTTER) ? nearestHit(mouse.x, mouse.y) : null;
+    cv.style.cursor = hover && (hover.kind === 'prove' || hover.kind === 'cert') ? 'pointer' : 'crosshair';
+    if (!hover) tip.style.display = 'none';
+  });
+  cv.addEventListener('mousedown', e => { mouse.down = true; mouse.dragged = false; mouse.downX = e.clientX; mouse.downY = e.clientY; });
+  window.addEventListener('mouseup', e => {
+    if (mouse.down && !mouse.dragged) {
+      const r = cv.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
+      if (mx > GUTTER) {
+        const h = nearestHit(mx, my);
+        if (h && (h.kind === 'prove' || h.kind === 'cert')) { selection = { kind: h.kind, round: h.round.idx, seat: h.seat }; renderInspector(); }
+        else if (h && h.kind === 'miss') { selection = null; renderInspector(); }
+        else { selection = null; el('insp-title').textContent = 'Nothing selected'; el('insp-body').innerHTML = '<div class="insp-empty">Click a prove tick or a certificate on the timeline to trace its proof paths. Hover any mark for detail.</div>'; }
+      }
+    }
+    mouse.down = false; mouse.dragged = false; cv.classList.remove('panning');
+  });
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    const mt = xT(mouse.x);
+    const f = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+    windowMs = Math.max(1600, Math.min(totalMs * 1.2, windowMs * f));
+    viewStart = mt - (mouse.x - GUTTER) / pxPerMs(); manual = true; clampView();
+  }, { passive: false });
+  cv.addEventListener('mouseleave', () => { tip.style.display = 'none'; hover = null; });
+
+  function renderInspector() {
+    if (!selection) return; const r = sim.rounds[selection.round]; const ch = r.challenges[selection.seat];
+    const rc = ROLE_COLOR[ch.role];
+    el('insp-title').innerHTML = (selection.kind === 'cert' ? 'Certificate' : 'Proof of access');
+    const inTime = ch.peers.filter(p => p.signed).length;
+    const late = ch.peers.filter(p => p.late).length;
+    let h = '';
+    h += `<div style="margin-bottom:8px"><span class="badge" style="border-color:${rc};color:${rc}">${WW.ROLE_LABEL[ch.role]}</span>` +
+      (ch.certified ? '<span class="badge cert">certified</span>' : '<span class="badge miss">missed</span>') + `</div>`;
+    h += kv('spool', 's' + String(selection.seat).padStart(2, '0') + ' · ' + ch.cityName);
+    h += kv('cpu box', ch.box + ' · ' + WW.CPU.sha256_mbps[ch.box] + ' MB/s');
+    h += kv('round', r.epoch + '·' + r.roundInEpoch + ' · entropy slot ' + r.entropySlot);
+    h += kv('entropy hash', r.entropyHash, 'd');
+    h += kv('derive', fmt(ch.deriveMs), 'd');
+    if (ch.proveMs != null) h += kv('prove', fmt(ch.proveMs) + '  (+' + (ch.proveMs - ch.deriveMs).toFixed(0) + 'ms)', 'o');
+    h += kv('deadline', fmt(ch.deadlineMs));
+    if (ch.certified) h += kv('certificate', fmt(ch.certMs) + '  (' + (ch.deadlineMs - ch.certMs).toFixed(0) + 'ms to spare)', 'g');
+    h += kv('attestations', ch.attCount + ' / 14 needed', ch.certified ? 'g' : 'p');
+    // peer list
+    h += `<div class="insp-section"><div class="t">Proof arrivals (${inTime} signed${late ? ', ' + late + ' late' : ''})</div>`;
+    const peers = ch.peers.slice().sort((a, b) => a.arrivalMs - b.arrivalMs);
+    for (const pr of peers) {
+      const o = occAt(pr.seat, r.epoch);
+      const col = pr.signed ? C.attest : (pr.late ? C.prove : C.faint);
+      h += `<div class="peerline"><span class="dot" style="background:${col}"></span><span class="nm">s${String(pr.seat).padStart(2, '0')} ${o.cityName}</span><span class="tm" style="color:${col}">${(pr.arrivalMs - ch.prodMs).toFixed(0)}ms ${pr.late ? '· late' : pr.signed ? '· sign' : '· no'}</span></div>`;
+    }
+    h += `</div>`;
+    h += `<div class="insp-section"><div class="t">Reading</div><div style="color:${C.dim};font-size:11.5px;line-height:1.55">${explain(ch)}</div></div>`;
+    el('insp-body').innerHTML = h;
+  }
+  function kv(k, v, cls) { return `<div class="kv"><span class="k">${k}</span><span class="v ${cls || ''}">${v}</span></div>`; }
+  function explain(ch) {
+    switch (ch.role) {
+      case 'honest': return 'Reads its own bytes (negligible), builds the Merkle proof, broadcasts. Certifies with wide margin.';
+      case 'nearby': return 'Stores nothing — fetches the public bytes from a ~20ms metro edge and re-encodes. The proof is valid and arrives before the deadline, so it <b>certifies and is never evicted</b>. The deadline cannot separate it from a real holder.';
+      case 'reconstruct': return 'Stores nothing — rebuilds from the 16 group helpers (a full intra-group round trip plus a decode). At the whole-slot deadline that is still within two slots, so it <b>survives</b>. Only a sub-slot deadline would catch it, and the slot clock cannot express one.';
+      case 'selective': return 'Holds the data but delivers its proof late and only to some peers, so fewer than 14 attest in time. It misses repeatedly and is evicted.';
+      case 'offline': return 'Answers for a while, then goes silent. Consecutive misses trip a cause-free eviction.';
+      case 'colluder': return 'Part of a two-node bloc that only attests itself. Two signatures cannot reach fourteen, and they cannot forge a certificate for a member that never proved. Evicted.';
+    }
+    return '';
+  }
+
+  // controls
+  function setPlay(v) { playing = v; if (v) manual = false; el('btn-play').textContent = v ? 'Pause' : 'Play'; el('btn-play').classList.toggle('on', !v); }
+  el('btn-play').onclick = () => setPlay(!playing);
+  el('sel-speed').onchange = e => { speed = parseFloat(e.target.value); };
+
+  // Restart playback, optionally rebuilding the run first.
+  function restart(seed) {
+    if (seed !== undefined) newSim(seed);
+    now = 0; viewStart = -600; windowMs = 5200; selection = null; manual = false;
+    renderClear(); setPlay(true);
+  }
+
+  el('btn-replay').onclick = () => restart();
+  el('btn-seed').onclick = () => restart(null);
+
+  // Knob changes keep the seed, so whatever moves is the knob and not a
+  // different draw. Relay decides whether withholding works; the deadline
+  // decides which free-riders the round can separate.
+  el('sel-relay').onchange = e => { P.RELAY = e.target.value; restart(sim.seed); };
+  el('sel-faults').onchange = e => { P.FAULTS = e.target.value; restart(sim.seed); };
+  el('sel-deadline').onchange = e => {
+    const value = e.target.value;
+    if (value.startsWith('ms')) {
+      P.DEADLINE_MS = parseInt(value.slice(2), 10);
+    } else {
+      P.DEADLINE_MS = null;
+      P.DEADLINE_SLOTS = parseInt(value, 10);
+    }
+    restart(sim.seed);
+  };
+  el('btn-how').onclick = () => { const p = el('howto'); p.classList.toggle('open'); el('btn-how').classList.toggle('on', p.classList.contains('open')); setTimeout(resize, 0); };
+  function renderClear() { el('insp-title').textContent = 'Nothing selected'; el('insp-body').innerHTML = '<div class="insp-empty">Click a prove tick or a certificate on the timeline to trace its proof paths. Hover any mark for detail.</div>'; }
+  window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); setPlay(!playing); } });
+  window.addEventListener('resize', resize);
+
+  // boot
+  const params = new URLSearchParams(location.search);
+  const seedParam = params.get('seed');
+  newSim(seedParam != null ? (parseInt(seedParam, 16) >>> 0) : null);
+  resize();
+  const tParam = parseFloat(params.get('t'));
+  if (Number.isFinite(tParam)) {
+    now = Math.max(0, Math.min(totalMs, tParam * 1000));
+    viewStart = now - 0.60 * windowMs;
+    clampView();
+  }
+  if (params.get('paused') === '1') setPlay(false);
+  let last = performance.now();
+  function frame(t) {
+    const dt = Math.min(90, t - last); last = t;
+    if (playing) {
+      ffBoost = playbackBoost(now);
+      let step = dt * speed * ffBoost;
+      // Never overshoot the opening of a round, however long the frame took.
+      const gate = nextSpanStart(now);
+      if (gate != null) step = Math.min(step, gate - now);
+      now += step;
+      if (now >= totalMs) { now = totalMs; setPlay(false); }
+    } else {
+      ffBoost = 1;
+    }
+    follow(); draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

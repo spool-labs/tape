@@ -1,3 +1,4 @@
+pub mod action;
 pub mod api;
 pub mod chain;
 pub mod config;
