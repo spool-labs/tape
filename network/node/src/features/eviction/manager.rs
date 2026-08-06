@@ -9,14 +9,11 @@ use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_protocol::api::{GetHealthReq, GetHealthRes};
 use tape_protocol::{Api, ProtocolState};
-use tape_core::challenge::record::{NodeVerdict, PeerRecord, node_verdict};
-use tape_store::ops::ChallengeOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::context::NodeContext;
-use crate::features::challenge::fold::holds_spool;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
@@ -125,7 +122,7 @@ where
         }
 
         for node in self.context.eviction_queue.snapshot() {
-            if !self.judge_target(&state, node).await {
+            if !self.judge_target(node, state.epoch()).await {
                 continue;
             }
 
@@ -144,35 +141,17 @@ where
     }
 
     /// Judge the target with this node's own probe, at most once per voting
-    /// epoch, so a recovered target is dropped rather than voted out.
-    ///
-    /// Judged on the challenge record once it holds enough rounds, on a health
-    /// ping below that. The arms differ: a run claims the peer stopped
-    /// answering, so answering now clears it. The rate arm claims nothing about
-    /// reachability, so a probe cannot clear it.
-    async fn judge_target(&mut self, state: &ProtocolState, node: Address) -> bool {
-        let epoch = state.epoch();
+    /// epoch. A proposal alone never recruits a signature: only a target this
+    /// node observes failing stays queued, and a recovered target is dropped.
+    async fn judge_target(&mut self, node: Address, epoch: EpochNumber) -> bool {
         if self.probe_failed.get(&node) == Some(&epoch) {
             return true;
         }
 
-        // Only the spools it still answers for, or a handoff would hand its
-        // successor the old owner's run.
-        let records: Vec<PeerRecord> = self
-            .context
-            .store
-            .records_for_peer(node)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(spool, _)| holds_spool(state, node, *spool))
-            .map(|(_, record)| record)
-            .collect();
-
-        let healthy = match node_verdict(&records) {
-            NodeVerdict::RateFailed => false,
-            NodeVerdict::Unproven | NodeVerdict::RunFailed => self.answers(node).await,
-            NodeVerdict::Healthy => true,
-        };
+        let healthy = matches!(
+            self.context.api.get_health(node, &GetHealthReq).await,
+            Ok(GetHealthRes { ok: true })
+        );
         if healthy {
             debug!(node = %node, "eviction: target probed healthy, dropping");
             self.context.eviction_queue.remove(&node);
@@ -183,14 +162,6 @@ where
         info!(node = %node, epoch = epoch.0, "eviction: target probe failed, voting to evict");
         self.probe_failed.insert(node, epoch);
         true
-    }
-
-    /// Whether the target answers a health request right now.
-    async fn answers(&self, node: Address) -> bool {
-        matches!(
-            self.context.api.get_health(node, &GetHealthReq).await,
-            Ok(GetHealthRes { ok: true })
-        )
     }
 
     async fn run_round(
