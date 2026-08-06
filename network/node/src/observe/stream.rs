@@ -123,8 +123,19 @@ impl StreamHub {
             frames.extend(replay.hello.clone());
             frames.extend(replay.topology.clone());
             frames.extend(replay.board.clone());
-            if !replay.history.is_empty() {
-                let history: Vec<&Tick> = replay.history.iter().collect();
+            // Sampling stops once nobody has watched for a while, which leaves
+            // the ring holding whatever was current then. Sending that would
+            // draw a full window of stale readings as if they were live.
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let history: Vec<&Tick> = replay
+                .history
+                .iter()
+                .filter(|tick| now_ms.saturating_sub(tick.at_ms) <= BACKFILL_SPAN_MS)
+                .collect();
+            if !history.is_empty() {
                 frames.extend(Frame::new(EVENT_BACKFILL, &history));
             }
         }
