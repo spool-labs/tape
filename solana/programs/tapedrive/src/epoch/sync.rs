@@ -1,5 +1,6 @@
 use tape_api::program::prelude::*;
 use tape_api::event::SpoolSynced;
+use tape_core::encoding::ClayParams;
 
 pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SyncSpool::try_from_bytes(data)?;
@@ -65,15 +66,13 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(TapeError::AlreadySynced.into());
     }
 
-    let was_quorum = has_honest_signer(
-        group.synced.count_ones() as u64,
+    let ready_gate = sync_ready_threshold(
         GROUP_SIZE as u64,
+        ClayParams::DEFAULT.k() as u64,
     );
+    let was_quorum = group.synced.count_ones() as u64 >= ready_gate;
     group.synced.set(slice_idx);
-    let now_quorum = has_honest_signer(
-        group.synced.count_ones() as u64,
-        GROUP_SIZE as u64,
-    );
+    let now_quorum = group.synced.count_ones() as u64 >= ready_gate;
 
     if !was_quorum && now_quorum {
         epoch.state.synced_count = epoch.state.synced_count.saturating_add(1);
