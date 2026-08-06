@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,12 +14,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use tape_core::erasure::GROUP_SIZE;
-use tape_observe_api::ChallengeRow;
 
-use crate::action::{ActionHandle, ActionLog};
 use crate::view::{NodeView, LocalnetView, UploadView};
 
 const GROUP_COLS: usize = 7;
@@ -29,17 +26,12 @@ const GROUP_ROWS: usize = 3;
 pub enum Command {
     AddNode,
     RemoveNode,
-    StallNode,
-    FlapNode,
-    LoseSlices,
     UploadBlob,
-    DeleteUpload,
     Quit,
 }
 
 pub fn run_tui(
     snapshot: Arc<ArcSwap<LocalnetView>>,
-    action: ActionHandle,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<Command>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -52,9 +44,8 @@ pub fn run_tui(
         }
 
         let snap = snapshot.load();
-        let last = action.load();
         let disconnected = cmd_tx.is_closed();
-        terminal.draw(|frame| render_frame(frame, &snap, &last, disconnected))?;
+        terminal.draw(|frame| render_frame(frame, &snap, disconnected))?;
 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
@@ -66,20 +57,8 @@ pub fn run_tui(
                         KeyCode::Char('r') => {
                             let _ = cmd_tx.send(Command::RemoveNode);
                         }
-                        KeyCode::Char('j') => {
-                            let _ = cmd_tx.send(Command::StallNode);
-                        }
-                        KeyCode::Char('f') => {
-                            let _ = cmd_tx.send(Command::FlapNode);
-                        }
-                        KeyCode::Char('x') => {
-                            let _ = cmd_tx.send(Command::LoseSlices);
-                        }
                         KeyCode::Char('u') => {
                             let _ = cmd_tx.send(Command::UploadBlob);
-                        }
-                        KeyCode::Char('d') => {
-                            let _ = cmd_tx.send(Command::DeleteUpload);
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             let _ = cmd_tx.send(Command::Quit);
@@ -127,12 +106,7 @@ impl Drop for TerminalDropGuard {
     }
 }
 
-fn render_frame(
-    frame: &mut Frame<'_>,
-    view: &LocalnetView,
-    last: &ActionLog,
-    disconnected: bool,
-) {
+fn render_frame(frame: &mut Frame<'_>, view: &LocalnetView, disconnected: bool) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(0, 0, 0))),
@@ -163,9 +137,9 @@ fn render_frame(
 
     render_title_bar(frame, chunks[0], view);
     render_spool_grid(frame, chunks[1], view);
-    render_node_table(frame, body_chunks[0], view, last.node);
+    render_node_table(frame, body_chunks[0], view);
     render_upload_table(frame, body_chunks[1], view);
-    render_help_bar(frame, chunks[3], view, last, disconnected);
+    render_help_bar(frame, chunks[3], view, disconnected);
 }
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
@@ -189,23 +163,8 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
         None => view.cluster.phase.clone(),
     };
 
-    // Counts of what the keys did, so the state is legible even on a terminal
-    // too short to show the rows they act on.
-    let stalled = view.nodes.iter().filter(|node| node.stalled).count();
-    let flapping = view.nodes.iter().filter(|node| node.flapping).count();
-    let down = view
-        .nodes
-        .iter()
-        .filter(|node| !node.healthy && !node.stalled)
-        .count();
-    let faults = if stalled + flapping + down > 0 {
-        format!("  stall:{stalled} flap:{flapping} down:{down}")
-    } else {
-        String::new()
-    };
-
     let left = format!(
-        " LOCALNET  Nodes:{}  Healthy:{}{faults}  Metrics:{}  Groups:{}  C[{}/{}/{}]  {}",
+        " LOCALNET  Nodes:{}  Healthy:{}  Metrics:{}  Groups:{}  C[{}/{}/{}]  {}",
         view.nodes.len(),
         healthy_nodes,
         metrics_nodes,
@@ -215,33 +174,8 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
         view.cluster.committee_next_size,
         phase,
     );
-    let rounds = view
-        .nodes
-        .iter()
-        .filter(|node| node.healthy)
-        .min_by_key(|node| node.local_id)
-        .and_then(|node| node.challenge_rounds.as_ref())
-        .map(|rounds| {
-            format!(
-                "R[o:{} c:{} m:{} x:{}]  ",
-                rounds.opened,
-                rounds.settled_certified,
-                rounds.settled_missed,
-                rounds.answers_refused,
-            )
-        })
-        .unwrap_or_default();
-    let rate = match view
-        .cluster
-        .honest_rate_min_bps
-        .zip(view.cluster.honest_rate_med_bps)
-    {
-        Some((min, med)) => format!("rate[{}~{}%]  ", min / 100, med / 100),
-        None => String::new(),
-    };
-
     let right = format!(
-        "{rounds}{rate}epoch:{}  registered:{}  slot:{} ",
+        "epoch:{}  registered:{}  slot:{} ",
         view.cluster.epoch,
         view.cluster.total_nodes_registered,
         view.cluster.slot,
@@ -342,12 +276,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     frame.render_widget(Paragraph::new(lines), pad_left(inner));
 }
 
-fn render_node_table(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    view: &LocalnetView,
-    focus: Option<usize>,
-) {
+fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -357,56 +286,11 @@ fn render_node_table(
 
     let mut nodes: Vec<&NodeView> = view.nodes.iter().collect();
     nodes.sort_by_key(|node| node.local_id);
-    let focus_row = focus.and_then(|id| nodes.iter().position(|node| node.local_id == id));
 
-    // One node's record of everyone, which is what the record is: a local
-    // view, not a network verdict. The lowest healthy id keeps it stable.
-    let challenge_grid: HashMap<&str, &ChallengeRow> = view
-        .nodes
-        .iter()
-        .filter(|node| node.healthy)
-        .min_by_key(|node| node.local_id)
-        .and_then(|node| node.challenge.as_ref())
-        .map(|grid| grid.rows.iter().map(|row| (row.node.as_str(), row)).collect())
-        .unwrap_or_default();
-
-    let epoch = view.cluster.epoch;
-    let rows = nodes.into_iter().map(move |node| {
+    let rows = nodes.into_iter().map(|node| {
         let stats = node.stats.as_ref();
-        // A stalled node that collects an eviction shows the eviction: that
-        // arrival is the whole point of watching.
-        let (health, health_style) = if node
-            .suspended_until
-            .is_some_and(|until| until > 0 && until >= epoch)
-        {
-            ("evct", Style::default().fg(Color::Red))
-        } else if node.stalled {
-            ("stall", Style::default().fg(Color::Yellow))
-        } else if node.flapping {
-            ("flap", Style::default().fg(Color::Cyan))
-        } else if node.healthy {
-            ("up", Style::default())
-        } else {
-            ("down", Style::default())
-        };
+        let healthy = if node.healthy { "up" } else { "down" };
         let metrics = if node.metrics_available { "yes" } else { "no" };
-
-        let judged = challenge_grid.get(node.node_address.as_str());
-        let miss = judged
-            .map(|row| row.consecutive_misses.to_string())
-            .unwrap_or_else(|| "-".into());
-        let rate = judged
-            .map(|row| format!("{}%", row.success_rate_bps / 100))
-            .unwrap_or_else(|| "-".into());
-        let strip = judged
-            .map(|row| {
-                let tail = row.recent.len().saturating_sub(16);
-                row.recent[tail..]
-                    .iter()
-                    .map(|proved| if *proved { '▮' } else { '·' })
-                    .collect::<String>()
-            })
-            .unwrap_or_else(|| "-".into());
 
         Row::new(vec![
             Cell::from("▌").style(Style::default().fg(node_color(node.local_id))),
@@ -423,11 +307,8 @@ fn render_node_table(
                     .to_string(),
             ),
             Cell::from(node.address.clone().unwrap_or_else(|| "-".into())),
-            Cell::from(health).style(health_style),
+            Cell::from(healthy),
             Cell::from(metrics),
-            Cell::from(miss),
-            Cell::from(rate),
-            Cell::from(strip),
             Cell::from(
                 stats.map(|s| s.owned_spools.to_string())
                     .unwrap_or_else(|| "-".into()),
@@ -461,9 +342,6 @@ fn render_node_table(
         Constraint::Length(17),
         Constraint::Length(6),
         Constraint::Length(7),
-        Constraint::Length(4),
-        Constraint::Length(5),
-        Constraint::Length(16),
         Constraint::Length(6),
         Constraint::Length(7),
         Constraint::Length(10),
@@ -485,9 +363,6 @@ fn render_node_table(
             "Address",
             "Health",
             "Metrics",
-            "Miss",
-            "Rate",
-            "Rounds",
             "Spools",
             "Tracks",
             "Payload",
@@ -499,59 +374,22 @@ fn render_node_table(
         .style(Style::default().fg(Color::DarkGray)),
     );
 
-    // The table shows only the rows that fit and drops the rest from the bottom,
-    // which is where the node keys act. Scroll the node a key just touched into
-    // view, so a press on a short terminal is never invisible.
-    let capacity = inner.height.saturating_sub(1) as usize;
-    let offset = focus_row
-        .map(|row| row.saturating_sub(capacity.saturating_sub(1)))
-        .unwrap_or(0);
-    let mut state = TableState::default().with_offset(offset);
-    frame.render_stateful_widget(table, inner, &mut state);
+    frame.render_widget(table, inner);
 }
 
-fn render_help_bar(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    view: &LocalnetView,
-    last: &ActionLog,
-    disconnected: bool,
-) {
+fn render_help_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView, disconnected: bool) {
     let status = if disconnected { "disconnected" } else { "ready" };
-    let mut spans = Vec::new();
-
-    // What the last key did leads the bar, because a key whose effect lands on
-    // a row the table dropped is indistinguishable from one that never
-    // registered. The hints clip off the right instead.
-    if !last.text.is_empty() {
-        let tone = if last.failed { Color::Red } else { Color::Green };
-        spans.push(Span::styled(" > ", Style::default().fg(tone)));
-        spans.push(Span::styled(
-            truncate_tail(&last.text, area.width.saturating_sub(20) as usize),
-            Style::default().fg(tone),
-        ));
-        spans.push(Span::raw("  "));
-    }
-
-    spans.extend(vec![
+    let mut spans = vec![
         Span::styled(" a ", Style::default().fg(Color::Green)),
-        Span::raw("add  "),
+        Span::raw("add node  "),
         Span::styled(" r ", Style::default().fg(Color::Yellow)),
-        Span::raw("remove  "),
-        Span::styled(" j ", Style::default().fg(Color::Magenta)),
-        Span::raw("stall  "),
-        Span::styled(" f ", Style::default().fg(Color::Cyan)),
-        Span::raw("flap  "),
-        Span::styled(" x ", Style::default().fg(Color::LightYellow)),
-        Span::raw("lose slices  "),
-        Span::styled(" u ", Style::default().fg(Color::Blue)),
-        Span::raw("upload  "),
-        Span::styled(" d ", Style::default().fg(Color::LightRed)),
-        Span::raw("delete upload  "),
+        Span::raw("remove last node  "),
+        Span::styled(" u ", Style::default().fg(Color::Cyan)),
+        Span::raw("upload blob  "),
         Span::styled(" q ", Style::default().fg(Color::Red)),
         Span::raw("quit"),
         Span::raw(format!("  [{status}]")),
-    ]);
+    ];
 
     if let Some(upload) = view.uploads.first() {
         if let Some(error) = upload.last_error.as_deref() {
@@ -663,8 +501,8 @@ fn format_tape(value: u64) -> String {
 fn cert_style(status: &str) -> Style {
     match status {
         "yes" => Style::default().fg(Color::Green),
-        "pending" | "deleting" => Style::default().fg(Color::Yellow),
-        "failed" | "delfail" => Style::default().fg(Color::Red),
+        "pending" => Style::default().fg(Color::Yellow),
+        "failed" => Style::default().fg(Color::Red),
         _ => Style::default().fg(Color::DarkGray),
     }
 }
@@ -704,84 +542,4 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> Color {
         ((g1 + m) * 255.0) as u8,
         ((b1 + m) * 255.0) as u8,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use ratatui::backend::TestBackend;
-
-    use super::*;
-
-    /// A fleet large enough that its last rows cannot fit the table.
-    fn fleet(count: usize) -> LocalnetView {
-        let nodes = (0..count)
-            .map(|id| NodeView {
-                local_id: id,
-                node_id: Some(id as u64),
-                address: Some(format!("127.0.0.1:{}", 4000 + id)),
-                healthy: true,
-                ..NodeView::default()
-            })
-            .collect();
-        LocalnetView {
-            nodes,
-            ..LocalnetView::default()
-        }
-    }
-
-    /// Every cell of one rendered frame, so a row's text reads contiguously.
-    fn screen(view: &LocalnetView, last: &ActionLog) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(200, 30)).expect("terminal");
-        terminal
-            .draw(|frame| render_frame(frame, view, last, false))
-            .expect("draw");
-        terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect()
-    }
-
-    // a command says what it did, even when it acted on a row the table dropped
-    #[test]
-    fn action_reported() {
-        let view = fleet(30);
-        let log = ActionLog::done("stalled node 29, crank holds its seat".into(), 29);
-
-        assert!(screen(&view, &log).contains("stalled node 29"));
-    }
-
-    // a command that failed says so, rather than looking like a key that never registered
-    #[test]
-    fn failure_reported() {
-        let view = fleet(4);
-        let log = ActionLog::failed("stall failed: node not running".into());
-
-        assert!(screen(&view, &log).contains("stall failed"));
-    }
-
-    // the node a key acted on is scrolled into a table too short to hold it
-    #[test]
-    fn focus_scrolled() {
-        let view = fleet(30);
-        let idle = screen(&view, &ActionLog::default());
-        let focused = screen(&view, &ActionLog::done("stalled node 29".into(), 29));
-
-        assert!(!idle.contains("127.0.0.1:4029"), "the last node should start off-screen");
-        assert!(focused.contains("127.0.0.1:4029"), "the acted-on node should be scrolled in");
-    }
-
-    // faults are counted in the title bar, which no table height can hide
-    #[test]
-    fn faults_counted() {
-        let mut view = fleet(6);
-        view.nodes[5].stalled = true;
-        view.nodes[5].healthy = false;
-        view.nodes[4].flapping = true;
-        view.nodes[3].healthy = false;
-
-        assert!(screen(&view, &ActionLog::default()).contains("stall:1 flap:1 down:1"));
-    }
 }

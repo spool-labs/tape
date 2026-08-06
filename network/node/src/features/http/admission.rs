@@ -16,6 +16,7 @@ use tracing::{debug, warn};
 
 use tape_core::types::coin::{Coin, TAPE};
 
+use crate::config::cidr::CidrBlock;
 use crate::config::http::{AdmissionConfig, StakeTier};
 use crate::features::http::forwarded::caller_ip;
 use crate::features::http::auth::{ActivePeer, StakedPeer};

@@ -11,7 +11,7 @@ use tape_retry::{retry_if, RetryConfig};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn, Instrument, info};
+use tracing::{debug, warn, Instrument};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::node::NodeConfig;
@@ -25,7 +25,6 @@ use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap;
 use crate::features::assignment::manager::AssignmentManager;
-use crate::features::challenge::ChallengeManager;
 use crate::features::eviction::manager::EvictionManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
@@ -300,6 +299,11 @@ where
             ServiceName::BalanceMonitor,
             BalanceMonitor::new(context.clone(), cancel.clone()).run(),
         );
+
+        supervisor.spawn(
+            ServiceName::ObserveStream,
+            crate::observe::StreamPublisher::new(context.clone(), cancel.clone()).run(),
+        );
     }
 
     #[cfg(feature = "metrics")]
@@ -374,26 +378,14 @@ where
     );
 
     supervisor.spawn(
-        ServiceName::ChallengeManager,
-        ChallengeManager::new(
+        ServiceName::EvictionManager,
+        EvictionManager::new(
             context.clone(),
-            receivers.challenge,
+            receivers.eviction,
             cancel.clone(),
         )
         .run(),
     );
-
-    // An operator that does not want to act on its records says so here. The
-    // records are still kept and still shown, but nothing is proposed and no
-    // peer's proposal is signed.
-    if config.eviction.enabled {
-        supervisor.spawn(
-            ServiceName::EvictionManager,
-            EvictionManager::new(context.clone(), receivers.eviction, cancel.clone()).run(),
-        );
-    } else {
-        info!("eviction disabled by config: proposing nothing, signing no eviction vote");
-    }
 
     supervisor.spawn(
         ServiceName::SnapshotManager,

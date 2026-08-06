@@ -51,7 +51,6 @@ members = [
   "tools/tape-recover-assignment",
   "tools/tape-store-cli",
   "tools/tape-measure",
-  "lib/whirlwind",
 ]
 
 # Programs and test crates excluded from default cargo build/check:
