@@ -1,3 +1,4 @@
+use crate::wire::CompiledInstruction;
 use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
     EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
@@ -357,7 +358,7 @@ pub enum ParsedInstruction {
 
 /// Parse a single compiled instruction into a RawInstruction.
 pub fn parse_raw_instruction(
-    ix: &crate::wire::CompiledInstruction,
+    ix: &CompiledInstruction,
     account_keys: &[String],
 ) -> Result<Option<RawInstruction>, ParseError> {
     // Get the program ID
@@ -744,7 +745,7 @@ mod tests {
 
     fn compiled_instruction(
         instruction: &Instruction,
-    ) -> (crate::wire::CompiledInstruction, Vec<String>) {
+    ) -> (CompiledInstruction, Vec<String>) {
         let mut account_keys = vec![TAPE_PROGRAM_ID.to_string()];
         let accounts = instruction
             .accounts
@@ -755,7 +756,7 @@ mod tests {
             })
             .collect();
         (
-            crate::wire::CompiledInstruction {
+            CompiledInstruction {
                 program_id_index: 0,
                 accounts,
                 data: bs58::encode(&instruction.data).into_string(),

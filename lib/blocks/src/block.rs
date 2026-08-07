@@ -72,7 +72,7 @@ pub fn parse(block: &wire::Block) -> Result<ParsedBlock, ParseError> {
     };
 
     for tx in transactions {
-        if is_failed_transaction(tx) {
+        if tx.is_failed() {
             result.failed_tx_count += 1;
             continue;
         }
@@ -251,11 +251,6 @@ fn parse_inner_instructions(
     }
 
     Ok(instructions)
-}
-
-/// Check if a transaction failed.
-fn is_failed_transaction(tx: &wire::Transaction) -> bool {
-    tx.is_failed()
 }
 
 #[cfg(test)]

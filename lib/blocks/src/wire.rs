@@ -15,117 +15,91 @@ use serde::de::IgnoredAny;
 
 /// A confirmed block, carrying only what the parser consumes.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct Block {
-    #[serde(default)]
     pub previous_blockhash: String,
-    #[serde(default)]
     pub blockhash: String,
-    #[serde(default)]
     pub parent_slot: u64,
-    #[serde(default)]
     pub block_time: Option<i64>,
-    #[serde(default)]
     pub transactions: Option<Vec<Transaction>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct Transaction {
-    #[serde(default)]
     pub transaction: TransactionBody,
-    #[serde(default)]
     pub meta: Option<Meta>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct TransactionBody {
-    #[serde(default)]
     pub signatures: Vec<String>,
-    #[serde(default)]
     pub message: Message,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct Message {
-    #[serde(default)]
     pub account_keys: Vec<String>,
-    #[serde(default)]
     pub instructions: Vec<CompiledInstruction>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct CompiledInstruction {
-    #[serde(default)]
     pub program_id_index: u8,
-    #[serde(default)]
     pub accounts: Vec<u8>,
-    #[serde(default)]
     pub data: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct Meta {
     /// Null on success. Held as `IgnoredAny` because only its presence is read,
     /// so a failed transaction never builds its error tree.
-    #[serde(default)]
     pub err: Option<IgnoredAny>,
-    #[serde(default)]
     pub log_messages: Option<Vec<String>>,
-    #[serde(default)]
     pub inner_instructions: Option<Vec<InnerInstructions>>,
-    #[serde(default)]
     pub loaded_addresses: Option<LoadedAddresses>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct InnerInstructions {
-    #[serde(default)]
     pub index: u8,
-    #[serde(default)]
     pub instructions: Vec<CompiledInstruction>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct LoadedAddresses {
-    #[serde(default)]
     pub writable: Vec<String>,
-    #[serde(default)]
     pub readonly: Vec<String>,
 }
 
 impl Transaction {
     /// A transaction with no meta is treated as failed, matching the typed path.
     pub fn is_failed(&self) -> bool {
-        self.meta.as_ref().map(|meta| meta.err.is_some()).unwrap_or(true)
+        self.meta.as_ref().is_none_or(|meta| meta.err.is_some())
     }
 }
 
 /// Build the wire shape from the typed one.
 ///
-/// The hot path deserialises straight into these types, but litesvm, the rpc
-/// cache and the parser tests all produce `UiConfirmedBlock` already, so they
-/// convert instead of growing a second construction path.
+/// The hot path deserialises straight into these types. litesvm has no JSON at
+/// all, it builds `UiConfirmedBlock` structurally, so it converts rather than
+/// growing a second construction path. The parser tests do the same.
 mod from_typed {
-    use solana_transaction_status::option_serializer::OptionSerializer;
-    use solana_transaction_status::{
-        EncodedTransaction, EncodedTransactionWithStatusMeta, UiConfirmedBlock, UiInstruction,
-        UiMessage,
+        use solana_transaction_status::{
+        EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
+        UiConfirmedBlock, UiInstruction, UiMessage,
     };
 
     use super::{
-        Block, CompiledInstruction, InnerInstructions, LoadedAddresses, Message, Meta, Transaction,
-        TransactionBody,
+        Block, CompiledInstruction, IgnoredAny, InnerInstructions, LoadedAddresses, Message, Meta,
+        Transaction, TransactionBody,
     };
-
-    fn option<T>(value: OptionSerializer<T>) -> Option<T> {
-        match value {
-            OptionSerializer::Some(value) => Some(value),
-            OptionSerializer::None | OptionSerializer::Skip => None,
-        }
-    }
 
     impl From<UiConfirmedBlock> for Block {
         fn from(block: UiConfirmedBlock) -> Self {
@@ -141,6 +115,16 @@ mod from_typed {
         }
     }
 
+    impl From<UiCompiledInstruction> for CompiledInstruction {
+        fn from(ix: UiCompiledInstruction) -> Self {
+            Self {
+                program_id_index: ix.program_id_index,
+                accounts: ix.accounts,
+                data: ix.data,
+            }
+        }
+    }
+
     impl From<EncodedTransactionWithStatusMeta> for Transaction {
         fn from(tx: EncodedTransactionWithStatusMeta) -> Self {
             let body = match tx.transaction {
@@ -152,11 +136,7 @@ mod from_typed {
                             instructions: raw
                                 .instructions
                                 .into_iter()
-                                .map(|ix| CompiledInstruction {
-                                    program_id_index: ix.program_id_index,
-                                    accounts: ix.accounts,
-                                    data: ix.data,
-                                })
+                                .map(CompiledInstruction::from)
                                 .collect(),
                         },
                         // The parser skips parsed messages, so an empty one is
@@ -168,9 +148,9 @@ mod from_typed {
             };
 
             let meta = tx.meta.map(|meta| Meta {
-                err: meta.status.is_err().then_some(serde::de::IgnoredAny),
-                log_messages: option(meta.log_messages),
-                inner_instructions: option(meta.inner_instructions).map(|sets| {
+                err: meta.status.is_err().then_some(IgnoredAny),
+                log_messages: meta.log_messages.into(),
+                inner_instructions: meta.inner_instructions.map(|sets| {
                     sets.into_iter()
                         .map(|set| InnerInstructions {
                             index: set.index,
@@ -178,18 +158,14 @@ mod from_typed {
                                 .instructions
                                 .into_iter()
                                 .filter_map(|ix| match ix {
-                                    UiInstruction::Compiled(ix) => Some(CompiledInstruction {
-                                        program_id_index: ix.program_id_index,
-                                        accounts: ix.accounts,
-                                        data: ix.data,
-                                    }),
+                                    UiInstruction::Compiled(ix) => Some(ix.into()),
                                     UiInstruction::Parsed(_) => None,
                                 })
                                 .collect(),
                         })
                         .collect()
                 }),
-                loaded_addresses: option(meta.loaded_addresses).map(|loaded| LoadedAddresses {
+                loaded_addresses: meta.loaded_addresses.map(|loaded| LoadedAddresses {
                     writable: loaded.writable,
                     readonly: loaded.readonly,
                 }),

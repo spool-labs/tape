@@ -5833,6 +5833,7 @@ name = "rpc-solana"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "reqwest",
  "rpc",
  "serde",
  "serde_json",

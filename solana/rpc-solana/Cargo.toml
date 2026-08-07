@@ -34,6 +34,7 @@ thiserror.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+reqwest = { workspace = true, features = ["gzip", "brotli", "deflate"] }
 
 # Logging (optional)
 tracing = { version = "0.1", optional = true }

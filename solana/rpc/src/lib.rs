@@ -40,7 +40,7 @@ pub use solana_client::rpc_config::RpcProgramAccountsConfig;
 pub use solana_commitment_config::CommitmentLevel;
 pub use solana_instruction_error::InstructionError;
 pub use solana_transaction_error::TransactionError;
-pub use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock};
+pub use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 
 /// Prelude module for convenient imports
 pub mod prelude {
