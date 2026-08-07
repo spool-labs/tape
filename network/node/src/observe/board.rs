@@ -1,24 +1,38 @@
 //! Builds a node's board from live context and the metric set.
 
+use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rpc::Rpc;
 use store::{Column, Store, StoreVolume};
+use tape_core::bft::has_honest_signer;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::types::bitmap::BitmapRead;
+use tape_core::types::SpoolIndex;
+use tape_core::challenge::record::{
+    NodeVerdict, PeerRecord, node_tally, node_verdict,
+    MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
+};
 use tape_core::system::NodeStatus;
+use tape_crypto::Address;
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
-use tape_store::ops::{SliceOps, SpoolOps};
+use tape_store::ops::{ChallengeOps, SliceOps, SpoolOps};
 use tape_observe_api::{
-    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, DecodeStats, EpochInfo,
+    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
+    ChallengeRounds, DecodeStats, EpochInfo,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
-    NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo, StorageVolume,
+    ChallengeOwner, NodeStats, OwnerVerdict, ResourceInfo, RoundId, SpoolStat, StatsSource, StorageContents, StorageInfo,
+    StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
     SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGES, SPOOL_STAGE_FETCHED,
 };
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 
 use crate::context::NodeContext;
+use crate::features::challenge::fold::holds_spool;
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
 
@@ -633,7 +647,7 @@ where
             number: state.epoch().0,
             phase: phase_name(u64::from(state.phase()) as u8).to_string(),
             phase_index: u64::from(state.phase()) as u8,
-            synced_count: state.current.epoch.state.synced_count,
+            synced_count: synced_groups(&state),
             committee_size: state.current.committee.len() as u64,
             groups: state.current.groups.len() as u64,
             peers: state.peers.len() as u64,
@@ -716,6 +730,206 @@ where
         last_epoch: super::last_epoch(),
         current_epoch: current_epoch.clone(),
         lifetime: super::epoch::lifetime_including(&current_epoch),
+        challenge: challenge_grid(context),
+        challenge_rounds: challenge_rounds(context),
+    }
+}
+
+/// Groups that have crossed their readiness quorum, counted from the bitmaps.
+///
+/// Not `epoch.state.synced_count`. The program keeps that counter and drives the
+/// Sync phase off it, but replay never mirrors it: `handle_sync_spool` sets the
+/// group's bit and applies the phase and nothing writes the count, so reading it
+/// here reports zero in every phase of every epoch. The bitmaps are the durable
+/// evidence, and the rule applied to them is the program's own.
+fn synced_groups(state: &ProtocolState) -> u64 {
+    state
+        .current
+        .groups
+        .iter()
+        .filter(|group| {
+            has_honest_signer(group.synced.count_ones() as u64, GROUP_SIZE as u64)
+        })
+        .count() as u64
+}
+
+/// Lifetime round counters, straight off the context atomics.
+fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeRounds {
+    let counters = &context.challenge_counters;
+    ChallengeRounds {
+        opened: counters.opened.load(Ordering::Relaxed),
+        settled_certified: counters.settled_certified.load(Ordering::Relaxed),
+        settled_missed: counters.settled_missed.load(Ordering::Relaxed),
+        answers_refused: counters.answers_refused.load(Ordering::Relaxed),
+        voided: counters.voided.load(Ordering::Relaxed),
+        discarded: counters.discarded.load(Ordering::Relaxed),
+        own_certified: counters.own_certified.load(Ordering::Relaxed),
+        own_missed: counters.own_missed.load(Ordering::Relaxed),
+    }
+}
+
+/// This node's challenge record, worst row first.
+///
+/// Its own observations, not anything the network agreed on: a row with gaps is
+/// a peer this node did not hear from, which is a reason to look rather than a
+/// verdict. Ordering by rate puts an outlier at the top.
+fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeGrid {
+    // A record only matters to an operator once it has turned into an action,
+    // so the row says whether this node is already pushing to evict the peer.
+    let queued = context.eviction_queue.snapshot();
+    // Only the spools their owners still answer for. A record outlives a handoff,
+    // and showing one against the peer that gave the spool up reads as a failure
+    // on data it is no longer asked about.
+    let state = context.state();
+    let mut rows: Vec<ChallengeRow> = context
+        .store
+        .iter_peer_records()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|((node, spool), _)| holds_spool(&state, *node, *spool))
+        .map(|((node, spool), record)| ChallengeRow {
+            node: node.to_string(),
+            spool: spool.as_u64(),
+            opportunities: record.opportunities,
+            successes: record.successes,
+            consecutive_misses: record.consecutive_misses,
+            success_rate_bps: record.success_rate().0,
+            rule_fired: record.eviction_fires(),
+            queued: queued.contains(&node),
+            recent: record.recent_rounds(),
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        (a.success_rate_bps, &a.node, a.spool).cmp(&(b.success_rate_bps, &b.node, b.spool))
+    });
+
+    ChallengeGrid {
+        recent_capacity: RECENT_ROUNDS as u64,
+        min_opportunities: MIN_OPPORTUNITIES,
+        rate_floor_bps: RATE_FLOOR.0,
+        max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
+        axis: round_axis(context, &rows),
+        owners: owner_rows(context, &state, &queued),
+        rows,
+    }
+}
+
+/// Every owner this node keeps records for, judged by its own rule.
+///
+/// Sent already judged so a reader draws the verdict rather than inventing one:
+/// the rule lives in core and a pooled rate is not one of its inputs.
+fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    queued: &[Address],
+) -> Vec<ChallengeOwner> {
+    let mut by_peer: BTreeMap<Address, Vec<PeerRecord>> = BTreeMap::new();
+    for ((node, spool), record) in context.store.iter_peer_records().unwrap_or_default() {
+        if holds_spool(state, node, spool) {
+            by_peer.entry(node).or_default().push(record);
+        }
+    }
+
+    let mut owners: Vec<ChallengeOwner> = by_peer
+        .into_iter()
+        .map(|(node, records)| {
+            let tally = node_tally(&records);
+            ChallengeOwner {
+                node: node.to_string(),
+                spools: tally.spools,
+                opportunities: tally.opportunities,
+                successes: tally.successes,
+                rate_bps: tally.rate().0,
+                worst_run: tally.worst_run,
+                verdict: match node_verdict(&records) {
+                    NodeVerdict::Healthy => OwnerVerdict::Healthy,
+                    NodeVerdict::Unproven => OwnerVerdict::Unproven,
+                    NodeVerdict::RunFailed => OwnerVerdict::RunFailed,
+                    NodeVerdict::RateFailed => OwnerVerdict::RateFailed,
+                },
+                queued: queued.contains(&node),
+            }
+        })
+        .collect();
+    owners.sort_by(|a, b| (a.rate_bps, &a.node).cmp(&(b.rate_bps, &b.node)));
+    owners
+}
+
+/// The rounds the strip's columns stand for, newest last.
+///
+/// Read from the fullest ledger rather than assembled per row: settling judges
+/// every spool in the group together, so the rounds are the same for all of
+/// them and a spool assigned later just has fewer of them.
+fn round_axis<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    rows: &[ChallengeRow],
+) -> Vec<RoundId> {
+    let span = rows.iter().map(|row| row.recent.len()).max().unwrap_or_default();
+    if span == 0 {
+        return Vec::new();
+    }
+
+    let Some((widest, spool)) = rows
+        .iter()
+        .max_by_key(|row| row.recent.len())
+        .and_then(|row| row.node.parse::<Address>().ok().map(|node| (node, row.spool)))
+    else {
+        return Vec::new();
+    };
+
+    let rounds = context
+        .store
+        .peer_rounds(widest, SpoolIndex(spool))
+        .unwrap_or_default();
+    let tail = rounds.len().saturating_sub(span);
+    rounds[tail..]
+        .iter()
+        .map(|(epoch, round, _)| RoundId {
+            epoch: epoch.0,
+            round: round.0,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_core::types::SpoolBitmap;
+    use tape_core::types::bitmap::BitmapWrite;
+
+    use super::*;
+    use crate::harness::{NodeHarness, TestContext};
+
+    // the chain's counter never reaches replayed state, so the board counts the
+    // groups that crossed quorum from the bitmaps that do
+    #[tokio::test]
+    async fn synced_from_bitmaps() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx: TestContext = harness.ctx_for(0);
+        let mut state = (*ctx.state()).clone();
+
+        for group in &mut state.current.groups {
+            group.synced = SpoolBitmap::from_indices(&[]);
+        }
+        assert_eq!(synced_groups(&state), 0);
+
+        // The gate is a quorum, so one position short of it is not a synced group.
+        for position in 0..7 {
+            state.current.groups[0].synced.set(position);
+        }
+        assert_eq!(synced_groups(&state), 0);
+
+        state.current.groups[0].synced.set(7);
+        assert_eq!(synced_groups(&state), 1);
     }
 }
 

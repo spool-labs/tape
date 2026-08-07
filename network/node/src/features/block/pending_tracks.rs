@@ -4,10 +4,15 @@
 //! the pending queue, so SDK reads, peer queries, `put_slice`, and `certify`
 //! see new tracks at confirmed latency rather than waiting for finalization.
 //!
-//! Only `Register` and `Certify` flow through pending state. `Invalidate` and
-//! `Delete` are destructive and remain on the finalized path — exposing them
-//! from confirmed state risks showing a track as gone when the block that
-//! removed it gets reorged out.
+//! Only `Reserve`, `Register` and `Certify` flow through pending state.
+//! `Invalidate` and `Delete` are destructive and remain on the finalized path —
+//! exposing them from confirmed state risks showing a track as gone when the
+//! block that removed it gets reorged out.
+//!
+//! Reservations are here because a track without its tape is not servable: a
+//! proof needs the tape's track set, so a fresh tape's first track would be
+//! not-found on every peer for a whole finality window while the overlay
+//! resolved the track and the tape read fell through to disk.
 //!
 //! Read paths fold pending events on top of the disk-backed `TapeStore` via
 //! `apply_to_track`. Once a slot is finalized (and the corresponding events
@@ -20,8 +25,9 @@ use std::sync::RwLock;
 use tape_blocks::ParsedInstruction;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::{CompressedTrack, TrackState};
-use tape_core::types::SlotNumber;
+use tape_core::types::{SlotNumber, TrackNumber};
 use tape_crypto::address::Address;
+use tape_store::types::TapeInfo;
 
 use crate::features::block::ingestor::ParsedBlock;
 
@@ -44,6 +50,12 @@ struct Event {
     kind: EventKind,
 }
 
+#[derive(Debug)]
+struct TapeEvent {
+    slot: SlotNumber,
+    info: TapeInfo,
+}
+
 #[derive(Debug, Default)]
 pub struct PendingTracks {
     inner: RwLock<Inner>,
@@ -60,6 +72,11 @@ struct Inner {
     /// promoted.
     addresses_by_slot: BTreeMap<SlotNumber, Vec<Address>>,
 
+    /// Per-tape reservation log, in append order.
+    reservations: HashMap<Address, Vec<TapeEvent>>,
+
+    /// Reverse index for dropping a slot's reservations.
+    tapes_by_slot: BTreeMap<SlotNumber, Vec<Address>>,
 }
 
 impl PendingTracks {
@@ -81,6 +98,17 @@ impl PendingTracks {
                 kind: EventKind::Register { state, data },
             },
         );
+    }
+
+    /// Record a tape reservation seen at confirmed commitment.
+    pub fn apply_reserve(&self, slot: SlotNumber, tape: Address, info: TapeInfo) {
+        let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
+        inner
+            .reservations
+            .entry(tape)
+            .or_default()
+            .push(TapeEvent { slot, info });
+        inner.tapes_by_slot.entry(slot).or_default().push(tape);
     }
 
     pub fn apply_certify(&self, slot: SlotNumber, track: Address) {
@@ -126,6 +154,18 @@ impl PendingTracks {
                 ParsedInstruction::CertifyTrack { track, .. } => {
                     self.apply_certify(block.slot, *track);
                 }
+                ParsedInstruction::ReserveTape { tape, event, .. } => {
+                    self.apply_reserve(
+                        block.slot,
+                        *tape,
+                        TapeInfo {
+                            id: event.id,
+                            flags: event.flags,
+                            end_epoch: event.expiry_epoch,
+                            next_track_number: TrackNumber(0),
+                        },
+                    );
+                }
                 _ => {}
             }
         }
@@ -136,6 +176,22 @@ impl PendingTracks {
     /// its effects are now on disk.
     pub fn drop_slot(&self, slot: SlotNumber) {
         let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
+
+        if let Some(tapes) = inner.tapes_by_slot.remove(&slot) {
+            for tape in tapes {
+                let drained_empty = match inner.reservations.get_mut(&tape) {
+                    Some(events) => {
+                        events.retain(|event| event.slot != slot);
+                        events.is_empty()
+                    }
+                    None => false,
+                };
+                if drained_empty {
+                    inner.reservations.remove(&tape);
+                }
+            }
+        }
+
         let Some(addresses) = inner.addresses_by_slot.remove(&slot) else {
             return;
         };
@@ -152,6 +208,23 @@ impl PendingTracks {
                 inner.events_by_track.remove(&addr);
             }
         }
+    }
+
+    /// Fold a pending reservation for `tape` on top of what the store holds.
+    ///
+    /// A reservation is the whole tape record, so the newest one wins outright
+    /// rather than merging field by field.
+    pub fn apply_to_tape(&self, tape: Address, in_store: Option<TapeInfo>) -> Option<TapeInfo> {
+        if in_store.is_some() {
+            return in_store;
+        }
+
+        let inner = self.inner.read().expect("pending-tracks lock poisoned");
+        inner
+            .reservations
+            .get(&tape)
+            .and_then(|events| events.last())
+            .map(|event| event.info.clone())
     }
 
     /// Fold pending events for `track` on top of `in_store` (the value

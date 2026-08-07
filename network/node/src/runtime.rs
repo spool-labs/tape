@@ -11,20 +11,21 @@ use tape_retry::{retry_if, RetryConfig};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn, Instrument};
+use tracing::{debug, warn, Instrument, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::node::NodeConfig;
 use crate::config::logs::{LoggingConfig, LoggingFormat};
 use crate::context::NodeContext;
 use crate::core::startup::build_context;
-use crate::core::channels::{downstream_channels, store_channel};
+use crate::core::channels::{downstream_channels, drain_block_channel, store_channel};
 use crate::core::error::NodeError;
-use crate::core::types::ServiceName;
+use crate::core::types::{ChannelName, ServiceName};
 use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap;
 use crate::features::assignment::manager::AssignmentManager;
+use crate::features::challenge::ChallengeManager;
 use crate::features::eviction::manager::EvictionManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
@@ -373,14 +374,32 @@ where
     );
 
     supervisor.spawn(
-        ServiceName::EvictionManager,
-        EvictionManager::new(
+        ServiceName::ChallengeManager,
+        ChallengeManager::new(
             context.clone(),
-            receivers.eviction,
+            receivers.challenge,
             cancel.clone(),
         )
         .run(),
     );
+
+    // An operator that does not want to act on its records says so here. The
+    // records are still kept and still shown, but nothing is proposed and no
+    // peer's proposal is signed.
+    if config.eviction.enabled {
+        supervisor.spawn(
+            ServiceName::EvictionManager,
+            EvictionManager::new(context.clone(), receivers.eviction, cancel.clone()).run(),
+        );
+    } else {
+        // The lane is bounded and the ingestor writes to it regardless, so it
+        // still has to be read or block ingest stops at the first full buffer.
+        info!("eviction disabled by config: proposing nothing, signing no eviction vote");
+        supervisor.spawn(
+            ServiceName::EvictionManager,
+            drain_block_channel(receivers.eviction, cancel.clone(), ChannelName::EvictionManager),
+        );
+    }
 
     supervisor.spawn(
         ServiceName::SnapshotManager,

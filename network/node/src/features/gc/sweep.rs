@@ -5,11 +5,11 @@ use store::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_store::{
     TapeStore,
-    ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+    ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
     types::ObjectInfo,
 };
 use tracing::debug;
@@ -23,6 +23,13 @@ use crate::features::store::cleanup::{
 
 const UNCERTIFIED_RETENTION_EPOCHS: u64 = 2;
 
+/// Closed epochs of per-round challenge outcomes kept behind the current one.
+///
+/// A record's recency is rebuilt from the rounds as stored and a run of misses
+/// can cross a boundary, so the epoch that just closed has to stay readable.
+/// Anything older is history: nothing folds into it and no eviction reads it.
+const ROUND_RETENTION_EPOCHS: u64 = 1;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GcSweepStats {
     pub tapes_deleted: usize,
@@ -34,18 +41,26 @@ pub async fn sweep_epoch<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,
+    epoch_start_slot: SlotNumber,
     owned_spools: &HashSet<SpoolIndex>,
     pending: &PendingTracks,
     at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
 
-    stats += sweep_expired_tapes(store, config, current_epoch, at_tip).await?;
+    stats += sweep_expired_tapes(store, config, current_epoch, epoch_start_slot, at_tip).await?;
     stats += sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip).await?;
-    stats += sweep_orphan_tracks(store, config, at_tip).await?;
+    stats += sweep_orphan_tracks(store, config, epoch_start_slot, at_tip).await?;
     stats += sweep_orphan_slices(store, config, pending, at_tip).await?;
 
     sweep_stale_recoveries(store, pending, at_tip).await?;
+
+    let keep_from = EpochNumber(
+        current_epoch
+            .as_u64()
+            .saturating_sub(ROUND_RETENTION_EPOCHS),
+    );
+    store.prune_rounds_before(keep_from).map_err(store_error)?;
 
     Ok(stats)
 }
@@ -54,6 +69,7 @@ async fn sweep_expired_tapes<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,
+    epoch_start_slot: SlotNumber,
     at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
@@ -67,7 +83,7 @@ async fn sweep_expired_tapes<Db: Store>(
     let tapes = store.iter_all_tapes().map_err(store_error)?;
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
         if info.end_epoch <= current_epoch {
-            stats += delete_tape_local(store, tape, track_batch(config))?.into();
+            stats += delete_tape_local(store, tape, track_batch(config), epoch_start_slot)?.into();
         }
 
         if should_yield(index) {
@@ -170,6 +186,7 @@ fn cleanup_unowned_track_slices<Db: Store>(
 async fn sweep_orphan_tracks<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
+    epoch_start_slot: SlotNumber,
     at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
@@ -196,7 +213,7 @@ async fn sweep_orphan_tracks<Db: Store>(
                     track_number = info.track_number.0,
                     "gc deleting orphan track with missing parent tape"
                 );
-                stats += delete_track_local(store, *track)?.into();
+                stats += delete_track_local(store, *track, epoch_start_slot)?.into();
                 continue;
             }
 
@@ -207,7 +224,8 @@ async fn sweep_orphan_tracks<Db: Store>(
             };
 
             if reclaim {
-                stats.slices_deleted += cleanup_track_slices(store, *track, info.group)?;
+                stats.slices_deleted +=
+                    cleanup_track_slices(store, *track, info.group, epoch_start_slot)?;
             }
         }
 
@@ -240,6 +258,8 @@ async fn sweep_orphan_slices<Db: Store>(
 
             for (track, _) in &slices {
                 if should_delete_slice(store, pending, at_tip, spool_id, *track)? {
+                    // An orphan slice has no track record, so it was never in
+                    // the sample set and leaves nothing behind.
                     store.delete_slice(spool_id, *track).map_err(store_error)?;
                     stats.slices_deleted += 1;
                 }
@@ -365,19 +385,24 @@ mod tests {
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
-        EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
+        EpochNumber, RoundNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
+    use tape_core::challenge::sample::EntryKind;
     use tape_store::{
-        ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
-        types::{ObjectInfo, SystemObjectKind, TapeInfo},
+        ops::{
+            ChallengeOps, ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
+            TrackOps,
+        },
+        types::{ObjectInfo, SystemObjectKind, TapeInfo, TrackSample},
         TapeStore,
     };
 
-    use tape_api::program::tapedrive::track_pda;
-
     use super::{should_delete_slice, sweep_epoch, PendingTracks};
+    use crate::features::store::cleanup::{
+        cleanup_track_slices, sweep_deleted_slices, DELETED_SLICE_HORIZON_SLOTS,
+    };
     use crate::config::store::GcConfig;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -407,11 +432,11 @@ mod tests {
         }
     }
 
-    fn track_info(tape: Address, track_number: TrackNumber, group: GroupIndex) -> CompressedTrack {
+    fn track_info(tape: Address, group: GroupIndex) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
-            track_number,
+            track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
@@ -425,7 +450,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(0)).0;
+        let track = Address::new_unique();
         let spool_id = SpoolIndex(20);
         let slot = SlotNumber(10);
 
@@ -443,13 +468,13 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, TrackNumber(0), GroupIndex(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(1), slot))
             .unwrap();
         store.put_slice(spool_id, track, vec![1, 2, 3]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(3), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .unwrap();
 
@@ -478,13 +503,13 @@ mod tests {
             )
             .expect("put tape");
 
-        sweep_epoch(&store, &config, EpochNumber(3), &owned_spools(&[]), &PendingTracks::new(), false)
+        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), false)
             .await
             .expect("sweep behind tip");
 
         assert!(store.get_tape(tape).expect("get tape").is_some());
 
-        sweep_epoch(&store, &config, EpochNumber(3), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .expect("sweep at tip");
 
@@ -496,19 +521,19 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(0)).0;
+        let track = Address::new_unique();
         let spool_id = SpoolIndex(20);
 
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
             .unwrap();
-        store.put_track(track, track_info(tape, TrackNumber(0), GroupIndex(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(2), SlotNumber(20)))
             .unwrap();
         store.put_slice(spool_id, track, vec![5, 6, 7]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .unwrap();
 
@@ -522,7 +547,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(0)).0;
+        let track = Address::new_unique();
         let spool_id = SpoolIndex(20);
 
         store
@@ -539,7 +564,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, TrackNumber(0), GroupIndex(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(
                 track,
@@ -551,7 +576,7 @@ mod tests {
             .unwrap();
         store.put_slice(spool_id, track, vec![8, 8, 8]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .unwrap();
 
@@ -568,7 +593,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(0)).0;
+        let track = Address::new_unique();
         let spool_id = SpoolIndex(20);
 
         store
@@ -585,7 +610,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, TrackNumber(0), GroupIndex(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(
                 track,
@@ -603,7 +628,7 @@ mod tests {
         store.put_slice(spool_id, track, vec![8, 8, 8]).unwrap();
         store.add_pending_recovery(spool_id, track).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .unwrap();
 
@@ -624,7 +649,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(0)).0;
+        let track = Address::new_unique();
         let spool_id = SpoolIndex(20);
 
         store
@@ -641,7 +666,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, TrackNumber(0), GroupIndex(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(
                 track,
@@ -653,7 +678,7 @@ mod tests {
             .unwrap();
         store.add_pending_recovery(spool_id, track).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .unwrap();
 
@@ -665,7 +690,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(0)).0;
+        let track = Address::new_unique();
         let spool_id = SpoolIndex(20);
 
         store
@@ -682,16 +707,16 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_track(track, track_info(tape, TrackNumber(0), GroupIndex(1))).unwrap();
+        store.put_track(track, track_info(tape, GroupIndex(1))).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(1), SlotNumber(10)))
             .unwrap();
         store.put_slice(spool_id, track, vec![1]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(5), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(5), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .unwrap();
-        sweep_epoch(&store, &config, EpochNumber(5), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(5), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
             .await
             .unwrap();
 
@@ -707,8 +732,8 @@ mod tests {
         let config = test_config();
 
         let tape = Address::new_unique();
-        let track_stale = track_pda(tape, TrackNumber(0)).0;
-        let track_recent = track_pda(tape, TrackNumber(1)).0;
+        let track_stale = Address::new_unique();
+        let track_recent = Address::new_unique();
         let group = GroupIndex(1);
         let owned_spool = group.spool_at(0);
         let unowned_spool = group.spool_at(1);
@@ -724,7 +749,7 @@ mod tests {
             .unwrap();
 
         // Stale uncertified: registered epoch 2, current epoch 5 -> age 3 >= threshold 2
-        store.put_track(track_stale, track_info(tape, TrackNumber(0), group)).unwrap();
+        store.put_track(track_stale, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track_stale,
@@ -742,7 +767,7 @@ mod tests {
         store.add_pending_recovery(unowned_spool, track_stale).unwrap();
 
         // Recent uncertified: registered epoch 4, current epoch 5 -> age 1 < threshold 2
-        store.put_track(track_recent, track_info(tape, TrackNumber(1), group)).unwrap();
+        store.put_track(track_recent, track_info(tape, group)).unwrap();
         store
             .put_object_info(
                 track_recent,
@@ -760,6 +785,7 @@ mod tests {
             &store,
             &config,
             EpochNumber(5),
+            SlotNumber(0),
             &owned_spools(&[owned_spool]),
             &PendingTracks::new(),
             true,
@@ -810,11 +836,98 @@ mod tests {
         pending.apply_register(
             SlotNumber(10),
             track,
-            track_info(Address::new_unique(), TrackNumber(0), group),
+            track_info(Address::new_unique(), group),
             tape_core::track::data::BlobData::Inline(vec![]),
         );
         store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
 
         assert!(!should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
+    }
+
+    // a deleted track keeps its slices while a round can still draw it, and only
+    // that long: tying them to the epoch sweep would hold them for a week on
+    // mainnet
+    #[tokio::test]
+    async fn slices_outlive_the_delete_by_a_round_horizon() {
+        let store = test_store();
+        let track = Address::new_unique();
+        let group = GroupIndex(0);
+        let spool = group.spool_at(0);
+
+        store.put_slice(spool, track, vec![7u8; 32]).unwrap();
+        store
+            .put_track_data(track, tape_core::track::data::BlobData::Inline(vec![1, 2, 3]))
+            .unwrap();
+        store
+            .put_track_sample(
+                group,
+                track,
+                TrackSample {
+                    kind: EntryKind::Inline,
+                    value_hash: Hash::default(),
+                    registered_slot: SlotNumber(1),
+                    deleted_slot: None,
+                },
+            )
+            .unwrap();
+
+        cleanup_track_slices(&store, track, group, SlotNumber(10)).unwrap();
+        assert!(
+            store.get_slice(spool, track).unwrap().is_some(),
+            "the delete took bytes a live round still asks for"
+        );
+        assert!(
+            store.get_track_data(track).unwrap().is_some(),
+            "the delete took the encoding an observer verifies against"
+        );
+
+        // Inside the horizon a round can still draw it, so the bytes stay.
+        let inside = SlotNumber(10 + DELETED_SLICE_HORIZON_SLOTS);
+        assert_eq!(sweep_deleted_slices(&store, inside).unwrap().tracks, 0);
+        assert!(store.get_slice(spool, track).unwrap().is_some());
+
+        // Past it, nothing can, and the row goes with its slices and encoding.
+        // One horizon owns all three, or whichever went first strands the rest.
+        let past = SlotNumber(11 + DELETED_SLICE_HORIZON_SLOTS);
+        let swept = sweep_deleted_slices(&store, past).unwrap();
+        assert_eq!((swept.tracks, swept.slices), (1, 1));
+        assert!(store.get_slice(spool, track).unwrap().is_none());
+        assert!(store.get_track_data(track).unwrap().is_none());
+        assert!(store.track_sample(group, track).unwrap().is_none());
+    }
+
+    // the sweep drops per-round outcomes older than the epoch that just closed,
+    // and keeps that one, since a run of misses can cross the boundary
+    #[tokio::test]
+    async fn prunes_old_rounds() {
+        let store = test_store();
+        let peer = Address::new_unique();
+        let spool = SpoolIndex(7);
+
+        for epoch in 1..=3u64 {
+            store
+                .put_round_outcome(peer, spool, EpochNumber(epoch), RoundNumber(0), false)
+                .unwrap();
+        }
+
+        sweep_epoch(
+            &store,
+            &test_config(),
+            EpochNumber(3),
+            SlotNumber(100),
+            &owned_spools(&[]),
+            &PendingTracks::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let kept: Vec<EpochNumber> = store
+            .peer_rounds(peer, spool)
+            .unwrap()
+            .into_iter()
+            .map(|(epoch, _, _)| epoch)
+            .collect();
+        assert_eq!(kept, vec![EpochNumber(2), EpochNumber(3)]);
     }
 }
