@@ -62,8 +62,6 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
         PeerReq::Certify(_) => PeerRes::Certify(Err(unexpected_error())),
         PeerReq::Vote(_) => PeerRes::Vote(Err(unexpected_error())),
         PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(unexpected_error())),
-        PeerReq::ProofOfAccess(_) => PeerRes::ProofOfAccess(Err(unexpected_error())),
-        PeerReq::Attest(_) => PeerRes::Attest(Err(unexpected_error())),
         PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(unexpected_error())),
         PeerReq::GetStats(_) => PeerRes::GetStats(Err(unexpected_error())),
         PeerReq::PutSlice(_) => PeerRes::PutSlice(Err(unexpected_error())),
@@ -241,8 +239,6 @@ fn setup() -> Fixture {
             PeerReq::Certify(_) => unexpected_peer_response(&req),
             PeerReq::Vote(_) => unexpected_peer_response(&req),
             PeerReq::Invalidate(_) => unexpected_peer_response(&req),
-            PeerReq::ProofOfAccess(_) => unexpected_peer_response(&req),
-            PeerReq::Attest(_) => unexpected_peer_response(&req),
             PeerReq::GetHealth(_) => unexpected_peer_response(&req),
             PeerReq::GetStats(_) => unexpected_peer_response(&req),
             PeerReq::PutSlice(_) => unexpected_peer_response(&req),
@@ -270,9 +266,6 @@ fn setup() -> Fixture {
         group.spools[position] = Spool::new(node, BlsPubkey::zeroed());
     }
     state.current.groups.push(group);
-    // A hand-built state has never been verified against the chain, so it reads
-    // as infinitely old and every query would try to refresh off an empty rpc.
-    state.touch();
 
     let client = Tapedrive::from_parts(
         ArcSwap::from_pointee(state),

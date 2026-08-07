@@ -1,4 +1,0 @@
-# The exported run is large and reproducible; regenerate it with
-# `cargo run -p whirlwind --features simulations --bin whirlwind-sim -- export`.
-whirlwind-run.json
-*.json

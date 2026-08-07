@@ -17,9 +17,6 @@ pub const OBSERVE_ATLAS_PATH: &str = tape_observe_api::ATLAS_PATH;
 
 pub const VOTE_PATH: &str = "/v1/votes";
 
-pub const CHALLENGE_PROOF_PATH: &str = "/v1/challenge/proof";
-pub const CHALLENGE_ATTEST_PATH: &str = "/v1/challenge/attest";
-
 pub const SYNC_SLICES_PATH: &str = "/v1/sync/slices";
 pub const SYNC_TRACKS_PATH: &str = "/v1/sync/tracks";
 

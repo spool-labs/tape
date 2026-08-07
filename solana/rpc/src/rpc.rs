@@ -11,7 +11,8 @@ use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_commitment_config::CommitmentLevel;
 use solana_hash::Hash;
 use solana_transaction::{Transaction, TransactionError};
-use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, UiConfirmedBlock};
+use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
+use tape_blocks::wire::Block;
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
 
@@ -70,7 +71,7 @@ pub trait Rpc: Send + Sync {
     async fn get_genesis_hash(&self) -> Result<Hash, RpcError>;
 
     /// Get a confirmed block by slot number
-    async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError>;
+    async fn get_block(&self, slot: u64) -> Result<Block, RpcError>;
 
     /// Get the lowest slot the node still has a confirmed block for. Slots
     /// below this have been pruned from the ledger and can never be fetched.

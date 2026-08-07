@@ -13,13 +13,14 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::{Transaction, TransactionError};
 use solana_transaction_status::{
-    EncodedConfirmedTransactionWithStatusMeta, TransactionDetails, UiConfirmedBlock,
+    EncodedConfirmedTransactionWithStatusMeta, TransactionDetails,
     UiTransactionEncoding,
 };
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 use rpc::{Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
+use tape_blocks::wire::Block;
 use tape_crypto::tx::Txid;
 
 const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
@@ -487,11 +488,12 @@ impl Rpc for SolanaRpc {
         .await
     }
 
-    async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
+    async fn get_block(&self, slot: u64) -> Result<Block, RpcError> {
         self.with_retry("getBlock", move |client| async move {
             client
                 .get_block_with_config(slot, BLOCK_CONFIG)
                 .await
+                .map(Block::from)
                 .map_err(|error| Self::normalize_get_block_error(Self::convert_error(error, None)))
         })
         .await

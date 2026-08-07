@@ -1,5 +1,4 @@
 pub mod cidr;
-pub mod eviction;
 pub mod gateway;
 pub mod http;
 mod helpers;

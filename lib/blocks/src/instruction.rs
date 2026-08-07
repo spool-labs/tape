@@ -1,4 +1,3 @@
-use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
     EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
@@ -358,7 +357,7 @@ pub enum ParsedInstruction {
 
 /// Parse a single compiled instruction into a RawInstruction.
 pub fn parse_raw_instruction(
-    ix: &UiCompiledInstruction,
+    ix: &crate::wire::CompiledInstruction,
     account_keys: &[String],
 ) -> Result<Option<RawInstruction>, ParseError> {
     // Get the program ID
@@ -723,7 +722,6 @@ mod tests {
     use crate::event::TapedriveEvent;
     use crate::merge::merge;
     use solana_instruction::Instruction;
-    use solana_transaction_status::UiCompiledInstruction;
     use tape_api::instruction::{
         build_finalize_group_ix, build_register_node_ix, build_set_bls_pubkey_ix,
         build_set_name_ix, build_set_network_address_ix, build_set_network_tls_ix,
@@ -744,7 +742,9 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
-    fn compiled_instruction(instruction: &Instruction) -> (UiCompiledInstruction, Vec<String>) {
+    fn compiled_instruction(
+        instruction: &Instruction,
+    ) -> (crate::wire::CompiledInstruction, Vec<String>) {
         let mut account_keys = vec![TAPE_PROGRAM_ID.to_string()];
         let accounts = instruction
             .accounts
@@ -755,11 +755,10 @@ mod tests {
             })
             .collect();
         (
-            UiCompiledInstruction {
+            crate::wire::CompiledInstruction {
                 program_id_index: 0,
                 accounts,
                 data: bs58::encode(&instruction.data).into_string(),
-                stack_height: None,
             },
             account_keys,
         )

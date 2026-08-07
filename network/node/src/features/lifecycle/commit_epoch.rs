@@ -88,16 +88,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
             TxOutcome::Rejected {
-                kind: TxRejectionKind::Program(TapeError::InsufficientCommittee),
-                ..
-            } => {
-                // A short committee is not always someone else's problem: if we
-                // are the unseated member, the right action is JoinCommittee,
-                // and holding the running slot here would starve that replan.
-                info!(epoch = epoch.0, "commit_epoch: next committee below floor, replanning");
-                return TaskDone::Rejected(Action::CommitEpoch, epoch);
-            }
-            TxOutcome::Rejected {
                 kind: TxRejectionKind::Program(err),
                 ..
             } => {

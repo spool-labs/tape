@@ -32,12 +32,6 @@ pub async fn vote<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::Forbidden("vote signer does not match peer identity".into()));
     }
 
-    // An operator that has turned eviction off signs nobody's proposal. The
-    // proposer needs q of the group, so declining is a vote against by omission.
-    if request.candidate.kind == VoteKind::Eviction && !state.context.config.eviction.enabled {
-        return Err(RouteError::Forbidden("eviction disabled on this node".into()));
-    }
-
     let protocol = state.context.state();
     let message = validate_candidate(&protocol, request.candidate)?;
     let signer_pubkey = validate_group_signer(&protocol, &request)?;

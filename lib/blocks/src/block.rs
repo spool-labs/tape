@@ -1,8 +1,4 @@
 use std::collections::BTreeMap;
-use solana_transaction_status::{
-    option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
-    UiConfirmedBlock, UiInstruction, UiMessage, UiTransactionStatusMeta,
-};
 use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
 use tape_crypto::address::Address;
 
@@ -13,6 +9,7 @@ use crate::helpers::{
 };
 use crate::instruction::{parse_raw_instruction, ParsedInstruction, RawInstruction};
 use crate::merge::merge;
+use crate::wire;
 use tape_crypto::tx::Txid;
 
 /// Result of parsing a single block.
@@ -67,7 +64,7 @@ pub struct ParsedBlock {
 /// // Merged usage (node):
 /// let merged = tape_blocks::merge(parsed.raw_instructions, parsed.events)?;
 /// ```
-pub fn parse(block: &UiConfirmedBlock) -> Result<ParsedBlock, ParseError> {
+pub fn parse(block: &wire::Block) -> Result<ParsedBlock, ParseError> {
     let mut result = ParsedBlock::default();
 
     let Some(transactions) = &block.transactions else {
@@ -102,7 +99,7 @@ pub fn parse(block: &UiConfirmedBlock) -> Result<ParsedBlock, ParseError> {
 /// Instruction/event alignment is performed on a per-transaction basis so
 /// same-type instructions or events in one block cannot cross-map across
 /// different transactions.
-pub fn parse_and_merge(block: &UiConfirmedBlock) -> Result<Vec<ParsedInstruction>, ParseError> {
+pub fn parse_and_merge(block: &wire::Block) -> Result<Vec<ParsedInstruction>, ParseError> {
     let parsed = parse(block)?;
     merge_transactions(&parsed.transactions)
 }
@@ -110,7 +107,7 @@ pub fn parse_and_merge(block: &UiConfirmedBlock) -> Result<Vec<ParsedInstruction
 /// Parse a confirmed block and merge parsed instructions while retaining the
 /// source transaction id for each merged instruction.
 pub fn parse_and_merge_with_sources(
-    block: &UiConfirmedBlock,
+    block: &wire::Block,
 ) -> Result<Vec<ParsedInstructionWithSource>, ParseError> {
     let parsed = parse(block)?;
     merge_transactions_with_sources(&parsed.transactions)
@@ -144,14 +141,8 @@ fn merge_transactions_with_sources(
     Ok(instructions)
 }
 
-fn transaction_id(
-    tx: &EncodedTransactionWithStatusMeta,
-) -> Result<Option<Txid>, ParseError> {
-    let EncodedTransaction::Json(ui_tx) = &tx.transaction else {
-        return Ok(None);
-    };
-
-    let Some(encoded) = ui_tx.signatures.first() else {
+fn transaction_id(tx: &wire::Transaction) -> Result<Option<Txid>, ParseError> {
+    let Some(encoded) = tx.transaction.signatures.first() else {
         return Ok(None);
     };
 
@@ -167,15 +158,9 @@ fn transaction_id(
 
 /// Parse a single transaction for tapedrive instructions and events.
 fn parse_transaction(
-    tx: &EncodedTransactionWithStatusMeta,
+    tx: &wire::Transaction,
 ) -> Result<(Vec<RawInstruction>, Vec<TapedriveEvent>), ParseError> {
-    let EncodedTransaction::Json(ui_tx) = &tx.transaction else {
-        return Ok((Vec::new(), Vec::new()));
-    };
-
-    let UiMessage::Raw(raw_message) = &ui_tx.message else {
-        return Ok((Vec::new(), Vec::new()));
-    };
+    let raw_message = &tx.transaction.message;
 
     let Some(meta) = &tx.meta else {
         return Ok((Vec::new(), Vec::new()));
@@ -184,7 +169,7 @@ fn parse_transaction(
     // Solana resolves compiled-instruction indices against static keys, then
     // ALT-loaded writable, then ALT-loaded readonly. Order is load-bearing.
     let mut resolved_keys: Vec<String> = raw_message.account_keys.clone();
-    if let OptionSerializer::Some(loaded) = &meta.loaded_addresses {
+    if let Some(loaded) = &meta.loaded_addresses {
         resolved_keys.extend(loaded.writable.iter().cloned());
         resolved_keys.extend(loaded.readonly.iter().cloned());
     }
@@ -213,11 +198,11 @@ fn parse_transaction(
 }
 
 /// Parse events from transaction log messages.
-fn parse_log_messages(meta: &UiTransactionStatusMeta) -> Result<Vec<TapedriveEvent>, ParseError> {
+fn parse_log_messages(meta: &wire::Meta) -> Result<Vec<TapedriveEvent>, ParseError> {
     let mut events = Vec::new();
     let tapedrive_program_id = Address::from(TAPE_PROGRAM_ID);
 
-    let OptionSerializer::Some(log_messages) = &meta.log_messages else {
+    let Some(log_messages) = &meta.log_messages else {
         return Ok(events);
     };
 
@@ -248,21 +233,19 @@ fn parse_log_messages(meta: &UiTransactionStatusMeta) -> Result<Vec<TapedriveEve
 /// Parse inner instructions from transaction metadata.
 fn parse_inner_instructions(
     account_keys: &[String],
-    meta: &UiTransactionStatusMeta,
+    meta: &wire::Meta,
 ) -> Result<BTreeMap<u8, Vec<RawInstruction>>, ParseError> {
     let mut instructions = BTreeMap::new();
 
-    let OptionSerializer::Some(inner_instructions) = &meta.inner_instructions else {
+    let Some(inner_instructions) = &meta.inner_instructions else {
         return Ok(instructions);
     };
 
     for inner_ix_set in inner_instructions {
         let parsed_for_index = instructions.entry(inner_ix_set.index).or_default();
         for inner_ix in &inner_ix_set.instructions {
-            if let UiInstruction::Compiled(compiled_ix) = inner_ix {
-                if let Some(parsed) = parse_raw_instruction(compiled_ix, account_keys)? {
-                    parsed_for_index.push(parsed);
-                }
+            if let Some(parsed) = parse_raw_instruction(inner_ix, account_keys)? {
+                parsed_for_index.push(parsed);
             }
         }
     }
@@ -271,11 +254,8 @@ fn parse_inner_instructions(
 }
 
 /// Check if a transaction failed.
-fn is_failed_transaction(tx: &EncodedTransactionWithStatusMeta) -> bool {
-    tx.meta
-        .as_ref()
-        .map(|meta| meta.status.is_err())
-        .unwrap_or(true)
+fn is_failed_transaction(tx: &wire::Transaction) -> bool {
+    tx.is_failed()
 }
 
 #[cfg(test)]
@@ -293,9 +273,10 @@ mod tests {
     use tape_core::system::{EpochPhase, NodePreferences};
     use bytemuck::Zeroable;
     use solana_transaction_status::{
-        EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
-        UiInnerInstructions, UiLoadedAddresses, UiRawMessage, UiTransaction,
-        UiTransactionStatusMeta,
+        option_serializer::OptionSerializer, EncodedTransaction,
+        EncodedTransactionWithStatusMeta, UiCompiledInstruction, UiConfirmedBlock,
+        UiInnerInstructions, UiInstruction, UiLoadedAddresses, UiMessage, UiRawMessage,
+        UiTransaction, UiTransactionStatusMeta,
     };
     use tape_api::event::{EpochAdvanced, EventType, SpoolSynced, TrackWritten};
     use tape_api::instruction::build_track_write_ix;
@@ -325,7 +306,7 @@ mod tests {
             num_reward_partitions: None,
         };
 
-        let result = parse(&block).unwrap();
+        let result = parse(&block.into()).unwrap();
         assert!(result.raw_instructions.is_empty());
         assert!(result.events.is_empty());
         assert_eq!(result.tx_count, 0);
@@ -370,7 +351,7 @@ mod tests {
             num_reward_partitions: None,
         };
 
-        let parsed = parse(&block).unwrap();
+        let parsed = parse(&block.into()).unwrap();
 
         assert_eq!(parsed.transactions.len(), 1);
         assert_eq!(parsed.transactions[0].tx_id, Some(Txid::from(signature)));
@@ -660,7 +641,7 @@ mod tests {
             version: None,
         };
 
-        let (instructions, events) = parse_transaction(&tx).unwrap();
+        let (instructions, events) = parse_transaction(&tx.into()).unwrap();
 
         assert_eq!(instructions.len(), 2);
         match &instructions[0] {
@@ -797,7 +778,7 @@ mod tests {
             version: None,
         };
 
-        let (instructions, events) = parse_transaction(&tx).unwrap();
+        let (instructions, events) = parse_transaction(&tx.into()).unwrap();
 
         assert_eq!(instructions.len(), 1);
         match &instructions[0] {
