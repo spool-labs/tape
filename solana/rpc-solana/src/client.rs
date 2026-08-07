@@ -13,15 +13,24 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::{Transaction, TransactionError};
 use solana_transaction_status::{
-    EncodedConfirmedTransactionWithStatusMeta, TransactionDetails,
+    EncodedConfirmedTransactionWithStatusMeta, TransactionDetails, UiConfirmedBlock,
     UiTransactionEncoding,
 };
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 use rpc::{Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
-use tape_blocks::wire::Block;
 use tape_crypto::tx::Txid;
+
+const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
+    encoding: Some(UiTransactionEncoding::Json),
+    transaction_details: Some(TransactionDetails::Full),
+    rewards: Some(false),
+    commitment: Some(CommitmentConfig {
+        commitment: CommitmentLevel::Confirmed,
+    }),
+    max_supported_transaction_version: Some(0),
+};
 
 /// Production Solana RPC client with retry and failover capabilities.
 ///
@@ -51,9 +60,6 @@ pub struct SolanaRpc {
     /// One client per configured endpoint, so switching endpoints never
     /// rebuilds a client or drops its connection pool
     clients: Vec<Arc<RpcClient>>,
-    /// Used by getBlock, which owns its request so the body is deserialised
-    /// once. Shared across endpoints, since reqwest pools per host.
-    http: reqwest::Client,
     /// Prometheus counters, absent when no registry is installed
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
@@ -104,11 +110,6 @@ impl SolanaRpc {
             config,
             selector: Mutex::new(selector),
             clients,
-            // Compression is already on through solana-rpc-client's reqwest
-            // features, and Accepts::default() enables whatever is compiled in.
-            // Declared here anyway so this path does not depend on another
-            // crate's feature list to keep decompressing getBlock.
-            http: reqwest::Client::new(),
             #[cfg(feature = "metrics")]
             metrics,
         })
@@ -189,21 +190,6 @@ impl SolanaRpc {
         Call: Fn(Arc<RpcClient>) -> CallFuture,
         CallFuture: Future<Output = Result<Value, RpcError>>,
     {
-        self.with_retry_at(method, |index| call(self.clients[index].clone()))
-            .await
-    }
-
-    /// Same failover, backoff and metrics, handing the callback the endpoint
-    /// index so a caller can reach the url rather than the typed client.
-    async fn with_retry_at<Value, Call, CallFuture>(
-        &self,
-        method: &str,
-        call: Call,
-    ) -> Result<Value, RpcError>
-    where
-        Call: Fn(usize) -> CallFuture,
-        CallFuture: Future<Output = Result<Value, RpcError>>,
-    {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -211,7 +197,9 @@ impl SolanaRpc {
         let mut cursor = self.start_operation();
 
         loop {
-            match tokio::time::timeout(self.config.timeout, call(cursor.index())).await {
+            let client = self.clients[cursor.index()].clone();
+
+            match tokio::time::timeout(self.config.timeout, call(client)).await {
                 Ok(Ok(value)) => {
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -383,106 +371,22 @@ impl SolanaRpc {
 
         Self::convert_error(err, None)
     }
-}
 
-/// The `getBlock` request body.
-///
-/// `json` encoding and full transaction details are what make the response
-/// shape fixed enough to deserialise without the untagged enums. Rewards are
-/// declined outright rather than dropped after parsing.
-fn block_request(slot: u64, commitment: CommitmentLevel) -> Result<serde_json::Value, RpcError> {
-    let config = RpcBlockConfig {
-        commitment: Some(CommitmentConfig { commitment }),
-        ..BLOCK_CONFIG
-    };
-    let config = serde_json::to_value(config)
-        .map_err(|error| RpcError::Internal(format!("getBlock config: {error}")))?;
+    fn normalize_get_block_error(error: RpcError) -> RpcError {
+        if let RpcError::Request(message) = error {
+            if Self::is_block_not_available_message(&message) {
+                return RpcError::BlockNotAvailable;
+            }
 
-    Ok(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getBlock",
-        "params": [slot, config],
-    }))
-}
+            return RpcError::Request(message);
+        }
 
-/// Serialises to exactly the params `block_request` sends; commitment is
-/// filled in per call from the configured level.
-const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
-    encoding: Some(UiTransactionEncoding::Json),
-    transaction_details: Some(TransactionDetails::Full),
-    rewards: Some(false),
-    commitment: None,
-    max_supported_transaction_version: Some(0),
-};
-
-/// Fetch one block, deserialising the response body a single time.
-///
-/// The typed client walks the whole body into a `serde_json::Value` and back
-/// out through `from_value`, so every field is built whether or not anything
-/// reads it. Balances alone are 40% of a mainnet block. Here the body goes
-/// straight into the fields the parser consumes.
-async fn fetch_block(
-    http: &reqwest::Client,
-    endpoint: &str,
-    slot: u64,
-    commitment: CommitmentLevel,
-) -> Result<Block, RpcError> {
-    let response = http
-        .post(endpoint)
-        .json(&block_request(slot, commitment)?)
-        .send()
-        .await
-        // reqwest renders transport failures as "error sending request ...",
-        // which is already what the retriable and failover checks look for.
-        .map_err(|error| RpcError::Request(error.to_string()))?;
-
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| RpcError::Request(error.to_string()))?;
-
-    if !status.is_success() {
-        // Carries the status code, so 429 and 5xx stay retriable.
-        return Err(RpcError::Request(format!(
-            "getBlock http {}: {}",
-            status.as_u16(),
-            String::from_utf8_lossy(&body[..body.len().min(256)])
-        )));
+        error
     }
 
-    decode_block_response(&body)
-}
-
-/// Turn a `getBlock` response body into a block or the matching error.
-fn decode_block_response(body: &[u8]) -> Result<Block, RpcError> {
-    let envelope: BlockEnvelope = serde_json::from_slice(body)
-        .map_err(|error| RpcError::Deserialization(error.to_string()))?;
-
-    if let Some(error) = envelope.error {
-        // Skipped slots arrive here, and callers key on the message text, so it
-        // is passed through rather than reworded.
-        return Err(RpcError::Request(error.message));
+    fn is_block_not_available_message(message: &str) -> bool {
+        message.contains("invalid type: null") && message.contains("UiConfirmedBlock")
     }
-
-    // A null result is how a cluster reports a block it does not hold. The
-    // typed path could only see this as a deserialisation failure.
-    envelope.result.ok_or(RpcError::BlockNotAvailable)
-}
-
-#[derive(serde::Deserialize)]
-struct BlockEnvelope {
-    #[serde(default)]
-    result: Option<Block>,
-    #[serde(default)]
-    error: Option<JsonRpcError>,
-}
-
-#[derive(serde::Deserialize)]
-struct JsonRpcError {
-    #[serde(default)]
-    message: String,
 }
 
 /// Send a transaction and poll its signature status at a short fixed cadence.
@@ -583,14 +487,12 @@ impl Rpc for SolanaRpc {
         .await
     }
 
-    async fn get_block(&self, slot: u64) -> Result<Block, RpcError> {
-        self.with_retry_at("getBlock", |index| {
-            fetch_block(
-                &self.http,
-                &self.config.endpoints[index],
-                slot,
-                self.config.commitment,
-            )
+    async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
+        self.with_retry("getBlock", move |client| async move {
+            client
+                .get_block_with_config(slot, BLOCK_CONFIG)
+                .await
+                .map_err(|error| Self::normalize_get_block_error(Self::convert_error(error, None)))
         })
         .await
     }
@@ -921,79 +823,27 @@ mod tests {
     }
 
     #[test]
-    fn request_matches_the_config_the_typed_client_sent() {
-        let request = block_request(77, CommitmentLevel::Confirmed).expect("config encodes");
-        let params = &request["params"];
+    fn test_normalize_get_block_error_maps_null_block_to_block_not_available() {
+        let error = RpcError::Request(
+            "RPC request failed: invalid type: null, expected struct UiConfirmedBlock"
+                .to_string(),
+        );
 
-        assert_eq!(request["method"], "getBlock");
-        assert_eq!(params[0], 77);
-        assert_eq!(params[1]["encoding"], "json");
-        assert_eq!(params[1]["transactionDetails"], "full");
-        assert_eq!(params[1]["rewards"], false);
-        assert_eq!(params[1]["maxSupportedTransactionVersion"], 0);
-        // Rendered by Display, so pin the wire spelling rather than trust it.
-        assert_eq!(params[1]["commitment"], "confirmed");
+        let normalized = SolanaRpc::normalize_get_block_error(error);
+
+        assert!(matches!(normalized, RpcError::BlockNotAvailable));
     }
 
     #[test]
-    fn null_result_reads_as_block_not_available() {
-        let body = br#"{"jsonrpc":"2.0","result":null,"id":1}"#;
+    fn test_normalize_get_block_error_leaves_other_request_errors_unchanged() {
+        let error = RpcError::Request("connection reset".to_string());
 
-        assert!(matches!(
-            decode_block_response(body),
-            Err(RpcError::BlockNotAvailable)
-        ));
-    }
+        let normalized = SolanaRpc::normalize_get_block_error(error);
 
-    #[test]
-    fn skipped_slot_error_survives_as_a_skipped_slot() {
-        let body = br#"{"jsonrpc":"2.0","error":{"code":-32007,
-            "message":"Slot 12345 was skipped, or missing due to ledger jump to recent snapshot"},
-            "id":1}"#;
-
-        let error = decode_block_response(body).expect_err("skipped slot is an error");
-
-        // The ingest loop skips the slot off this, so the message must survive.
-        assert!(error.is_skipped_slot(), "got {error:?}");
-    }
-
-    #[test]
-    fn rate_limit_error_stays_retriable() {
-        let body = br#"{"jsonrpc":"2.0","error":{"code":429,"message":"Too Many Requests"},"id":1}"#;
-
-        let error = decode_block_response(body).expect_err("rate limit is an error");
-
-        assert!(error.is_retriable(), "got {error:?}");
-    }
-
-    #[test]
-    fn result_decodes_into_the_parser_shape() {
-        let body = br#"{"jsonrpc":"2.0","id":1,"result":{
-            "blockhash":"abc","previousBlockhash":"def","parentSlot":41,"blockTime":1700,
-            "rewards":[],
-            "transactions":[{
-              "transaction":{"signatures":["sig"],"message":{
-                 "accountKeys":["k0","k1"],
-                 "instructions":[{"programIdIndex":1,"accounts":[0],"data":"d"}]}},
-              "meta":{"err":null,"preBalances":[1],"postBalances":[2],
-                 "logMessages":["Program k1 invoke [1]"]}
-            }]}}"#;
-
-        let block = decode_block_response(body).expect("valid block");
-
-        assert_eq!(block.blockhash, "abc");
-        assert_eq!(block.parent_slot, 41);
-        let txs = block.transactions.expect("transactions");
-        assert!(!txs[0].is_failed());
-        assert_eq!(txs[0].transaction.message.account_keys, ["k0", "k1"]);
-    }
-
-    #[test]
-    fn garbage_body_is_a_deserialisation_error() {
-        assert!(matches!(
-            decode_block_response(b"not json"),
-            Err(RpcError::Deserialization(_))
-        ));
+        match normalized {
+            RpcError::Request(message) => assert_eq!(message, "connection reset"),
+            other => panic!("expected request error, got {other:?}"),
+        }
     }
 
     #[test]

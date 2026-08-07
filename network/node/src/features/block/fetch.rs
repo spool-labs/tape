@@ -5,10 +5,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use futures::stream::{self, Stream, StreamExt};
-use rpc::Rpc;
+use rpc::{Rpc, UiConfirmedBlock};
 use store::Store;
 use tape_blocks::parse_and_merge_with_sources;
-use tape_blocks::wire::Block as WireBlock;
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
 use tape_protocol::Api;
@@ -110,7 +109,7 @@ where
 
 /// Convert a fetched block into the replay input shared by live ingest and
 /// offline tooling
-pub fn parse_block(slot: SlotNumber, block: &WireBlock) -> Result<ParsedBlock, NodeError> {
+pub fn parse_block(slot: SlotNumber, block: &UiConfirmedBlock) -> Result<ParsedBlock, NodeError> {
     let parent_slot = SlotNumber(block.parent_slot);
     let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
     let previous_blockhash =

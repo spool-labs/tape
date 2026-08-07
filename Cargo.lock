@@ -5723,7 +5723,6 @@ dependencies = [
  "solana-transaction",
  "solana-transaction-error",
  "solana-transaction-status",
- "tape-blocks",
  "tape-crypto",
  "thiserror 2.0.18",
 ]
@@ -5788,7 +5787,6 @@ dependencies = [
  "solana-transaction",
  "solana-transaction-status",
  "tape-api",
- "tape-blocks",
  "tape-core",
  "tape-crypto",
  "tape-metrics",
@@ -5833,7 +5831,6 @@ name = "rpc-solana"
 version = "0.3.0"
 dependencies = [
  "async-trait",
- "reqwest",
  "rpc",
  "serde",
  "serde_json",
@@ -5847,7 +5844,6 @@ dependencies = [
  "solana-transaction",
  "solana-transaction-error",
  "solana-transaction-status",
- "tape-blocks",
  "tape-crypto",
  "tape-metrics",
  "tape-retry",
@@ -9386,8 +9382,6 @@ dependencies = [
  "base64 0.13.1",
  "bs58",
  "bytemuck",
- "serde",
- "serde_json",
  "solana-hash 4.2.0",
  "solana-instruction",
  "solana-keypair",
@@ -9882,7 +9876,6 @@ dependencies = [
  "store",
  "store-rocks",
  "tape-api",
- "tape-blocks",
  "tape-core",
  "tape-crypto",
  "tape-node",

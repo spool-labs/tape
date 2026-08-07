@@ -1,6 +1,5 @@
 use rpc_solana::{RpcConfig, SolanaRpc};
-use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
-use tape_blocks::wire::Block;
+use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError, UiConfirmedBlock};
 use tape_crypto::tx::Txid;
 
 #[cfg(feature = "metrics")]
@@ -88,7 +87,7 @@ impl<R: Rpc> RpcClient<R> {
     }
 
     /// Get block by slot number.
-    pub async fn get_block(&self, slot: u64) -> Result<Block, RpcError> {
+    pub async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
         self.rpc.get_block(slot).await
     }
 

@@ -176,9 +176,20 @@ impl Api for HttpApi {
 
         self.record(node, "put_slice", &resp, start, bytes_sent);
 
-        check_status(resp).await?;
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx(node, "put_slice", bytes.len() as u64);
 
-        Ok(PutSliceRes)
+        let receipt: BlsSignResponse = wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(PutSliceRes {
+            receipt: CertifyRes {
+                signature: receipt.signature,
+                node: receipt.node,
+                epoch: receipt.epoch,
+            },
+        })
     }
 
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {

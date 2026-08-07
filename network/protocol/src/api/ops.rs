@@ -21,8 +21,12 @@ pub struct PutSliceReq {
     pub payload: SlicePayload,
 }
 
+/// A stored slice comes back with the certify signature for its track, so the
+/// write path does not have to ask the same node again.
 #[derive(Clone, Debug)]
-pub struct PutSliceRes;
+pub struct PutSliceRes {
+    pub receipt: CertifyRes,
+}
 
 #[derive(Clone, Debug)]
 pub struct GetSliceReq {

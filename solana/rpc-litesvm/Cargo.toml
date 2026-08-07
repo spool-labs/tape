@@ -5,7 +5,6 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-tape-blocks = { path = "../../lib/blocks" }
 rpc = { path = "../rpc" }
 async-trait = "0.1"
 solana-client.workspace = true
@@ -33,3 +32,4 @@ solana-keypair.workspace = true
 solana-signer.workspace = true
 solana-system-interface.workspace = true
 tape-api.workspace = true
+tape-blocks = { path = "../../lib/blocks" }

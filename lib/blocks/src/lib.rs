@@ -34,7 +34,6 @@ mod event;
 mod helpers;
 mod instruction;
 mod merge;
-pub mod wire;
 
 // Re-export main types and functions
 pub use block::{
