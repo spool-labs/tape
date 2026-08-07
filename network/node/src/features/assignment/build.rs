@@ -324,6 +324,7 @@ mod tests {
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
+    use tape_crypto::merkle::{root_from_leaf_hashes, verify_proof_hash};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -405,6 +406,62 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    fn payload(group: u64, size: u64) -> AssignmentGroupPayload {
+        AssignmentGroupPayload::new(
+            GroupIndex(group),
+            [group; GROUP_SIZE],
+            StorageUnits::from_bytes(size),
+            [StorageUnits::from_bytes(0); GROUP_SIZE],
+        )
+    }
+
+    // Every group proof has to verify against the root the same call returned,
+    // because finalize_group checks exactly that on chain.
+    #[test]
+    fn group_proofs_verify_against_the_root() {
+        for count in 1..=8u64 {
+            let payloads: Vec<_> = (0..count).map(|g| payload(g, 1024 * (g + 1))).collect();
+            let leaves: Vec<Hash> = payloads.iter().map(hash_assignment_group_payload).collect();
+
+            let (root, groups) = group_candidates(payloads).expect("candidates build");
+
+            assert_eq!(groups.len() as u64, count);
+            assert_eq!(root, root_from_leaf_hashes::<ASSIGNMENT_TREE_HEIGHT>(&leaves));
+
+            for (index, candidate) in groups.iter().enumerate() {
+                assert_eq!(candidate.group, GroupIndex(index as u64));
+                assert!(
+                    verify_proof_hash(
+                        leaves[index],
+                        &root,
+                        &candidate.proof,
+                        index as u64,
+                        ASSIGNMENT_TREE_HEIGHT,
+                    ),
+                    "group {index} of {count} failed to verify"
+                );
+            }
+        }
+    }
+
+    // A proof taken from the wrong group must not verify, or the check above
+    // would pass on any proof at all.
+    #[test]
+    fn a_proof_from_another_group_does_not_verify() {
+        let payloads: Vec<_> = (0..4u64).map(|g| payload(g, 2048)).collect();
+        let leaves: Vec<Hash> = payloads.iter().map(hash_assignment_group_payload).collect();
+
+        let (root, groups) = group_candidates(payloads).expect("candidates build");
+
+        assert!(!verify_proof_hash(
+            leaves[0],
+            &root,
+            &groups[1].proof,
+            0,
+            ASSIGNMENT_TREE_HEIGHT,
+        ));
     }
 
     #[test]
