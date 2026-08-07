@@ -114,8 +114,7 @@ mod tests {
                 key: track_key(&name, &BlobDataSlice::Coded(blob)),
                 track_number,
                 kind: TrackKind::Coded as u64,
-                // Certified: the listing scan hides objects a GET would 404 on.
-                state: TrackState::Certified as u64,
+                state: TrackState::Registered as u64,
                 size: blob.size,
                 group: GroupIndex::from(4),
                 value_hash: blob.get_hash(),

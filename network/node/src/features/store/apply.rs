@@ -21,7 +21,6 @@ use tape_store::TapeStore;
 use tracing::warn;
 
 use crate::core::error::NodeError;
-use crate::features::store::sample::put_sample;
 use crate::features::store::cleanup::{
     cleanup_track_slices, delete_tape_local, delete_track_local, remove_object_listing_for_track,
 };
@@ -55,7 +54,7 @@ pub fn apply_event<Db: Store>(
             set_certified(store, *track, *epoch)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
-            delete_track_local(store, *track, slot)?;
+            delete_track_local(store, *track)?;
         }
         ReplayableEvent::InvalidateTrack { track, epoch } => {
             invalidate_track(store, *track, *epoch, slot)?;
@@ -80,7 +79,7 @@ pub fn apply_event<Db: Store>(
                 .map_err(store_error)?;
         }
         ReplayableEvent::DestroyTape { tape, .. } => {
-            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE, slot)?;
+            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE)?;
         }
         ReplayableEvent::ExtendTape {
             tape,
@@ -184,22 +183,6 @@ fn put_track_object<Db: Store>(
 
     store.put_track(track, replay.state)
         .map_err(store_error)?;
-
-    // The challenge sample set, from the registration rather than from what this
-    // node stored. Both kinds are sampled: a coded track by its slice, an inline
-    // track as one bounded entry whose payload every owner keeps.
-    let data = match replay.blob {
-        Some(blob) => BlobData::Coded(blob),
-        None => BlobData::Inline(Vec::new()),
-    };
-    put_sample(
-        store,
-        replay.state.group,
-        track,
-        &data,
-        replay.state.value_hash,
-        slot,
-    )?;
 
     // We need to advance the track cursor so that merkle proofs for this tape don't break due to
     // using the wrong index when tracks are deleted.
@@ -464,7 +447,7 @@ fn invalidate_track<Db: Store>(
         // Keep object_metadata across invalidation. Delete/GC still use it as
         // the track -> name reverse lookup when the track is eventually removed.
         remove_object_listing_for_track(store, track, &info)?;
-        let _ = cleanup_track_slices(store, track, info.group, slot)?;
+        let _ = cleanup_track_slices(store, track, info.group)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
     }
@@ -557,11 +540,11 @@ mod tests {
         })
     }
 
-    fn track_info(tape: Address, group: GroupIndex) -> CompressedTrack {
+    fn track_info(tape: Address, track_number: TrackNumber, group: GroupIndex) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
-            track_number: TrackNumber(0),
+            track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
             size: StorageUnits::from_bytes(1024),
@@ -652,9 +635,6 @@ mod tests {
         let mut track_event = make_blob_track(tape, track_number, EpochNumber(7));
         let blob = match &mut track_event {
             ReplayableEvent::Track(replay) => {
-                // Listing hides what a GET would 404 on, so a named object only
-                // appears once its track is certified.
-                replay.state.state = TrackState::Certified as u64;
                 replay.state.key = hash(&name);
                 replay.object = Some(ReplayTrackObject {
                     name: name.clone(),
@@ -759,7 +739,7 @@ mod tests {
         let tape = Address::new_unique();
         let group = GroupIndex::from(11);
 
-        store.put_track(track, track_info(tape, group)).unwrap();
+        store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -790,14 +770,12 @@ mod tests {
 
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
-        // The slices outlive the deletion: a round whose window opened before it
-        // still asks about the track, and the sweep drops both together.
         for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
                     .get_slice(group.spool_at(slice_index), track)
                     .unwrap()
-                    .is_some()
+                    .is_none()
             );
         }
     }
@@ -810,7 +788,7 @@ mod tests {
         let tape = Address::new_unique();
         let group = GroupIndex::from(23);
 
-        store.put_track(track, track_info(tape, group)).unwrap();
+        store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -847,14 +825,12 @@ mod tests {
                 slot: SlotNumber(55),
             })
         );
-        // The slices outlive the deletion: a round whose window opened before it
-        // still asks about the track, and the sweep drops both together.
         for slice_index in 0..GROUP_SIZE {
             assert!(
                 store
                     .get_slice(group.spool_at(slice_index), track)
                     .unwrap()
-                    .is_some()
+                    .is_none()
             );
         }
     }
@@ -865,9 +841,9 @@ mod tests {
         let slot = SlotNumber(13);
         let tape = Address::new_unique();
         let other_tape = Address::new_unique();
-        let track_a = Address::new_unique();
-        let track_b = Address::new_unique();
-        let track_other = Address::new_unique();
+        let track_a = track_pda(tape, TrackNumber(0)).0;
+        let track_b = track_pda(tape, TrackNumber(1)).0;
+        let track_other = track_pda(other_tape, TrackNumber(0)).0;
         let group = GroupIndex::from(31);
 
         store
@@ -893,8 +869,8 @@ mod tests {
             )
             .unwrap();
 
-        for track in [track_a, track_b] {
-            store.put_track(track, track_info(tape, group)).unwrap();
+        for (number, track) in [(TrackNumber(0), track_a), (TrackNumber(1), track_b)] {
+            store.put_track(track, track_info(tape, number, group)).unwrap();
             store
                 .put_object_info(
                     track,
@@ -914,7 +890,7 @@ mod tests {
         }
 
         store
-            .put_track(track_other, track_info(other_tape, group))
+            .put_track(track_other, track_info(other_tape, TrackNumber(0), group))
             .unwrap();
         store
             .put_object_info(
@@ -943,13 +919,12 @@ mod tests {
         for track in [track_a, track_b] {
             assert!(store.get_track(track).unwrap().is_none());
             assert!(store.get_object_info(track).unwrap().is_none());
-            // Slices outlive the deletion, as above.
             for slice_index in 0..GROUP_SIZE {
                 assert!(
                     store
                         .get_slice(group.spool_at(slice_index), track)
                         .unwrap()
-                        .is_some()
+                        .is_none()
                 );
             }
         }
@@ -1038,7 +1013,7 @@ mod tests {
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
             .unwrap();
-        store.put_track(track, track_info(tape, group)).unwrap();
+        store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -1079,7 +1054,7 @@ mod tests {
         store
             .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
             .unwrap();
-        store.put_track(track, track_info(tape, group)).unwrap();
+        store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
             .put_object_info(
                 track,
@@ -1119,7 +1094,7 @@ mod tests {
         let tape = Address::new_unique();
         let group = GroupIndex::from(7);
 
-        store.put_track(track, track_info(tape, group)).unwrap();
+        store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
             .put_object_info(
                 track,

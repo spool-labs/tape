@@ -9,7 +9,6 @@ use std::future::IntoFuture;
 
 use arc_swap::ArcSwap;
 use clap::Parser;
-use tape_e2e_localnet::action::ActionLog;
 use tape_e2e_localnet::api::{self, AppState};
 use tape_e2e_localnet::config::LocalnetConfig;
 use tape_e2e_localnet::observer::Observer;
@@ -125,7 +124,6 @@ async fn async_main() -> ExitCode {
     }
 
     let snapshot = Arc::new(ArcSwap::from_pointee(LocalnetView::default()));
-    let action = Arc::new(ArcSwap::from_pointee(ActionLog::default()));
     let observer = Arc::new(observer);
     let orchestrator = Arc::new(Mutex::new(orch));
     let upload_manager = Arc::new(UploadManager::new(
@@ -159,11 +157,10 @@ async fn async_main() -> ExitCode {
     ));
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TuiCommand>();
     let tui_shutdown = shutdown.clone();
-    let tui_action = action.clone();
     let tui_thread = thread::Builder::new()
         .name("localnet-tui".into())
         .spawn(move || {
-            if let Err(error) = tui::run_tui(snapshot, tui_action, cmd_tx, tui_shutdown) {
+            if let Err(error) = tui::run_tui(snapshot, cmd_tx, tui_shutdown) {
                 eprintln!("tui error: {error:#}");
             }
         });
@@ -178,9 +175,6 @@ async fn async_main() -> ExitCode {
 
     let mut server = Box::pin(axum::serve(listener, app).into_future());
     let mut fatal_error: Option<String> = None;
-    // The operator crank for stalled nodes: their join and pool advance only
-    // have to land once per epoch, whenever each window is open.
-    let mut crank = tokio::time::interval(std::time::Duration::from_secs(10));
     let exit_code = loop {
         tokio::select! {
             result = &mut server => {
@@ -191,89 +185,26 @@ async fn async_main() -> ExitCode {
                 break ExitCode::SUCCESS;
             }
             Some(cmd) = cmd_rx.recv() => {
-                // Every arm reports, because these keys act on the last node,
-                // which is the row a short terminal drops first.
-                let log = match cmd {
+                match cmd {
                     TuiCommand::AddNode => {
                         let mut orch = orchestrator.lock().await;
-                        match orch.add_node().await {
-                            Ok(id) => ActionLog::done(format!("added node {id}"), id),
-                            Err(error) => ActionLog::failed(format!("add failed: {error:#}")),
+                        if let Err(error) = orch.add_node().await {
+                            tracing::error!(error = %error, "add node failed");
                         }
                     }
                     TuiCommand::RemoveNode => {
                         let mut orch = orchestrator.lock().await;
                         match orch.remove_last_node().await {
-                            Ok(Some(id)) => {
-                                ActionLog::done(format!("removed node {id}, its seat is gone"), id)
-                            }
-                            Ok(None) => ActionLog::idle("remove: no node is running".into()),
-                            Err(error) => ActionLog::failed(format!("remove failed: {error}")),
+                            Ok(Some(_)) | Ok(None) => {}
+                            Err(error) => tracing::error!(error = %error, "remove node failed"),
                         }
                     }
-                    TuiCommand::StallNode => {
-                        let mut orch = orchestrator.lock().await;
-                        match orch.stall_last_node().await {
-                            Ok(Some(id)) => {
-                                ActionLog::done(format!("stalled node {id}, crank holds its seat"), id)
-                            }
-                            Ok(None) => ActionLog::idle("stall: no node is running".into()),
-                            Err(error) => ActionLog::failed(format!("stall failed: {error:#}")),
+                    TuiCommand::UploadBlob => {
+                        if let Err(error) = upload_manager.start_random_upload() {
+                            tracing::error!(error = %error, "upload failed to start");
                         }
                     }
-                    TuiCommand::FlapNode => {
-                        let mut orch = orchestrator.lock().await;
-                        match orch.toggle_flap_last_node() {
-                            Ok(Some((id, true))) => {
-                                ActionLog::done(format!("flapping node {id}, pauses on the crank"), id)
-                            }
-                            Ok(Some((id, false))) => {
-                                ActionLog::done(format!("flap off for node {id}"), id)
-                            }
-                            Ok(None) => ActionLog::idle("flap: no node is running".into()),
-                            Err(error) => ActionLog::failed(format!("flap failed: {error:#}")),
-                        }
-                    }
-                    TuiCommand::LoseSlices => {
-                        let mut orch = orchestrator.lock().await;
-                        match orch.lose_slices_last_node().await {
-                            Ok(Some((id, dropped))) => ActionLog::done(
-                                format!("node {id} silently lost {dropped} slices, restarted"),
-                                id,
-                            ),
-                            Ok(None) => ActionLog::idle("lose slices: no node is running".into()),
-                            Err(error) => ActionLog::failed(format!("slice loss failed: {error:#}")),
-                        }
-                    }
-                    TuiCommand::UploadBlob => match upload_manager.start_random_upload() {
-                        Ok(upload) => ActionLog::idle(format!(
-                            "uploading {} bytes to {}",
-                            upload.size_bytes, upload.tape_address
-                        )),
-                        Err(error) => ActionLog::failed(format!("upload failed: {error:#}")),
-                    },
-                    TuiCommand::DeleteUpload => match upload_manager.delete_latest() {
-                        Ok(Some(tape)) => ActionLog::idle(format!("deleting the track on {tape}")),
-                        Ok(None) => ActionLog::idle("delete: no completed upload to delete".into()),
-                        Err(error) => ActionLog::failed(format!("delete failed: {error:#}")),
-                    },
                     TuiCommand::Quit => break ExitCode::SUCCESS,
-                };
-                action.store(Arc::new(log));
-            }
-            _ = crank.tick() => {
-                let (chain, targets) = {
-                    let mut orch = orchestrator.lock().await;
-                    orch.crank_flapping();
-                    (orch.chain_handle(), orch.stalled_targets())
-                };
-                for (id, pubkey, keypair) in targets {
-                    if let Err(error) = chain.advance_pool(pubkey).await {
-                        tracing::debug!(id, error = %error, "stall crank: advance pool");
-                    }
-                    if let Err(error) = chain.join_committee(&keypair).await {
-                        tracing::debug!(id, error = %error, "stall crank: join committee");
-                    }
                 }
             }
             _ = tokio::signal::ctrl_c() => {
