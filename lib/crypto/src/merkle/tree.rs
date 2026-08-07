@@ -438,6 +438,109 @@ pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
     level[0]
 }
 
+/// A tree built once over pre-hashed leaves, serving every proof off the same levels.
+///
+/// Folding per proof costs the whole tree per call, so a caller wanting the root
+/// and one proof per leaf pays for the levels once per leaf. This holds the
+/// levels instead and answers a proof as an index walk.
+pub struct MerkleLeafTree {
+    // Every level end to end, leaves first, each padded to an even length.
+    nodes: Vec<Hash>,
+    // Where each level starts in `nodes`, one entry per level plus the root.
+    offsets: Vec<usize>,
+    leaf_count: usize,
+    height: usize,
+}
+
+impl MerkleLeafTree {
+    /// Fold pre-hashed leaves into a tree of the given height.
+    pub fn new(leaf_hashes: &[Hash], height: usize) -> Result<Self, MerkleError> {
+        Self::new_at_depth(leaf_hashes, 0, height)
+    }
+
+    /// Fold nodes that already stand `depth` levels above the leaves up `height` more.
+    ///
+    /// The empty subtree root an odd level pads with depends on how deep that
+    /// level is, so starting from the middle of a tree has to say where.
+    pub fn new_at_depth(
+        leaf_hashes: &[Hash],
+        depth: usize,
+        height: usize,
+    ) -> Result<Self, MerkleError> {
+        if leaf_hashes.is_empty() {
+            return Err(MerkleError::InvalidProof);
+        }
+        if depth + height > MAX_MERKLE_TREE_HEIGHT {
+            return Err(MerkleError::InvalidProof);
+        }
+        if leaf_hashes.len() > (1usize << height) {
+            return Err(MerkleError::InvalidProof);
+        }
+
+        // Every level width follows from the leaf count, so `nodes` is sized
+        // up front and never grows while folding.
+        let mut offsets = Vec::with_capacity(height + 1);
+        let mut width = leaf_hashes.len();
+        let mut total = 0;
+        for _ in 0..height {
+            width += width & 1;
+            offsets.push(total);
+            total += width;
+            width /= 2;
+        }
+        offsets.push(total);
+        total += width;
+
+        let mut nodes = Vec::with_capacity(total);
+        nodes.extend_from_slice(leaf_hashes);
+
+        for level in 0..height {
+            let start = offsets[level];
+            // Pad the odd tail with this level's empty subtree root, which is
+            // what leaf insertion does implicitly.
+            if !(nodes.len() - start).is_multiple_of(2) {
+                nodes.push(EMPTY_ROOTS[depth + level].into());
+            }
+            let parents = hash_level(&nodes[start..]);
+            nodes.extend_from_slice(&parents);
+        }
+
+        Ok(Self {
+            nodes,
+            offsets,
+            leaf_count: leaf_hashes.len(),
+            height,
+        })
+    }
+
+    /// Root of the folded tree, equal to `root_from_leaf_hashes` over the same leaves.
+    pub fn root(&self) -> Hash {
+        self.nodes[self.offsets[self.height]]
+    }
+
+    /// Sibling path from the leaf at `index` up to the root.
+    pub fn proof_at(&self, index: usize) -> Result<Vec<Hash>, MerkleError> {
+        if index >= self.leaf_count {
+            return Err(MerkleError::InvalidProof);
+        }
+
+        let mut proof = Vec::with_capacity(self.height);
+        let mut position = index;
+
+        for level in 0..self.height {
+            let sibling = if position.is_multiple_of(2) {
+                position + 1
+            } else {
+                position - 1
+            };
+            proof.push(self.nodes[self.offsets[level] + sibling]);
+            position /= 2;
+        }
+
+        Ok(proof)
+    }
+}
+
 /// Create a Merkle proof from pre-hashed leaf values.
 pub fn create_proof_from_leaf_hashes<const N: usize>(
     hashes: &[Hash],
@@ -526,53 +629,7 @@ pub fn create_proof_from_level(
     depth: usize,
     levels: usize,
 ) -> Result<Vec<Hash>, MerkleError> {
-    if nodes.is_empty() {
-        return Err(MerkleError::InvalidProof);
-    }
-    if index >= nodes.len() {
-        return Err(MerkleError::InvalidProof);
-    }
-    if nodes.len() > (1usize << levels) {
-        return Err(MerkleError::InvalidProof);
-    }
-    if depth + levels > MAX_MERKLE_TREE_HEIGHT {
-        return Err(MerkleError::InvalidProof);
-    }
-
-    let empty: Vec<Hash> = (0..levels)
-        .map(|i| EMPTY_ROOTS[depth + i].into())
-        .collect();
-
-    let mut layers = Vec::with_capacity(levels);
-    let mut current_layer: Vec<Hash> = nodes.to_vec();
-
-    for i in 0..levels {
-        if !current_layer.len().is_multiple_of(2) {
-            current_layer.push(empty[i]);
-        }
-
-        layers.push(current_layer.clone());
-        current_layer = hash_level(&current_layer);
-    }
-
-    let mut proof = Vec::with_capacity(levels);
-    let mut current_index = index;
-    let mut layer_index = 0;
-
-    for _ in 0..levels {
-        let sibling = if current_index.is_multiple_of(2) {
-            layers[layer_index][current_index + 1]
-        } else {
-            layers[layer_index][current_index - 1]
-        };
-
-        proof.push(sibling);
-
-        current_index /= 2;
-        layer_index += 1;
-    }
-
-    Ok(proof)
+    MerkleLeafTree::new_at_depth(nodes, depth, levels)?.proof_at(index)
 }
 
 pub fn verify_proof(
@@ -907,6 +964,51 @@ mod tests {
         let root = root_from_leaf_hashes::<5>(&hashes);
 
         assert_eq!(tree.root(), root);
+    }
+
+    #[test]
+    fn merkle_leaf_tree_matches_per_leaf_helpers() {
+        // Odd leaf counts pad at more than one level, which is where a shared
+        // fold could drift from the per-call one.
+        for leaf_count in 1..=20usize {
+            let data: Vec<Vec<u8>> = (0..leaf_count).map(|i| vec![i as u8; 100]).collect();
+            let hashes: Vec<Hash> = data.iter().map(|d| hash_leaf(d)).collect();
+
+            let tree = MerkleLeafTree::new(&hashes, 5).expect("valid tree");
+
+            // create_proof_from_leaf_hashes folds through this same type, so the
+            // references are the incremental root and independent verification.
+            let mut incremental = MerkleTree::<5>::new();
+            for hash in &hashes {
+                incremental.add_leaf_hash(*hash).unwrap();
+            }
+            assert_eq!(tree.root(), incremental.root());
+            assert_eq!(tree.root(), root_from_leaf_hashes::<5>(&hashes));
+
+            for (index, leaf) in hashes.iter().enumerate() {
+                let proof = tree.proof_at(index).expect("valid proof");
+                assert_eq!(proof.len(), 5);
+                assert!(verify_proof_hash(*leaf, &tree.root(), &proof, index as u64, 5));
+
+                // A tampered sibling must not verify, or the check above is free.
+                let mut broken = proof.clone();
+                broken[0] = hash_leaf(b"not a sibling");
+                assert!(!verify_proof_hash(*leaf, &tree.root(), &broken, index as u64, 5));
+            }
+        }
+    }
+
+    #[test]
+    fn merkle_leaf_tree_rejects_out_of_range() {
+        let hashes: Vec<Hash> = (0..4u8).map(|i| hash_leaf(&[i])).collect();
+        let tree = MerkleLeafTree::new(&hashes, 2).expect("valid tree");
+
+        assert_eq!(tree.proof_at(4), Err(MerkleError::InvalidProof));
+        assert_eq!(MerkleLeafTree::new(&[], 2).err(), Some(MerkleError::InvalidProof));
+        assert_eq!(
+            MerkleLeafTree::new(&hashes, 1).err(),
+            Some(MerkleError::InvalidProof)
+        );
     }
 
     #[test]

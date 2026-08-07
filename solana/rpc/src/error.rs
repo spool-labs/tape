@@ -53,6 +53,10 @@ pub enum RpcError {
 
         /// Full error text, including logs when available.
         message: String,
+
+        /// True when the failure came from simulating the transaction before
+        /// sending it, so nothing was submitted and no fee was charged.
+        simulated: bool,
     },
 
     /// Blockhash has expired (transaction too old)
@@ -131,6 +135,13 @@ impl RpcError {
             TransactionError::InstructionError(_, err) => Some(err),
             _ => None,
         }
+    }
+
+    /// True when this failure was reported by a pre-send simulation rather
+    /// than by execution, meaning the transaction never landed and cost
+    /// nothing.
+    pub fn is_simulated(&self) -> bool {
+        matches!(self, RpcError::Transaction { simulated: true, .. })
     }
 
     /// Custom program error code, when an instruction failed with one.
@@ -312,6 +323,7 @@ mod tests {
                 InstructionError::ComputationalBudgetExceeded,
             )),
             message: "Error processing Instruction 1: Computational budget exceeded".to_string(),
+            simulated: false,
         };
         assert!(budget.is_compute_budget_exceeded());
         assert_eq!(budget.custom_program_error(), None);
@@ -322,6 +334,7 @@ mod tests {
                 InstructionError::Custom(0x10),
             )),
             message: "Error processing Instruction 0: custom program error: 0x10".to_string(),
+            simulated: false,
         };
         assert!(!program.is_compute_budget_exceeded());
         assert_eq!(program.custom_program_error(), Some(0x10));
@@ -329,6 +342,7 @@ mod tests {
         let unstructured = RpcError::Transaction {
             err: None,
             message: "Transaction simulation failed".to_string(),
+            simulated: false,
         };
         assert!(!unstructured.is_compute_budget_exceeded());
         assert_eq!(unstructured.transaction_error(), None);

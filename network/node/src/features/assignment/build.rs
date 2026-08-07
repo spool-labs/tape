@@ -13,7 +13,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{BlacklistEntry, Member};
 use tape_core::types::{EpochNumber, SpoolCount, StorageUnits};
-use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
+use tape_crypto::merkle::MerkleLeafTree;
 use tape_crypto::{Address, Hash};
 use tape_protocol::{Api, ProtocolState};
 use tape_spooler::migrate_dhondt;
@@ -227,15 +227,16 @@ fn group_candidates(
         .iter()
         .map(hash_assignment_group_payload)
         .collect::<Vec<_>>();
-    let root = root_from_leaf_hashes::<ASSIGNMENT_TREE_HEIGHT>(&leaves);
+    // One fold serves the root and every group proof.
+    let tree = MerkleLeafTree::new(&leaves, ASSIGNMENT_TREE_HEIGHT)
+        .map_err(|e| NodeError::Store(format!("assignment tree: {e:?}")))?;
+    let root = tree.root();
 
     let mut groups = Vec::with_capacity(payloads.len());
     for payload in payloads {
-        let proof = create_proof_from_leaf_hashes::<ASSIGNMENT_TREE_HEIGHT>(
-            &leaves,
-            payload.group.0 as usize,
-        )
-        .map_err(|e| NodeError::Store(format!("assignment proof: {e:?}")))?;
+        let proof = tree
+            .proof_at(payload.group.0 as usize)
+            .map_err(|e| NodeError::Store(format!("assignment proof: {e:?}")))?;
         let proof = proof
             .try_into()
             .map_err(|_| NodeError::Store("assignment proof length mismatch".into()))?;

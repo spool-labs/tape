@@ -459,17 +459,6 @@ pub fn next_committee_filled(state: &ProtocolState) -> bool {
         .is_some_and(|committee| committee.len() as u64 >= capacity)
 }
 
-/// This node's 0-based position in the current committee, used to order
-/// contended submissions. Falls back to 0 (submit first) when not found.
-pub fn committee_rank(state: &ProtocolState, node: Address) -> usize {
-    state
-        .current
-        .committee
-        .iter()
-        .position(|m| m.node == node)
-        .unwrap_or(0)
-}
-
 fn assignment_ready(state: &ProtocolState) -> bool {
     let Some(next_epoch) = state.next_epoch.as_ref() else {
         return false;

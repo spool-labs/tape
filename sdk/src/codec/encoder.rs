@@ -6,7 +6,7 @@
 use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_core::erasure::{GROUP_SIZE, slice_root};
 use tape_core::types::SpoolIndex;
-use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
+use tape_crypto::merkle::MerkleLeafTree;
 use tape_crypto::Hash;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, SLICE_TREE_HEIGHT,
@@ -239,12 +239,15 @@ impl BlobEncoder {
             .ok_or_else(|| {
                 UploadError::Encoding("slice exceeds sub-leaf tree capacity".to_string())
             })?;
-        let root = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaf_hashes);
+        // One fold serves the root and all GROUP_SIZE proofs.
+        let tree = MerkleLeafTree::new(&leaf_hashes, SLICE_TREE_HEIGHT)
+            .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
+        let root = tree.root();
 
-        let proofs: Result<Vec<Vec<Hash>>, _> = (0..leaf_hashes.len())
-            .map(|idx| create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaf_hashes, idx))
-            .collect();
-        let proofs = proofs.map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
+        let proofs = (0..leaf_hashes.len())
+            .map(|idx| tree.proof_at(idx))
+            .collect::<Result<Vec<Vec<Hash>>, _>>()
+            .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
 
         // Generate proof for each slice
         let mut output = Vec::with_capacity(chunks.len());

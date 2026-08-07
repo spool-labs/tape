@@ -13,10 +13,8 @@ use tracing::{debug, info, warn};
 
 use crate::chain::submit_commit_epoch;
 use crate::context::NodeContext;
-use crate::core::chain_tx::{
-    await_submit_turn, submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind,
-};
-use crate::features::lifecycle::manager::{commit_at, committee_rank};
+use crate::core::chain_tx::{submit_if_at_tip, wait_by_pace, TxOutcome, TxRejectionKind};
+use crate::features::lifecycle::manager::commit_at;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 /// Fixed retry cadence once the commit window looks open locally but the
@@ -33,15 +31,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    let rank = committee_rank(&ctx.state(), ctx.node_address());
     let mut state_rx = ctx.subscribe_state();
     let mut backoff = Backoff::new(RetryConfig::infinite());
-
-    // Lower ranks commit first; if one lands during the wait the phase check
-    // below returns Done, so higher ranks never race for a commit no longer needed.
-    if await_submit_turn(rank, &cancel).await {
-        return TaskDone::Cancelled(Action::CommitEpoch, epoch);
-    }
 
     loop {
         if ctx.state().epoch() != epoch {

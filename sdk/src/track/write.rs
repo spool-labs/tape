@@ -1719,6 +1719,7 @@ mod tests {
         let err = TapedriveError::Rpc(rpc::RpcError::Transaction {
             err: None,
             message: "custom program error: 0x34".to_string(),
+            simulated: false,
         });
         assert!(should_retry_certification(&err));
     }

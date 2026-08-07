@@ -30,6 +30,6 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     );
 
     ctx.rpc
-        .send_instructions_with_compute_unit_limit(ctx.signer(), INVALIDATE_TRACK_CU, vec![ix])
+        .simulate_then_send_with_compute_unit_limit(ctx.signer(), INVALIDATE_TRACK_CU, vec![ix])
         .await
 }

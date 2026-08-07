@@ -358,6 +358,7 @@ impl SolanaRpc {
             return RpcError::Transaction {
                 err: Some(tx_error),
                 message,
+                simulated: false,
             };
         }
 
@@ -365,6 +366,7 @@ impl SolanaRpc {
             return RpcError::Transaction {
                 err: None,
                 message: err_str,
+                simulated: false,
             };
         }
 
@@ -1007,7 +1009,7 @@ mod tests {
         let converted = SolanaRpc::convert_error(error, None);
 
         match converted {
-            RpcError::Transaction { err, message } => {
+            RpcError::Transaction { err, message, .. } => {
                 assert_eq!(
                     err,
                     Some(TransactionError::InstructionError(
