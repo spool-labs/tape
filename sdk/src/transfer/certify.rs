@@ -209,7 +209,7 @@ impl CertificationCollector {
         }
 
         let mut epoch_buckets: HashMap<u64, SignatureBucket> = HashMap::new();
-        bank_receipts(&mut epoch_buckets, &mut signature_requests, banked);
+        bank_receipts(&mut epoch_buckets, &mut signature_requests, banked, state.epoch());
 
         let mut remaining_node_weight = signature_requests
             .iter()
@@ -432,17 +432,26 @@ fn collect_signature_requests(
 
 /// Move receipts collected during upload into the epoch buckets and drop the
 /// owners that gave them from the request set.
+///
+/// A receipt signed under an earlier epoch is dropped rather than banked. The
+/// certify instruction is checked against the epoch it names, so a stale
+/// signature would be rejected on chain no matter how many of them agree, and
+/// that owner is asked again instead.
 fn bank_receipts(
     epoch_buckets: &mut HashMap<u64, SignatureBucket>,
     requests: &mut Vec<SignatureRequest>,
     banked: &[CertifyRes],
+    epoch: EpochNumber,
 ) {
     if banked.is_empty() {
         return;
     }
 
     requests.retain(|request| {
-        match banked.iter().find(|receipt| receipt.node == request.node) {
+        match banked
+            .iter()
+            .find(|receipt| receipt.node == request.node && receipt.epoch == epoch)
+        {
             Some(receipt) => {
                 record_signature_response(
                     epoch_buckets,
@@ -567,7 +576,7 @@ mod tests {
         ];
         let mut buckets = HashMap::new();
 
-        bank_receipts(&mut buckets, &mut requests, &[receipt(banked_node, 7)]);
+        bank_receipts(&mut buckets, &mut requests, &[receipt(banked_node, 7)], EpochNumber(7));
 
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].node, other_node);
@@ -589,6 +598,7 @@ mod tests {
             &mut buckets,
             &mut requests,
             &[receipt(first, 3), receipt(second, 3)],
+            EpochNumber(3),
         );
 
         assert!(requests.is_empty());
@@ -596,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn receipts_from_different_epochs_stay_in_separate_buckets() {
+    fn a_receipt_from_an_earlier_epoch_is_not_banked() {
         let first = Address::new_unique();
         let second = Address::new_unique();
         let mut requests = vec![request(first, vec![0]), request(second, vec![1])];
@@ -606,11 +616,15 @@ mod tests {
             &mut buckets,
             &mut requests,
             &[receipt(first, 4), receipt(second, 5)],
+            EpochNumber(4),
         );
 
-        assert_eq!(buckets.len(), 2);
+        // Only the receipt matching the epoch being certified is banked; the
+        // other owner is asked again rather than signing a stale epoch.
+        assert_eq!(buckets.len(), 1);
         assert_eq!(buckets.get(&4).expect("epoch 4").weight, 1);
-        assert_eq!(buckets.get(&5).expect("epoch 5").weight, 1);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].node, second);
     }
 
     #[test]
@@ -619,7 +633,12 @@ mod tests {
         let mut requests = vec![request(known, vec![0])];
         let mut buckets = HashMap::new();
 
-        bank_receipts(&mut buckets, &mut requests, &[receipt(Address::new_unique(), 9)]);
+        bank_receipts(
+            &mut buckets,
+            &mut requests,
+            &[receipt(Address::new_unique(), 9)],
+            EpochNumber(9),
+        );
 
         assert_eq!(requests.len(), 1);
         assert!(buckets.is_empty());
