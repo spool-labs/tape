@@ -183,16 +183,12 @@ impl CertificationCollector {
     }
 
     /// Collect signatures from committee members for a track via the Api trait.
-    ///
-    /// Receipts banked while the slices were uploaded count as signatures from
-    /// those owners, so only the shortfall is asked for.
     pub async fn collect_signatures<P: Api>(
         &self,
         peer_client: &P,
         track_address: &Address,
         group: GroupIndex,
         state: &ProtocolState,
-        banked: &[CertifyRes],
     ) -> Result<CollectedSignatures, CertificationError> {
         let group_total_weight = GROUP_SIZE as u64;
 
@@ -200,21 +196,18 @@ impl CertificationCollector {
             return Err(CertificationError::NoCommitteeMembers);
         }
 
-        let mut signature_requests = collect_signature_requests(group, state)?;
+        let signature_requests = collect_signature_requests(group, state)?;
+        let mut remaining_node_weight = signature_requests
+            .iter()
+            .map(|request| request.weight)
+            .sum::<u64>();
+
         if signature_requests.is_empty() {
             return Err(CertificationError::InsufficientSignatures {
                 got: 0,
                 total: group_total_weight as usize,
             });
         }
-
-        let mut epoch_buckets: HashMap<u64, SignatureBucket> = HashMap::new();
-        bank_receipts(&mut epoch_buckets, &mut signature_requests, banked, state.epoch());
-
-        let mut remaining_node_weight = signature_requests
-            .iter()
-            .map(|request| request.weight)
-            .sum::<u64>();
 
         let track = *track_address;
         let max_retries = self.config.max_retries;
@@ -239,6 +232,7 @@ impl CertificationCollector {
         .buffer_unordered(self.config.max_concurrent);
 
         // Collect results, potentially exiting early
+        let mut epoch_buckets: HashMap<u64, SignatureBucket> = HashMap::new();
         let mut failures: Vec<(Address, NodeSignError)> = Vec::new();
         let mut early_exit_triggered = false;
 
@@ -430,42 +424,6 @@ fn collect_signature_requests(
     Ok(by_node.into_values().collect())
 }
 
-/// Move receipts collected during upload into the epoch buckets and drop the
-/// owners that gave them from the request set.
-///
-/// A receipt signed under an earlier epoch is dropped rather than banked. The
-/// certify instruction is checked against the epoch it names, so a stale
-/// signature would be rejected on chain no matter how many of them agree, and
-/// that owner is asked again instead.
-fn bank_receipts(
-    epoch_buckets: &mut HashMap<u64, SignatureBucket>,
-    requests: &mut Vec<SignatureRequest>,
-    banked: &[CertifyRes],
-    epoch: EpochNumber,
-) {
-    if banked.is_empty() {
-        return;
-    }
-
-    requests.retain(|request| {
-        match banked
-            .iter()
-            .find(|receipt| receipt.node == request.node && receipt.epoch == epoch)
-        {
-            Some(receipt) => {
-                record_signature_response(
-                    epoch_buckets,
-                    receipt.epoch.0,
-                    receipt.clone(),
-                    &request.positions,
-                );
-                false
-            }
-            None => true,
-        }
-    });
-}
-
 fn record_signature_response(
     epoch_buckets: &mut HashMap<u64, SignatureBucket>,
     epoch_key: u64,
@@ -549,100 +507,7 @@ fn select_best_epoch(epoch_buckets: &HashMap<u64, SignatureBucket>) -> (Option<u
 
 #[cfg(test)]
 mod tests {
-    use bytemuck::Zeroable;
-
     use super::*;
-
-    fn receipt(node: Address, epoch: u64) -> CertifyRes {
-        CertifyRes {
-            signature: BlsSignature::zeroed(),
-            node,
-            epoch: EpochNumber(epoch),
-        }
-    }
-
-    fn request(node: Address, positions: Vec<usize>) -> SignatureRequest {
-        let weight = positions.len() as u64;
-        SignatureRequest { node, positions, weight }
-    }
-
-    #[test]
-    fn banked_owners_are_not_asked_again() {
-        let banked_node = Address::new_unique();
-        let other_node = Address::new_unique();
-        let mut requests = vec![
-            request(banked_node, vec![0, 1, 2]),
-            request(other_node, vec![3, 4]),
-        ];
-        let mut buckets = HashMap::new();
-
-        bank_receipts(&mut buckets, &mut requests, &[receipt(banked_node, 7)], EpochNumber(7));
-
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].node, other_node);
-
-        let bucket = buckets.get(&7).expect("banked epoch bucket");
-        assert_eq!(bucket.weight, 3);
-        assert_eq!(bucket.positions, vec![0, 1, 2]);
-        assert_eq!(bucket.signatures.len(), 3);
-    }
-
-    #[test]
-    fn a_full_set_of_receipts_leaves_nothing_to_ask() {
-        let first = Address::new_unique();
-        let second = Address::new_unique();
-        let mut requests = vec![request(first, vec![0]), request(second, vec![1])];
-        let mut buckets = HashMap::new();
-
-        bank_receipts(
-            &mut buckets,
-            &mut requests,
-            &[receipt(first, 3), receipt(second, 3)],
-            EpochNumber(3),
-        );
-
-        assert!(requests.is_empty());
-        assert_eq!(buckets.get(&3).expect("bucket").weight, 2);
-    }
-
-    #[test]
-    fn a_receipt_from_an_earlier_epoch_is_not_banked() {
-        let first = Address::new_unique();
-        let second = Address::new_unique();
-        let mut requests = vec![request(first, vec![0]), request(second, vec![1])];
-        let mut buckets = HashMap::new();
-
-        bank_receipts(
-            &mut buckets,
-            &mut requests,
-            &[receipt(first, 4), receipt(second, 5)],
-            EpochNumber(4),
-        );
-
-        // Only the receipt matching the epoch being certified is banked; the
-        // other owner is asked again rather than signing a stale epoch.
-        assert_eq!(buckets.len(), 1);
-        assert_eq!(buckets.get(&4).expect("epoch 4").weight, 1);
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].node, second);
-    }
-
-    #[test]
-    fn a_receipt_from_an_unknown_owner_is_ignored() {
-        let known = Address::new_unique();
-        let mut requests = vec![request(known, vec![0])];
-        let mut buckets = HashMap::new();
-
-        bank_receipts(
-            &mut buckets,
-            &mut requests,
-            &[receipt(Address::new_unique(), 9)],
-            EpochNumber(9),
-        );
-
-        assert_eq!(requests.len(), 1);
-        assert!(buckets.is_empty());
-    }
 
     #[test]
     fn certification_config_default() {

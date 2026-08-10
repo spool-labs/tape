@@ -176,20 +176,9 @@ impl Api for HttpApi {
 
         self.record(node, "put_slice", &resp, start, bytes_sent);
 
-        let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx(node, "put_slice", bytes.len() as u64);
+        check_status(resp).await?;
 
-        let receipt: BlsSignResponse = wincode::deserialize(&bytes)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        Ok(PutSliceRes {
-            receipt: CertifyRes {
-                signature: receipt.signature,
-                node: receipt.node,
-                epoch: receipt.epoch,
-            },
-        })
+        Ok(PutSliceRes)
     }
 
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
@@ -644,64 +633,6 @@ impl Api for HttpApi {
             node: wire.node,
             epoch: wire.epoch,
         })
-    }
-
-    async fn proof_of_access(
-        &self,
-        node: Address,
-        req: &ProofOfAccessReq,
-    ) -> Result<ProofOfAccessRes, ApiError> {
-        let (client, base) = self.resolve(node)?;
-        let url = format!("{base}{CHALLENGE_PROOF_PATH}");
-        let wire = ProofOfAccessPayload::from(req.answer.clone());
-        let body =
-            wincode::serialize(&wire).map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        let bytes_sent = body.len() as u64;
-        let start = Instant::now();
-        let resp = client
-            .post(&url)
-            .timeout(VOTE_TIMEOUT)
-            .header("content-type", BINARY_CONTENT)
-            .body(body)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record(node, "proof_of_access", &resp, start, bytes_sent);
-        check_status(resp).await?;
-        Ok(ProofOfAccessRes)
-    }
-
-    async fn attest(&self, node: Address, req: &AttestReq) -> Result<AttestRes, ApiError> {
-        let (client, base) = self.resolve(node)?;
-        let url = format!("{base}{CHALLENGE_ATTEST_PATH}");
-        let wire = AttestationPayload {
-            epoch: req.epoch,
-            group: req.group,
-            round: req.round,
-            spool: req.spool,
-            block: req.block,
-            signer: req.signer,
-            signature: req.signature,
-        };
-        let body =
-            wincode::serialize(&wire).map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        let bytes_sent = body.len() as u64;
-        let start = Instant::now();
-        let resp = client
-            .post(&url)
-            .timeout(VOTE_TIMEOUT)
-            .header("content-type", BINARY_CONTENT)
-            .body(body)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record(node, "attest", &resp, start, bytes_sent);
-        check_status(resp).await?;
-        Ok(AttestRes)
     }
 
     async fn get_health(

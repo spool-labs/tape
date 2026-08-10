@@ -18,9 +18,8 @@ use tracing::{debug, info};
 
 use crate::chain::{submit_finalize_snapshot, submit_propose_snapshot, submit_vote_snapshot};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{await_submit_turn, submit_if_at_tip, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{submit_if_at_tip, TxOutcome, TxRejectionKind};
 use crate::core::error::NodeError;
-use crate::features::lifecycle::manager::committee_rank;
 use crate::features::snapshot::build::{persist_snapshot_candidate, SnapshotCandidate};
 use crate::features::snapshot::vote::vote_candidate;
 use crate::features::vote::{bitmap_index_in_group, member_groups};
@@ -46,20 +45,14 @@ where
         return Ok(());
     }
 
-    if await_submit_turn(committee_rank(&state, me), cancel).await {
-        return Ok(());
-    }
-
-    // Re-read after the wait: skip proposing if another member's proposal for
-    // this voting epoch already landed, or the round already reached a canonical
-    // snapshot hash, while this node waited its turn.
+    // Skip proposing if another member's proposal for this voting epoch already
+    // landed, or the round already reached a canonical snapshot hash.
     if proposed
         .lock()
         .is_ok_and(|seen| seen.contains(&candidate.voting_epoch))
     {
         return Ok(());
     }
-    let state = ctx.state();
     if state
         .previous
         .as_ref()
@@ -163,10 +156,6 @@ where
 {
     let me = ctx.node_address();
     if state.find_member(me).is_none() {
-        return Ok(());
-    }
-
-    if await_submit_turn(committee_rank(state, me), cancel).await {
         return Ok(());
     }
 
@@ -349,13 +338,8 @@ where
 
     persist_snapshot_candidate(ctx.as_ref(), candidate)?;
 
-    if await_submit_turn(committee_rank(&state, me), cancel).await {
-        return Ok(());
-    }
-
-    // Re-read after the wait: finalizing moves the voting epoch out of the
-    // Snapshot phase, so skip if a lower-ranked member already finalized.
-    let state = ctx.state();
+    // Finalizing moves the voting epoch out of the Snapshot phase, so skip if
+    // another member already finalized.
     if state.epoch() != candidate.voting_epoch || state.phase() != EpochPhase::Snapshot {
         return Ok(());
     }

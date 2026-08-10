@@ -7,13 +7,11 @@ use tape_core::types::SlotNumber;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{AppContext, NodeContext};
 use tape_node::core::startup::build_context;
-use tape_node::core::channels::{
-    downstream_channels, drain_block_channel, store_channel, DownstreamReceivers,
-};
+use tape_node::core::channels::{downstream_channels, store_channel, DownstreamReceivers};
 use tape_node::core::error::NodeError;
 use tape_node::core::types::{ChannelName, ServiceName};
 use tape_node::features::block::ingest_monitor;
-use tape_node::features::block::ingestor::BlockIngestor;
+use tape_node::features::block::ingestor::{BlockIngestor, ParsedBlock};
 use tape_node::features::bootstrap;
 use tape_node::features::replay::manager::ReplayManager;
 use tape_node::features::state::manager::StateManager;
@@ -21,9 +19,10 @@ use tape_node::runtime::{bootstrap_with_status_listener, join_http_server};
 use tape_node::supervisor::Supervisor;
 use tape_protocol::Api;
 use tape_store::ops::AuditOps;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
+use tracing::{debug, Instrument};
 
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
@@ -33,6 +32,32 @@ use crate::meter::GatewayMeter;
 use crate::staging::{StagingLimits, StagingStore};
 use crate::store::GatewayStoreManager;
 
+async fn drain_block_channel(
+    mut rx: mpsc::Receiver<Arc<ParsedBlock>>,
+    cancel: CancellationToken,
+    channel: ChannelName,
+) -> Result<(), NodeError> {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            received = rx.recv() => {
+                let Some(block) = received else {
+                    return if cancel.is_cancelled() {
+                        Ok(())
+                    } else {
+                        Err(NodeError::ChannelClosed { channel })
+                    };
+                };
+
+                debug!(
+                    slot = block.slot.0,
+                    channel = ?channel,
+                    "gateway drained unused block channel"
+                );
+            }
+        }
+    }
+}
 
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -52,7 +77,7 @@ where
 {
     // Destructure exhaustively: every downstream channel must be consumed or
     // drained, or the ingestor's fan-out fills its buffer and deadlocks.
-    let (senders, DownstreamReceivers { state, assignment, challenge, eviction, replay, snapshot }) =
+    let (senders, DownstreamReceivers { state, assignment, eviction, replay, snapshot }) =
         downstream_channels();
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
@@ -148,11 +173,6 @@ where
     supervisor.spawn(
         ServiceName::AssignmentManager,
         drain_block_channel(assignment, cancel.clone(), ChannelName::AssignmentManager),
-    );
-
-    supervisor.spawn(
-        ServiceName::ChallengeManager,
-        drain_block_channel(challenge, cancel.clone(), ChannelName::ChallengeManager),
     );
 
     supervisor.spawn(

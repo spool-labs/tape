@@ -5,9 +5,9 @@ use solana_signer::Signer;
 use tape_api::compute::MAX_COMPUTE_UNIT_LIMIT;
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
-    build_add_to_blacklist_ix, build_advance_pool_ix, build_join_committee_ix,
-    build_propose_eviction_ix, build_set_committee_size_ix, build_set_access_threshold_ix,
-    build_set_spool_groups_ix, build_stake_with_pool_ix,
+    build_add_to_blacklist_ix, build_advance_pool_ix, build_propose_eviction_ix,
+    build_set_committee_size_ix, build_set_access_threshold_ix, build_set_spool_groups_ix,
+    build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
 use tape_core::system::{BlacklistEntry, NodeStatus};
@@ -155,42 +155,6 @@ impl SimnetScenario<'_> {
             .with_context(|| format!("advance pool for node {node_index}"))?;
 
         trace!(node_index, "advance_pool completed");
-        Ok(())
-    }
-
-    /// Re-join the next committee on the node's behalf, as its operator would.
-    ///
-    /// Joining is authority-signed and per-epoch, so a node whose runtime is
-    /// down keeps its seat only while someone signs this. Repeats are
-    /// idempotent, and a suspension makes it fail, which is the eviction's
-    /// on-chain effect.
-    pub async fn join_committee(&self, node_index: usize) -> Result<()> {
-        trace!(node_index, "submitting join_committee instruction");
-        let payer = self.harness.admin();
-        let node = &self.harness.nodes()[node_index];
-        let authority = node.authority();
-        let current_epoch = self.read_system().await?.current_epoch;
-        let node_address = self.node_address(node_index).into();
-        let ix = build_join_committee_ix(
-            payer.pubkey().into(),
-            authority.into(),
-            node_address,
-            current_epoch,
-        );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
-
-        self.harness
-            .chain()
-            .send_instructions_with_signers_and_advance(
-                payer,
-                vec![cu_ix, ix],
-                &[node.keypair()],
-                self.harness.config().slot_advance_per_tx,
-            )
-            .await
-            .with_context(|| format!("join committee for node {node_index}"))?;
-
-        trace!(node_index, "join_committee completed");
         Ok(())
     }
 

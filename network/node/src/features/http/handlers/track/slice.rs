@@ -7,22 +7,20 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::cert::track::TrackWriteMessage;
 use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_crypto::merkle::verify_proof_hash;
 use tape_protocol::Api;
-use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SlicePayload};
+use tape_protocol::api::{BINARY_CONTENT, SlicePayload};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::SliceWrite;
 use tracing::{debug, trace};
 
 use crate::features::blacklist::refuses_object;
 use crate::features::http::auth::{MaybeStakedPeer, local_access_threshold};
 use crate::features::http::error::RouteError;
-use crate::features::http::state::{AppState, current_epoch};
+use crate::features::http::state::AppState;
 
 pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -94,7 +92,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
     body: Bytes,
-) -> Result<impl IntoResponse, RouteError> {
+) -> Result<StatusCode, RouteError> {
     trace!(
         track_id = %track_id,
         spool_id = %spool_id,
@@ -107,7 +105,6 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
 
     let track_key = track;
-    let epoch = current_epoch(&state)?;
     let payload: SlicePayload = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 
@@ -126,7 +123,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if refuses_object(
         state.context.store.as_ref(),
         state.context.node_address(),
-        epoch,
+        state.context.state().epoch(),
         track_key,
         track.tape,
     )
@@ -176,10 +173,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("leaf hash mismatch".into()));
     }
 
-    // One hash of the slice serves both jobs: the root that settles the claim,
-    // and the sidecar the store keeps so a later challenge answers off one window.
-    let slice = SliceWrite::new(payload.data);
-    let Some(root) = slice.root() else {
+    let Some(root) = slice_root(&payload.data) else {
         return Err(RouteError::BadRequest("slice exceeds sub-leaf tree capacity".into()));
     };
     if root != payload.leaf_hash {
@@ -196,35 +190,17 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("invalid merkle proof".into()));
     }
 
-    let data_len = slice.data().len() as u64;
+    let data_len = payload.data.len() as u64;
     state
         .context
         .store
-        .put_slice(spool_id, track_key, slice)
+        .put_slice(spool_id, track_key, payload.data)
         .map_err(store_error)?;
     state.context.metrics.add_uploaded(data_len);
 
-    let message = TrackWriteMessage::new(epoch, track.get_hash());
-    let signature = state
-        .context
-        .bls_sign(&message.to_bytes())
-        .map_err(|error| RouteError::Internal(format!("bls sign: {error:?}")))?;
-
-    let receipt = BlsSignResponse {
-        signature,
-        node: state.context.node_address(),
-        epoch,
-    };
-    let bytes = wincode::serialize(&receipt)
-        .map_err(|error| RouteError::Internal(format!("serialize slice receipt: {error}")))?;
-
     debug!(track_id = %track_id, spool_id = %spool_id, "http put_slice success");
 
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, BINARY_CONTENT)],
-        bytes,
-    ))
+    Ok(StatusCode::OK)
 }
 
 fn store_error(error: impl Display) -> RouteError {
@@ -251,11 +227,10 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber,
-        TrackNumber,
+        ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
-    use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
+    use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackDataOps};
     use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 
@@ -459,144 +434,4 @@ mod tests {
 
         assert_eq!(body.as_ref(), slice_bytes.as_slice());
     }
-
-    // A coded track whose commitment matches a real slice, so put_slice accepts
-    // it and answers with the certify signature.
-    fn seed_writable_track(ctx: &TestContext) -> (Address, SpoolIndex, SlicePayload) {
-        let epoch = ctx.state().epoch();
-        let group = GroupIndex(2);
-        let track_number = TrackNumber(11);
-        let owned_spool = group.spool_at(5);
-        let leaf_pos = owned_spool.as_usize() % GROUP_SIZE;
-
-        let slice_bytes = vec![0x5C; 128];
-        let leaf = slice_root(&slice_bytes).expect("slice root");
-
-        let mut leaves = [Hash::from([0x11; 32]); GROUP_SIZE];
-        leaves[leaf_pos] = leaf;
-        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
-        let merkle_proof = create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves, leaf_pos)
-            .expect("slice proof");
-
-        let blob = BlobEncoding {
-            size: StorageUnits::from_bytes(slice_bytes.len() as u64),
-            commitment,
-            profile: EncodingProfile::basic_default(),
-            stripe_size: StorageUnits::from_bytes(512),
-            stripe_count: StripeCount(1),
-            leaves,
-        };
-
-        let tape = Address::new_unique();
-        let track_address = track_pda(tape, track_number).0;
-
-        ctx.store
-            .put_tape(
-                tape,
-                TapeInfo {
-                    id: TapeNumber(7),
-                    flags: 0,
-                    end_epoch: EpochNumber(u64::MAX),
-                    next_track_number: TrackNumber(track_number.0 + 1),
-                },
-            )
-            .expect("seed tape");
-
-        ctx.store
-            .put_track(
-                track_address,
-                CompressedTrack {
-                    tape,
-                    key: Hash::from([0x22; 32]),
-                    track_number,
-                    kind: TrackKind::Coded as u64,
-                    state: TrackState::Registered as u64,
-                    size: blob.size,
-                    group,
-                    value_hash: blob.get_hash(),
-                },
-            )
-            .expect("seed track");
-
-        ctx.store
-            .put_track_data(track_address, BlobData::Coded(blob))
-            .expect("seed track data");
-
-        ctx.store
-            .set_spool_state(owned_spool, SpoolState::new(SpoolStatus::Active, epoch))
-            .expect("set spool state");
-
-        (
-            track_address,
-            owned_spool,
-            SlicePayload::new(slice_bytes, leaf, merkle_proof),
-        )
-    }
-
-    #[tokio::test]
-    async fn stored_slice_answers_with_a_certify_receipt() {
-        let ctx = test_context().await;
-        let (track_address, owned_spool, payload) = seed_writable_track(&ctx);
-        let track = ctx.store.get_track(track_address).expect("track").expect("track present");
-
-        let body = wincode::serialize(&payload).expect("serialize payload");
-        let response = put_slice(
-            State(AppState { context: ctx.clone() }),
-            Path((track_address.to_string(), owned_spool)),
-            body.into(),
-        )
-        .await
-        .expect("put_slice")
-        .into_response();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read body");
-        let receipt: BlsSignResponse = wincode::deserialize(&bytes).expect("receipt");
-
-        assert_eq!(receipt.node, ctx.node_address());
-        assert_eq!(receipt.epoch, ctx.state().epoch());
-
-        // The signature has to be the one the certify route would have issued.
-        let message = TrackWriteMessage::new(receipt.epoch, track.get_hash());
-        let pubkey = ctx.bls_pubkey().expect("bls pubkey");
-        receipt
-            .signature
-            .verify_aggregate(message.to_bytes(), &[pubkey])
-            .expect("receipt signs the track write message");
-    }
-
-    #[tokio::test]
-    async fn a_receipt_does_not_verify_against_another_epoch() {
-        let ctx = test_context().await;
-        let (track_address, owned_spool, payload) = seed_writable_track(&ctx);
-        let track = ctx.store.get_track(track_address).expect("track").expect("track present");
-
-        let body = wincode::serialize(&payload).expect("serialize payload");
-        let response = put_slice(
-            State(AppState { context: ctx.clone() }),
-            Path((track_address.to_string(), owned_spool)),
-            body.into(),
-        )
-        .await
-        .expect("put_slice")
-        .into_response();
-
-        let bytes = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read body");
-        let receipt: BlsSignResponse = wincode::deserialize(&bytes).expect("receipt");
-
-        let wrong = TrackWriteMessage::new(EpochNumber(receipt.epoch.0 + 1), track.get_hash());
-        let pubkey = ctx.bls_pubkey().expect("bls pubkey");
-        assert!(
-            receipt
-                .signature
-                .verify_aggregate(wrong.to_bytes(), &[pubkey])
-                .is_err()
-        );
-    }
 }
-

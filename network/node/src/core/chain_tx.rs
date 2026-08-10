@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::time::Duration;
 
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -12,14 +11,6 @@ use tape_crypto::tx::Txid;
 use tape_retry::{Backoff, backoff_or_cancel};
 
 use crate::core::ingest::IngestBus;
-
-/// Per-rank delay before a committee member submits a contended any-member
-/// transaction, so lower ranks submit first and higher ranks observe the result.
-const SUBMIT_TURN_STEP: Duration = Duration::from_millis(400);
-
-/// Rank cap on the wait, so a large committee cannot push high ranks past the
-/// whole submission window.
-const SUBMIT_TURN_MAX_RANK: usize = 8;
 
 /// Block until the next state update or cancellation, for retries whose
 /// precondition only flips when a new block is ingested. Returns true when the
@@ -35,26 +26,11 @@ pub async fn wait_for_state_change<State>(
     }
 }
 
-/// Wait out this node's rank-ordered turn before submitting a contended
-/// transaction. Rank 0 returns immediately. Returns true when the task should
-/// stop (cancelled).
-pub async fn await_submit_turn(rank: usize, cancel: &CancellationToken) -> bool {
-    if rank == 0 {
-        return false;
-    }
-    let delay = SUBMIT_TURN_STEP * rank.min(SUBMIT_TURN_MAX_RANK) as u32;
-    // Both branches are cancellation-safe.
-    tokio::select! {
-        _ = cancel.cancelled() => true,
-        _ = tokio::time::sleep(delay) => false,
-    }
-}
-
 /// Spawn a detached consensus submit into the given slot, unless a submit of
 /// that kind is still in flight. A finished handle is left in place and the next
 /// call overwrites it, so a failed submit is naturally re-driven on the next
-/// block or heartbeat. This keeps the turn sleep inside the submit off the
-/// manager event loop while still deduping the per-block and per-heartbeat re-fire.
+/// block or heartbeat. This keeps the submit off the manager event loop while
+/// still deduping the per-block and per-heartbeat re-fire.
 pub fn spawn_guarded<F>(slot: &mut Option<JoinHandle<()>>, task: F)
 where
     F: Future<Output = ()> + Send + 'static,

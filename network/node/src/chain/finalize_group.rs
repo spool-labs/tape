@@ -23,5 +23,5 @@ pub async fn submit_finalize_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // merkle proof already push this tx near the 1232-byte transaction-size
     // limit, and a ComputeBudget instruction would add ~40 bytes (its program
     // key + the instruction) and push it over.
-    ctx.rpc.send_instructions(ctx.signer(), vec![ix]).await
+    ctx.rpc.simulate_then_send(ctx.signer(), vec![ix]).await
 }

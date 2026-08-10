@@ -19,6 +19,6 @@ pub async fn submit_propose_eviction<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_propose_eviction_ix(fee_payer, epoch, node);
 
     ctx.rpc
-        .send_instructions_with_compute_unit_limit(ctx.signer(), PROPOSE_EVICTION_CU, vec![ix])
+        .simulate_then_send_with_compute_unit_limit(ctx.signer(), PROPOSE_EVICTION_CU, vec![ix])
         .await
 }

@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use axum::extract::{Path, State};
@@ -71,7 +70,6 @@ fn to_network(view: &LocalnetView) -> tape_observe_api::Network {
         })
         .collect();
     obs::Network {
-        generated_at: now_secs(),
         epoch: c.epoch,
         phase: c.phase.clone(),
         phase_index: c.phase_index,
@@ -192,11 +190,4 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
         }),
     )
         .into_response()
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default()
 }

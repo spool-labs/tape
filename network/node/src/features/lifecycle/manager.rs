@@ -370,18 +370,6 @@ pub fn next_action(
                 return Some(Action::JoinCommittee);
             }
 
-            // A member the next committee lost after our first join resolved
-            // leaves it short with nobody retrying, and the commit cannot pass
-            // a committee under the group floor: whoever is unseated joins
-            // again while the commit is held, or the epoch wedges. An eviction
-            // landing late in the epoch is exactly this.
-            if !in_next
-                && commit_window_open(state, now)
-                && !next_committee_filled(state)
-            {
-                return Some(Action::JoinCommittee);
-            }
-
             // CommitEpoch: captures the next-epoch nonce and enters Closing.
             // Gated on the elapsed epoch duration so we never spawn a task that
             // would only submit TooSoon-rejected transactions until the window
@@ -449,7 +437,7 @@ fn commit_grace_over(state: &ProtocolState, now: i64) -> bool {
 /// the operator's intent for the serving set, so the commit waits (bounded by
 /// the grace) for every declared slot, including growth beyond the current
 /// membership.
-pub fn next_committee_filled(state: &ProtocolState) -> bool {
+fn next_committee_filled(state: &ProtocolState) -> bool {
     let capacity = state
         .next_committee_capacity
         .unwrap_or(state.system.committee_size);
@@ -457,17 +445,6 @@ pub fn next_committee_filled(state: &ProtocolState) -> bool {
         .next_committee
         .as_ref()
         .is_some_and(|committee| committee.len() as u64 >= capacity)
-}
-
-/// This node's 0-based position in the current committee, used to order
-/// contended submissions. Falls back to 0 (submit first) when not found.
-pub fn committee_rank(state: &ProtocolState, node: Address) -> usize {
-    state
-        .current
-        .committee
-        .iter()
-        .position(|m| m.node == node)
-        .unwrap_or(0)
 }
 
 fn assignment_ready(state: &ProtocolState) -> bool {

@@ -16,6 +16,6 @@ pub async fn submit_resize_peer_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_resize_peer_set_ix(fee_payer, ctx.state().epoch());
 
     ctx.rpc
-        .send_instructions_with_compute_unit_limit(ctx.signer(), RESIZE_PEER_SET_CU, vec![ix])
+        .simulate_then_send_with_compute_unit_limit(ctx.signer(), RESIZE_PEER_SET_CU, vec![ix])
         .await
 }
