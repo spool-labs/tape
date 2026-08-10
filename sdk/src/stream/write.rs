@@ -19,7 +19,6 @@ use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 use tape_protocol::Api;
-use tape_protocol::api::CertifyRes;
 use tape_retry::{retry_if, RetryConfig};
 
 use crate::error::TapedriveError;
@@ -75,7 +74,6 @@ const CERTIFY_CONFLICT_DELAY: Duration = Duration::from_millis(400);
 struct PendingChunk {
     pub entry: ChunkEntry,
     pub written: WrittenTrack,
-    pub receipts: Vec<CertifyRes>,
 }
 
 // A registered chunk whose encoded slices still need to be stored.
@@ -477,9 +475,8 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
             )
             .await?;
             verify_track_number(&written, track_number)?;
-            let receipts =
-                upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-            certify_with_retry(client, tape_key, &written, Operation::WriteStream, &receipts).await
+            upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
+            certify_with_retry(client, tape_key, &written, Operation::WriteStream).await
         }
         Err(other) => Err(other),
     }
@@ -734,13 +731,7 @@ where
     let collect_stage = async move {
         while let Some(pending) = stored_receiver.recv().await {
             let collected =
-                collect_certification(
-                    client,
-                    &pending.written,
-                    Operation::WriteStream,
-                    &pending.receipts,
-                )
-                .await?;
+                collect_certification(client, &pending.written, Operation::WriteStream).await?;
             if collected_sender.send((pending, collected)).await.is_err() {
                 break;
             }
@@ -871,7 +862,7 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
         }
     }
 
-    certify_submit_with_retry(client, tape_key, written, Operation::WriteStream, None, &[]).await?;
+    certify_submit_with_retry(client, tape_key, written, Operation::WriteStream, None).await?;
     apply_certified_to_mirror(client, tape_key, mirror, &certified, None).await
 }
 
@@ -1060,7 +1051,7 @@ async fn store_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     registered: RegisteredChunk,
 ) -> Result<PendingChunk, TapedriveError> {
-    let receipts = upload_with_retry(
+    upload_with_retry(
         client,
         &registered.written,
         &registered.plan,
@@ -1071,7 +1062,6 @@ async fn store_chunk<Blockchain: Rpc, Cluster: Api>(
     Ok(PendingChunk {
         entry: registered.entry,
         written: registered.written,
-        receipts,
     })
 }
 
@@ -1121,9 +1111,8 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
         Operation::WriteStream,
     )
     .await?;
-    let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-    let track =
-        certify_with_retry(client, tape_key, &written, Operation::WriteStream, &receipts).await?;
+    upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
+    let track = certify_with_retry(client, tape_key, &written, Operation::WriteStream).await?;
     Ok(WrittenTrack {
         address: written.address,
         track,

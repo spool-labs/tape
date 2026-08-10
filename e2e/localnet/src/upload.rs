@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,6 +9,7 @@ use rand::RngCore;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
+use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_retry::{Backoff, RetryConfig};
 use tape_sdk::error::TapedriveError;
@@ -30,13 +31,21 @@ const MAX_BLOB_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 struct UploadResult {
     certified: bool,
-    track_address: String,
+    track: Address,
+}
+
+/// What deleting an upload's track needs: the tape's signing key, and the
+/// track address once the write has landed.
+struct DeleteHandle {
+    key: Arc<TapeKey>,
+    track: Option<Address>,
 }
 
 pub struct UploadManager {
     rpc_url: String,
     admin_keypair_path: PathBuf,
     uploads: Arc<Mutex<VecDeque<UploadView>>>,
+    deletable: Arc<Mutex<HashMap<String, DeleteHandle>>>,
     upload_seq: AtomicUsize,
 }
 
@@ -46,6 +55,7 @@ impl UploadManager {
             rpc_url,
             admin_keypair_path,
             uploads: Arc::new(Mutex::new(VecDeque::new())),
+            deletable: Arc::new(Mutex::new(HashMap::new())),
             upload_seq: AtomicUsize::new(0),
         }
     }
@@ -63,7 +73,7 @@ impl UploadManager {
         let upload_number = self.upload_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let force_raw = upload_number.is_multiple_of(5);
         let data = random_blob(force_raw);
-        let tape_key = TapeKey::generate();
+        let tape_key = Arc::new(TapeKey::generate());
         let tape_address = tape_key.address().to_string();
 
         let upload = UploadView {
@@ -74,12 +84,29 @@ impl UploadManager {
             last_error: None,
         };
 
-        {
+        let evicted = {
             let mut uploads = self.uploads.lock().expect("upload state mutex poisoned");
             uploads.push_front(upload.clone());
+            let mut evicted = Vec::new();
             while uploads.len() > MAX_UPLOAD_HISTORY {
-                uploads.pop_back();
+                if let Some(old) = uploads.pop_back() {
+                    evicted.push(old.tape_address);
+                }
             }
+            evicted
+        };
+        {
+            let mut deletable = self.deletable.lock().expect("delete state mutex poisoned");
+            for old in evicted {
+                deletable.remove(&old);
+            }
+            deletable.insert(
+                tape_address.clone(),
+                DeleteHandle {
+                    key: tape_key.clone(),
+                    track: None,
+                },
+            );
         }
 
         info!(
@@ -93,6 +120,7 @@ impl UploadManager {
         let rpc_url = self.rpc_url.clone();
         let admin_keypair_path = self.admin_keypair_path.clone();
         let uploads = self.uploads.clone();
+        let deletable = self.deletable.clone();
         spawn(async move {
             match run_upload(
                 &rpc_url,
@@ -109,9 +137,13 @@ impl UploadManager {
                         &uploads,
                         &tape_address,
                         status,
-                        Some(result.track_address),
+                        Some(result.track.to_string()),
                         None,
                     );
+                    let mut deletable = deletable.lock().expect("delete state mutex poisoned");
+                    if let Some(handle) = deletable.get_mut(&tape_address) {
+                        handle.track = Some(result.track);
+                    }
                     info!(tape = %tape_address, certified = result.certified, "localnet upload completed");
                 }
                 Err(err) => {
@@ -124,6 +156,77 @@ impl UploadManager {
 
         Ok(upload)
     }
+
+    /// Delete the newest completed upload's track on chain, as its tape owner.
+    ///
+    /// The deletion is real: it lands the DeleteTrack instruction, and every
+    /// node drops the track and its slices when the event finalizes. Returns
+    /// the tape whose track is being deleted, or None when nothing qualifies.
+    pub fn delete_latest(&self) -> Result<Option<String>> {
+        let target = {
+            let uploads = self.uploads.lock().expect("upload state mutex poisoned");
+            uploads
+                .iter()
+                .find(|upload| matches!(upload.cert_status.as_str(), "yes" | "no"))
+                .cloned()
+        };
+        let Some(view) = target else {
+            return Ok(None);
+        };
+
+        let handle = {
+            let deletable = self.deletable.lock().expect("delete state mutex poisoned");
+            deletable
+                .get(&view.tape_address)
+                .and_then(|handle| handle.track.map(|track| (handle.key.clone(), track)))
+        };
+        let Some((key, track)) = handle else {
+            return Ok(None);
+        };
+
+        update_upload_status(&self.uploads, &view.tape_address, "deleting", None, None);
+        info!(tape = %view.tape_address, track = %track, "deleting localnet track");
+
+        let rpc_url = self.rpc_url.clone();
+        let admin_keypair_path = self.admin_keypair_path.clone();
+        let uploads = self.uploads.clone();
+        let tape_address = view.tape_address.clone();
+        spawn(async move {
+            match run_delete(&rpc_url, &admin_keypair_path, &key, track).await {
+                Ok(()) => {
+                    update_upload_status(&uploads, &tape_address, "deleted", None, None);
+                    info!(tape = %tape_address, "localnet track deleted");
+                }
+                Err(err) => {
+                    let details = format_error_chain(&err);
+                    update_upload_status(&uploads, &tape_address, "delfail", None, Some(details.clone()));
+                    error!(tape = %tape_address, error = %details, "localnet delete failed");
+                }
+            }
+        });
+
+        Ok(Some(view.tape_address))
+    }
+}
+
+async fn run_delete(
+    rpc_url: &str,
+    admin_keypair_path: &Path,
+    tape_key: &TapeKey,
+    track: Address,
+) -> Result<()> {
+    let admin = load_solana_keypair(admin_keypair_path)
+        .with_context(|| format!("load deleter keypair: {}", admin_keypair_path.display()))?;
+    let rpc = SolanaRpc::new(RpcConfig {
+        endpoints: vec![rpc_url.to_string()],
+        ..Default::default()
+    })
+    .context("create delete rpc client")?;
+    let admin = CryptoKeypair::from_solana_keypair(&admin).context("convert deleter keypair")?;
+
+    let sdk = Tapedrive::new(rpc, admin);
+    sdk.delete(tape_key, track).await.context("delete track")?;
+    Ok(())
 }
 
 fn random_blob(force_raw: bool) -> Vec<u8> {
@@ -219,10 +322,9 @@ async fn run_upload(
         .write_track(tape_key, data)
         .await
         .context("write track")?;
-    let track_address = track_pda(track.tape, track.track_number).0.to_string();
     Ok(UploadResult {
         certified: track.is_certified(),
-        track_address,
+        track: track_pda(track.tape, track.track_number).0,
     })
 }
 

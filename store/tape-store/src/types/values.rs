@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsSignature;
+use tape_core::erasure::{slice_root_from_sidecar, slice_sidecar};
+use tape_core::challenge::sample::EntryKind;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::types::{
     ContentType, EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
@@ -24,6 +26,50 @@ type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
 /// Stored slice bytes with a widened decode limit
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
 pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
+
+/// A slice on its way into the store, with the sidecar its bytes imply.
+///
+/// Deriving the sidecar costs one hash of the slice, and a writer that has to
+/// check the slice root before storing it needs that same pass. Carrying both
+/// together is what stops the write path hashing twice: build this once, read the
+/// root off it, then hand it to `put_slice`.
+///
+/// `From<Vec<u8>>` builds one for a caller that has no root to check.
+pub struct SliceWrite {
+    data: Vec<u8>,
+    sidecar: Option<Vec<Hash>>,
+}
+
+impl SliceWrite {
+    /// Derive the sidecar from the bytes. One pass over the slice.
+    pub fn new(data: Vec<u8>) -> Self {
+        let sidecar = slice_sidecar(&data);
+        Self { data, sidecar }
+    }
+
+    /// The slice's registered leaf, folded from the sidecar rather than rehashed.
+    ///
+    /// None when the slice needs more sample leaves than the tree can hold, which
+    /// is the same case that leaves it with no sidecar and no provable sample.
+    pub fn root(&self) -> Option<Hash> {
+        self.sidecar.as_deref().map(slice_root_from_sidecar)
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Split into the parts `put_slice` writes.
+    pub fn into_parts(self) -> (Vec<u8>, Option<Vec<Hash>>) {
+        (self.data, self.sidecar)
+    }
+}
+
+impl From<Vec<u8>> for SliceWrite {
+    fn from(data: Vec<u8>) -> Self {
+        Self::new(data)
+    }
+}
 
 /// Snapshot build artifact retained until the corresponding `WriteSnapshot`
 /// event lands locally and the staged slice is flushed into `SliceCol`.
@@ -98,6 +144,37 @@ pub struct ObjectListEntry {
     pub kind: u64,
     /// Hot content type; precise custom strings are deferred to the data plane
     pub content_type: ContentType,
+}
+
+/// One track's standing in the challenge sample set for its group
+///
+/// Every field is chain-derived, so each owner writes the same row at the same
+/// point in replay. The slice length is the one the registered encoding
+/// produces, not the one a stored slice measures.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub struct TrackSample {
+    /// What the track contributes to the draw
+    pub kind: EntryKind,
+    /// The value hash the write registered
+    ///
+    /// Carried rather than read back off the track, because a track deleted
+    /// mid-round is still in the set while its record is gone.
+    pub value_hash: Hash,
+    /// Slot the registration finalized at
+    pub registered_slot: SlotNumber,
+    /// Slot a deletion finalized at, while rounds can still reference it
+    pub deleted_slot: Option<SlotNumber>,
+}
+
+impl TrackSample {
+    /// Whether this track is in the set a round cut at `cutoff` draws from.
+    ///
+    /// A deletion at or after the cut still belongs to the round, so observers
+    /// either side of a mid-round delete ask the same question.
+    pub fn in_set_at(&self, cutoff: SlotNumber) -> bool {
+        self.registered_slot < cutoff
+            && self.deleted_slot.is_none_or(|deleted| deleted >= cutoff)
+    }
 }
 
 /// Name metadata keyed by object track address

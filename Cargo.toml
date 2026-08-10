@@ -51,6 +51,7 @@ members = [
   "tools/tape-recover-assignment",
   "tools/tape-store-cli",
   "tools/tape-measure",
+  "lib/whirlwind",
 ]
 
 # Programs and test crates excluded from default cargo build/check:
@@ -94,7 +95,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "Apache-2.0"
 homepage = "https://tapedrive.io"
@@ -104,38 +105,38 @@ readme = "./README.md"
 keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
-tape-api = { version = "0.3.0", path = "./solana/api" }
-tape-blocks = { version = "0.3.0", path = "./lib/blocks" }
-tape-core = { version = "0.3.0", path = "./lib/core" }
-tape-crypto = { version = "0.3.0", path = "./lib/crypto" }
-tape-solana = { version = "0.3.0", path = "./solana/framework" }
+tape-api = { version = "0.4.0", path = "./solana/api" }
+tape-blocks = { version = "0.4.0", path = "./lib/blocks" }
+tape-core = { version = "0.4.0", path = "./lib/core" }
+tape-crypto = { version = "0.4.0", path = "./lib/crypto" }
+tape-solana = { version = "0.4.0", path = "./solana/framework" }
 
-rpc = { version = "0.3.0", path = "./solana/rpc" }
-rpc-solana = { version = "0.3.0", path = "./solana/rpc-solana" }
-rpc-client = { version = "0.3.0", path = "./solana/rpc-client" }
-rpc-litesvm = { version = "0.1.0", path = "./solana/rpc-litesvm" }
+rpc = { version = "0.4.0", path = "./solana/rpc" }
+rpc-solana = { version = "0.4.0", path = "./solana/rpc-solana" }
+rpc-client = { version = "0.4.0", path = "./solana/rpc-client" }
+rpc-litesvm = { version = "0.4.0", path = "./solana/rpc-litesvm" }
 
-tape-store = { version = "0.3.0", path = "./store/tape-store" }
-tape-slicer = { version = "0.3.0", path = "./lib/slicer" }
-tape-spooler = { version = "0.3.0", path = "./lib/spooler" }
-tape-snapshot = { version = "0.3.0", path = "./lib/snapshot" }
-store = { version = "0.3.0", path = "./store/store" }
-store-memory = { version = "0.3.0", path = "./store/store-memory" }
-store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
-tape-sdk = { version = "0.3.0", path = "./sdk" }
-tape-test = { version = "0.3.0", path = "./test" }
-tape-chain-harness = { version = "0.3.0", path = "./test/harness" }
-tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
-tape-observe-api = { version = "0.1.0", path = "./lib/observe-api" }
-tape-atlas = { version = "0.1.0", path = "./lib/atlas" }
-tape-gateway = { version = "0.3.0", path = "./network/gateway" }
-tape-node = { version = "0.3.0", path = "./network/node" }
-peer-manager = { version = "0.3.0", path = "./network/peer-manager" }
-peer-memory = { version = "0.3.0", path = "./network/peer-memory" }
-peer-http = { version = "0.3.0", path = "./network/peer-http" }
-peer-tls = { version = "0.3.0", path = "./network/peer-tls" }
-tape-protocol = { version = "0.3.0", path = "./network/protocol" }
-tape-retry = { version = "0.3.0", path = "./lib/retry" }
+tape-store = { version = "0.4.0", path = "./store/tape-store" }
+tape-slicer = { version = "0.4.0", path = "./lib/slicer" }
+tape-spooler = { version = "0.4.0", path = "./lib/spooler" }
+tape-snapshot = { version = "0.4.0", path = "./lib/snapshot" }
+store = { version = "0.4.0", path = "./store/store" }
+store-memory = { version = "0.4.0", path = "./store/store-memory" }
+store-rocks = { version = "0.4.0", path = "./store/store-rocks" }
+tape-sdk = { version = "0.4.0", path = "./sdk" }
+tape-test = { version = "0.4.0", path = "./test" }
+tape-chain-harness = { version = "0.4.0", path = "./test/harness" }
+tape-metrics = { version = "0.4.0", path = "./lib/metrics" }
+tape-observe-api = { version = "0.4.0", path = "./lib/observe-api" }
+tape-atlas = { version = "0.4.0", path = "./lib/atlas" }
+tape-gateway = { version = "0.4.0", path = "./network/gateway" }
+tape-node = { version = "0.4.0", path = "./network/node" }
+peer-manager = { version = "0.4.0", path = "./network/peer-manager" }
+peer-memory = { version = "0.4.0", path = "./network/peer-memory" }
+peer-http = { version = "0.4.0", path = "./network/peer-http" }
+peer-tls = { version = "0.4.0", path = "./network/peer-tls" }
+tape-protocol = { version = "0.4.0", path = "./network/protocol" }
+tape-retry = { version = "0.4.0", path = "./lib/retry" }
 dashmap = "6"
 ratatui = "0.29"
 crossterm = "0.28"

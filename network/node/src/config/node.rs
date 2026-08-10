@@ -10,6 +10,8 @@ use tape_crypto::ed25519::Keypair;
 use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
 
 use crate::core::error::NodeError;
+use super::challenge::ChallengeConfig;
+use super::eviction::EvictionConfig;
 use super::{
     gateway::{GatewayConfig, is_valid_origin},
     helpers::{deserialize_pathbuf, expand_path},
@@ -58,6 +60,14 @@ pub struct NodeConfig {
     /// HTTPS (pinned + mTLS) listener and TLS key material.
     #[serde(default)]
     pub https: HttpsConfig,
+
+    /// Whether this node runs the storage challenge.
+    #[serde(default)]
+    pub challenge: ChallengeConfig,
+
+    /// Whether this node takes part in evicting its peers.
+    #[serde(default)]
+    pub eviction: EvictionConfig,
 
     /// Local RocksDB storage settings.
     #[serde(default)]
@@ -455,6 +465,10 @@ https:
   listen: "0.0.0.0:3430"
   identity_keypair: "/etc/tape/tls.json"
   auto_update: false
+challenge:
+  enabled: false
+eviction:
+  enabled: false
 store:
   path: "/var/lib/tape/data"
   compaction_mb_per_sec: 80
@@ -536,6 +550,8 @@ metrics:
         assert_eq!(config.https.listen.to_string(), "0.0.0.0:3430");
         assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.json"));
         assert!(!config.https.auto_update);
+        assert!(!config.challenge.enabled);
+        assert!(!config.eviction.enabled);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
         assert_eq!(config.store.bulk_compaction_mb_per_sec, 40);
@@ -700,6 +716,36 @@ recovery:
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.repair_batch, 12);
         assert_eq!(config.recovery.sync_batch, 100);
+    }
+
+    #[test]
+    fn challenge_is_on_unless_turned_off() {
+        let config = NodeConfig::from_yaml_str(
+            r#"
+node:
+  name: "test"
+network:
+  host: "test"
+"#,
+        )
+        .unwrap();
+
+        assert!(config.challenge.enabled);
+    }
+
+    #[test]
+    fn eviction_is_on_unless_turned_off() {
+        let config = NodeConfig::from_yaml_str(
+            r#"
+node:
+  name: "test"
+network:
+  host: "test"
+"#,
+        )
+        .unwrap();
+
+        assert!(config.eviction.enabled);
     }
 
     #[test]

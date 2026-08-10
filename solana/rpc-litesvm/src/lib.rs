@@ -25,7 +25,7 @@ use solana_signature::Signature;
 use solana_transaction::{versioned::VersionedTransaction, Transaction};
 use solana_transaction_status::{
     ConfirmedTransactionWithStatusMeta, EncodedConfirmedTransactionWithStatusMeta,
-    TransactionWithStatusMeta, UiConfirmedBlock, UiTransactionEncoding,
+    TransactionWithStatusMeta, UiTransactionEncoding,
     VersionedTransactionWithStatusMeta,
 };
 use tape_crypto::address::Address;
@@ -412,7 +412,7 @@ impl Rpc for LiteSvmRpc {
         Ok(LITESVM_GENESIS_HASH)
     }
 
-    async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
+    async fn get_block(&self, slot: u64) -> Result<tape_blocks::wire::Block, RpcError> {
         let inner = self
             .inner
             .lock()
@@ -430,6 +430,7 @@ impl Rpc for LiteSvmRpc {
         })?;
 
         data.to_ui_confirmed_block()
+            .map(tape_blocks::wire::Block::from)
             .map_err(|e| RpcError::Internal(format!("failed to encode block: {e}")))
     }
 
