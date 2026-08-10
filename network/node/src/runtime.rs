@@ -386,8 +386,7 @@ where
             .run(),
         );
     } else {
-        // The lane is bounded and the ingestor writes to it regardless, so it
-        // still has to be read or block ingest stops at the first full buffer.
+        // Still drained, or block ingest stops at the first full buffer.
         info!("challenge disabled by config: opening no round, answering none");
         supervisor.spawn(
             ServiceName::ChallengeManager,

@@ -1,14 +1,11 @@
-//! A slice the uploader abandoned closes on its own.
+//! A slice the uploader abandons is repaired once its owner comes back.
 //!
 //! The uploader stops retrying a node the moment quorum accepts, so a node
-//! that is unreachable during a write never gets its slice and the write
-//! certifies without it. That is by design, and it leaves a gap: one owner
-//! holds nothing for a track its group has certified.
+//! that is down for a write never gets its slice and the write certifies
+//! without it, leaving one owner holding nothing for a certified track.
 //!
-//! This asserts the gap closes. The owner comes back, finds the slice missing
-//! for a spool it still owns, and fills it from the group. Reading the track
-//! proves nothing here, because a read only needs k slices and would succeed
-//! with the gap still open, so the assertion is against the victim's own store.
+//! Reading the track would prove nothing, because a read needs only k slices
+//! and succeeds with the gap still open. The assertion is on the owner's store.
 
 use std::time::{Duration, Instant};
 
@@ -29,8 +26,8 @@ const TARGET_GROUPS: u64 = 1;
 const STAKE: u64 = 1_000;
 const STEADY_EPOCH: u64 = 2;
 
-/// The repair is queued off the certify the victim replays on restart, and the
-/// spool manager wakes once a second, so this is slack rather than a budget.
+/// Slack rather than a budget: the repair is queued as soon as the victim
+/// replays the certify it missed.
 const HEAL_TIMEOUT: Duration = Duration::from_secs(180);
 
 // a slice stranded by an unreachable owner is repaired once that owner returns
@@ -112,8 +109,7 @@ async fn upload_gap_repair_inner() {
         "quorum without the stopped owner should still certify"
     );
 
-    // The gap the uploader left, read straight from the store rather than
-    // through any node that could answer for a peer.
+    // Read the gap from the store, not through a node that answers for a peer.
     assert!(
         node_slice(&harness, VICTIM, spool, track).is_none(),
         "the stopped owner should hold nothing for a track written while it was down"
