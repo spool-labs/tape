@@ -396,8 +396,9 @@ where
 
     // An operator that does not want to act on its records says so here. The
     // records are still kept and still shown, but nothing is proposed and no
-    // peer's proposal is signed.
-    if config.eviction.enabled {
+    // peer's proposal is signed. A node with the challenge off lands here too,
+    // having no record of its own to act on.
+    if config.eviction_enabled() {
         supervisor.spawn(
             ServiceName::EvictionManager,
             EvictionManager::new(context.clone(), receivers.eviction, cancel.clone()).run(),

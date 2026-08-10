@@ -121,6 +121,14 @@ impl GenesisPreset {
 
 
 impl NodeConfig {
+    /// Whether this node takes part in evicting its peers
+    ///
+    /// The challenge is what produces the evidence, so a node that does not run
+    /// it has nothing to propose or vote on whatever the eviction knob says.
+    pub fn eviction_enabled(&self) -> bool {
+        self.challenge.enabled && self.eviction.enabled
+    }
+
     /// Load configuration from a YAML file.
     pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let path = expand_path(path.as_ref());
@@ -716,6 +724,28 @@ recovery:
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.repair_batch, 12);
         assert_eq!(config.recovery.sync_batch, 100);
+    }
+
+    // the challenge is what produces eviction evidence, so turning it off takes
+    // eviction with it whatever the eviction knob says
+    #[test]
+    fn challenge_off_takes_eviction_with_it() {
+        let config = NodeConfig::from_yaml_str(
+            r#"
+node:
+  name: "test"
+network:
+  host: "test"
+challenge:
+  enabled: false
+eviction:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        assert!(config.eviction.enabled);
+        assert!(!config.eviction_enabled());
     }
 
     #[test]

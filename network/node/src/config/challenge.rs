@@ -8,6 +8,9 @@ use serde::Deserialize;
 /// attestation. It keeps sampling what it stores, so turning it back on needs
 /// no backfill. A node that answers nothing cannot be certified by its group,
 /// so this belongs on a fleet that has the challenge off everywhere.
+///
+/// Off also turns eviction off, since the challenge is what produces the
+/// evidence an eviction rests on.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct ChallengeConfig {
     /// Whether to run challenge rounds and serve the challenge routes.

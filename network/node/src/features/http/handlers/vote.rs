@@ -34,7 +34,7 @@ pub async fn vote<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // An operator that has turned eviction off signs nobody's proposal. The
     // proposer needs q of the group, so declining is a vote against by omission.
-    if request.candidate.kind == VoteKind::Eviction && !state.context.config.eviction.enabled {
+    if request.candidate.kind == VoteKind::Eviction && !state.context.config.eviction_enabled() {
         return Err(RouteError::Forbidden("eviction disabled on this node".into()));
     }
 

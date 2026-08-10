@@ -8,6 +8,9 @@ use serde::Deserialize;
 /// nothing and signs no peer's proposal. Records are one node's own observation
 /// either way, so an operator that does not want to act on them can say so
 /// without going dark on the mechanism.
+///
+/// A node with the challenge off is off here too whatever this says, having no
+/// record of its own to act on.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct EvictionConfig {
     /// Whether to propose evictions and sign peers' eviction votes.

@@ -379,7 +379,7 @@ where
             );
             // With eviction off there is no manager draining the queue, so
             // leave it empty. The record is kept either way.
-            if self.context.config.eviction.enabled {
+            if self.context.config.eviction_enabled() {
                 self.context.eviction_queue.insert(peer);
             }
         }
