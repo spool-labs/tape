@@ -15,7 +15,7 @@ use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
-use tape_protocol::api::{Api, ApiError, SlicePayload, PutSliceReq};
+use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::{mpsc, watch, Semaphore};
@@ -72,6 +72,7 @@ struct NodeUploadResult {
     stored: Vec<SpoolIndex>,
     failed: Vec<SpoolIndex>,
     not_responsible: Vec<SpoolIndex>,
+    receipt: Option<CertifyRes>,
 }
 
 impl DistributedUploader {
@@ -116,7 +117,7 @@ impl DistributedUploader {
     /// spool assignment. Returns as soon as a certification quorum of members
     /// and slices has landed; the remaining uploads keep running as detached
     /// tasks and any that fail are left for the recovery worker to handle.
-    pub async fn upload_all<P: Api>(&self, peer_client: Arc<P>) -> Result<(), UploadError> {
+    pub async fn upload_all<P: Api>(&self, peer_client: Arc<P>) -> Result<Vec<CertifyRes>, UploadError> {
         if self.group_peers.is_empty() {
             return Err(UploadError::NoNodesAvailable);
         }
@@ -149,6 +150,7 @@ impl DistributedUploader {
         // the full retry budget; after quorum, remaining uploads get one
         // attempt.
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
+        let node_count = node_groups.len();
         for (node, spools) in node_groups {
             let track = self.track;
             let concurrency_limit = self.concurrency_limit.clone();
@@ -210,6 +212,9 @@ impl DistributedUploader {
         let mut member_failures = 0;
         let mut fully_successful_members = 0;
         let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
+        // One receipt per owner: every slice that node stored signs the same
+        // track hash, so the rest are duplicates.
+        let mut receipts: Vec<CertifyRes> = Vec::with_capacity(node_count);
 
         while let Some(result) = result_receiver.recv().await {
             match result {
@@ -217,6 +222,7 @@ impl DistributedUploader {
                     total_failed_slices += node.failed.len();
                     not_responsible_count += node.not_responsible.len();
                     stored_slices.extend(node.stored);
+                    receipts.extend(node.receipt);
                     if node.failed.is_empty() && node.not_responsible.is_empty() {
                         fully_successful_members += 1;
                     }
@@ -245,7 +251,7 @@ impl DistributedUploader {
                     required_slices,
                     "slice upload quorum reached, draining remaining uploads in the background"
                 );
-                return Ok(());
+                return Ok(receipts);
             }
         }
 
@@ -321,10 +327,14 @@ async fn upload_node_slices<P: Api>(
     let mut stored = Vec::new();
     let mut failed = Vec::new();
     let mut not_responsible = Vec::new();
+    let mut receipt = None;
 
     for (global_spool, result) in join_all(uploads).await {
         match result {
-            Ok(()) => stored.push(global_spool),
+            Ok(signed) => {
+                stored.push(global_spool);
+                receipt.get_or_insert(signed);
+            }
             Err(e) => {
                 warn!(
                     track = %track,
@@ -342,7 +352,7 @@ async fn upload_node_slices<P: Api>(
         }
     }
 
-    Ok(NodeUploadResult { stored, failed, not_responsible })
+    Ok(NodeUploadResult { stored, failed, not_responsible, receipt })
 }
 
 /// Whether a slice push should retry
@@ -360,13 +370,13 @@ async fn upload_slice_with_retry<P: Api>(
     req: PutSliceReq,
     payload_bytes: usize,
     mut quorum: watch::Receiver<bool>,
-) -> Result<(), ApiError> {
+) -> Result<CertifyRes, ApiError> {
     let started = Instant::now();
     let mut backoff = Backoff::new(RetryConfig::ten());
 
     loop {
         match peer_client.put_slice(node, &req).await {
-            Ok(_) => return Ok(()),
+            Ok(response) => return Ok(response.receipt),
             Err(error) => {
                 if !should_retry_put_slice(&error) {
                     warn!(

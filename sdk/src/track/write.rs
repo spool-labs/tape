@@ -25,6 +25,7 @@ use tape_core::types::ContentType;
 use tape_crypto::hash::hash;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
+use tape_protocol::api::CertifyRes;
 use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
 use tape_protocol::api::GetTrackByNumberReq;
@@ -293,7 +294,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         &self,
         written: &WrittenTrack,
         plan: &UploadPlan,
-    ) -> Result<(), TapedriveError> {
+    ) -> Result<Vec<CertifyRes>, TapedriveError> {
         let bytes = plan.slices.iter().map(|slice| slice.data.len() as u64).sum();
         let timer = self
             .timer(Operation::Upload, Phase::Total)
@@ -319,7 +320,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ) -> Result<(), TapedriveError> {
         let timer = self.timer(Operation::Certify, Phase::Total).chunks(1);
 
-        let result = certify_once(self, tape_key, written, Operation::Certify, &mut None).await;
+        let result =
+            certify_once(self, tape_key, written, Operation::Certify, &mut None, &[]).await;
 
         timer.finish_result(&result);
         result
@@ -735,7 +737,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     group: GroupIndex,
     slices: Vec<SliceWithProof>,
     operation: Operation,
-) -> Result<(), TapedriveError> {
+) -> Result<Vec<CertifyRes>, TapedriveError> {
     let bytes = slices.iter().map(|slice| slice.data.len() as u64).sum();
     let chunks = slices.len() as u64;
 
@@ -779,7 +781,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
     written: &WrittenTrack,
     plan: &UploadPlan,
     operation: Operation,
-) -> Result<(), TapedriveError> {
+) -> Result<Vec<CertifyRes>, TapedriveError> {
     let eager = upload_once(
         client,
         written.address,
@@ -789,7 +791,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
     )
     .await;
     match eager {
-        Ok(()) => return Ok(()),
+        Ok(receipts) => return Ok(receipts),
         Err(err) if should_retry_upload(&err) => {
             debug!(error = %err, "eager upload failed; waiting for track visibility");
         }
@@ -943,13 +945,20 @@ pub(crate) async fn collect_certification<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     written: &WrittenTrack,
     operation: Operation,
+    banked: &[CertifyRes],
 ) -> Result<CollectedSignatures, TapedriveError> {
     let collect = client.timer(operation, Phase::CertifyCollect);
     let result = async {
         let state = bootstrap_network_state(client, Some(operation)).await?;
         let collector = CertificationCollector::with_defaults();
         collector
-            .collect_signatures(client.api.as_ref(), &written.address, written.track.group, &state)
+            .collect_signatures(
+                client.api.as_ref(),
+                &written.address,
+                written.track.group,
+                &state,
+                banked,
+            )
             .await
             .map_err(TapedriveError::Certification)
     }
@@ -1197,15 +1206,29 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         // mirror's sequence; those writes certify through the peer path.
         let mirrored = mirror.append(&written.track).is_ok();
 
-        upload_with_retry(client, &written, &plan, Operation::WriteTrack).await?;
+        let receipts = upload_with_retry(client, &written, &plan, Operation::WriteTrack).await?;
 
         if !mirrored {
-            return certify_with_retry(client, tape_key, &written, Operation::WriteTrack)
-                .await
-                .map(|track| ObjectWrite::coded(track, commitment));
+            return certify_with_retry(
+                client,
+                tape_key,
+                &written,
+                Operation::WriteTrack,
+                &receipts,
+            )
+            .await
+            .map(|track| ObjectWrite::coded(track, commitment));
         }
 
-        certify_with_mirror(client, tape_key, &mirror, &written, Operation::WriteTrack).await?;
+        certify_with_mirror(
+            client,
+            tape_key,
+            &mirror,
+            &written,
+            Operation::WriteTrack,
+            &receipts,
+        )
+        .await?;
 
         // The certify transaction is confirmed, so the on-chain leaf is
         // final; readers poll peers, so their visibility is not waited on.
@@ -1401,8 +1424,8 @@ pub(crate) async fn finish_coded_track<Blockchain: Rpc, Cluster: Api>(
         address: track_pda(existing.tape, existing.track_number).0,
         track: existing,
     };
-    upload_with_retry(client, &written, plan, operation).await?;
-    certify_with_retry(client, operator, &written, operation).await
+    let receipts = upload_with_retry(client, &written, plan, operation).await?;
+    certify_with_retry(client, operator, &written, operation, &receipts).await
 }
 
 /// Certify a written track with a proof from a mirror seeded before its
@@ -1416,19 +1439,28 @@ async fn certify_with_mirror<Blockchain: Rpc, Cluster: Api>(
     mirror: &ArchiveMirror,
     written: &WrittenTrack,
     operation: Operation,
+    banked: &[CertifyRes],
 ) -> Result<(), TapedriveError> {
-    let collected = match collect_certification(client, written, operation).await {
+    let collected = match collect_certification(client, written, operation, banked).await {
         Ok(collected) => collected,
         Err(err) if should_retry_certification(&err) => {
             debug!(error = %err, "signature collection failed; falling back to peer proofs");
-            return certify_submit_with_retry(client, tape_key, written, operation, None).await;
+            return certify_submit_with_retry(client, tape_key, written, operation, None, banked)
+                .await;
         }
         Err(err) => return Err(err),
     };
 
     let Ok(proof) = mirror.proof_for(written.track.track_number) else {
-        return certify_submit_with_retry(client, tape_key, written, operation, Some(collected))
-            .await;
+        return certify_submit_with_retry(
+            client,
+            tape_key,
+            written,
+            operation,
+            Some(collected),
+            banked,
+        )
+        .await;
     };
 
     let submitted = submit_certification_with_proof(
@@ -1445,7 +1477,7 @@ async fn certify_with_mirror<Blockchain: Rpc, Cluster: Api>(
         Err(err) if should_retry_certification(&err) => {
             warn!(error = %err, track = %written.address, "mirror-proof certify failed; falling back to peer proofs");
             let collected = (!needs_fresh_signatures(&err)).then_some(collected);
-            certify_submit_with_retry(client, tape_key, written, operation, collected).await
+            certify_submit_with_retry(client, tape_key, written, operation, collected, banked).await
         }
         Err(err) => Err(err),
     }
@@ -1456,7 +1488,7 @@ pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
     written: &WrittenTrack,
     plan: &UploadPlan,
     operation: Operation,
-) -> Result<(), TapedriveError> {
+) -> Result<Vec<CertifyRes>, TapedriveError> {
     retry_if(
         write_retry_config(),
         None,
@@ -1474,10 +1506,11 @@ async fn certify_once<Blockchain: Rpc, Cluster: Api>(
     written: &WrittenTrack,
     operation: Operation,
     collected: &mut Option<CollectedSignatures>,
+    banked: &[CertifyRes],
 ) -> Result<(), TapedriveError> {
     let signatures = match collected.take() {
         Some(signatures) => signatures,
-        None => collect_certification(client, written, operation).await?,
+        None => collect_certification(client, written, operation, banked).await?,
     };
     let result = submit_certification(client, tape_key, written, &signatures, operation).await;
     *collected = Some(signatures);
@@ -1495,11 +1528,12 @@ pub(crate) async fn certify_submit_with_retry<Blockchain: Rpc, Cluster: Api>(
     written: &WrittenTrack,
     operation: Operation,
     mut collected: Option<CollectedSignatures>,
+    banked: &[CertifyRes],
 ) -> Result<(), TapedriveError> {
     let mut backoff = Backoff::new(write_retry_config());
 
     loop {
-        match certify_once(client, tape_key, written, operation, &mut collected).await {
+        match certify_once(client, tape_key, written, operation, &mut collected, banked).await {
             Ok(()) => return Ok(()),
             Err(err) if should_retry_certification(&err) => {
                 if needs_fresh_signatures(&err) {
@@ -1536,8 +1570,9 @@ pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
     tape_key: &impl TapeOperator,
     written: &WrittenTrack,
     operation: Operation,
+    banked: &[CertifyRes],
 ) -> Result<CompressedTrack, TapedriveError> {
-    certify_submit_with_retry(client, tape_key, written, operation, None).await?;
+    certify_submit_with_retry(client, tape_key, written, operation, None, banked).await?;
 
     let visible = client.timer(operation, Phase::CertifyVisible).chunks(1);
     let result = wait_for_certified_track(client, &tape_key.address(), written.track.track_number).await;

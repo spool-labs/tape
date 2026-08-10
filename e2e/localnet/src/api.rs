@@ -71,10 +71,7 @@ fn to_network(view: &LocalnetView) -> tape_observe_api::Network {
         })
         .collect();
     obs::Network {
-        generated_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        generated_at: now_secs(),
         epoch: c.epoch,
         phase: c.phase.clone(),
         phase_index: c.phase_index,
@@ -195,4 +192,11 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
         }),
     )
         .into_response()
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
 }
