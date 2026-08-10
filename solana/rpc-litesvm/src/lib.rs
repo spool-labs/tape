@@ -603,6 +603,7 @@ impl Rpc for LiteSvmRpc {
             Err(failed) => Err(RpcError::Transaction {
                 message: transaction_error(&failed.err, &failed.meta.logs),
                 err: Some(failed.err),
+                simulated: false,
             }),
         }
     }

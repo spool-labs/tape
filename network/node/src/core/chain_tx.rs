@@ -159,7 +159,7 @@ where
     } else {
         TxOutcome::SkippedStale
     };
-    record_lifecycle_tx(action, outcome.metric_label());
+    record_lifecycle_tx(action, outcome.metric_label(), outcome.sent_label());
     outcome
 }
 
@@ -187,6 +187,23 @@ impl TxOutcome {
                 TxRejectionKind::UnknownExecution => "unknown",
                 TxRejectionKind::Transport => "transport",
             },
+        }
+    }
+
+    /// Prometheus label for whether this outcome cost a transaction fee. A
+    /// rejection the simulation caught never reached the chain, and a submit
+    /// refused for stale ingest was never built, so neither was paid for.
+    fn sent_label(&self) -> &'static str {
+        match self {
+            TxOutcome::Confirmed(_) => "true",
+            TxOutcome::SkippedStale => "false",
+            TxOutcome::Rejected { err, .. } => {
+                if err.is_simulated() {
+                    "false"
+                } else {
+                    "true"
+                }
+            }
         }
     }
 
@@ -219,16 +236,17 @@ pub async fn wait_by_pace<State>(
     }
 }
 
-/// Count one lifecycle or consensus transaction submission by action and outcome.
+/// Count one lifecycle or consensus transaction submission by action, outcome,
+/// and whether it reached the chain and paid a fee.
 #[cfg(feature = "metrics")]
-fn record_lifecycle_tx(action: &str, outcome: &str) {
+fn record_lifecycle_tx(action: &str, outcome: &str, sent: &str) {
     if let Some(counter) = lifecycle_tx_counter() {
-        counter.with_label_values(&[action, outcome]).inc();
+        counter.with_label_values(&[action, outcome, sent]).inc();
     }
 }
 
 #[cfg(not(feature = "metrics"))]
-fn record_lifecycle_tx(_action: &str, _outcome: &str) {}
+fn record_lifecycle_tx(_action: &str, _outcome: &str, _sent: &str) {}
 
 /// Lazily build and register the lifecycle transaction counter in the default
 /// registry. None if a counter of the same name is already registered, in which
@@ -242,9 +260,9 @@ fn lifecycle_tx_counter() -> Option<&'static tape_metrics::IntCounterVec> {
             let counter = tape_metrics::IntCounterVec::new(
                 tape_metrics::prometheus::Opts::new(
                     "tape_node_lifecycle_tx_total",
-                    "Lifecycle and consensus transaction submissions by action and outcome",
+                    "Lifecycle and consensus transaction submissions by action, outcome, and whether they were sent",
                 ),
-                &["action", "outcome"],
+                &["action", "outcome", "sent"],
             )
             .ok()?;
             tape_metrics::prometheus::default_registry()
@@ -271,6 +289,7 @@ mod tests {
         RpcError::Transaction {
             err: None,
             message: message.to_string(),
+            simulated: false,
         }
     }
 
@@ -305,6 +324,26 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn sent_label_separates_free_rejections() {
+        let landed = classify_tx(Err(text_error("custom program error: 0x51")));
+        assert_eq!(landed.sent_label(), "true");
+
+        let dropped = classify_tx(Err(RpcError::Transaction {
+            err: Some(TransactionError::InstructionError(
+                1,
+                InstructionError::AccountAlreadyInitialized,
+            )),
+            message: "instruction requires an uninitialized account".to_string(),
+            simulated: true,
+        }));
+        assert_eq!(dropped.metric_label(), "contention");
+        assert_eq!(dropped.sent_label(), "false");
+
+        assert_eq!(classify_tx(Ok(test_txid(4))).sent_label(), "true");
+        assert_eq!(TxOutcome::SkippedStale.sent_label(), "false");
     }
 
     #[test]
@@ -357,6 +396,7 @@ mod tests {
             )),
             message: "Error processing Instruction 1: instruction requires an uninitialized account"
                 .to_string(),
+            simulated: false,
         };
         assert!(matches!(
             classify_rejection(&contention),
@@ -370,6 +410,7 @@ mod tests {
             )),
             message: "Error processing Instruction 1: invalid account data for instruction"
                 .to_string(),
+            simulated: false,
         };
         assert!(matches!(
             classify_rejection(&stale),
@@ -382,6 +423,7 @@ mod tests {
                 InstructionError::ComputationalBudgetExceeded,
             )),
             message: "Error processing Instruction 1: Computational budget exceeded".to_string(),
+            simulated: false,
         };
         assert!(matches!(
             classify_rejection(&budget),

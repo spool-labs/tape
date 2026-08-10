@@ -359,6 +359,7 @@ impl<R: Rpc> RpcClient<R> {
         Some(RpcError::Transaction {
             err: Some(err),
             message,
+            simulated: true,
         })
     }
 
