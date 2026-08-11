@@ -43,8 +43,5 @@ pub trait Api: Send + Sync + 'static {
     async fn attest(&self, node: Address, req: &AttestReq) -> Result<AttestRes, ApiError>;
     async fn get_health(&self, node: Address, req: &GetHealthReq) -> Result<GetHealthRes, ApiError>;
     async fn get_stats(&self, node: Address, req: &GetStatsReq) -> Result<GetStatsRes, ApiError>;
-
-    /// Fetch a peer's board as raw JSON bytes, returned verbatim so a proxy can
-    /// re-serve them without re-encoding.
     async fn get_observe_board(&self, node: Address) -> Result<Vec<u8>, ApiError>;
 }
