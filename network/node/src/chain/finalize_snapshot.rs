@@ -20,6 +20,6 @@ pub async fn submit_finalize_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_finalize_snapshot_ix(fee_payer, epoch, tape);
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), FINALIZE_SNAPSHOT_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), FINALIZE_SNAPSHOT_CU, vec![ix])
         .await
 }

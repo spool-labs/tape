@@ -24,6 +24,6 @@ pub async fn submit_vote_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_vote_snapshot_ix(fee_payer, epoch, hash, group, bitmap, signature);
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), VOTE_SNAPSHOT_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), VOTE_SNAPSHOT_CU, vec![ix])
         .await
 }

@@ -104,7 +104,7 @@ pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
     }
 
     let msg = match err {
-        RpcError::Transaction { err: None, message, .. } => message,
+        RpcError::Transaction { err: None, message } => message,
         RpcError::Request(msg) if looks_like_transaction_error(msg) => msg,
         _ => return None,
     };
@@ -135,7 +135,6 @@ mod tests {
                 InstructionError::Custom(code),
             )),
             message: format!("custom program error: {code:#x}"),
-            simulated: false,
         }
     }
 
@@ -157,7 +156,6 @@ mod tests {
         let err = RpcError::Transaction {
             err: None,
             message: "custom program error: 0x52".to_string(),
-            simulated: false,
         };
         assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadyAdvanced));
     }
@@ -167,7 +165,6 @@ mod tests {
         let err = RpcError::Transaction {
             err: None,
             message: "TransactionError::InstructionError(0, Custom(81))".to_string(),
-            simulated: false,
         };
         assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadySynced));
     }

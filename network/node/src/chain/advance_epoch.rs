@@ -18,35 +18,22 @@ pub async fn submit_advance_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_advance_epoch_ix(fee_payer, current_epoch);
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), ADVANCE_EPOCH_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), ADVANCE_EPOCH_CU, vec![ix])
         .await
 }
 
 #[cfg(test)]
 mod tests {
-    use rpc::Rpc;
     use tape_api::errors::TapeError;
     use tape_core::system::EpochPhase;
     use tape_core::types::EpochNumber;
-    use tape_crypto::address::Address;
 
     use super::submit_advance_epoch;
     use crate::core::chain_tx::{TxOutcome, TxRejectionKind, classify_tx};
-    use crate::harness::{NodeHarness, TestContext};
+    use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
     const NODE: usize = 7;
-    const RIVAL: usize = 11;
-
-    async fn fee_payer_balance(ctx: &TestContext) -> u64 {
-        let payer: Address = ctx.pubkey().into();
-        ctx.rpc
-            .rpc()
-            .get_account(&payer)
-            .await
-            .expect("fetch fee payer")
-            .lamports
-    }
 
     #[tokio::test]
     async fn success() {
@@ -74,34 +61,6 @@ mod tests {
         assert_eq!(current.state.phase(), Some(EpochPhase::Completed));
         assert_eq!(next.id, next_epoch);
         assert_eq!(next.state.phase(), Some(EpochPhase::Sync));
-    }
-
-    #[tokio::test]
-    async fn losing_the_race_costs_nothing() {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Closing)
-            .next_committee_size(20)
-            .advance_ready()
-            .build()
-            .await
-            .expect("build harness");
-        let winner = harness.ctx_for(NODE);
-        let rival = harness.ctx_for(RIVAL);
-
-        submit_advance_epoch(&winner)
-            .await
-            .expect("submit advance epoch");
-
-        // The rival still holds the pre-advance state, so it submits for an
-        // epoch that has already moved on.
-        let before = fee_payer_balance(&rival).await;
-        let outcome = classify_tx(submit_advance_epoch(&rival).await);
-        let after = fee_payer_balance(&rival).await;
-
-        assert!(matches!(outcome, TxOutcome::Rejected { .. }));
-        assert_eq!(before, after, "rejected submit paid a transaction fee");
     }
 
     #[tokio::test]

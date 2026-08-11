@@ -37,6 +37,16 @@ pub const fn has_honest_signer(weight: u64, total: u64) -> bool {
     weight > tolerated
 }
 
+/// Participants required to reconstruct the data with at least one honest owner.
+pub const fn recovery_threshold(total: u64, reconstruct_k: u64) -> u64 {
+    let honest = max_faulty(total) + 1;
+    if reconstruct_k > honest {
+        reconstruct_k
+    } else {
+        honest
+    }
+}
+
 /// Finds the highest value where the cumulative weight of all votes for that value and higher
 /// achieves a supermajority. If no such value exists, it returns 0.
 ///
@@ -179,5 +189,12 @@ mod tests {
         assert!(hp > 0);
         assert!(lf > 0);
         assert!(lf >= hp);
+    }
+
+    #[test]
+    fn recovery() {
+        assert_eq!(recovery_threshold(20, 7), 7);
+        assert_eq!(recovery_threshold(20, 9), 9);
+        assert_eq!(recovery_threshold(4, 2), 2);
     }
 }

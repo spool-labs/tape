@@ -19,6 +19,6 @@ pub async fn submit_propose_assignment<Db: Store, Cluster: Api, Blockchain: Rpc>
     let ix = build_propose_assignment_ix(fee_payer, epoch, hash);
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), PROPOSE_ASSIGNMENT_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), PROPOSE_ASSIGNMENT_CU, vec![ix])
         .await
 }

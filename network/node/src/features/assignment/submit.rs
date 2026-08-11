@@ -18,10 +18,11 @@ use tracing::{debug, info};
 
 use crate::chain::{submit_finalize_group, submit_propose_assignment, submit_vote_assignment};
 use crate::context::NodeContext;
-use crate::core::chain_tx::{submit_if_at_tip, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{await_submit_turn, submit_if_at_tip, TxOutcome, TxRejectionKind};
 use crate::core::error::NodeError;
 use crate::features::assignment::build::AssignmentCandidate;
 use crate::features::assignment::vote::vote_candidate;
+use crate::features::lifecycle::manager::committee_rank;
 use crate::features::vote::{bitmap_index_in_group, member_groups};
 
 pub async fn submit_assignment_proposal<Db, Cluster, Blockchain>(
@@ -45,14 +46,20 @@ where
         return Ok(());
     }
 
-    // Skip proposing if another member's proposal for this voting epoch already
-    // landed, or the round already reached a canonical assignment hash.
+    if await_submit_turn(committee_rank(&state, me), cancel).await {
+        return Ok(());
+    }
+
+    // Re-read after the wait: skip proposing if another member's proposal for
+    // this voting epoch already landed, or the round already reached a canonical
+    // assignment hash, while this node waited its turn.
     if proposed
         .lock()
         .is_ok_and(|seen| seen.contains(&candidate.voting_epoch))
     {
         return Ok(());
     }
+    let state = ctx.state();
     if state
         .next_epoch
         .as_ref()
@@ -156,6 +163,10 @@ where
 {
     let me = ctx.node_address();
     if state.find_member(me).is_none() {
+        return Ok(());
+    }
+
+    if await_submit_turn(committee_rank(state, me), cancel).await {
         return Ok(());
     }
 
@@ -332,9 +343,14 @@ where
         return Ok(());
     }
 
-    // Bail if the round left Closing, or every group is already finalized.
-    // Groups can finalize out of order, so they are not skipped by index; a
-    // re-submit of a finalized group is dropped by its simulation.
+    if await_submit_turn(committee_rank(&state, me), cancel).await {
+        return Ok(());
+    }
+
+    // Re-read after the wait: bail if the round left Closing, or every group
+    // is already finalized. Groups can finalize out of order, so they are not
+    // skipped by index; a re-submit of a finalized group is cheaply rejected.
+    let state = ctx.state();
     if state.epoch() != candidate.voting_epoch || state.phase() != EpochPhase::Closing {
         return Ok(());
     }

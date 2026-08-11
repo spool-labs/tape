@@ -24,6 +24,6 @@ pub async fn submit_vote_eviction<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_vote_eviction_ix(fee_payer, epoch, node, group, bitmap, signature);
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), VOTE_EVICTION_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), VOTE_EVICTION_CU, vec![ix])
         .await
 }

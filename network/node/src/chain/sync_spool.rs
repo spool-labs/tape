@@ -29,7 +29,7 @@ pub async fn submit_sync_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
     );
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), SYNC_SPOOL_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), SYNC_SPOOL_CU, vec![ix])
         .await
 }
 

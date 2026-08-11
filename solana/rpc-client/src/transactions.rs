@@ -27,35 +27,6 @@ impl SolanaSigner for SolanaSignerAdapter<'_> {
     }
 }
 
-/// Per-call knobs for one transaction submission.
-#[derive(Clone, Copy)]
-struct SubmitOptions {
-    /// Wait for the transaction to reach `commitment` before returning.
-    confirm: bool,
-    /// Commitment the confirmation waits for.
-    commitment: CommitmentLevel,
-    /// Skip the RPC node's own preflight simulation.
-    skip_preflight: bool,
-    /// Simulate before sending, and drop the send if the simulation fails.
-    simulate_first: bool,
-    /// Metrics label for this operation.
-    operation: &'static str,
-}
-
-impl SubmitOptions {
-    /// Confirmed send, preflight skipped, no pre-send simulation. Override
-    /// single fields with struct update syntax.
-    fn new(commitment: CommitmentLevel, operation: &'static str) -> Self {
-        Self {
-            confirm: true,
-            commitment,
-            skip_preflight: true,
-            simulate_first: false,
-            operation,
-        }
-    }
-}
-
 impl<R: Rpc> RpcClient<R> {
     /// Build and send a transaction from instructions
     ///
@@ -87,7 +58,10 @@ impl<R: Rpc> RpcClient<R> {
             payer,
             &[],
             &instructions,
-            SubmitOptions::new(self.rpc().commitment(), "send_instructions"),
+            true,
+            self.rpc().commitment(),
+            true,
+            "send_instructions",
         )
         .await
     }
@@ -111,7 +85,9 @@ impl<R: Rpc> RpcClient<R> {
             &[],
             compute_unit_limit,
             instructions,
-            SubmitOptions::new(self.rpc().commitment(), "send_instructions"),
+            self.rpc().commitment(),
+            true,
+            "send_instructions",
         )
         .await
     }
@@ -145,7 +121,10 @@ impl<R: Rpc> RpcClient<R> {
             payer,
             signers,
             &instructions,
-            SubmitOptions::new(self.rpc().commitment(), "send_instructions_with_signers"),
+            true,
+            self.rpc().commitment(),
+            true,
+            "send_instructions_with_signers",
         )
         .await
     }
@@ -168,57 +147,9 @@ impl<R: Rpc> RpcClient<R> {
             signers,
             compute_unit_limit,
             instructions,
-            SubmitOptions {
-                skip_preflight,
-                ..SubmitOptions::new(commitment, "send_instructions_with_signers")
-            },
-        )
-        .await
-    }
-
-    /// Simulate the instructions first and only send when the simulation
-    /// succeeds.
-    ///
-    /// Contended protocol transactions are submitted by several committee
-    /// members at once. Whoever loses the race would otherwise land a failing
-    /// transaction and pay its fee for nothing. A failed simulation is
-    /// returned in the same shape a landed failure produces, so callers
-    /// classify it and pace their retries the same way.
-    pub async fn simulate_then_send(
-        &self,
-        payer: &dyn TapeSigner,
-        instructions: Vec<Instruction>,
-    ) -> Result<Txid, RpcError> {
-        self.submit(
-            payer,
-            &[],
-            &instructions,
-            SubmitOptions {
-                simulate_first: true,
-                ..SubmitOptions::new(self.rpc().commitment(), "simulate_then_send")
-            },
-        )
-        .await
-    }
-
-    /// `simulate_then_send` under a fixed compute unit limit. Budget
-    /// exhaustion is caught by the simulation, so the measured-limit resend in
-    /// `send_capped` now costs nothing to trigger.
-    pub async fn simulate_then_send_with_compute_unit_limit(
-        &self,
-        payer: &dyn TapeSigner,
-        compute_unit_limit: u32,
-        instructions: Vec<Instruction>,
-    ) -> Result<Txid, RpcError> {
-        self.send_capped(
-            payer,
-            &[],
-            compute_unit_limit,
-            instructions,
-            SubmitOptions {
-                simulate_first: true,
-                ..SubmitOptions::new(self.rpc().commitment(), "simulate_then_send")
-            },
+            commitment,
+            skip_preflight,
+            "send_instructions_with_signers",
         )
         .await
     }
@@ -249,10 +180,10 @@ impl<R: Rpc> RpcClient<R> {
             payer,
             &[],
             &instructions,
-            SubmitOptions {
-                confirm: false,
-                ..SubmitOptions::new(self.rpc().commitment(), "send_instructions_async")
-            },
+            false,
+            self.rpc().commitment(),
+            true,
+            "send_instructions_async",
         )
         .await
     }
@@ -281,13 +212,10 @@ impl<R: Rpc> RpcClient<R> {
             payer,
             signers,
             &instructions,
-            SubmitOptions {
-                confirm: false,
-                ..SubmitOptions::new(
-                    self.rpc().commitment(),
-                    "send_instructions_with_signers_async",
-                )
-            },
+            false,
+            self.rpc().commitment(),
+            true,
+            "send_instructions_with_signers_async",
         )
         .await
     }
@@ -300,14 +228,18 @@ impl<R: Rpc> RpcClient<R> {
         signers: &[&dyn TapeSigner],
         compute_unit_limit: u32,
         instructions: Vec<Instruction>,
-        options: SubmitOptions,
+        commitment: CommitmentLevel,
+        skip_preflight: bool,
+        operation: &'static str,
     ) -> Result<Txid, RpcError> {
         let mut capped = instructions;
         capped.insert(
             0,
             ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit),
         );
-        let result = self.submit(payer, signers, &capped, options).await;
+        let result = self
+            .submit(payer, signers, &capped, true, commitment, skip_preflight, operation)
+            .await;
 
         let Err(err) = &result else {
             return result;
@@ -331,36 +263,8 @@ impl<R: Rpc> RpcClient<R> {
         );
 
         capped[0] = ComputeBudgetInstruction::set_compute_unit_limit(measured);
-        self.submit(payer, signers, &capped, options).await
-    }
-
-    /// Simulate a signed transaction and report an execution failure as the
-    /// rejection the caller would have got by sending it.
-    ///
-    /// None when the simulation passed, and also when the simulation itself
-    /// could not be run: an unreachable simulate endpoint must not stop the
-    /// node from submitting, and a real send reports the truth either way.
-    ///
-    /// The simulation runs at the client's commitment rather than through the
-    /// RPC node's preflight, which defaults to the finalized bank and would
-    /// reject transactions whose precondition landed seconds ago.
-    async fn simulation_rejection(&self, transaction: &Transaction) -> Option<RpcError> {
-        let simulation = match self.rpc().simulate_transaction(transaction).await {
-            Ok(simulation) => simulation,
-            Err(err) => {
-                tracing::debug!(%err, "simulation unavailable, sending anyway");
-                return None;
-            }
-        };
-
-        let err = simulation.err?;
-        let message = err.to_string();
-        tracing::debug!(%message, "simulation failed, transaction not sent");
-        Some(RpcError::Transaction {
-            err: Some(err),
-            message,
-            simulated: true,
-        })
+        self.submit(payer, signers, &capped, true, commitment, skip_preflight, operation)
+            .await
     }
 
     /// Simulate a probe batch already capped at the runtime ceiling and return
@@ -396,10 +300,13 @@ impl<R: Rpc> RpcClient<R> {
         payer: &dyn TapeSigner,
         signers: &[&dyn TapeSigner],
         instructions: &[Instruction],
-        options: SubmitOptions,
+        confirm: bool,
+        commitment: CommitmentLevel,
+        skip_preflight: bool,
+        operation: &'static str,
     ) -> Result<Txid, RpcError> {
         #[cfg(not(feature = "metrics"))]
-        let _ = options.operation;
+        let _ = operation;
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
@@ -408,19 +315,9 @@ impl<R: Rpc> RpcClient<R> {
                 .build_signed_transaction(payer, signers, instructions)
                 .await?;
 
-            if options.simulate_first {
-                if let Some(rejection) = self.simulation_rejection(&transaction).await {
-                    return Err(rejection);
-                }
-            }
-
-            if options.confirm {
+            if confirm {
                 self.rpc()
-                    .send_and_confirm_transaction(
-                        &transaction,
-                        options.commitment,
-                        options.skip_preflight,
-                    )
+                    .send_and_confirm_transaction(&transaction, commitment, skip_preflight)
                     .await
             } else {
                 self.rpc().send_transaction(&transaction).await
@@ -434,19 +331,19 @@ impl<R: Rpc> RpcClient<R> {
                 Ok(_) => {
                     metrics.record_transaction_success();
                     if let Some(timer) = &timer {
-                        if options.confirm {
+                        if confirm {
                             metrics.record_transaction_confirmation("confirmed", timer);
                         }
-                        metrics.record_operation(options.operation, "success", timer);
+                        metrics.record_operation(operation, "success", timer);
                     }
                 }
                 Err(_) => {
                     metrics.record_transaction_error();
                     if let Some(timer) = &timer {
-                        if options.confirm {
+                        if confirm {
                             metrics.record_transaction_confirmation("error", timer);
                         }
-                        metrics.record_operation(options.operation, "error", timer);
+                        metrics.record_operation(operation, "error", timer);
                     }
                 }
             }

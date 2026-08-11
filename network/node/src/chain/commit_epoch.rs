@@ -17,7 +17,7 @@ pub async fn submit_commit_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_commit_epoch_ix(fee_payer, current_epoch);
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), COMMIT_EPOCH_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), COMMIT_EPOCH_CU, vec![ix])
         .await
 }
 

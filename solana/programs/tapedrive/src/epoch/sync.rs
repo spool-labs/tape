@@ -1,5 +1,6 @@
 use tape_api::program::prelude::*;
 use tape_api::event::SpoolSynced;
+use tape_core::encoding::ClayParams;
 
 pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SyncSpool::try_from_bytes(data)?;
@@ -65,17 +66,15 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(TapeError::AlreadySynced.into());
     }
 
-    let was_quorum = has_honest_signer(
-        group.synced.count_ones() as u64,
+    let required = recovery_threshold(
         GROUP_SIZE as u64,
+        ClayParams::DEFAULT.k() as u64,
     );
+    let was_recoverable = group.synced.count_ones() as u64 >= required;
     group.synced.set(slice_idx);
-    let now_quorum = has_honest_signer(
-        group.synced.count_ones() as u64,
-        GROUP_SIZE as u64,
-    );
+    let is_recoverable = group.synced.count_ones() as u64 >= required;
 
-    if !was_quorum && now_quorum {
+    if !was_recoverable && is_recoverable {
         epoch.state.synced_count = epoch.state.synced_count.saturating_add(1);
         if epoch.state.synced_count == system.live_group_count {
             epoch.state.phase = EpochPhase::Snapshot as u64;
@@ -224,10 +223,10 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        // Seven spools already synced; this call is the eighth, crossing the
-        // honest-signer threshold and completing the only live group.
+        // Six spools already synced; this call is the seventh, crossing
+        // max(k, f+1) and completing the only live group.
         let mut group = group_with_owner(curr, group_id, slice_in_group, node_address);
-        for slot in 0..slice_in_group {
+        for slot in 0..slice_in_group - 1 {
             group.synced.set(slot);
         }
 

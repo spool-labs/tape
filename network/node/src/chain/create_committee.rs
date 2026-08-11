@@ -18,6 +18,6 @@ pub async fn submit_create_committee<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_create_committee_ix(fee_payer, epoch);
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), CREATE_COMMITTEE_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), CREATE_COMMITTEE_CU, vec![ix])
         .await
 }

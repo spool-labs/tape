@@ -1775,7 +1775,6 @@ mod tests {
                 err: None,
                 message: "Error processing Instruction 0: invalid account data for instruction"
                     .into(),
-                simulated: false,
             })),
             S3Error::AccessDenied(_)
         ));
@@ -1785,7 +1784,6 @@ mod tests {
             s3_write_error(TapedriveError::Rpc(RpcError::Transaction {
                 err: None,
                 message: "blockhash expired".into(),
-                simulated: false,
             })),
             S3Error::Internal(_)
         ));

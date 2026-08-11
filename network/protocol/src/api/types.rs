@@ -4,13 +4,18 @@ use core::mem::size_of;
 
 use tape_core::{
     bls::BlsSignature,
-    erasure::SLICE_TREE_HEIGHT,
+    erasure::{SLICE_TREE_HEIGHT, SUB_LEAF_BYTES},
     spooler::GroupIndex,
+    challenge::ProofOfAccess,
+    challenge::proof::SampleProof,
+    track::blob::SubLeafProof,
 };
 pub use tape_core::system::VoteCandidate;
 use tape_core::prelude::{BlobData, EpochNumber, SpoolIndex, TrackNumber};
+use tape_core::types::RoundNumber;
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
 use tape_core::types::{ContentType, SlotNumber, SpoolBitmap, StorageUnits};
+use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
 use tape_crypto::prelude::{Address, Hash};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
@@ -26,6 +31,12 @@ pub const SLICE_BODY_LIMIT: usize = size_of::<u64>()
     + (SLICE_TREE_HEIGHT * Hash::LEN);
 
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
+
+/// Fixed-size leaf bound prevents challenge-response payload inflation.
+type SampleLeafBytes = WincodeVec<Pod<u8>, BincodeLen<SUB_LEAF_BYTES>>;
+
+/// Matches the maximum payload accepted by the on-chain write instruction.
+type InlinePayloadBytes = WincodeVec<Pod<u8>, BincodeLen<TRACK_WRITE_MAX_BYTES>>;
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -186,6 +197,111 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
     }
 }
 
+/// Wire representation of a storage-challenge proof.
+///
+/// Coded proofs include leaf bytes to prove access to the data rather than a
+/// cached hash. Inline proofs include the registered payload.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub enum SampleProofPayload {
+    Coded {
+        sub_leaf: u64,
+        #[wincode(with = "SampleLeafBytes")]
+        leaf: Vec<u8>,
+        sub_proof: Vec<Hash>,
+    },
+    Inline {
+        #[wincode(with = "InlinePayloadBytes")]
+        payload: Vec<u8>,
+    },
+}
+
+impl From<SampleProof> for SampleProofPayload {
+    fn from(proof: SampleProof) -> Self {
+        match proof {
+            SampleProof::Coded { sub_leaf, proof } => Self::Coded {
+                sub_leaf,
+                leaf: proof.sub_leaf,
+                sub_proof: proof.sub_proof,
+            },
+            SampleProof::Inline { payload } => Self::Inline { payload },
+        }
+    }
+}
+
+impl From<SampleProofPayload> for SampleProof {
+    fn from(payload: SampleProofPayload) -> Self {
+        match payload {
+            SampleProofPayload::Coded {
+                sub_leaf,
+                leaf,
+                sub_proof,
+            } => Self::Coded {
+                sub_leaf,
+                proof: SubLeafProof {
+                    sub_leaf: leaf,
+                    sub_proof,
+                },
+            },
+            SampleProofPayload::Inline { payload } => Self::Inline { payload },
+        }
+    }
+}
+
+/// Wire representation of a challenged owner's answer for one round.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ProofOfAccessPayload {
+    pub epoch: EpochNumber,
+    pub group: GroupIndex,
+    pub round: RoundNumber,
+    pub spool: SpoolIndex,
+    pub block: Hash,
+    pub track: Address,
+    pub proof: SampleProofPayload,
+    pub signature: BlsSignature,
+}
+
+impl From<ProofOfAccess> for ProofOfAccessPayload {
+    fn from(answer: ProofOfAccess) -> Self {
+        Self {
+            epoch: answer.epoch,
+            group: answer.group,
+            round: answer.round,
+            spool: answer.spool,
+            block: answer.block,
+            track: answer.track,
+            proof: answer.proof.into(),
+            signature: answer.signature,
+        }
+    }
+}
+
+impl From<ProofOfAccessPayload> for ProofOfAccess {
+    fn from(payload: ProofOfAccessPayload) -> Self {
+        Self {
+            epoch: payload.epoch,
+            group: payload.group,
+            round: payload.round,
+            spool: payload.spool,
+            block: payload.block,
+            track: payload.track,
+            proof: payload.proof.into(),
+            signature: payload.signature,
+        }
+    }
+}
+
+/// Wire representation of an observer's attestation for a round.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct AttestationPayload {
+    pub epoch: EpochNumber,
+    pub group: GroupIndex,
+    pub round: RoundNumber,
+    pub spool: SpoolIndex,
+    pub block: Hash,
+    pub signer: Address,
+    pub signature: BlsSignature,
+}
+
 /// Payload for slice upload requests.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SlicePayload {
@@ -320,11 +436,87 @@ pub struct TrackProofResponse {
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::{GROUP_SIZE, SUB_TREE_HEIGHT};
     use tape_core::system::VoteKind;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+
+    /// A distinct non-zero hash per level. Zero is the seed the empty-subtree
+    /// roots derive from, so it is the one 32-byte value with a meaning of its
+    /// own and a poor stand-in for a path element.
+    fn path() -> Vec<Hash> {
+        (0..SUB_TREE_HEIGHT)
+            .map(|level| Hash::from([level as u8 + 1; 32]))
+            .collect()
+    }
+
+    /// Raise a declared length wherever the encoding put it.
+    fn inflate(encoded: &mut [u8], declared: u64) {
+        let claim = declared.to_le_bytes();
+        let at = encoded
+            .windows(claim.len())
+            .position(|window| window == claim)
+            .expect("a length field");
+        encoded[at..at + claim.len()].copy_from_slice(&(declared + 1).to_le_bytes());
+    }
+
+    // a proof of either shape comes back off the wire as what went on it
+    #[test]
+    fn proof_round_trip() {
+        let coded = SampleProof::Coded {
+            sub_leaf: 3,
+            proof: SubLeafProof {
+                sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
+                sub_proof: path(),
+            },
+        };
+        let encoded = wincode::serialize(&SampleProofPayload::from(coded.clone())).unwrap();
+        let decoded: SampleProofPayload = wincode::deserialize(&encoded).unwrap();
+        assert_eq!(SampleProof::from(decoded), coded);
+
+        let inline = SampleProof::Inline {
+            payload: b"a small object".to_vec(),
+        };
+        let encoded = wincode::serialize(&SampleProofPayload::from(inline.clone())).unwrap();
+        let decoded: SampleProofPayload = wincode::deserialize(&encoded).unwrap();
+        assert_eq!(SampleProof::from(decoded), inline);
+    }
+
+    // the oversize claim comes from a peer, so a leaf longer than one chunk is
+    // refused on decode, before anything allocates
+    #[test]
+    fn oversize_leaf() {
+        let mut encoded = wincode::serialize(&SampleProofPayload::Coded {
+            sub_leaf: 0,
+            leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
+            sub_proof: path(),
+        })
+        .unwrap();
+        inflate(&mut encoded, SUB_LEAF_BYTES as u64);
+
+        assert!(wincode::deserialize::<SampleProofPayload>(&encoded).is_err());
+    }
+
+    // an inline payload is bounded by what the chain accepts, not by what the
+    // SDK chooses to write
+    #[test]
+    fn oversize_inline() {
+        let mut encoded = wincode::serialize(&SampleProofPayload::Inline {
+            payload: vec![0x5A; TRACK_WRITE_MAX_BYTES],
+        })
+        .unwrap();
+        inflate(&mut encoded, TRACK_WRITE_MAX_BYTES as u64);
+
+        assert!(wincode::deserialize::<SampleProofPayload>(&encoded).is_err());
+
+        // At the cap it still decodes.
+        let ok = wincode::serialize(&SampleProofPayload::Inline {
+            payload: vec![0x5A; TRACK_WRITE_MAX_BYTES],
+        })
+        .unwrap();
+        assert!(wincode::deserialize::<SampleProofPayload>(&ok).is_ok());
+    }
 
     fn address(byte: u8) -> Address {
         let mut bytes = [0u8; 32];

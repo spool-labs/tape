@@ -16,7 +16,7 @@ pub async fn submit_advance_pool<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_advance_pool_ix(fee_payer, ctx.node_address(), ctx.state().epoch());
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), ADVANCE_POOL_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), ADVANCE_POOL_CU, vec![ix])
         .await
 }
 

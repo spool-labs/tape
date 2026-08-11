@@ -13,7 +13,10 @@ use crate::chain::{
     submit_create_committee, submit_create_epoch, submit_resize_committee, submit_resize_peer_set,
 };
 use crate::context::NodeContext;
-use crate::core::chain_tx::{submit_if_at_tip, wait_for_state_change, TxOutcome, TxRejectionKind};
+use crate::core::chain_tx::{
+    await_submit_turn, submit_if_at_tip, wait_for_state_change, TxOutcome, TxRejectionKind,
+};
+use crate::features::lifecycle::manager::committee_rank;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -36,6 +39,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> TaskDone {
     let next_epoch = epoch.next();
     let candidate_epoch = epoch.saturating_add(EpochNumber(2));
+    let node = ctx.node_address();
+    let rank = committee_rank(&ctx.state(), node);
     let mut state_rx = ctx.subscribe_state();
 
     loop {
@@ -88,9 +93,15 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
             }
             step => {
-                // Every member submits this step at once. The submit simulates
-                // first, so a member that another one beat to it drops the send
-                // instead of paying for a rejected transaction.
+                // Wait for this rank's turn so lower ranks submit first. Waited again per
+                // step because each setup account is a separate race; after the
+                // delay, re-check in case a lower rank already advanced this step.
+                if await_submit_turn(rank, &cancel).await {
+                    break;
+                }
+                if next_setup_step(&ctx.state(), next_epoch, candidate_epoch) != step {
+                    continue;
+                }
                 if submit_setup_step(&ctx, epoch, candidate_epoch, step).await {
                     return TaskDone::Rejected(Action::PrepareNextEpoch, epoch);
                 }

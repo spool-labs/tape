@@ -16,6 +16,6 @@ pub async fn submit_resize_committee<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let ix = build_resize_committee_ix(fee_payer, ctx.state().epoch());
 
     ctx.rpc
-        .simulate_then_send_with_compute_unit_limit(ctx.signer(), RESIZE_COMMITTEE_CU, vec![ix])
+        .send_instructions_with_compute_unit_limit(ctx.signer(), RESIZE_COMMITTEE_CU, vec![ix])
         .await
 }

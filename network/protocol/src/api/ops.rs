@@ -2,7 +2,9 @@
 
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
+use tape_core::types::RoundNumber;
 use tape_core::spooler::GroupIndex;
+use tape_core::challenge::ProofOfAccess;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
@@ -21,8 +23,12 @@ pub struct PutSliceReq {
     pub payload: SlicePayload,
 }
 
+/// A stored slice comes back with the certify signature for its track, so the
+/// write path does not have to ask the same node again.
 #[derive(Clone, Debug)]
-pub struct PutSliceRes;
+pub struct PutSliceRes {
+    pub receipt: CertifyRes,
+}
 
 #[derive(Clone, Debug)]
 pub struct GetSliceReq {
@@ -199,6 +205,28 @@ pub struct VoteReq {
 pub struct VoteRes;
 
 #[derive(Clone, Debug)]
+pub struct ProofOfAccessReq {
+    pub answer: ProofOfAccess,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProofOfAccessRes;
+
+#[derive(Clone, Debug)]
+pub struct AttestReq {
+    pub epoch: EpochNumber,
+    pub group: GroupIndex,
+    pub round: RoundNumber,
+    pub spool: SpoolIndex,
+    pub block: Hash,
+    pub signer: Address,
+    pub signature: BlsSignature,
+}
+
+#[derive(Clone, Debug)]
+pub struct AttestRes;
+
+#[derive(Clone, Debug)]
 pub struct GetHealthReq;
 
 #[derive(Clone, Debug)]
@@ -231,6 +259,8 @@ pub enum PeerReq {
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
     Vote(VoteReq),
+    ProofOfAccess(ProofOfAccessReq),
+    Attest(AttestReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -251,6 +281,8 @@ pub enum PeerRes {
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     Vote(Result<VoteRes, ApiError>),
+    ProofOfAccess(Result<ProofOfAccessRes, ApiError>),
+    Attest(Result<AttestRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),
 }
