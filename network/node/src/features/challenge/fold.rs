@@ -7,11 +7,6 @@ use tape_store::TapeStore;
 use tape_store::ops::ChallengeOps;
 use tracing::debug;
 
-/// Returns whether the peer owns the spool in the current or previous epoch.
-pub fn holds_spool(state: &ProtocolState, peer: Address, spool: SpoolIndex) -> bool {
-    state.spool_owner(spool) == Some(peer) || state.spool_owner_prev(spool) == Some(peer)
-}
-
 pub struct Folded {
     pub record: Option<PeerRecord>,
     /// The stored outcome, which may differ from a duplicate input.
@@ -69,6 +64,11 @@ pub fn fold_outcome<Db: Store>(
     );
 
     Folded { record: Some(record), certified: stands }
+}
+
+/// Returns whether the peer owns the spool in the current or previous epoch.
+pub fn holds_spool(state: &ProtocolState, peer: Address, spool: SpoolIndex) -> bool {
+    state.spool_owner(spool) == Some(peer) || state.spool_owner_prev(spool) == Some(peer)
 }
 
 #[cfg(test)]

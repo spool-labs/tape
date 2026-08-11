@@ -1,4 +1,4 @@
-//! Rich JSON export of one continuous multi-epoch run for the browser animation.
+//! JSON export of one continuous multi-epoch run.
 //!
 //! The document wraps run-wide metadata, every node's lifetime, and the ordered
 //! event log the engine already produced. Metadata carries the parameters and the

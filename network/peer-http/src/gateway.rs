@@ -291,7 +291,7 @@ impl Api for GatewayApi {
         Err(unsupported("vote"))
     }
 
-    /// A gateway holds no spool, so it neither answers a round nor auditions one.
+    /// A gateway holds no spool, so it neither answers nor audits a round.
     async fn proof_of_access(
         &self,
         _node: Address,

@@ -20,7 +20,7 @@ use crate::core::error::NodeError;
 use crate::core::channels::ChainEvent;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
-use crate::features::challenge::audition::{
+use crate::features::challenge::audit::{
     Round, build_answer, group_members, has_sample_set, spawn_attest,
 };
 use crate::features::challenge::fold::fold_outcome;

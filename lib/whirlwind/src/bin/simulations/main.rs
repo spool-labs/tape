@@ -24,8 +24,8 @@ use whirlwind::sim::scoreboard::EvictionRule;
 use whirlwind::spool::{AGREEMENT_THRESHOLD, LEAF_COUNT};
 use whirlwind::types::{RoundNumber, SlotCount};
 
-/// Default output path for the animation export, under the crate's viz directory.
-const DEFAULT_EXPORT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/viz/whirlwind-run.json");
+/// Default output path for the simulation event log.
+const DEFAULT_EXPORT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/whirlwind-run.json");
 
 #[derive(Parser)]
 #[command(name = "whirlwind-sim", about = "Whirlwind latency histogram and epoch engine")]
@@ -208,9 +208,9 @@ struct EpochArgs {
 }
 
 /// Export defaults to a shorter run than the full report so the JSON stays a
-/// friendly size for a browser animation while still crossing several epoch
-/// boundaries. Certificate BLS defaults off because the animation reads the
-/// modeled formation timing, not real aggregate bytes; eviction BLS stays real.
+/// manageable size while still crossing several epoch boundaries. Certificate
+/// BLS defaults off because the event log records modeled formation timing, not
+/// real aggregate bytes; eviction BLS stays real.
 #[derive(Parser)]
 struct ExportArgs {
     /// Epochs to run back to back.

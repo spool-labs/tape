@@ -1,3 +1,4 @@
 # The raw ping dataset is large (~208 MiB); fetch it with ./download.sh.
 pings.csv
 pings.csv.gz
+whirlwind-run.json

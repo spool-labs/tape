@@ -11,7 +11,7 @@ use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace};
 
-use crate::features::challenge::audition::{
+use crate::features::challenge::audit::{
     Round, accept_answer, attest_message, group_members, round_of, spawn_relay_and_attest,
 };
 use crate::features::challenge::fold::fold_outcome;
@@ -23,7 +23,7 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    // A node with the challenge off holds no round to audition against.
+    // A node with the challenge off holds no round to audit against.
     if !state.context.config.challenge.enabled {
         return Err(RouteError::Forbidden("challenge disabled on this node".into()));
     }
@@ -42,7 +42,7 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
         return Ok(StatusCode::OK);
     }
 
-    // Only a group-mate can audition an answer: nobody else settles the round
+    // Only a group-mate can audit an answer: nobody else settles the round
     // or holds a stake in it.
     let holds_a_spool = protocol
         .member_spools(state.context.node_address())
