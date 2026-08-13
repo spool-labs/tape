@@ -244,25 +244,16 @@ impl BlobEncoder {
             .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
         let root = tree.root();
 
-        let proofs = (0..leaf_hashes.len())
-            .map(|idx| tree.proof_at(idx))
-            .collect::<Result<Vec<Vec<Hash>>, _>>()
-            .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
-
         // Generate proof for each slice
         let mut output = Vec::with_capacity(chunks.len());
-        for (idx, ((chunk, leaf_hash), proof_vec)) in chunks
+        for (idx, (chunk, leaf_hash)) in chunks
             .into_iter()
-            .zip(leaf_hashes.into_iter())
-            .zip(proofs)
+            .zip(leaf_hashes.iter().copied())
             .enumerate()
         {
-
-            // Convert Vec<Hash> to fixed-size array
-            let mut proof_arr = [Hash::default(); SLICE_TREE_HEIGHT];
-            for (i, h) in proof_vec.into_iter().enumerate() {
-                proof_arr[i] = h;
-            }
+            let proof_arr = tree
+                .proof_at_n::<SLICE_TREE_HEIGHT>(idx)
+                .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
 
             output.push(SliceWithProof::new(
                 SpoolIndex::from(idx as u64),

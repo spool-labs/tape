@@ -235,11 +235,8 @@ fn group_candidates(
     let mut groups = Vec::with_capacity(payloads.len());
     for payload in payloads {
         let proof = tree
-            .proof_at(payload.group.0 as usize)
+            .proof_at_n::<ASSIGNMENT_TREE_HEIGHT>(payload.group.0 as usize)
             .map_err(|e| NodeError::Store(format!("assignment proof: {e:?}")))?;
-        let proof = proof
-            .try_into()
-            .map_err(|_| NodeError::Store("assignment proof length mismatch".into()))?;
 
         groups.push(GroupCandidate {
             group: payload.group,
@@ -324,7 +321,7 @@ mod tests {
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
-    use tape_crypto::merkle::{root_from_leaf_hashes, verify_proof_hash};
+    use tape_core::cert::verify_assignment_group_payload;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -418,50 +415,35 @@ mod tests {
     }
 
     // Every group proof has to verify against the root the same call returned,
-    // because finalize_group checks exactly that on chain.
+    // through the same function finalize_group runs on chain rather than through
+    // the primitive under it. `verify_assignment_group_payload` derives the leaf
+    // and the index from the payload itself, so a proof built at the wrong index
+    // fails here where a hand-passed index would have hidden it.
     #[test]
     fn group_proofs_verify_against_the_root() {
         for count in 1..=8u64 {
             let payloads: Vec<_> = (0..count).map(|g| payload(g, 1024 * (g + 1))).collect();
-            let leaves: Vec<Hash> = payloads.iter().map(hash_assignment_group_payload).collect();
-
             let (root, groups) = group_candidates(payloads).expect("candidates build");
 
             assert_eq!(groups.len() as u64, count);
-            assert_eq!(root, root_from_leaf_hashes::<ASSIGNMENT_TREE_HEIGHT>(&leaves));
-
             for (index, candidate) in groups.iter().enumerate() {
                 assert_eq!(candidate.group, GroupIndex(index as u64));
                 assert!(
-                    verify_proof_hash(
-                        leaves[index],
-                        &root,
-                        &candidate.proof,
-                        index as u64,
-                        ASSIGNMENT_TREE_HEIGHT,
-                    ),
+                    verify_assignment_group_payload(&root, &candidate.payload, &candidate.proof),
                     "group {index} of {count} failed to verify"
                 );
             }
+
+            // A proof from another group must not verify, or the check above
+            // would pass on any proof at all.
+            if let [first, second, ..] = groups.as_slice() {
+                assert!(!verify_assignment_group_payload(
+                    &root,
+                    &first.payload,
+                    &second.proof
+                ));
+            }
         }
-    }
-
-    // A proof taken from the wrong group must not verify, or the check above
-    // would pass on any proof at all.
-    #[test]
-    fn a_proof_from_another_group_does_not_verify() {
-        let payloads: Vec<_> = (0..4u64).map(|g| payload(g, 2048)).collect();
-        let leaves: Vec<Hash> = payloads.iter().map(hash_assignment_group_payload).collect();
-
-        let (root, groups) = group_candidates(payloads).expect("candidates build");
-
-        assert!(!verify_proof_hash(
-            leaves[0],
-            &root,
-            &groups[1].proof,
-            0,
-            ASSIGNMENT_TREE_HEIGHT,
-        ));
     }
 
     #[test]
