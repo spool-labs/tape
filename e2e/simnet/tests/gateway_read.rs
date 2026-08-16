@@ -43,7 +43,12 @@ async fn staked_gateway_inner() {
     let all: Vec<usize> = (0..NODE_COUNT).collect();
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
-    let slice_timeout = Duration::from_secs(120);
+    // A write certifies on a supermajority, so the owners outside it queue a
+    // repair off the certify and fetch the slice from a peer. Every owner does
+    // end up holding one, but a multi-track stream queues that work for every
+    // chunk at once, and 120s left the tail of it still in flight: one run
+    // reached 18 of 20 rather than stalling at the 14 the write left behind.
+    let slice_timeout = Duration::from_secs(300);
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
 
     {
