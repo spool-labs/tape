@@ -52,6 +52,12 @@ impl SimnetBuilder {
         self
     }
 
+    /// Whether nodes propose and sign evictions, on by default.
+    pub fn eviction(mut self, enabled: bool) -> Self {
+        self.config.eviction = enabled;
+        self
+    }
+
     pub fn file_log(mut self, enabled: bool) -> Self {
         self.config.file_log = enabled;
         self
@@ -286,5 +292,6 @@ fn make_node(config: &SimnetConfig, chain: &ChainFixture, id: usize) -> Result<T
         bind_addr,
         port,
         config.stop_timeout,
+        config.eviction,
     )
 }

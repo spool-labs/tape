@@ -21,6 +21,10 @@ async fn late_join_inner() {
         .node_count(INITIAL_NODES)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
+        // Not an eviction test, and the fleet is sized at the group floor. A node
+        // too busy to answer a probe reads as one that is gone, and the seat it
+        // loses is one the next committee cannot do without.
+        .eviction(false)
         .build()
         .expect("build harness");
 

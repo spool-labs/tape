@@ -52,6 +52,13 @@ pub struct SimnetConfig {
     pub file_log: bool,
     /// Arbitrary serialized accounts to inject into LiteSVM before nodes start.
     pub seed_accounts: Vec<SeededAccount>,
+    /// Whether nodes propose and sign evictions.
+    ///
+    /// On by default, as a fleet runs it. A fixture that is not about eviction
+    /// turns it off: a node too busy to answer a probe reads as one that is
+    /// gone, and a committee sized at the group floor has no seat to spare for
+    /// the eviction that follows.
+    pub eviction: bool,
 }
 
 impl Default for SimnetConfig {
@@ -64,6 +71,7 @@ impl Default for SimnetConfig {
             slot_advance_per_tx: 1,
             file_log: false,
             seed_accounts: Vec::new(),
+            eviction: true,
         }
     }
 }
