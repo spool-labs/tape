@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
+use tape_core::challenge::schedule::SLOT_MS;
 use tokio::task::JoinHandle;
 
 use crate::chain::ChainFixture;
@@ -108,8 +109,13 @@ impl Default for SimnetBuilder {
     }
 }
 
-/// Block production cadence for the simulated chain (1 slot per second).
+/// Wall time between blocks, which is the harness running slower than a cluster.
 const BLOCK_PRODUCTION_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Chain time one slot costs, which is the cluster's slot time whatever the wall
+/// cadence above. The epoch phases and the challenge grid are both counted in
+/// slots off a duration in seconds, so the two only line up at this rate.
+const SLOT_TIME: Duration = Duration::from_millis(SLOT_MS);
 
 /// In-memory multi-node simulation harness.
 pub struct SimnetHarness {
@@ -256,7 +262,7 @@ impl SimnetHarness {
     fn ensure_block_producer(&mut self) {
         if self.block_producer.is_none() {
             self.block_producer = Some(
-                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL),
+                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL, SLOT_TIME),
             );
         }
     }
