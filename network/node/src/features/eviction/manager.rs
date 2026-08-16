@@ -4,23 +4,24 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_blocks::ParsedInstruction;
+use tape_core::challenge::record::{NodeVerdict, PeerRecord, node_verdict};
 use tape_core::types::EpochNumber;
 use tape_crypto::Address;
 use tape_protocol::api::{GetHealthReq, GetHealthRes};
-use tape_protocol::{Api, ProtocolState};
-use tape_core::challenge::record::{NodeVerdict, PeerRecord, node_verdict};
 use tape_store::ops::ChallengeOps;
+use tape_blocks::ParsedInstruction;
+use tape_protocol::{Api, ProtocolState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::context::NodeContext;
-use crate::features::challenge::fold::holds_spool;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::challenge::fold::holds_spool;
 use crate::features::eviction::build::{EvictionCandidate, build_eviction};
+use crate::features::eviction::queue::Opened;
 use crate::features::eviction::fanout::fanout_eviction_votes;
 use crate::features::eviction::submit::{submit_eviction_proposal, submit_ready_eviction_votes};
 use crate::features::eviction::vote::create_eviction_votes;
@@ -93,8 +94,10 @@ where
             match ix {
                 ParsedInstruction::ProposeEviction { node, .. } => {
                     if *node != self.context.node_address() {
-                        info!(node = %node, "eviction: vote opened, judging target");
-                        self.context.eviction_queue.insert(*node);
+                        info!(node = %node, "eviction: vote opened, signing");
+                        self.context
+                            .eviction_queue
+                            .insert(*node, self.context.state().epoch(), Opened::Proposal);
                     }
                 }
                 ParsedInstruction::NodeEvicted { event } => {
@@ -124,8 +127,14 @@ where
             return Ok(());
         }
 
-        for node in self.context.eviction_queue.snapshot() {
-            if !self.judge_target(&state, node).await {
+        // A proposal dies with its voting epoch, so a target that never gathered
+        // its supermajority goes with it rather than being re-proposed forever.
+        self.context.eviction_queue.retain_epoch(state.epoch());
+
+        for (node, opened) in self.context.eviction_queue.snapshot() {
+            // A proposal is a decision already taken. A record is this node's
+            // own, and the run arm it fires on is the one a live probe clears.
+            if opened == Opened::Record && !self.judge_target(&state, node).await {
                 continue;
             }
 
