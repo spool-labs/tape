@@ -1,16 +1,7 @@
 //! Nodes with an open eviction vote this node joins, scoped to one voting epoch.
 //!
-//! Two things open a vote and they are not judged the same. A proposal is a
-//! decision its proposer has already taken, so members sign it and what holds
-//! the eviction back is the group supermajority and the supermajority of groups
-//! it then needs. A record is this node's own reading of a peer, and the run arm
-//! it fires on claims the peer stopped answering, which a live probe can settle.
-//!
-//! An entry is dropped when the eviction lands, and otherwise when its voting
-//! epoch passes. A proposal expires with that epoch, so a target left behind
-//! would be re-proposed every epoch for the rest of the node's life. One that
-//! still deserves the vote is queued again by the next proposal, or by the next
-//! round its record fails.
+//! A proposal is signed, a record is probed first, and an entry is dropped when
+//! the eviction lands or its voting epoch passes.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

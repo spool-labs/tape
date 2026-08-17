@@ -234,9 +234,6 @@ fn group_candidates(
 
     let mut groups = Vec::with_capacity(payloads.len());
     for (index, payload) in payloads.into_iter().enumerate() {
-        // finalize_group derives the leaf index from the payload's own group, so
-        // a leaf that does not sit at its group's index would prove against the
-        // wrong sibling path and be refused on chain with nothing said here.
         if payload.group.0 as usize != index {
             return Err(NodeError::Store(format!(
                 "assignment group {} is not the {index}th leaf",

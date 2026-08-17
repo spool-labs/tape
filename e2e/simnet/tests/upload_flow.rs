@@ -233,10 +233,6 @@ async fn upload_flow_inner() {
         );
 
         let track_address = track_pda(track.tape, track.track_number).0;
-        // A write certifies on a supermajority and the owners outside it queue a
-        // repair off the certify, so the full group arrives shortly after the
-        // upload returns rather than with it. Sampling once reads whatever the
-        // quorum happened to be: one run saw 18.
         let deadline = Instant::now() + Duration::from_secs(180);
         let slice_count = loop {
             let count = scenario

@@ -106,9 +106,6 @@ async fn upload_gap_repair_inner() {
         node_slice(&harness, VICTIM, spool, track).is_none(),
         "the stopped owner should hold nothing for a track written while it was down"
     );
-    // A write certifies on a supermajority, so the owners outside it may not
-    // have answered yet when the upload returns. What the write promises is the
-    // quorum, and any owner inside it serves as the reference length.
     let holders = slice_holders(&harness, track);
     assert!(
         is_supermajority(holders.len() as u64, GROUP_SIZE as u64),

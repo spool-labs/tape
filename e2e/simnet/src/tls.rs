@@ -11,15 +11,6 @@ static ASSIGNED: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
 const RANGE_SIZE: u64 = 400;
 
 /// First port of the harness range, below the ephemeral range of the platform.
-///
-/// A pick binds a port, drops the listener and hands the number back for the
-/// caller to bind a moment later. A range that overlaps the ephemeral one loses
-/// that window to an outgoing connection of this very process.
-///
-/// Linux hands out from 32768 (`net.ipv4.ip_local_port_range`), so 30000 sits
-/// inside it and a node lost 39206 to a peer connection between the pick and
-/// the bind. 20000 is clear of that, and of the fixed `base_port` block at
-/// 19000 a fixture uses when it does not ask for a pick.
 #[cfg(target_os = "linux")]
 const RANGE_BASE: u64 = 20_000;
 

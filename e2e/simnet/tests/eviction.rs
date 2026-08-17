@@ -84,11 +84,7 @@ async fn eviction_inner() {
 
     let target = Address::from(harness.scenario().node_address(EVICT_NODE));
 
-    // The target stays up and answers everything asked of it. An eviction is
-    // the operators' call, not a verdict a node reaches about its peer, so a
-    // proposal is enough to open the vote and a healthy target is no defence.
-    // What an eviction has to clear is the group supermajority and then a
-    // supermajority of groups, which is where a bad proposal dies.
+    // The target stays up and answers everything asked of it.
     let target_epoch = wait_eviction_landed(&harness, evict_timeout).await;
 
     // The target is absent from the committee the vote targeted.

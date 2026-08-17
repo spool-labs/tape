@@ -413,12 +413,6 @@ impl<const N: usize> MerkleTree<N> {
 }
 
 /// Pad a level's odd tail with the empty subtree root at this depth
-///
-/// The rule the folded root and the incrementally inserted root have to agree
-/// on: an odd level is completed with the empty subtree root for its own depth,
-/// which is what `add_leaf_hash` does implicitly by leaving the slot empty. It
-/// lives here because every fold needs it and a disagreement between them would
-/// give the sdk, the node and the program different roots over the same leaves.
 fn pad_odd_tail(level: &mut Vec<Hash>, depth: usize) {
     if !level.len().is_multiple_of(2) {
         level.push(EMPTY_ROOTS[depth].into());
@@ -465,7 +459,9 @@ pub struct MerkleLeafTree {
     nodes: Vec<Hash>,
     // Where each level starts in `nodes`, one entry per level plus the root.
     offsets: Vec<usize>,
+    // Leaves the tree was built over, before any odd-tail padding.
     leaf_count: usize,
+    // Levels above the leaves, which is the length of every proof.
     height: usize,
 }
 
@@ -514,14 +510,9 @@ impl MerkleLeafTree {
         for level in 0..height {
             let start = offsets[level];
             if !(nodes.len() - start).is_multiple_of(2) {
-                // The same rule `pad_odd_tail` states, applied in place: this
-                // fold keeps every level end to end rather than one at a time.
                 nodes.push(EMPTY_ROOTS[depth + level].into());
             }
 
-            // Open this level's parents and join straight into them. The space
-            // was reserved up front, so the fold neither allocates per level nor
-            // copies a level back into the buffer it came from.
             let end = nodes.len();
             nodes.resize(end + (end - start) / 2, Hash::default());
             let (level_nodes, parents) = nodes.split_at_mut(end);
