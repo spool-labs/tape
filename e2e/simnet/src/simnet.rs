@@ -118,9 +118,7 @@ impl Default for SimnetBuilder {
 /// Wall time between blocks, which is the harness running slower than a cluster.
 const BLOCK_PRODUCTION_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Chain time one slot costs, which is the cluster's slot time whatever the wall
-/// cadence above. The epoch phases and the challenge grid are both counted in
-/// slots off a duration in seconds, so the two only line up at this rate.
+/// Chain time one slot costs.
 const SLOT_TIME: Duration = Duration::from_millis(SLOT_MS);
 
 /// In-memory multi-node simulation harness.
