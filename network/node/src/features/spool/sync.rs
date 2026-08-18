@@ -50,7 +50,7 @@ use crate::features::spool::types::SyncResult;
 // the rest of the spool group.
 
 struct SyncBatch {
-    next_cursor: Option<Address>,
+    next_cursor: Option<Vec<u8>>,
     synced: usize,
     fetched_bytes: u64,
     persisted_bytes: u64,
@@ -143,8 +143,8 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 
                 match batch.next_cursor {
                     Some(c) => {
-                        cursor = Some(c);
-                        if let Err(error) = ctx.store.set_spool_sync_cursor(spool, c) {
+                        cursor = Some(c.clone());
+                        if let Err(error) = ctx.store.set_spool_sync_cursor(spool, &c) {
                             warn!(spool = %spool, %error, "set_spool_sync_cursor failed");
                         }
                     }
@@ -178,7 +178,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     config: &RecoveryConfig,
     spool: SpoolIndex,
     prev_owner: Address,
-    cursor: Option<Address>,
+    cursor: Option<Vec<u8>>,
     token: &CancellationToken,
 ) -> Result<SyncBatch, ApiError> {
 
@@ -188,7 +188,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let req = SyncSlicesReq {
         spool_index: spool,
-        cursor: cursor.map(|track| track.to_bytes()),
+        cursor: cursor.clone(),
         limit: config.sync_batch.max(1) as u32,
     };
 
@@ -213,7 +213,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Err(error) => {
             warn!(spool = %spool, %error, "failed to read track metadata, skipping batch");
             return Ok(SyncBatch {
-                next_cursor: res.next_cursor.map(Address::new),
+                next_cursor: res.next_cursor.clone(),
                 synced: 0,
                 fetched_bytes: 0,
                 persisted_bytes: 0,
@@ -225,7 +225,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Err(error) => {
             warn!(spool = %spool, %error, "failed to read track data, skipping batch");
             return Ok(SyncBatch {
-                next_cursor: res.next_cursor.map(Address::new),
+                next_cursor: res.next_cursor.clone(),
                 synced: 0,
                 fetched_bytes: 0,
                 persisted_bytes: 0,
@@ -275,7 +275,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         persisted_bytes += slice_len;
     }
 
-    let next_cursor = res.next_cursor.map(Address::new);
+    let next_cursor = res.next_cursor;
 
     Ok(SyncBatch {
         next_cursor,
@@ -711,7 +711,7 @@ mod tests {
                 if n == 0 {
                     PeerRes::SyncSlices(Ok(SyncSlicesRes {
                         entries: vec![entry(a1, &slice1)],
-                    next_cursor: Some(a2.to_bytes()),
+                    next_cursor: Some(a2.to_bytes().to_vec()),
                     }))
                 } else {
                     PeerRes::SyncSlices(Ok(SyncSlicesRes {

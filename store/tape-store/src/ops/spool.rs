@@ -39,8 +39,8 @@ pub trait SpoolOps {
     fn iter_pending_recoveries( &self, spool_id: SpoolIndex, limit: usize,) -> Result<Vec<Address>>;
 
     // Sync progress
-    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Address>>;
-    fn set_spool_sync_cursor( &self, spool_id: SpoolIndex, last_synced_track: Address,) -> Result<()>;
+    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Vec<u8>>>;
+    fn set_spool_sync_cursor(&self, spool_id: SpoolIndex, mark: &[u8]) -> Result<()>;
     fn remove_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<()>;
 
     // Bulk clear all pending repairs for a spool
@@ -134,18 +134,14 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         clear_all_pending_by_spool(self, SpoolPendingRecoveryCol::CF_NAME, spool_id)
     }
 
-    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Address>> {
+    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Vec<u8>>> {
         let key = SpoolIndexKey::new(spool_id);
         Ok(self.get::<SpoolSyncCursorCol>(&key)?)
     }
 
-    fn set_spool_sync_cursor(
-        &self,
-        spool_id: SpoolIndex,
-        last_synced_track: Address,
-    ) -> Result<()> {
+    fn set_spool_sync_cursor(&self, spool_id: SpoolIndex, mark: &[u8]) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
-        self.put::<SpoolSyncCursorCol>(&key, &last_synced_track)?;
+        self.put::<SpoolSyncCursorCol>(&key, &mark.to_vec())?;
         Ok(())
     }
 
@@ -369,8 +365,11 @@ mod tests {
 
         assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());
 
-        store.set_spool_sync_cursor(spool_id, track).unwrap();
-        assert_eq!(store.get_spool_sync_cursor(spool_id).unwrap(), Some(track));
+        store.set_spool_sync_cursor(spool_id, &track.to_bytes()).unwrap();
+        assert_eq!(
+            store.get_spool_sync_cursor(spool_id).unwrap(),
+            Some(track.to_bytes().to_vec()),
+        );
 
         store.remove_spool_sync_cursor(spool_id).unwrap();
         assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());

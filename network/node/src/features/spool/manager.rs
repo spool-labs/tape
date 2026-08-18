@@ -630,7 +630,7 @@ mod tests {
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
-        ctx.store.set_spool_sync_cursor(SPOOL, track).unwrap();
+        ctx.store.set_spool_sync_cursor(SPOOL, &track.to_bytes()).unwrap();
 
         let manager = SpoolManager::new(
             ctx.clone(),

@@ -448,7 +448,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", SYNC_SLICES_PATH);
         let wire_req = SyncSlicesRequest {
             spool_index: req.spool_index,
-            cursor: req.cursor,
+            cursor: req.cursor.clone(),
             limit: req.limit,
         };
         let body =

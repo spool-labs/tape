@@ -38,7 +38,7 @@ mod split;
 use std::path::Path;
 
 use reel::{
-    ByteCount, MapShape, Preallocate, ReelConfig, ReelStore, ShardShapes, SyncPolicy,
+    ByteCount, MapShape, PointReads, Preallocate, ReelConfig, ReelStore, ShardShapes, SyncPolicy,
     MAP_EVERYTHING,
 };
 use reel_core::Store as ReelStoreTrait;
@@ -149,6 +149,11 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
         // The mapped read path is gated on this and the default forbids it, so
         // every warm read pays a door round trip it does not need.
         map_above: MAP_EVERYTHING,
+        // Ask the page cache before queueing a read. Worthless on a direct
+        // plane, which has no cache to ask, and nearly free where it loses on a
+        // buffered one: a cold probe costs one nowait syscall against a seek,
+        // and a warm one skips the door entirely.
+        point_reads: PointReads::Probed,
         ..ReelConfig::default()
     }
 }

@@ -38,19 +38,14 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotResponsible)?;
 
-    let cursor = request.cursor.map(Address::new);
     let limit = (request.limit as usize).clamp(1, MAX_SYNC_BATCH);
-    let slices = state
+    // A page boundary rather than a row, so a peer resuming may be handed
+    // slices it already holds; it skips what it has rather than rewriting it.
+    let (slices, next_cursor) = state
         .context
         .store
-        .iter_slices_by_spool_from(request.spool_index, cursor, limit)
+        .sweep_slices_by_spool(request.spool_index, request.cursor.as_deref(), limit)
         .map_err(store_error)?;
-
-    let next_cursor = if slices.len() == limit {
-        slices.last().map(|(track, _)| track.to_bytes())
-    } else {
-        None
-    };
 
     let current_epoch = state.context.state().epoch();
 

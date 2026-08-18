@@ -325,8 +325,13 @@ impl SlicePayload {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesRequest {
     pub spool_index: SpoolIndex,
-    /// Last track address received, or empty to start from the beginning.
-    pub cursor: Option<[u8; 32]>,
+    /// Where the last page left off, or nothing to start from the beginning.
+    ///
+    /// Opaque: the server mints it and the client only ever hands it back. A
+    /// mark the server did not mint, or one from a different opening of its
+    /// volume, restarts the scan rather than resuming into a layout that is not
+    /// there.
+    pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }
 
@@ -334,8 +339,12 @@ pub struct SyncSlicesRequest {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesResponse {
     pub entries: Vec<SyncSliceEntry>,
-    /// Next cursor for pagination, or None if no more entries.
-    pub next_cursor: Option<[u8; 32]>,
+    /// Where to resume, or nothing when the scan is done.
+    ///
+    /// A page boundary rather than a row: a client resuming from it may be
+    /// handed slices it already holds, which is safe because a slice it already
+    /// has is skipped rather than rewritten.
+    pub next_cursor: Option<Vec<u8>>,
 }
 
 /// A single slice entry in a sync response.
@@ -695,7 +704,7 @@ mod tests {
     fn sync_slices_request() {
         let req = SyncSlicesRequest {
             spool_index: SpoolIndex(42),
-            cursor: Some([0xAA; 32]),
+            cursor: Some(vec![0xAA; 32]),
             limit: 100,
         };
         let bytes = wincode::serialize(&req).unwrap();
@@ -716,7 +725,7 @@ mod tests {
                     slice_data: vec![4, 5, 6],
                 },
             ],
-            next_cursor: Some([0x22; 32]),
+            next_cursor: Some(vec![0x22; 32]),
         };
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: SyncSlicesResponse = wincode::deserialize(&bytes).unwrap();

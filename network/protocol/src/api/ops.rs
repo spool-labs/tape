@@ -133,14 +133,14 @@ pub struct GetTrackProofRes {
 #[derive(Clone, Debug)]
 pub struct SyncSlicesReq {
     pub spool_index: SpoolIndex,
-    pub cursor: Option<[u8; 32]>,
+    pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }
 
 #[derive(Clone, Debug)]
 pub struct SyncSlicesRes {
     pub entries: Vec<SyncSliceEntry>,
-    pub next_cursor: Option<[u8; 32]>,
+    pub next_cursor: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
