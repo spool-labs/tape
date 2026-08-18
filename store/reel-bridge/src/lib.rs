@@ -168,6 +168,13 @@ fn rows(iter: reel_core::StoreIter<'_>) -> StoreIter<'_> {
     Box::new(iter.map(|(key, value)| (key, value.into_vec())))
 }
 
+/// Values the vendored trait lends, as values the internal one owns
+fn owned(values: Vec<Option<reel_core::Value>>) -> Vec<Option<Vec<u8>>> {
+    values
+        .into_iter()
+        .map(|value| value.map(reel_core::Value::into_vec))
+        .collect()
+}
 
 impl Store for ReelBridge {
     fn get(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Vec<u8>>> {
@@ -176,8 +183,59 @@ impl Store for ReelBridge {
             .map_err(crossed)
     }
 
+    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Vec<u8>>>> {
+        ReelStoreTrait::get_many(&self.inner, cf, keys)
+            .map(owned)
+            .map_err(crossed)
+    }
+
+    async fn get_wait(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Vec<u8>>> {
+        ReelStoreTrait::get_wait(&self.inner, cf, key)
+            .await
+            .map(|value| value.map(reel_core::Value::into_vec))
+            .map_err(crossed)
+    }
+
+    async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Vec<u8>>>> {
+        ReelStoreTrait::get_many_wait(&self.inner, cf, keys)
+            .await
+            .map(owned)
+            .map_err(crossed)
+    }
+
+    fn get_range(
+        &self,
+        cf: &str,
+        key: &[u8],
+        offset: u64,
+        len: usize,
+    ) -> StoreResult<Option<Vec<u8>>> {
+        ReelStoreTrait::get_range(&self.inner, cf, key, offset, len)
+            .map(|value| value.map(reel_core::Value::into_vec))
+            .map_err(crossed)
+    }
+
+    async fn get_range_wait(
+        &self,
+        cf: &str,
+        key: &[u8],
+        offset: u64,
+        len: usize,
+    ) -> StoreResult<Option<Vec<u8>>> {
+        ReelStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
+            .await
+            .map(|value| value.map(reel_core::Value::into_vec))
+            .map_err(crossed)
+    }
+
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
         ReelStoreTrait::put(&self.inner, cf, key, value).map_err(crossed)
+    }
+
+    async fn put_wait(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
+        ReelStoreTrait::put_wait(&self.inner, cf, key, value)
+            .await
+            .map_err(crossed)
     }
 
     fn delete(&self, cf: &str, key: &[u8]) -> StoreResult<()> {
@@ -192,6 +250,11 @@ impl Store for ReelBridge {
         ReelStoreTrait::write_batch(&self.inner, batch(staged)).map_err(crossed)
     }
 
+    async fn write_batch_wait(&self, staged: WriteBatch) -> StoreResult<()> {
+        ReelStoreTrait::write_batch_wait(&self.inner, batch(staged))
+            .await
+            .map_err(crossed)
+    }
 
     fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> StoreResult<()> {
         ReelStoreTrait::delete_range(&self.inner, cf, start, end).map_err(crossed)
@@ -211,6 +274,10 @@ impl Store for ReelBridge {
 
     fn iter_keys_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Vec<Vec<u8>>> {
         ReelStoreTrait::iter_keys_prefix(&self.inner, cf, prefix).map_err(crossed)
+    }
+
+    fn count_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<u64> {
+        ReelStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
     }
 
     fn iter_from(&self, cf: &str, start: &[u8], way: Direction) -> StoreResult<StoreIter<'_>> {

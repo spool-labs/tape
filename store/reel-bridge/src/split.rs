@@ -77,6 +77,14 @@ impl Store for MetaBulkStore {
         self.route(cf).get(cf, key)
     }
 
+    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        self.route(cf).get_many(cf, keys)
+    }
+
+    fn get_range(&self, cf: &str, key: &[u8], offset: u64, len: usize) -> Result<Option<Vec<u8>>> {
+        self.route(cf).get_range(cf, key, offset, len)
+    }
+
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
         self.route(cf).put(cf, key, value)
     }
@@ -135,6 +143,47 @@ impl Store for MetaBulkStore {
         }
         self.meta.write_batch(meta_batch)?;
         self.bulk.write_batch(bulk_batch)
+    }
+
+    fn count_prefix(&self, cf: &str, prefix: &[u8]) -> Result<u64> {
+        self.route(cf).count_prefix(cf, prefix)
+    }
+
+    // The awaited calls cannot go through `route`, whose answer is a `dyn Store`
+    // and so carries none of them. One family names one half, so the branch is
+    // the same routing written out.
+    async fn get_wait(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        match self.is_bulk(cf) {
+            true => self.bulk.get_wait(cf, key).await,
+            false => self.meta.get_wait(cf, key).await,
+        }
+    }
+
+    async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        match self.is_bulk(cf) {
+            true => self.bulk.get_many_wait(cf, keys).await,
+            false => self.meta.get_many_wait(cf, keys).await,
+        }
+    }
+
+    async fn get_range_wait(
+        &self,
+        cf: &str,
+        key: &[u8],
+        offset: u64,
+        len: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        match self.is_bulk(cf) {
+            true => self.bulk.get_range_wait(cf, key, offset, len).await,
+            false => self.meta.get_range_wait(cf, key, offset, len).await,
+        }
+    }
+
+    async fn put_wait(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        match self.is_bulk(cf) {
+            true => self.bulk.put_wait(cf, key, value).await,
+            false => self.meta.put_wait(cf, key, value).await,
+        }
     }
 
     fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> Result<()> {
