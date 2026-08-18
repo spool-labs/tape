@@ -86,10 +86,6 @@ fn to_network(view: &LocalnetView) -> tape_observe_api::Network {
     }
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
 async fn observe_network(State(state): State<AppState>) -> impl IntoResponse {
     let snap = state.snapshot.load_full();
     Json(to_network(snap.as_ref())).into_response()
