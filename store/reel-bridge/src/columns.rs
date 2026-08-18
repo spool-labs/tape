@@ -6,6 +6,13 @@
 //! engine's own declaration; the rest are declared variable-width and unsharded,
 //! since nothing measures their key layout and a wrong fixed width is a runtime
 //! refusal rather than a compile error.
+//!
+//! Columns declare lz4, which is what the RocksDB store they replace sets for
+//! the whole database. A codec is attempted at admission and not promised, so a
+//! payload that does not shrink is stored verbatim. Three shapes stay raw:
+//! `slice`, because a codec frame decodes whole and a storage challenge reads a
+//! window out of one, and the two carrying shapes, because the engine refuses a
+//! codec beside a carry.
 
 use reel::{Codec, ColumnId, ColumnSet, ColumnSpec, KeyWidth, MapShape};
 use tape_store::columns::ALL_COLUMN_FAMILIES;
@@ -32,8 +39,27 @@ const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> Column
         inline_max: 0,
         row_carry: 0,
         purge_mark: None,
-        codec: Codec::None,
+        codec: Codec::Lz4,
         map_shape: MapShape::Open,
+    }
+}
+
+/// A fixed-width column stored verbatim, so a window of one value can be read
+///
+/// A codec frame decodes whole, so a coded column can answer no range at all.
+/// The column a storage challenge reads a sub-leaf out of has to stay raw or
+/// every such read pulls the whole payload back.
+const fn ranged(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> ColumnSpec {
+    ColumnSpec {
+        id: ColumnId(id),
+        name,
+        key_width: KeyWidth::Fixed(width),
+        shard_bytes,
+        inline_max: 0,
+        row_carry: 0,
+        purge_mark: None,
+        codec: Codec::None,
+        map_shape: MapShape::Tree,
     }
 }
 
@@ -57,6 +83,25 @@ const fn carried(id: u8, name: &'static str, width: u16, shard_bytes: u8, carry:
     }
 }
 
+/// A fixed-width column whose small values are held in the resident index
+///
+/// The read then answers from memory with no syscall at all, which is what a
+/// userspace block cache buys an engine that has one. Paid for in resident bytes
+/// per key, so it is only affordable where the key count is bounded.
+const fn inlined(id: u8, name: &'static str, width: u16, shard_bytes: u8, inline: u16) -> ColumnSpec {
+    ColumnSpec {
+        id: ColumnId(id),
+        name,
+        key_width: KeyWidth::Fixed(width),
+        shard_bytes,
+        inline_max: inline,
+        row_carry: 0,
+        purge_mark: None,
+        codec: Codec::None,
+        map_shape: MapShape::Tree,
+    }
+}
+
 /// A column with nothing declared about its keys beyond that they are keys
 const fn plain(id: u8, name: &'static str) -> ColumnSpec {
     ColumnSpec {
@@ -67,7 +112,7 @@ const fn plain(id: u8, name: &'static str) -> ColumnSpec {
         inline_max: 0,
         row_carry: 0,
         purge_mark: None,
-        codec: Codec::None,
+        codec: Codec::Lz4,
         map_shape: MapShape::Tree,
     }
 }
@@ -82,7 +127,7 @@ const fn shaped(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> Colu
         inline_max: 0,
         row_carry: 0,
         purge_mark: None,
-        codec: Codec::None,
+        codec: Codec::Lz4,
         map_shape: MapShape::Tree,
     }
 }
@@ -106,7 +151,7 @@ pub const TAPE_COLUMNS: ColumnSet = &[
     plain(11, ALL_COLUMN_FAMILIES[10]), // spool_status
     shaped(12, ALL_COLUMN_FAMILIES[11], SLICE_KEY_LEN, 2), // spool_pending_repair
     shaped(13, ALL_COLUMN_FAMILIES[12], SLICE_KEY_LEN, 2), // spool_pending_recovery
-    shaped(14, ALL_COLUMN_FAMILIES[13], SLICE_KEY_LEN, 2), // slice
+    ranged(14, ALL_COLUMN_FAMILIES[13], SLICE_KEY_LEN, 2), // slice
     shaped(15, ALL_COLUMN_FAMILIES[14], SLICE_KEY_LEN, 2), // slice_size
     shaped(16, ALL_COLUMN_FAMILIES[15], SLICE_KEY_LEN, 2), // slice_sidecar
     plain(17, ALL_COLUMN_FAMILIES[16]), // challenge_record
