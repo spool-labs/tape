@@ -37,7 +37,7 @@ mod split;
 
 use std::path::Path;
 
-use reel::{ByteCount, Preallocate, ReelConfig, ReelStore, SyncPolicy};
+use reel::{ByteCount, MapShape, Preallocate, ReelConfig, ReelStore, ShardShapes, SyncPolicy};
 use reel_core::Store as ReelStoreTrait;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
@@ -71,6 +71,34 @@ impl ReelBridge {
         &self.inner
     }
 
+    /// The shape each column's index actually took, beside the one it declared
+    ///
+    /// A declaration is a request the engine may decline, and a declined open
+    /// shard is a tree that looks like one in the source and nowhere else. A run
+    /// reporting a shape number says which it got rather than which it asked for.
+    pub fn shapes(&self) -> Vec<(&'static str, MapShape, MapShape)> {
+        let index = self.inner.index();
+        let mut shapes = Vec::with_capacity(TAPE_COLUMNS.len());
+        for spec in TAPE_COLUMNS {
+            let Some(column) = index.column(spec.id) else {
+                continue;
+            };
+            shapes.push((spec.name, spec.map_shape, column.map_shape()));
+        }
+        shapes
+    }
+
+    /// Every column whose index did not take the shape it declared
+    pub fn declined_shapes(&self) -> Vec<&'static str> {
+        let mut declined = Vec::new();
+        for (name, asked, got) in self.shapes() {
+            if asked != got {
+                declined.push(name);
+            }
+        }
+        declined
+    }
+
     /// Drive every buffered append out to the filesystem
     ///
     /// The reel's answer to a RocksDB flush: what a bench calls between its write
@@ -92,6 +120,10 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
         segment_bytes: ByteCount::from_bytes(segment_bytes),
         preallocate: Preallocate::Chunk,
         sync: SyncPolicy::Never,
+        // Without this the engine drops every open-shard request a column makes
+        // and hands back a tree, so a run measuring the shape would measure the
+        // default and never say so.
+        shard_shapes: ShardShapes::Declared,
         ..ReelConfig::default()
     }
 }

@@ -19,6 +19,24 @@ const ADDRESS_LEN: u16 = 32;
 /// Bytes a snapshot artifact key occupies
 const SNAPSHOT_KEY_LEN: u16 = 24;
 
+/// A column whose keys are all one width, held in an open-addressed shard
+///
+/// Point reads first: the shard has no order, so a walk gathers and sorts. Only
+/// for a column nothing walks.
+const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> ColumnSpec {
+    ColumnSpec {
+        id: ColumnId(id),
+        name,
+        key_width: KeyWidth::Fixed(width),
+        shard_bytes,
+        inline_max: 0,
+        row_carry: 0,
+        purge_mark: None,
+        codec: Codec::None,
+        map_shape: MapShape::Open,
+    }
+}
+
 /// A column with nothing declared about its keys beyond that they are keys
 const fn plain(id: u8, name: &'static str) -> ColumnSpec {
     ColumnSpec {
@@ -59,7 +77,7 @@ pub const TAPE_COLUMNS: ColumnSet = &[
     plain(2, ALL_COLUMN_FAMILIES[1]),   // tape
     shaped(3, ALL_COLUMN_FAMILIES[2], ADDRESS_LEN, 1), // track
     plain(4, ALL_COLUMN_FAMILIES[3]),   // track_lookup
-    shaped(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1), // track_data
+    open(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1), // track_data
     plain(6, ALL_COLUMN_FAMILIES[5]),   // object_info
     plain(7, ALL_COLUMN_FAMILIES[6]),   // object_metadata
     plain(8, ALL_COLUMN_FAMILIES[7]),   // object_list
