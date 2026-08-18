@@ -6,7 +6,7 @@
 //! the name of the shape it asked for, which is worse than no number at all.
 
 use reel::MapShape;
-use reel_bridge::{bench_config, ReelBridge};
+use reel_bridge::{bench_config, ReelBridge, TAPE_COLUMNS};
 use tempfile::TempDir;
 
 /// The segment size a bench arm opens with
@@ -16,7 +16,7 @@ const SEGMENT_BYTES: u64 = 256 * 1024 * 1024;
 #[test]
 fn declared_shapes_take() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     let declined = store.declined_shapes();
     assert!(
@@ -29,7 +29,7 @@ fn declared_shapes_take() {
 #[test]
 fn track_data_is_open() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     for (name, _, got) in store.shapes() {
         let wanted = match name {

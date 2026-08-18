@@ -26,7 +26,11 @@ pub struct MetaBulkStore {
 
 impl MetaBulkStore {
     /// Open both halves under one root, the metadata volume beside the reel
-    pub fn open(root: &Path, config: reel::ReelConfig) -> Result<MetaBulkStore> {
+    pub fn open(
+        root: &Path,
+        config: reel::ReelConfig,
+        columns: reel::ColumnSet,
+    ) -> Result<MetaBulkStore> {
         let meta_dir = root.join(META_SUBDIR);
         std::fs::create_dir_all(&meta_dir)?;
 
@@ -38,7 +42,7 @@ impl MetaBulkStore {
             bench_db_options(),
             bench_metadata_configs(&cache),
         )?;
-        let bulk = ReelBridge::open(root.join(REEL_SUBDIR), config)?;
+        let bulk = ReelBridge::open(root.join(REEL_SUBDIR), config, columns)?;
         Ok(MetaBulkStore { meta, bulk })
     }
 

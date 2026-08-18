@@ -5,12 +5,15 @@
 //! free to answer differently, so each case asks both and compares.
 
 use reel::sync::tension::block_on;
-use reel_bridge::{bench_config, MetaBulkStore, ReelBridge};
+use reel_bridge::{bench_config, MetaBulkStore, ReelBridge, TAPE_COLUMNS};
 use store::{Store, Value};
 
 /// Values as plain vectors, so an expectation can be written as bytes
 fn owned(values: Vec<Option<Value>>) -> Vec<Option<Vec<u8>>> {
-    values.into_iter().map(|held| held.map(Value::into_vec)).collect()
+    values
+        .into_iter()
+        .map(|held| held.map(Value::into_vec))
+        .collect()
 }
 use tempfile::TempDir;
 
@@ -127,7 +130,7 @@ fn key_of_missing(cf: &str) -> Vec<u8> {
 #[test]
 fn bridge_agrees() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     let keys = fill(&store, BULK_CF, bulk_key);
     agrees(&store, BULK_CF, &keys, &7u16.to_be_bytes());
@@ -137,7 +140,7 @@ fn bridge_agrees() {
 #[test]
 fn split_routes() {
     let dir = TempDir::new().expect("dir");
-    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     let bulk = fill(&store, BULK_CF, bulk_key);
     agrees(&store, BULK_CF, &bulk, &7u16.to_be_bytes());
@@ -150,7 +153,7 @@ fn split_routes() {
 #[test]
 fn awaited_writes() {
     let dir = TempDir::new().expect("dir");
-    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     let key = bulk_key(1);
     block_on(store.put_wait(BULK_CF, &key, &payload(1))).expect("put_wait");
@@ -191,7 +194,7 @@ fn swept(store: &impl Store, cf: &str, page: usize) -> Vec<Vec<u8>> {
 #[test]
 fn sweep_covers() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
     let keys = fill(&store, BULK_CF, bulk_key);
 
     for page in [1usize, 7, RECORDS * 2] {
@@ -207,7 +210,7 @@ fn sweep_covers() {
 #[test]
 fn sweep_refuses_foreign() {
     let dir = TempDir::new().expect("dir");
-    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
     let keys = fill(&store, BULK_CF, bulk_key);
 
     let (rows, _) = store

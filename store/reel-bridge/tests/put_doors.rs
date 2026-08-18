@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use reel::{ColumnId, KeyBytes, RecordKey, SEGMENT_SUFFIX};
-use reel_bridge::{bench_config, ReelBridge};
+use reel_bridge::{bench_config, ReelBridge, TAPE_COLUMNS};
 use store::{Store, WriteBatch};
 use tape_store::columns::ALL_COLUMN_FAMILIES;
 use tempfile::TempDir;
@@ -71,7 +71,7 @@ struct Round {
 fn run_variant(variant: usize, size: usize) -> Round {
     let dir = TempDir::new().expect("tempdir");
     let root = dir.path().join("db");
-    let bridge = ReelBridge::open(&root, bench_config(SEGMENT_BYTES)).expect("open reel");
+    let bridge = ReelBridge::open(&root, bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open reel");
     let cf = ALL_COLUMN_FAMILIES[13];
 
     let payload = vec![0xABu8; size];

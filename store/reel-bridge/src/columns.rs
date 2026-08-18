@@ -29,8 +29,9 @@ const SNAPSHOT_KEY_LEN: u16 = 24;
 /// A column whose keys are all one width, held in an open-addressed shard
 ///
 /// Point reads first: the shard has no order, so a walk gathers and sorts. Only
-/// for a column nothing walks.
-const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> ColumnSpec {
+/// for a column nothing walks. The codec is a parameter because `track_data` is
+/// the one column a bench opens both ways, to say what the codec bought.
+const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8, codec: Codec) -> ColumnSpec {
     ColumnSpec {
         id: ColumnId(id),
         name,
@@ -39,7 +40,7 @@ const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> Column
         inline_max: 0,
         row_carry: 0,
         purge_mark: None,
-        codec: Codec::Lz4,
+        codec,
         map_shape: MapShape::Open,
     }
 }
@@ -132,17 +133,18 @@ const fn shaped(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> Colu
     }
 }
 
-/// Every family a tape store addresses, as the reel needs them declared
+/// Families a tape store addresses, with `track_data` declared as asked
 ///
 /// Identifiers are positions in `ALL_COLUMN_FAMILIES` plus one, so zero stays
 /// free and the mapping is stable as long as that list does not reorder. The
 /// column-set test holds it to that list.
-pub const TAPE_COLUMNS: ColumnSet = &[
+const fn tape_columns(track_data_codec: Codec) -> [ColumnSpec; ALL_COLUMN_FAMILIES.len()] {
+    [
     plain(1, ALL_COLUMN_FAMILIES[0]),   // meta
     plain(2, ALL_COLUMN_FAMILIES[1]),   // tape
     shaped(3, ALL_COLUMN_FAMILIES[2], ADDRESS_LEN, 1), // track
     plain(4, ALL_COLUMN_FAMILIES[3]),   // track_lookup
-    open(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1), // track_data
+    open(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1, track_data_codec), // track_data
     plain(6, ALL_COLUMN_FAMILIES[5]),   // object_info
     plain(7, ALL_COLUMN_FAMILIES[6]),   // object_metadata
     plain(8, ALL_COLUMN_FAMILIES[7]),   // object_list
@@ -170,7 +172,23 @@ pub const TAPE_COLUMNS: ColumnSet = &[
     plain(30, ALL_COLUMN_FAMILIES[29]), // s3_multipart_upload
     plain(31, ALL_COLUMN_FAMILIES[30]), // s3_multipart_part
     plain(32, ALL_COLUMN_FAMILIES[31]), // s3_multipart_part_data
-];
+    ]
+}
+
+/// The set the node ships, `track_data` coded
+const CODED_TRACK_DATA: [ColumnSpec; ALL_COLUMN_FAMILIES.len()] = tape_columns(Codec::Lz4);
+
+/// The same set with `track_data` stored verbatim
+const RAW_TRACK_DATA: [ColumnSpec; ALL_COLUMN_FAMILIES.len()] = tape_columns(Codec::None);
+
+/// Every family a tape store addresses, as the reel needs them declared
+pub const TAPE_COLUMNS: ColumnSet = &CODED_TRACK_DATA;
+
+/// The same families with `track_data` uncoded, for a run weighing the codec
+///
+/// The only difference between the two sets is one column's declaration, so a
+/// pair of runs over them differs by the codec and by nothing else.
+pub const RAW_TRACK_DATA_COLUMNS: ColumnSet = &RAW_TRACK_DATA;
 
 #[cfg(test)]
 mod tests {
@@ -187,5 +205,19 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), TAPE_COLUMNS.len());
         assert!(!ids.contains(&0));
+    }
+
+    #[test]
+    fn the_codec_is_the_only_difference() {
+        for (coded, raw) in TAPE_COLUMNS.iter().zip(RAW_TRACK_DATA_COLUMNS) {
+            if coded.name == ALL_COLUMN_FAMILIES[4] {
+                assert_eq!(coded.codec, Codec::Lz4);
+                assert_eq!(raw.codec, Codec::None);
+            } else {
+                assert_eq!(coded.codec, raw.codec);
+            }
+            assert_eq!(coded.name, raw.name);
+            assert_eq!(coded.id.as_u8(), raw.id.as_u8());
+        }
     }
 }

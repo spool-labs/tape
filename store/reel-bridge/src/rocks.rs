@@ -15,9 +15,10 @@
 //! Every knob with an opposite number on the reel side is set to match it, and
 //! `RUNBOOK-tape.md` records each pairing:
 //!
-//! - Compression is off on both engines. The bench column set declares
-//!   `Codec::None` for every column, and the payloads are pseudorandom, so
-//!   compression would only spend CPU.
+//! - Compression follows the same knob on both engines,
+//!   `TAPE_BENCH_TRACK_DATA_CODEC`. A run comparing codecs has to be able to
+//!   turn one engine's off without turning the other's off by hand, or the row
+//!   it reports is a codec measured against no codec.
 //! - Neither engine paces compaction. The reel arm runs `CompactRate::Auto`,
 //!   which is unpaced, so the rocks arm carries no rate limiter.
 //! - Both engines read and write buffered. The reel arm resolves
@@ -31,6 +32,7 @@
 
 use std::path::Path;
 
+use crate::arm::track_data_codec;
 use store::{Error as StoreError, Result as StoreResult};
 use store_rocks::{
     BlockBasedOptions, Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, DBCompressionType,
@@ -242,11 +244,16 @@ fn tuned(config: ColumnFamilyConfig, cache: &Cache) -> ColumnFamilyDescriptor {
             // Replaces the table factory the shape carries, cache and all.
             options.set_block_based_table_factory(&block);
 
-            // Pseudorandom payloads do not compress, and the reel arm declares
-            // Codec::None for every column.
-            options.set_compression_type(DBCompressionType::None);
-            options.set_bottommost_compression_type(DBCompressionType::None);
-            options.set_blob_compression_type(DBCompressionType::None);
+            // Whatever the reel arm was asked to declare, so the two engines are
+            // compared on the same codec. Set on every family rather than on
+            // track_data alone, since a run measures one family at a time.
+            let compression = match track_data_codec() {
+                "none" => DBCompressionType::None,
+                _ => DBCompressionType::Lz4,
+            };
+            options.set_compression_type(compression);
+            options.set_bottommost_compression_type(compression);
+            options.set_blob_compression_type(compression);
 
             // A blob read otherwise consults no cache at all, so every slice
             // above the 256 KiB threshold would come off the filesystem on

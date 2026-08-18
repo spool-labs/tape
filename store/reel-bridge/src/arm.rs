@@ -10,7 +10,9 @@ use store::Store;
 use store_rocks::SplitStore;
 use tape_store::TapeStore;
 
-use crate::{bench_config, open_bench_split, MetaBulkStore, ReelBridge};
+use crate::{
+    bench_config, open_bench_split, MetaBulkStore, ReelBridge, RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS,
+};
 
 /// Segment size a reel arm opens with, in MiB, unless the environment names another
 const DEFAULT_SEGMENT_MIB: u64 = 256;
@@ -33,6 +35,30 @@ pub fn scaled(figure: usize) -> usize {
         .unwrap_or(1)
         .max(1);
     (figure / divisor).max(1)
+}
+
+/// Environment variable naming the codec a reel arm declares on `track_data`
+pub const TRACK_DATA_CODEC_VAR: &str = "TAPE_BENCH_TRACK_DATA_CODEC";
+
+/// What `track_data` is declared with, the shipped codec unless the run asked otherwise
+///
+/// A knob rather than a second arm type because `/proc` accounting already puts
+/// every arm in its own process, so a run names the codec the same way it names
+/// the segment size.
+pub fn track_data_codec() -> &'static str {
+    match std::env::var(TRACK_DATA_CODEC_VAR).ok().as_deref() {
+        None | Some("lz4") => "lz4",
+        Some("none") => "none",
+        Some(other) => panic!("{TRACK_DATA_CODEC_VAR} is lz4 or none, not {other}"),
+    }
+}
+
+/// The column set a reel-backed arm opens with
+fn reel_columns() -> reel::ColumnSet {
+    match track_data_codec() {
+        "none" => RAW_TRACK_DATA_COLUMNS,
+        _ => TAPE_COLUMNS,
+    }
 }
 
 /// The reel config every reel-backed arm opens with
@@ -76,7 +102,7 @@ impl BenchArm for ReelBridge {
     const NAME: &'static str = "reel";
 
     fn open_bench(root: &Path) -> TapeStore<Self> {
-        TapeStore::new(ReelBridge::open(root, reel_config()).expect("open reel"))
+        TapeStore::new(ReelBridge::open(root, reel_config(), reel_columns()).expect("open reel"))
     }
 
     fn settle(store: &TapeStore<Self>) {
@@ -88,7 +114,10 @@ impl BenchArm for MetaBulkStore {
     const NAME: &'static str = "split";
 
     fn open_bench(root: &Path) -> TapeStore<Self> {
-        TapeStore::new(MetaBulkStore::open(root, reel_config()).expect("open rocks meta plus reel"))
+        TapeStore::new(
+            MetaBulkStore::open(root, reel_config(), reel_columns())
+                .expect("open rocks meta plus reel"),
+        )
     }
 
     fn settle(store: &TapeStore<Self>) {

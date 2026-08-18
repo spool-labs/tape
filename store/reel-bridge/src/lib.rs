@@ -46,8 +46,10 @@ use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
     StoreIter, StoreVolume, WriteBatch, Value};
 
-pub use arm::{scaled, BenchArm, SCALE_VAR, SEGMENT_MIB_VAR};
-pub use columns::TAPE_COLUMNS;
+pub use arm::{
+    scaled, track_data_codec, BenchArm, SCALE_VAR, SEGMENT_MIB_VAR, TRACK_DATA_CODEC_VAR,
+};
+pub use columns::{RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS};
 pub use rocks::{
     bench_bulk_configs, bench_cache, bench_db_options, bench_metadata_configs, bench_store_configs,
     open_bench_split, CACHE_BYTES,
@@ -60,11 +62,18 @@ pub struct ReelBridge {
 }
 
 impl ReelBridge {
-    /// Open a reel under this directory serving every tape column family
-    pub fn open(root: impl AsRef<Path>, config: ReelConfig) -> StoreResult<ReelBridge> {
+    /// Open a reel under this directory serving the given tape column families
+    ///
+    /// The set is a parameter rather than a constant because a run weighing a
+    /// codec opens the same families twice and declares one of them both ways.
+    pub fn open(
+        root: impl AsRef<Path>,
+        config: ReelConfig,
+        columns: reel::ColumnSet,
+    ) -> StoreResult<ReelBridge> {
         let root = root.as_ref();
         std::fs::create_dir_all(root)?;
-        let inner = ReelStore::open(root.to_path_buf(), config, TAPE_COLUMNS).map_err(engine)?;
+        let inner = ReelStore::open(root.to_path_buf(), config, columns).map_err(engine)?;
         Ok(ReelBridge { inner })
     }
 
