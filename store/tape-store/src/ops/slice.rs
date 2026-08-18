@@ -52,6 +52,17 @@ pub trait SliceOps {
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>>;
 
+    /// One page of a spool's slices, in no promised order, resumed by a mark.
+    ///
+    /// The spool is the slice key's shard prefix, so this is one shard's walk on
+    /// either backend rather than a scan of the family.
+    fn sweep_slices_by_spool(
+        &self,
+        spool_id: SpoolIndex,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<(Address, Vec<u8>)>, Option<Vec<u8>>)>;
+
     /// Iterate slice keys (track addresses) by spool without loading data.
     fn iter_slice_keys_by_spool(
         &self,
@@ -223,6 +234,29 @@ impl<S: Store> SliceOps for TapeStore<S> {
             }
         }
         Ok(results)
+    }
+
+    fn sweep_slices_by_spool(
+        &self,
+        spool_id: SpoolIndex,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<(Address, Vec<u8>)>, Option<Vec<u8>>)> {
+        let prefix = SliceKey::spool_prefix(spool_id);
+        let (rows, next) =
+            self.inner()
+                .inner()
+                .sweep_prefix(SliceCol::CF_NAME, &prefix, from, limit)?;
+
+        let mut slices = Vec::with_capacity(rows.len());
+        for (key_bytes, value_bytes) in rows {
+            let key: SliceKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
+            let data: SliceValue = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
+            slices.push((key.track_address, data.0));
+        }
+        Ok((slices, next))
     }
 
     fn iter_slice_keys_by_spool(

@@ -263,16 +263,12 @@ async fn sweep_orphan_slices<Db: Store>(
     let mut stats = GcSweepStats::default();
     let spools = store.iter_all_spools().map_err(store_error)?;
     for (index, (spool_id, _)) in spools.into_iter().enumerate() {
-        let mut cursor = None;
+        let mut cursor: Option<Vec<u8>> = None;
 
         loop {
-            let slices = store
-                .iter_slices_by_spool_from(spool_id, cursor, slice_batch(config))
+            let (slices, next) = store
+                .sweep_slices_by_spool(spool_id, cursor.as_deref(), slice_batch(config))
                 .map_err(store_error)?;
-
-            if slices.is_empty() {
-                break;
-            }
 
             let mut addresses: Vec<Address> = Vec::with_capacity(slices.len());
             for (track, _) in &slices {
@@ -293,7 +289,10 @@ async fn sweep_orphan_slices<Db: Store>(
                 }
             }
 
-            cursor = slices.last().map(|(track, _)| *track);
+            match next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
             yield_now().await;
         }
 

@@ -338,6 +338,22 @@ impl Store for ReelBridge {
         ReelStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
     }
 
+    fn sweep_prefix(
+        &self,
+        cf: &str,
+        prefix: &[u8],
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> StoreResult<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
+        let (rows, next) =
+            ReelStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)?;
+        let mut owned = Vec::with_capacity(rows.len());
+        for (key, value) in rows {
+            owned.push((key, value.into_vec()));
+        }
+        Ok((owned, next))
+    }
+
     fn sweep(
         &self,
         cf: &str,

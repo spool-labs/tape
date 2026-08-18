@@ -219,6 +219,38 @@ pub trait Store: Send + Sync {
         Ok((rows, next))
     }
 
+    /// One page of the keys under a prefix, resumable by an opaque mark.
+    ///
+    /// Same promise as `sweep`, narrowed to a prefix. A backend whose keys have
+    /// no order can serve this only where the prefix selects a whole shard of
+    /// its own, and answers nothing where it does not, so a caller cannot turn a
+    /// prefix walk into a scan of the family by accident.
+    fn sweep_prefix(
+        &self,
+        cf: &str,
+        prefix: &[u8],
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<KeyValue>, Option<Vec<u8>>)> {
+        let start = from.unwrap_or(prefix);
+        let mut rows = Vec::with_capacity(limit);
+        let mut next = None;
+        for (key, value) in self.iter_from(cf, start, Direction::Asc)? {
+            if !key.starts_with(prefix) {
+                break;
+            }
+            if from.is_some_and(|mark| key.as_slice() == mark) {
+                continue;
+            }
+            if rows.len() == limit {
+                next = Some(key);
+                break;
+            }
+            rows.push((key, value));
+        }
+        Ok((rows, next))
+    }
+
     /// Exact count of the keys under `prefix`, WITHOUT materializing them.
     ///
     /// The default collects the keys and takes the length; backends override to
