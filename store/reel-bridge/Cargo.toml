@@ -12,6 +12,7 @@ reel.workspace = true
 reel-core.workspace = true
 
 [dev-dependencies]
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 tape-core.workspace = true
 tape-crypto.workspace = true
 tempfile = "3.10"

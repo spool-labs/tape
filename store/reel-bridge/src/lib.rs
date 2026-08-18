@@ -32,6 +32,9 @@
 
 mod arm;
 mod columns;
+pub mod fill;
+#[cfg(target_os = "linux")]
+pub mod written;
 mod rocks;
 mod split;
 
@@ -62,6 +65,30 @@ pub use split::{MetaBulkStore, REEL_SUBDIR};
 /// The public reel engine behind the internal store trait
 pub struct ReelBridge {
     inner: ReelStore,
+}
+
+/// What one column's index holds
+pub struct ResidentColumn {
+    /// The column, as the volume was opened with it
+    pub column: String,
+
+    /// Live records the index counts, absent on a paged open
+    pub records: Option<u64>,
+
+    /// Live bytes the index counts, absent on a paged open
+    pub bytes: Option<u64>,
+
+    /// Keys the index holds in memory
+    pub keys: u64,
+}
+
+/// What a whole index holds
+pub struct IndexReport {
+    /// Bytes the index accounts to itself
+    pub resident_bytes: u64,
+
+    /// One row per column the volume was opened over
+    pub columns: Vec<ResidentColumn>,
 }
 
 impl ReelBridge {
@@ -123,6 +150,33 @@ impl ReelBridge {
             }
         }
         declined
+    }
+
+    /// What the engine's index holds, column by column
+    ///
+    /// The engine's own report layer, for a bench weighing what a column costs in
+    /// memory rather than on disk. A paged open counts only the keys it holds, so
+    /// the record and byte cells go unanswered there rather than reporting a
+    /// fraction of the column as the whole.
+    pub fn index_report(&self) -> IndexReport {
+        let index = self.inner.index();
+        let keys = index.lead_tie_rates();
+        let stat = reel::report::stat::stat(&self.inner);
+
+        let mut columns = Vec::with_capacity(stat.columns.len());
+        for column in stat.columns {
+            let resident = keys
+                .iter()
+                .find(|(id, _, _)| id.as_u8() == column.id)
+                .map_or(0, |(_, _, keys)| *keys);
+            columns.push(ResidentColumn {
+                column: column.column,
+                records: column.records,
+                bytes: column.bytes,
+                keys: resident,
+            });
+        }
+        IndexReport { resident_bytes: index.resident_bytes().to_bytes(), columns }
     }
 
     /// Drive every buffered append out to the filesystem
