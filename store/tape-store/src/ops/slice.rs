@@ -1,18 +1,13 @@
 //! Slice data operations (merged primary + recovery)
 
-use store::{Column, Store, WriteBatch};
-use tape_core::erasure::slice_sidecar;
+use store::{Column, Store};
 use tape_core::types::{SpoolIndex, StorageUnits};
-use tape_crypto::Hash;
 use tape_crypto::address::Address;
 
-use crate::columns::{SliceCol, SliceSidecarCol, SliceSizeCol};
+use crate::columns::SliceCol;
 use crate::error::{Result, TapeStoreError};
-use crate::types::{SliceKey, SliceValue, SliceWrite};
+use crate::types::{slice, SliceKey, SliceWrite};
 use crate::TapeStore;
-
-/// Entries staged before a rebuild flushes its batch
-const REBUILD_BATCH_LEN: usize = 4096;
 
 /// Operations for slice data storage
 pub trait SliceOps {
@@ -36,6 +31,20 @@ pub trait SliceOps {
 
     /// Check if a slice exists without loading data
     fn has_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool>;
+
+    /// The sidecar of a slice and a window of its payload, in two ranged reads
+    ///
+    /// What a storage challenge answers from: the nodes above the sample window
+    /// and the window itself, never the whole slice. Nothing comes back when the
+    /// slice is absent. A backend with no partial read answers each of the two
+    /// with the whole value, which is what it did for the single read before.
+    fn slice_window(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+        offset: usize,
+        len: usize,
+    ) -> Result<Option<(Vec<tape_crypto::Hash>, Vec<u8>)>>;
 
     /// Iterate slices by spool
     fn iter_slices_by_spool(
@@ -63,6 +72,14 @@ pub trait SliceOps {
         limit: usize,
     ) -> Result<(Vec<(Address, Vec<u8>)>, Option<Vec<u8>>)>;
 
+    /// One page of a spool's slice keys, in no promised order, resumed by a mark.
+    fn sweep_slice_keys_by_spool(
+        &self,
+        spool_id: SpoolIndex,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<Address>, Option<Vec<u8>>)>;
+
     /// Iterate slice keys (track addresses) by spool without loading data.
     fn iter_slice_keys_by_spool(
         &self,
@@ -71,57 +88,39 @@ pub trait SliceOps {
 
     /// Iterate each track in a spool with the byte length of its slice.
     ///
-    /// Reads the size index rather than the slices, so it never touches a payload.
-    /// Ordered by track address, which the spool-prefixed key gives for free.
+    /// Reads the slices, so it is tooling rather than something to run on a
+    /// request. Ordered by track address, which the spool-prefixed key gives for
+    /// free.
     fn iter_slice_sizes_by_spool(
         &self,
         spool_id: SpoolIndex,
     ) -> Result<Vec<(Address, StorageUnits)>>;
 
-    /// Sub-leaf tree nodes kept beside a slice, for answering a storage challenge.
-    ///
-    /// None when the slice is absent or predates the sidecar. A caller that needs
-    /// one either rebuilds from the slice or runs `ensure_slice_sidecars`.
-    fn get_slice_sidecar(
-        &self,
-        spool_id: SpoolIndex,
-        track_address: Address,
-    ) -> Result<Option<Vec<Hash>>>;
-
-    /// Drop a slice's sidecar, leaving the slice itself in place.
-    ///
-    /// Only the rebuild path and its tests need this. A live node deletes the
-    /// slice and its sidecar together.
-    fn delete_slice_sidecar(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
-
-    /// Build any missing sidecar from the slice it belongs to.
-    ///
-    /// Returns how many were written. Reads slices, so it is a startup job rather
-    /// than something to run on a request.
-    fn ensure_slice_sidecars(&self) -> Result<usize>;
-
     /// Count slices in a spool without loading data.
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize>;
 
-    /// Slice count and total payload bytes for a spool, without loading data
-    fn slice_totals_by_spool(&self, spool_id: SpoolIndex) -> Result<(u64, StorageUnits)>;
+    /// Slice count and stored bytes for a spool, without loading data
+    ///
+    /// Stored bytes are what the backend holds under those keys, sidecars and
+    /// framing included, rather than what the caller handed it. Nothing comes back
+    /// for the bytes from a backend that could only answer by reading payloads.
+    fn slice_totals_by_spool(
+        &self,
+        spool_id: SpoolIndex,
+    ) -> Result<(u64, Option<StorageUnits>)>;
 
-    /// Slice count and total payload bytes across every spool, without loading data
-    fn slice_totals(&self) -> Result<(u64, StorageUnits)>;
+    /// Slice count and stored bytes across every spool, without loading data
+    fn slice_totals(&self) -> Result<(u64, Option<StorageUnits>)>;
 
     /// Delete all slices for a spool with a single range delete.
     fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<()>;
-
-    /// Rebuild the size index if it has drifted from the slice column
-    ///
-    /// Returns true when a rebuild ran
-    fn ensure_slice_size_index(&self) -> Result<bool>;
 }
 
 impl<S: Store> SliceOps for TapeStore<S> {
     fn get_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<Option<Vec<u8>>> {
-        let key = SliceKey::new(spool_id, track_address);
-        Ok(self.get::<SliceCol>(&key)?.map(|value| value.0))
+        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
+        let stored = self.inner().inner().get(SliceCol::CF_NAME, &key)?;
+        Ok(stored.map(|value| slice::payload(&value).to_vec()))
     }
 
     fn put_slice(
@@ -134,41 +133,44 @@ impl<S: Store> SliceOps for TapeStore<S> {
         // sample either, so it is stored without one rather than refused here.
         let (data, sidecar) = slice.into().into_parts();
 
-        let key = SliceKey::new(spool_id, track_address);
-        let key_bytes = serialize_slice_key(&key)?;
-        let size_bytes = serialize_size(StorageUnits(data.len() as u64))?;
-        let sidecar_bytes = sidecar.map(serialize_sidecar).transpose()?;
-        let value_bytes = wincode::serialize(&SliceValue(data))
-            .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-
-        // All three families share a volume, so one batch keeps a payload, its
-        // recorded length and its sidecar from ever disagreeing. Hand the
-        // serialized bytes over rather than copying the payload into the batch.
-        let mut batch = WriteBatch::new();
-        batch.put_owned(SliceCol::CF_NAME, key_bytes.clone(), value_bytes);
-        batch.put_owned(SliceSizeCol::CF_NAME, key_bytes.clone(), size_bytes);
-        if let Some(sidecar) = sidecar_bytes {
-            batch.put_owned(SliceSidecarCol::CF_NAME, key_bytes, sidecar);
-        }
-        self.inner().inner().write_batch(batch)?;
+        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
+        let value = slice::fuse(&data, sidecar.as_deref());
+        self.inner().inner().put(SliceCol::CF_NAME, &key, &value)?;
         Ok(())
     }
 
     fn delete_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
-        let key = SliceKey::new(spool_id, track_address);
-        let key_bytes = serialize_slice_key(&key)?;
-
-        let mut batch = WriteBatch::new();
-        batch.delete_owned(SliceCol::CF_NAME, key_bytes.clone());
-        batch.delete_owned(SliceSizeCol::CF_NAME, key_bytes.clone());
-        batch.delete_owned(SliceSidecarCol::CF_NAME, key_bytes);
-        self.inner().inner().write_batch(batch)?;
+        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
+        self.inner().inner().delete(SliceCol::CF_NAME, &key)?;
         Ok(())
     }
 
     fn has_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<bool> {
         let key = SliceKey::new(spool_id, track_address);
         Ok(self.contains::<SliceCol>(&key)?)
+    }
+
+    fn slice_window(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+        offset: usize,
+        len: usize,
+    ) -> Result<Option<(Vec<tape_crypto::Hash>, Vec<u8>)>> {
+        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
+        let raw = self.inner().inner();
+
+        // The head is asked for at its widest and answers short, so one read has
+        // the sidecar and where the payload begins whatever the slice's size.
+        let Some(head) = raw.get_range(SliceCol::CF_NAME, &key, 0, slice::MAX_HEAD_BYTES)? else {
+            return Ok(None);
+        };
+        let start = slice::payload_start(&head) as u64;
+        let Some(window) = raw.get_range(SliceCol::CF_NAME, &key, start + offset as u64, len)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some((slice::sidecar(&head), window.into_vec())))
     }
 
     fn iter_slices_by_spool(
@@ -185,9 +187,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         for (key_bytes, value_bytes) in iter {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            let data: SliceValue = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-            results.push((key.track_address, data.0));
+            results.push((key.track_address, slice::payload(&value_bytes).to_vec()));
         }
         Ok(results)
     }
@@ -201,11 +201,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         let prefix = SliceKey::spool_prefix(spool_id);
 
         let start_key = match after_track {
-            Some(track) => {
-                let key = SliceKey::new(spool_id, track);
-                wincode::serialize(&key)
-                    .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?
-            }
+            Some(track) => serialize_slice_key(&SliceKey::new(spool_id, track))?,
             None => prefix.to_vec(),
         };
 
@@ -226,9 +222,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
             if after_track.is_some() && Some(key.track_address) == after_track {
                 continue;
             }
-            let data: SliceValue = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-            results.push((key.track_address, data.0));
+            results.push((key.track_address, slice::payload(&value_bytes).to_vec()));
             if results.len() >= limit {
                 break;
             }
@@ -252,11 +246,30 @@ impl<S: Store> SliceOps for TapeStore<S> {
         for (key_bytes, value_bytes) in rows {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            let data: SliceValue = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-            slices.push((key.track_address, data.0));
+            slices.push((key.track_address, slice::payload(&value_bytes).to_vec()));
         }
         Ok((slices, next))
+    }
+
+    fn sweep_slice_keys_by_spool(
+        &self,
+        spool_id: SpoolIndex,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<Address>, Option<Vec<u8>>)> {
+        let prefix = SliceKey::spool_prefix(spool_id);
+        let (keys, next) =
+            self.inner()
+                .inner()
+                .sweep_keys_prefix(SliceCol::CF_NAME, &prefix, from, limit)?;
+
+        let mut tracks = Vec::with_capacity(keys.len());
+        for key_bytes in keys {
+            let key: SliceKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
+            tracks.push(key.track_address);
+        }
+        Ok((tracks, next))
     }
 
     fn iter_slice_keys_by_spool(
@@ -284,109 +297,34 @@ impl<S: Store> SliceOps for TapeStore<S> {
         &self,
         spool_id: SpoolIndex,
     ) -> Result<Vec<(Address, StorageUnits)>> {
-        let prefix = SliceKey::spool_prefix(spool_id);
-        let iter = self
-            .inner()
-            .inner()
-            .iter_prefix(SliceSizeCol::CF_NAME, &prefix)?;
-
-        let mut results = Vec::new();
-        for (key_bytes, value_bytes) in iter {
-            let key: SliceKey = wincode::deserialize(&key_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            results.push((key.track_address, deserialize_size(&value_bytes)?));
-        }
-        Ok(results)
-    }
-
-    fn get_slice_sidecar(
-        &self,
-        spool_id: SpoolIndex,
-        track_address: Address,
-    ) -> Result<Option<Vec<Hash>>> {
-        let key = SliceKey::new(spool_id, track_address);
-        Ok(self.get::<SliceSidecarCol>(&key)?)
-    }
-
-    fn delete_slice_sidecar(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()> {
-        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
-        self.inner().inner().delete(SliceSidecarCol::CF_NAME, &key)?;
-        Ok(())
-    }
-
-    fn ensure_slice_sidecars(&self) -> Result<usize> {
-        let raw = self.inner().inner();
-        let mut written = 0usize;
-        let mut batch = WriteBatch::new();
-        let mut staged = 0usize;
-
-        for key_bytes in raw.iter_keys_prefix(SliceCol::CF_NAME, &[])? {
-            if raw.get(SliceSidecarCol::CF_NAME, &key_bytes)?.is_some() {
-                continue;
-            }
-
-            let Some(value_bytes) = raw.get(SliceCol::CF_NAME, &key_bytes)? else {
-                continue;
-            };
-            let slice: SliceValue = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-            let Some(sidecar) = slice_sidecar(&slice.0) else {
-                continue;
-            };
-
-            batch.put_owned(SliceSidecarCol::CF_NAME, key_bytes, serialize_sidecar(sidecar)?);
-            written += 1;
-            staged += 1;
-
-            if staged >= REBUILD_BATCH_LEN {
-                raw.write_batch(core::mem::take(&mut batch))?;
-                staged = 0;
-            }
-        }
-
-        if staged > 0 {
-            raw.write_batch(batch)?;
-        }
-
-        Ok(written)
+        let slices = self.iter_slices_by_spool(spool_id)?;
+        Ok(slices
+            .into_iter()
+            .map(|(track, data)| (track, StorageUnits(data.len() as u64)))
+            .collect())
     }
 
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
         let prefix = SliceKey::spool_prefix(spool_id);
-        // Keys-only: never read/copy the (blob) values just to count them.
-        Ok(self
-            .inner()
-            .inner()
-            .iter_keys_prefix(SliceCol::CF_NAME, &prefix)?
-            .len())
+        Ok(self.inner().inner().count_prefix(SliceCol::CF_NAME, &prefix)? as usize)
     }
 
-    fn slice_totals_by_spool(&self, spool_id: SpoolIndex) -> Result<(u64, StorageUnits)> {
+    fn slice_totals_by_spool(
+        &self,
+        spool_id: SpoolIndex,
+    ) -> Result<(u64, Option<StorageUnits>)> {
         let prefix = SliceKey::spool_prefix(spool_id);
-        let iter = self
-            .inner()
-            .inner()
-            .iter_prefix(SliceSizeCol::CF_NAME, &prefix)?;
-
-        let mut count = 0u64;
-        let mut bytes = 0u64;
-        for (_, value_bytes) in iter {
-            bytes = bytes.saturating_add(deserialize_size(&value_bytes)?.as_u64());
-            count += 1;
-        }
-        Ok((count, StorageUnits(bytes)))
+        let raw = self.inner().inner();
+        let count = raw.count_prefix(SliceCol::CF_NAME, &prefix)?;
+        let bytes = raw.bytes_prefix(SliceCol::CF_NAME, &prefix)?;
+        Ok((count, bytes.map(StorageUnits)))
     }
 
-    fn slice_totals(&self) -> Result<(u64, StorageUnits)> {
-        let iter = self.inner().inner().iter(SliceSizeCol::CF_NAME)?;
-
-        let mut count = 0u64;
-        let mut bytes = 0u64;
-        for (_, value_bytes) in iter {
-            bytes = bytes.saturating_add(deserialize_size(&value_bytes)?.as_u64());
-            count += 1;
-        }
-        Ok((count, StorageUnits(bytes)))
+    fn slice_totals(&self) -> Result<(u64, Option<StorageUnits>)> {
+        let raw = self.inner().inner();
+        let count = raw.count_prefix(SliceCol::CF_NAME, &[])?;
+        let bytes = raw.bytes_prefix(SliceCol::CF_NAME, &[])?;
+        Ok((count, bytes.map(StorageUnits)))
     }
 
     fn delete_all_slices_for_spool(&self, spool_id: SpoolIndex) -> Result<()> {
@@ -396,61 +334,19 @@ impl<S: Store> SliceOps for TapeStore<S> {
         // drop them with one range tombstone.
         let (start, end) = SliceKey::spool_key_range(spool_id);
         match end {
-            Some(end) => {
-                raw.delete_range(SliceCol::CF_NAME, &start, &end)?;
-                raw.delete_range(SliceSizeCol::CF_NAME, &start, &end)?;
-                raw.delete_range(SliceSidecarCol::CF_NAME, &start, &end)?;
-            }
+            Some(end) => raw.delete_range(SliceCol::CF_NAME, &start, &end)?,
             None => {
                 // The max spool prefix has no exclusive successor; fall back to
                 // collecting keys and batch-deleting them.
                 let keys = raw.iter_keys_prefix(SliceCol::CF_NAME, &start)?;
-                let mut batch = WriteBatch::new();
-                for key in &keys {
-                    batch.delete(SliceCol::CF_NAME, key);
-                    batch.delete(SliceSizeCol::CF_NAME, key);
-                    batch.delete(SliceSidecarCol::CF_NAME, key);
+                let mut batch = store::WriteBatch::new();
+                for key in keys {
+                    batch.delete_owned(SliceCol::CF_NAME, key);
                 }
                 raw.write_batch(batch)?;
             }
         }
         Ok(())
-    }
-
-    fn ensure_slice_size_index(&self) -> Result<bool> {
-        let raw = self.inner().inner();
-
-        let slices = raw.iter_keys_prefix(SliceCol::CF_NAME, &[])?;
-        let sizes = raw.iter_keys_prefix(SliceSizeCol::CF_NAME, &[])?;
-        if slices.len() == sizes.len() {
-            return Ok(false);
-        }
-
-        // Interrupting the rebuild leaves a short index, which the same count
-        // check catches on the next open.
-        let mut batch = WriteBatch::new();
-        for key in &sizes {
-            batch.delete(SliceSizeCol::CF_NAME, key);
-        }
-        raw.write_batch(batch)?;
-
-        let mut batch = WriteBatch::new();
-        let mut staged = 0usize;
-        for (key_bytes, value_bytes) in raw.iter(SliceCol::CF_NAME)? {
-            let value: SliceValue = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
-            let size_bytes = serialize_size(StorageUnits(value.0.len() as u64))?;
-            batch.put_owned(SliceSizeCol::CF_NAME, key_bytes, size_bytes);
-            staged += 1;
-            if staged == REBUILD_BATCH_LEN {
-                raw.write_batch(std::mem::replace(&mut batch, WriteBatch::new()))?;
-                staged = 0;
-            }
-        }
-        if !batch.is_empty() {
-            raw.write_batch(batch)?;
-        }
-        Ok(true)
     }
 }
 
@@ -459,29 +355,20 @@ fn serialize_slice_key(key: &SliceKey) -> Result<Vec<u8>> {
         .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))
 }
 
-fn serialize_sidecar(sidecar: Vec<Hash>) -> Result<Vec<u8>> {
-    wincode::serialize(&sidecar)
-        .map_err(|e| TapeStoreError::Serialization(format!("slice sidecar: {}", e)))
-}
-
-fn serialize_size(size: StorageUnits) -> Result<Vec<u8>> {
-    wincode::serialize(&size)
-        .map_err(|e| TapeStoreError::Serialization(format!("slice size: {}", e)))
-}
-
-fn deserialize_size(bytes: &[u8]) -> Result<StorageUnits> {
-    wincode::deserialize(bytes)
-        .map_err(|e| TapeStoreError::Serialization(format!("slice size: {}", e)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
-    use tape_core::erasure::slice_root;
+    use tape_core::erasure::{slice_root, slice_sidecar, SAMPLE_WINDOW_BYTES};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    /// What a slice occupies once stored, which is what the totals report
+    fn stored_len(payload: usize) -> u64 {
+        let nodes = slice_sidecar(&vec![0u8; payload]).map_or(0, |nodes| nodes.len());
+        (slice::ENVELOPE_LEN + nodes * 32 + payload) as u64
     }
 
     // the root the write path checks and the sidecar the store keeps both fall
@@ -499,55 +386,53 @@ mod tests {
         let track = Address::new_unique();
         store.put_slice(spool, track, write).unwrap();
 
-        assert_eq!(
-            store.get_slice_sidecar(spool, track).unwrap(),
-            slice_sidecar(&data)
-        );
+        let (sidecar, _) = store.slice_window(spool, track, 0, 1).unwrap().unwrap();
+        assert_eq!(Some(sidecar), slice_sidecar(&data));
         assert_eq!(store.get_slice(spool, track).unwrap(), Some(data));
     }
 
-    // a slice gets a sidecar when it is written and loses it when it is deleted
+    // a slice and its sidecar are one record, so a delete cannot leave half of it
     #[test]
     fn sidecar_life() {
         let store = test_store();
         let spool = SpoolIndex(3);
         let track = Address::new_unique();
-        let slice: Vec<u8> = (0..300_000).map(|byte| (byte * 7 % 251) as u8).collect();
+        let data: Vec<u8> = (0..300_000).map(|byte| (byte * 7 % 251) as u8).collect();
 
-        store.put_slice(spool, track, slice.clone()).unwrap();
-        assert_eq!(
-            store.get_slice_sidecar(spool, track).unwrap(),
-            slice_sidecar(&slice)
-        );
+        store.put_slice(spool, track, data.clone()).unwrap();
+        let (sidecar, _) = store.slice_window(spool, track, 0, 1).unwrap().unwrap();
+        assert_eq!(Some(sidecar), slice_sidecar(&data));
 
-        // Nothing left behind: a stale sidecar would prove a slice the node no
-        // longer holds.
         store.delete_slice(spool, track).unwrap();
-        assert!(store.get_slice_sidecar(spool, track).unwrap().is_none());
+        assert!(store.slice_window(spool, track, 0, 1).unwrap().is_none());
     }
 
-    // a missing sidecar is rebuilt from the slice on open, and a store with
-    // nothing missing writes nothing
+    // a window comes back from where the payload starts, not from the envelope
     #[test]
-    fn sidecar_rebuild() {
+    fn windowed_read() {
         let store = test_store();
-        let spool = SpoolIndex(4);
+        let spool = SpoolIndex(6);
         let track = Address::new_unique();
-        let slice: Vec<u8> = (0..300_000).map(|byte| (byte * 11 % 253) as u8).collect();
+        let data: Vec<u8> = (0..700_000).map(|byte| (byte * 17 % 241) as u8).collect();
+        store.put_slice(spool, track, data.clone()).unwrap();
 
-        store.put_slice(spool, track, slice.clone()).unwrap();
-        let expected = store.get_slice_sidecar(spool, track).unwrap();
-        store.delete_slice_sidecar(spool, track).unwrap();
-        assert!(store.get_slice_sidecar(spool, track).unwrap().is_none());
+        // The second window, which is where an envelope left in the offset would
+        // show up as bytes shifted by its width.
+        let (_, window) = store
+            .slice_window(spool, track, SAMPLE_WINDOW_BYTES, SAMPLE_WINDOW_BYTES)
+            .unwrap()
+            .unwrap();
+        assert_eq!(window, data[SAMPLE_WINDOW_BYTES..2 * SAMPLE_WINDOW_BYTES]);
 
-        assert_eq!(store.ensure_slice_sidecars().unwrap(), 1);
-        assert_eq!(store.get_slice_sidecar(spool, track).unwrap(), expected);
-
-        // Idempotent, so a restart with nothing missing writes nothing.
-        assert_eq!(store.ensure_slice_sidecars().unwrap(), 0);
+        // A window running past the end stops at the end, the way a pread does.
+        let (_, tail) = store
+            .slice_window(spool, track, 2 * SAMPLE_WINDOW_BYTES, SAMPLE_WINDOW_BYTES)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tail, data[2 * SAMPLE_WINDOW_BYTES..]);
     }
 
-    // the size index pairs each track in a spool with its payload length
+    // the sizes a spool reports pair each track with its payload length
     #[test]
     fn slice_sizes() {
         let store = test_store();
@@ -730,6 +615,36 @@ mod tests {
         assert_eq!(keys.len(), 2);
     }
 
+    // a keys-only sweep hands out every track in the spool and nothing else
+    #[test]
+    fn sweep_keys_by_spool() {
+        let store = test_store();
+        let spool_id = SpoolIndex(11);
+
+        let mut written = Vec::new();
+        for _ in 0..5 {
+            let track = Address::new_unique();
+            store.put_slice(spool_id, track, vec![0xAB; 64]).unwrap();
+            written.push(track);
+        }
+        store.put_slice(SpoolIndex(12), Address::new_unique(), vec![1]).unwrap();
+
+        let mut swept = Vec::new();
+        let mut mark = None;
+        loop {
+            let (page, next) = store.sweep_slice_keys_by_spool(spool_id, mark.as_deref(), 2).unwrap();
+            swept.extend(page);
+            match next {
+                Some(next) => mark = Some(next),
+                None => break,
+            }
+        }
+
+        written.sort_unstable();
+        swept.sort_unstable();
+        assert_eq!(swept, written);
+    }
+
     #[test]
     fn delete_all_for_spool() {
         let store = test_store();
@@ -788,16 +703,7 @@ mod tests {
         assert_eq!(store.count_slices_by_spool(SpoolIndex(0)).unwrap(), 0);
     }
 
-    /// Sum a spool's payload lengths the slow way, straight from the blobs.
-    fn scanned_totals<S: Store>(store: &TapeStore<S>, spool_id: SpoolIndex) -> (u64, StorageUnits) {
-        let slices = store
-            .iter_slices_by_spool(spool_id)
-            .expect("iter slices by spool");
-        let bytes = slices.iter().map(|(_, data)| data.len() as u64).sum();
-        (slices.len() as u64, StorageUnits(bytes))
-    }
-
-    // totals track the payloads through writes and deletes
+    // totals track the stored records through writes and deletes
     #[test]
     fn totals_follow_writes() {
         let store = test_store();
@@ -810,26 +716,18 @@ mod tests {
 
         assert_eq!(
             store.slice_totals_by_spool(spool_id).expect("totals"),
-            (2, StorageUnits(1000))
-        );
-        assert_eq!(
-            store.slice_totals_by_spool(spool_id).expect("totals"),
-            scanned_totals(&store, spool_id)
+            (2, Some(StorageUnits(stored_len(300) + stored_len(700))))
         );
 
         store.delete_slice(spool_id, removed).expect("delete removed");
 
         assert_eq!(
             store.slice_totals_by_spool(spool_id).expect("totals"),
-            (1, StorageUnits(300))
-        );
-        assert_eq!(
-            store.slice_totals_by_spool(spool_id).expect("totals"),
-            scanned_totals(&store, spool_id)
+            (1, Some(StorageUnits(stored_len(300))))
         );
     }
 
-    // overwriting a slice replaces its recorded length rather than adding to it
+    // overwriting a slice replaces its stored bytes rather than adding to them
     #[test]
     fn totals_after_overwrite() {
         let store = test_store();
@@ -841,13 +739,13 @@ mod tests {
 
         assert_eq!(
             store.slice_totals_by_spool(spool_id).expect("totals"),
-            (1, StorageUnits(100))
+            (1, Some(StorageUnits(stored_len(100))))
         );
     }
 
-    // a range delete clears the size index alongside the payloads
+    // a range delete clears the spool it names and leaves its neighbours weighed
     #[test]
-    fn range_delete_clears_sizes() {
+    fn range_delete_clears_totals() {
         let store = test_store();
 
         store.put_slice(SpoolIndex(41), Address::new_unique(), vec![1; 10]).expect("put prev");
@@ -860,19 +758,19 @@ mod tests {
 
         assert_eq!(
             store.slice_totals_by_spool(SpoolIndex(42)).expect("totals"),
-            (0, StorageUnits(0))
+            (0, Some(StorageUnits(0)))
         );
         assert_eq!(
             store.slice_totals_by_spool(SpoolIndex(41)).expect("totals"),
-            (1, StorageUnits(10))
+            (1, Some(StorageUnits(stored_len(10))))
         );
         assert_eq!(
             store.slice_totals_by_spool(SpoolIndex(43)).expect("totals"),
-            (1, StorageUnits(30))
+            (1, Some(StorageUnits(stored_len(30))))
         );
     }
 
-    // the max spool prefix has no successor, so its fallback path must clear sizes too
+    // the max spool prefix has no successor, so its fallback path must clear too
     #[test]
     fn range_delete_max_spool() {
         let store = test_store();
@@ -886,35 +784,7 @@ mod tests {
 
         assert_eq!(
             store.slice_totals_by_spool(spool_id).expect("totals"),
-            (0, StorageUnits(0))
-        );
-    }
-
-    // a store whose index went missing rebuilds it on the invariant check
-    #[test]
-    fn rebuild_repairs_index() {
-        let store = test_store();
-        let spool_id = SpoolIndex(3);
-        let track = Address::new_unique();
-
-        store.put_slice(spool_id, track, vec![0xEE; 512]).expect("put slice");
-
-        let key = serialize_slice_key(&SliceKey::new(spool_id, track)).expect("serialize key");
-        store
-            .inner()
-            .inner()
-            .delete(SliceSizeCol::CF_NAME, &key)
-            .expect("drop size entry");
-        assert_eq!(
-            store.slice_totals_by_spool(spool_id).expect("totals"),
-            (0, StorageUnits(0))
-        );
-
-        assert!(store.ensure_slice_size_index().expect("ensure index"));
-
-        assert_eq!(
-            store.slice_totals_by_spool(spool_id).expect("totals"),
-            (1, StorageUnits(512))
+            (0, Some(StorageUnits(0)))
         );
     }
 
@@ -928,21 +798,16 @@ mod tests {
         store.put_slice(SpoolIndex(2), Address::new_unique(), vec![0; 250]).expect("put two");
         store.put_slice(SpoolIndex(2), dropped, vec![0; 50]).expect("put dropped");
 
-        assert_eq!(store.slice_totals().expect("totals"), (3, StorageUnits(400)));
+        assert_eq!(
+            store.slice_totals().expect("totals"),
+            (3, Some(StorageUnits(stored_len(100) + stored_len(250) + stored_len(50))))
+        );
 
         store.delete_slice(SpoolIndex(2), dropped).expect("delete");
 
-        assert_eq!(store.slice_totals().expect("totals"), (2, StorageUnits(350)));
-    }
-
-    // a consistent index is left alone
-    #[test]
-    fn rebuild_skips_intact_index() {
-        let store = test_store();
-        store
-            .put_slice(SpoolIndex(1), Address::new_unique(), vec![1; 64])
-            .expect("put slice");
-
-        assert!(!store.ensure_slice_size_index().expect("ensure index"));
+        assert_eq!(
+            store.slice_totals().expect("totals"),
+            (2, Some(StorageUnits(stored_len(100) + stored_len(250))))
+        );
     }
 }
