@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use store::{batch::BatchOp, Direction, Result, Store, StoreIter, WriteBatch};
+use store::{batch::BatchOp, Direction, Result, Store, StoreIter, WriteBatch, Value};
 
 #[cfg(feature = "metrics")]
 use tape_metrics::{get_metrics, OperationTimer};
@@ -44,7 +44,7 @@ impl Default for MemoryStore {
 }
 
 impl Store for MemoryStore {
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
 
@@ -85,7 +85,7 @@ impl Store for MemoryStore {
             }
         }
 
-        result
+        result.map(|held| held.map(Value::new))
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
@@ -461,7 +461,7 @@ mod tests {
         store.put("test", b"key", b"value").unwrap();
 
         let result = store.get("test", b"key").unwrap();
-        assert_eq!(result, Some(b"value".to_vec()));
+        assert_eq!(result.map(Value::into_vec), Some(b"value".to_vec()));
     }
 
     #[test]
@@ -472,7 +472,7 @@ mod tests {
         store.put("test", b"key", b"value2").unwrap();
 
         let result = store.get("test", b"key").unwrap();
-        assert_eq!(result, Some(b"value2".to_vec()));
+        assert_eq!(result.map(Value::into_vec), Some(b"value2".to_vec()));
     }
 
     #[test]
@@ -503,15 +503,15 @@ mod tests {
         store.put("cf2", b"key", b"value2").unwrap();
         store.put("cf3", b"key", b"value3").unwrap();
 
-        assert_eq!(store.get("cf1", b"key").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(store.get("cf2", b"key").unwrap(), Some(b"value2".to_vec()));
-        assert_eq!(store.get("cf3", b"key").unwrap(), Some(b"value3".to_vec()));
+        assert_eq!(store.get("cf1", b"key").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+        assert_eq!(store.get("cf2", b"key").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
+        assert_eq!(store.get("cf3", b"key").unwrap().map(Value::into_vec), Some(b"value3".to_vec()));
 
         // Delete from one CF doesn't affect others
         store.delete("cf2", b"key").unwrap();
-        assert_eq!(store.get("cf1", b"key").unwrap(), Some(b"value1".to_vec()));
+        assert_eq!(store.get("cf1", b"key").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
         assert_eq!(store.get("cf2", b"key").unwrap(), None);
-        assert_eq!(store.get("cf3", b"key").unwrap(), Some(b"value3".to_vec()));
+        assert_eq!(store.get("cf3", b"key").unwrap().map(Value::into_vec), Some(b"value3".to_vec()));
     }
 
     #[test]
@@ -522,7 +522,7 @@ mod tests {
         let value = vec![10u8, 20, 30, 200, 100];
 
         store.put("test", &key, &value).unwrap();
-        assert_eq!(store.get("test", &key).unwrap(), Some(value));
+        assert_eq!(store.get("test", &key).unwrap().map(Value::into_vec), Some(value));
     }
 
     #[test]
@@ -551,9 +551,9 @@ mod tests {
         store.write_batch(batch).unwrap();
 
         // Verify all operations applied
-        assert_eq!(store.get("test", b"key1").unwrap(), Some(b"new1".to_vec()));
+        assert_eq!(store.get("test", b"key1").unwrap().map(Value::into_vec), Some(b"new1".to_vec()));
         assert_eq!(store.get("test", b"key2").unwrap(), None);
-        assert_eq!(store.get("test", b"key3").unwrap(), Some(b"new3".to_vec()));
+        assert_eq!(store.get("test", b"key3").unwrap().map(Value::into_vec), Some(b"new3".to_vec()));
     }
 
     #[test]
@@ -567,8 +567,8 @@ mod tests {
 
         store.write_batch(batch).unwrap();
 
-        assert_eq!(store.get("cf1", b"key").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(store.get("cf2", b"key").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(store.get("cf1", b"key").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+        assert_eq!(store.get("cf2", b"key").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
         assert_eq!(store.get("cf3", b"key").unwrap(), None);
     }
 
@@ -676,8 +676,7 @@ mod tests {
             let key = format!("key{}", i);
             let expected_value = format!("value{}", i);
             assert_eq!(
-                store.get("test", key.as_bytes()).unwrap(),
-                Some(expected_value.as_bytes().to_vec())
+                store.get("test", key.as_bytes()).unwrap().map(Value::into_vec), Some(expected_value.as_bytes().to_vec())
             );
         }
     }

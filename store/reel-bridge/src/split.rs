@@ -9,8 +9,7 @@
 use std::path::Path;
 
 use store::{
-    BatchOp, CfDiskUsage, Direction, DiskVolume, Result, Store, StoreIter, StoreVolume, WriteBatch,
-};
+    BatchOp, CfDiskUsage, Direction, DiskVolume, Result, Store, StoreIter, StoreVolume, WriteBatch, Value};
 use store_rocks::RocksStore;
 use tape_store::config::{BULK_COLUMN_FAMILIES, META_SUBDIR};
 
@@ -73,15 +72,15 @@ impl MetaBulkStore {
 }
 
 impl Store for MetaBulkStore {
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         self.route(cf).get(cf, key)
     }
 
-    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Value>>> {
         self.route(cf).get_many(cf, keys)
     }
 
-    fn get_range(&self, cf: &str, key: &[u8], offset: u64, len: usize) -> Result<Option<Vec<u8>>> {
+    fn get_range(&self, cf: &str, key: &[u8], offset: u64, len: usize) -> Result<Option<Value>> {
         self.route(cf).get_range(cf, key, offset, len)
     }
 
@@ -161,14 +160,14 @@ impl Store for MetaBulkStore {
     // The awaited calls cannot go through `route`, whose answer is a `dyn Store`
     // and so carries none of them. One family names one half, so the branch is
     // the same routing written out.
-    async fn get_wait(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn get_wait(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         match self.is_bulk(cf) {
             true => self.bulk.get_wait(cf, key).await,
             false => self.meta.get_wait(cf, key).await,
         }
     }
 
-    async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+    async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Value>>> {
         match self.is_bulk(cf) {
             true => self.bulk.get_many_wait(cf, keys).await,
             false => self.meta.get_many_wait(cf, keys).await,
@@ -181,7 +180,7 @@ impl Store for MetaBulkStore {
         key: &[u8],
         offset: u64,
         len: usize,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Value>> {
         match self.is_bulk(cf) {
             true => self.bulk.get_range_wait(cf, key, offset, len).await,
             false => self.meta.get_range_wait(cf, key, offset, len).await,

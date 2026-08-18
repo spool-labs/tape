@@ -10,8 +10,7 @@ use rocksdb::{
 };
 
 use store::{
-    BatchOp, CfDiskUsage, Direction, Error, Result, Store, StoreIter, StoreVolume, WriteBatch,
-};
+    BatchOp, CfDiskUsage, Direction, Error, Result, Store, StoreIter, StoreVolume, WriteBatch, Value};
 
 #[cfg(feature = "metrics")]
 use store::get_metrics;
@@ -291,7 +290,7 @@ impl RocksStore {
 }
 
 impl Store for RocksStore {
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
 
@@ -344,7 +343,7 @@ impl Store for RocksStore {
             }
         }
 
-        result
+        result.map(|held| held.map(Value::new))
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
@@ -946,7 +945,7 @@ mod tests {
         // Put and get
         store.put("test", b"key1", b"value1").unwrap();
         let result = store.get("test", b"key1").unwrap();
-        assert_eq!(result, Some(b"value1".to_vec()));
+        assert_eq!(result.map(Value::into_vec), Some(b"value1".to_vec()));
 
         // Contains
         assert!(store.contains("test", b"key1").unwrap());
@@ -965,8 +964,8 @@ mod tests {
         store.put("cf1", b"key", b"value1").unwrap();
         store.put("cf2", b"key", b"value2").unwrap();
 
-        assert_eq!(store.get("cf1", b"key").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(store.get("cf2", b"key").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(store.get("cf1", b"key").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+        assert_eq!(store.get("cf2", b"key").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
     }
 
     #[test]
@@ -983,8 +982,8 @@ mod tests {
 
         store.write_batch(batch).unwrap();
 
-        assert_eq!(store.get("test", b"key1").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(store.get("test", b"key2").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(store.get("test", b"key1").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+        assert_eq!(store.get("test", b"key2").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
         assert_eq!(store.get("test", b"to_delete").unwrap(), None);
     }
 
@@ -1007,7 +1006,7 @@ mod tests {
 
         // Now we can use it
         store.put("dynamic", b"key", b"value").unwrap();
-        assert_eq!(store.get("dynamic", b"key").unwrap(), Some(b"value".to_vec()));
+        assert_eq!(store.get("dynamic", b"key").unwrap().map(Value::into_vec), Some(b"value".to_vec()));
     }
 
     #[test]
@@ -1025,7 +1024,7 @@ mod tests {
         // Reopen and verify
         {
             let store = RocksStore::open(&path, &["test"]).unwrap();
-            assert_eq!(store.get("test", b"key").unwrap(), Some(b"value".to_vec()));
+            assert_eq!(store.get("test", b"key").unwrap().map(Value::into_vec), Some(b"value".to_vec()));
         }
     }
 
@@ -1038,7 +1037,7 @@ mod tests {
         let value = vec![100u8, 200, 0, 1, 255];
 
         store.put("test", &key, &value).unwrap();
-        assert_eq!(store.get("test", &key).unwrap(), Some(value));
+        assert_eq!(store.get("test", &key).unwrap().map(Value::into_vec), Some(value));
     }
 
     #[test]
@@ -1210,12 +1209,10 @@ mod tests {
         store.put("block", b"key2", b"value2").unwrap();
 
         assert_eq!(
-            store.get("fixed", &1u64.to_be_bytes()).unwrap(),
-            Some(b"value1".to_vec())
+            store.get("fixed", &1u64.to_be_bytes()).unwrap().map(Value::into_vec), Some(b"value1".to_vec())
         );
         assert_eq!(
-            store.get("block", b"key2").unwrap(),
-            Some(b"value2".to_vec())
+            store.get("block", b"key2").unwrap().map(Value::into_vec), Some(b"value2".to_vec())
         );
     }
 
@@ -1241,7 +1238,7 @@ mod tests {
         store.put("blobs", b"large_key", &large_value).unwrap();
 
         let result = store.get("blobs", b"large_key").unwrap();
-        assert_eq!(result, Some(large_value));
+        assert_eq!(result.map(Value::into_vec), Some(large_value));
     }
 
     #[test]
@@ -1289,7 +1286,7 @@ mod tests {
         let store = RocksStore::open_with_cf_config(dir.path(), db_opts, cf_configs).unwrap();
 
         store.put("custom", b"key", b"value").unwrap();
-        assert_eq!(store.get("custom", b"key").unwrap(), Some(b"value".to_vec()));
+        assert_eq!(store.get("custom", b"key").unwrap().map(Value::into_vec), Some(b"value".to_vec()));
     }
 
     #[test]
@@ -1307,7 +1304,7 @@ mod tests {
         // Since we opened with empty config, we can create a CF dynamically
         store.create_cf("test").unwrap();
         store.put("test", b"key", b"value").unwrap();
-        assert_eq!(store.get("test", b"key").unwrap(), Some(b"value".to_vec()));
+        assert_eq!(store.get("test", b"key").unwrap().map(Value::into_vec), Some(b"value".to_vec()));
     }
 
     #[test]
@@ -1328,8 +1325,8 @@ mod tests {
             let ro_store = RocksStore::open_read_only(&path, &["test"]).unwrap();
 
             // Can read
-            assert_eq!(ro_store.get("test", b"key1").unwrap(), Some(b"value1".to_vec()));
-            assert_eq!(ro_store.get("test", b"key2").unwrap(), Some(b"value2".to_vec()));
+            assert_eq!(ro_store.get("test", b"key1").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+            assert_eq!(ro_store.get("test", b"key2").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
             assert!(ro_store.contains("test", b"key1").unwrap());
 
             // Can iterate
@@ -1366,7 +1363,7 @@ mod tests {
             secondary.catch_up_with_primary().unwrap();
 
             // Can read initial data
-            assert_eq!(secondary.get("test", b"key1").unwrap(), Some(b"initial".to_vec()));
+            assert_eq!(secondary.get("test", b"key1").unwrap().map(Value::into_vec), Some(b"initial".to_vec()));
         }
     }
 
@@ -1390,7 +1387,7 @@ mod tests {
 
         // Initial sync
         secondary.catch_up_with_primary().unwrap();
-        assert_eq!(secondary.get("test", b"key1").unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(secondary.get("test", b"key1").unwrap().map(Value::into_vec), Some(b"v1".to_vec()));
 
         // Write more data to primary
         primary.put("test", b"key2", b"v2").unwrap();
@@ -1399,7 +1396,7 @@ mod tests {
         // Before catch-up, secondary might not see new data
         // After catch-up, it should see it
         secondary.catch_up_with_primary().unwrap();
-        assert_eq!(secondary.get("test", b"key2").unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(secondary.get("test", b"key2").unwrap().map(Value::into_vec), Some(b"v2".to_vec()));
     }
 
     #[test]
@@ -1419,8 +1416,8 @@ mod tests {
         let ro2 = RocksStore::open_read_only(&path, &["test"]).unwrap();
 
         // Both can read the same data
-        assert_eq!(ro1.get("test", b"shared").unwrap(), Some(b"data".to_vec()));
-        assert_eq!(ro2.get("test", b"shared").unwrap(), Some(b"data".to_vec()));
+        assert_eq!(ro1.get("test", b"shared").unwrap().map(Value::into_vec), Some(b"data".to_vec()));
+        assert_eq!(ro2.get("test", b"shared").unwrap().map(Value::into_vec), Some(b"data".to_vec()));
     }
 
     #[test]
@@ -1455,8 +1452,7 @@ mod tests {
 
             let ro_store = RocksStore::open_read_only_with_cf_config(&path, db_opts, cf_configs).unwrap();
             assert_eq!(
-                ro_store.get("fixed", &1u64.to_be_bytes()).unwrap(),
-                Some(b"value1".to_vec())
+                ro_store.get("fixed", &1u64.to_be_bytes()).unwrap().map(Value::into_vec), Some(b"value1".to_vec())
             );
         }
     }
@@ -1503,7 +1499,7 @@ mod tests {
             ).unwrap();
 
             secondary.catch_up_with_primary().unwrap();
-            assert_eq!(secondary.get("block", b"key").unwrap(), Some(b"value".to_vec()));
+            assert_eq!(secondary.get("block", b"key").unwrap().map(Value::into_vec), Some(b"value".to_vec()));
         }
     }
 

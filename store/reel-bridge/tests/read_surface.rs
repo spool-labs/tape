@@ -6,7 +6,12 @@
 
 use reel::sync::tension::block_on;
 use reel_bridge::{bench_config, MetaBulkStore, ReelBridge};
-use store::Store;
+use store::{Store, Value};
+
+/// Values as plain vectors, so an expectation can be written as bytes
+fn owned(values: Vec<Option<Value>>) -> Vec<Option<Vec<u8>>> {
+    values.into_iter().map(|held| held.map(Value::into_vec)).collect()
+}
 use tempfile::TempDir;
 
 /// A bulk family, whose keys the reel is told are 34 bytes wide
@@ -56,16 +61,16 @@ fn agrees(store: &impl Store, cf: &str, keys: &[Vec<u8>], prefix: &[u8]) {
 
     let one_at_a_time: Vec<Option<Vec<u8>>> = asked
         .iter()
-        .map(|key| store.get(cf, key).expect("get"))
+        .map(|key| store.get(cf, key).expect("get").map(Value::into_vec))
         .collect();
-    assert_eq!(store.get_many(cf, &asked).expect("get_many"), one_at_a_time);
+    assert_eq!(owned(store.get_many(cf, &asked).expect("get_many")), one_at_a_time);
     assert_eq!(
-        block_on(store.get_many_wait(cf, &asked)).expect("get_many_wait"),
+        owned(block_on(store.get_many_wait(cf, &asked)).expect("get_many_wait")),
         one_at_a_time,
     );
     for (at, key) in asked.iter().enumerate() {
         assert_eq!(
-            block_on(store.get_wait(cf, key)).expect("get_wait"),
+            block_on(store.get_wait(cf, key)).expect("get_wait").map(Value::into_vec),
             one_at_a_time[at],
         );
     }
@@ -76,19 +81,22 @@ fn agrees(store: &impl Store, cf: &str, keys: &[Vec<u8>], prefix: &[u8]) {
     for (offset, len) in [(0u64, whole.len()), (8, 16), (4, whole.len() * 2), (0, 0)] {
         let window = whole[offset as usize..(offset as usize + len).min(whole.len())].to_vec();
         assert_eq!(
-            store.get_range(cf, asked[0], offset, len).expect("range"),
+            store.get_range(cf, asked[0], offset, len).expect("range").map(Value::into_vec),
             Some(window.clone()),
             "range at {offset} for {len}",
         );
         assert_eq!(
-            block_on(store.get_range_wait(cf, asked[0], offset, len)).expect("range_wait"),
+            block_on(store.get_range_wait(cf, asked[0], offset, len))
+                .expect("range_wait")
+                .map(Value::into_vec),
             Some(window),
         );
     }
     assert_eq!(
         store
             .get_range(cf, asked[0], whole.len() as u64 + 1, 4)
-            .expect("range past the end"),
+            .expect("range past the end")
+            .map(Value::into_vec),
         Some(Vec::new()),
     );
 
@@ -99,10 +107,10 @@ fn agrees(store: &impl Store, cf: &str, keys: &[Vec<u8>], prefix: &[u8]) {
 
     // A key nothing wrote answers nothing, however it is asked.
     let missing = key_of_missing(cf);
-    assert_eq!(store.get(cf, &missing).expect("get"), None);
-    assert_eq!(store.get_many(cf, &[&missing]).expect("get_many"), vec![None]);
+    assert!(store.get(cf, &missing).expect("get").is_none());
+    assert_eq!(owned(store.get_many(cf, &[&missing]).expect("get_many")), vec![None]);
     assert_eq!(
-        store.get_range(cf, &missing, 0, 4).expect("range"),
+        store.get_range(cf, &missing, 0, 4).expect("range").map(Value::into_vec),
         None,
         "a missing key answers nothing rather than no bytes",
     );
@@ -146,16 +154,19 @@ fn awaited_writes() {
 
     let key = bulk_key(1);
     block_on(store.put_wait(BULK_CF, &key, &payload(1))).expect("put_wait");
-    assert_eq!(store.get(BULK_CF, &key).expect("get"), Some(payload(1)));
+    assert_eq!(store.get(BULK_CF, &key).expect("get").map(Value::into_vec), Some(payload(1)));
 
     let mut batch = store::WriteBatch::new();
     let second = bulk_key(2);
     batch.put(BULK_CF, &second, &payload(2));
     batch.put(META_CF, &meta_key(2), &payload(2));
     block_on(store.write_batch_wait(batch)).expect("write_batch_wait");
-    assert_eq!(store.get(BULK_CF, &second).expect("get"), Some(payload(2)));
     assert_eq!(
-        store.get(META_CF, &meta_key(2)).expect("get"),
+        store.get(BULK_CF, &second).expect("get").map(Value::into_vec),
+        Some(payload(2)),
+    );
+    assert_eq!(
+        store.get(META_CF, &meta_key(2)).expect("get").map(Value::into_vec),
         Some(payload(2)),
     );
 }

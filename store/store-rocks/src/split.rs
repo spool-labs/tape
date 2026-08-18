@@ -10,8 +10,7 @@
 //! layout, so a one-drive box needs no special handling.
 
 use store::{
-    BatchOp, CfDiskUsage, DiskVolume, Direction, Result, Store, StoreIter, StoreVolume, WriteBatch,
-};
+    BatchOp, CfDiskUsage, DiskVolume, Direction, Result, Store, StoreIter, StoreVolume, WriteBatch, Value};
 
 use crate::RocksStore;
 
@@ -75,7 +74,7 @@ impl SplitStore {
 }
 
 impl Store for SplitStore {
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         self.route(cf).get(cf, key)
     }
 
@@ -267,10 +266,10 @@ mod tests {
         store.put("slice", b"k", b"s").unwrap();
 
         // Each value is only visible through its owning instance.
-        assert_eq!(store.get("meta", b"k").unwrap(), Some(b"m".to_vec()));
-        assert_eq!(store.get("slice", b"k").unwrap(), Some(b"s".to_vec()));
-        assert_eq!(store.meta().get("meta", b"k").unwrap(), Some(b"m".to_vec()));
-        assert_eq!(store.bulk().get("slice", b"k").unwrap(), Some(b"s".to_vec()));
+        assert_eq!(store.get("meta", b"k").unwrap().map(Value::into_vec), Some(b"m".to_vec()));
+        assert_eq!(store.get("slice", b"k").unwrap().map(Value::into_vec), Some(b"s".to_vec()));
+        assert_eq!(store.meta().get("meta", b"k").unwrap().map(Value::into_vec), Some(b"m".to_vec()));
+        assert_eq!(store.bulk().get("slice", b"k").unwrap().map(Value::into_vec), Some(b"s".to_vec()));
         assert!(store.meta().get("slice", b"k").is_err());
         assert!(store.bulk().get("meta", b"k").is_err());
     }
@@ -291,8 +290,8 @@ mod tests {
         bulk_batch.put("slice", b"b", b"2");
         store.write_batch(bulk_batch).unwrap();
 
-        assert_eq!(store.get("meta", b"a").unwrap(), Some(b"1".to_vec()));
-        assert_eq!(store.get("slice", b"b").unwrap(), Some(b"2".to_vec()));
+        assert_eq!(store.get("meta", b"a").unwrap().map(Value::into_vec), Some(b"1".to_vec()));
+        assert_eq!(store.get("slice", b"b").unwrap().map(Value::into_vec), Some(b"2".to_vec()));
         // The bulk batch did not leak into the metadata volume.
         assert_eq!(store.meta().get("meta", b"b").unwrap(), None);
     }

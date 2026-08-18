@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::{Result, WriteBatch};
+use crate::{Result, Value, WriteBatch};
 
 /// Iterator direction for scanning (lexicographic order)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,13 +64,13 @@ impl CfDiskUsage {
 /// Column families are namespaces for keys - each CF has its own key space.
 pub trait Store: Send + Sync {
     /// Get a value by key from the specified column family.
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>>;
 
     /// Get several values from one column family, answered in the order asked.
     ///
     /// The default asks one at a time; a backend overrides to put them all in
     /// front of its device at once.
-    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Value>>> {
         let mut values = Vec::with_capacity(keys.len());
         for key in keys {
             values.push(self.get(cf, key)?);
@@ -82,7 +82,7 @@ pub trait Store: Send + Sync {
     ///
     /// Not dispatchable through `dyn Store`, since the future's type is the
     /// backend's own. The default answers from the blocking call.
-    fn get_wait(&self, cf: &str, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send
+    fn get_wait(&self, cf: &str, key: &[u8]) -> impl Future<Output = Result<Option<Value>>> + Send
     where
         Self: Sized,
     {
@@ -94,7 +94,7 @@ pub trait Store: Send + Sync {
         &self,
         cf: &str,
         keys: &[&[u8]],
-    ) -> impl Future<Output = Result<Vec<Option<Vec<u8>>>>> + Send
+    ) -> impl Future<Output = Result<Vec<Option<Value>>>> + Send
     where
         Self: Sized,
     {
@@ -104,7 +104,7 @@ pub trait Store: Send + Sync {
     /// Get part of one value, from `offset` for `len` bytes.
     ///
     /// Clamped the way a `pread` is, and a missing key answers nothing at all.
-    fn get_range(&self, cf: &str, key: &[u8], offset: u64, len: usize) -> Result<Option<Vec<u8>>> {
+    fn get_range(&self, cf: &str, key: &[u8], offset: u64, len: usize) -> Result<Option<Value>> {
         Ok(self.get(cf, key)?.map(|value| range_of(value, offset, len)))
     }
 
@@ -115,7 +115,7 @@ pub trait Store: Send + Sync {
         key: &[u8],
         offset: u64,
         len: usize,
-    ) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send
+    ) -> impl Future<Output = Result<Option<Value>>> + Send
     where
         Self: Sized,
     {
@@ -291,11 +291,11 @@ pub trait Store: Send + Sync {
 }
 
 /// The window of a value a ranged read asks for, clamped rather than refused
-pub fn range_of(value: Vec<u8>, offset: u64, len: usize) -> Vec<u8> {
+pub fn range_of(value: Value, offset: u64, len: usize) -> Value {
     let held = value.len();
     let at = offset.min(held as u64) as usize;
     let end = at.saturating_add(len).min(held);
-    value[at..end].to_vec()
+    Value::new(value[at..end].to_vec())
 }
 
 #[cfg(test)]
@@ -305,22 +305,22 @@ mod tests {
     // a window inside the value comes back whole
     #[test]
     fn window_inside() {
-        assert_eq!(range_of(b"abcdefgh".to_vec(), 2, 3), b"cde");
-        assert_eq!(range_of(b"abcdefgh".to_vec(), 0, 8), b"abcdefgh");
+        assert_eq!(range_of(Value::new(b"abcdefgh".to_vec()), 2, 3).as_slice(), b"cde");
+        assert_eq!(range_of(Value::new(b"abcdefgh".to_vec()), 0, 8).as_slice(), b"abcdefgh");
     }
 
     // a window running past the end stops at the end
     #[test]
     fn window_over() {
-        assert_eq!(range_of(b"abcd".to_vec(), 2, 99), b"cd");
-        assert_eq!(range_of(b"abcd".to_vec(), 0, usize::MAX), b"abcd");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 2, 99).as_slice(), b"cd");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 0, usize::MAX).as_slice(), b"abcd");
     }
 
     // an offset at or past the end answers no bytes
     #[test]
     fn window_beyond() {
-        assert_eq!(range_of(b"abcd".to_vec(), 4, 2), b"");
-        assert_eq!(range_of(b"abcd".to_vec(), u64::MAX, 2), b"");
-        assert_eq!(range_of(Vec::new(), 0, 2), b"");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 4, 2).as_slice(), b"");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), u64::MAX, 2).as_slice(), b"");
+        assert_eq!(range_of(Value::new(Vec::new()), 0, 2).as_slice(), b"");
     }
 }

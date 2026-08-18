@@ -1,3 +1,4 @@
+use store::Value;
 use store::{Store, WriteBatch};
 
 use crate::MemoryStore;
@@ -11,8 +12,8 @@ fn basic_crud() {
     store.put("users", b"bob", b"user").unwrap();
 
     // Test get
-    assert_eq!(store.get("users", b"alice").unwrap(), Some(b"admin".to_vec()));
-    assert_eq!(store.get("users", b"bob").unwrap(), Some(b"user".to_vec()));
+    assert_eq!(store.get("users", b"alice").unwrap().map(Value::into_vec), Some(b"admin".to_vec()));
+    assert_eq!(store.get("users", b"bob").unwrap().map(Value::into_vec), Some(b"user".to_vec()));
     assert_eq!(store.get("users", b"charlie").unwrap(), None);
 
     // Test contains
@@ -39,15 +40,15 @@ fn column_families() {
     store.put("comments", b"key1", b"comment_value").unwrap();
 
     // Each CF should have independent key spaces
-    assert_eq!(store.get("users", b"key1").unwrap(), Some(b"user_value".to_vec()));
-    assert_eq!(store.get("posts", b"key1").unwrap(), Some(b"post_value".to_vec()));
-    assert_eq!(store.get("comments", b"key1").unwrap(), Some(b"comment_value".to_vec()));
+    assert_eq!(store.get("users", b"key1").unwrap().map(Value::into_vec), Some(b"user_value".to_vec()));
+    assert_eq!(store.get("posts", b"key1").unwrap().map(Value::into_vec), Some(b"post_value".to_vec()));
+    assert_eq!(store.get("comments", b"key1").unwrap().map(Value::into_vec), Some(b"comment_value".to_vec()));
 
     // Delete from one CF shouldn't affect others
     store.delete("posts", b"key1").unwrap();
     assert_eq!(store.get("posts", b"key1").unwrap(), None);
-    assert_eq!(store.get("users", b"key1").unwrap(), Some(b"user_value".to_vec()));
-    assert_eq!(store.get("comments", b"key1").unwrap(), Some(b"comment_value".to_vec()));
+    assert_eq!(store.get("users", b"key1").unwrap().map(Value::into_vec), Some(b"user_value".to_vec()));
+    assert_eq!(store.get("comments", b"key1").unwrap().map(Value::into_vec), Some(b"comment_value".to_vec()));
 }
 
 #[test]
@@ -68,9 +69,9 @@ fn write_batch() {
     store.write_batch(batch).unwrap();
 
     // Verify all operations were applied
-    assert_eq!(store.get("test", b"key1").unwrap(), Some(b"value1".to_vec()));
-    assert_eq!(store.get("test", b"key2").unwrap(), Some(b"value2".to_vec()));
-    assert_eq!(store.get("test", b"key3").unwrap(), Some(b"value3".to_vec()));
+    assert_eq!(store.get("test", b"key1").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+    assert_eq!(store.get("test", b"key2").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
+    assert_eq!(store.get("test", b"key3").unwrap().map(Value::into_vec), Some(b"value3".to_vec()));
     assert_eq!(store.get("test", b"existing").unwrap(), None);
 }
 
@@ -86,9 +87,9 @@ fn batch_multi_cf() {
 
     store.write_batch(batch).unwrap();
 
-    assert_eq!(store.get("cf1", b"key").unwrap(), Some(b"value1".to_vec()));
-    assert_eq!(store.get("cf2", b"key").unwrap(), Some(b"value2".to_vec()));
-    assert_eq!(store.get("cf3", b"key").unwrap(), Some(b"value3".to_vec()));
+    assert_eq!(store.get("cf1", b"key").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+    assert_eq!(store.get("cf2", b"key").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
+    assert_eq!(store.get("cf3", b"key").unwrap().map(Value::into_vec), Some(b"value3".to_vec()));
     assert_eq!(store.get("cf4", b"key").unwrap(), None);
 }
 
@@ -97,13 +98,13 @@ fn overwrite() {
     let store = MemoryStore::new();
 
     store.put("test", b"key", b"value1").unwrap();
-    assert_eq!(store.get("test", b"key").unwrap(), Some(b"value1".to_vec()));
+    assert_eq!(store.get("test", b"key").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
 
     store.put("test", b"key", b"value2").unwrap();
-    assert_eq!(store.get("test", b"key").unwrap(), Some(b"value2".to_vec()));
+    assert_eq!(store.get("test", b"key").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
 
     store.put("test", b"key", b"value3").unwrap();
-    assert_eq!(store.get("test", b"key").unwrap(), Some(b"value3".to_vec()));
+    assert_eq!(store.get("test", b"key").unwrap().map(Value::into_vec), Some(b"value3".to_vec()));
 }
 
 #[test]
@@ -112,15 +113,15 @@ fn empty_data() {
 
     // Empty key
     store.put("test", b"", b"value").unwrap();
-    assert_eq!(store.get("test", b"").unwrap(), Some(b"value".to_vec()));
+    assert_eq!(store.get("test", b"").unwrap().map(Value::into_vec), Some(b"value".to_vec()));
 
     // Empty value
     store.put("test", b"key", b"").unwrap();
-    assert_eq!(store.get("test", b"key").unwrap(), Some(b"".to_vec()));
+    assert_eq!(store.get("test", b"key").unwrap().map(Value::into_vec), Some(b"".to_vec()));
 
     // Both empty
     store.put("test2", b"", b"").unwrap();
-    assert_eq!(store.get("test2", b"").unwrap(), Some(b"".to_vec()));
+    assert_eq!(store.get("test2", b"").unwrap().map(Value::into_vec), Some(b"".to_vec()));
 }
 
 #[test]
@@ -131,7 +132,7 @@ fn binary_data() {
     let binary_value = vec![100u8, 200, 150, 0, 1, 2, 255];
 
     store.put("binary", &binary_key, &binary_value).unwrap();
-    assert_eq!(store.get("binary", &binary_key).unwrap(), Some(binary_value.clone()));
+    assert_eq!(store.get("binary", &binary_key).unwrap().map(Value::into_vec), Some(binary_value.clone()));
     assert!(store.contains("binary", &binary_key).unwrap());
 
     store.delete("binary", &binary_key).unwrap();
@@ -157,10 +158,10 @@ fn batch_builder() {
 
     store.write_batch(batch).unwrap();
 
-    assert_eq!(store.get("cf1", b"key1").unwrap(), Some(b"value1".to_vec()));
-    assert_eq!(store.get("cf1", b"key2").unwrap(), Some(b"value2".to_vec()));
+    assert_eq!(store.get("cf1", b"key1").unwrap().map(Value::into_vec), Some(b"value1".to_vec()));
+    assert_eq!(store.get("cf1", b"key2").unwrap().map(Value::into_vec), Some(b"value2".to_vec()));
     assert_eq!(store.get("cf2", b"key3").unwrap(), None);
-    assert_eq!(store.get("cf3", b"key4").unwrap(), Some(b"value4".to_vec()));
+    assert_eq!(store.get("cf3", b"key4").unwrap().map(Value::into_vec), Some(b"value4".to_vec()));
 }
 
 #[test]
@@ -204,8 +205,7 @@ fn large_batch() {
         let key = format!("key_{}", i);
         let expected_value = format!("value_{}", i);
         assert_eq!(
-            store.get("test", key.as_bytes()).unwrap(),
-            Some(expected_value.as_bytes().to_vec())
+            store.get("test", key.as_bytes()).unwrap().map(Value::into_vec), Some(expected_value.as_bytes().to_vec())
         );
     }
 }
@@ -228,8 +228,8 @@ fn batch_mixed() {
 
     store.write_batch(batch).unwrap();
 
-    assert_eq!(store.get("test", b"key1").unwrap(), Some(b"updated1".to_vec()));
+    assert_eq!(store.get("test", b"key1").unwrap().map(Value::into_vec), Some(b"updated1".to_vec()));
     assert_eq!(store.get("test", b"key2").unwrap(), None);
-    assert_eq!(store.get("test", b"key3").unwrap(), Some(b"initial3".to_vec()));
-    assert_eq!(store.get("test", b"key4").unwrap(), Some(b"new4".to_vec()));
+    assert_eq!(store.get("test", b"key3").unwrap().map(Value::into_vec), Some(b"initial3".to_vec()));
+    assert_eq!(store.get("test", b"key4").unwrap().map(Value::into_vec), Some(b"new4".to_vec()));
 }
