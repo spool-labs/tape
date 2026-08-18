@@ -67,17 +67,14 @@ fn slice_and_track_traffic<A: BenchArm>() {
         "{}",
         A::NAME
     );
-    // Stored bytes cover the payloads and the sidecar in front of each of them,
-    // so the floor is the payloads and the arms differ above it.
     let (count, bytes) = store.slice_totals_by_spool(spool).unwrap();
     assert_eq!(count, SLICE_COUNT as u64, "{}", A::NAME);
-    if let Some(bytes) = bytes {
-        assert!(
-            bytes >= StorageUnits::from_bytes((SLICE_COUNT * SLICE_SIZE) as u64),
-            "{} weighed {bytes:?} of slices",
-            A::NAME
-        );
-    }
+    assert_eq!(
+        bytes,
+        StorageUnits::from_bytes((SLICE_COUNT * SLICE_SIZE) as u64),
+        "{}",
+        A::NAME
+    );
 
     let sizes = store.iter_slice_sizes_by_spool(spool).unwrap();
     assert_eq!(sizes.len(), SLICE_COUNT, "{}", A::NAME);

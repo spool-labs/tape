@@ -8,9 +8,7 @@ use tape_core::challenge::{self, ProofOfAccess, SampleEntry};
 use tape_core::challenge::proof::{Registered, SampleProof};
 use tape_core::challenge::sample::SampleLeaf;
 use tape_core::challenge::sample::{Sample, sample_space};
-use tape_core::erasure::{
-    SAMPLE_WINDOW_LEAVES, SUB_LEAF_BYTES, prove_sub_leaf_windowed, sample_window_range,
-};
+use tape_core::erasure::{SUB_LEAF_BYTES, prove_sub_leaf_windowed, sample_window};
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
@@ -129,25 +127,19 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let (sample, _) = expected_sample(context, state, round, spool)?;
     let proof = match sample.leaf {
         SampleLeaf::Coded { sub_leaf } => {
-            // One window of the slice and the sidecar above it, which is every
-            // byte a proof reads. The rest of the slice stays on the device.
-            let window = sample_window_range(sub_leaf);
-            let (sidecar, bytes) = context
-                .store
-                .slice_window(spool, sample.track, window.start, window.len())
-                .ok()
-                .flatten()?;
-            if sidecar.is_empty() {
-                debug!(track = %sample.track, "challenge: slice has no sidecar");
-                return None;
-            }
+            let slice = context.store.get_slice(spool, sample.track).ok().flatten()?;
+            let sidecar = context.store.get_slice_sidecar(spool, sample.track).ok().flatten()?;
 
-            let at = (sub_leaf % SAMPLE_WINDOW_LEAVES) * SUB_LEAF_BYTES;
+            let start = sub_leaf * SUB_LEAF_BYTES;
             SampleProof::Coded {
                 sub_leaf: sub_leaf as u64,
                 proof: SubLeafProof {
-                    sub_leaf: bytes.get(at..(at + SUB_LEAF_BYTES).min(bytes.len()))?.to_vec(),
-                    sub_proof: prove_sub_leaf_windowed(&sidecar, &bytes, sub_leaf)?,
+                    sub_leaf: slice[start..(start + SUB_LEAF_BYTES).min(slice.len())].to_vec(),
+                    sub_proof: prove_sub_leaf_windowed(
+                        &sidecar,
+                        &slice[sample_window(sub_leaf, slice.len())],
+                        sub_leaf,
+                    )?,
                 },
             }
         }

@@ -41,6 +41,7 @@ pub mod types;
 
 use std::path::Path;
 
+use ops::SliceOps;
 use store::{Store, TypedStore};
 use store_rocks::{RocksStore, SplitStore};
 
@@ -134,7 +135,23 @@ impl TapeStore<SplitStore> {
             config::create_db_options(bulk_compaction_mb_per_sec),
             config::create_bulk_store_configs(),
         )?;
-        Ok(Self::new(split_store(meta, bulk)))
+        let store = Self::new(split_store(meta, bulk));
+
+        // A store written before the size index existed reports no slice totals
+        // until the index is laid down.
+        store.ensure_slice_size_index().map_err(|err| match err {
+            error::TapeStoreError::Store(err) => err,
+            other => store::Error::Database(other.to_string()),
+        })?;
+
+        // Same for the challenge sidecars. Until one exists a challenge still
+        // answers, by hashing the whole slice, so this is a cost fix rather than
+        // a correctness one.
+        store.ensure_slice_sidecars().map_err(|err| match err {
+            error::TapeStoreError::Store(err) => err,
+            other => store::Error::Database(other.to_string()),
+        })?;
+        Ok(store)
     }
 
     /// Open a read-only replica under a single root directory

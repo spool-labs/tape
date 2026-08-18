@@ -1,0 +1,32 @@
+host=reel-simd-t5 2026-08-18T14:27:55Z
+--- uring-door
+        map_above: None,
+        point_reads: PointReads::Queued,
+        io_backend: IoBackend::Uring,
+uring-door    reel   random      50000        1      112.48ms        2.25µs       6.7 MiB      42.0 MiB
+uring-door    reel   random      50000       64       19.24ms      384.00ns       6.7 MiB      42.0 MiB
+uring-door    reel   random      50000      512       18.27ms      365.00ns       6.7 MiB      42.0 MiB
+uring-door    reel   random     200000        1      130.17ms        2.60µs      26.7 MiB      77.1 MiB
+uring-door    reel   random     200000       64       23.25ms      465.00ns      26.7 MiB      77.1 MiB
+uring-door    reel   random     200000      512       22.59ms      451.00ns      26.7 MiB      77.1 MiB
+--- uring-probe
+        map_above: None,
+        point_reads: PointReads::Probed,
+        io_backend: IoBackend::Uring,
+uring-probe    reel   random      50000        1       81.33ms        1.63µs       6.7 MiB      42.0 MiB
+uring-probe    reel   random      50000       64       19.97ms      399.00ns       6.7 MiB      42.0 MiB
+uring-probe    reel   random      50000      512       18.40ms      367.00ns       6.7 MiB      42.0 MiB
+uring-probe    reel   random     200000        1       95.59ms        1.91µs      26.7 MiB      77.1 MiB
+uring-probe    reel   random     200000       64       23.87ms      477.00ns      26.7 MiB      77.1 MiB
+uring-probe    reel   random     200000      512       22.92ms      458.00ns      26.7 MiB      77.1 MiB
+--- uring-mapped
+        map_above: MAP_EVERYTHING,
+        point_reads: PointReads::Probed,
+        io_backend: IoBackend::Uring,
+uring-mapped    reel   random      50000        1       18.28ms      365.00ns       6.7 MiB      42.0 MiB
+uring-mapped    reel   random      50000       64       19.29ms      385.00ns       6.7 MiB      42.0 MiB
+uring-mapped    reel   random      50000      512       17.80ms      356.00ns       6.7 MiB      42.0 MiB
+uring-mapped    reel   random     200000        1       29.02ms      580.00ns      26.7 MiB      77.1 MiB
+uring-mapped    reel   random     200000       64       22.84ms      456.00ns      26.7 MiB      77.1 MiB
+uring-mapped    reel   random     200000      512       21.59ms      431.00ns      26.7 MiB      77.1 MiB
+2026-08-18T14:28:28Z

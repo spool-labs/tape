@@ -44,14 +44,22 @@ fn track_data_is_open() {
 #[test]
 fn node_config_opens() {
     let dir = TempDir::new().expect("dir");
-    let store = reel_bridge::open_node_store(dir.path().join("volume"), 0, 8 * 1024 * 1024)
-        .expect("open the node store");
+    let store = reel_bridge::open_node_store(
+        dir.path().join("volume"),
+        0,
+        8 * 1024 * 1024,
+        reel::IoBackend::Posix,
+    )
+    .expect("open the node store");
 
     // The knobs this campaign measured have to be the ones a node gets, not
     // just the ones a bench got.
     let bridge = store.inner().inner();
     let config = bridge.engine().config();
-    assert!(config.map_above.is_some(), "warm reads would take the door");
+    // No mapping: the fleet gives up the warm read rather than take SIGBUS on a
+    // bad sector, and a posix volume has no ring overhead for the probe to undo.
+    assert!(config.map_above.is_none());
+    assert_eq!(config.point_reads, reel::PointReads::Queued);
     assert_ne!(
         config.sync,
         reel::SyncPolicy::Never,
@@ -61,4 +69,17 @@ fn node_config_opens() {
         bridge.declined_shapes().is_empty(),
         "a column's declared shape was dropped",
     );
+}
+
+// the probe is coupled to the backend, since only a ring has overhead to undo
+#[test]
+fn probe_follows_the_backend() {
+    for (backend, wanted) in [
+        (reel::IoBackend::Posix, reel::PointReads::Queued),
+        (reel::IoBackend::Uring, reel::PointReads::Probed),
+        (reel::IoBackend::UringDirect, reel::PointReads::Queued),
+    ] {
+        let config = reel_bridge::node_config(0, 8 * 1024 * 1024, backend);
+        assert_eq!(config.point_reads, wanted, "{backend:?}");
+    }
 }

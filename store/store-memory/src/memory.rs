@@ -434,24 +434,6 @@ impl Store for MemoryStore {
         Ok(None)
     }
 
-    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>> {
-        // Summed in place: the values are already in memory, so weighing them
-        // faults nothing in and copies nothing out.
-        let data = self.data.read().unwrap();
-        let bytes = data
-            .get(cf)
-            .map(|cf_data| {
-                cf_data
-                    .iter()
-                    .filter(|(key, _)| key.starts_with(prefix))
-                    .map(|(_, value)| value.len() as u64)
-                    .sum()
-            })
-            .unwrap_or(0);
-
-        Ok(Some(bytes))
-    }
-
     fn key_count_estimate(&self, _cf: &str) -> Result<Option<u64>> {
         Ok(None)
     }

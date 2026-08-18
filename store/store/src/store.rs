@@ -210,10 +210,8 @@ pub trait Store: Send + Sync {
             if from.is_some_and(|mark| key.as_slice() == mark) {
                 continue;
             }
-            // Marked with the last key handed out, which is the one the resume
-            // skips. Marking with the first key held back would drop it instead.
             if rows.len() == limit {
-                next = rows.last().map(|(key, _): &KeyValue| key.clone());
+                next = Some(key);
                 break;
             }
             rows.push((key, value));
@@ -244,31 +242,13 @@ pub trait Store: Send + Sync {
             if from.is_some_and(|mark| key.as_slice() == mark) {
                 continue;
             }
-            // Marked with the last key handed out, which is the one the resume
-            // skips. Marking with the first key held back would drop it instead.
             if rows.len() == limit {
-                next = rows.last().map(|(key, _): &KeyValue| key.clone());
+                next = Some(key);
                 break;
             }
             rows.push((key, value));
         }
         Ok((rows, next))
-    }
-
-    /// One page of the keys under a prefix, resumable by an opaque mark.
-    ///
-    /// Same promise as `sweep_prefix` for a caller that wants the keys and none of
-    /// the values. The default takes the values and drops them; a backend that can
-    /// page keys on their own overrides it.
-    fn sweep_keys_prefix(
-        &self,
-        cf: &str,
-        prefix: &[u8],
-        from: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
-        let (rows, next) = self.sweep_prefix(cf, prefix, from, limit)?;
-        Ok((rows.into_iter().map(|(key, _)| key).collect(), next))
     }
 
     /// Exact count of the keys under `prefix`, WITHOUT materializing them.
@@ -278,15 +258,6 @@ pub trait Store: Send + Sync {
     fn count_prefix(&self, cf: &str, prefix: &[u8]) -> Result<u64> {
         Ok(self.iter_keys_prefix(cf, prefix)?.len() as u64)
     }
-
-    /// Stored value bytes under `prefix`, WITHOUT reading any of them.
-    ///
-    /// The byte twin of `count_prefix`, and stored bytes rather than anything the
-    /// caller put in: whatever the backend holds under those keys, its own framing
-    /// included or not as it accounts for it. Nothing comes back from a backend
-    /// that could only answer by reading the payloads. Has no default, so a
-    /// delegating store cannot inherit a no-answer silently.
-    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>>;
 
     /// Iterate from the start key (inclusive) in the specified direction.
     fn iter_from(&self, cf: &str, start: &[u8], direction: Direction) -> Result<StoreIter<'_>>;

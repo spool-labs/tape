@@ -23,6 +23,10 @@ const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
 /// A wrapper around a byte vector with a widened decode limit for track slice data
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
 
+/// Stored slice bytes with a widened decode limit
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub struct SliceValue(#[wincode(with = "SliceBytes")] pub Vec<u8>);
+
 /// A slice and its derived challenge-proof sidecar.
 ///
 /// Keeping them together lets callers validate the root and store the slice
