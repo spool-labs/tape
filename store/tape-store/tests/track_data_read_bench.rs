@@ -33,18 +33,44 @@ const PAYLOAD_LEN: usize = 128;
 /// Reads taken per arm, enough that one slow lookup does not carry the figure
 const PROBES: usize = 50_000;
 
-/// An incompressible payload, so a block-compressing engine is not handed a win
-///
-/// A run of one repeated byte compresses to nothing, which flatters whichever
-/// arm compresses blocks and measures the codec rather than the read.
-fn payload(seed: usize) -> BlobData {
-    let mut state = 0x9E3779B97F4A7C15u64 ^ seed as u64;
+/// What a row's bytes look like, since a codec's answer depends entirely on it
+#[derive(Clone, Copy)]
+enum Fill {
+    /// Pseudorandom, which lz4 declines and stores verbatim
+    Random,
+
+    /// Repetitive the way a real coded payload's framing is, which lz4 shrinks
+    Packed,
+}
+
+impl Fill {
+    fn label(self) -> &'static str {
+        match self {
+            Fill::Random => "random",
+            Fill::Packed => "packed",
+        }
+    }
+}
+
+fn payload(seed: usize, fill: Fill) -> BlobData {
     let mut bytes = Vec::with_capacity(PAYLOAD_LEN);
-    while bytes.len() < PAYLOAD_LEN {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        bytes.extend_from_slice(&state.to_le_bytes());
+    match fill {
+        Fill::Random => {
+            let mut state = 0x9E3779B97F4A7C15u64 ^ seed as u64;
+            while bytes.len() < PAYLOAD_LEN {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.extend_from_slice(&state.to_le_bytes());
+            }
+        }
+        Fill::Packed => {
+            let head = (seed as u64).to_le_bytes();
+            while bytes.len() < PAYLOAD_LEN {
+                bytes.extend_from_slice(&head);
+                bytes.extend_from_slice(&[0u8; 24]);
+            }
+        }
     }
     bytes.truncate(PAYLOAD_LEN);
     BlobData::Inline(bytes)
@@ -64,10 +90,11 @@ fn best<F: FnMut() -> usize>(mut f: F, expect: usize) -> Duration {
 
 fn sweep<A: BenchArm>() {
     println!(
-        "{:>7}  {:>9}  {:>7}  {:>12}  {:>12}   (warm)",
-        "engine", "rows", "batch", "total", "per read"
+        "{:>7}  {:>7}  {:>9}  {:>7}  {:>12}  {:>12}  {:>11}   (warm)",
+        "engine", "fill", "rows", "batch", "total", "per read", "on disk"
     );
 
+    for fill in [Fill::Random, Fill::Packed] {
     for &count in COUNTS {
         let count = scaled(count);
         let dir = TempDir::new().unwrap();
@@ -76,10 +103,14 @@ fn sweep<A: BenchArm>() {
         let mut addresses = Vec::with_capacity(count);
         for seed in 0..count {
             let address = Address::new_unique();
-            store.put_track_data(address, payload(seed)).unwrap();
+            store.put_track_data(address, payload(seed, fill)).unwrap();
             addresses.push(address);
         }
         A::settle(&store);
+
+        // What the rows actually cost on the device, which is the half of a
+        // codec's answer that latency never shows.
+        let on_disk = store.inner().inner().actual_size_bytes().unwrap_or(0);
 
         // Strided rather than sequential, so the read order is not the write
         // order and the shard is asked for a scattered key the way a node asks.
@@ -110,10 +141,14 @@ fn sweep<A: BenchArm>() {
 
             let per_read = elapsed / probes as u32;
             let engine = A::NAME;
+            let label = fill.label();
+            let disk_mib = on_disk as f64 / (1024.0 * 1024.0);
             println!(
-                "{engine:>7}  {count:>9}  {batch:>7}  {elapsed:>12.2?}  {per_read:>12.2?}"
+                "{engine:>7}  {label:>7}  {count:>9}  {batch:>7}  {elapsed:>12.2?}  \
+                 {per_read:>12.2?}  {disk_mib:>8.1} MiB"
             );
         }
+    }
     }
 }
 
