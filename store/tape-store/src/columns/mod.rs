@@ -22,7 +22,9 @@
 //! - `spool_sync_cursor`: Sync cursor (SpoolIndexKey -> Address)
 //!
 //! ## Slice Data Column (BlobDB)
-//! - `slice`: Slice data, sidecar and payload under one key (SliceKey -> stored slice)
+//! - `slice`: Slice data (SliceKey -> Vec<u8>)
+//! - `slice_size`: Slice payload lengths (SliceKey -> u64)
+//! - `slice_sidecar`: Sub-leaf tree nodes for challenge proofs (SliceKey -> Vec<Hash>)
 //!
 //! ## Challenge Columns
 //! - `challenge_record`: Per-peer challenge history (Address -> PeerRecord)
@@ -65,6 +67,8 @@ pub mod policy;
 pub mod s3_multipart;
 pub mod snapshot;
 pub mod slice;
+pub mod slice_sidecar;
+pub mod slice_size;
 pub mod spool;
 pub mod sync_cursor;
 pub mod tape;
@@ -91,6 +95,8 @@ pub use policy::PolicyRuleCol;
 pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
+pub use slice_sidecar::SliceSidecarCol;
+pub use slice_size::SliceSizeCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
@@ -118,6 +124,8 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "spool_pending_repair",
     "spool_pending_recovery",
     "slice",
+    "slice_size",
+    "slice_sidecar",
     "challenge_record",
     "challenge_round",
     "track_sample",

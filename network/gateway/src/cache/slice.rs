@@ -10,7 +10,7 @@ use tape_node::config::gateway::GatewayCacheConfig;
 use tape_store::TapeStore;
 use tape_store::columns::SliceCol;
 use tape_store::ops::SliceOps;
-use tape_store::types::{slice, SliceKey};
+use tape_store::types::{SliceKey, SliceValue};
 use tracing::{debug, warn};
 
 use super::error::GatewayCacheError;
@@ -122,9 +122,9 @@ impl<Db: Store> GatewaySliceCache<Db> {
         for (key_bytes, value_bytes) in iter {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|error| GatewayCacheError::Codec(format!("slice key: {error}")))?;
-            // The budget is the payload the gateway serves, not the sidecar
-            // riding in front of it.
-            state.upsert(key.into(), slice::payload(&value_bytes).len() as u64);
+            let value: SliceValue = wincode::deserialize(&value_bytes)
+                .map_err(|error| GatewayCacheError::Codec(format!("slice value: {error}")))?;
+            state.upsert(key.into(), value.0.len() as u64);
         }
 
         Ok(state)

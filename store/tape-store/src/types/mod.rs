@@ -6,7 +6,6 @@
 //! - Values: TapeInfo, PackedTrack, snapshot artifacts
 mod enums;
 pub mod keys;
-pub mod slice;
 mod values;
 
 // Re-export enum types
@@ -27,6 +26,6 @@ pub use keys::{
 pub use values::{
     AuditEntry, AuthState, BudgetLimits, Credential, CredentialCaps, InvalidationProof,
     LedgerEntry, LedgerReservation, MultipartPart, MultipartPartData, MultipartUpload,
-    ObjectListEntry, ObjectMetadata, PolicyRule, SliceWrite,
+    ObjectListEntry, ObjectMetadata, PolicyRule, SliceValue, SliceWrite,
     SnapshotArtifact, TapeInfo, TrackSample,
 };

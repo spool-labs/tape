@@ -32,7 +32,7 @@
 //!
 //! store.put("users", b"alice", b"admin").unwrap();
 //! let value = store.get("users", b"alice").unwrap();
-//! assert_eq!(value.map(|value| value.into_vec()), Some(b"admin".to_vec()));
+//! assert_eq!(value, Some(b"admin".to_vec()));
 //! ```
 
 mod memory;

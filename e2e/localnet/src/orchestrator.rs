@@ -13,7 +13,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::EpochNumber;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_store::TapeStore;
-use tape_store::columns::SliceCol;
+use tape_store::columns::{SliceCol, SliceSidecarCol};
 use tracing::{debug, info};
 
 use crate::chain::ChainManager;
@@ -441,6 +441,7 @@ fn lose_slices(store_path: &std::path::Path, one_in: usize) -> Result<usize> {
         if index % one_in != 0 {
             continue;
         }
+        batch.delete_owned(SliceSidecarCol::CF_NAME, key.clone());
         batch.delete_owned(SliceCol::CF_NAME, key);
         dropped += 1;
     }

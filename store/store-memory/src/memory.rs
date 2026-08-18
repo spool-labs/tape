@@ -434,24 +434,6 @@ impl Store for MemoryStore {
         Ok(None)
     }
 
-    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>> {
-        // Summed in place: the values are already in memory, so weighing them
-        // faults nothing in and copies nothing out.
-        let data = self.data.read().unwrap();
-        let bytes = data
-            .get(cf)
-            .map(|cf_data| {
-                cf_data
-                    .iter()
-                    .filter(|(key, _)| key.starts_with(prefix))
-                    .map(|(_, value)| value.len() as u64)
-                    .sum()
-            })
-            .unwrap_or(0);
-
-        Ok(Some(bytes))
-    }
-
     fn key_count_estimate(&self, _cf: &str) -> Result<Option<u64>> {
         Ok(None)
     }
@@ -463,6 +445,42 @@ impl Store for MemoryStore {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Keys the sweep test writes, enough to cross several page boundaries
+    const SWEPT: usize = 250;
+
+    // a default sweep loses nothing at a page boundary
+    #[test]
+    fn sweep_covers() {
+        let store = MemoryStore::new();
+        let mut wrote = BTreeSet::new();
+        for at in 0..SWEPT as u64 {
+            let key = at.to_be_bytes();
+            store.put("rows", &key, b"v").unwrap();
+            wrote.insert(key.to_vec());
+        }
+
+        // A page size that divides the count and one that does not, since the
+        // key a boundary lands on is the one a resume can drop.
+        for page in [1usize, 10, 17, SWEPT] {
+            let mut seen = BTreeSet::new();
+            let mut mark: Option<Vec<u8>> = None;
+            loop {
+                let (rows, next) = store.sweep("rows", mark.as_deref(), page).unwrap();
+                for (key, _) in rows {
+                    assert!(seen.insert(key), "page {page} handed a key out twice");
+                }
+                match next {
+                    Some(next) => mark = Some(next),
+                    None => break,
+                }
+            }
+            assert_eq!(seen, wrote, "page {page} lost keys");
+        }
+    }
+
     use super::*;
 
     #[test]
