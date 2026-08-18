@@ -104,7 +104,9 @@ fn all_column_families() {
 
     // Sync progress
     let progress_track = Address::new_unique();
-    store.set_spool_sync_cursor(spool, progress_track).unwrap();
+    store
+        .set_spool_sync_cursor(spool, &progress_track.to_bytes())
+        .unwrap();
 
     // Pending recovery
     store
@@ -123,7 +125,7 @@ fn all_column_families() {
     assert!(store.get_spool_state(spool).unwrap().unwrap().is_active());
     assert_eq!(
         store.get_spool_sync_cursor(spool).unwrap(),
-        Some(progress_track)
+        Some(progress_track.to_bytes().to_vec()),
     );
     assert!(store.has_pending_recovery(spool, track_address).unwrap());
     assert!(store.get_slice(spool, track_address).unwrap().is_some());
