@@ -57,6 +57,32 @@ impl<S: Store> TypedStore<S> {
         }
     }
 
+    /// Get several values from one column, answered in the order asked.
+    ///
+    /// One call in front of the backend rather than one per key, which is where a
+    /// batching backend has room to be faster than the loop it replaces.
+    pub fn get_many<C: Column>(&self, keys: &[C::Key]) -> Result<Vec<Option<C::Value>>> {
+        let mut asked = Vec::with_capacity(keys.len());
+        for key in keys {
+            asked.push(
+                wincode::serialize(key)
+                    .map_err(|e| Error::Serialization(format!("failed to serialize key: {}", e)))?,
+            );
+        }
+        let borrowed: Vec<&[u8]> = asked.iter().map(|key| key.as_slice()).collect();
+
+        let mut values = Vec::with_capacity(keys.len());
+        for value_bytes in self.inner.get_many(C::CF_NAME, &borrowed)? {
+            values.push(match value_bytes {
+                Some(bytes) => Some(wincode::deserialize(&bytes).map_err(|e| {
+                    Error::Serialization(format!("failed to deserialize value: {}", e))
+                })?),
+                None => None,
+            });
+        }
+        Ok(values)
+    }
+
     /// Put a key-value pair into the column.
     pub fn put<C: Column>(&self, key: &C::Key, value: &C::Value) -> Result<()> {
         let key_bytes = wincode::serialize(key)

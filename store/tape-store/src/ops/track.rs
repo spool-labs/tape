@@ -15,6 +15,9 @@ pub trait TrackOps {
     /// Get track by address.
     fn get_track(&self, track_address: Address) -> Result<Option<CompressedTrack>>;
 
+    /// Get track metadata for several addresses, answered in the order asked.
+    fn get_tracks(&self, track_addresses: &[Address]) -> Result<Vec<Option<CompressedTrack>>>;
+
     /// Store track metadata.
     fn put_track(&self, track_address: Address, track: CompressedTrack) -> Result<()>;
 
@@ -44,6 +47,14 @@ pub trait TrackOps {
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
+    fn get_tracks(&self, track_addresses: &[Address]) -> Result<Vec<Option<CompressedTrack>>> {
+        let packed = self.get_many::<TrackCol>(track_addresses)?;
+        Ok(packed
+            .into_iter()
+            .map(|track| track.map(CompressedTrack::unpack))
+            .collect())
+    }
+
     fn get_track(&self, track_address: Address) -> Result<Option<CompressedTrack>> {
         Ok(self
             .get::<TrackCol>(&track_address)?

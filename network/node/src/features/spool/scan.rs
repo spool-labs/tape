@@ -4,6 +4,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
@@ -70,34 +71,40 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             break;
         }
 
+        let mut considered: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track_addr, track_info) in &tracks {
-            // Skip tracks not in this spool's group.
-            if track_info.group != group {
-                continue;
+            // Tracks outside this spool's group belong to another node, and a raw
+            // track has no slice semantics to repair.
+            if track_info.group == group && track_info.is_coded() {
+                considered.push(*track_addr);
             }
+        }
 
-            // Raw tracks have no slice semantics and should never enter repair.
-            if !track_info.is_coded() {
-                continue;
+        // The batch's certify status in one call rather than one per track, since
+        // a decision per row is what makes a sweep a round trip per row.
+        let infos = match ctx.store.get_object_infos(&considered) {
+            Ok(infos) => infos,
+            Err(error) => {
+                warn!(spool = %spool, %error, "scan get_object_infos failed");
+                had_error = true;
+                break;
             }
+        };
 
+        for (track_addr, info) in considered.iter().zip(infos) {
             // Only consider certified tracks for repair
-            match ctx.store.get_object_info(*track_addr) {
-                Ok(Some(info)) if info.is_certified() => {}
-                Ok(Some(_)) => continue,
-                Ok(None) => {
+            match info {
+                Some(info) if info.is_certified() => {}
+                Some(_) => continue,
+                None => {
                     warn!(spool = %spool, track = %track_addr, "scan: track exists but ObjectInfo missing");
                     had_error = true;
                     continue;
                 }
-                Err(error) => {
-                    warn!(spool = %spool, track = %track_addr, %error, "scan get_object_info failed");
-                    had_error = true;
-                    continue;
-                }
             }
 
-            // Check if slice exists locally.
+            // Check if slice exists locally. A containment check reads the index
+            // and never the payload, so there is nothing here for a batch to win.
             let has_slice = match ctx.store.has_slice(spool, *track_addr) {
                 Ok(has_slice) => has_slice,
                 Err(error) => {

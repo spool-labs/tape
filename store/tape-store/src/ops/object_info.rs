@@ -13,6 +13,9 @@ pub trait ObjectInfoOps {
     /// Get object info by address
     fn get_object_info(&self, address: Address) -> Result<Option<ObjectInfo>>;
 
+    /// Get object info for several addresses, answered in the order asked
+    fn get_object_infos(&self, addresses: &[Address]) -> Result<Vec<Option<ObjectInfo>>>;
+
     /// Store object info
     fn put_object_info(&self, address: Address, info: ObjectInfo) -> Result<()>;
 
@@ -26,6 +29,10 @@ pub trait ObjectInfoOps {
 impl<S: Store> ObjectInfoOps for TapeStore<S> {
     fn get_object_info(&self, address: Address) -> Result<Option<ObjectInfo>> {
         Ok(self.get::<ObjectInfoCol>(&address)?)
+    }
+
+    fn get_object_infos(&self, addresses: &[Address]) -> Result<Vec<Option<ObjectInfo>>> {
+        Ok(self.get_many::<ObjectInfoCol>(addresses)?)
     }
 
     fn put_object_info(&self, address: Address, info: ObjectInfo) -> Result<()> {
