@@ -34,23 +34,27 @@ pub fn validate_bootstrap_store<Db: Store>(
             break;
         }
 
+        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
+        let mut parents: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track, metadata) in &tracks {
+            addresses.push(*track);
+            parents.push(metadata.tape);
+        }
+        // The page's two reads once each. A validate walks every track there is,
+        // so a round trip a row is the whole cost of the pass.
+        let tapes = store.get_tapes(&parents).map_err(store_error)?;
+        let objects = store.get_object_infos(&addresses).map_err(store_error)?;
+
+        for (((track, metadata), held_tape), held_object) in
+            tracks.iter().zip(tapes).zip(objects)
+        {
             stats.tracks_scanned += 1;
 
-            let tape = store
-                .get_tape(metadata.tape)
-                .map_err(store_error)?
-                .ok_or_else(|| {
-                    violation(
-                        *track,
-                        metadata.tape,
-                        "missing parent tape metadata",
-                    )
-                })?;
+            let tape = held_tape.ok_or_else(|| {
+                violation(*track, metadata.tape, "missing parent tape metadata")
+            })?;
 
-            let object = store
-                .get_object_info(*track)
-                .map_err(store_error)?
+            let object = held_object
                 .ok_or_else(|| {
                     violation(
                         *track,

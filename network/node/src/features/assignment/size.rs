@@ -86,9 +86,16 @@ pub fn group_weights<Db: Store>(
             break;
         }
 
-        for (track, metadata) in &tracks {
+        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
+        for (track, _) in &tracks {
+            addresses.push(*track);
+        }
+        // The page's object info once, rather than one read per track.
+        let infos = store.get_object_infos(&addresses).map_err(store_error)?;
+
+        for ((track, metadata), info) in tracks.iter().zip(infos) {
             let Some(active) =
-                active_track_footprint(store, *track, metadata, voting_epoch, target_epoch)?
+                active_track_footprint(store, *track, metadata, info, voting_epoch, target_epoch)?
             else {
                 continue;
             };
@@ -124,20 +131,20 @@ pub fn group_weights<Db: Store>(
     })
 }
 
+/// One track's contribution to a group's weight, or nothing where it makes none
+///
+/// The object info is handed in, since the page read the whole batch's in one
+/// call; what is still read here is the parent tape and the footprint.
 fn active_track_footprint<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     metadata: &CompressedTrack,
+    info: Option<ObjectInfo>,
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
 ) -> Result<Option<ActiveTrackFootprint>, AssignmentSizeError> {
-
     // Only ObjectInfo::Valid is accounted user data. System-owned tracks are
     // kept live for repair/GC without entering assignment sizing.
-    let info = store
-        .get_object_info(track)
-        .map_err(store_error)?;
-
     let Some(ObjectInfo::Valid {
         track_address,
         registered_epoch,

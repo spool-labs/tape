@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::system::BlacklistEntry;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{
@@ -15,7 +16,7 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 
-use crate::features::blacklist::refuses_object;
+use crate::features::blacklist::blacklist_entries_for_node;
 use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -52,25 +53,33 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     };
 
     let current_epoch = state.context.state().epoch();
+
+    // The blacklist is the same set for every row, and reading it per row read
+    // the whole thing per row. The track metadata comes back in one call too.
+    let refused = blacklist_entries_for_node(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        current_epoch,
+    )
+    .map_err(store_error)?;
+    let mut addresses: Vec<Address> = Vec::with_capacity(slices.len());
+    for (track_address, _) in &slices {
+        addresses.push(*track_address);
+    }
+    let metadata = state
+        .context
+        .store
+        .get_tracks(&addresses)
+        .map_err(store_error)?;
+
     let mut entries = Vec::with_capacity(slices.len());
-    for (track_address, slice_data) in slices {
-        let Some(track) = state
-            .context
-            .store
-            .get_track(track_address)
-            .map_err(store_error)?
-        else {
+    for ((track_address, slice_data), held) in slices.into_iter().zip(metadata) {
+        let Some(track) = held else {
             continue;
         };
 
-        if refuses_object(
-            state.context.store.as_ref(),
-            state.context.node_address(),
-            current_epoch,
-            track_address,
-            track.tape,
-        )
-        .map_err(store_error)?
+        if refused.contains(&BlacklistEntry::track(track_address))
+            || refused.contains(&BlacklistEntry::tape(track.tape))
         {
             continue;
         }
@@ -117,6 +126,14 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut next_cursor = None;
     let current_epoch = state.context.state().epoch();
 
+    // One read of the blacklist for the whole scan rather than one per track.
+    let refused = blacklist_entries_for_node(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        current_epoch,
+    )
+    .map_err(store_error)?;
+
     loop {
         let tracks = state
             .context
@@ -136,14 +153,8 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
-            if refuses_object(
-                state.context.store.as_ref(),
-                state.context.node_address(),
-                current_epoch,
-                *track_address,
-                track.tape,
-            )
-            .map_err(store_error)?
+            if refused.contains(&BlacklistEntry::track(*track_address))
+                || refused.contains(&BlacklistEntry::tape(track.tape))
             {
                 continue;
             }
