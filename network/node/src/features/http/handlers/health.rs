@@ -116,6 +116,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?;
 
     let mut slices_stored = 0u64;
+    // Stored bytes, and zero from a backend that cannot weigh a spool without
+    // reading every payload in it.
     let mut slice_payload_bytes = 0u64;
 
     for (spool_id, _) in &owned_spools {
@@ -123,7 +125,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .slice_totals_by_spool(*spool_id)
             .map_err(store_error)?;
         slices_stored += count;
-        slice_payload_bytes += bytes.as_u64();
+        slice_payload_bytes += bytes.unwrap_or_default().as_u64();
     }
 
     let store_disk_bytes = store

@@ -33,7 +33,7 @@
 use std::path::Path;
 
 use crate::arm::track_data_codec;
-use store::{Error as StoreError, Result as StoreResult};
+use store::Result as StoreResult;
 use store_rocks::{
     BlockBasedOptions, Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, DBCompressionType,
     Options, RocksStore, SplitStore,
@@ -41,8 +41,6 @@ use store_rocks::{
 use tape_store::config::{
     tape_store_column_configs, BULK_COLUMN_FAMILIES, BULK_SUBDIR, META_SUBDIR,
 };
-use tape_store::error::TapeStoreError;
-use tape_store::ops::SliceOps;
 use tape_store::TapeStore;
 
 /// Cache one RocksDB instance shares across its block reads and its blob reads
@@ -158,10 +156,6 @@ const TARGET_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const LEVEL_BASE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Families whose values are payloads rather than metadata rows
-///
-/// Not the same list as the bulk volume: `slice_size` and `slice_sidecar` ride
-/// the bulk volume because a batch cannot span the two, but they hold eight-byte
-/// lengths and sub-leaf nodes and read like metadata.
 const PAYLOAD_FAMILIES: &[&str] = &[
     "track_data",
     "slice",
@@ -304,20 +298,11 @@ pub fn bench_bulk_configs(cache: &Cache) -> Vec<ColumnFamilyDescriptor> {
     volume_configs(cache, true)
 }
 
-/// Whatever the tape store said while it finished opening, as a store error
-fn opening(error: TapeStoreError) -> StoreError {
-    match error {
-        TapeStoreError::Store(error) => error,
-        other => StoreError::Database(other.to_string()),
-    }
-}
-
 /// The split rocks store the bench arm runs on, under one root
 ///
 /// `TapeStore::open_primary` with the bench box's sizing: same two volumes in
-/// the same two subdirectories, same families on each, and the same pair of
-/// index backfills afterwards, so the arm's open time is the node's open time
-/// and not a shortcut past it.
+/// the same two subdirectories and the same families on each, so the arm's open
+/// is the node's open and not a shortcut past it.
 pub fn open_bench_split(root: &Path) -> StoreResult<TapeStore<SplitStore>> {
     let meta_dir = root.join(META_SUBDIR);
     let bulk_dir = root.join(BULK_SUBDIR);
@@ -342,11 +327,7 @@ pub fn open_bench_split(root: &Path) -> StoreResult<TapeStore<SplitStore>> {
         .iter()
         .map(|name| (*name).to_string())
         .collect();
-    let store = TapeStore::new(SplitStore::new(meta, bulk, bulk_cfs));
-
-    store.ensure_slice_size_index().map_err(opening)?;
-    store.ensure_slice_sidecars().map_err(opening)?;
-    Ok(store)
+    Ok(TapeStore::new(SplitStore::new(meta, bulk, bulk_cfs)))
 }
 
 #[cfg(test)]

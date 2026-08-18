@@ -19,10 +19,8 @@
 //! - The two `Error`, `CfDiskUsage`, `DiskVolume` and `StoreVolume` types are
 //!   structurally identical and nominally distinct, so each crosses by hand.
 //!
-//! What is not bridged: the reel's newer reads (`get_many`, `get_range`, the
-//! awaited twins, `walk_from`, `count_prefix`, `maintain`) have no caller on the
-//! internal trait, so a bench routed through this bridge exercises the engine's
-//! blocking one-at-a-time paths only.
+//! What is not bridged: the reel's `walk_from` and `maintain` have no caller on
+//! the internal trait.
 //!
 //! The rocks arm's configuration lives here too, in `rocks`. The fleet's is
 //! sized for spinning disks behind small memory, and a baseline opened under
@@ -32,6 +30,9 @@
 
 mod arm;
 mod columns;
+pub mod fill;
+#[cfg(target_os = "linux")]
+pub mod written;
 mod rocks;
 mod split;
 
@@ -43,7 +44,6 @@ use reel::{
     MAP_EVERYTHING,
 };
 use reel_core::Store as ReelStoreTrait;
-use tape_store::ops::SliceOps;
 use tape_store::TapeStore;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
@@ -62,6 +62,30 @@ pub use split::{MetaBulkStore, REEL_SUBDIR};
 /// The public reel engine behind the internal store trait
 pub struct ReelBridge {
     inner: ReelStore,
+}
+
+/// What one column's index holds
+pub struct ResidentColumn {
+    /// The column, as the volume was opened with it
+    pub column: String,
+
+    /// Live records the index counts, absent on a paged open
+    pub records: Option<u64>,
+
+    /// Live bytes the index counts, absent on a paged open
+    pub bytes: Option<u64>,
+
+    /// Keys the index holds in memory
+    pub keys: u64,
+}
+
+/// What a whole index holds
+pub struct IndexReport {
+    /// Bytes the index accounts to itself
+    pub resident_bytes: u64,
+
+    /// One row per column the volume was opened over
+    pub columns: Vec<ResidentColumn>,
 }
 
 impl ReelBridge {
@@ -125,6 +149,33 @@ impl ReelBridge {
         declined
     }
 
+    /// What the engine's index holds, column by column
+    ///
+    /// The engine's own report layer, for a bench weighing what a column costs in
+    /// memory rather than on disk. A paged open counts only the keys it holds, so
+    /// the record and byte cells go unanswered there rather than reporting a
+    /// fraction of the column as the whole.
+    pub fn index_report(&self) -> IndexReport {
+        let index = self.inner.index();
+        let keys = index.lead_tie_rates();
+        let stat = reel::report::stat::stat(&self.inner);
+
+        let mut columns = Vec::with_capacity(stat.columns.len());
+        for column in stat.columns {
+            let resident = keys
+                .iter()
+                .find(|(id, _, _)| id.as_u8() == column.id)
+                .map_or(0, |(_, _, keys)| *keys);
+            columns.push(ResidentColumn {
+                column: column.column,
+                records: column.records,
+                bytes: column.bytes,
+                keys: resident,
+            });
+        }
+        IndexReport { resident_bytes: index.resident_bytes().to_bytes(), columns }
+    }
+
     /// Drive every buffered append out to the filesystem
     ///
     /// The reel's answer to a RocksDB flush: what a bench calls between its write
@@ -180,13 +231,7 @@ pub fn open_node_store(
 ) -> StoreResult<TapeStore<ReelBridge>> {
     let root = root.as_ref();
     std::fs::create_dir_all(root)?;
-    let store = TapeStore::new(ReelBridge::open_node(root, compaction_mbps, sync_bytes)?);
-
-    // A volume written before the size index existed reports no slice totals
-    // until the index is laid down.
-    SliceOps::ensure_slice_size_index(&store)
-        .map_err(|error| StoreError::Database(error.to_string()))?;
-    Ok(store)
+    Ok(TapeStore::new(ReelBridge::open_node(root, compaction_mbps, sync_bytes)?))
 }
 
 /// A config sized for a bench rather than for a node
@@ -411,6 +456,20 @@ impl Store for ReelBridge {
 
     fn count_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<u64> {
         ReelStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
+    }
+
+    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Option<u64>> {
+        ReelStoreTrait::bytes_prefix(&self.inner, cf, prefix).map_err(crossed)
+    }
+
+    fn sweep_keys_prefix(
+        &self,
+        cf: &str,
+        prefix: &[u8],
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> StoreResult<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
+        ReelStoreTrait::sweep_keys_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
     }
 
     fn sweep_prefix(

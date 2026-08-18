@@ -108,6 +108,34 @@ fn agrees(store: &impl Store, cf: &str, keys: &[Vec<u8>], prefix: &[u8]) {
         store.iter_keys_prefix(cf, prefix).expect("keys").len() as u64,
     );
 
+    // A backend that cannot weigh a prefix without reading it says nothing; one
+    // that can has to agree with the walk.
+    let walked: u64 = store
+        .iter_prefix(cf, prefix)
+        .expect("prefix")
+        .map(|(_, value)| value.len() as u64)
+        .sum();
+    if let Some(bytes) = store.bytes_prefix(cf, prefix).expect("bytes_prefix") {
+        assert_eq!(bytes, walked);
+    }
+
+    let mut swept: Vec<Vec<u8>> = Vec::new();
+    let mut mark = None;
+    loop {
+        let (page, next) = store
+            .sweep_keys_prefix(cf, prefix, mark.as_deref(), 2)
+            .expect("sweep_keys_prefix");
+        swept.extend(page);
+        match next {
+            Some(next) => mark = Some(next),
+            None => break,
+        }
+    }
+    swept.sort();
+    let mut walked_keys = store.iter_keys_prefix(cf, prefix).expect("keys");
+    walked_keys.sort();
+    assert_eq!(swept, walked_keys);
+
     // A key nothing wrote answers nothing, however it is asked.
     let missing = key_of_missing(cf);
     assert!(store.get(cf, &missing).expect("get").is_none());

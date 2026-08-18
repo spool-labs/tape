@@ -19,7 +19,7 @@ use crate::config::BULK_COLUMN_FAMILIES;
 pub enum ColumnClass {
     /// Small index or metadata column; the store's overhead over raw payload.
     Metadata,
-    /// Erasure-coded slice payload.
+    /// Erasure-coded slice payload, the sidecar stored beside it included.
     Slice,
     /// Other bulk payload such as local track data and staged snapshot artifacts.
     Bulk,

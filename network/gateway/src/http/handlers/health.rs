@@ -129,6 +129,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 fn cached_slice_stats<Db: Store>(store: &TapeStore<Db>) -> Result<(u64, u64), RouteError> {
+    // Stored bytes, and zero from a backend that cannot weigh the column without
+    // reading every payload in it.
     let (slices_stored, slice_payload_bytes) = store.slice_totals().map_err(store_error)?;
-    Ok((slices_stored, slice_payload_bytes.as_u64()))
+    Ok((slices_stored, slice_payload_bytes.unwrap_or_default().as_u64()))
 }

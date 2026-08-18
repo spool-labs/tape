@@ -165,21 +165,6 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
             .with_blob_db(256 * 1024) // 256 KiB threshold
             .with_prefix_extractor(2),
 
-        // Slice size - 34-byte SliceKey, 8-byte payload lengths
-        // 2-byte spool prefix for iteration by spool
-        // Never blob-backed: summing the index must not fault in slice payloads
-        ColumnFamilyConfig::new("slice_size")
-            .with_block_based(cache)
-            .with_prefix_extractor(2),
-
-        // Slice sidecar - 34-byte SliceKey, sub-leaf tree nodes for challenges
-        // 2-byte spool prefix for iteration by spool
-        // Never blob-backed: the point of the sidecar is answering without a
-        // slice read, which a blob indirection would put straight back
-        ColumnFamilyConfig::new("slice_sidecar")
-            .with_block_based(cache)
-            .with_prefix_extractor(2),
-
         // Challenge record - 34-byte key, small counters
         // 32-byte peer prefix so one node's spools are a single scan
         ColumnFamilyConfig::new("challenge_record")
@@ -274,7 +259,7 @@ pub const BULK_SUBDIR: &str = "bulk";
 /// A slice, its recorded length and its sidecar are written in one batch, so
 /// they have to share a volume: a cross-volume batch is not atomic.
 pub const BULK_COLUMN_FAMILIES: &[&str] =
-    &["track_data", "slice", "slice_size", "slice_sidecar", "snapshot_artifact"];
+    &["track_data", "slice", "snapshot_artifact"];
 
 /// Column family configurations for the metadata (fast volume) store
 pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {
@@ -362,7 +347,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 32);
+        assert_eq!(configs.len(), 30);
     }
 
     #[test]
@@ -386,8 +371,6 @@ mod tests {
             "spool_pending_repair",
             "spool_pending_recovery",
             "slice",
-            "slice_size",
-            "slice_sidecar",
             "challenge_record",
             "challenge_round",
             "spool_sync_cursor",
@@ -430,7 +413,7 @@ mod tests {
         assert_eq!(meta.len() + bulk.len(), create_tape_store_configs().len());
         assert_eq!(
             bulk,
-            vec!["track_data", "slice", "slice_size", "slice_sidecar", "snapshot_artifact"]
+            vec!["track_data", "slice", "snapshot_artifact"]
         );
         assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
     }
