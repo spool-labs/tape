@@ -350,8 +350,13 @@ pub struct SyncSliceEntry {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncTracksRequest {
     pub spool_index: SpoolIndex,
-    /// Last track address received, or empty to start from the beginning.
-    pub cursor: Option<[u8; 32]>,
+    /// Where the last page left off, or nothing to start from the beginning.
+    ///
+    /// Opaque: the server mints it and the client only ever hands it back. A
+    /// mark the server did not mint, or one from a different opening of its
+    /// volume, restarts the scan rather than resuming into a layout that is not
+    /// there.
+    pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }
 
@@ -359,8 +364,12 @@ pub struct SyncTracksRequest {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncTracksResponse {
     pub entries: Vec<SyncTrackEntry>,
-    /// Next cursor for pagination, or None if no more entries.
-    pub next_cursor: Option<[u8; 32]>,
+    /// Where to resume, or nothing when the scan is done.
+    ///
+    /// A page boundary rather than a row: a client resuming from it can be
+    /// handed rows it already has, which is safe because taking a track twice
+    /// is taking it once.
+    pub next_cursor: Option<Vec<u8>>,
 }
 
 /// A single track-data entry in a sync response.
@@ -732,7 +741,7 @@ mod tests {
                 track_address: [0x11; 32],
                 data: BlobData::Inline(vec![1, 2, 3]),
             }],
-            next_cursor: Some([0x11; 32]),
+            next_cursor: Some(vec![0x11; 32]),
         };
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: SyncTracksResponse = wincode::deserialize(&bytes).unwrap();

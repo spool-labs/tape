@@ -121,7 +121,7 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let limit = (request.limit as usize).clamp(1, MAX_SYNC_BATCH);
     let scan_batch = limit.max(MIN_SCAN_BATCH);
-    let mut scan_cursor = request.cursor.map(Address::new);
+    let mut scan_cursor = request.cursor;
     let mut entries = Vec::with_capacity(limit);
     let mut next_cursor = None;
     let current_epoch = state.context.state().epoch();
@@ -135,20 +135,17 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     .map_err(store_error)?;
 
     loop {
-        let tracks = state
+        // A page boundary rather than a row: the mark the sweep answers names
+        // where the next page starts, so a peer resuming from it may be handed
+        // rows it already took. Taking a track twice is taking it once.
+        let (tracks, next) = state
             .context
             .store
-            .iter_tracks_from(scan_cursor, scan_batch)
+            .sweep_tracks(scan_cursor.as_deref(), scan_batch)
             .map_err(store_error)?;
-
-        if tracks.is_empty() {
-            next_cursor = None;
-            break;
-        }
+        next_cursor = next.clone();
 
         for (track_address, track) in tracks.iter() {
-            next_cursor = Some(track_address.to_bytes());
-
             if !track.group.contains(request.spool_index) {
                 continue;
             }
@@ -191,12 +188,10 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         }
 
-        if tracks.len() < scan_batch {
-            next_cursor = None;
-            break;
+        match next {
+            Some(next) => scan_cursor = Some(next),
+            None => break,
         }
-
-        scan_cursor = next_cursor.map(Address::new);
     }
 
     let response = SyncTracksResponse {

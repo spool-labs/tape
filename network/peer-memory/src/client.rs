@@ -121,7 +121,7 @@ impl Api for MemoryApi {
     }
 
     async fn sync_tracks(&self, node: Address, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
-        dispatch!(self, node, SyncTracksReq { spool_index: req.spool_index, cursor: req.cursor, limit: req.limit }, SyncTracks)
+        dispatch!(self, node, SyncTracksReq { spool_index: req.spool_index, cursor: req.cursor.clone(), limit: req.limit }, SyncTracks)
     }
 
     async fn repair(&self, node: Address, req: &RepairReq) -> Result<RepairRes, ApiError> {

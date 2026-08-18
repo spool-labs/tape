@@ -488,7 +488,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", SYNC_TRACKS_PATH);
         let wire_req = SyncTracksRequest {
             spool_index: req.spool_index,
-            cursor: req.cursor,
+            cursor: req.cursor.clone(),
             limit: req.limit,
         };
         let body =
