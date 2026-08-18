@@ -11,10 +11,26 @@
 //! - **Prefix Extractors**: Only on CFs whose access pattern is a prefix scan;
 //!   CFs that need total-order iteration get none
 
-use store_rocks::{ColumnFamilyConfig, ColumnFamilyDescriptor, Options};
+use store_rocks::{Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, Options};
 
 // Re-export rocksdb types needed for configuration
 use rocksdb;
+
+/// Block cache size for one RocksDB instance
+///
+/// One cache is shared by every column family on the instance. RocksDB hands a
+/// table factory its own 32 MiB cache when none is set, so without this the two
+/// instances would carry a private cache per family: roughly a gigabyte of
+/// capacity that nothing bounds and that fills as the store grows.
+const BLOCK_CACHE_BYTES: usize = 96 * 1024 * 1024;
+
+/// Ceiling on memtable memory across all column families of one instance
+///
+/// Per-family write buffers only bound one family at a time. With 24 families
+/// on the metadata volume, the sum is what matters on a small box, and RocksDB
+/// leaves it unbounded unless this is set. Crossing it flushes the largest
+/// memtable rather than stalling writes.
+const TOTAL_WRITE_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 
 /// Create optimized column family configurations for all TapeStore column families
 ///
@@ -58,202 +74,188 @@ use rocksdb;
 /// - `credential` - String access-key-id keys, Credential values (BlockBased)
 /// - `audit_log` - 12-byte AuditKey, total-order (BlockBased, no prefix extractor)
 pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
+    let cache = Cache::new_lru_cache(BLOCK_CACHE_BYTES);
+    tape_store_column_configs(&cache)
+        .into_iter()
+        .map(ColumnFamilyConfig::build)
+        .collect()
+}
+
+/// Every column family's shape, unbuilt, over one instance-wide cache
+///
+/// A caller opening these for something other than a node run overlays its own
+/// sizing with `with_options` before building them, which is how the bench arm
+/// gets a cache and a compaction budget fit for its box. The shapes themselves,
+/// prefix extractors and blob thresholds and which family sits on which volume,
+/// are what the node runs and are not a caller's to change.
+pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
     vec![
         // Meta - variable-size keys and values, infrequent access
         ColumnFamilyConfig::new("meta")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Tape - 32-byte Address keys, small TapeInfo values
         ColumnFamilyConfig::new("tape")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Track - 32-byte Address keys, PackedTrack values.
         // Total-order iteration is load-bearing (sizing, GC, spool scans);
         // no prefix extractor.
         ColumnFamilyConfig::new("track")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Track lookup - ordered by (tape, track_number, key)
         // 32-byte tape prefix for efficient per-tape scans
         ColumnFamilyConfig::new("track_lookup")
-            .with_block_based()
-            .with_prefix_extractor(32)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(32),
 
         // Track data - 32-byte Address keys, local payload values
         ColumnFamilyConfig::new("track_data")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Challenge sample set - 40-byte key, small chain-derived row
         // 8-byte group prefix so one group's set is a prefix scan
         ColumnFamilyConfig::new("track_sample")
-            .with_block_based()
-            .with_prefix_extractor(8)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(8),
 
         // Object info - 32-byte Address keys, ObjectInfo values
         ColumnFamilyConfig::new("object_info")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Object metadata - 32-byte Address keys, ObjectMetadata values
         ColumnFamilyConfig::new("object_metadata")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Object list - per-bucket S3 listing index ([bucket 32B][name var])
         // 32-byte bucket prefix for efficient per-bucket prefix scans
         ColumnFamilyConfig::new("object_list")
-            .with_block_based()
-            .with_prefix_extractor(32)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(32),
 
         // Sync cursor - singleton (empty key)
         ColumnFamilyConfig::new("sync_cursor")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // GC progress - String keys
         ColumnFamilyConfig::new("gc")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Spool status - 2-byte SpoolIndexKey
         ColumnFamilyConfig::new("spool_status")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Spool pending repair - 34-byte SliceKey
         // 2-byte spool prefix for iteration by spool
         ColumnFamilyConfig::new("spool_pending_repair")
-            .with_block_based()
-            .with_prefix_extractor(2)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(2),
 
         // Spool pending recovery - 34-byte SliceKey
         // 2-byte spool prefix for iteration by spool
         ColumnFamilyConfig::new("spool_pending_recovery")
-            .with_block_based()
-            .with_prefix_extractor(2)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(2),
 
         // Slice - 34-byte SliceKey, large (~1MB) values
         // 2-byte spool prefix for iteration by spool
         ColumnFamilyConfig::new("slice")
+            .with_block_based(cache)
             .with_blob_db(256 * 1024) // 256 KiB threshold
-            .with_prefix_extractor(2)
-            .build(),
+            .with_prefix_extractor(2),
 
         // Slice size - 34-byte SliceKey, 8-byte payload lengths
         // 2-byte spool prefix for iteration by spool
         // Never blob-backed: summing the index must not fault in slice payloads
         ColumnFamilyConfig::new("slice_size")
-            .with_block_based()
-            .with_prefix_extractor(2)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(2),
 
         // Slice sidecar - 34-byte SliceKey, sub-leaf tree nodes for challenges
         // 2-byte spool prefix for iteration by spool
         // Never blob-backed: the point of the sidecar is answering without a
         // slice read, which a blob indirection would put straight back
         ColumnFamilyConfig::new("slice_sidecar")
-            .with_block_based()
-            .with_prefix_extractor(2)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(2),
 
         // Challenge record - 34-byte key, small counters
         // 32-byte peer prefix so one node's spools are a single scan
         ColumnFamilyConfig::new("challenge_record")
-            .with_block_based()
-            .with_prefix_extractor(32)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(32),
 
         // Challenge rounds - 50-byte key, one byte per outcome
         // 32-byte peer prefix so one node's history is a single scan
         ColumnFamilyConfig::new("challenge_round")
-            .with_block_based()
-            .with_prefix_extractor(32)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(32),
 
         // Spool sync progress - 2-byte SpoolIndexKey
         ColumnFamilyConfig::new("spool_sync_cursor")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Event log - 20-byte EventLogKey (epoch 8B + slot 8B + seq 4B)
         // 8-byte epoch prefix for efficient per-epoch scanning and deletion
         ColumnFamilyConfig::new("event_log")
-            .with_block_based()
-            .with_prefix_extractor(8)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(8),
 
         // Vote signatures - prefix scans by (voting_epoch, kind, target_epoch, hash, group)
         ColumnFamilyConfig::new("vote_sig")
-            .with_block_based()
-            .with_prefix_extractor(64)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(64),
 
         // Snapshot artifacts - staged local slices indexed by (epoch, group, chunk)
         ColumnFamilyConfig::new("snapshot_artifact")
+            .with_block_based(cache)
             .with_blob_db(256 * 1024)
-            .with_prefix_extractor(16)
-            .build(),
+            .with_prefix_extractor(16),
 
         // Credential - S3 write credentials keyed by access key id (String).
         // Point lookups by access key id; total-order iteration for admin listing.
         ColumnFamilyConfig::new("credential")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Policy rules - ordered write-authorization ruleset ([priority 4B][id 8B]).
         ColumnFamilyConfig::new("policy_rule")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Auth state - singleton write-authorization control state (kill switch,
         // policy version, default-budget override). 0-byte key.
         ColumnFamilyConfig::new("auth_state")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Audit log - append-only authorize decisions ([timestamp 8B][seq 4B]).
         ColumnFamilyConfig::new("audit_log")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Ledger - per-principal accounting row keyed by 32-byte owner Address.
         ColumnFamilyConfig::new("ledger")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // Ledger reservations - outstanding budget holds
         // ([created_at 8B][principal 32B][seq 8B]).
         ColumnFamilyConfig::new("ledger_reservation")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // S3 multipart upload metadata keyed by upload id (String).
         ColumnFamilyConfig::new("s3_multipart_upload")
-            .with_block_based()
-            .build(),
+            .with_block_based(cache),
 
         // S3 multipart part metadata keyed by ([upload 32B][part_number 4B]).
         // 32-byte upload prefix for scoped per-upload scans; small values.
         ColumnFamilyConfig::new("s3_multipart_part")
-            .with_block_based()
-            .with_prefix_extractor(32)
-            .build(),
+            .with_block_based(cache)
+            .with_prefix_extractor(32),
 
         // S3 multipart part payloads keyed identically to their metadata; large
         // values held only until completion/abort.
         ColumnFamilyConfig::new("s3_multipart_part_data")
+            .with_block_based(cache)
             .with_blob_db(256 * 1024)
-            .with_prefix_extractor(32)
-            .build(),
+            .with_prefix_extractor(32),
     ]
 }
 
@@ -331,10 +333,11 @@ fn base_db_options() -> Options {
     options.create_missing_column_families(true);
 
     // Memory and write buffer tuning
-    // 64 MiB per write buffer, up to 4 buffers per CF
+    // 64 MiB per write buffer, up to 4 buffers per CF, bounded in total
     options.set_write_buffer_size(64 * 1024 * 1024);
     options.set_max_write_buffer_number(4);
     options.set_min_write_buffer_number_to_merge(2);
+    options.set_db_write_buffer_size(TOTAL_WRITE_BUFFER_BYTES);
 
     // Parallelism - scale with CPU count
     let cpus = std::thread::available_parallelism()

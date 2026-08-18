@@ -149,6 +149,15 @@ impl Store for MetaBulkStore {
         self.route(cf).count_prefix(cf, prefix)
     }
 
+    fn sweep(
+        &self,
+        cf: &str,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
+        self.route(cf).sweep(cf, from, limit)
+    }
+
     // The awaited calls cannot go through `route`, whose answer is a `dyn Store`
     // and so carries none of them. One family names one half, so the branch is
     // the same routing written out.

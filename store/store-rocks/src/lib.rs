@@ -26,15 +26,17 @@
 //! # Advanced Configuration
 //!
 //! ```no_run
-//! use store_rocks::{RocksStore, ColumnFamilyConfig};
+//! use store_rocks::{Cache, RocksStore, ColumnFamilyConfig};
 //! use rocksdb::Options;
 //!
 //! let mut db_opts = Options::default();
 //! db_opts.create_if_missing(true);
 //! db_opts.create_missing_column_families(true);
 //!
+//! // One cache shared by every column family on the instance.
+//! let cache = Cache::new_lru_cache(64 * 1024 * 1024);
 //! let cf_configs = vec![
-//!     ColumnFamilyConfig::new("fixed_keys").with_block_based().build(),
+//!     ColumnFamilyConfig::new("fixed_keys").with_block_based(&cache).build(),
 //!     ColumnFamilyConfig::new("large_blobs").with_blob_db(1024 * 1024).build(),
 //! ];
 //!
@@ -50,4 +52,4 @@ pub use rocks::RocksStore;
 pub use split::SplitStore;
 
 // Re-export commonly used RocksDB types for convenience
-pub use rocksdb::{ColumnFamilyDescriptor, Options};
+pub use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, Options};

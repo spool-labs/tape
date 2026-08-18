@@ -4,12 +4,18 @@
 //! synchronous cost of the delete call; actual space reclamation is deferred to
 //! compaction in both cases (range tombstone vs N point tombstones).
 //!
+//! Three arms, one store layout each: RocksDB's split meta/bulk layout, the
+//! public reel serving every family, and the layout a node would run the reel in,
+//! RocksDB metadata beside a reel holding the bulk families.
+//!
 //! Ignored by default. Run with:
-//!   cargo test -p tape-store --test slice_delete_bench -- --ignored --nocapture
+//!   cargo test -p tape-store --test slice_delete_bench --release -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 
-use store::{Column, Store};
+use reel_bridge::{scaled, BenchArm, MetaBulkStore, ReelBridge};
+use store::Column;
+use store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_store::columns::SliceCol;
@@ -26,31 +32,31 @@ const CASES: &[(usize, usize)] = &[
     (16 * 1024, 50_000),
 ];
 
-fn populate(store: &TapeStore<store_rocks::SplitStore>, spool: SpoolIndex, count: usize, size: usize) {
+fn populate<A: BenchArm>(store: &TapeStore<A>, spool: SpoolIndex, count: usize, size: usize) {
+    let data = vec![0xAB; size];
     for _ in 0..count {
         store
-            .put_slice(spool, Address::new_unique(), vec![0xAB; size])
+            .put_slice(spool, Address::new_unique(), data.clone())
             .unwrap();
     }
-    store.inner().inner().flush().unwrap();
+    A::settle(store);
 }
 
-#[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn range_tombstone_vs_per_key_delete() {
+fn sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
     let prefix = SliceKey::spool_prefix(spool);
 
     println!(
-        "{:>8}  {:>7}  {:>9}  {:>12}  {:>13}  {:>9}",
-        "size", "count", "total", "per-key del", "range tomb", "speedup"
+        "{:>7}  {:>8}  {:>7}  {:>9}  {:>12}  {:>13}  {:>9}",
+        "engine", "size", "count", "total", "per-key del", "range tomb", "speedup"
     );
 
     for &(size, count) in CASES {
+        let count = scaled(count);
         // Old path: scan the spool's keys, then delete each one.
         let old = {
             let dir = TempDir::new().unwrap();
-            let store = TapeStore::open_primary(dir.path().join("db")).unwrap();
+            let store = A::open_bench(&dir.path().join("db"));
             populate(&store, spool, count, size);
             let raw = store.inner().inner();
             let t = Instant::now();
@@ -70,7 +76,7 @@ fn range_tombstone_vs_per_key_delete() {
         // New path: a single range tombstone.
         let new = {
             let dir = TempDir::new().unwrap();
-            let store = TapeStore::open_primary(dir.path().join("db")).unwrap();
+            let store = A::open_bench(&dir.path().join("db"));
             populate(&store, spool, count, size);
             let t = Instant::now();
             store.delete_all_slices_for_spool(spool).unwrap();
@@ -82,10 +88,30 @@ fn range_tombstone_vs_per_key_delete() {
         let speedup = old.as_secs_f64() / new.as_secs_f64().max(f64::MIN_POSITIVE);
         let total_mib = (size * count) as f64 / (1024.0 * 1024.0);
         let size_label = format!("{} KiB", size / 1024);
+        let engine = A::NAME;
         println!(
-            "{size_label:>8}  {count:>7}  {total_mib:>7.1} MiB  {:>12.2?}  {:>13.2?}  {speedup:>8.0}x",
+            "{engine:>7}  {size_label:>8}  {count:>7}  {total_mib:>7.1} MiB  {:>12.2?}  \
+             {:>13.2?}  {speedup:>8.0}x",
             old, new,
         );
         let _ = Duration::from_secs(0);
     }
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn range_tombstone_vs_per_key_delete_rocks() {
+    sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn range_tombstone_vs_per_key_delete_reel() {
+    sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn range_tombstone_vs_per_key_delete_split() {
+    sweep::<MetaBulkStore>();
 }

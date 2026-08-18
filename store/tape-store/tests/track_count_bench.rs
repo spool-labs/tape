@@ -3,19 +3,26 @@
 //! over the BlockBased `track` CF. Both the node's and gateway's `/v1/stats`
 //! count tracks this way.
 //!
+//! Three arms. The rocks and split arms are the layout a node runs: `track` is a
+//! metadata family on the RocksDB meta volume, so those two rows should agree.
+//! The all-reel arm is a hypothetical, since the production reel serves bulk
+//! families only and never sees `track`; it says what a metadata scan would cost
+//! if it did.
+//!
 //! Ignored by default. Run with:
-//!   cargo test -p tape-store --test track_count_bench -- --ignored --nocapture
+//!   cargo test -p tape-store --test track_count_bench --release -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 
-use store::{Column, Direction, Store};
+use reel_bridge::{scaled, BenchArm, MetaBulkStore, ReelBridge};
+use store::{Column, Direction};
+use store_rocks::SplitStore;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{GroupIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_store::columns::TrackCol;
 use tape_store::ops::TrackOps;
-use tape_store::TapeStore;
 use tempfile::TempDir;
 
 const COUNTS: &[usize] = &[10_000, 50_000, 200_000];
@@ -44,19 +51,21 @@ fn best<F: FnMut() -> usize>(mut f: F, expect: usize) -> Duration {
     best
 }
 
-#[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_count() {
-    println!("{:>9}  {:>13}  {:>11}  {:>9}", "tracks", "value-reading", "keys-only", "speedup");
+fn sweep<A: BenchArm>() {
+    println!(
+        "{:>7}  {:>9}  {:>13}  {:>11}  {:>9}",
+        "engine", "tracks", "value-reading", "keys-only", "speedup"
+    );
 
     for &count in COUNTS {
+        let count = scaled(count);
         let dir = TempDir::new().unwrap();
-        let store = TapeStore::open_primary(dir.path().join("db")).unwrap();
+        let store = A::open_bench(&dir.path().join("db"));
         for _ in 0..count {
             store.put_track(Address::new_unique(), sample_track()).unwrap();
         }
+        A::settle(&store);
         let raw = store.inner().inner();
-        raw.flush().unwrap();
 
         let value_reading = best(
             || raw.iter_from(TrackCol::CF_NAME, &[], Direction::Asc).unwrap().count(),
@@ -68,6 +77,27 @@ fn keys_only_vs_value_reading_count() {
         );
 
         let speedup = value_reading.as_secs_f64() / keys_only.as_secs_f64().max(f64::MIN_POSITIVE);
-        println!("{count:>9}  {value_reading:>13.2?}  {keys_only:>11.2?}  {speedup:>8.1}x");
+        let engine = A::NAME;
+        println!(
+            "{engine:>7}  {count:>9}  {value_reading:>13.2?}  {keys_only:>11.2?}  {speedup:>8.1}x"
+        );
     }
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn keys_only_vs_value_reading_count_rocks() {
+    sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn keys_only_vs_value_reading_count_reel() {
+    sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn keys_only_vs_value_reading_count_split() {
+    sweep::<MetaBulkStore>();
 }

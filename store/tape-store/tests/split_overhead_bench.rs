@@ -1,7 +1,11 @@
-//! Split-store overhead benchmark: one RocksDB instance holding every column
-//! family vs the split meta/bulk layout on the same disk. Measures open time,
-//! bulk slice write and read throughput, and metadata operation latency on an
-//! idle store and while slice writes are in flight.
+//! Store layout benchmark: one RocksDB instance holding every column family, the
+//! split meta/bulk RocksDB layout on the same disk, the public reel serving every
+//! family, and RocksDB metadata beside a reel holding the bulk families. Measures
+//! open time, bulk slice write and read throughput, and metadata operation latency
+//! on an idle store and while slice writes are in flight.
+//!
+//! The last arm is the shape a node would run the reel in, so its metadata rows
+//! should track the split-rocks arm and only its slice rows should move.
 //!
 //! Ignored by default. Run with:
 //!   cargo test -p tape-store --test split_overhead_bench --release -- --ignored --nocapture
@@ -11,15 +15,15 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use reel_bridge::{
+    bench_cache, bench_db_options, bench_store_configs, scaled, BenchArm, MetaBulkStore, ReelBridge,
+};
 use store::Store;
 use store_rocks::{RocksStore, SplitStore};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
-use tape_store::config::{
-    create_db_options, create_tape_store_configs, DEFAULT_META_COMPACTION_MB_PER_SEC,
-};
 use tape_store::ops::{SliceOps, TrackOps};
 use tape_store::TapeStore;
 use tempfile::TempDir;
@@ -48,6 +52,18 @@ impl Flush for RocksStore {
 }
 
 impl Flush for SplitStore {
+    fn flush_store(&self) {
+        self.flush().unwrap();
+    }
+}
+
+impl Flush for ReelBridge {
+    fn flush_store(&self) {
+        self.flush().unwrap();
+    }
+}
+
+impl Flush for MetaBulkStore {
     fn flush_store(&self) {
         self.flush().unwrap();
     }
@@ -120,12 +136,14 @@ where
     S: Store + Flush + Send + Sync + 'static,
 {
     let store = Arc::new(store);
+    let idle_ops = scaled(IDLE_META_OPS);
+    let slice_count = scaled(SLICE_COUNT);
     println!("{label}  open {opened:?}");
 
     // Metadata latency with no other traffic.
-    let mut idle_put = Vec::with_capacity(IDLE_META_OPS);
-    let mut idle_get = Vec::with_capacity(IDLE_META_OPS);
-    for _ in 0..IDLE_META_OPS {
+    let mut idle_put = Vec::with_capacity(idle_ops);
+    let mut idle_get = Vec::with_capacity(idle_ops);
+    for _ in 0..idle_ops {
         sample_meta(&store, &mut idle_put, &mut idle_get);
         thread::sleep(META_PAUSE);
     }
@@ -134,22 +152,22 @@ where
 
     // Bulk write throughput, including the flush that makes the data durable.
     let spool = SpoolIndex(7);
-    let mut addresses = Vec::with_capacity(SLICE_COUNT);
+    let mut addresses = Vec::with_capacity(slice_count);
     let t = Instant::now();
-    for _ in 0..SLICE_COUNT {
+    for _ in 0..slice_count {
         let address = Address::new_unique();
         store.put_slice(spool, address, payload.to_vec()).unwrap();
         addresses.push(address);
     }
     store.inner().inner().flush_store();
-    println!("  slice write  {}", throughput(SLICE_COUNT, t.elapsed()));
+    println!("  slice write  {}", throughput(slice_count, t.elapsed()));
 
     // Bulk read-back throughput.
     let t = Instant::now();
     for address in &addresses {
         assert!(store.get_slice(spool, *address).unwrap().is_some());
     }
-    println!("  slice read   {}", throughput(SLICE_COUNT, t.elapsed()));
+    println!("  slice read   {}", throughput(slice_count, t.elapsed()));
 
     // Metadata latency while a background thread writes slices, the case where
     // a shared write-ahead log would queue small commits behind bulk data.
@@ -160,7 +178,7 @@ where
         let payload = payload.to_vec();
         thread::spawn(move || {
             let t = Instant::now();
-            for _ in 0..SLICE_COUNT {
+            for _ in 0..slice_count {
                 store
                     .put_slice(spool, Address::new_unique(), payload.clone())
                     .unwrap();
@@ -181,22 +199,23 @@ where
     let bulk = writer.join().unwrap();
     println!("  meta loaded  put {}", stats(put));
     println!("               get {}", stats(get));
-    println!("  loaded bulk  {}", throughput(SLICE_COUNT, bulk));
+    println!("  loaded bulk  {}", throughput(slice_count, bulk));
 }
 
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn single_instance_vs_split() {
+fn store_layout_overhead() {
     let payload = random_payload(SLICE_SIZE);
 
     {
         let dir = TempDir::new().unwrap();
         let t = Instant::now();
+        let cache = bench_cache();
         let store = TapeStore::new(
             RocksStore::open_with_cf_config(
                 dir.path().join("db"),
-                create_db_options(DEFAULT_META_COMPACTION_MB_PER_SEC),
-                create_tape_store_configs(),
+                bench_db_options(),
+                bench_store_configs(&cache),
             )
             .unwrap(),
         );
@@ -206,7 +225,21 @@ fn single_instance_vs_split() {
     {
         let dir = TempDir::new().unwrap();
         let t = Instant::now();
-        let store = TapeStore::open_primary(dir.path().join("db")).unwrap();
+        let store = SplitStore::open_bench(&dir.path().join("db"));
         run_arm("split-same-disk", store, t.elapsed(), &payload);
+    }
+
+    {
+        let dir = TempDir::new().unwrap();
+        let t = Instant::now();
+        let store = ReelBridge::open_bench(&dir.path().join("db"));
+        run_arm("reel-everything", store, t.elapsed(), &payload);
+    }
+
+    {
+        let dir = TempDir::new().unwrap();
+        let t = Instant::now();
+        let store = MetaBulkStore::open_bench(&dir.path().join("db"));
+        run_arm("rocks-meta-reel-bulk", store, t.elapsed(), &payload);
     }
 }

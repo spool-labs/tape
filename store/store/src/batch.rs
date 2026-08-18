@@ -78,6 +78,16 @@ impl WriteBatch {
     }
 }
 
+/// Consuming iteration that hands each staged payload over without a copy
+impl IntoIterator for WriteBatch {
+    type Item = BatchOp;
+    type IntoIter = std::vec::IntoIter<BatchOp>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ops.into_iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

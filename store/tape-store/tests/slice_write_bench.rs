@@ -10,12 +10,21 @@
 //! the index versus reading every blob back, which is what the stats handler
 //! used to do.
 //!
+//! Three arms, one store layout each: RocksDB's split meta/bulk layout, the
+//! public reel serving every family, and the layout a node would run the reel in,
+//! RocksDB metadata beside a reel holding the bulk families.
+//!
+//! The two columns a slice write touches are separate records on every arm, so
+//! the batch question is the same question on each.
+//!
 //! Ignored by default. Run with:
 //!   cargo test -p tape-store --test slice_write_bench --release -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 
-use store::{Column, Store};
+use reel_bridge::{scaled, BenchArm, MetaBulkStore, ReelBridge};
+use store::Column;
+use store_rocks::SplitStore;
 use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_crypto::address::Address;
 use tape_store::columns::{SliceCol, SliceSizeCol};
@@ -73,11 +82,11 @@ const VARIANTS: usize = 4;
 /// running first. Report the min, which is the least noisy estimator here.
 const ROUNDS: usize = 6;
 
-fn run_variant(variant: usize, spool: SpoolIndex, size: usize, count: usize) -> Duration {
+fn run_variant<A: BenchArm>(variant: usize, spool: SpoolIndex, size: usize, count: usize) -> Duration {
     // A private directory per variant per round: neighbours must not share a
     // page cache or a compaction backlog.
     let dir = TempDir::new().expect("tempdir");
-    let store = TapeStore::open_primary(dir.path().join("db")).expect("open primary");
+    let store = A::open_bench(&dir.path().join("db"));
 
     let elapsed = match variant {
         // Old path: one put into the slice column, no index.
@@ -117,26 +126,25 @@ fn run_variant(variant: usize, spool: SpoolIndex, size: usize, count: usize) -> 
     };
 
     // Settle the write before the next variant opens its store.
-    store.inner().inner().flush().expect("flush");
+    A::settle(&store);
     elapsed
 }
 
-#[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn index_write_overhead() {
+fn write_sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
 
     println!(
-        "{:>8}  {:>6}  {:>11}  {:>11}  {:>11}  {:>11}  {:>9}",
-        "size", "count", "single put", "batched", "two puts", "batch-only", "overhead"
+        "{:>7}  {:>8}  {:>6}  {:>11}  {:>11}  {:>11}  {:>11}  {:>9}",
+        "engine", "size", "count", "single put", "batched", "two puts", "batch-only", "overhead"
     );
 
     for &(size, count) in CASES {
+        let count = scaled(count);
         let mut best = [Duration::MAX; VARIANTS];
         for round in 0..ROUNDS {
             for offset in 0..VARIANTS {
                 let variant = (round + offset) % VARIANTS;
-                let elapsed = run_variant(variant, spool, size, count);
+                let elapsed = run_variant::<A>(variant, spool, size, count);
                 best[variant] = best[variant].min(elapsed);
             }
         }
@@ -144,7 +152,8 @@ fn index_write_overhead() {
         let overhead = best[1].as_secs_f64() / best[0].as_secs_f64().max(f64::MIN_POSITIVE);
         let per_op = |elapsed: Duration| elapsed / count as u32;
         println!(
-            "{:>8}  {count:>6}  {:>11.2?}  {:>11.2?}  {:>11.2?}  {:>11.2?}  {overhead:>8.2}x",
+            "{:>7}  {:>8}  {count:>6}  {:>11.2?}  {:>11.2?}  {:>11.2?}  {:>11.2?}  {overhead:>8.2}x",
+            A::NAME,
             size_label(size),
             per_op(best[0]),
             per_op(best[1]),
@@ -152,6 +161,24 @@ fn index_write_overhead() {
             per_op(best[3]),
         );
     }
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn index_write_overhead_rocks() {
+    write_sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn index_write_overhead_reel() {
+    write_sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn index_write_overhead_split() {
+    write_sweep::<MetaBulkStore>();
 }
 
 /// (slice size, count) for the delete sweep. Point-delete cost is dominated by
@@ -163,25 +190,31 @@ const DELETE_CASES: &[(usize, usize)] = &[
 ];
 
 /// Fill a fresh store and hand back the keys, so a delete pass can be timed alone.
-fn populate(
-    store: &TapeStore<store_rocks::SplitStore>,
+fn populate<A: BenchArm>(
+    store: &TapeStore<A>,
     spool: SpoolIndex,
     size: usize,
     count: usize,
 ) -> Vec<Address> {
+    let payload = vec![0xABu8; size];
     let mut addresses = Vec::with_capacity(count);
     for _ in 0..count {
         let address = Address::new_unique();
-        store.put_slice(spool, address, vec![0xABu8; size]).expect("put slice");
+        store.put_slice(spool, address, payload.clone()).expect("put slice");
         addresses.push(address);
     }
-    store.inner().inner().flush().expect("flush");
+    A::settle(store);
     addresses
 }
 
-fn run_delete_variant(variant: usize, spool: SpoolIndex, size: usize, count: usize) -> Duration {
+fn run_delete_variant<A: BenchArm>(
+    variant: usize,
+    spool: SpoolIndex,
+    size: usize,
+    count: usize,
+) -> Duration {
     let dir = TempDir::new().expect("tempdir");
-    let store = TapeStore::open_primary(dir.path().join("db")).expect("open primary");
+    let store = A::open_bench(&dir.path().join("db"));
     let addresses = populate(&store, spool, size, count);
 
     let mut total = Duration::ZERO;
@@ -209,29 +242,30 @@ fn run_delete_variant(variant: usize, spool: SpoolIndex, size: usize, count: usi
     total
 }
 
-#[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn index_delete_overhead() {
+fn delete_sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
 
     println!(
-        "{:>8}  {:>6}  {:>13}  {:>13}  {:>13}  {:>9}",
-        "size", "count", "single delete", "batched", "two deletes", "overhead"
+        "{:>7}  {:>8}  {:>6}  {:>13}  {:>13}  {:>13}  {:>9}",
+        "engine", "size", "count", "single delete", "batched", "two deletes", "overhead"
     );
 
     for &(size, count) in DELETE_CASES {
+        let count = scaled(count);
         let mut best = [Duration::MAX; 3];
         for round in 0..ROUNDS {
             for offset in 0..3 {
                 let variant = (round + offset) % 3;
-                best[variant] = best[variant].min(run_delete_variant(variant, spool, size, count));
+                best[variant] =
+                    best[variant].min(run_delete_variant::<A>(variant, spool, size, count));
             }
         }
 
         let overhead = best[1].as_secs_f64() / best[0].as_secs_f64().max(f64::MIN_POSITIVE);
         let per_op = |elapsed: Duration| elapsed / count as u32;
         println!(
-            "{:>8}  {count:>6}  {:>13.2?}  {:>13.2?}  {:>13.2?}  {overhead:>8.2}x",
+            "{:>7}  {:>8}  {count:>6}  {:>13.2?}  {:>13.2?}  {:>13.2?}  {overhead:>8.2}x",
+            A::NAME,
             size_label(size),
             per_op(best[0]),
             per_op(best[1]),
@@ -241,9 +275,14 @@ fn index_delete_overhead() {
 }
 
 /// Time one whole-spool delete against a freshly filled store.
-fn run_spool_delete(variant: usize, spool: SpoolIndex, size: usize, count: usize) -> Duration {
+fn run_spool_delete<A: BenchArm>(
+    variant: usize,
+    spool: SpoolIndex,
+    size: usize,
+    count: usize,
+) -> Duration {
     let dir = TempDir::new().expect("tempdir");
-    let store = TapeStore::open_primary(dir.path().join("db")).expect("open primary");
+    let store = A::open_bench(&dir.path().join("db"));
     populate(&store, spool, size, count);
 
     let start = Instant::now();
@@ -262,28 +301,29 @@ fn run_spool_delete(variant: usize, spool: SpoolIndex, size: usize, count: usize
     start.elapsed()
 }
 
-#[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn spool_delete_overhead() {
+fn spool_delete_sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
 
     println!(
-        "{:>8}  {:>6}  {:>14}  {:>15}  {:>9}",
-        "size", "count", "one tombstone", "two tombstones", "overhead"
+        "{:>7}  {:>8}  {:>6}  {:>14}  {:>15}  {:>9}",
+        "engine", "size", "count", "one tombstone", "two tombstones", "overhead"
     );
 
     for &(size, count) in DELETE_CASES {
+        let count = scaled(count);
         let mut best = [Duration::MAX; 2];
         for round in 0..ROUNDS {
             for offset in 0..2 {
                 let variant = (round + offset) % 2;
-                best[variant] = best[variant].min(run_spool_delete(variant, spool, size, count));
+                best[variant] =
+                    best[variant].min(run_spool_delete::<A>(variant, spool, size, count));
             }
         }
 
         let overhead = best[1].as_secs_f64() / best[0].as_secs_f64().max(f64::MIN_POSITIVE);
         println!(
-            "{:>8}  {count:>6}  {:>14.2?}  {:>15.2?}  {overhead:>8.2}x",
+            "{:>7}  {:>8}  {count:>6}  {:>14.2?}  {:>15.2?}  {overhead:>8.2}x",
+            A::NAME,
             size_label(size),
             best[0],
             best[1],
@@ -291,26 +331,61 @@ fn spool_delete_overhead() {
     }
 }
 
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn index_delete_overhead_rocks() {
+    delete_sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn index_delete_overhead_reel() {
+    delete_sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn index_delete_overhead_split() {
+    delete_sweep::<MetaBulkStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn spool_delete_overhead_rocks() {
+    spool_delete_sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn spool_delete_overhead_reel() {
+    spool_delete_sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn spool_delete_overhead_split() {
+    spool_delete_sweep::<MetaBulkStore>();
+}
+
 /// The max spool prefix has no exclusive successor, so it falls back to
 /// collecting keys and batch-deleting them. That path now stages two tombstones
 /// per slice instead of one.
-#[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn max_spool_fallback_delete() {
+fn max_spool_sweep<A: BenchArm>() {
     let spool = SpoolIndex(u16::MAX as u64);
 
     println!(
-        "{:>8}  {:>6}  {:>13}  {:>13}  {:>9}",
-        "size", "count", "one column", "two columns", "overhead"
+        "{:>7}  {:>8}  {:>6}  {:>13}  {:>13}  {:>9}",
+        "engine", "size", "count", "one column", "two columns", "overhead"
     );
 
     for &(size, count) in DELETE_CASES {
+        let count = scaled(count);
         let mut best = [Duration::MAX; 2];
         for round in 0..ROUNDS {
             for offset in 0..2 {
                 let variant = (round + offset) % 2;
                 let dir = TempDir::new().expect("tempdir");
-                let store = TapeStore::open_primary(dir.path().join("db")).expect("open primary");
+                let store = A::open_bench(&dir.path().join("db"));
                 populate(&store, spool, size, count);
                 let raw = store.inner().inner();
                 let (range_start, _) = SliceKey::spool_key_range(spool);
@@ -333,7 +408,8 @@ fn max_spool_fallback_delete() {
 
         let overhead = best[1].as_secs_f64() / best[0].as_secs_f64().max(f64::MIN_POSITIVE);
         println!(
-            "{:>8}  {count:>6}  {:>13.2?}  {:>13.2?}  {overhead:>8.2}x",
+            "{:>7}  {:>8}  {count:>6}  {:>13.2?}  {:>13.2?}  {overhead:>8.2}x",
+            A::NAME,
             size_label(size),
             best[0],
             best[1],
@@ -343,25 +419,43 @@ fn max_spool_fallback_delete() {
 
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn totals_read_speedup() {
+fn max_spool_fallback_delete_rocks() {
+    max_spool_sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn max_spool_fallback_delete_reel() {
+    max_spool_sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn max_spool_fallback_delete_split() {
+    max_spool_sweep::<MetaBulkStore>();
+}
+
+fn totals_sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
     let prefix = SliceKey::spool_prefix(spool);
 
     println!(
-        "{:>8}  {:>6}  {:>9}  {:>14}  {:>11}  {:>8}",
-        "size", "count", "total", "blob-reading", "size index", "speedup"
+        "{:>7}  {:>8}  {:>6}  {:>9}  {:>14}  {:>11}  {:>8}",
+        "engine", "size", "count", "total", "blob-reading", "size index", "speedup"
     );
 
     for &(size, count) in CASES {
+        let count = scaled(count);
         let dir = TempDir::new().expect("tempdir");
-        let store = TapeStore::open_primary(dir.path().join("db")).expect("open primary");
+        let store = A::open_bench(&dir.path().join("db"));
+        let payload = vec![0xABu8; size];
         for _ in 0..count {
             store
-                .put_slice(spool, Address::new_unique(), vec![0xAB; size])
+                .put_slice(spool, Address::new_unique(), payload.clone())
                 .expect("put slice");
         }
+        A::settle(&store);
         let raw = store.inner().inner();
-        raw.flush().expect("flush");
 
         // What the handler used to do: pull every payload back to sum lengths.
         let start = Instant::now();
@@ -382,8 +476,28 @@ fn totals_read_speedup() {
         let speedup = blob_reading.as_secs_f64() / size_index.as_secs_f64().max(f64::MIN_POSITIVE);
         let total_mib = (size * count) as f64 / (1024.0 * 1024.0);
         println!(
-            "{:>8}  {count:>6}  {total_mib:>7.1} MiB  {blob_reading:>14.2?}  {size_index:>11.2?}  {speedup:>7.1}x",
+            "{:>7}  {:>8}  {count:>6}  {total_mib:>7.1} MiB  {blob_reading:>14.2?}  \
+             {size_index:>11.2?}  {speedup:>7.1}x",
+            A::NAME,
             size_label(size),
         );
     }
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn totals_read_speedup_rocks() {
+    totals_sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn totals_read_speedup_reel() {
+    totals_sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn totals_read_speedup_split() {
+    totals_sweep::<MetaBulkStore>();
 }

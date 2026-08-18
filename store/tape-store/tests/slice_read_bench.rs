@@ -1,24 +1,47 @@
 //! Read-path microbenchmark: keys-only scan vs value-reading scan over the
-//! blob-backed `slice` column family, swept across slice sizes. This is what
+//! `slice` column family, swept across slice sizes. This is what
 //! `count_slices_by_spool` / `iter_slice_keys_by_spool` do under the hood, so it
-//! measures the win from `iter_keys_prefix` not materializing (and, for blobs,
-//! not dereferencing) values.
+//! measures the win from `iter_keys_prefix` not materializing (and, for a store
+//! that indirects large values, not dereferencing) them.
 //!
-//! Caches are warm (data was just written+flushed), so this reflects the
-//! memory-resident case; a node under memory pressure with on-disk blobs would
-//! see a larger gap on the value-reading path. Ignored by default. Run with:
-//!   cargo test -p tape-store --test slice_read_bench -- --ignored --nocapture
+//! Three arms, one store layout each: RocksDB's split meta/bulk layout, the
+//! public reel serving every family, and the layout a node would run the reel in,
+//! RocksDB metadata beside a reel holding the bulk families.
+//!
+//! Caches are warm on all three (data was just written and settled), so this
+//! reflects the memory-resident case; a node under memory pressure would see a
+//! larger gap on the value-reading path. Ignored by default. Run with:
+//!   cargo test -p tape-store --test slice_read_bench --release -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 
-use store::{Column, Store};
+use reel_bridge::{scaled, BenchArm, MetaBulkStore, ReelBridge};
+use store::Column;
+use store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_store::columns::SliceCol;
 use tape_store::ops::SliceOps;
 use tape_store::types::SliceKey;
-use tape_store::TapeStore;
 use tempfile::TempDir;
+
+/// An incompressible payload, so a value-reading scan is charged for the bytes
+///
+/// A repeating fill compresses away and the arm that compresses then reads a
+/// fraction of what the other one does, which measures the codec rather than the
+/// scan.
+fn payload(size: usize) -> Vec<u8> {
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut out = Vec::with_capacity(size + 8);
+    while out.len() < size {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        out.extend_from_slice(&state.to_le_bytes());
+    }
+    out.truncate(size);
+    out
+}
 
 /// (slice size in bytes, number of slices). The 256 KiB threshold splits inline
 /// (SST) values from blob-file values. These model *fat spools* — tens of
@@ -45,28 +68,28 @@ fn best<F: FnMut() -> usize>(mut scan: F, expect: usize, rounds: u32) -> Duratio
     best
 }
 
-#[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_scan() {
+fn sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
     let prefix = SliceKey::spool_prefix(spool);
 
     println!(
-        "{:>8}  {:>6}  {:>9}  {:>13}  {:>11}  {:>8}  {:>11}",
-        "size", "count", "total", "value-reading", "keys-only", "speedup", "saved/scan"
+        "{:>7}  {:>8}  {:>6}  {:>9}  {:>13}  {:>11}  {:>8}  {:>11}",
+        "engine", "size", "count", "total", "value-reading", "keys-only", "speedup", "saved/scan"
     );
 
     for &(size, count) in CASES {
+        let count = scaled(count);
         // Fresh store per case so earlier cases don't pollute caches/compaction.
         let dir = TempDir::new().unwrap();
-        let store = TapeStore::open_primary(dir.path().join("db")).unwrap();
+        let store = A::open_bench(&dir.path().join("db"));
+        let data = payload(size);
         for _ in 0..count {
             store
-                .put_slice(spool, Address::new_unique(), vec![0xAB; size])
+                .put_slice(spool, Address::new_unique(), data.clone())
                 .unwrap();
         }
+        A::settle(&store);
         let raw = store.inner().inner();
-        raw.flush().unwrap();
 
         let value_reading = best(
             || raw.iter_prefix(SliceCol::CF_NAME, &prefix).unwrap().count(),
@@ -87,8 +110,28 @@ fn keys_only_vs_value_reading_scan() {
         } else {
             format!("{} KiB", size / 1024)
         };
+        let engine = A::NAME;
         println!(
-            "{size_label:>8}  {count:>6}  {total_mib:>7.1} MiB  {value_reading:>13.2?}  {keys_only:>11.2?}  {speedup:>7.1}x  {saved:>11.2?}",
+            "{engine:>7}  {size_label:>8}  {count:>6}  {total_mib:>7.1} MiB  \
+             {value_reading:>13.2?}  {keys_only:>11.2?}  {speedup:>7.1}x  {saved:>11.2?}",
         );
     }
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn keys_only_vs_value_reading_scan_rocks() {
+    sweep::<SplitStore>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn keys_only_vs_value_reading_scan_reel() {
+    sweep::<ReelBridge>();
+}
+
+#[test]
+#[ignore = "performance benchmark; run with --ignored --nocapture"]
+fn keys_only_vs_value_reading_scan_split() {
+    sweep::<MetaBulkStore>();
 }

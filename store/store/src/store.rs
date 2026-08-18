@@ -189,6 +189,36 @@ pub trait Store: Send + Sync {
         Ok(self.iter_prefix(cf, prefix)?.map(|(k, _)| k).collect())
     }
 
+    /// One page of a column family, resumable by an opaque mark.
+    ///
+    /// Promises only that a full sweep hands out every live key at least once,
+    /// in whatever order the backend keeps. `None` back means the family is
+    /// done. The default walks in key order and marks with the last key handed
+    /// out; a backend whose keys have no order overrides it and marks in its own
+    /// terms. A mark is the backend's to read: hand back whatever the last page
+    /// answered and nothing else.
+    fn sweep(
+        &self,
+        cf: &str,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<KeyValue>, Option<Vec<u8>>)> {
+        let start = from.unwrap_or(&[]);
+        let mut rows = Vec::with_capacity(limit);
+        let mut next = None;
+        for (key, value) in self.iter_from(cf, start, Direction::Asc)? {
+            if from.is_some_and(|mark| key.as_slice() == mark) {
+                continue;
+            }
+            if rows.len() == limit {
+                next = Some(key);
+                break;
+            }
+            rows.push((key, value));
+        }
+        Ok((rows, next))
+    }
+
     /// Exact count of the keys under `prefix`, WITHOUT materializing them.
     ///
     /// The default collects the keys and takes the length; backends override to

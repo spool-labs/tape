@@ -3,7 +3,7 @@
 //! This module provides a builder-pattern API for configuring RocksDB column families
 //! with different table types and options optimized for different workloads.
 
-use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, Options, SliceTransform};
+use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTransform};
 
 /// Configuration builder for RocksDB column families
 ///
@@ -22,7 +22,7 @@ use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, Options, SliceTransform
 /// # Examples
 ///
 /// ```
-/// use store_rocks::ColumnFamilyConfig;
+/// use store_rocks::{Cache, ColumnFamilyConfig};
 ///
 /// // Large values with BlobDB
 /// let config = ColumnFamilyConfig::new("blobs")
@@ -31,8 +31,9 @@ use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, Options, SliceTransform
 ///     .build();
 ///
 /// // Structured data with bloom filters
+/// let cache = Cache::new_lru_cache(64 * 1024 * 1024);
 /// let config = ColumnFamilyConfig::new("metadata")
-///     .with_block_based()
+///     .with_block_based(&cache)
 ///     .build();
 /// ```
 pub struct ColumnFamilyConfig {
@@ -72,6 +73,10 @@ impl ColumnFamilyConfig {
     /// data, large values, and range scans. Includes bloom filters for faster lookups
     /// and caches index/filter blocks in memory.
     ///
+    /// Every column family must be handed the same `cache` as its siblings on the
+    /// instance. RocksDB gives a table factory its own 32 MiB cache when none is
+    /// set, so per-family caches would put no bound at all on the instance's total.
+    ///
     /// # Configuration
     /// - `block_size: 16 KiB`: Size of data blocks
     /// - `bloom_filter(10.0, false)`: 10 bits per key bloom filter
@@ -80,17 +85,19 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::ColumnFamilyConfig;
+    /// use store_rocks::{Cache, ColumnFamilyConfig};
     ///
+    /// let cache = Cache::new_lru_cache(64 * 1024 * 1024);
     /// let config = ColumnFamilyConfig::new("metadata")
-    ///     .with_block_based()
+    ///     .with_block_based(&cache)
     ///     .build();
     /// ```
-    pub fn with_block_based(mut self) -> Self {
+    pub fn with_block_based(mut self, cache: &Cache) -> Self {
         let mut block_opts = BlockBasedOptions::default();
         block_opts.set_block_size(16 * 1024); // 16 KiB
         block_opts.set_bloom_filter(10.0, false);
         block_opts.set_cache_index_and_filter_blocks(true);
+        block_opts.set_block_cache(cache);
 
         self.options.set_block_based_table_factory(&block_opts);
         self.options.set_level_compaction_dynamic_level_bytes(true);
@@ -194,10 +201,11 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::ColumnFamilyConfig;
+    /// use store_rocks::{Cache, ColumnFamilyConfig};
     ///
+    /// let cache = Cache::new_lru_cache(64 * 1024 * 1024);
     /// let descriptor = ColumnFamilyConfig::new("my_column")
-    ///     .with_block_based()
+    ///     .with_block_based(&cache)
     ///     .build();
     /// ```
     pub fn build(self) -> ColumnFamilyDescriptor {
@@ -225,7 +233,8 @@ mod tests {
 
     #[test]
     fn test_block_based_config() {
-        let config = ColumnFamilyConfig::new("structured").with_block_based();
+        let cache = Cache::new_lru_cache(8 * 1024 * 1024);
+        let config = ColumnFamilyConfig::new("structured").with_block_based(&cache);
         let descriptor = config.build();
         assert_eq!(descriptor.name(), "structured");
     }
@@ -246,8 +255,9 @@ mod tests {
 
     #[test]
     fn test_chained_config() {
+        let cache = Cache::new_lru_cache(8 * 1024 * 1024);
         let config = ColumnFamilyConfig::new("complex")
-            .with_block_based()
+            .with_block_based(&cache)
             .with_blob_db(2 * 1024 * 1024)
             .with_prefix_extractor(16);
 

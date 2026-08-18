@@ -1085,9 +1085,10 @@ mod tests {
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
 
+        let cache = crate::Cache::new_lru_cache(8 * 1024 * 1024);
         let cf_configs = vec![
             ColumnFamilyConfig::new("prefixed")
-                .with_block_based()
+                .with_block_based(&cache)
                 .with_prefix_extractor(2)
                 .build(),
         ];
@@ -1196,9 +1197,10 @@ mod tests {
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
 
+        let cache = crate::Cache::new_lru_cache(8 * 1024 * 1024);
         let cf_configs = vec![
-            ColumnFamilyConfig::new("fixed").with_block_based().build(),
-            ColumnFamilyConfig::new("block").with_block_based().build(),
+            ColumnFamilyConfig::new("fixed").with_block_based(&cache).build(),
+            ColumnFamilyConfig::new("block").with_block_based(&cache).build(),
         ];
 
         let store = RocksStore::open_with_cf_config(dir.path(), db_opts, cf_configs).unwrap();
@@ -1427,6 +1429,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let path = dir.path().to_path_buf();
+        let cache = crate::Cache::new_lru_cache(8 * 1024 * 1024);
 
         // Create database with custom config
         {
@@ -1435,7 +1438,7 @@ mod tests {
             db_opts.create_missing_column_families(true);
 
             let cf_configs = vec![
-                ColumnFamilyConfig::new("fixed").with_block_based().build(),
+                ColumnFamilyConfig::new("fixed").with_block_based(&cache).build(),
             ];
 
             let store = RocksStore::open_with_cf_config(&path, db_opts, cf_configs).unwrap();
@@ -1447,7 +1450,7 @@ mod tests {
         {
             let db_opts = Options::default();
             let cf_configs = vec![
-                ColumnFamilyConfig::new("fixed").with_block_based().build(),
+                ColumnFamilyConfig::new("fixed").with_block_based(&cache).build(),
             ];
 
             let ro_store = RocksStore::open_read_only_with_cf_config(&path, db_opts, cf_configs).unwrap();
@@ -1465,6 +1468,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let primary_path = dir.path().join("primary");
         let secondary_path = dir.path().join("secondary");
+        let cache = crate::Cache::new_lru_cache(8 * 1024 * 1024);
 
         // Create primary with custom config
         {
@@ -1473,7 +1477,7 @@ mod tests {
             db_opts.create_missing_column_families(true);
 
             let cf_configs = vec![
-                ColumnFamilyConfig::new("block").with_block_based().build(),
+                ColumnFamilyConfig::new("block").with_block_based(&cache).build(),
             ];
 
             let primary = RocksStore::open_with_cf_config(&primary_path, db_opts, cf_configs).unwrap();
@@ -1488,7 +1492,7 @@ mod tests {
             db_opts.create_missing_column_families(true);
 
             let cf_configs = vec![
-                ColumnFamilyConfig::new("block").with_block_based().build(),
+                ColumnFamilyConfig::new("block").with_block_based(&cache).build(),
             ];
 
             let secondary = RocksStore::open_secondary_with_cf_config(

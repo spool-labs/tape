@@ -159,3 +159,48 @@ fn awaited_writes() {
         Some(payload(2)),
     );
 }
+
+/// Every key a sweep hands out, paged until the mark comes back empty
+fn swept(store: &impl Store, cf: &str, page: usize) -> Vec<Vec<u8>> {
+    let mut seen = Vec::new();
+    let mut mark: Option<Vec<u8>> = None;
+    loop {
+        let (rows, next) = store.sweep(cf, mark.as_deref(), page).expect("sweep");
+        for (key, _) in rows {
+            seen.push(key);
+        }
+        match next {
+            Some(next) => mark = Some(next),
+            None => return seen,
+        }
+    }
+}
+
+// a sweep covers the family whatever page it is asked for, on either backend
+#[test]
+fn sweep_covers() {
+    let dir = TempDir::new().expect("dir");
+    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let keys = fill(&store, BULK_CF, bulk_key);
+
+    for page in [1usize, 7, RECORDS * 2] {
+        let mut seen = swept(&store, BULK_CF, page);
+        seen.sort();
+        let mut wrote = keys.clone();
+        wrote.sort();
+        assert_eq!(seen, wrote, "page {page} lost or repeated keys");
+    }
+}
+
+// a mark from nowhere starts the sweep over rather than answering nonsense
+#[test]
+fn sweep_refuses_foreign() {
+    let dir = TempDir::new().expect("dir");
+    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES)).expect("open");
+    let keys = fill(&store, BULK_CF, bulk_key);
+
+    let (rows, _) = store
+        .sweep(BULK_CF, Some(b"not a mark this store minted"), RECORDS * 2)
+        .expect("sweep");
+    assert_eq!(rows.len(), keys.len(), "a foreign mark should start over");
+}

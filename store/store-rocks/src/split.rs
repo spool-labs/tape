@@ -243,9 +243,10 @@ mod tests {
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
+        let cache = crate::Cache::new_lru_cache(8 * 1024 * 1024);
         let cf_configs = cfs
             .iter()
-            .map(|name| ColumnFamilyConfig::new(*name).with_block_based().build())
+            .map(|name| ColumnFamilyConfig::new(*name).with_block_based(&cache).build())
             .collect();
         RocksStore::open_with_cf_config(dir, db_opts, cf_configs).unwrap()
     }
