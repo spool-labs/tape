@@ -163,10 +163,6 @@ impl Store for SplitStore {
         self.route(cf).iter_keys_prefix(cf, prefix)
     }
 
-    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>> {
-        self.route(cf).bytes_prefix(cf, prefix)
-    }
-
     fn iter_from(&self, cf: &str, start: &[u8], direction: Direction) -> Result<StoreIter<'_>> {
         self.route(cf).iter_from(cf, start, direction)
     }

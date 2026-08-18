@@ -1532,16 +1532,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
-name = "crc-fast"
-version = "1.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e75b2483e97a5a7da73ac68a05b629f9c53cff58d8ed1c77866079e18b00dba5"
-dependencies = [
- "digest 0.10.7",
- "spin",
-]
-
-[[package]]
 name = "crc32c"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3124,21 +3114,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "generator"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3b854b0e584ead1a33f18b2fcad7cf7be18b3875c78816b753639aa501513ae"
-dependencies = [
- "cc",
- "cfg-if",
- "libc",
- "log",
- "rustversion",
- "windows-link",
- "windows-result",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3854,17 +3829,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-uring"
-version = "0.7.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d64d8ca234d152948ceaede1f419b6a83983a5ecccaac05fb337a809c96d3aa6"
-dependencies = [
- "bitflags 2.11.0",
- "cfg-if",
- "libc",
-]
-
-[[package]]
 name = "ipconfig"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4418,19 +4382,6 @@ name = "longest-increasing-subsequence"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3bd0dd2cd90571056fdb71f6275fada10131182f84899f4b2a916e565d81d86"
-
-[[package]]
-name = "loom"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
-dependencies = [
- "cfg-if",
- "generator",
- "scoped-tls",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "lru"
@@ -5882,44 +5833,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reel"
-version = "0.1.0"
-dependencies = [
- "crc-fast",
- "io-uring",
- "libc",
- "loom",
- "lz4_flex",
- "reel-core",
- "serde",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "reel-bridge"
-version = "0.4.0"
-dependencies = [
- "libc",
- "reel",
- "reel-core",
- "store",
- "store-rocks",
- "tape-core",
- "tape-crypto",
- "tape-store",
- "tempfile",
-]
-
-[[package]]
-name = "reel-core"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.18",
- "wincode 0.1.2",
-]
-
-[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6404,12 +6317,6 @@ checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
 dependencies = [
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "scoped-tls"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
 name = "scopeguard"
@@ -9167,12 +9074,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spin"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
-
-[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9496,7 +9397,6 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "store"
 version = "0.4.0"
 dependencies = [
- "reel-core",
  "serde",
  "store-memory",
  "tape-metrics",
@@ -9893,25 +9793,6 @@ dependencies = [
  "thiserror 2.0.18",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
-]
-
-[[package]]
-name = "tape-cue"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "clap",
- "reel",
- "reel-bridge",
- "serde",
- "serde_json",
- "store",
- "store-rocks",
- "tape-core",
- "tape-crypto",
- "tape-slicer",
- "tape-store",
- "tempfile",
 ]
 
 [[package]]
@@ -10411,8 +10292,6 @@ name = "tape-store"
 version = "0.4.0"
 dependencies = [
  "bytemuck",
- "lz4_flex",
- "reel-bridge",
  "rocksdb",
  "serde",
  "store",
@@ -10425,6 +10304,23 @@ dependencies = [
  "thiserror 2.0.18",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
+]
+
+[[package]]
+name = "tape-store-cli"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "store",
+ "store-rocks",
+ "tape-core",
+ "tape-crypto",
+ "tape-slicer",
+ "tape-store",
+ "tempfile",
 ]
 
 [[package]]

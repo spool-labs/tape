@@ -259,15 +259,6 @@ pub trait Store: Send + Sync {
         Ok(self.iter_keys_prefix(cf, prefix)?.len() as u64)
     }
 
-    /// Stored value bytes under `prefix`, WITHOUT reading any of them.
-    ///
-    /// The byte twin of `count_prefix`, and stored bytes rather than anything the
-    /// caller put in: whatever the backend holds under those keys, its own framing
-    /// included or not as it accounts for it. Nothing comes back from a backend
-    /// that could only answer by reading the payloads. Has no default, so a
-    /// delegating store cannot inherit a no-answer silently.
-    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>>;
-
     /// Iterate from the start key (inclusive) in the specified direction.
     fn iter_from(&self, cf: &str, start: &[u8], direction: Direction) -> Result<StoreIter<'_>>;
 
