@@ -1,0 +1,31 @@
+host=reel-simd-t5 2026-08-18T11:43:23Z
+=== inline 0: a pread per key ===
+119:    shaped(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1), // track_data
+inline0    reel      50000        1      104.49ms        2.09µs
+inline0    reel      50000       64       19.97ms      399.00ns
+inline0    reel      50000      512       18.85ms      377.00ns
+inline0    reel     200000        1      120.16ms        2.40µs
+inline0    reel     200000       64       25.38ms      507.00ns
+inline0    reel     200000      512       23.86ms      477.00ns
+inline0   rocks      50000        1       68.87ms        1.38µs
+inline0   rocks      50000       64       67.93ms        1.36µs
+inline0   rocks      50000      512       68.32ms        1.37µs
+inline0   rocks     200000        1       72.57ms        1.45µs
+inline0   rocks     200000       64       72.19ms        1.44µs
+inline0   rocks     200000      512       71.49ms        1.43µs
+
+=== inline 200: the value lives in the index ===
+119:    inlined(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1, 200), // track_data
+inline200    reel      50000        1      116.27ms        2.32µs
+inline200    reel      50000       64       26.60ms      531.00ns
+inline200    reel      50000      512       25.32ms      506.00ns
+inline200    reel     200000        1      140.27ms        2.80µs
+inline200    reel     200000       64       35.98ms      719.00ns
+inline200    reel     200000      512       34.60ms      691.00ns
+inline200   rocks      50000        1       67.42ms        1.35µs
+inline200   rocks      50000       64       66.76ms        1.34µs
+inline200   rocks      50000      512       66.78ms        1.34µs
+inline200   rocks     200000        1       72.60ms        1.45µs
+inline200   rocks     200000       64       71.61ms        1.43µs
+inline200   rocks     200000      512       71.15ms        1.42µs
+restored=1

@@ -1,0 +1,105 @@
+host=reel-simd-t5 cores=8 ram_gb=31 2026-08-18T09:40:22Z
+toolchain=cargo 1.97.1 (c980f4866 2026-06-30)
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling zerocopy v0.8.56
+   Compiling crossbeam-utils v0.8.22
+   Compiling serde v1.0.229
+   Compiling crossbeam-epoch v0.9.20
+   Compiling version_check v0.9.5
+   Compiling thiserror v2.0.20
+   Compiling once_cell v1.21.4
+   Compiling crossbeam-deque v0.8.7
+   Compiling typenum v1.20.1
+   Compiling autocfg v1.5.1
+   Compiling generic-array v0.14.7
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling either v1.17.0
+   Compiling bitflags v2.13.1
+   Compiling num-traits v0.2.19
+   Compiling syn v3.0.3
+   Compiling syn v2.0.119
+   Compiling wincode v0.1.2
+   Compiling rayon-core v1.13.0
+   Compiling getrandom v0.2.17
+   Compiling rustix v1.1.4
+   Compiling ciborium-io v0.2.2
+   Compiling io-uring v0.7.14
+   Compiling rand_core v0.6.4
+   Compiling plotters-backend v0.3.7
+   Compiling getrandom v0.4.3
+   Compiling crypto-common v0.1.7
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling regex-syntax v0.8.11
+   Compiling anstyle v1.0.14
+   Compiling clap_lex v1.1.0
+   Compiling plotters-svg v0.3.7
+   Compiling digest v0.10.7
+   Compiling clap_builder v4.6.6
+   Compiling itertools v0.10.5
+   Compiling regex-automata v0.4.18
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling tracing-core v0.1.36
+   Compiling spin v0.10.1
+   Compiling zerocopy-derive v0.8.56
+   Compiling tracing-attributes v0.1.31
+   Compiling same-file v1.0.6
+   Compiling linux-raw-sys v0.12.1
+   Compiling reel-core v0.1.0 (/home/k22/reel/crates/reel-core)
+   Compiling pin-project-lite v0.2.17
+   Compiling saa v5.6.0
+   Compiling cast v0.3.0
+   Compiling criterion-plot v0.5.0
+   Compiling sdd v4.8.8
+   Compiling tracing v0.1.44
+   Compiling ftree v1.3.0
+   Compiling tinytemplate v1.2.1
+   Compiling walkdir v2.5.0
+   Compiling crc-fast v1.10.0
+   Compiling regex v1.13.1
+   Compiling clap v4.6.6
+   Compiling plotters v0.3.7
+   Compiling rayon v1.12.0
+   Compiling is-terminal v0.4.17
+   Compiling anes v0.1.6
+   Compiling fastrand v2.5.0
+   Compiling oorandom v11.1.5
+   Compiling lz4_flex v0.11.6
+   Compiling tempfile v3.27.0
+   Compiling scc v3.8.6
+   Compiling indexset v0.16.0
+   Compiling reel-mock v0.1.0 (/home/k22/reel/crates/reel-mock)
+   Compiling crossbeam-skiplist v0.1.3
+   Compiling rustc-hash v2.1.3
+   Compiling xxhash-rust v0.8.18
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling foldhash v0.2.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand_chacha v0.3.1
+   Compiling ciborium v0.2.2
+   Compiling rand v0.8.7
+   Compiling criterion v0.5.1
+   Compiling reel v0.1.0 (/home/k22/reel/crates/reel)
+    Finished `release` profile [optimized] target(s) in 37.57s
+     Running tests/index_shape.rs (target/release/deps/index_shape-e204e2ab7f7f8db1)
+
+running 1 test
+value is the engine's Entry, 24 bytes
+     keys       load   tbtree B    get ns    btree B    get ns     hash B    get ns     open B    get ns
+   262144      grown      130.6     125.1       85.9     207.6      114.0      26.6       97.2      33.4
+   262144  installed       65.3     100.8       58.2     186.9      114.0      24.2       65.1      22.9
+  1048576      grown      130.6     258.8       85.8     341.3      114.0      32.5       82.0      45.0
+  1048576  installed       65.3     220.3       58.2     301.9      114.0      32.1       65.1      44.5
+test key_footprint ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 3.55s
+
+exit=0

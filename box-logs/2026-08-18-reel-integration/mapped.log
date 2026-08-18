@@ -1,0 +1,54 @@
+warning: function `carried` is never used
+  --> store/reel-bridge/src/columns.rs:72:10
+   |
+72 | const fn carried(id: u8, name: &'static str, width: u16, shard_bytes: u8, carry: u16) -> ColumnSpec {
+   |          ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `inlined` is never used
+  --> store/reel-bridge/src/columns.rs:91:10
+   |
+91 | const fn inlined(id: u8, name: &'static str, width: u16, shard_bytes: u8, inline: u16) -> ColumnSpec {
+   |          ^^^^^^^
+
+warning: `reel-bridge` (lib) generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 0.28s
+     Running tests/track_data_read_bench.rs (target/release/deps/track_data_read_bench-3f119eee162f8dac)
+
+running 2 tests
+test track_data_point_reads_reel ...  engine     fill       rows    batch         total      per read         live        files   (warm)
+bench_config segment=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+   reel   random      50000        1       23.42ms      468.00ns       6.7 MiB      42.0 MiB
+   reel   random      50000       64       20.91ms      418.00ns       6.7 MiB      42.0 MiB
+   reel   random      50000      512       19.82ms      396.00ns       6.7 MiB      42.0 MiB
+bench_config segment=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+   reel   random     200000        1       32.06ms      641.00ns      26.7 MiB      77.1 MiB
+   reel   random     200000       64       24.91ms      498.00ns      26.7 MiB      77.1 MiB
+   reel   random     200000      512       24.23ms      484.00ns      26.7 MiB      77.1 MiB
+bench_config segment=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+   reel   packed      50000        1       21.99ms      439.00ns       6.7 MiB      42.0 MiB
+   reel   packed      50000       64       21.61ms      432.00ns       6.7 MiB      42.0 MiB
+   reel   packed      50000      512       19.86ms      397.00ns       6.7 MiB      42.0 MiB
+bench_config segment=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+   reel   packed     200000        1       32.30ms      646.00ns      26.7 MiB      77.1 MiB
+   reel   packed     200000       64       25.16ms      503.00ns      26.7 MiB      77.1 MiB
+   reel   packed     200000      512       24.06ms      481.00ns      26.7 MiB      77.1 MiB
+ok
+test track_data_point_reads_rocks ...  engine     fill       rows    batch         total      per read         live        files   (warm)
+  rocks   random      50000        1       63.06ms        1.26µs       8.7 MiB       9.1 MiB
+  rocks   random      50000       64       66.64ms        1.33µs       8.7 MiB       9.1 MiB
+  rocks   random      50000      512       66.51ms        1.33µs       8.7 MiB       9.1 MiB
+  rocks   random     200000        1       66.58ms        1.33µs      34.9 MiB      35.2 MiB
+  rocks   random     200000       64       70.17ms        1.40µs      34.9 MiB      35.2 MiB
+  rocks   random     200000      512       70.16ms        1.40µs      34.9 MiB      35.2 MiB
+  rocks   packed      50000        1       62.96ms        1.26µs       8.7 MiB       9.1 MiB
+  rocks   packed      50000       64       66.86ms        1.34µs       8.7 MiB       9.1 MiB
+  rocks   packed      50000      512       66.77ms        1.34µs       8.7 MiB       9.1 MiB
+  rocks   packed     200000        1       67.08ms        1.34µs      34.9 MiB      35.2 MiB
+  rocks   packed     200000       64       70.40ms        1.41µs      34.9 MiB      35.2 MiB
+  rocks   packed     200000      512       70.69ms        1.41µs      34.9 MiB      35.2 MiB
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.70s
+

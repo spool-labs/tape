@@ -1,0 +1,52 @@
+   Compiling reel-bridge v0.4.0 (/home/k22/tape/store/reel-bridge)
+warning: function `carried` is never used
+  --> store/reel-bridge/src/columns.rs:72:10
+   |
+72 | const fn carried(id: u8, name: &'static str, width: u16, shard_bytes: u8, carry: u16) -> ColumnSpec {
+   |          ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `inlined` is never used
+  --> store/reel-bridge/src/columns.rs:91:10
+   |
+91 | const fn inlined(id: u8, name: &'static str, width: u16, shard_bytes: u8, inline: u16) -> ColumnSpec {
+   |          ^^^^^^^
+
+warning: `reel-bridge` (lib) generated 2 warnings
+   Compiling tape-store v0.4.0 (/home/k22/tape/store/tape-store)
+    Finished `release` profile [optimized] target(s) in 2.08s
+     Running tests/track_data_read_bench.rs (target/release/deps/track_data_read_bench-3f119eee162f8dac)
+
+running 2 tests
+test track_data_point_reads_reel ...  engine     fill       rows    batch         total      per read         live        files   (warm)
+   reel   random      50000        1      104.37ms        2.09µs       6.7 MiB      42.0 MiB
+   reel   random      50000       64       19.93ms      398.00ns       6.7 MiB      42.0 MiB
+   reel   random      50000      512       18.79ms      375.00ns       6.7 MiB      42.0 MiB
+   reel   random     200000        1      120.38ms        2.41µs      26.7 MiB      77.1 MiB
+   reel   random     200000       64       23.86ms      477.00ns      26.7 MiB      77.1 MiB
+   reel   random     200000      512       22.76ms      455.00ns      26.7 MiB      77.1 MiB
+   reel   packed      50000        1      106.56ms        2.13µs       6.7 MiB      42.0 MiB
+   reel   packed      50000       64       20.85ms      416.00ns       6.7 MiB      42.0 MiB
+   reel   packed      50000      512       19.90ms      397.00ns       6.7 MiB      42.0 MiB
+   reel   packed     200000        1      119.25ms        2.38µs      26.7 MiB      77.1 MiB
+   reel   packed     200000       64       24.26ms      485.00ns      26.7 MiB      77.1 MiB
+   reel   packed     200000      512       23.38ms      467.00ns      26.7 MiB      77.1 MiB
+ok
+test track_data_point_reads_rocks ...  engine     fill       rows    batch         total      per read         live        files   (warm)
+  rocks   random      50000        1       67.41ms        1.35µs       8.7 MiB       9.1 MiB
+  rocks   random      50000       64       67.32ms        1.35µs       8.7 MiB       9.1 MiB
+  rocks   random      50000      512       67.03ms        1.34µs       8.7 MiB       9.1 MiB
+  rocks   random     200000        1       70.94ms        1.42µs      34.9 MiB      35.2 MiB
+  rocks   random     200000       64       70.89ms        1.42µs      34.9 MiB      35.2 MiB
+  rocks   random     200000      512       70.62ms        1.41µs      34.9 MiB      35.2 MiB
+  rocks   packed      50000        1       67.29ms        1.34µs       8.7 MiB       9.1 MiB
+  rocks   packed      50000       64       66.82ms        1.34µs       8.7 MiB       9.1 MiB
+  rocks   packed      50000      512       67.25ms        1.34µs       8.7 MiB       9.1 MiB
+  rocks   packed     200000        1       70.69ms        1.41µs      34.9 MiB      35.2 MiB
+  rocks   packed     200000       64       70.36ms        1.41µs      34.9 MiB      35.2 MiB
+  rocks   packed     200000      512       69.77ms        1.40µs      34.9 MiB      35.2 MiB
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.73s
+

@@ -1,0 +1,15 @@
+host=reel-simd-t5 2026-08-18T11:49:17Z
+segment_mib=4 map_above=MAP_EVERYTHING
+  rocks   random      50000        1       69.39ms        1.39µs       9.1 MiB
+  rocks   random      50000       64       69.03ms        1.38µs       9.1 MiB
+  rocks   random      50000      512       69.17ms        1.38µs       9.1 MiB
+  rocks   random     200000        1       72.83ms        1.46µs      35.2 MiB
+  rocks   random     200000       64       72.33ms        1.45µs      35.2 MiB
+  rocks   random     200000      512       72.12ms        1.44µs      35.2 MiB
+  rocks   packed      50000        1       69.23ms        1.38µs       9.1 MiB
+  rocks   packed      50000       64       68.32ms        1.37µs       9.1 MiB
+  rocks   packed      50000      512       68.32ms        1.37µs       9.1 MiB
+  rocks   packed     200000        1       72.91ms        1.46µs      35.2 MiB
+  rocks   packed     200000       64       72.20ms        1.44µs      35.2 MiB
+  rocks   packed     200000      512       72.08ms        1.44µs      35.2 MiB
+2026-08-18T11:49:22Z

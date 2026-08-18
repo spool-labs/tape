@@ -1,0 +1,56 @@
+alloc4mib bench_config segment=4194304 alloc_chunk=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+alloc4mib    reel   random      50000        1       22.57ms      451.00ns       6.7 MiB      42.0 MiB
+alloc4mib    reel   random      50000       64       20.94ms      418.00ns       6.7 MiB      42.0 MiB
+alloc4mib    reel   random      50000      512       20.02ms      400.00ns       6.7 MiB      42.0 MiB
+alloc4mib bench_config segment=4194304 alloc_chunk=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+alloc4mib    reel   random     200000        1       32.62ms      652.00ns      26.7 MiB      77.1 MiB
+alloc4mib    reel   random     200000       64       24.94ms      498.00ns      26.7 MiB      77.1 MiB
+alloc4mib    reel   random     200000      512       23.95ms      479.00ns      26.7 MiB      77.1 MiB
+alloc4mib bench_config segment=4194304 alloc_chunk=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+alloc4mib    reel   packed      50000        1       22.32ms      446.00ns       6.7 MiB      42.0 MiB
+alloc4mib    reel   packed      50000       64       20.98ms      419.00ns       6.7 MiB      42.0 MiB
+alloc4mib    reel   packed      50000      512       19.78ms      395.00ns       6.7 MiB      42.0 MiB
+alloc4mib bench_config segment=4194304 alloc_chunk=4194304 map_above=Some(ByteCount(0)) shapes=Declared
+alloc4mib    reel   packed     200000        1       32.48ms      649.00ns      26.7 MiB      77.1 MiB
+alloc4mib    reel   packed     200000       64       25.15ms      503.00ns      26.7 MiB      77.1 MiB
+alloc4mib    reel   packed     200000      512       23.99ms      479.00ns      26.7 MiB      77.1 MiB
+alloc4mib   rocks   random      50000        1       64.03ms        1.28µs       8.7 MiB       9.1 MiB
+alloc4mib   rocks   random      50000       64       67.38ms        1.35µs       8.7 MiB       9.1 MiB
+alloc4mib   rocks   random      50000      512       67.71ms        1.35µs       8.7 MiB       9.1 MiB
+alloc4mib   rocks   random     200000        1       68.69ms        1.37µs      34.9 MiB      35.2 MiB
+alloc4mib   rocks   random     200000       64       71.26ms        1.42µs      34.9 MiB      35.2 MiB
+alloc4mib   rocks   random     200000      512       71.07ms        1.42µs      34.9 MiB      35.2 MiB
+alloc4mib   rocks   packed      50000        1       63.55ms        1.27µs       8.7 MiB       9.1 MiB
+alloc4mib   rocks   packed      50000       64       67.93ms        1.36µs       8.7 MiB       9.1 MiB
+alloc4mib   rocks   packed      50000      512       67.66ms        1.35µs       8.7 MiB       9.1 MiB
+alloc4mib   rocks   packed     200000        1       68.30ms        1.36µs      34.9 MiB      35.2 MiB
+alloc4mib   rocks   packed     200000       64       72.08ms        1.44µs      34.9 MiB      35.2 MiB
+alloc4mib   rocks   packed     200000      512       72.18ms        1.44µs      34.9 MiB      35.2 MiB
+alloc1mib bench_config segment=4194304 alloc_chunk=1048576 map_above=Some(ByteCount(0)) shapes=Declared
+alloc1mib    reel   random      50000        1       23.03ms      460.00ns       6.7 MiB      19.0 MiB
+alloc1mib    reel   random      50000       64       21.10ms      421.00ns       6.7 MiB      19.0 MiB
+alloc1mib    reel   random      50000      512       19.99ms      399.00ns       6.7 MiB      19.0 MiB
+alloc1mib bench_config segment=4194304 alloc_chunk=1048576 map_above=Some(ByteCount(0)) shapes=Declared
+alloc1mib    reel   random     200000        1       32.70ms      654.00ns      26.7 MiB      54.1 MiB
+alloc1mib    reel   random     200000       64       24.60ms      492.00ns      26.7 MiB      54.1 MiB
+alloc1mib    reel   random     200000      512       23.61ms      472.00ns      26.7 MiB      54.1 MiB
+alloc1mib bench_config segment=4194304 alloc_chunk=1048576 map_above=Some(ByteCount(0)) shapes=Declared
+alloc1mib    reel   packed      50000        1       22.11ms      442.00ns       6.7 MiB      19.0 MiB
+alloc1mib    reel   packed      50000       64       21.20ms      423.00ns       6.7 MiB      19.0 MiB
+alloc1mib    reel   packed      50000      512       20.36ms      407.00ns       6.7 MiB      19.0 MiB
+alloc1mib bench_config segment=4194304 alloc_chunk=1048576 map_above=Some(ByteCount(0)) shapes=Declared
+alloc1mib    reel   packed     200000        1       32.37ms      647.00ns      26.7 MiB      54.1 MiB
+alloc1mib    reel   packed     200000       64       24.89ms      497.00ns      26.7 MiB      54.1 MiB
+alloc1mib    reel   packed     200000      512       23.47ms      469.00ns      26.7 MiB      54.1 MiB
+alloc1mib   rocks   random      50000        1       64.96ms        1.30µs       8.7 MiB       9.1 MiB
+alloc1mib   rocks   random      50000       64       68.04ms        1.36µs       8.7 MiB       9.1 MiB
+alloc1mib   rocks   random      50000      512       68.29ms        1.36µs       8.7 MiB       9.1 MiB
+alloc1mib   rocks   random     200000        1       68.90ms        1.38µs      34.9 MiB      35.2 MiB
+alloc1mib   rocks   random     200000       64       72.59ms        1.45µs      34.9 MiB      35.2 MiB
+alloc1mib   rocks   random     200000      512       72.70ms        1.45µs      34.9 MiB      35.2 MiB
+alloc1mib   rocks   packed      50000        1       64.06ms        1.28µs       8.7 MiB       9.1 MiB
+alloc1mib   rocks   packed      50000       64       67.65ms        1.35µs       8.7 MiB       9.1 MiB
+alloc1mib   rocks   packed      50000      512       70.22ms        1.40µs       8.7 MiB       9.1 MiB
+alloc1mib   rocks   packed     200000        1       68.13ms        1.36µs      34.9 MiB      35.2 MiB
+alloc1mib   rocks   packed     200000       64       72.78ms        1.46µs      34.9 MiB      35.2 MiB
+alloc1mib   rocks   packed     200000      512       72.36ms        1.45µs      34.9 MiB      35.2 MiB

@@ -13,6 +13,7 @@
 //! Ignored by default. Run with:
 //!   cargo test -p tape-store --test track_data_read_bench --release -- --ignored --nocapture
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use reel_bridge::{scaled, BenchArm, ReelBridge};
@@ -97,8 +98,14 @@ fn sweep<A: BenchArm>() {
     for fill in [Fill::Random, Fill::Packed] {
     for &count in COUNTS {
         let count = scaled(count);
+        // A named root keeps the volume after the run, so what it laid down can
+        // be looked at rather than inferred from a total.
         let dir = TempDir::new().unwrap();
-        let store = A::open_bench(&dir.path().join("db"));
+        let root = match std::env::var_os("TAPE_BENCH_KEEP") {
+            Some(kept) => PathBuf::from(kept).join(format!("{}-{count}", A::NAME)),
+            None => dir.path().join("db"),
+        };
+        let store = A::open_bench(&root);
 
         let mut addresses = Vec::with_capacity(count);
         for seed in 0..count {
@@ -135,12 +142,24 @@ fn sweep<A: BenchArm>() {
             let elapsed = best(
                 || {
                     let mut found = 0;
-                    for chunk in asked.chunks(batch) {
-                        // A batch of one is the loop, through the same call, so
-                        // the column measures depth and not two code paths.
-                        for held in store.get_track_datas(chunk).unwrap() {
-                            if held.is_some() {
-                                found += 1;
+                    match batch {
+                        // The engine serves one key and many keys down separate
+                        // paths, and only the single one has the mapped read. A
+                        // batch of one through `get_many` measures neither.
+                        1 => {
+                            for address in &asked {
+                                if store.get_track_data(*address).unwrap().is_some() {
+                                    found += 1;
+                                }
+                            }
+                        }
+                        batch => {
+                            for chunk in asked.chunks(batch) {
+                                for held in store.get_track_datas(chunk).unwrap() {
+                                    if held.is_some() {
+                                        found += 1;
+                                    }
+                                }
                             }
                         }
                     }

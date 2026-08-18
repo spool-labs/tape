@@ -1,0 +1,39 @@
+host=reel-simd-t5 cores=8 tmp=/dev/nvme0n1p1 ext4 2026-08-18T11:38:48Z
+round1 open    reel      50000        1      106.49ms        2.13µs
+round1 open    reel      50000       64       20.77ms      415.00ns
+round1 open    reel      50000      512       19.79ms      395.00ns
+round1 open    reel     200000        1      121.14ms        2.42µs
+round1 open    reel     200000       64       24.85ms      496.00ns
+round1 open    reel     200000      512       23.96ms      479.00ns
+round1 tree    reel      50000        1      104.56ms        2.09µs
+round1 tree    reel      50000       64       19.89ms      397.00ns
+round1 tree    reel      50000      512       18.83ms      376.00ns
+round1 tree    reel     200000        1      120.48ms        2.41µs
+round1 tree    reel     200000       64       25.48ms      509.00ns
+round1 tree    reel     200000      512       23.82ms      476.00ns
+round2 open    reel      50000        1      106.05ms        2.12µs
+round2 open    reel      50000       64       20.52ms      410.00ns
+round2 open    reel      50000      512       19.87ms      397.00ns
+round2 open    reel     200000        1      120.56ms        2.41µs
+round2 open    reel     200000       64       25.49ms      509.00ns
+round2 open    reel     200000      512       24.67ms      493.00ns
+round2 tree    reel      50000        1      104.80ms        2.10µs
+round2 tree    reel      50000       64       19.91ms      398.00ns
+round2 tree    reel      50000      512       18.61ms      372.00ns
+round2 tree    reel     200000        1      120.17ms        2.40µs
+round2 tree    reel     200000       64       25.50ms      509.00ns
+round2 tree    reel     200000      512       23.65ms      473.00ns
+round3 open    reel      50000        1      107.37ms        2.15µs
+round3 open    reel      50000       64       21.61ms      432.00ns
+round3 open    reel      50000      512       19.78ms      395.00ns
+round3 open    reel     200000        1      121.14ms        2.42µs
+round3 open    reel     200000       64       25.05ms      500.00ns
+round3 open    reel     200000      512       24.39ms      487.00ns
+round3 tree    reel      50000        1      105.34ms        2.11µs
+round3 tree    reel      50000       64       20.64ms      412.00ns
+round3 tree    reel      50000      512       19.32ms      386.00ns
+round3 tree    reel     200000        1      119.77ms        2.40µs
+round3 tree    reel     200000       64       26.31ms      526.00ns
+round3 tree    reel     200000      512       24.46ms      489.00ns
+restored=1
+2026-08-18T11:39:36Z

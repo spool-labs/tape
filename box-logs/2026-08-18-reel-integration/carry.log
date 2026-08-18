@@ -1,0 +1,32 @@
+host=reel-simd-t5 tmp=/dev/nvme0n1p1 ext4 2026-08-18T11:41:18Z
+=== carry 0: every value read from the volume ===
+100:    shaped(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1), // track_data
+carry0    reel      50000        1      104.95ms        2.10µs
+carry0    reel      50000       64       19.90ms      398.00ns
+carry0    reel      50000      512       18.80ms      375.00ns
+carry0    reel     200000        1      119.79ms        2.40µs
+carry0    reel     200000       64       25.74ms      514.00ns
+carry0    reel     200000      512       23.86ms      477.00ns
+carry0   rocks      50000        1       68.05ms        1.36µs
+carry0   rocks      50000       64       67.36ms        1.35µs
+carry0   rocks      50000      512       67.40ms        1.35µs
+carry0   rocks     200000        1       71.56ms        1.43µs
+carry0   rocks     200000       64       70.86ms        1.42µs
+carry0   rocks     200000      512       70.88ms        1.42µs
+
+=== carry 128: the value rides in the sealed row ===
+100:    carried(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1, 200), // track_data
+carry200    reel      50000        1      104.34ms        2.09µs
+carry200    reel      50000       64       20.08ms      401.00ns
+carry200    reel      50000      512       19.01ms      380.00ns
+carry200    reel     200000        1      120.23ms        2.40µs
+carry200    reel     200000       64       25.10ms      502.00ns
+carry200    reel     200000      512       24.12ms      482.00ns
+carry200   rocks      50000        1       75.79ms        1.52µs
+carry200   rocks      50000       64       67.57ms        1.35µs
+carry200   rocks      50000      512       67.76ms        1.36µs
+carry200   rocks     200000        1       72.34ms        1.45µs
+carry200   rocks     200000       64       70.89ms        1.42µs
+carry200   rocks     200000      512       70.91ms        1.42µs
+restored=1
+2026-08-18T11:41:31Z

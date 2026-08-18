@@ -120,11 +120,19 @@ impl ReelBridge {
 /// RocksDB arm that does not fsync per write either.
 pub fn bench_config(segment_bytes: u64) -> ReelConfig {
     let default = ReelConfig::default();
+    // Printed rather than assumed: a bench that cannot say which config it
+    // opened with cannot tell a real result from a stale binary.
+    eprintln!(
+        "bench_config segment={segment_bytes} alloc_chunk={} map_above={:?} shapes={:?}",
+        alloc_chunk_bytes().min(segment_bytes), MAP_EVERYTHING, ShardShapes::Declared,
+    );
     ReelConfig {
         segment_bytes: ByteCount::from_bytes(segment_bytes),
         // A small segment cannot reserve a chunk larger than itself, and a run
-        // sweeping segment sizes has no reason to know that.
-        alloc_chunk: ByteCount::from_bytes(default.alloc_chunk.to_bytes().min(segment_bytes)),
+        // sweeping segment sizes has no reason to know that. Overridable, since
+        // the reservation is the difference between a segment's file size and
+        // what it holds.
+        alloc_chunk: ByteCount::from_bytes(alloc_chunk_bytes().min(segment_bytes)),
         preallocate: Preallocate::Chunk,
         sync: SyncPolicy::Never,
         // Without this the engine drops every open-shard request a column makes
@@ -135,6 +143,17 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
         // every warm read pays a door round trip it does not need.
         map_above: MAP_EVERYTHING,
         ..ReelConfig::default()
+    }
+}
+
+/// Environment variable naming the allocation chunk in MiB
+pub const ALLOC_MIB_VAR: &str = "TAPE_BENCH_ALLOC_MIB";
+
+/// The allocation chunk a bench arm reserves ahead in, the shipped one unless asked
+fn alloc_chunk_bytes() -> u64 {
+    match std::env::var(ALLOC_MIB_VAR).ok().and_then(|value| value.parse::<u64>().ok()) {
+        Some(mib) => mib * 1024 * 1024,
+        None => ReelConfig::default().alloc_chunk.to_bytes(),
     }
 }
 
