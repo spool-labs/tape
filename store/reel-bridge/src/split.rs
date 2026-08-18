@@ -152,6 +152,10 @@ impl Store for MetaBulkStore {
         self.route(cf).count_prefix(cf, prefix)
     }
 
+    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>> {
+        self.route(cf).bytes_prefix(cf, prefix)
+    }
+
     fn sweep(
         &self,
         cf: &str,

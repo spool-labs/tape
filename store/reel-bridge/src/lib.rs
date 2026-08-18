@@ -467,6 +467,10 @@ impl Store for ReelBridge {
         ReelStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
     }
 
+    fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Option<u64>> {
+        ReelStoreTrait::bytes_prefix(&self.inner, cf, prefix).map_err(crossed)
+    }
+
     fn sweep_prefix(
         &self,
         cf: &str,
