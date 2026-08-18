@@ -1,5 +1,7 @@
 //! Core storage trait defining the key-value store interface
 
+use std::future::Future;
+
 use crate::{Result, WriteBatch};
 
 /// Iterator direction for scanning (lexicographic order)
@@ -64,8 +66,79 @@ pub trait Store: Send + Sync {
     /// Get a value by key from the specified column family.
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>>;
 
+    /// Get several values from one column family, answered in the order asked.
+    ///
+    /// The default asks one at a time; a backend overrides to put them all in
+    /// front of its device at once.
+    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut values = Vec::with_capacity(keys.len());
+        for key in keys {
+            values.push(self.get(cf, key)?);
+        }
+        Ok(values)
+    }
+
+    /// Get a value by key, awaited rather than waited for on the calling thread.
+    ///
+    /// Not dispatchable through `dyn Store`, since the future's type is the
+    /// backend's own. The default answers from the blocking call.
+    fn get_wait(&self, cf: &str, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send
+    where
+        Self: Sized,
+    {
+        std::future::ready(self.get(cf, key))
+    }
+
+    /// Get several values from one column family, awaited, answered in order.
+    fn get_many_wait(
+        &self,
+        cf: &str,
+        keys: &[&[u8]],
+    ) -> impl Future<Output = Result<Vec<Option<Vec<u8>>>>> + Send
+    where
+        Self: Sized,
+    {
+        std::future::ready(self.get_many(cf, keys))
+    }
+
+    /// Get part of one value, from `offset` for `len` bytes.
+    ///
+    /// Clamped the way a `pread` is, and a missing key answers nothing at all.
+    fn get_range(&self, cf: &str, key: &[u8], offset: u64, len: usize) -> Result<Option<Vec<u8>>> {
+        Ok(self.get(cf, key)?.map(|value| range_of(value, offset, len)))
+    }
+
+    /// Get part of one value, awaited rather than waited for on the calling thread.
+    fn get_range_wait(
+        &self,
+        cf: &str,
+        key: &[u8],
+        offset: u64,
+        len: usize,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send
+    where
+        Self: Sized,
+    {
+        std::future::ready(self.get_range(cf, key, offset, len))
+    }
+
     /// Put a key-value pair into the specified column family.
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()>;
+
+    /// Put a key-value pair, awaited rather than waited for on the calling thread.
+    ///
+    /// Not dispatchable through `dyn Store`, for the same reason `get_wait` is not.
+    fn put_wait(
+        &self,
+        cf: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send
+    where
+        Self: Sized,
+    {
+        std::future::ready(self.put(cf, key, value))
+    }
 
     /// Delete a key from the specified column family.
     fn delete(&self, cf: &str, key: &[u8]) -> Result<()>;
@@ -78,6 +151,16 @@ pub trait Store: Send + Sync {
     /// Atomicity holds only within a single backend. A backend split across
     /// independent instances may write a cross-instance batch non-atomically.
     fn write_batch(&self, batch: WriteBatch) -> Result<()>;
+
+    /// Apply a batch of write operations atomically, awaited.
+    ///
+    /// One durability point for the whole batch, however many keys it carries.
+    fn write_batch_wait(&self, batch: WriteBatch) -> impl Future<Output = Result<()>> + Send
+    where
+        Self: Sized,
+    {
+        std::future::ready(self.write_batch(batch))
+    }
 
     /// Delete every key in the range `[start, end)` from the column family.
     /// Backends can override with a native range tombstone; the default collects
@@ -104,6 +187,14 @@ pub trait Store: Send + Sync {
     /// override to skip value (e.g. blob-file) reads when only keys are needed.
     fn iter_keys_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
         Ok(self.iter_prefix(cf, prefix)?.map(|(k, _)| k).collect())
+    }
+
+    /// Exact count of the keys under `prefix`, WITHOUT materializing them.
+    ///
+    /// The default collects the keys and takes the length; backends override to
+    /// count in place.
+    fn count_prefix(&self, cf: &str, prefix: &[u8]) -> Result<u64> {
+        Ok(self.iter_keys_prefix(cf, prefix)?.len() as u64)
     }
 
     /// Iterate from the start key (inclusive) in the specified direction.
@@ -166,5 +257,40 @@ pub trait Store: Send + Sync {
             used_bytes: self.actual_size_bytes()?,
             free_bytes: self.available_disk_bytes()?,
         }])
+    }
+}
+
+/// The window of a value a ranged read asks for, clamped rather than refused
+pub fn range_of(value: Vec<u8>, offset: u64, len: usize) -> Vec<u8> {
+    let held = value.len();
+    let at = offset.min(held as u64) as usize;
+    let end = at.saturating_add(len).min(held);
+    value[at..end].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a window inside the value comes back whole
+    #[test]
+    fn window_inside() {
+        assert_eq!(range_of(b"abcdefgh".to_vec(), 2, 3), b"cde");
+        assert_eq!(range_of(b"abcdefgh".to_vec(), 0, 8), b"abcdefgh");
+    }
+
+    // a window running past the end stops at the end
+    #[test]
+    fn window_over() {
+        assert_eq!(range_of(b"abcd".to_vec(), 2, 99), b"cd");
+        assert_eq!(range_of(b"abcd".to_vec(), 0, usize::MAX), b"abcd");
+    }
+
+    // an offset at or past the end answers no bytes
+    #[test]
+    fn window_beyond() {
+        assert_eq!(range_of(b"abcd".to_vec(), 4, 2), b"");
+        assert_eq!(range_of(b"abcd".to_vec(), u64::MAX, 2), b"");
+        assert_eq!(range_of(Vec::new(), 0, 2), b"");
     }
 }
