@@ -75,16 +75,12 @@ pub fn group_weights<Db: Store>(
 ) -> Result<AssignmentGroupWeights, AssignmentSizeError> {
     let mut sizes = vec![StorageUnits::zero(); target_groups];
     let mut active_tracks = Vec::new();
-    let mut cursor = None;
+    let mut cursor: Option<Vec<u8>> = None;
 
     loop {
-        let tracks = store
-            .iter_tracks_from(cursor, TRACK_SCAN_BATCH)
+        let (tracks, next) = store
+            .sweep_tracks(cursor.as_deref(), TRACK_SCAN_BATCH)
             .map_err(store_error)?;
-
-        if tracks.is_empty() {
-            break;
-        }
 
         let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track, _) in &tracks {
@@ -122,7 +118,10 @@ pub fn group_weights<Db: Store>(
             active_tracks.push(active);
         }
 
-        cursor = tracks.last().map(|(track, _)| *track);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
     }
 
     Ok(AssignmentGroupWeights {

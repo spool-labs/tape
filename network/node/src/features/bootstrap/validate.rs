@@ -23,16 +23,12 @@ pub fn validate_bootstrap_store<Db: Store>(
     store: &TapeStore<Db>,
 ) -> Result<BootstrapInvariantStats, NodeError> {
     let mut stats = BootstrapInvariantStats::default();
-    let mut cursor = None;
+    let mut cursor: Option<Vec<u8>> = None;
 
     loop {
-        let tracks = store
-            .iter_tracks_from(cursor, TRACK_SCAN_BATCH)
+        let (tracks, next) = store
+            .sweep_tracks(cursor.as_deref(), TRACK_SCAN_BATCH)
             .map_err(store_error)?;
-
-        if tracks.is_empty() {
-            break;
-        }
 
         let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
         let mut parents: Vec<Address> = Vec::with_capacity(tracks.len());
@@ -67,7 +63,10 @@ pub fn validate_bootstrap_store<Db: Store>(
             validate_tape_classification(*track, metadata.tape, &tape, &object, &mut stats)?;
         }
 
-        cursor = tracks.last().map(|(track, _)| *track);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
     }
 
     debug!(

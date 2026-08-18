@@ -317,7 +317,7 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
     batch_size: usize,
     token: &CancellationToken,
 ) -> usize {
-    let mut cursor = None;
+    let mut cursor: Option<Vec<u8>> = None;
     let mut synced = 0usize;
     let peers = track_data_peers(ctx.as_ref(), spool);
 
@@ -326,17 +326,13 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
             break;
         }
 
-        let tracks = match ctx.store.iter_tracks_from(cursor, batch_size.max(1)) {
-            Ok(tracks) => tracks,
+        let (tracks, next) = match ctx.store.sweep_tracks(cursor.as_deref(), batch_size.max(1)) {
+            Ok(swept) => swept,
             Err(error) => {
-                warn!(spool = %spool, %error, "iter_tracks_from failed during track-data sync");
+                warn!(spool = %spool, %error, "sweep_tracks failed during track-data sync");
                 break;
             }
         };
-
-        if tracks.is_empty() {
-            break;
-        }
 
         for (track_addr, track) in &tracks {
             if token.is_cancelled() {
@@ -370,7 +366,10 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
             }
         }
 
-        cursor = tracks.last().map(|(track_addr, _)| *track_addr);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
     }
 
     synced

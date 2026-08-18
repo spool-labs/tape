@@ -110,17 +110,13 @@ async fn sweep_uncertified_tracks<Db: Store>(
         return Ok(stats);
     }
 
-    let mut cursor = None;
+    let mut cursor: Option<Vec<u8>> = None;
     let retention = UNCERTIFIED_RETENTION_EPOCHS;
 
     loop {
-        let tracks = store
-            .iter_tracks_from(cursor, track_batch(config))
+        let (tracks, next) = store
+            .sweep_tracks(cursor.as_deref(), track_batch(config))
             .map_err(store_error)?;
-
-        if tracks.is_empty() {
-            break;
-        }
 
         let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track, _) in &tracks {
@@ -148,7 +144,10 @@ async fn sweep_uncertified_tracks<Db: Store>(
             }
         }
 
-        cursor = tracks.last().map(|(track, _)| *track);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
         yield_now().await;
     }
 
@@ -197,16 +196,12 @@ async fn sweep_orphan_tracks<Db: Store>(
     at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
-    let mut cursor = None;
+    let mut cursor: Option<Vec<u8>> = None;
 
     loop {
-        let tracks = store
-            .iter_tracks_from(cursor, track_batch(config))
+        let (tracks, next) = store
+            .sweep_tracks(cursor.as_deref(), track_batch(config))
             .map_err(store_error)?;
-
-        if tracks.is_empty() {
-            break;
-        }
 
         let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
         let mut tapes: Vec<Address> = Vec::with_capacity(tracks.len());
@@ -249,7 +244,10 @@ async fn sweep_orphan_tracks<Db: Store>(
             }
         }
 
-        cursor = tracks.last().map(|(track, _)| *track);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
         yield_now().await;
     }
 

@@ -37,6 +37,17 @@ pub trait TrackOps {
         limit: usize,
     ) -> Result<Vec<(Address, CompressedTrack)>>;
 
+    /// One page of tracks in no promised order, resumed by an opaque mark.
+    ///
+    /// What a maintenance pass wants: complete, resumable coverage without the
+    /// key order it never reads. The mark is the backend's; hand back whatever
+    /// the last page answered and nothing to start.
+    fn sweep_tracks(
+        &self,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<(Address, CompressedTrack)>, Option<Vec<u8>>)>;
+
     /// Paginated track iteration ordered by (tape, track_number, key).
     fn iter_tracks_by_tape_from(
         &self,
@@ -88,6 +99,24 @@ impl<S: Store> TrackOps for TapeStore<S> {
             .inner()
             .iter_keys_prefix(TrackCol::CF_NAME, &[])?
             .len())
+    }
+
+    fn sweep_tracks(
+        &self,
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<(Address, CompressedTrack)>, Option<Vec<u8>>)> {
+        let (rows, next) = self.inner().inner().sweep(TrackCol::CF_NAME, from, limit)?;
+
+        let mut tracks = Vec::with_capacity(rows.len());
+        for (key_bytes, value_bytes) in rows {
+            let key: Address = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?;
+            let info: PackedTrack = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("track info: {}", e)))?;
+            tracks.push((key, CompressedTrack::unpack(info)));
+        }
+        Ok((tracks, next))
     }
 
     fn iter_tracks_from(

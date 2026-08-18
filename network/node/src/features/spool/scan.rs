@@ -22,7 +22,7 @@ use crate::features::spool::types::ScanResult;
 // Adds are idempotent (presence-based queue), so re-scanning is safe.
 //
 // Algorithm:
-// 1. Paginate over all tracks via store.iter_tracks_from(cursor, batch_size):
+// 1. Sweep all tracks via store.sweep_tracks(mark, batch_size):
 //    a. Check cancellation.
 //    b. For each (track_address, track_info) in the batch:
 //       - Skip if track's spool group doesn't include this spool.
@@ -43,7 +43,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     cancel: &CancellationToken,
 ) -> ScanResult {
 
-    let mut cursor = None;
+    let mut cursor: Option<Vec<u8>> = None;
     let mut gaps = 0usize;
     let mut had_error = false;
 
@@ -55,21 +55,14 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             break;
         }
 
-        let tracks = match ctx
-            .store
-            .iter_tracks_from(cursor, batch_size)
-        {
-            Ok(tracks) => tracks,
+        let (tracks, next) = match ctx.store.sweep_tracks(cursor.as_deref(), batch_size) {
+            Ok(swept) => swept,
             Err(error) => {
-                warn!(spool = %spool, %error, "scan iter_tracks_from failed");
+                warn!(spool = %spool, %error, "scan sweep_tracks failed");
                 had_error = true;
                 break;
             }
         };
-
-        if tracks.is_empty() {
-            break;
-        }
 
         let mut considered: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track_addr, track_info) in &tracks {
@@ -127,9 +120,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             gaps += 1;
         }
 
-        cursor = tracks
-            .last()
-            .map(|(track_addr, _)| *track_addr);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
     }
 
     if had_error {
