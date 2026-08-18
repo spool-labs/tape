@@ -4,7 +4,6 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
-use tape_core::challenge::schedule::SLOT_MS;
 use tokio::task::JoinHandle;
 
 use crate::chain::ChainFixture;
@@ -49,12 +48,6 @@ impl SimnetBuilder {
 
     pub fn slot_advance_per_tx(mut self, slots: u64) -> Self {
         self.config.slot_advance_per_tx = slots;
-        self
-    }
-
-    /// Whether nodes propose and sign evictions, on by default.
-    pub fn eviction(mut self, enabled: bool) -> Self {
-        self.config.eviction = enabled;
         self
     }
 
@@ -115,11 +108,8 @@ impl Default for SimnetBuilder {
     }
 }
 
-/// Wall time between blocks, which is the harness running slower than a cluster.
+/// Block production cadence for the simulated chain (1 slot per second).
 const BLOCK_PRODUCTION_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Chain time one slot costs.
-const SLOT_TIME: Duration = Duration::from_millis(SLOT_MS);
 
 /// In-memory multi-node simulation harness.
 pub struct SimnetHarness {
@@ -266,7 +256,7 @@ impl SimnetHarness {
     fn ensure_block_producer(&mut self) {
         if self.block_producer.is_none() {
             self.block_producer = Some(
-                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL, SLOT_TIME),
+                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL),
             );
         }
     }
@@ -290,6 +280,5 @@ fn make_node(config: &SimnetConfig, chain: &ChainFixture, id: usize) -> Result<T
         bind_addr,
         port,
         config.stop_timeout,
-        config.eviction,
     )
 }

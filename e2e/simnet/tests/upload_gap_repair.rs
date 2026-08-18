@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use store::Store;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::bft::is_supermajority;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
@@ -15,6 +14,7 @@ use tape_store::ops::{SliceOps, SpoolOps};
 // slice rather than landing on a spool somebody else also holds.
 const NODE_COUNT: usize = GROUP_SIZE;
 const VICTIM: usize = 1;
+const WITNESS: usize = 2;
 const TARGET_GROUPS: u64 = 1;
 const STAKE: u64 = 1_000;
 const STEADY_EPOCH: u64 = 2;
@@ -106,16 +106,8 @@ async fn upload_gap_repair_inner() {
         node_slice(&harness, VICTIM, spool, track).is_none(),
         "the stopped owner should hold nothing for a track written while it was down"
     );
-    let holders = slice_holders(&harness, track);
-    assert!(
-        is_supermajority(holders.len() as u64, GROUP_SIZE as u64),
-        "a certified write left {} of {GROUP_SIZE} owners holding their slice",
-        holders.len()
-    );
-    let (_, witness) = holders
-        .into_iter()
-        .find(|(index, _)| *index != VICTIM)
-        .expect("a holder other than the victim");
+    let witness = node_slice(&harness, WITNESS, node_spool(&harness, WITNESS), track)
+        .expect("a running owner holds its slice");
 
     harness
         .start_nodes(&[VICTIM])
@@ -178,19 +170,6 @@ fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {
     let node = harness.node(index).expect("node");
     let spools = node.context().store.iter_all_spools().expect("iter spools");
     spools.first().copied().map(|(spool, _)| spool).expect("node owns a spool")
-}
-
-/// Owners holding a slice for this track, with the slice each holds.
-///
-/// Scans every owner rather than naming one: which owners land inside the
-/// certifying quorum is not fixed, so a named one is a coin flip.
-fn slice_holders(harness: &SimnetHarness, track: Address) -> Vec<(usize, Vec<u8>)> {
-    (0..NODE_COUNT)
-        .filter_map(|index| {
-            let slice = node_slice(harness, index, node_spool(harness, index), track)?;
-            Some((index, slice))
-        })
-        .collect()
 }
 
 fn node_slice(

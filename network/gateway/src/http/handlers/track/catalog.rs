@@ -11,7 +11,7 @@ use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::TrackNumber;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
-use tape_crypto::merkle::{MerkleLeafTree, hash_leaf};
+use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf};
 use tape_protocol::Api;
 use tape_protocol::api::{
     FindTrackRequest, ListObjectsRequest, ListObjectsResponse, ListTracksByTapeRequest,
@@ -97,9 +97,11 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    let proof: [Hash; TRACK_TREE_HEIGHT] = MerkleLeafTree::new(&leaves, TRACK_TREE_HEIGHT)
-        .and_then(|tree| tree.proof_at_n::<{ TRACK_TREE_HEIGHT }>(track_index))
-        .map_err(|_| RouteError::Internal("invalid track proof".into()))?;
+    let proof: [Hash; TRACK_TREE_HEIGHT] =
+        create_proof_from_leaf_hashes::<{ TRACK_TREE_HEIGHT }>(&leaves, track_index)
+            .map_err(|_| RouteError::Internal("invalid track proof".into()))?
+            .try_into()
+            .map_err(|_| RouteError::Internal("invalid track proof length".into()))?;
 
     binary_response(&TrackProofResponse {
         proof: CompressedTrackProof {

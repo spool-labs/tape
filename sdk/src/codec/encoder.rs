@@ -6,7 +6,7 @@
 use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_core::erasure::{GROUP_SIZE, slice_root};
 use tape_core::types::SpoolIndex;
-use tape_crypto::merkle::MerkleLeafTree;
+use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
 use tape_crypto::Hash;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, SLICE_TREE_HEIGHT,
@@ -239,21 +239,27 @@ impl BlobEncoder {
             .ok_or_else(|| {
                 UploadError::Encoding("slice exceeds sub-leaf tree capacity".to_string())
             })?;
-        // One fold serves the root and all GROUP_SIZE proofs.
-        let tree = MerkleLeafTree::new(&leaf_hashes, SLICE_TREE_HEIGHT)
-            .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
-        let root = tree.root();
+        let root = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaf_hashes);
+
+        let proofs: Result<Vec<Vec<Hash>>, _> = (0..leaf_hashes.len())
+            .map(|idx| create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaf_hashes, idx))
+            .collect();
+        let proofs = proofs.map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
 
         // Generate proof for each slice
         let mut output = Vec::with_capacity(chunks.len());
-        for (idx, (chunk, leaf_hash)) in chunks
+        for (idx, ((chunk, leaf_hash), proof_vec)) in chunks
             .into_iter()
-            .zip(leaf_hashes.iter().copied())
+            .zip(leaf_hashes.into_iter())
+            .zip(proofs)
             .enumerate()
         {
-            let proof_arr = tree
-                .proof_at_n::<SLICE_TREE_HEIGHT>(idx)
-                .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
+
+            // Convert Vec<Hash> to fixed-size array
+            let mut proof_arr = [Hash::default(); SLICE_TREE_HEIGHT];
+            for (i, h) in proof_vec.into_iter().enumerate() {
+                proof_arr[i] = h;
+            }
 
             output.push(SliceWithProof::new(
                 SpoolIndex::from(idx as u64),

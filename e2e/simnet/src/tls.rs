@@ -10,24 +10,17 @@ static ASSIGNED: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
 /// Ports reserved per harness process.
 const RANGE_SIZE: u64 = 400;
 
-/// First port of the harness range, below the ephemeral range of the platform.
-#[cfg(target_os = "linux")]
-const RANGE_BASE: u64 = 20_000;
-
-/// macOS hands out from 49152, so the original range is already clear there.
-#[cfg(not(target_os = "linux"))]
-const RANGE_BASE: u64 = 30_000;
-
 /// Pick a loopback bind address that stays stable until the caller binds it.
 ///
 /// Asking the OS for `:0` and dropping the listener races concurrent
 /// harnesses: freed ephemeral ports are reused most-recent-first, so a second
 /// simnet on the same host steals them before the node binds. Instead each
-/// process probes its own PID-keyed range and remembers what it handed out, so
-/// no two picks in one process ever share a port.
+/// process probes its own PID-keyed range in 30000-39999, clear of the OS
+/// ephemeral range (49152+) and remembers what it handed out, so no two picks
+/// in one process ever share a port.
 pub fn pick_bind() -> Result<std::net::SocketAddr> {
     let pid = std::process::id() as u64;
-    let base = RANGE_BASE + (pid % 25) * RANGE_SIZE;
+    let base = 30_000 + (pid % 25) * RANGE_SIZE;
 
     let mut assigned = ASSIGNED
         .get_or_init(|| Mutex::new(HashSet::new()))

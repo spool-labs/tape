@@ -1,0 +1,18 @@
+[package]
+name = "reel-bridge"
+version.workspace = true
+edition.workspace = true
+description = "Bench-scoped bridge from the internal store trait onto the public reel engine"
+
+[dependencies]
+store.workspace = true
+store-rocks.workspace = true
+tape-store.workspace = true
+reel.workspace = true
+reel-core.workspace = true
+
+[dev-dependencies]
+tape-core.workspace = true
+tape-crypto.workspace = true
+tempfile = "3.10"
+libc = "0.2"

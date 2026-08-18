@@ -37,8 +37,6 @@ async fn eviction_inner() {
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
-    // Nothing has to be waited out: the vote opens on the proposal and lands
-    // as fast as the signatures gather.
     let evict_timeout = Duration::from_secs(90);
 
     {
@@ -84,7 +82,15 @@ async fn eviction_inner() {
 
     let target = Address::from(harness.scenario().node_address(EVICT_NODE));
 
-    // The target stays up and answers everything asked of it.
+    // Stop the target so every voter's own probe fails, then open the vote
+    // with a single permissionless proposal. Committee nodes observe the
+    // proposal on-chain, probe the target themselves, and sign only because
+    // the probe fails. Landing takes a supermajority of groups and sets
+    // suspended_until while removing the target from the next committee.
+    harness
+        .stop_nodes(&[EVICT_NODE])
+        .await
+        .expect("stop target node");
     let target_epoch = wait_eviction_landed(&harness, evict_timeout).await;
 
     // The target is absent from the committee the vote targeted.
@@ -98,6 +104,17 @@ async fn eviction_inner() {
         "evicted node still seated in committee {}",
         target_epoch.0
     );
+
+    // Bring the target back so it can observe its suspension and later rejoin.
+    harness
+        .start_nodes_with_retry(&[EVICT_NODE], 3, Duration::from_millis(200))
+        .await
+        .expect("restart evicted node");
+    harness
+        .scenario()
+        .wait_node_healthy(EVICT_NODE, health_timeout)
+        .await
+        .expect("evicted node healthy after restart");
 
     // Advance into the target epoch and confirm the node dropped out of the
     // active committee. The spare backfills the freed seat.

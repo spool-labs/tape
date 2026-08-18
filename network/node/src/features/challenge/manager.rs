@@ -24,7 +24,6 @@ use crate::features::challenge::audit::{
     Round, build_answer, group_members, has_sample_set, spawn_attest,
 };
 use crate::features::challenge::fold::fold_outcome;
-use crate::features::eviction::queue::Opened;
 
 // Capture settlement inputs when the round opens because settlement may cross
 // an epoch boundary. Unfinalized or unaskable rounds are void rather than
@@ -338,9 +337,7 @@ where
             // With eviction off there is no manager draining the queue, so
             // leave it empty. The record is kept either way.
             if self.context.config.eviction_enabled() {
-                self.context
-                    .eviction_queue
-                    .insert(peer, epoch, Opened::Record);
+                self.context.eviction_queue.insert(peer);
             }
         }
 

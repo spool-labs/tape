@@ -151,21 +151,10 @@ impl LiteSvmRpc {
 
     /// Closes the current block (making it visible via get_slot/get_block)
     /// and opens a new slot, every `interval`.
-    ///
-    /// `slot_time` is what one slot costs the chain clock, which is the cluster's
-    /// slot time and not the wall interval this loop runs at. A harness produces
-    /// blocks slower than a cluster does, and everything the protocol schedules
-    /// counts in slots derived from a duration in seconds, so charging the clock
-    /// the wall interval puts the epoch's phases on a different grid than the one
-    /// its owners compute.
-    pub fn start_block_producer(&self, interval: Duration, slot_time: Duration) -> JoinHandle<()> {
+    pub fn start_block_producer(&self, interval: Duration) -> JoinHandle<()> {
         let rpc = self.clone();
         tokio::spawn(async move {
-            let slot_ms = slot_time.as_millis() as u64;
-            // The clock holds whole seconds, so a sub-second slot is carried
-            // rather than truncated: at 400 ms that is two seconds every five.
-            let mut carried_ms = 0u64;
-
+            let tick_seconds = interval.as_secs() as i64;
             loop {
                 tokio::time::sleep(interval).await;
                 let mut inner = rpc.inner.lock().expect("mutex poisoned");
@@ -175,12 +164,8 @@ impl LiteSvmRpc {
                 inner.confirmed_tip = slot;
                 inner.pending_slot = inner.confirmed_tip + 1;
 
-                carried_ms += slot_ms;
-                let seconds = (carried_ms / 1_000) as i64;
-                carried_ms %= 1_000;
-
                 let mut clock = inner.svm.get_sysvar::<SvmClock>();
-                clock.unix_timestamp = clock.unix_timestamp.saturating_add(seconds);
+                clock.unix_timestamp = clock.unix_timestamp.saturating_add(tick_seconds);
                 inner.svm.set_sysvar(&clock);
             }
         })

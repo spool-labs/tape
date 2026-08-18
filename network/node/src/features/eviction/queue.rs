@@ -1,55 +1,38 @@
-//! Nodes with an open eviction vote this node joins, scoped to one voting epoch.
+//! Set of nodes with an open eviction vote this node may join.
 //!
-//! A proposal is signed, a record is probed first, and an entry is dropped when
-//! the eviction lands or its voting epoch passes.
+//! Targets are added when an on-chain eviction proposal is observed. The
+//! eviction manager probes each target itself and only votes while its own
+//! probe fails; a target is dropped once the eviction lands or the target
+//! probes healthy again.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
-use tape_core::types::EpochNumber;
 use tape_crypto::Address;
-
-/// What opened the vote on a target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Opened {
-    /// An eviction proposal observed on chain.
-    Proposal,
-    /// This node's own challenge record firing its rule.
-    Record,
-}
 
 #[derive(Default)]
 pub struct EvictionQueue {
-    // The voting epoch each target was opened in, and what opened it.
-    targets: Mutex<HashMap<Address, (EpochNumber, Opened)>>,
+    targets: Mutex<HashSet<Address>>,
 }
 
 impl EvictionQueue {
-    pub fn insert(&self, node: Address, epoch: EpochNumber, opened: Opened) {
-        self.lock().insert(node, (epoch, opened));
+    pub fn insert(&self, node: Address) {
+        self.lock().insert(node);
     }
 
     pub fn remove(&self, node: &Address) {
         self.lock().remove(node);
     }
 
-    /// Drop every target whose voting epoch has passed.
-    pub fn retain_epoch(&self, epoch: EpochNumber) {
-        self.lock().retain(|_, (opened, _)| *opened >= epoch);
-    }
-
-    pub fn snapshot(&self) -> Vec<(Address, Opened)> {
-        self.lock()
-            .iter()
-            .map(|(node, (_, opened))| (*node, *opened))
-            .collect()
+    pub fn snapshot(&self) -> Vec<Address> {
+        self.lock().iter().copied().collect()
     }
 
     pub fn is_empty(&self) -> bool {
         self.lock().is_empty()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Address, (EpochNumber, Opened)>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<Address>> {
         self.targets.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }

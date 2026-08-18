@@ -34,7 +34,6 @@ async fn staked_gateway_inner() {
         .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
-        .eviction(false)
         .build()
         .expect("build harness");
     let mut gateway =
@@ -44,7 +43,7 @@ async fn staked_gateway_inner() {
     let all: Vec<usize> = (0..NODE_COUNT).collect();
     let health_timeout = Duration::from_secs(30);
     let active_timeout = Duration::from_secs(60);
-    let slice_timeout = Duration::from_secs(300);
+    let slice_timeout = Duration::from_secs(120);
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
 
     {
