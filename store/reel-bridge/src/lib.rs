@@ -118,7 +118,6 @@ impl ReelBridge {
 /// segment it never fills. Syncing is left to the caller's flush, matching a
 /// RocksDB arm that does not fsync per write either.
 pub fn bench_config(segment_bytes: u64) -> ReelConfig {
-    let default = ReelConfig::default();
     // Printed rather than assumed: a bench that cannot say which config it
     // opened with cannot tell a real result from a stale binary.
     eprintln!(
