@@ -67,16 +67,14 @@ fn slice_and_track_traffic<A: BenchArm>() {
         "{}",
         A::NAME
     );
-    // Stored bytes cover the payloads and the sidecar in front of each of them,
-    // so the floor is the payloads and the arms differ above it.
+    // Stored bytes rather than payload bytes: a coded column reports what the
+    // codec left, and this fill is a run of one byte, so the ceiling is what an
+    // uncoded arm holds and the floor is only that it weighs something.
     let (count, bytes) = store.slice_totals_by_spool(spool).unwrap();
     assert_eq!(count, SLICE_COUNT as u64, "{}", A::NAME);
     if let Some(bytes) = bytes {
-        assert!(
-            bytes >= StorageUnits::from_bytes((SLICE_COUNT * SLICE_SIZE) as u64),
-            "{} weighed {bytes:?} of slices",
-            A::NAME
-        );
+        let uncoded = StorageUnits::from_bytes((SLICE_COUNT * (SLICE_SIZE + 64)) as u64);
+        assert!(bytes > StorageUnits(0) && bytes <= uncoded, "{} weighed {bytes:?}", A::NAME);
     }
 
     let sizes = store.iter_slice_sizes_by_spool(spool).unwrap();

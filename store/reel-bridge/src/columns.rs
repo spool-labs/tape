@@ -9,8 +9,11 @@
 //!
 //! Columns declare lz4, which is what the RocksDB store they replace sets for
 //! the whole database. A codec is attempted at admission and not promised, so a
-//! payload that does not shrink is stored verbatim. `slice` stays raw, because a
-//! codec frame decodes whole and a storage challenge reads a window out of one.
+//! payload that does not shrink is stored verbatim, which is what a parity slice
+//! does: the same declaration handles data and parity per record with nothing to
+//! configure. `slice` is declared with the rest of them, since a coded column
+//! answers a window by decoding the record whole, and at the sizes the product
+//! stores that is the read the challenge was doing anyway.
 
 use reel::{Codec, ColumnId, ColumnSet, ColumnSpec, KeyWidth, MapShape};
 use tape_store::columns::ALL_COLUMN_FAMILIES;
@@ -40,25 +43,6 @@ const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8, codec: Co
         purge_mark: None,
         codec,
         map_shape: MapShape::Open,
-    }
-}
-
-/// A fixed-width column stored verbatim, so a window of one value can be read
-///
-/// A codec frame decodes whole, so a coded column can answer no range at all.
-/// The column a storage challenge reads a sub-leaf out of has to stay raw or
-/// every such read pulls the whole payload back.
-const fn ranged(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> ColumnSpec {
-    ColumnSpec {
-        id: ColumnId(id),
-        name,
-        key_width: KeyWidth::Fixed(width),
-        shard_bytes,
-        inline_max: 0,
-        row_carry: 0,
-        purge_mark: None,
-        codec: Codec::None,
-        map_shape: MapShape::Tree,
     }
 }
 
@@ -114,7 +98,7 @@ const fn tape_columns(track_data_codec: Codec) -> [ColumnSpec; ALL_COLUMN_FAMILI
     plain(11, "spool_status"),
     shaped(12, "spool_pending_repair", SLICE_KEY_LEN, 2),
     shaped(13, "spool_pending_recovery", SLICE_KEY_LEN, 2),
-    ranged(14, "slice", SLICE_KEY_LEN, 2),
+    shaped(14, "slice", SLICE_KEY_LEN, 2),
     plain(17, "challenge_record"),
     plain(18, "challenge_round"),
     plain(19, "track_sample"),

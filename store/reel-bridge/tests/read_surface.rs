@@ -108,15 +108,16 @@ fn agrees(store: &impl Store, cf: &str, keys: &[Vec<u8>], prefix: &[u8]) {
         store.iter_keys_prefix(cf, prefix).expect("keys").len() as u64,
     );
 
-    // A backend that cannot weigh a prefix without reading it says nothing; one
-    // that can has to agree with the walk.
+    // A backend that cannot weigh a prefix without reading it says nothing. One
+    // that can reports stored bytes, which a coded column leaves under what the
+    // walk hands back and an uncoded one matches exactly.
     let walked: u64 = store
         .iter_prefix(cf, prefix)
         .expect("prefix")
         .map(|(_, value)| value.len() as u64)
         .sum();
     if let Some(bytes) = store.bytes_prefix(cf, prefix).expect("bytes_prefix") {
-        assert_eq!(bytes, walked);
+        assert!(bytes > 0 && bytes <= walked, "weighed {bytes} against {walked} walked");
     }
 
     let mut swept: Vec<Vec<u8>> = Vec::new();
