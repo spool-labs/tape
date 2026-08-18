@@ -38,10 +38,13 @@ mod split;
 use std::path::Path;
 
 use reel::{
-    ByteCount, MapShape, PointReads, Preallocate, ReelConfig, ReelStore, ShardShapes, SyncPolicy,
+    ByteCount, CompactRate, MapShape, PointReads, Preallocate, ReelConfig, ReelStore,
+    ShardShapes, SyncPolicy,
     MAP_EVERYTHING,
 };
 use reel_core::Store as ReelStoreTrait;
+use tape_store::ops::SliceOps;
+use tape_store::TapeStore;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
     StoreIter, StoreVolume, WriteBatch, Value};
@@ -66,6 +69,18 @@ impl ReelBridge {
     ///
     /// The set is a parameter rather than a constant because a run weighing a
     /// codec opens the same families twice and declares one of them both ways.
+    /// Open the volume a node runs on, under the node's own config
+    ///
+    /// The one entry point that is not bench scoped. Everything else in this
+    /// crate opens with `bench_config`, which turns durability off.
+    pub fn open_node(
+        root: impl AsRef<Path>,
+        compaction_mbps: u64,
+        sync_bytes: u64,
+    ) -> StoreResult<ReelBridge> {
+        ReelBridge::open(root, node_config(compaction_mbps, sync_bytes), TAPE_COLUMNS)
+    }
+
     pub fn open(
         root: impl AsRef<Path>,
         config: ReelConfig,
@@ -117,6 +132,61 @@ impl ReelBridge {
     pub fn flush(&self) -> StoreResult<()> {
         self.inner.flush().map_err(engine)
     }
+}
+
+/// The config a node opens its volume with
+///
+/// The bench config's siblings, minus everything that only makes sense when a
+/// run is about to be thrown away: durability is a real policy rather than
+/// `Never`, and the segment is the shipped size rather than one small enough
+/// that a short run still rolls.
+///
+/// The knobs that are not the default are the ones this campaign measured.
+/// `map_above` puts warm reads on the mapped path instead of a door round trip,
+/// and `point_reads` asks the page cache before queueing, which is what keeps a
+/// cold read on a path that can report an error rather than raising SIGBUS.
+///
+/// Durability is `sync_bytes` rather than a sync per put: a node writing slices
+/// in batches wants one sync per drain, and what a crash risks is the tail.
+/// Nothing here is measured yet; every read figure in this campaign was taken
+/// under `SyncPolicy::Never` and the write path has no numbers at all.
+pub fn node_config(compaction_mbps: u64, sync_bytes: u64) -> ReelConfig {
+    ReelConfig {
+        sync: match sync_bytes {
+            0 => SyncPolicy::EveryPut,
+            bytes => SyncPolicy::Bytes(ByteCount::from_bytes(bytes)),
+        },
+        compact_mbps: match compaction_mbps {
+            0 => CompactRate::Auto,
+            capped => CompactRate::Mbps(capped),
+        },
+        map_above: MAP_EVERYTHING,
+        point_reads: PointReads::Probed,
+        shard_shapes: ShardShapes::Declared,
+        ..ReelConfig::default()
+    }
+}
+
+/// The store a node runs, every tape family on one reel volume
+///
+/// This lives here rather than beside the other `TapeStore` constructors
+/// because the bridge sits above `tape-store` in the graph: it needs the tape
+/// column declarations, so `tape-store` cannot name it back. Promotion means
+/// the node calls this instead of `open_primary_split`.
+pub fn open_node_store(
+    root: impl AsRef<Path>,
+    compaction_mbps: u64,
+    sync_bytes: u64,
+) -> StoreResult<TapeStore<ReelBridge>> {
+    let root = root.as_ref();
+    std::fs::create_dir_all(root)?;
+    let store = TapeStore::new(ReelBridge::open_node(root, compaction_mbps, sync_bytes)?);
+
+    // A volume written before the size index existed reports no slice totals
+    // until the index is laid down.
+    SliceOps::ensure_slice_size_index(&store)
+        .map_err(|error| StoreError::Database(error.to_string()))?;
+    Ok(store)
 }
 
 /// A config sized for a bench rather than for a node
