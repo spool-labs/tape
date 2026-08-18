@@ -57,7 +57,6 @@ mod column;
 mod error;
 pub mod store;
 mod typed;
-mod value;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
@@ -72,6 +71,8 @@ pub use store::{
     range_of, CfDiskUsage, DiskVolume, Direction, KeyValue, Store, StoreIter, StoreVolume,
 };
 pub use typed::TypedStore;
-pub use value::Value;
+
+// The engine's value, re-exported so a caller names one type rather than two.
+pub use reel_core::Value;
 
 pub type Result<T> = std::result::Result<T, Error>;

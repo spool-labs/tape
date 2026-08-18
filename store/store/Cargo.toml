@@ -9,6 +9,10 @@ default = []
 metrics = ["tape-metrics/metrics"]
 
 [dependencies]
+# The engine's value type rather than a second one beside it. The reel is the
+# only backend this trait is going to have, so a value that can hold a window
+# into a shared block belongs here rather than being copied out at the boundary.
+reel-core = { workspace = true }
 thiserror.workspace = true
 serde.workspace = true
 wincode = "0.1"

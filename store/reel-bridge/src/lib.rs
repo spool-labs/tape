@@ -9,9 +9,9 @@
 //! Three divergences are bridged here and nowhere else:
 //!
 //! - A read answers `reel_core::Value`, a handle over the buffer the read used,
-//!   where the internal trait answers `Vec<u8>`. `Value::into_vec` moves the
-//!   buffer out when the value owns it and copies when it is a window into a
-//!   shared block, which is the read-side cost of the bridge.
+//!   and the internal trait now answers the same one, so a read crosses without
+//!   a copy at all: the store crate re-exports `reel_core::Value` rather than
+//!   keeping a second value type beside it.
 //! - A batch names its family by `Cow<'static, str>` rather than `String`, and
 //!   is consumed rather than iterated by reference. The internal `WriteBatch`
 //!   grew an `IntoIterator` so the bridge hands payloads over instead of cloning
@@ -236,44 +236,28 @@ fn rows(iter: reel_core::StoreIter<'_>) -> StoreIter<'_> {
     Box::new(iter.map(|(key, value)| (key, value.into_vec())))
 }
 
-/// One value the vendored trait lends, as one the internal trait carries
-///
-/// The buffer moves where the read owned it. A window into a block the reel
-/// shares with its neighbours still copies, since the internal value has no way
-/// to hold the block alive; that is the remaining copy on the read path.
-fn crossed_value(value: reel_core::Value) -> Value {
-    Value::new(value.into_vec())
-}
-
-/// Values the vendored trait lends, as values the internal one carries
-fn owned(values: Vec<Option<reel_core::Value>>) -> Vec<Option<Value>> {
-    values.into_iter().map(|value| value.map(crossed_value)).collect()
-}
 
 impl Store for ReelBridge {
     fn get(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
         ReelStoreTrait::get(&self.inner, cf, key)
-            .map(|value| value.map(crossed_value))
+            
             .map_err(crossed)
     }
 
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
-        ReelStoreTrait::get_many(&self.inner, cf, keys)
-            .map(owned)
-            .map_err(crossed)
+        ReelStoreTrait::get_many(&self.inner, cf, keys).map_err(crossed)
     }
 
     async fn get_wait(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
         ReelStoreTrait::get_wait(&self.inner, cf, key)
             .await
-            .map(|value| value.map(crossed_value))
+            
             .map_err(crossed)
     }
 
     async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
         ReelStoreTrait::get_many_wait(&self.inner, cf, keys)
             .await
-            .map(owned)
             .map_err(crossed)
     }
 
@@ -285,7 +269,7 @@ impl Store for ReelBridge {
         len: usize,
     ) -> StoreResult<Option<Value>> {
         ReelStoreTrait::get_range(&self.inner, cf, key, offset, len)
-            .map(|value| value.map(crossed_value))
+            
             .map_err(crossed)
     }
 
@@ -298,7 +282,7 @@ impl Store for ReelBridge {
     ) -> StoreResult<Option<Value>> {
         ReelStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
             .await
-            .map(|value| value.map(crossed_value))
+            
             .map_err(crossed)
     }
 

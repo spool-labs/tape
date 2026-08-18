@@ -292,10 +292,7 @@ pub trait Store: Send + Sync {
 
 /// The window of a value a ranged read asks for, clamped rather than refused
 pub fn range_of(value: Value, offset: u64, len: usize) -> Value {
-    let held = value.len();
-    let at = offset.min(held as u64) as usize;
-    let end = at.saturating_add(len).min(held);
-    Value::new(value[at..end].to_vec())
+    reel_core::store::range_of(value, offset, len)
 }
 
 #[cfg(test)]
@@ -305,22 +302,22 @@ mod tests {
     // a window inside the value comes back whole
     #[test]
     fn window_inside() {
-        assert_eq!(range_of(Value::new(b"abcdefgh".to_vec()), 2, 3).as_slice(), b"cde");
-        assert_eq!(range_of(Value::new(b"abcdefgh".to_vec()), 0, 8).as_slice(), b"abcdefgh");
+        assert_eq!(range_of(Value::new(b"abcdefgh".to_vec()), 2, 3).as_ref() as &[u8], b"cde");
+        assert_eq!(range_of(Value::new(b"abcdefgh".to_vec()), 0, 8).as_ref() as &[u8], b"abcdefgh");
     }
 
     // a window running past the end stops at the end
     #[test]
     fn window_over() {
-        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 2, 99).as_slice(), b"cd");
-        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 0, usize::MAX).as_slice(), b"abcd");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 2, 99).as_ref() as &[u8], b"cd");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 0, usize::MAX).as_ref() as &[u8], b"abcd");
     }
 
     // an offset at or past the end answers no bytes
     #[test]
     fn window_beyond() {
-        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 4, 2).as_slice(), b"");
-        assert_eq!(range_of(Value::new(b"abcd".to_vec()), u64::MAX, 2).as_slice(), b"");
-        assert_eq!(range_of(Value::new(Vec::new()), 0, 2).as_slice(), b"");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), 4, 2).as_ref() as &[u8], b"");
+        assert_eq!(range_of(Value::new(b"abcd".to_vec()), u64::MAX, 2).as_ref() as &[u8], b"");
+        assert_eq!(range_of(Value::new(Vec::new()), 0, 2).as_ref() as &[u8], b"");
     }
 }
