@@ -37,7 +37,10 @@ mod split;
 
 use std::path::Path;
 
-use reel::{ByteCount, MapShape, Preallocate, ReelConfig, ReelStore, ShardShapes, SyncPolicy};
+use reel::{
+    ByteCount, MapShape, Preallocate, ReelConfig, ReelStore, ShardShapes, SyncPolicy,
+    MAP_EVERYTHING,
+};
 use reel_core::Store as ReelStoreTrait;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
@@ -116,14 +119,21 @@ impl ReelBridge {
 /// segment it never fills. Syncing is left to the caller's flush, matching a
 /// RocksDB arm that does not fsync per write either.
 pub fn bench_config(segment_bytes: u64) -> ReelConfig {
+    let default = ReelConfig::default();
     ReelConfig {
         segment_bytes: ByteCount::from_bytes(segment_bytes),
+        // A small segment cannot reserve a chunk larger than itself, and a run
+        // sweeping segment sizes has no reason to know that.
+        alloc_chunk: ByteCount::from_bytes(default.alloc_chunk.to_bytes().min(segment_bytes)),
         preallocate: Preallocate::Chunk,
         sync: SyncPolicy::Never,
         // Without this the engine drops every open-shard request a column makes
         // and hands back a tree, so a run measuring the shape would measure the
         // default and never say so.
         shard_shapes: ShardShapes::Declared,
+        // The mapped read path is gated on this and the default forbids it, so
+        // every warm read pays a door round trip it does not need.
+        map_above: MAP_EVERYTHING,
         ..ReelConfig::default()
     }
 }

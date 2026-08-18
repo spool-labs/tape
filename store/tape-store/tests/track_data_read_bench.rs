@@ -90,8 +90,8 @@ fn best<F: FnMut() -> usize>(mut f: F, expect: usize) -> Duration {
 
 fn sweep<A: BenchArm>() {
     println!(
-        "{:>7}  {:>7}  {:>9}  {:>7}  {:>12}  {:>12}  {:>11}   (warm)",
-        "engine", "fill", "rows", "batch", "total", "per read", "on disk"
+        "{:>7}  {:>7}  {:>9}  {:>7}  {:>12}  {:>12}  {:>11}  {:>11}   (warm)",
+        "engine", "fill", "rows", "batch", "total", "per read", "live", "files"
     );
 
     for fill in [Fill::Random, Fill::Packed] {
@@ -108,9 +108,19 @@ fn sweep<A: BenchArm>() {
         }
         A::settle(&store);
 
-        // What the rows actually cost on the device, which is the half of a
-        // codec's answer that latency never shows.
-        let on_disk = store.inner().inner().actual_size_bytes().unwrap_or(0);
+        // Two figures, because they answer different questions. Files on disk
+        // include whatever an engine reserved ahead of writing, so an engine
+        // that preallocates looks enormous beside one that does not. Live bytes
+        // are what each engine says it is actually holding, which is the one to
+        // compare a codec on.
+        let files = store.inner().inner().actual_size_bytes().unwrap_or(0);
+        let live = store
+            .inner()
+            .inner()
+            .live_data_size_bytes()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
 
         // Strided rather than sequential, so the read order is not the write
         // order and the shard is asked for a scattered key the way a node asks.
@@ -142,10 +152,11 @@ fn sweep<A: BenchArm>() {
             let per_read = elapsed / probes as u32;
             let engine = A::NAME;
             let label = fill.label();
-            let disk_mib = on_disk as f64 / (1024.0 * 1024.0);
+            let live_mib = live as f64 / (1024.0 * 1024.0);
+            let files_mib = files as f64 / (1024.0 * 1024.0);
             println!(
                 "{engine:>7}  {label:>7}  {count:>9}  {batch:>7}  {elapsed:>12.2?}  \
-                 {per_read:>12.2?}  {disk_mib:>8.1} MiB"
+                 {per_read:>12.2?}  {live_mib:>8.1} MiB  {files_mib:>8.1} MiB"
             );
         }
     }
