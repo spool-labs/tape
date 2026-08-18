@@ -37,6 +37,26 @@ const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> Column
     }
 }
 
+/// A fixed-width column whose small values ride in the sealed row beside the key
+///
+/// A read then answers from the footer rather than from the volume, which is the
+/// difference between a device round trip and none. Only worth it where the
+/// values are small and bounded: the carry is paid in the stride of every block
+/// search and in the footer bytes of every sealed segment.
+const fn carried(id: u8, name: &'static str, width: u16, shard_bytes: u8, carry: u16) -> ColumnSpec {
+    ColumnSpec {
+        id: ColumnId(id),
+        name,
+        key_width: KeyWidth::Fixed(width),
+        shard_bytes,
+        inline_max: 0,
+        row_carry: carry,
+        purge_mark: None,
+        codec: Codec::None,
+        map_shape: MapShape::Tree,
+    }
+}
+
 /// A column with nothing declared about its keys beyond that they are keys
 const fn plain(id: u8, name: &'static str) -> ColumnSpec {
     ColumnSpec {
