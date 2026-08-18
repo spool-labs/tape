@@ -13,6 +13,9 @@ pub trait TapeOps {
     /// Get tape info by address
     fn get_tape(&self, tape_address: Address) -> Result<Option<TapeInfo>>;
 
+    /// Get tape info for several addresses, answered in the order asked
+    fn get_tapes(&self, tape_addresses: &[Address]) -> Result<Vec<Option<TapeInfo>>>;
+
     /// Store tape info
     fn put_tape(&self, tape_address: Address, info: TapeInfo) -> Result<()>;
 
@@ -26,6 +29,10 @@ pub trait TapeOps {
 impl<S: Store> TapeOps for TapeStore<S> {
     fn get_tape(&self, tape_address: Address) -> Result<Option<TapeInfo>> {
         Ok(self.get::<TapeCol>(&tape_address)?)
+    }
+
+    fn get_tapes(&self, tape_addresses: &[Address]) -> Result<Vec<Option<TapeInfo>>> {
+        Ok(self.get_many::<TapeCol>(tape_addresses)?)
     }
 
     fn put_tape(&self, tape_address: Address, info: TapeInfo) -> Result<()> {

@@ -7,6 +7,7 @@ use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
+use tape_core::track::types::CompressedTrack;
 use tape_store::{
     TapeStore,
     ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
@@ -121,9 +122,15 @@ async fn sweep_uncertified_tracks<Db: Store>(
             break;
         }
 
-        for (track, info) in &tracks {
-            let object = store.get_object_info(*track).map_err(store_error)?;
+        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
+        for (track, _) in &tracks {
+            addresses.push(*track);
+        }
+        // One call for the batch's certify status, since the decision is per row
+        // but the read need not be.
+        let objects = store.get_object_infos(&addresses).map_err(store_error)?;
 
+        for ((track, info), object) in tracks.iter().zip(objects) {
             if let Some(ObjectInfo::Valid {
                 certified_epoch: None,
                 registered_epoch,
@@ -201,8 +208,21 @@ async fn sweep_orphan_tracks<Db: Store>(
             break;
         }
 
+        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
+        let mut tapes: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track, info) in &tracks {
-            if store.get_tape(info.tape).map_err(store_error)?.is_none() {
+            addresses.push(*track);
+            tapes.push(info.tape);
+        }
+        // Both of the batch's reads once each. Tracks of one tape ask for it
+        // repeatedly, which a batch answers as cheaply as it answers the rest.
+        let parents = store.get_tapes(&tapes).map_err(store_error)?;
+        let objects = store.get_object_infos(&addresses).map_err(store_error)?;
+
+        for (((track, info), parent), object) in
+            tracks.iter().zip(parents).zip(objects)
+        {
+            if parent.is_none() {
                 if !at_tip {
                     continue;
                 }
@@ -217,7 +237,7 @@ async fn sweep_orphan_tracks<Db: Store>(
                 continue;
             }
 
-            let reclaim = match store.get_object_info(*track).map_err(store_error)? {
+            let reclaim = match object {
                 Some(object) if object.is_live() => false,
                 Some(_) => true,
                 None => at_tip,
@@ -256,8 +276,18 @@ async fn sweep_orphan_slices<Db: Store>(
                 break;
             }
 
+            let mut addresses: Vec<Address> = Vec::with_capacity(slices.len());
             for (track, _) in &slices {
-                if should_delete_slice(store, pending, at_tip, spool_id, *track)? {
+                addresses.push(*track);
+            }
+            // Both reads the decision needs, once each for the page. The object
+            // read was conditional per row and is unconditional per batch, which
+            // trades a few small values read for a round trip a row.
+            let in_store = store.get_tracks(&addresses).map_err(store_error)?;
+            let objects = store.get_object_infos(&addresses).map_err(store_error)?;
+
+            for ((track, held), object) in addresses.iter().zip(in_store).zip(objects) {
+                if should_delete_slice(pending, at_tip, spool_id, *track, held, object) {
                     // An orphan slice has no track record, so it was never in
                     // the sample set and leaves nothing behind.
                     store.delete_slice(spool_id, *track).map_err(store_error)?;
@@ -304,31 +334,34 @@ async fn sweep_stale_recoveries<Db: Store>(
     Ok(())
 }
 
-fn should_delete_slice<Db: Store>(
-    store: &TapeStore<Db>,
+/// Whether one slice has outlived the track it belongs to
+///
+/// Reads nothing: the page it belongs to read the track and its object info in
+/// one call apiece, so the decision is arithmetic on what came back.
+fn should_delete_slice(
     pending: &PendingTracks,
     at_tip: bool,
     spool_id: SpoolIndex,
     track: Address,
-) -> Result<bool, NodeError> {
-    let in_store = store.get_track(track).map_err(store_error)?;
-
+    in_store: Option<CompressedTrack>,
+    object: Option<ObjectInfo>,
+) -> bool {
     let Some(track_info) = pending.apply_to_track(track, in_store) else {
-        return Ok(at_tip);
+        return at_tip;
     };
 
     if !track_info.group.contains(spool_id) {
-        return Ok(true);
+        return true;
     }
 
     if in_store.is_none() {
-        return Ok(false);
+        return false;
     }
 
-    match store.get_object_info(track).map_err(store_error)? {
-        Some(object) if object.is_live() => Ok(false),
-        Some(_) => Ok(true),
-        None => Ok(at_tip),
+    match object {
+        Some(object) if object.is_live() => false,
+        Some(_) => true,
+        None => at_tip,
     }
 }
 
@@ -339,7 +372,11 @@ fn recovery_is_stale<Db: Store>(
     spool_id: SpoolIndex,
     track: Address,
 ) -> Result<bool, NodeError> {
-    should_delete_slice(store, pending, at_tip, spool_id, track)
+    let in_store = store.get_track(track).map_err(store_error)?;
+    let object = store.get_object_info(track).map_err(store_error)?;
+    Ok(should_delete_slice(
+        pending, at_tip, spool_id, track, in_store, object,
+    ))
 }
 
 fn track_batch(config: &GcConfig) -> usize {
@@ -820,9 +857,23 @@ mod tests {
         store.put_slice(spool_id, track, vec![1, 2, 3]).unwrap();
 
         // Behind the durable tip: "absent locally" is ambiguous, so defer.
-        assert!(!should_delete_slice(&store, &pending, false, spool_id, track).unwrap());
+        assert!(!should_delete_slice(
+            &pending,
+            false,
+            spool_id,
+            track,
+            store.get_track(track).unwrap(),
+            store.get_object_info(track).unwrap(),
+        ));
         // Caught up: the track is genuinely absent on-chain, so reclaim.
-        assert!(should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
+        assert!(should_delete_slice(
+            &pending,
+            true,
+            spool_id,
+            track,
+            store.get_track(track).unwrap(),
+            store.get_object_info(track).unwrap(),
+        ));
     }
 
     #[tokio::test]
@@ -843,7 +894,14 @@ mod tests {
         );
         store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
 
-        assert!(!should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
+        assert!(!should_delete_slice(
+            &pending,
+            true,
+            spool_id,
+            track,
+            store.get_track(track).unwrap(),
+            store.get_object_info(track).unwrap(),
+        ));
     }
 
     // a deleted track keeps its slices while a round can still draw it, and only
