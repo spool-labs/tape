@@ -311,40 +311,35 @@ fn store_io_stats(families: &[MetricFamily]) -> StoreIo {
     io
 }
 
-/// Real slice count across the node's spools. The RocksDB key estimate is
-/// unreliable for the blob-backed slice column, so count keys directly, but
-/// cache the result: the count is a full key scan and the board polls hot.
+/// Slices held and the bytes they occupy, from the slice column's own totals.
+///
+/// A backend that cannot weigh the column without reading it answers no bytes,
+/// which is reported as zero rather than as the volume's whole footprint.
+/// Cached either way: a backend that has to walk the column to answer makes
+/// this a full key scan, and the board polls hot.
 fn stored_slices<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-) -> u64
+) -> (u64, u64)
 where
     Db: Store + 'static,
     Cluster: Api,
     Blockchain: Rpc,
 {
     const SLICE_COUNT_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-    static CACHE: Mutex<Option<(Instant, u64)>> = Mutex::new(None);
+    static CACHE: Mutex<Option<(Instant, u64, u64)>> = Mutex::new(None);
     static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-    fn refresh<Db: Store>(store: &tape_store::TapeStore<Db>) -> u64 {
-        let count = store
-            .iter_all_spools()
-            .map(|spools| {
-                spools
-                    .iter()
-                    .map(|(id, _)| store.count_slices_by_spool(*id).unwrap_or(0) as u64)
-                    .sum()
-            })
-            .unwrap_or(0);
+    fn refresh<Db: Store>(store: &tape_store::TapeStore<Db>) -> (u64, u64) {
+        let (count, bytes) = store.slice_totals().unwrap_or((0, None));
+        let bytes = bytes.unwrap_or_default().as_u64();
         if let Ok(mut cache) = CACHE.lock() {
-            *cache = Some((Instant::now(), count));
+            *cache = Some((Instant::now(), count, bytes));
         }
-        count
+        (count, bytes)
     }
 
-    // Serve the cached count and refresh it off the request path: the count is
-    // a full key scan and the board polls hot.
-    if let Some((at, count)) = CACHE.lock().ok().and_then(|cache| *cache) {
+    // Serve the cached totals and refresh them off the request path.
+    if let Some((at, count, bytes)) = CACHE.lock().ok().and_then(|cache| *cache) {
         if at.elapsed() >= SLICE_COUNT_TTL
             && !REFRESHING.swap(true, std::sync::atomic::Ordering::AcqRel)
         {
@@ -354,7 +349,7 @@ where
                 REFRESHING.store(false, std::sync::atomic::Ordering::Release);
             });
         }
-        return count;
+        return (count, bytes);
     }
 
     refresh(&context.store)
@@ -380,17 +375,16 @@ where
     let metrics = context.metrics.snapshot();
     let volumes = backend.disk_volumes().unwrap_or_default();
     let store_disk_bytes = volumes.iter().map(|v| v.used_bytes).sum();
-    let slice_payload_bytes = volumes
-        .iter()
-        .find(|v| matches!(v.volume, StoreVolume::Bulk))
-        .map(|v| v.used_bytes)
-        .unwrap_or(0);
+    // Slice bytes come from the slice column, not from the volume holding it:
+    // the reel presents one volume tagged Bulk, so reading that volume's usage
+    // as the slice payload counts every other family as slices too.
+    let (slices_stored, slice_payload_bytes) = stored_slices(context);
 
     NodeStats {
         version: crate::VERSION.to_string(),
         owned_spools: context.my_spools().len() as u64,
         tracks_stored: estimate(TrackCol::CF_NAME),
-        slices_stored: stored_slices(context),
+        slices_stored,
         slice_payload_bytes,
         store_disk_bytes,
         free_disk_bytes: backend.available_disk_bytes().ok().flatten().unwrap_or(0),
