@@ -162,7 +162,7 @@ tape:
 	cargo build --release -p tape
 
 # Build the deploy binaries for x86_64 Linux. Native on Linux; on macOS they
-# build in a linux container, since RocksDB and vendored openssl choke under a
+# build in a linux container, since vendored openssl chokes under a
 # host cross-compiler. Artifacts land where the deploy tooling and ansible
 # trees expect them: target/x86_64-unknown-linux-gnu/release/.
 # No docker? Use the DO builder: `tape-network build-linux`.

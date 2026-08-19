@@ -3,7 +3,7 @@
 //! This example demonstrates:
 //! - Using TapeStore with MemoryStore backend (no filesystem)
 //! - Quick setup for unit tests
-//! - All operations work identically to RocksDB backend
+//! - All operations work identically to the reel backend a node runs on
 //!
 //! Run with: cargo run --example in_memory
 

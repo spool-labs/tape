@@ -69,7 +69,7 @@ pub struct NodeConfig {
     #[serde(default)]
     pub eviction: EvictionConfig,
 
-    /// Local RocksDB storage settings.
+    /// Local reel volume settings.
     #[serde(default)]
     pub store: StoreConfig,
 

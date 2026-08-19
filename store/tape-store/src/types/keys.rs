@@ -1,6 +1,7 @@
 //! Key types with big-endian encoding for proper lexicographic sorting
 //!
-//! All composite keys use big-endian encoding to ensure proper ordering in RocksDB:
+//! All composite keys use big-endian encoding so a byte-ordered column walks
+//! them in numeric order:
 //! - EpochKey: epoch BE (8 bytes)
 //! - UnitKey: empty (0 bytes)
 //! - SpoolIndexKey: spool_id BE (2 bytes)

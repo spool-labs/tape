@@ -1068,7 +1068,7 @@ mod tests {
     #[test]
     fn switch_error() {
         let reads = FakeReads {
-            killed: Err("rocksdb unavailable".to_string()),
+            killed: Err("store unavailable".to_string()),
             ..FakeReads::default()
         };
         let decision = decide(
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn credential_error() {
         let reads = FakeReads {
-            credential: Err("rocksdb unavailable".to_string()),
+            credential: Err("store unavailable".to_string()),
             ..FakeReads::default()
         };
         let decision = decide(
@@ -1111,7 +1111,7 @@ mod tests {
         let credential = active_credential(principal, CredentialCaps::all(), CredentialScope::AnyOwned);
         let reads = FakeReads {
             credential: Ok(Some(credential)),
-            policy: Err("rocksdb unavailable".to_string()),
+            policy: Err("store unavailable".to_string()),
             ..FakeReads::default()
         };
         let decision = decide(

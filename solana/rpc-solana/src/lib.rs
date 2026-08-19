@@ -12,7 +12,7 @@
 //!
 //! ## Pattern
 //!
-//! This follows the same pattern as `store-rocks/` in `tapedrive/archive/`:
+//! One trait, one production backend, test backends beside it:
 //! ```text
 //! tape-rpc (trait)  →  rpc-solana (production) | test backends
 //!                           ↓

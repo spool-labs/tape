@@ -587,7 +587,7 @@ fn node_status_label(status: &NodeStatus) -> &'static str {
 }
 
 /// Assemble one board. All reads are cheap in-memory state and a couple of
-/// RocksDB property reads, so this is safe to poll every second.
+/// index-counter reads, so this is safe to poll every second.
 pub fn build<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Board

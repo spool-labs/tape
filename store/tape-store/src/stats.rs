@@ -1,7 +1,7 @@
 //! Store size and composition stats.
 //!
-//! Reads the cheap RocksDB introspection surface — per-column-family on-disk
-//! size and estimated key counts, per-volume disk usage — and derives the
+//! Reads the engine's cheap introspection surface — per-column-family on-disk
+//! size and key counts, per-volume disk usage — and derives the
 //! metadata-versus-slice-data split and the metadata overhead the store CLI
 //! reports. Every figure is a cheap property read, safe to call on a live
 //! store; nothing here scans keys or values.

@@ -6,7 +6,7 @@
 //! # Available Backends
 //!
 //! - `store-memory`: In-memory HashMap-based storage (for testing)
-//! - `store-rocks`: RocksDB-based persistent storage (for production)
+//! - `reel-bridge`: the reel engine, which is what a node runs on
 //!
 //! The crate offers both low-level byte-oriented access via the `Store` trait
 //! and high-level typed access via the `TypedStore` wrapper with `Column` definitions.
