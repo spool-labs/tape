@@ -57,6 +57,9 @@ pub use arm::{
     scaled, track_data_codec, BenchArm, SCALE_VAR, SEGMENT_MIB_VAR, TRACK_DATA_CODEC_VAR,
 };
 pub use columns::{RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS};
+// Re-exported so a tool opening a node's volume needs this crate and not the
+// engine behind it.
+pub use reel::IndexResidency;
 #[cfg(feature = "rocks")]
 pub use rocks::{
     bench_bulk_configs, bench_cache, bench_db_options, bench_metadata_configs, bench_store_configs,
@@ -124,6 +127,22 @@ impl ReelBridge {
         let root = root.as_ref();
         std::fs::create_dir_all(root)?;
         let inner = ReelStore::open(root.to_path_buf(), config, columns).map_err(engine)?;
+        Ok(ReelBridge { inner })
+    }
+
+    /// Open an existing volume read-only, leaving its ownership lock alone
+    ///
+    /// No directory is created: a path with no volume under it is a mistyped
+    /// path, and answering it with an empty store would report a node holding
+    /// nothing.
+    pub fn open_read_only(
+        root: impl AsRef<Path>,
+        config: ReelConfig,
+        columns: reel::ColumnSet,
+    ) -> StoreResult<ReelBridge> {
+        let root = root.as_ref();
+        let inner =
+            ReelStore::open_read_only(root.to_path_buf(), config, columns).map_err(engine)?;
         Ok(ReelBridge { inner })
     }
 
@@ -285,6 +304,36 @@ pub fn open_node_store(
         compaction_mbps,
         sync_bytes,
         backend,
+    )?))
+}
+
+/// The config an offline tool reads a node's volume under
+///
+/// The node's own shape declarations, because a column read under a different
+/// declaration is a column the engine refuses to serve. Durability and the
+/// compaction ceiling are the node's and irrelevant here: nothing writes.
+/// Residency is the caller's, since it is the one thing a reader trades:
+/// resident answers what a column holds, paged answers which sealed segments
+/// stand over it and fits a volume larger than the memory reading it.
+pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
+    ReelConfig {
+        index: residency,
+        ..node_config(0, DEFAULT_SYNC_BYTES, default_backend())
+    }
+}
+
+/// A tape store over a node's volume, read-only and without its lock
+///
+/// What every offline tool opens: it reads beside a running node rather than
+/// waiting for one to stop.
+pub fn open_node_store_read_only(
+    root: impl AsRef<Path>,
+    residency: IndexResidency,
+) -> StoreResult<TapeStore<ReelBridge>> {
+    Ok(TapeStore::new(ReelBridge::open_read_only(
+        root,
+        read_only_config(residency),
+        TAPE_COLUMNS,
     )?))
 }
 
