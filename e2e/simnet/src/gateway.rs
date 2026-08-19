@@ -23,6 +23,8 @@ use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::core::error::NodeError;
 use tempfile::TempDir;
+
+use crate::node_volume;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tracing::Instrument;
@@ -78,7 +80,7 @@ impl TestGateway {
             admission: None,
             context: None,
             runtime: None,
-            store_dir: TempDir::new().context("gateway store dir")?,
+            store_dir: node_volume()?,
         })
     }
 

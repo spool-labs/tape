@@ -20,6 +20,8 @@ use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
 use tempfile::TempDir;
+
+use crate::node_volume;
 use tokio::time::Duration;
 use tracing::Instrument;
 
@@ -95,7 +97,7 @@ impl TestNode {
             context: None,
             test_config: TestConfig::new(mode, stop_timeout),
             runtime: None,
-            store_dir: TempDir::new().context("node store dir")?,
+            store_dir: node_volume()?,
         })
     }
 
