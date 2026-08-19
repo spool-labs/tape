@@ -11,7 +11,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use reel_bridge::ReelBridge;
+use reel_store::ReelStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
@@ -31,7 +31,7 @@ use tracing::Instrument;
 
 use crate::tls;
 
-type TestGatewayContext = Arc<NodeContext<ReelBridge, HttpApi, LiteSvmRpc>>;
+type TestGatewayContext = Arc<NodeContext<ReelStore, HttpApi, LiteSvmRpc>>;
 
 /// One simulated read gateway on its own reel volume, with a public HTTP server.
 pub struct TestGateway {
@@ -334,7 +334,7 @@ impl TestGateway {
     }
 
     async fn build_context(&self) -> Result<TestGatewayContext> {
-        let store = reel_bridge::open_harness_store(self.store_dir.path())
+        let store = reel_store::open_harness_store(self.store_dir.path())
             .context("open gateway store")?;
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());
@@ -359,7 +359,7 @@ impl TestGateway {
                 .context("build gateway HttpApi")?,
         );
 
-        let context = NodeContextBuilder::<ReelBridge, HttpApi, LiteSvmRpc>::new(
+        let context = NodeContextBuilder::<ReelStore, HttpApi, LiteSvmRpc>::new(
             self.app_config.clone(),
             clone_keypair(&self.keypair),
             self.bls_keypair,

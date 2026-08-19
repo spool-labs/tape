@@ -11,7 +11,7 @@ use store_rocks::SplitStore;
 use tape_store::TapeStore;
 
 use crate::{
-    bench_config, open_bench_split, MetaBulkStore, ReelBridge, RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS,
+    bench_config, open_bench_split, MetaBulkStore, ReelStore, RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS,
 };
 
 /// Segment size a reel arm opens with, in MiB, unless the environment names another
@@ -98,11 +98,11 @@ impl BenchArm for SplitStore {
     }
 }
 
-impl BenchArm for ReelBridge {
+impl BenchArm for ReelStore {
     const NAME: &'static str = "reel";
 
     fn open_bench(root: &Path) -> TapeStore<Self> {
-        TapeStore::new(ReelBridge::open(root, reel_config(), reel_columns()).expect("open reel"))
+        TapeStore::new(ReelStore::open(root, reel_config(), reel_columns()).expect("open reel"))
     }
 
     fn settle(store: &TapeStore<Self>) {

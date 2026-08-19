@@ -35,9 +35,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use reel_bridge::fill::{markdown, random};
-use reel_bridge::written::Written;
-use reel_bridge::{scaled, BenchArm, IndexReport, ReelBridge};
+use reel_store::fill::{markdown, random};
+use reel_store::written::Written;
+use reel_store::{scaled, BenchArm, IndexReport, ReelStore};
 use store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
@@ -123,7 +123,7 @@ impl SliceArm for SplitStore {
     }
 }
 
-impl SliceArm for ReelBridge {
+impl SliceArm for ReelStore {
     fn index_report(store: &TapeStore<Self>) -> Option<IndexReport> {
         Some(store.inner().inner().index_report())
     }
@@ -322,7 +322,7 @@ fn slice_bytes_rocks_small() {
 #[test]
 #[ignore = "byte-count benchmark; run with --ignored --nocapture"]
 fn slice_bytes_reel_small() {
-    sweep::<ReelBridge>(&SMALL);
+    sweep::<ReelStore>(&SMALL);
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn slice_bytes_rocks_medium() {
 #[test]
 #[ignore = "byte-count benchmark; run with --ignored --nocapture"]
 fn slice_bytes_reel_medium() {
-    sweep::<ReelBridge>(&MEDIUM);
+    sweep::<ReelStore>(&MEDIUM);
 }
 
 #[test]
@@ -346,5 +346,5 @@ fn slice_bytes_rocks_large() {
 #[test]
 #[ignore = "byte-count benchmark; run with --ignored --nocapture"]
 fn slice_bytes_reel_large() {
-    sweep::<ReelBridge>(&LARGE);
+    sweep::<ReelStore>(&LARGE);
 }

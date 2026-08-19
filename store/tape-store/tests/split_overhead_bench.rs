@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use reel_bridge::{
-    bench_cache, bench_db_options, bench_store_configs, scaled, BenchArm, MetaBulkStore, ReelBridge,
+use reel_store::{
+    bench_cache, bench_db_options, bench_store_configs, scaled, BenchArm, MetaBulkStore, ReelStore,
 };
 use store::Store;
 use store_rocks::{RocksStore, SplitStore};
@@ -57,7 +57,7 @@ impl Flush for SplitStore {
     }
 }
 
-impl Flush for ReelBridge {
+impl Flush for ReelStore {
     fn flush_store(&self) {
         self.flush().unwrap();
     }
@@ -232,7 +232,7 @@ fn store_layout_overhead() {
     {
         let dir = TempDir::new().unwrap();
         let t = Instant::now();
-        let store = ReelBridge::open_bench(&dir.path().join("db"));
+        let store = ReelStore::open_bench(&dir.path().join("db"));
         run_arm("reel-everything", store, t.elapsed(), &payload);
     }
 

@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use reel_bridge::{scaled, BenchArm, MetaBulkStore, ReelBridge};
+use reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use store::{Column, Direction};
 use store_rocks::SplitStore;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
@@ -93,7 +93,7 @@ fn keys_only_vs_value_reading_count_rocks() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn keys_only_vs_value_reading_count_reel() {
-    sweep::<ReelBridge>();
+    sweep::<ReelStore>();
 }
 
 #[test]

@@ -8,12 +8,12 @@
 //! owned per-record put and the batch both hand the buffer over.
 //!
 //! Ignored by default. Run with:
-//!   cargo test -p reel-bridge --test put_doors --release -- --ignored --nocapture
+//!   cargo test -p reel-store --test put_doors --release -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 
 use reel::{ColumnId, KeyBytes, RecordKey, SEGMENT_SUFFIX};
-use reel_bridge::{bench_config, ReelBridge, TAPE_COLUMNS};
+use reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
 use store::{Store, WriteBatch};
 use tape_store::columns::ALL_COLUMN_FAMILIES;
 use tempfile::TempDir;
@@ -71,14 +71,14 @@ struct Round {
 fn run_variant(variant: usize, size: usize) -> Round {
     let dir = TempDir::new().expect("tempdir");
     let root = dir.path().join("db");
-    let bridge = ReelBridge::open(&root, bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open reel");
+    let store = ReelStore::open(&root, bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open reel");
     let cf = ALL_COLUMN_FAMILIES[13];
 
     let payload = vec![0xABu8; size];
     let mut elapsed = Duration::ZERO;
     let mut slowest = Duration::ZERO;
     let faults_before = minor_faults();
-    let syncs_before = bridge.engine().sync_count();
+    let syncs_before = store.engine().sync_count();
 
     for at in 0..COUNT {
         let key = slice_key(at);
@@ -89,26 +89,26 @@ fn run_variant(variant: usize, size: usize) -> Round {
             // engine takes a buffer of its own before it can queue it.
             0 => {
                 let value = encode(&payload);
-                bridge.put(cf, &key, &value).expect("put");
+                store.put(cf, &key, &value).expect("put");
             }
-            // The same copy, with the bridge and the trait taken out of it.
+            // The same copy, straight at the engine with the trait taken out of it.
             1 => {
                 let value = encode(&payload);
                 let record = RecordKey::new(SLICE_COLUMN, KeyBytes::new(&key).expect("key"));
-                bridge.engine().put(&record, &value).expect("raw put");
+                store.engine().put(&record, &value).expect("raw put");
             }
             // The per-record door with the buffer handed over rather than lent.
             2 => {
                 let value = encode(&payload);
                 let record = RecordKey::new(SLICE_COLUMN, KeyBytes::new(&key).expect("key"));
-                bridge.engine().put_owned(&record, value).expect("put owned");
+                store.engine().put_owned(&record, value).expect("put owned");
             }
             // The batch door, which has taken owned payloads all along.
             _ => {
                 let value = encode(&payload);
                 let mut batch = WriteBatch::new();
                 batch.put_owned(cf, key.clone(), value);
-                bridge.write_batch(batch).expect("batch");
+                store.write_batch(batch).expect("batch");
             }
         }
         let took = start.elapsed();
@@ -117,8 +117,8 @@ fn run_variant(variant: usize, size: usize) -> Round {
     }
 
     let faults = minor_faults().saturating_sub(faults_before);
-    let syncs = bridge.engine().sync_count().saturating_sub(syncs_before);
-    bridge.flush().expect("flush");
+    let syncs = store.engine().sync_count().saturating_sub(syncs_before);
+    store.flush().expect("flush");
     let segments = std::fs::read_dir(&root)
         .map(|entries| {
             entries

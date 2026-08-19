@@ -1,8 +1,8 @@
 [package]
-name = "reel-bridge"
+name = "reel-store"
 version.workspace = true
 edition.workspace = true
-description = "Bench-scoped bridge from the internal store trait onto the public reel engine"
+description = "The node's store: tapedrive's columns on the reel engine"
 
 [dependencies]
 store.workspace = true
@@ -17,7 +17,7 @@ rocks = ["dep:store-rocks", "tape-store/rocks"]
 
 [dev-dependencies]
 # The arm is bench-scoped, so the benches ask for it and a node never does.
-reel-bridge = { path = ".", features = ["rocks"] }
+reel-store = { path = ".", features = ["rocks"] }
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 tape-core.workspace = true
 tape-crypto.workspace = true

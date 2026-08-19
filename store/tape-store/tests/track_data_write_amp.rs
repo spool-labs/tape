@@ -34,9 +34,9 @@
 
 use std::path::{Path, PathBuf};
 
-use reel_bridge::fill::{markdown, random};
-use reel_bridge::written::Written;
-use reel_bridge::{scaled, track_data_codec, BenchArm, ReelBridge};
+use reel_store::fill::{markdown, random};
+use reel_store::written::Written;
+use reel_store::{scaled, track_data_codec, BenchArm, ReelStore};
 use store_rocks::SplitStore;
 use tape_core::track::data::BlobData;
 use tape_crypto::address::Address;
@@ -225,7 +225,7 @@ fn write_amp_rocks_small() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn write_amp_reel_small() {
-    sweep::<ReelBridge>(&SMALL, Fill::Random);
+    sweep::<ReelStore>(&SMALL, Fill::Random);
 }
 
 #[test]
@@ -237,7 +237,7 @@ fn write_amp_rocks_medium() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn write_amp_reel_medium() {
-    sweep::<ReelBridge>(&MEDIUM, Fill::Random);
+    sweep::<ReelStore>(&MEDIUM, Fill::Random);
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn write_amp_rocks_large() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn write_amp_reel_large() {
-    sweep::<ReelBridge>(&LARGE, Fill::Random);
+    sweep::<ReelStore>(&LARGE, Fill::Random);
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn codec_rocks_medium() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn codec_reel_medium() {
-    sweep::<ReelBridge>(&MEDIUM, Fill::Markdown);
+    sweep::<ReelStore>(&MEDIUM, Fill::Markdown);
 }
 
 #[test]
@@ -273,5 +273,5 @@ fn codec_rocks_large() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn codec_reel_large() {
-    sweep::<ReelBridge>(&LARGE, Fill::Markdown);
+    sweep::<ReelStore>(&LARGE, Fill::Markdown);
 }

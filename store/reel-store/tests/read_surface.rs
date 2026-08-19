@@ -1,11 +1,11 @@
 //! The reel's wider reads, held against the naive defaults they replace
 //!
-//! Every method the bridge overrides has a default on the store trait that says
+//! Every method this crate overrides has a default on the store trait that says
 //! the same thing one key at a time. A backend is free to be faster; it is not
 //! free to answer differently, so each case asks both and compares.
 
 use reel::sync::tension::block_on;
-use reel_bridge::{bench_config, MetaBulkStore, ReelBridge, TAPE_COLUMNS};
+use reel_store::{bench_config, MetaBulkStore, ReelStore, TAPE_COLUMNS};
 use store::{Store, Value};
 
 /// Values as plain vectors, so an expectation can be written as bytes
@@ -155,11 +155,11 @@ fn key_of_missing(cf: &str) -> Vec<u8> {
     }
 }
 
-// the bridge answers its wider reads the same as one get at a time
+// the reel store answers its wider reads the same as one get at a time
 #[test]
-fn bridge_agrees() {
+fn reel_store_agrees() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
+    let store = ReelStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     let keys = fill(&store, BULK_CF, bulk_key);
     agrees(&store, BULK_CF, &keys, &7u16.to_be_bytes());
@@ -223,7 +223,7 @@ fn swept(store: &impl Store, cf: &str, page: usize) -> Vec<Vec<u8>> {
 #[test]
 fn sweep_covers() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
+    let store = ReelStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
     let keys = fill(&store, BULK_CF, bulk_key);
 
     for page in [1usize, 7, RECORDS * 2] {

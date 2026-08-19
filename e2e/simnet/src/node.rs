@@ -10,7 +10,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use reel_bridge::ReelBridge;
+use reel_store::ReelStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -27,7 +27,7 @@ use tracing::Instrument;
 
 use crate::config::NodeRuntimeMode;
 
-type TestNodeContext = Arc<NodeContext<ReelBridge, HttpApi, LiteSvmRpc>>;
+type TestNodeContext = Arc<NodeContext<ReelStore, HttpApi, LiteSvmRpc>>;
 
 struct TestConfig {
     mode: NodeRuntimeMode,
@@ -220,7 +220,7 @@ impl TestNode {
     }
 
     async fn build_context(&self) -> Result<TestNodeContext> {
-        let store = reel_bridge::open_harness_store(self.store_dir.path())
+        let store = reel_store::open_harness_store(self.store_dir.path())
             .context("open node store")?;
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());
@@ -246,7 +246,7 @@ impl TestNode {
                 .context("build HttpApi")?,
         );
 
-        let context = NodeContextBuilder::<ReelBridge, HttpApi, LiteSvmRpc>::new(
+        let context = NodeContextBuilder::<ReelStore, HttpApi, LiteSvmRpc>::new(
             self.app_config.clone(),
             clone_keypair(&self.keypair),
             self.bls_keypair,

@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use reel_bridge::{scaled, BenchArm, MetaBulkStore, ReelBridge};
+use reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
@@ -117,7 +117,7 @@ fn read_cost_by_slice_size_rocks() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn read_cost_by_slice_size_reel() {
-    sweep::<ReelBridge>();
+    sweep::<ReelStore>();
 }
 
 #[test]

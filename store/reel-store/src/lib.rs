@@ -1,14 +1,13 @@
-//! The internal store trait served by the public reel engine
+//! The node's store: tapedrive's columns on the reel engine
 //!
-//! The internal workspace is written against the `store::Store` trait; the
-//! public reel at `tape-public/reel` implements a vendored copy of that trait,
-//! `reel_core::Store`, which has since moved on. This crate is the adapter
-//! between the two, so a `TapeStore` built on the internal trait runs on the
-//! reel that shipped rather than on the internal fork of it. A node opens
-//! through `open_node_store` and an offline tool through
-//! `open_node_store_read_only`; the benches open through the rest.
+//! Every family a tape store addresses, declared here and served by one reel
+//! volume. A node opens through `open_node_store`, an offline tool through
+//! `open_node_store_read_only`, an e2e harness through `open_harness_store`;
+//! the benches open through the rest.
 //!
-//! Three divergences are bridged here and nowhere else:
+//! The reel implements `reel_core::Store`, a vendored copy of the internal
+//! `store::Store` that has since moved on, so three divergences cross here and
+//! nowhere else:
 //!
 //! - A read answers `reel_core::Value`, a handle over the buffer the read used,
 //!   and the internal trait now answers the same one, so a read crosses without
@@ -16,12 +15,12 @@
 //!   keeping a second value type beside it.
 //! - A batch names its family by `Cow<'static, str>` rather than `String`, and
 //!   is consumed rather than iterated by reference. The internal `WriteBatch`
-//!   grew an `IntoIterator` so the bridge hands payloads over instead of cloning
-//!   them; a clone there would put a memcpy of every slice on the write bench.
+//!   grew an `IntoIterator` so a staged payload moves across instead of being
+//!   cloned; a clone there would put a memcpy of every slice on the write path.
 //! - The two `Error`, `CfDiskUsage`, `DiskVolume` and `StoreVolume` types are
 //!   structurally identical and nominally distinct, so each crosses by hand.
 //!
-//! What is not bridged: the reel's `walk_from` and `maintain` have no caller on
+//! What does not cross: the reel's `walk_from` and `maintain` have no caller on
 //! the internal trait.
 //!
 //! The rocks arm's configuration lives here too, in `rocks`. The fleet's is
@@ -44,11 +43,11 @@ mod split;
 use std::path::Path;
 
 use reel::{
-    ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, ReelConfig, ReelStore,
-    ShardShapes, SyncPolicy, ThreadBudget,
+    ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, ReelConfig,
+    ReelStore as EngineStore, ShardShapes, SyncPolicy, ThreadBudget,
     MAP_EVERYTHING,
 };
-use reel_core::Store as ReelStoreTrait;
+use reel_core::Store as EngineStoreTrait;
 use tape_store::TapeStore;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
@@ -71,8 +70,8 @@ pub use rocks::{
 pub use split::{MetaBulkStore, REEL_SUBDIR};
 
 /// The public reel engine behind the internal store trait
-pub struct ReelBridge {
-    inner: ReelStore,
+pub struct ReelStore {
+    inner: EngineStore,
 }
 
 /// What one column's index holds
@@ -99,7 +98,7 @@ pub struct IndexReport {
     pub columns: Vec<ResidentColumn>,
 }
 
-impl ReelBridge {
+impl ReelStore {
     /// Open a reel under this directory serving the given tape column families
     ///
     /// The set is a parameter rather than a constant because a run weighing a
@@ -113,8 +112,8 @@ impl ReelBridge {
         compaction_mbps: u64,
         sync_bytes: u64,
         backend: IoBackend,
-    ) -> StoreResult<ReelBridge> {
-        ReelBridge::open(
+    ) -> StoreResult<ReelStore> {
+        ReelStore::open(
             root,
             node_config(compaction_mbps, sync_bytes, backend),
             TAPE_COLUMNS,
@@ -125,11 +124,11 @@ impl ReelBridge {
         root: impl AsRef<Path>,
         config: ReelConfig,
         columns: reel::ColumnSet,
-    ) -> StoreResult<ReelBridge> {
+    ) -> StoreResult<ReelStore> {
         let root = root.as_ref();
         std::fs::create_dir_all(root)?;
-        let inner = ReelStore::open(root.to_path_buf(), config, columns).map_err(engine)?;
-        Ok(ReelBridge { inner })
+        let inner = EngineStore::open(root.to_path_buf(), config, columns).map_err(engine)?;
+        Ok(ReelStore { inner })
     }
 
     /// Open an existing volume read-only, leaving its ownership lock alone
@@ -141,15 +140,15 @@ impl ReelBridge {
         root: impl AsRef<Path>,
         config: ReelConfig,
         columns: reel::ColumnSet,
-    ) -> StoreResult<ReelBridge> {
+    ) -> StoreResult<ReelStore> {
         let root = root.as_ref();
         let inner =
-            ReelStore::open_read_only(root.to_path_buf(), config, columns).map_err(engine)?;
-        Ok(ReelBridge { inner })
+            EngineStore::open_read_only(root.to_path_buf(), config, columns).map_err(engine)?;
+        Ok(ReelStore { inner })
     }
 
     /// The engine underneath, for a caller reading its counters
-    pub fn engine(&self) -> &ReelStore {
+    pub fn engine(&self) -> &EngineStore {
         &self.inner
     }
 
@@ -290,18 +289,17 @@ fn probe_for(backend: IoBackend) -> PointReads {
 /// The store a node runs, every tape family on one reel volume
 ///
 /// This lives here rather than beside the other `TapeStore` constructors
-/// because the bridge sits above `tape-store` in the graph: it needs the tape
-/// column declarations, so `tape-store` cannot name it back. Promotion means
-/// the node calls this instead of `open_primary_split`.
+/// because this crate sits above `tape-store` in the graph: it needs the tape
+/// column declarations, so `tape-store` cannot name it back.
 pub fn open_node_store(
     root: impl AsRef<Path>,
     compaction_mbps: u64,
     sync_bytes: u64,
     backend: IoBackend,
-) -> StoreResult<TapeStore<ReelBridge>> {
+) -> StoreResult<TapeStore<ReelStore>> {
     let root = root.as_ref();
     std::fs::create_dir_all(root)?;
-    Ok(TapeStore::new(ReelBridge::open_node(
+    Ok(TapeStore::new(ReelStore::open_node(
         root,
         compaction_mbps,
         sync_bytes,
@@ -339,8 +337,8 @@ pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
 pub fn open_node_store_read_only(
     root: impl AsRef<Path>,
     residency: IndexResidency,
-) -> StoreResult<TapeStore<ReelBridge>> {
-    Ok(TapeStore::new(ReelBridge::open_read_only(
+) -> StoreResult<TapeStore<ReelStore>> {
+    Ok(TapeStore::new(ReelStore::open_read_only(
         root,
         read_only_config(residency),
         TAPE_COLUMNS,
@@ -370,8 +368,8 @@ pub fn harness_config() -> ReelConfig {
 }
 
 /// A tape store on a harness volume, every family the node addresses
-pub fn open_harness_store(root: impl AsRef<Path>) -> StoreResult<TapeStore<ReelBridge>> {
-    Ok(TapeStore::new(ReelBridge::open(
+pub fn open_harness_store(root: impl AsRef<Path>) -> StoreResult<TapeStore<ReelStore>> {
+    Ok(TapeStore::new(ReelStore::open(
         root,
         harness_config(),
         TAPE_COLUMNS,
@@ -523,26 +521,26 @@ fn rows(iter: reel_core::StoreIter<'_>) -> StoreIter<'_> {
 }
 
 
-impl Store for ReelBridge {
+impl Store for ReelStore {
     fn get(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
-        ReelStoreTrait::get(&self.inner, cf, key)
+        EngineStoreTrait::get(&self.inner, cf, key)
             
             .map_err(crossed)
     }
 
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
-        ReelStoreTrait::get_many(&self.inner, cf, keys).map_err(crossed)
+        EngineStoreTrait::get_many(&self.inner, cf, keys).map_err(crossed)
     }
 
     async fn get_wait(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
-        ReelStoreTrait::get_wait(&self.inner, cf, key)
+        EngineStoreTrait::get_wait(&self.inner, cf, key)
             .await
             
             .map_err(crossed)
     }
 
     async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
-        ReelStoreTrait::get_many_wait(&self.inner, cf, keys)
+        EngineStoreTrait::get_many_wait(&self.inner, cf, keys)
             .await
             .map_err(crossed)
     }
@@ -554,7 +552,7 @@ impl Store for ReelBridge {
         offset: u64,
         len: usize,
     ) -> StoreResult<Option<Value>> {
-        ReelStoreTrait::get_range(&self.inner, cf, key, offset, len)
+        EngineStoreTrait::get_range(&self.inner, cf, key, offset, len)
             
             .map_err(crossed)
     }
@@ -566,66 +564,66 @@ impl Store for ReelBridge {
         offset: u64,
         len: usize,
     ) -> StoreResult<Option<Value>> {
-        ReelStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
+        EngineStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
             .await
             
             .map_err(crossed)
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
-        ReelStoreTrait::put(&self.inner, cf, key, value).map_err(crossed)
+        EngineStoreTrait::put(&self.inner, cf, key, value).map_err(crossed)
     }
 
     async fn put_wait(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
-        ReelStoreTrait::put_wait(&self.inner, cf, key, value)
+        EngineStoreTrait::put_wait(&self.inner, cf, key, value)
             .await
             .map_err(crossed)
     }
 
     fn delete(&self, cf: &str, key: &[u8]) -> StoreResult<()> {
-        ReelStoreTrait::delete(&self.inner, cf, key).map_err(crossed)
+        EngineStoreTrait::delete(&self.inner, cf, key).map_err(crossed)
     }
 
     fn contains(&self, cf: &str, key: &[u8]) -> StoreResult<bool> {
-        ReelStoreTrait::contains(&self.inner, cf, key).map_err(crossed)
+        EngineStoreTrait::contains(&self.inner, cf, key).map_err(crossed)
     }
 
     fn write_batch(&self, staged: WriteBatch) -> StoreResult<()> {
-        ReelStoreTrait::write_batch(&self.inner, batch(staged)).map_err(crossed)
+        EngineStoreTrait::write_batch(&self.inner, batch(staged)).map_err(crossed)
     }
 
     async fn write_batch_wait(&self, staged: WriteBatch) -> StoreResult<()> {
-        ReelStoreTrait::write_batch_wait(&self.inner, batch(staged))
+        EngineStoreTrait::write_batch_wait(&self.inner, batch(staged))
             .await
             .map_err(crossed)
     }
 
     fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> StoreResult<()> {
-        ReelStoreTrait::delete_range(&self.inner, cf, start, end).map_err(crossed)
+        EngineStoreTrait::delete_range(&self.inner, cf, start, end).map_err(crossed)
     }
 
     fn iter(&self, cf: &str) -> StoreResult<StoreIter<'_>> {
-        ReelStoreTrait::iter(&self.inner, cf)
+        EngineStoreTrait::iter(&self.inner, cf)
             .map(rows)
             .map_err(crossed)
     }
 
     fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<StoreIter<'_>> {
-        ReelStoreTrait::iter_prefix(&self.inner, cf, prefix)
+        EngineStoreTrait::iter_prefix(&self.inner, cf, prefix)
             .map(rows)
             .map_err(crossed)
     }
 
     fn iter_keys_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Vec<Vec<u8>>> {
-        ReelStoreTrait::iter_keys_prefix(&self.inner, cf, prefix).map_err(crossed)
+        EngineStoreTrait::iter_keys_prefix(&self.inner, cf, prefix).map_err(crossed)
     }
 
     fn count_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<u64> {
-        ReelStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
+        EngineStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
     }
 
     fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Option<u64>> {
-        ReelStoreTrait::bytes_prefix(&self.inner, cf, prefix).map_err(crossed)
+        EngineStoreTrait::bytes_prefix(&self.inner, cf, prefix).map_err(crossed)
     }
 
     fn sweep_keys_prefix(
@@ -635,7 +633,7 @@ impl Store for ReelBridge {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
-        ReelStoreTrait::sweep_keys_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
+        EngineStoreTrait::sweep_keys_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
     }
 
     fn sweep_prefix(
@@ -646,7 +644,7 @@ impl Store for ReelBridge {
         limit: usize,
     ) -> StoreResult<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
         let (rows, next) =
-            ReelStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)?;
+            EngineStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)?;
         let mut owned = Vec::with_capacity(rows.len());
         for (key, value) in rows {
             owned.push((key, value.into_vec()));
@@ -660,7 +658,7 @@ impl Store for ReelBridge {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
-        let (rows, next) = ReelStoreTrait::sweep(&self.inner, cf, from, limit).map_err(crossed)?;
+        let (rows, next) = EngineStoreTrait::sweep(&self.inner, cf, from, limit).map_err(crossed)?;
         let mut owned = Vec::with_capacity(rows.len());
         for (key, value) in rows {
             owned.push((key, value.into_vec()));
@@ -669,45 +667,45 @@ impl Store for ReelBridge {
     }
 
     fn iter_from(&self, cf: &str, start: &[u8], way: Direction) -> StoreResult<StoreIter<'_>> {
-        ReelStoreTrait::iter_from(&self.inner, cf, start, direction(way))
+        EngineStoreTrait::iter_from(&self.inner, cf, start, direction(way))
             .map(rows)
             .map_err(crossed)
     }
 
     fn iter_range(&self, cf: &str, start: &[u8], end: &[u8]) -> StoreResult<StoreIter<'_>> {
-        ReelStoreTrait::iter_range(&self.inner, cf, start, end)
+        EngineStoreTrait::iter_range(&self.inner, cf, start, end)
             .map(rows)
             .map_err(crossed)
     }
 
     fn actual_size_bytes(&self) -> StoreResult<u64> {
-        ReelStoreTrait::actual_size_bytes(&self.inner).map_err(crossed)
+        EngineStoreTrait::actual_size_bytes(&self.inner).map_err(crossed)
     }
 
     fn available_disk_bytes(&self) -> StoreResult<Option<u64>> {
-        ReelStoreTrait::available_disk_bytes(&self.inner).map_err(crossed)
+        EngineStoreTrait::available_disk_bytes(&self.inner).map_err(crossed)
     }
 
     fn live_data_size_bytes(&self) -> StoreResult<Option<u64>> {
-        ReelStoreTrait::live_data_size_bytes(&self.inner).map_err(crossed)
+        EngineStoreTrait::live_data_size_bytes(&self.inner).map_err(crossed)
     }
 
     fn key_count_estimate(&self, cf: &str) -> StoreResult<Option<u64>> {
-        ReelStoreTrait::key_count_estimate(&self.inner, cf).map_err(crossed)
+        EngineStoreTrait::key_count_estimate(&self.inner, cf).map_err(crossed)
     }
 
     fn cf_disk_usage(&self) -> StoreResult<Vec<CfDiskUsage>> {
-        ReelStoreTrait::cf_disk_usage(&self.inner)
+        EngineStoreTrait::cf_disk_usage(&self.inner)
             .map(|usage| usage.into_iter().map(cf_usage).collect())
             .map_err(crossed)
     }
 
     fn reclaim_space(&self) -> StoreResult<()> {
-        ReelStoreTrait::reclaim_space(&self.inner).map_err(crossed)
+        EngineStoreTrait::reclaim_space(&self.inner).map_err(crossed)
     }
 
     fn disk_volumes(&self) -> StoreResult<Vec<DiskVolume>> {
-        ReelStoreTrait::disk_volumes(&self.inner)
+        EngineStoreTrait::disk_volumes(&self.inner)
             .map(|volumes| volumes.into_iter().map(disk_volume).collect())
             .map_err(crossed)
     }

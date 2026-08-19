@@ -19,7 +19,7 @@ tape-blocks = { workspace = true }
 tape-spooler = { workspace = true }
 store = { workspace = true }
 reel = { workspace = true }
-reel-bridge = { workspace = true }
+reel-store = { workspace = true }
 tape-protocol = { workspace = true }
 peer-manager = { workspace = true }
 peer-http = { workspace = true }

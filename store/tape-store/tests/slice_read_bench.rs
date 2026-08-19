@@ -15,7 +15,7 @@
 
 use std::time::{Duration, Instant};
 
-use reel_bridge::{scaled, BenchArm, MetaBulkStore, ReelBridge};
+use reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use store::Column;
 use store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
@@ -127,7 +127,7 @@ fn keys_only_vs_value_reading_scan_rocks() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn keys_only_vs_value_reading_scan_reel() {
-    sweep::<ReelBridge>();
+    sweep::<ReelStore>();
 }
 
 #[test]

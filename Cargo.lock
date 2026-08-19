@@ -5897,28 +5897,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "reel-bridge"
+name = "reel-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "wincode 0.1.2",
+]
+
+[[package]]
+name = "reel-store"
 version = "0.4.0"
 dependencies = [
  "libc",
  "lz4_flex",
  "reel",
- "reel-bridge",
  "reel-core",
+ "reel-store",
  "store",
  "store-rocks",
  "tape-core",
  "tape-crypto",
  "tape-store",
  "tempfile",
-]
-
-[[package]]
-name = "reel-core"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.18",
- "wincode 0.1.2",
 ]
 
 [[package]]
@@ -9690,7 +9690,7 @@ dependencies = [
  "bytemuck",
  "clap",
  "hex",
- "reel-bridge",
+ "reel-store",
  "rpc",
  "rpc-client",
  "rpc-solana",
@@ -9903,7 +9903,7 @@ dependencies = [
  "anyhow",
  "clap",
  "reel",
- "reel-bridge",
+ "reel-store",
  "serde",
  "serde_json",
  "store",
@@ -9938,7 +9938,7 @@ dependencies = [
  "peer-tls",
  "rand 0.8.5",
  "ratatui",
- "reel-bridge",
+ "reel-store",
  "reqwest",
  "rpc-client",
  "rpc-litesvm",
@@ -9972,7 +9972,7 @@ dependencies = [
  "nix 0.29.0",
  "rand 0.8.5",
  "ratatui",
- "reel-bridge",
+ "reel-store",
  "reqwest",
  "rpc",
  "rpc-client",
@@ -10015,7 +10015,7 @@ dependencies = [
  "peer-manager",
  "peer-tls",
  "rand 0.8.5",
- "reel-bridge",
+ "reel-store",
  "reqwest",
  "rpc",
  "rpc-client",
@@ -10190,7 +10190,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "reel",
- "reel-bridge",
+ "reel-store",
  "reqwest",
  "rlimit",
  "rpc",
@@ -10269,7 +10269,7 @@ version = "0.4.0"
 dependencies = [
  "clap",
  "futures",
- "reel-bridge",
+ "reel-store",
  "rpc",
  "rpc-client",
  "rpc-solana",
@@ -10415,7 +10415,7 @@ name = "tape-store"
 version = "0.4.0"
 dependencies = [
  "bytemuck",
- "reel-bridge",
+ "reel-store",
  "rocksdb",
  "serde",
  "store",

@@ -19,7 +19,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 bytemuck.workspace = true
-reel-bridge = { workspace = true, features = ["rocks"] }
+reel-store = { workspace = true, features = ["rocks"] }
 store-rocks.workspace = true
 tempfile = "3.10"
 # The rocks arm is a bench control, so the benches ask for it and nothing else does.

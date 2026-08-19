@@ -6,7 +6,7 @@
 //! the name of the shape it asked for, which is worse than no number at all.
 
 use reel::MapShape;
-use reel_bridge::{bench_config, ReelBridge, TAPE_COLUMNS};
+use reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
 use tempfile::TempDir;
 
 /// The segment size a bench arm opens with
@@ -16,7 +16,7 @@ const SEGMENT_BYTES: u64 = 256 * 1024 * 1024;
 #[test]
 fn declared_shapes_take() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
+    let store = ReelStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     let declined = store.declined_shapes();
     assert!(
@@ -29,7 +29,7 @@ fn declared_shapes_take() {
 #[test]
 fn track_data_is_open() {
     let dir = TempDir::new().expect("dir");
-    let store = ReelBridge::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
+    let store = ReelStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     for (name, _, got) in store.shapes() {
         let wanted = match name {
@@ -44,7 +44,7 @@ fn track_data_is_open() {
 #[test]
 fn node_config_opens() {
     let dir = TempDir::new().expect("dir");
-    let store = reel_bridge::open_node_store(
+    let store = reel_store::open_node_store(
         dir.path().join("volume"),
         0,
         8 * 1024 * 1024,
@@ -54,8 +54,8 @@ fn node_config_opens() {
 
     // The knobs this campaign measured have to be the ones a node gets, not
     // just the ones a bench got.
-    let bridge = store.inner().inner();
-    let config = bridge.engine().config();
+    let volume = store.inner().inner();
+    let config = volume.engine().config();
     // No mapping: the fleet gives up the warm read rather than take SIGBUS on a
     // bad sector, and a posix volume has no ring overhead for the probe to undo.
     assert!(config.map_above.is_none());
@@ -66,7 +66,7 @@ fn node_config_opens() {
         "a node cannot open with durability off",
     );
     assert!(
-        bridge.declined_shapes().is_empty(),
+        volume.declined_shapes().is_empty(),
         "a column's declared shape was dropped",
     );
 }
@@ -74,10 +74,10 @@ fn node_config_opens() {
 // the three knobs the HDD battery settled are what a node gets unasked
 #[test]
 fn shipped_defaults() {
-    let config = reel_bridge::node_config(
+    let config = reel_store::node_config(
         0,
-        reel_bridge::DEFAULT_SYNC_BYTES,
-        reel_bridge::default_backend(),
+        reel_store::DEFAULT_SYNC_BYTES,
+        reel_store::default_backend(),
     );
 
     // Sixteen mebibytes between syncs: 1.09-1.46x the latency of never syncing,
@@ -112,7 +112,7 @@ fn probe_follows_the_backend() {
         (reel::IoBackend::Uring, reel::PointReads::Probed),
         (reel::IoBackend::UringDirect, reel::PointReads::Queued),
     ] {
-        let config = reel_bridge::node_config(0, 8 * 1024 * 1024, backend);
+        let config = reel_store::node_config(0, 8 * 1024 * 1024, backend);
         assert_eq!(config.point_reads, wanted, "{backend:?}");
     }
 }

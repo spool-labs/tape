@@ -4,7 +4,7 @@
 //! the same slice and track traffic the rocks arm does, so a bench that reports a
 //! reel row reported it off a store that actually served the workload.
 
-use reel_bridge::{BenchArm, MetaBulkStore, ReelBridge};
+use reel_store::{BenchArm, MetaBulkStore, ReelStore};
 use store_rocks::SplitStore;
 use tape_core::erasure::{
     sample_window, sample_window_range, slice_sidecar, SAMPLE_WINDOW_BYTES, SAMPLE_WINDOW_LEAVES,
@@ -107,7 +107,7 @@ fn slice_and_track_traffic<A: BenchArm>() {
 /// Markdown-shaped, because that is what a data slice of a systematic code
 /// carries and what makes the column's codec admit anything at all.
 fn windowed_slice() -> Vec<u8> {
-    reel_bridge::fill::markdown(3, 3 * SAMPLE_WINDOW_BYTES + 777)
+    reel_store::fill::markdown(3, 3 * SAMPLE_WINDOW_BYTES + 777)
 }
 
 /// A challenge answers the same bytes whatever the column did with them
@@ -151,7 +151,7 @@ fn rocks_answers_logical_windows() {
 
 #[test]
 fn reel_answers_logical_windows() {
-    windows_are_logical::<ReelBridge>();
+    windows_are_logical::<ReelStore>();
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn rocks_serves_the_tape_workload() {
 
 #[test]
 fn reel_serves_the_tape_workload() {
-    slice_and_track_traffic::<ReelBridge>();
+    slice_and_track_traffic::<ReelStore>();
 }
 
 #[test]

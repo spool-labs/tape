@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
-use reel_bridge::ReelBridge;
+use reel_store::ReelStore;
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
@@ -26,7 +26,7 @@ use crate::context::{AppContext, NodeContextBuilder};
 use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
 
-pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelBridge>, NodeError> {
+pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelStore>, NodeError> {
     let root = &config.store.path;
 
     // The first open replays the tail of every unsealed segment and rebuilds the
@@ -39,7 +39,7 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelBridge>, 
     );
     let opened_at = Instant::now();
 
-    let store = reel_bridge::open_node_store(
+    let store = reel_store::open_node_store(
         root,
         config.store.compaction_mb_per_sec,
         config.store.sync_bytes,

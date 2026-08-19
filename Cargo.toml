@@ -24,7 +24,7 @@ members = [
   "store/store",
   "store/store-memory",
   "store/store-rocks",
-  "store/reel-bridge",
+  "store/reel-store",
   "store/tape-store",
   "solana/rpc",
   "solana/rpc-solana",
@@ -77,7 +77,7 @@ default-members = [
   "store/store",
   "store/store-memory",
   "store/store-rocks",
-  "store/reel-bridge",
+  "store/reel-store",
   "store/tape-store",
   "lib/metrics",
   "lib/observe-api",
@@ -130,7 +130,7 @@ tape-snapshot = { version = "0.4.0", path = "./lib/snapshot" }
 store = { version = "0.4.0", path = "./store/store" }
 store-memory = { version = "0.4.0", path = "./store/store-memory" }
 store-rocks = { version = "0.4.0", path = "./store/store-rocks" }
-reel-bridge = { version = "0.4.0", path = "./store/reel-bridge" }
+reel-store = { version = "0.4.0", path = "./store/reel-store" }
 
 # The public reel checkout, benched from here rather than vendored. `reel-checkout`
 # is a symlink to it, made per checkout and ignored, because a path relative to

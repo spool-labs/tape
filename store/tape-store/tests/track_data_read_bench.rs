@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use reel_bridge::{scaled, BenchArm, ReelBridge};
+use reel_store::{scaled, BenchArm, ReelStore};
 use store_rocks::SplitStore;
 use tape_core::track::data::BlobData;
 use tape_crypto::address::Address;
@@ -191,5 +191,5 @@ fn track_data_point_reads_rocks() {
 #[test]
 #[ignore = "performance benchmark; run with --ignored --nocapture"]
 fn track_data_point_reads_reel() {
-    sweep::<ReelBridge>();
+    sweep::<ReelStore>();
 }

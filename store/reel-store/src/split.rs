@@ -13,7 +13,7 @@ use store::{
 use store_rocks::RocksStore;
 use tape_store::config::{BULK_COLUMN_FAMILIES, META_SUBDIR};
 
-use crate::{bench_cache, bench_db_options, bench_metadata_configs, ReelBridge};
+use crate::{bench_cache, bench_db_options, bench_metadata_configs, ReelStore};
 
 /// Subdirectory the reel's segment files live in
 pub const REEL_SUBDIR: &str = "reel";
@@ -21,7 +21,7 @@ pub const REEL_SUBDIR: &str = "reel";
 /// A tape store whose bulk families are served by the reel
 pub struct MetaBulkStore {
     meta: RocksStore,
-    bulk: ReelBridge,
+    bulk: ReelStore,
 }
 
 impl MetaBulkStore {
@@ -42,7 +42,7 @@ impl MetaBulkStore {
             bench_db_options(),
             bench_metadata_configs(&cache),
         )?;
-        let bulk = ReelBridge::open(root.join(REEL_SUBDIR), config, columns)?;
+        let bulk = ReelStore::open(root.join(REEL_SUBDIR), config, columns)?;
         Ok(MetaBulkStore { meta, bulk })
     }
 
@@ -52,7 +52,7 @@ impl MetaBulkStore {
     }
 
     /// The bulk half
-    pub fn bulk(&self) -> &ReelBridge {
+    pub fn bulk(&self) -> &ReelStore {
         &self.bulk
     }
 
