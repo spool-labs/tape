@@ -1,7 +1,4 @@
-//! Column family and database configuration for TapeStore
-//!
-//! This module provides optimized RocksDB configurations for all column families
-//! in the tape-store:
+//! Column family and database configuration for the RocksDB bench arm
 //!
 //! - **BlockBased**: Every column family. This is the only table format that
 //!   honors the `Store` trait's ordered-iteration contract (`iter_from` from
@@ -11,6 +8,7 @@
 //! - **Prefix Extractors**: Only on CFs whose access pattern is a prefix scan;
 //!   CFs that need total-order iteration get none
 
+use super::BULK_COLUMN_FAMILIES;
 use store_rocks::{Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, Options};
 
 // Re-export rocksdb types needed for configuration
@@ -244,22 +242,6 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
     ]
 }
 
-/// Subdirectory of a store root holding the metadata (fast volume) database
-pub const META_SUBDIR: &str = "meta";
-
-/// Subdirectory of a store root holding the bulk (large volume) database
-pub const BULK_SUBDIR: &str = "bulk";
-
-/// Column families that hold bulk payloads and live on the bulk volume
-///
-/// The slice and snapshot families use key-value separation; track data is
-/// stored inline but can be large. Everything else is small metadata that
-/// stays on the fast volume. The slice size index is small, but it rides along
-/// on the bulk volume because a write batch cannot span the two databases.
-/// A slice, its recorded length and its sidecar are written in one batch, so
-/// they have to share a volume: a cross-volume batch is not atomic.
-pub const BULK_COLUMN_FAMILIES: &[&str] =
-    &["track_data", "slice", "snapshot_artifact"];
 
 /// Column family configurations for the metadata (fast volume) store
 pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {

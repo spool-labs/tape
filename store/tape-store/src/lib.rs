@@ -39,9 +39,11 @@ pub mod ops;
 pub mod stats;
 pub mod types;
 
+#[cfg(feature = "rocks")]
 use std::path::Path;
 
 use store::{Store, TypedStore};
+#[cfg(feature = "rocks")]
 use store_rocks::{RocksStore, SplitStore};
 
 
@@ -86,6 +88,7 @@ impl<S: Store> std::ops::DerefMut for TapeStore<S> {
 
 /// Wrap an opened metadata store and bulk store in a split store, naming which
 /// column families live on the bulk volume
+#[cfg(feature = "rocks")]
 fn split_store(meta: RocksStore, bulk: RocksStore) -> SplitStore {
     let bulk_cfs: Vec<String> = config::BULK_COLUMN_FAMILIES
         .iter()
@@ -95,7 +98,9 @@ fn split_store(meta: RocksStore, bulk: RocksStore) -> SplitStore {
 }
 
 // Split-store constructors: a metadata store on the fast volume and a bulk
-// store on the large volume, split by column family.
+// store on the large volume, split by column family. The bench arm and the
+// offline tools open these; a node opens the reel.
+#[cfg(feature = "rocks")]
 impl TapeStore<SplitStore> {
     /// Open a primary store under a single root directory
     ///
@@ -550,7 +555,7 @@ mod tests {
 
     // slice blobs land in the bulk directory and never in the metadata one
     #[test]
-    #[cfg(not(miri))]
+    #[cfg(all(not(miri), feature = "rocks"))]
     fn split_placement() {
         use tempfile::tempdir;
 

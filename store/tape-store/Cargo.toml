@@ -10,8 +10,8 @@ tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 store.workspace = true
 store-memory.workspace = true
-store-rocks.workspace = true
-rocksdb.workspace = true
+store-rocks = { workspace = true, optional = true }
+rocksdb = { workspace = true, optional = true }
 wincode = "0.1"
 wincode-derive = "0.1"
 serde.workspace = true
@@ -19,5 +19,12 @@ thiserror.workspace = true
 
 [dev-dependencies]
 bytemuck.workspace = true
-reel-bridge.workspace = true
+reel-bridge = { workspace = true, features = ["rocks"] }
+store-rocks.workspace = true
 tempfile = "3.10"
+# The rocks arm is a bench control, so the benches ask for it and nothing else does.
+tape-store = { path = ".", features = ["rocks"] }
+
+[features]
+# RocksDB constructors, for the bench arm the reel is measured against
+rocks = ["dep:store-rocks", "dep:rocksdb"]

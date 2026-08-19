@@ -6,7 +6,8 @@ use arc_swap::ArcSwap;
 use peer_http::HttpApi;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use store_memory::MemoryStore;
+use reel_bridge::ReelBridge;
+use store::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::EpochPhase;
@@ -27,7 +28,7 @@ pub type SnapshotHandle = Arc<ArcSwap<PollSnapshot>>;
 pub enum PollerUpdate {
     AddNode(
         usize,
-        Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>,
+        Arc<NodeContext<ReelBridge, HttpApi, LiteSvmRpc>>,
         NodeRuntimeStatus,
     ),
     RemoveNode(usize),
@@ -86,7 +87,7 @@ impl PollerHandle {
 
 struct TrackedNode {
     id: usize,
-    ctx: Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>,
+    ctx: Arc<NodeContext<ReelBridge, HttpApi, LiteSvmRpc>>,
     runtime_status: NodeRuntimeStatus,
     prev_sync: u64,
     prev_repair: u64,
@@ -520,7 +521,7 @@ async fn poll_once(
         let total_store: u64 = state
             .nodes
             .iter()
-            .map(|n| n.ctx.store.inner().inner().total_size_bytes() as u64)
+            .map(|n| n.ctx.store.inner().inner().actual_size_bytes().unwrap_or(0))
             .sum();
 
         push_capped(&mut state.sync_bw_history, state.sync_accum);

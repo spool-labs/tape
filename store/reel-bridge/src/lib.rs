@@ -28,12 +28,15 @@
 //! opens with sizing fit for the bench box and with every knob that has an
 //! opposite number on the reel side set to match it.
 
+#[cfg(feature = "rocks")]
 mod arm;
 mod columns;
 pub mod fill;
 #[cfg(target_os = "linux")]
 pub mod written;
+#[cfg(feature = "rocks")]
 mod rocks;
+#[cfg(feature = "rocks")]
 mod split;
 
 use std::path::Path;
@@ -49,14 +52,17 @@ use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
     StoreIter, StoreVolume, WriteBatch, Value};
 
+#[cfg(feature = "rocks")]
 pub use arm::{
     scaled, track_data_codec, BenchArm, SCALE_VAR, SEGMENT_MIB_VAR, TRACK_DATA_CODEC_VAR,
 };
 pub use columns::{RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS};
+#[cfg(feature = "rocks")]
 pub use rocks::{
     bench_bulk_configs, bench_cache, bench_db_options, bench_metadata_configs, bench_store_configs,
     open_bench_split, CACHE_BYTES,
 };
+#[cfg(feature = "rocks")]
 pub use split::{MetaBulkStore, REEL_SUBDIR};
 
 /// The public reel engine behind the internal store trait
