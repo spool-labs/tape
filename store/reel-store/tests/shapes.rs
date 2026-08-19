@@ -49,6 +49,7 @@ fn node_config_opens() {
         0,
         8 * 1024 * 1024,
         reel::IoBackend::Posix,
+        reel_store::Reserve::Fleet,
     )
     .expect("open the node store");
 
@@ -78,6 +79,7 @@ fn shipped_defaults() {
         0,
         reel_store::DEFAULT_SYNC_BYTES,
         reel_store::default_backend(),
+        reel_store::Reserve::Fleet,
     );
 
     // Sixteen mebibytes between syncs: 1.09-1.46x the latency of never syncing,
@@ -112,7 +114,70 @@ fn probe_follows_the_backend() {
         (reel::IoBackend::Uring, reel::PointReads::Probed),
         (reel::IoBackend::UringDirect, reel::PointReads::Queued),
     ] {
-        let config = reel_store::node_config(0, 8 * 1024 * 1024, backend);
+        let config =
+            reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Fleet);
         assert_eq!(config.point_reads, wanted, "{backend:?}");
     }
+}
+
+// a small reservation moves all four knobs, since three of them alone still
+// leave a gibibyte on disk before the first slice
+#[test]
+fn small_sizes_the_reservation_to_the_run() {
+    let backend = reel_store::default_backend();
+    let fleet = reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Fleet);
+    let small = reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Small);
+
+    assert_eq!(fleet.preallocate, reel::Preallocate::Full);
+    assert_eq!(small.preallocate, reel::Preallocate::Chunk);
+    assert_eq!(small.active_tails.resolve_tails(), 1);
+    assert!(small.segment_bytes.to_bytes() < fleet.segment_bytes.to_bytes());
+    assert!(small.alloc_chunk.to_bytes() < fleet.alloc_chunk.to_bytes());
+
+    // What the volume claims before it holds anything, which is the whole point.
+    let idle = |config: &reel::ReelConfig| {
+        config.segment_bytes.to_bytes() * config.tail_count() as u64
+    };
+    assert!(idle(&small) * 32 < idle(&fleet), "small={} fleet={}", idle(&small), idle(&fleet));
+
+    // Everything the HDD battery settled survives the smaller reservation.
+    assert_eq!(small.sync, fleet.sync);
+    assert_eq!(small.io_backend, fleet.io_backend);
+    assert_eq!(small.point_reads, fleet.point_reads);
+    assert_eq!(small.shard_shapes, fleet.shard_shapes);
+    assert_eq!(small.map_above, fleet.map_above);
+}
+
+// what a fresh small volume actually claims from the filesystem, since the
+// knobs are only worth having if the blocks follow them
+#[test]
+fn a_small_volume_claims_little_before_it_holds_anything() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = TempDir::new().expect("dir");
+    let root = dir.path().join("volume");
+    let store = reel_store::open_harness_store(&root).expect("open the harness store");
+    drop(store);
+
+    let mut claimed = 0u64;
+    let mut stack = vec![root.clone()];
+    while let Some(path) = stack.pop() {
+        for entry in std::fs::read_dir(&path).expect("read the volume") {
+            let entry = entry.expect("entry");
+            let meta = entry.metadata().expect("metadata");
+            match meta.is_dir() {
+                true => stack.push(entry.path()),
+                // Blocks rather than length: preallocation is the reservation,
+                // and a sparse extend would show a length it never took.
+                false => claimed += meta.blocks() * 512,
+            }
+        }
+    }
+
+    // One tail reserving a 4 MiB step, against the gibibyte per tail the shipped
+    // shape would have claimed here.
+    assert!(
+        claimed < 64 * 1024 * 1024,
+        "a fresh small volume claimed {claimed} bytes"
+    );
 }

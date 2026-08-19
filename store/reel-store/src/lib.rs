@@ -44,10 +44,11 @@ use std::path::Path;
 
 use reel::{
     ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, ReelConfig,
-    ReelStore as EngineStore, ShardShapes, SyncPolicy, ThreadBudget,
+    ReelStore as EngineStore, ServingBackend, ShardShapes, SyncPolicy, ThreadBudget,
     MAP_EVERYTHING,
 };
 use reel_core::Store as EngineStoreTrait;
+use serde::Deserialize;
 use tape_store::TapeStore;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
@@ -112,10 +113,11 @@ impl ReelStore {
         compaction_mbps: u64,
         sync_bytes: u64,
         backend: IoBackend,
+        reserve: Reserve,
     ) -> StoreResult<ReelStore> {
         ReelStore::open(
             root,
-            node_config(compaction_mbps, sync_bytes, backend),
+            node_config(compaction_mbps, sync_bytes, backend, reserve),
             TAPE_COLUMNS,
         )
     }
@@ -150,6 +152,15 @@ impl ReelStore {
     /// The engine underneath, for a caller reading its counters
     pub fn engine(&self) -> &EngineStore {
         &self.inner
+    }
+
+    /// The backend actually serving this volume
+    ///
+    /// A configured ring downgrades to posix where the kernel will not give
+    /// one, so the config states a request and this states the outcome. Ask
+    /// this rather than the config wherever it matters which one is running.
+    pub fn serving_backend(&self) -> ServingBackend {
+        self.inner.serving_backend()
     }
 
     /// The shape each column's index actually took, beside the one it declared
@@ -237,6 +248,29 @@ pub const fn default_backend() -> IoBackend {
     }
 }
 
+/// What a fresh volume claims before it holds a byte
+///
+/// A tail costs a reserved segment and the shipped shape pre-writes each one
+/// whole, so an eight-core box reserves eight gibibytes before the first slice
+/// lands. That is the right trade on a fleet disk and the wrong one wherever the
+/// reservation is a large share of the volume, or twenty nodes share a laptop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reserve {
+    /// Gibibyte segments pre-written whole, a tail per core up to eight
+    #[default]
+    Fleet,
+
+    /// Segments a short run can fill, reserved in steps, on one tail
+    Small,
+}
+
+/// Bytes a small volume seals a segment at
+const SMALL_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Bytes a small volume reserves ahead of its write head
+const SMALL_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
+
 /// The config a node opens its volume with
 ///
 /// The bench config's siblings, minus everything that only makes sense when a
@@ -246,8 +280,13 @@ pub const fn default_backend() -> IoBackend {
 ///
 /// The knobs that are not the engine default are the ones the HDD battery
 /// settled, each with its own line below.
-pub fn node_config(compaction_mbps: u64, sync_bytes: u64, backend: IoBackend) -> ReelConfig {
-    ReelConfig {
+pub fn node_config(
+    compaction_mbps: u64,
+    sync_bytes: u64,
+    backend: IoBackend,
+    reserve: Reserve,
+) -> ReelConfig {
+    let config = ReelConfig {
         sync: match sync_bytes {
             0 => SyncPolicy::EveryPut,
             bytes => SyncPolicy::Bytes(ByteCount::from_bytes(bytes)),
@@ -269,6 +308,20 @@ pub fn node_config(compaction_mbps: u64, sync_bytes: u64, backend: IoBackend) ->
         io_backend: backend,
         shard_shapes: ShardShapes::Declared,
         ..ReelConfig::default()
+    };
+
+    match reserve {
+        Reserve::Fleet => config,
+        // Four knobs rather than one: dropping the tail count alone still
+        // reserves a gibibyte, and shrinking the segment alone still pre-writes
+        // it. Chunk is what makes the reservation track the data.
+        Reserve::Small => ReelConfig {
+            segment_bytes: ByteCount::from_bytes(SMALL_SEGMENT_BYTES),
+            alloc_chunk: ByteCount::from_bytes(SMALL_ALLOC_CHUNK),
+            preallocate: Preallocate::Chunk,
+            active_tails: ThreadBudget::threads(1),
+            ..config
+        },
     }
 }
 
@@ -296,15 +349,24 @@ pub fn open_node_store(
     compaction_mbps: u64,
     sync_bytes: u64,
     backend: IoBackend,
+    reserve: Reserve,
 ) -> StoreResult<TapeStore<ReelStore>> {
     let root = root.as_ref();
     std::fs::create_dir_all(root)?;
-    Ok(TapeStore::new(ReelStore::open_node(
-        root,
-        compaction_mbps,
-        sync_bytes,
-        backend,
-    )?))
+    let volume = ReelStore::open_node(root, compaction_mbps, sync_bytes, backend, reserve)?;
+
+    // The request beside the outcome, on one line, because they are two facts
+    // and a volume that asked for the ring can be served by posix. Said here
+    // rather than left to the engine's own warning, which only fires on the
+    // downgrade and so cannot tell a ring from a log nobody configured.
+    tracing::info!(
+        requested = ?backend,
+        serving = %volume.serving_backend(),
+        root = %root.display(),
+        "opened the node volume",
+    );
+
+    Ok(TapeStore::new(volume))
 }
 
 /// The config an offline tool reads a node's volume under
@@ -326,7 +388,7 @@ pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
             IndexResidency::Resident => ShardShapes::Declared,
             _ => ShardShapes::Tree,
         },
-        ..node_config(0, DEFAULT_SYNC_BYTES, default_backend())
+        ..node_config(0, DEFAULT_SYNC_BYTES, default_backend(), Reserve::Fleet)
     }
 }
 
@@ -345,26 +407,13 @@ pub fn open_node_store_read_only(
     )?))
 }
 
-/// Bytes a harness volume seals a segment at
-const HARNESS_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
-
-/// Bytes a harness volume reserves ahead of its write head
-const HARNESS_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
-
 /// The node's own policy at a size a throwaway volume can afford
 ///
-/// Every knob the fleet ships, at a segment an e2e node can fill: the shipped
-/// segment is preallocated whole, and twenty-five nodes reserving a gibibyte
-/// each is the size of the run rather than the size of its data. One tail for
-/// the same reason, since a tail costs a reserved segment.
+/// Every knob the fleet ships, at a reservation the size of the run rather than
+/// the size of the disk. The same shape an operator asks for with
+/// `store.reserve: small`.
 pub fn harness_config() -> ReelConfig {
-    ReelConfig {
-        segment_bytes: ByteCount::from_bytes(HARNESS_SEGMENT_BYTES),
-        alloc_chunk: ByteCount::from_bytes(HARNESS_ALLOC_CHUNK),
-        preallocate: Preallocate::Chunk,
-        active_tails: ThreadBudget::threads(1),
-        ..node_config(0, DEFAULT_SYNC_BYTES, default_backend())
-    }
+    node_config(0, DEFAULT_SYNC_BYTES, default_backend(), Reserve::Small)
 }
 
 /// A tape store on a harness volume, every family the node addresses

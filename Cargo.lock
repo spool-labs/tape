@@ -5913,6 +5913,7 @@ dependencies = [
  "reel",
  "reel-core",
  "reel-store",
+ "serde",
  "store",
  "store-rocks",
  "tape-core",

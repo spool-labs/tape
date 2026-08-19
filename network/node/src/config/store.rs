@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use reel::IoBackend;
-use reel_store::{default_backend, DEFAULT_SYNC_BYTES};
+use reel_store::{default_backend, Reserve, DEFAULT_SYNC_BYTES};
 use serde::Deserialize;
 
 use super::helpers::deserialize_pathbuf;
@@ -33,6 +33,12 @@ pub struct StoreConfig {
     #[serde(default)]
     pub min_free_bytes: u64,
 
+    /// What a fresh volume reserves before it holds a byte. `fleet` pre-writes a
+    /// gibibyte segment per tail; `small` sizes the reservation to the run, which
+    /// is what a laptop wants and what a local fleet of twenty needs.
+    #[serde(default)]
+    pub reserve: Reserve,
+
     /// Local garbage-collection settings.
     #[serde(default)]
     pub gc: GcConfig,
@@ -46,6 +52,7 @@ impl Default for StoreConfig {
             sync_bytes: default_sync_bytes(),
             io_backend: default_backend(),
             min_free_bytes: 0,
+            reserve: Reserve::default(),
             gc: GcConfig::default(),
         }
     }
@@ -123,6 +130,15 @@ mod tests {
         assert_eq!(config.compaction_mb_per_sec, 0);
         assert_eq!(config.sync_bytes, 16 * 1024 * 1024);
         assert_eq!(config.io_backend, default_backend());
+        assert_eq!(config.reserve, Reserve::Fleet);
+    }
+
+    // a volume that cannot afford the shipped reservation says so in one word
+    #[test]
+    fn yaml_names_a_small_reservation() {
+        let config: StoreConfig =
+            serde_yaml::from_str("path: /data/tape\nreserve: small").unwrap();
+        assert_eq!(config.reserve, Reserve::Small);
     }
 
     // an operator naming a backend gets that backend

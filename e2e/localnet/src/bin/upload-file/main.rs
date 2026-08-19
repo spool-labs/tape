@@ -41,6 +41,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     ensure!(cli.size_bytes > 0, "--size-bytes must be greater than zero");
 
+    // Off unless RUST_LOG asks: the SDK's own stage lines are what attributes an
+    // upload's wall clock, and this binary is where the clock is read.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .init();
+
     let admin = load_solana_keypair(&cli.admin_keypair)
         .with_context(|| format!("load admin keypair: {}", cli.admin_keypair.display()))?;
     let rpc = rpc_solana::SolanaRpc::new(RpcConfig {

@@ -53,6 +53,12 @@ impl Visit for Message<'_> {
 
 // a node that ships with the ring opens on one, rather than on the fallback
 //
+// Asked of the volume itself and cross-checked against what it logged, because
+// those are two independent statements of the same fact: the engine's own answer
+// and the line an operator reads. A disagreement between them is worth failing
+// over on its own, since every claim made about a fleet node's backend rests on
+// one or the other.
+//
 // Linux only: everywhere else there is no ring to be had and the downgrade is
 // the right answer, so asserting it elsewhere would be a platform check wearing
 // a correctness test's name. A red here on linux means this machine would not
@@ -65,16 +71,18 @@ fn the_ring_is_not_silently_downgraded() {
     let dir = tempfile::TempDir::new().expect("dir");
     let warnings = Warnings::default();
 
-    with_default(tracing_subscriber::registry().with(warnings.clone()), || {
+    let store = with_default(tracing_subscriber::registry().with(warnings.clone()), || {
         reel_store::open_node_store(
             dir.path().join("volume"),
             0,
             reel_store::DEFAULT_SYNC_BYTES,
             reel::IoBackend::Uring,
+            reel_store::Reserve::Fleet,
         )
-        .expect("open the node store");
+        .expect("open the node store")
     });
 
+    let serving = store.inner().inner().serving_backend();
     let downgraded: Vec<String> = warnings
         .lines()
         .into_iter()
@@ -82,8 +90,12 @@ fn the_ring_is_not_silently_downgraded() {
         .collect();
 
     assert!(
+        serving.is_ring(),
+        "a volume configured for the ring is served by {serving}",
+    );
+    assert!(
         downgraded.is_empty(),
-        "a volume configured for the ring was served by the posix fallback: {downgraded:?}",
+        "the volume reports {serving} while its log reports a downgrade: {downgraded:?}",
     );
 }
 

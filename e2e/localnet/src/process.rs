@@ -437,6 +437,9 @@ https:
 
 store:
   path: "{store}"
+  # Twenty nodes on one laptop: the shipped shape would reserve a gibibyte per
+  # tail per node before a slice lands.
+  reserve: small
 
 metrics:
   enabled: true

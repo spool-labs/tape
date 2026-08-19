@@ -33,8 +33,9 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelStore>, N
     // resident index, so the gap between these two lines can run minutes.
     info!(
         root = %root.display(),
-        backend = ?config.store.io_backend,
+        requested = ?config.store.io_backend,
         sync_bytes = config.store.sync_bytes,
+        reserve = ?config.store.reserve,
         "opening store",
     );
     let opened_at = Instant::now();
@@ -44,6 +45,7 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelStore>, N
         config.store.compaction_mb_per_sec,
         config.store.sync_bytes,
         config.store.io_backend,
+        config.store.reserve,
     )
     .map_err(|error| {
         NodeError::Store(format!(
@@ -52,7 +54,15 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelStore>, N
         ))
     })?;
 
-    info!(elapsed_ms = opened_at.elapsed().as_millis() as u64, "store opened");
+    // The backend that took the volume, not the one the config asked for: the
+    // two differ whenever a ring was configured and the kernel would not give
+    // one, and this line is where an operator finds out.
+    info!(
+        elapsed_ms = opened_at.elapsed().as_millis() as u64,
+        requested = ?config.store.io_backend,
+        serving = %store.inner().inner().serving_backend(),
+        "store opened",
+    );
 
     Ok(store)
 }

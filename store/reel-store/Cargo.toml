@@ -10,6 +10,8 @@ store-rocks = { workspace = true, optional = true }
 tape-store.workspace = true
 reel.workspace = true
 reel-core.workspace = true
+serde.workspace = true
+tracing = "0.1"
 
 [features]
 # The RocksDB control arm, which only a bench opens

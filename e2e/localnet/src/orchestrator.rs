@@ -8,7 +8,7 @@ use nix::sys::signal::Signal;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use reel_store::{default_backend, DEFAULT_SYNC_BYTES};
+use reel_store::{default_backend, Reserve, DEFAULT_SYNC_BYTES};
 use store::{Column, Store};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::EpochNumber;
@@ -432,9 +432,16 @@ fn clone_keypair(keypair: &Keypair) -> Keypair {
 }
 
 fn lose_slices(store_path: &std::path::Path, one_in: usize) -> Result<usize> {
-    // The stopped node's own volume, opened the way the node opens it.
-    let store = reel_store::open_node_store(store_path, 0, DEFAULT_SYNC_BYTES, default_backend())
-        .context("open stopped node store")?;
+    // The stopped node's own volume, opened the way the node opens it, down to
+    // the reservation the generated config gives it.
+    let store = reel_store::open_node_store(
+        store_path,
+        0,
+        DEFAULT_SYNC_BYTES,
+        default_backend(),
+        Reserve::Small,
+    )
+    .context("open stopped node store")?;
     let raw = store.inner().inner();
 
     let mut batch = store::WriteBatch::new();
