@@ -607,6 +607,7 @@ where
     let owned_spool_count = context.my_spools().len() as u64;
 
     let current_epoch = super::current_epoch_progress(state.epoch().0, &gathered);
+    let (slices_stored, _) = stored_slices(context);
 
     let labeled = |series: &[&str], read: &dyn Fn(&str) -> u64| -> Vec<Labeled> {
         series
@@ -686,7 +687,7 @@ where
             tapes: backend.key_count_estimate(TapeCol::CF_NAME).ok().flatten().unwrap_or(0),
             tracks: backend.key_count_estimate(TrackCol::CF_NAME).ok().flatten().unwrap_or(0),
             objects: backend.key_count_estimate(ObjectInfoCol::CF_NAME).ok().flatten().unwrap_or(0),
-            slices: stored_slices(context),
+            slices: slices_stored,
         },
         store_io: store_io_stats(&gathered),
         resources: {

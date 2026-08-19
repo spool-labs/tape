@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::cert::track::TrackWriteMessage;
-use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
+use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;

@@ -6,7 +6,6 @@
 //! - SpoolSyncCursorCol: spool_id -> the peer's opaque sweep mark
 
 use store::Column;
-use tape_crypto::address::Address;
 use tape_core::system::SpoolState;
 
 use crate::types::{SliceKey, SpoolIndexKey};
