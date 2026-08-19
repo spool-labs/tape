@@ -318,6 +318,14 @@ pub fn open_node_store(
 pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
     ReelConfig {
         index: residency,
+        // The engine refuses an open shard under a paged walk, and `track_data`
+        // declares one, so a paged read takes every column as a tree instead.
+        // The shape is how this open builds its index, not how the volume was
+        // written, so nothing on disk cares which one was asked for.
+        shard_shapes: match residency {
+            IndexResidency::Resident => ShardShapes::Declared,
+            _ => ShardShapes::Tree,
+        },
         ..node_config(0, DEFAULT_SYNC_BYTES, default_backend())
     }
 }
