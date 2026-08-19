@@ -10,8 +10,8 @@ use peer_http::HttpApi;
 use rpc::Rpc;
 use rpc_client::RpcClient;
 use rpc_solana::SolanaRpc;
-use store::{DiskVolume, Store, StoreVolume};
-use store_rocks::SplitStore;
+use reel_bridge::ReelBridge;
+use store::{DiskVolume, Store};
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
@@ -35,7 +35,7 @@ use crate::features::challenge::counters::ChallengeCounters;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
 
-pub type AppContext = Arc<NodeContext<SplitStore, HttpApi, SolanaRpc>>;
+pub type AppContext = Arc<NodeContext<ReelBridge, HttpApi, SolanaRpc>>;
 
 pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub config: Arc<NodeConfig>,
@@ -209,33 +209,25 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     /// Disabled (always false) unless a free-space floor is configured.
     pub fn is_write_throttled(&self) -> bool {
         let min_free = self.config.store.min_free_bytes;
-        let bulk_min_free = self.config.store.bulk_min_free_bytes;
-        if min_free == 0 && bulk_min_free == 0 {
+        if min_free == 0 {
             return false;
         }
         match self.store.inner().inner().disk_volumes() {
-            Ok(volumes) => volume_below_threshold(&volumes, min_free, bulk_min_free),
+            Ok(volumes) => volume_below_threshold(&volumes, min_free),
             Err(_) => false,
         }
     }
 }
 
-/// Whether any volume's free space sits below its configured floor. A zero
+/// Whether any volume's free space sits below the configured floor. A zero
 /// floor or an unknown free figure never throttles.
-fn volume_below_threshold(volumes: &[DiskVolume], min_free: u64, bulk_min_free: u64) -> bool {
-    for volume in volumes {
-        let floor = match volume.volume {
-            StoreVolume::Primary => min_free,
-            StoreVolume::Bulk => bulk_min_free,
-        };
-        if floor == 0 {
-            continue;
-        }
-        if volume.free_bytes.is_some_and(|free| free < floor) {
-            return true;
-        }
+fn volume_below_threshold(volumes: &[DiskVolume], min_free: u64) -> bool {
+    if min_free == 0 {
+        return false;
     }
-    false
+    volumes
+        .iter()
+        .any(|volume| volume.free_bytes.is_some_and(|free| free < min_free))
 }
 
 pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -348,19 +340,15 @@ mod tests {
         DiskVolume { volume: role, used_bytes: 0, free_bytes: free }
     }
 
-    // a volume below its floor throttles; zero floor or unknown free never does
+    // a volume below the floor throttles; zero floor or unknown free never does
     #[test]
     fn throttle_thresholds() {
-        let volumes = vec![
-            volume(StoreVolume::Primary, Some(10_000)),
-            volume(StoreVolume::Bulk, Some(500)),
-        ];
+        let volumes = vec![volume(StoreVolume::Bulk, Some(500))];
 
-        assert!(!volume_below_threshold(&volumes, 0, 0));
-        assert!(volume_below_threshold(&volumes, 0, 1_000));
-        assert!(!volume_below_threshold(&volumes, 0, 400));
-        assert!(volume_below_threshold(&volumes, 20_000, 0));
-        assert!(!volume_below_threshold(&[volume(StoreVolume::Bulk, None)], 0, 1_000));
+        assert!(!volume_below_threshold(&volumes, 0));
+        assert!(volume_below_threshold(&volumes, 1_000));
+        assert!(!volume_below_threshold(&volumes, 400));
+        assert!(!volume_below_threshold(&[volume(StoreVolume::Bulk, None)], 1_000));
     }
 
     #[tokio::test]

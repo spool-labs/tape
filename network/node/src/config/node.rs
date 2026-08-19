@@ -477,7 +477,8 @@ eviction:
 store:
   path: "/var/lib/tape/data"
   compaction_mb_per_sec: 80
-  bulk_compaction_mb_per_sec: 40
+  sync_bytes: 8388608
+  io_backend: posix
   gc:
     enabled: true
     interval_secs: 30
@@ -559,7 +560,8 @@ metrics:
         assert!(!config.eviction.enabled);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
-        assert_eq!(config.store.bulk_compaction_mb_per_sec, 40);
+        assert_eq!(config.store.sync_bytes, 8 * 1024 * 1024);
+        assert_eq!(config.store.io_backend, reel::IoBackend::Posix);
         assert!(config.store.gc.enabled);
         assert_eq!(config.store.gc.interval_secs, 30);
         assert_eq!(config.store.gc.track_batch, 64);

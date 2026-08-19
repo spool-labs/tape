@@ -18,7 +18,8 @@ tape-store = { workspace = true }
 tape-blocks = { workspace = true }
 tape-spooler = { workspace = true }
 store = { workspace = true }
-store-rocks = { workspace = true }
+reel = { workspace = true }
+reel-bridge = { workspace = true }
 tape-protocol = { workspace = true }
 peer-manager = { workspace = true }
 peer-http = { workspace = true }
@@ -83,5 +84,4 @@ metrics = [
     "dep:memory-stats",
     "rpc-client/metrics",
     "store/metrics",
-    "store-rocks/metrics",
 ]

@@ -324,7 +324,7 @@ fn raw_spool(harness: &SimnetHarness, spool: SpoolIndex) -> Vec<(Address, Vec<u8
         .filter_map(|(track, _)| {
             let key = wincode::serialize(&SliceKey::new(spool, track)).expect("slice key");
             let bytes = raw.get(SliceCol::CF_NAME, &key).expect("raw get")?;
-            Some((track, bytes))
+            Some((track, bytes.into_vec()))
         })
         .collect()
 }

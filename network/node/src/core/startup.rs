@@ -1,14 +1,13 @@
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
+use reel_bridge::ReelBridge;
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
-use store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
@@ -27,59 +26,35 @@ use crate::context::{AppContext, NodeContextBuilder};
 use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
 
-pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<SplitStore>, NodeError> {
-    let meta_dir = config.store.meta_dir();
-    let bulk_dir = config.store.bulk_dir();
+pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelBridge>, NodeError> {
+    let root = &config.store.path;
 
-    // The first open after an upgrade rebuilds the slice size index, scanning
-    // every stored slice, so the gap between these two lines can run minutes.
-    info!(meta = %meta_dir.display(), bulk = %bulk_dir.display(), "opening store");
+    // The first open replays the tail of every unsealed segment and rebuilds the
+    // resident index, so the gap between these two lines can run minutes.
+    info!(
+        root = %root.display(),
+        backend = ?config.store.io_backend,
+        sync_bytes = config.store.sync_bytes,
+        "opening store",
+    );
     let opened_at = Instant::now();
 
-    let store = TapeStore::open_primary_split(
-        &meta_dir,
-        &bulk_dir,
+    let store = reel_bridge::open_node_store(
+        root,
         config.store.compaction_mb_per_sec,
-        config.store.bulk_compaction_mb_per_sec,
+        config.store.sync_bytes,
+        config.store.io_backend,
     )
     .map_err(|error| {
         NodeError::Store(format!(
-            "failed to open storage (meta={}, bulk={}): {error}",
-            meta_dir.display(),
-            bulk_dir.display()
+            "failed to open storage (root={}): {error}",
+            root.display()
         ))
     })?;
 
     info!(elapsed_ms = opened_at.elapsed().as_millis() as u64, "store opened");
 
-    // A configured bulk path on the same device as the metadata store usually
-    // means the bulk drive is not mounted, so bulk data would land on the fast
-    // disk. Surface it rather than silently filling the wrong device.
-    if config.store.bulk_path.is_some() && on_same_device(&meta_dir, &bulk_dir) == Some(true) {
-        warn!(
-            meta = %meta_dir.display(),
-            bulk = %bulk_dir.display(),
-            "bulk_path resolves to the same device as the metadata store; the bulk drive may not be mounted"
-        );
-    }
-
     Ok(store)
-}
-
-/// Whether two existing directories sit on the same filesystem device
-///
-/// Returns None when either directory cannot be inspected.
-#[cfg(unix)]
-fn on_same_device(meta_dir: &Path, bulk_dir: &Path) -> Option<bool> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(meta_dir).ok()?;
-    let bulk = std::fs::metadata(bulk_dir).ok()?;
-    Some(meta.dev() == bulk.dev())
-}
-
-#[cfg(not(unix))]
-fn on_same_device(_meta_dir: &Path, _bulk_dir: &Path) -> Option<bool> {
-    None
 }
 
 fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
@@ -371,7 +346,7 @@ mod tests {
     use tape_core::types::{BasisPoints, EpochNumber, SlotNumber};
     use tape_crypto::ed25519::Keypair;
 
-    use super::{ensure_registered, on_same_device, resolve_network_address};
+    use super::{ensure_registered, resolve_network_address};
     use crate::chain::register_node::submit_register_node;
     use crate::config::node::NodeConfig;
     use crate::core::error::NodeError;
@@ -397,17 +372,21 @@ mod tests {
         config
     }
 
-    // two subdirectories of one root share a device
-    #[cfg(unix)]
+    // the node's own store opens on the reel, under the shipped defaults
     #[test]
-    fn same_device_detected() {
+    fn opens_the_node_store() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let meta = dir.path().join("meta");
-        let bulk = dir.path().join("bulk");
-        std::fs::create_dir_all(&meta).expect("meta dir");
-        std::fs::create_dir_all(&bulk).expect("bulk dir");
+        let mut config = NodeConfig::default();
+        config.store.path = dir.path().join("volume");
 
-        assert_eq!(on_same_device(&meta, &bulk), Some(true));
+        let store = super::open_primary_store(&config).expect("open the node store");
+        let opened = store.inner().inner().engine().config();
+
+        assert!(opened.map_above.is_none());
+        assert_eq!(
+            opened.sync,
+            reel::SyncPolicy::Bytes(reel::ByteCount::from_bytes(16 * 1024 * 1024)),
+        );
     }
 
     // -- resolve_network_address tests --

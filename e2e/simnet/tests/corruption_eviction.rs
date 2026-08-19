@@ -288,7 +288,8 @@ fn rot_slice<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, tr
     let mut bytes = raw
         .get(SliceCol::CF_NAME, &key)
         .expect("raw get")
-        .expect("slice bytes present");
+        .expect("slice bytes present")
+        .into_vec();
 
     // Overwrite the whole payload, not a patch: a round samples one sub-leaf,
     // so a patch covering a fraction p of the slice is found in 1/p rounds and

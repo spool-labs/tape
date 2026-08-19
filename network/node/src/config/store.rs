@@ -1,72 +1,51 @@
 use std::path::PathBuf;
 
+use reel::IoBackend;
+use reel_bridge::{default_backend, DEFAULT_SYNC_BYTES};
 use serde::Deserialize;
 
-use tape_store::config::{DEFAULT_BULK_COMPACTION_MB_PER_SEC, DEFAULT_META_COMPACTION_MB_PER_SEC};
+use super::helpers::deserialize_pathbuf;
 
-use super::helpers::{deserialize_option_pathbuf, deserialize_pathbuf};
-
-/// Local RocksDB store settings.
+/// Local reel store settings.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct StoreConfig {
-    /// Filesystem path for the store root. Holds the metadata store in a meta
-    /// subdirectory, and the bulk store in a bulk subdirectory unless a separate
-    /// bulk path is set.
+    /// Filesystem path for the store root. One reel volume holds every column
+    /// family, so this is the only store path a node takes.
     #[serde(default = "default_store_path", deserialize_with = "deserialize_pathbuf")]
     pub path: PathBuf,
 
-    /// Optional separate root for the bulk store, for a large secondary device
-    #[serde(default, deserialize_with = "deserialize_option_pathbuf")]
-    pub bulk_path: Option<PathBuf>,
-
-    /// RocksDB compaction rate limit for the metadata volume in MB/s.
-    #[serde(default = "default_compaction_mb_per_sec")]
+    /// Compaction rate limit in MB/s. 0 lets the engine pace itself.
+    #[serde(default)]
     pub compaction_mb_per_sec: u64,
 
-    /// RocksDB compaction rate limit for the bulk volume in MB/s. Lower it
-    /// well under the default when the bulk store lives on a spinning disk.
-    #[serde(default = "default_bulk_compaction_mb_per_sec")]
-    pub bulk_compaction_mb_per_sec: u64,
+    /// Bytes written between durability syncs. 0 syncs on every put, which the
+    /// HDD battery measured at 16-67x the latency of never syncing.
+    #[serde(default = "default_sync_bytes")]
+    pub sync_bytes: u64,
 
-    /// Reject new uploads when the metadata volume has fewer free bytes than this.
+    /// File backend the volume opens with. A ring falls back to posix with a
+    /// warning where the kernel cannot give one.
+    #[serde(default = "default_backend")]
+    pub io_backend: IoBackend,
+
+    /// Reject new uploads when the store volume has fewer free bytes than this.
     /// 0 disables the check.
     #[serde(default)]
     pub min_free_bytes: u64,
-
-    /// Reject new uploads when the bulk volume has fewer free bytes than this.
-    /// 0 disables the check.
-    #[serde(default)]
-    pub bulk_min_free_bytes: u64,
 
     /// Local garbage-collection settings.
     #[serde(default)]
     pub gc: GcConfig,
 }
 
-impl StoreConfig {
-    /// Directory of the metadata (fast volume) database
-    pub fn meta_dir(&self) -> PathBuf {
-        self.path.join(tape_store::config::META_SUBDIR)
-    }
-
-    /// Directory of the bulk (large volume) database, under the bulk path if set
-    pub fn bulk_dir(&self) -> PathBuf {
-        self.bulk_path
-            .as_ref()
-            .unwrap_or(&self.path)
-            .join(tape_store::config::BULK_SUBDIR)
-    }
-}
-
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
             path: default_store_path(),
-            bulk_path: None,
-            compaction_mb_per_sec: default_compaction_mb_per_sec(),
-            bulk_compaction_mb_per_sec: default_bulk_compaction_mb_per_sec(),
+            compaction_mb_per_sec: 0,
+            sync_bytes: default_sync_bytes(),
+            io_backend: default_backend(),
             min_free_bytes: 0,
-            bulk_min_free_bytes: 0,
             gc: GcConfig::default(),
         }
     }
@@ -108,12 +87,8 @@ fn default_store_path() -> PathBuf {
     super::helpers::expand_path("~/.tape/data")
 }
 
-fn default_compaction_mb_per_sec() -> u64 {
-    DEFAULT_META_COMPACTION_MB_PER_SEC
-}
-
-fn default_bulk_compaction_mb_per_sec() -> u64 {
-    DEFAULT_BULK_COMPACTION_MB_PER_SEC
+fn default_sync_bytes() -> u64 {
+    DEFAULT_SYNC_BYTES
 }
 
 fn default_gc_enabled() -> bool {
@@ -140,37 +115,28 @@ fn default_reclaim_min_deleted_slices() -> usize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn single_device_layout() {
-        let config = StoreConfig {
-            path: PathBuf::from("/mnt/nvme/tape"),
-            bulk_path: None,
-            ..StoreConfig::default()
-        };
-        // Both volumes live under the store root in separate subdirectories.
-        assert_eq!(config.meta_dir(), PathBuf::from("/mnt/nvme/tape/meta"));
-        assert_eq!(config.bulk_dir(), PathBuf::from("/mnt/nvme/tape/bulk"));
-    }
-
-    #[test]
-    fn separate_bulk_device_layout() {
-        let config = StoreConfig {
-            path: PathBuf::from("/mnt/nvme/tape"),
-            bulk_path: Some(PathBuf::from("/mnt/hdd/tape")),
-            ..StoreConfig::default()
-        };
-        assert_eq!(config.meta_dir(), PathBuf::from("/mnt/nvme/tape/meta"));
-        assert_eq!(config.bulk_dir(), PathBuf::from("/mnt/hdd/tape/bulk"));
-    }
-
-    // unspecified keys fall back to the shared defaults
+    // unspecified keys fall back to the measured fleet defaults
     #[test]
     fn yaml_defaults() {
         let config: StoreConfig = serde_yaml::from_str("path: /data/tape").unwrap();
         assert_eq!(config.path, PathBuf::from("/data/tape"));
-        assert_eq!(config.bulk_path, None);
-        assert_eq!(config.bulk_dir(), PathBuf::from("/data/tape/bulk"));
-        assert_eq!(config.compaction_mb_per_sec, DEFAULT_META_COMPACTION_MB_PER_SEC);
-        assert_eq!(config.bulk_compaction_mb_per_sec, DEFAULT_BULK_COMPACTION_MB_PER_SEC);
+        assert_eq!(config.compaction_mb_per_sec, 0);
+        assert_eq!(config.sync_bytes, 16 * 1024 * 1024);
+        assert_eq!(config.io_backend, default_backend());
+    }
+
+    // an operator naming a backend gets that backend
+    #[test]
+    fn yaml_names_the_backend() {
+        let config: StoreConfig =
+            serde_yaml::from_str("path: /data/tape\nio_backend: posix").unwrap();
+        assert_eq!(config.io_backend, IoBackend::Posix);
+    }
+
+    // the ring is what a linux node opens with, since the fallback is automatic
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_defaults_to_the_ring() {
+        assert_eq!(StoreConfig::default().io_backend, IoBackend::Uring);
     }
 }

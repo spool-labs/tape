@@ -190,6 +190,27 @@ impl ReelBridge {
     }
 }
 
+/// Bytes a node writes between durability syncs
+///
+/// The HDD battery's answer: syncing every 16 MiB costs 1.09-1.46x the latency
+/// of never syncing and writes zero extra bytes, where a sync per put costs
+/// 16-67x. A node writing slices in batches wants one sync per drain, and what a
+/// crash risks is the tail.
+pub const DEFAULT_SYNC_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The file backend a node opens its volume with
+///
+/// A ring wherever one can exist. `select_backend` downgrades to posix with a
+/// warning where the ring cannot be set up, so naming it here costs nothing on a
+/// kernel that has none, and `get_many` depth is worth 3.25x on the ring against
+/// flat on posix.
+pub const fn default_backend() -> IoBackend {
+    match cfg!(target_os = "linux") {
+        true => IoBackend::Uring,
+        false => IoBackend::Posix,
+    }
+}
+
 /// The config a node opens its volume with
 ///
 /// The bench config's siblings, minus everything that only makes sense when a
@@ -197,15 +218,8 @@ impl ReelBridge {
 /// `Never`, and the segment is the shipped size rather than one small enough
 /// that a short run still rolls.
 ///
-/// The knobs that are not the default are the ones this campaign measured.
-/// `map_above` puts warm reads on the mapped path instead of a door round trip,
-/// and `point_reads` asks the page cache before queueing, which is what keeps a
-/// cold read on a path that can report an error rather than raising SIGBUS.
-///
-/// Durability is `sync_bytes` rather than a sync per put: a node writing slices
-/// in batches wants one sync per drain, and what a crash risks is the tail.
-/// Nothing here is measured yet; every read figure in this campaign was taken
-/// under `SyncPolicy::Never` and the write path has no numbers at all.
+/// The knobs that are not the engine default are the ones the HDD battery
+/// settled, each with its own line below.
 pub fn node_config(compaction_mbps: u64, sync_bytes: u64, backend: IoBackend) -> ReelConfig {
     ReelConfig {
         sync: match sync_bytes {
@@ -218,10 +232,12 @@ pub fn node_config(compaction_mbps: u64, sync_bytes: u64, backend: IoBackend) ->
         },
         // No mapping. It is worth 3.3x on a warm blocking single read, and it
         // turns a bad sector into SIGBUS and a dead process where the door
-        // returns an error the node can act on. Warm blocking singles are a thin
-        // slice of an io-bound workload on 64 TB against 64 GB of cache, and the
-        // fleet's disks grow bad sectors, so the latency is the cheaper thing to
-        // give up. The mapped path stays a bench and tooling knob.
+        // returns an error the node can act on. A mapped cold read also pulls 5x
+        // the device bytes a door read pulls, against a spindle answering in
+        // ~7.8 ms. Warm blocking singles are a thin slice of an io-bound
+        // workload on 64 TB against 64 GB of cache, so the latency is the
+        // cheaper thing to give up. The mapped path stays a bench and tooling
+        // knob.
         map_above: None,
         point_reads: probe_for(backend),
         io_backend: backend,

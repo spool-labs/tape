@@ -71,6 +71,39 @@ fn node_config_opens() {
     );
 }
 
+// the three knobs the HDD battery settled are what a node gets unasked
+#[test]
+fn shipped_defaults() {
+    let config = reel_bridge::node_config(
+        0,
+        reel_bridge::DEFAULT_SYNC_BYTES,
+        reel_bridge::default_backend(),
+    );
+
+    // Sixteen mebibytes between syncs: 1.09-1.46x the latency of never syncing,
+    // and no extra bytes written. A sync per put was 16-67x.
+    assert_eq!(
+        config.sync,
+        reel::SyncPolicy::Bytes(reel::ByteCount::from_bytes(16 * 1024 * 1024)),
+    );
+
+    // A ring wherever one can exist, and the probe follows it.
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(config.io_backend, reel::IoBackend::Uring);
+        assert_eq!(config.point_reads, reel::PointReads::Probed);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert_eq!(config.io_backend, reel::IoBackend::Posix);
+        assert_eq!(config.point_reads, reel::PointReads::Queued);
+    }
+
+    // A cold mapped read pulls 5x the device bytes against a ~7.8 ms spindle,
+    // and a bad sector under a mapping is SIGBUS rather than an error.
+    assert!(config.map_above.is_none());
+}
+
 // the probe is coupled to the backend, since only a ring has overhead to undo
 #[test]
 fn probe_follows_the_backend() {
