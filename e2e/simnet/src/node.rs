@@ -97,7 +97,7 @@ impl TestNode {
             context: None,
             test_config: TestConfig::new(mode, stop_timeout),
             runtime: None,
-            store_dir: node_volume()?,
+            store_dir: node_volume(&format!("node-{id}"))?,
         })
     }
 

@@ -34,20 +34,51 @@ pub const SIMNET_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
 /// Directory under the workspace target that holds this run's node volumes
 const VOLUME_SUBDIR: &str = "simnet";
 
+/// Environment variable that leaves this run's volumes on disk, off by default
+pub const KEEP_VOLUMES_VAR: &str = "SIMNET_KEEP_VOLUMES";
+
+/// Whether this run keeps its volumes rather than deleting them
+fn keep_volumes() -> bool {
+    match std::env::var(KEEP_VOLUMES_VAR) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
 /// A fresh reel volume for one node or gateway, deleted when its owner drops
 ///
 /// Under the workspace target rather than the system temp dir: a run that dies
 /// mid-test leaves its volume behind, and there it is swept by `rm -rf target`
 /// or `cargo clean` instead of sitting somewhere nobody thinks to look.
-pub(crate) fn node_volume() -> Result<TempDir> {
+///
+/// `SIMNET_KEEP_VOLUMES=1` keeps every volume instead, which is the only way to
+/// open the bytes a node wrote after the test that wrote them has finished.
+pub(crate) fn node_volume(label: &str) -> Result<TempDir> {
     let workspace = ChainFixture::workspace_root_from_manifest(Path::new(env!(
         "CARGO_MANIFEST_DIR"
     )))?;
     let parent = workspace.join("target").join(VOLUME_SUBDIR);
     std::fs::create_dir_all(&parent)
         .with_context(|| format!("create {}", parent.display()))?;
-    tempfile::tempdir_in(&parent)
-        .with_context(|| format!("node volume under {}", parent.display()))
+
+    let keep = keep_volumes();
+    let prefix = format!("{label}-");
+    let volume = tempfile::Builder::new()
+        .prefix(&prefix)
+        .disable_cleanup(keep)
+        .tempdir_in(&parent)
+        .with_context(|| format!("node volume under {}", parent.display()))?;
+
+    // Said when the volume is made rather than when it survives, so the path is
+    // on record even for a run that aborts before anything drops.
+    if keep {
+        println!("simnet volume kept: {}", volume.path().display());
+    }
+
+    Ok(volume)
 }
 
 pub fn run_simnet_test<T, F>(test: T)

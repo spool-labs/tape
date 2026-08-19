@@ -80,7 +80,7 @@ impl TestGateway {
             admission: None,
             context: None,
             runtime: None,
-            store_dir: node_volume()?,
+            store_dir: node_volume(&format!("gateway-{id}"))?,
         })
     }
 
