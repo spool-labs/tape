@@ -842,6 +842,13 @@ impl Store for RocksStore {
         Ok(Some(total))
     }
 
+    fn bytes_prefix(&self, _cf: &str, _prefix: &[u8]) -> Result<Option<u64>> {
+        // RocksDB keeps no byte counter per key range, and the only exact answer is
+        // a walk that pulls every payload in the range through the block cache. The
+        // callers that want bytes take the count instead.
+        Ok(None)
+    }
+
     fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
         let Some(handle) = self.db.cf_handle(cf) else {
             return Ok(None);

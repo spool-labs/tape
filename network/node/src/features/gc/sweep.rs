@@ -266,14 +266,11 @@ async fn sweep_orphan_slices<Db: Store>(
         let mut cursor: Option<Vec<u8>> = None;
 
         loop {
-            let (slices, next) = store
-                .sweep_slices_by_spool(spool_id, cursor.as_deref(), slice_batch(config))
+            // Keys alone: the decision is made from the track and object rows,
+            // and a page of slice payloads read here would be read to be dropped.
+            let (addresses, next) = store
+                .sweep_slice_keys_by_spool(spool_id, cursor.as_deref(), slice_batch(config))
                 .map_err(store_error)?;
-
-            let mut addresses: Vec<Address> = Vec::with_capacity(slices.len());
-            for (track, _) in &slices {
-                addresses.push(*track);
-            }
             // Both reads the decision needs, once each for the page. The object
             // read was conditional per row and is unconditional per batch, which
             // trades a few small values read for a round trip a row.

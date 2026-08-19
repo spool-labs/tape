@@ -293,9 +293,11 @@ fn rot_slice<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, tr
     // Overwrite the whole payload, not a patch: a round samples one sub-leaf,
     // so a patch covering a fraction p of the slice is found in 1/p rounds and
     // only p = 1 is caught by the first draw. A fixed pattern rather than a
-    // flip keeps this idempotent. The leading bytes stay so the stored value
-    // still decodes.
-    for byte in &mut bytes[16..] {
+    // flip keeps this idempotent. The envelope and the sidecar in front of the
+    // payload are left alone, so what rots is the data the node was asked to
+    // keep and not its own bookkeeping.
+    let payload_at = tape_store::types::slice::payload_start(&bytes);
+    for byte in &mut bytes[payload_at..] {
         *byte = 0x5A;
     }
     raw.put(SliceCol::CF_NAME, &key, &bytes).expect("raw put");

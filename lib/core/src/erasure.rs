@@ -82,8 +82,17 @@ pub fn slice_root_from_sidecar(sidecar: &[Hash]) -> Hash {
 
 /// Byte range of the slice a sample leaf's proof is built from.
 pub fn sample_window(sub_leaf: usize, slice_len: usize) -> Range<usize> {
+    let window = sample_window_range(sub_leaf);
+    window.start..window.end.min(slice_len)
+}
+
+/// The same range for a reader that does not know the slice's length.
+///
+/// A store clamps a window running past the end the way a `pread` does, so a
+/// caller reading one out of the slice does not have to learn its size first.
+pub fn sample_window_range(sub_leaf: usize) -> Range<usize> {
     let start = (sub_leaf / SAMPLE_WINDOW_LEAVES) * SAMPLE_WINDOW_BYTES;
-    start..(start + SAMPLE_WINDOW_BYTES).min(slice_len)
+    start..start + SAMPLE_WINDOW_BYTES
 }
 
 /// Path from a sample leaf to its slice root, built from one window and the sidecar.

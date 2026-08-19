@@ -6,6 +6,10 @@
 
 use reel_bridge::{BenchArm, MetaBulkStore, ReelBridge};
 use store_rocks::SplitStore;
+use tape_core::erasure::{
+    sample_window, sample_window_range, slice_sidecar, SAMPLE_WINDOW_BYTES, SAMPLE_WINDOW_LEAVES,
+    SUB_LEAF_BYTES,
+};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
@@ -67,14 +71,15 @@ fn slice_and_track_traffic<A: BenchArm>() {
         "{}",
         A::NAME
     );
+    // Stored bytes rather than payload bytes: a coded column reports what the
+    // codec left, and this fill is a run of one byte, so the ceiling is what an
+    // uncoded arm holds and the floor is only that it weighs something.
     let (count, bytes) = store.slice_totals_by_spool(spool).unwrap();
     assert_eq!(count, SLICE_COUNT as u64, "{}", A::NAME);
-    assert_eq!(
-        bytes,
-        StorageUnits::from_bytes((SLICE_COUNT * SLICE_SIZE) as u64),
-        "{}",
-        A::NAME
-    );
+    if let Some(bytes) = bytes {
+        let uncoded = StorageUnits::from_bytes((SLICE_COUNT * (SLICE_SIZE + 64)) as u64);
+        assert!(bytes > StorageUnits(0) && bytes <= uncoded, "{} weighed {bytes:?}", A::NAME);
+    }
 
     let sizes = store.iter_slice_sizes_by_spool(spool).unwrap();
     assert_eq!(sizes.len(), SLICE_COUNT, "{}", A::NAME);
@@ -95,6 +100,63 @@ fn slice_and_track_traffic<A: BenchArm>() {
         "the range delete took the neighbouring spool with it on {}",
         A::NAME
     );
+}
+
+/// A slice big enough to hold several sample windows, in bytes a codec shrinks
+///
+/// Markdown-shaped, because that is what a data slice of a systematic code
+/// carries and what makes the column's codec admit anything at all.
+fn windowed_slice() -> Vec<u8> {
+    reel_bridge::fill::markdown(3, 3 * SAMPLE_WINDOW_BYTES + 777)
+}
+
+/// A challenge answers the same bytes whatever the column did with them
+///
+/// The window and the sub-leaf are logical offsets into the payload, so a coded
+/// column has to answer what the caller wrote and not what it stored.
+fn windows_are_logical<A: BenchArm>() {
+    let dir = TempDir::new().unwrap();
+    let store = A::open_bench(dir.path());
+    let spool = SpoolIndex(4);
+    let track = Address::new_unique();
+    let payload = windowed_slice();
+
+    store.put_slice(spool, track, payload.clone()).unwrap();
+    A::settle(&store);
+
+    for sub_leaf in [0usize, 1, SAMPLE_WINDOW_LEAVES, 2 * SAMPLE_WINDOW_LEAVES + 5] {
+        let asked = sample_window_range(sub_leaf);
+        let (sidecar, window) = store
+            .slice_window(spool, track, asked.start, asked.len())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(sidecar, slice_sidecar(&payload).unwrap(), "{}", A::NAME);
+        assert_eq!(window, payload[sample_window(sub_leaf, payload.len())], "{}", A::NAME);
+
+        // The sub-leaf a proof signs, cut out of the window the same way the
+        // challenge cuts it.
+        let at = (sub_leaf % SAMPLE_WINDOW_LEAVES) * SUB_LEAF_BYTES;
+        let leaf = &window[at..(at + SUB_LEAF_BYTES).min(window.len())];
+        let start = sub_leaf * SUB_LEAF_BYTES;
+        assert_eq!(leaf, &payload[start..(start + SUB_LEAF_BYTES).min(payload.len())],
+            "{} at sub-leaf {sub_leaf}", A::NAME);
+    }
+}
+
+#[test]
+fn rocks_answers_logical_windows() {
+    windows_are_logical::<SplitStore>();
+}
+
+#[test]
+fn reel_answers_logical_windows() {
+    windows_are_logical::<ReelBridge>();
+}
+
+#[test]
+fn rocks_meta_plus_reel_bulk_answers_logical_windows() {
+    windows_are_logical::<MetaBulkStore>();
 }
 
 #[test]

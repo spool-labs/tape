@@ -5901,6 +5901,7 @@ name = "reel-bridge"
 version = "0.4.0"
 dependencies = [
  "libc",
+ "lz4_flex",
  "reel",
  "reel-core",
  "store",
@@ -10411,7 +10412,6 @@ name = "tape-store"
 version = "0.4.0"
 dependencies = [
  "bytemuck",
- "lz4_flex",
  "reel-bridge",
  "rocksdb",
  "serde",

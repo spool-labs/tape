@@ -9,10 +9,11 @@
 //!
 //! Columns declare lz4, which is what the RocksDB store they replace sets for
 //! the whole database. A codec is attempted at admission and not promised, so a
-//! payload that does not shrink is stored verbatim. Three shapes stay raw:
-//! `slice`, because a codec frame decodes whole and a storage challenge reads a
-//! window out of one, and the two carrying shapes, because the engine refuses a
-//! codec beside a carry.
+//! payload that does not shrink is stored verbatim, which is what a parity slice
+//! does: the same declaration handles data and parity per record with nothing to
+//! configure. `slice` is declared with the rest of them, since a coded column
+//! answers a window by decoding the record whole, and at the sizes the product
+//! stores that is the read the challenge was doing anyway.
 
 use reel::{Codec, ColumnId, ColumnSet, ColumnSpec, KeyWidth, MapShape};
 use tape_store::columns::ALL_COLUMN_FAMILIES;
@@ -42,64 +43,6 @@ const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8, codec: Co
         purge_mark: None,
         codec,
         map_shape: MapShape::Open,
-    }
-}
-
-/// A fixed-width column stored verbatim, so a window of one value can be read
-///
-/// A codec frame decodes whole, so a coded column can answer no range at all.
-/// The column a storage challenge reads a sub-leaf out of has to stay raw or
-/// every such read pulls the whole payload back.
-const fn ranged(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> ColumnSpec {
-    ColumnSpec {
-        id: ColumnId(id),
-        name,
-        key_width: KeyWidth::Fixed(width),
-        shard_bytes,
-        inline_max: 0,
-        row_carry: 0,
-        purge_mark: None,
-        codec: Codec::None,
-        map_shape: MapShape::Tree,
-    }
-}
-
-/// A fixed-width column whose small values ride in the sealed row beside the key
-///
-/// A read then answers from the footer rather than from the volume, which is the
-/// difference between a device round trip and none. Only worth it where the
-/// values are small and bounded: the carry is paid in the stride of every block
-/// search and in the footer bytes of every sealed segment.
-const fn carried(id: u8, name: &'static str, width: u16, shard_bytes: u8, carry: u16) -> ColumnSpec {
-    ColumnSpec {
-        id: ColumnId(id),
-        name,
-        key_width: KeyWidth::Fixed(width),
-        shard_bytes,
-        inline_max: 0,
-        row_carry: carry,
-        purge_mark: None,
-        codec: Codec::None,
-        map_shape: MapShape::Tree,
-    }
-}
-
-/// A fixed-width column whose small values are held in the resident index
-///
-/// The read then answers from memory with no syscall at all, which is what a
-/// userspace block cache buys an engine that has one. Paid for in resident bytes
-/// per key, so it is only affordable where the key count is bounded.
-const fn inlined(id: u8, name: &'static str, width: u16, shard_bytes: u8, inline: u16) -> ColumnSpec {
-    ColumnSpec {
-        id: ColumnId(id),
-        name,
-        key_width: KeyWidth::Fixed(width),
-        shard_bytes,
-        inline_max: inline,
-        row_carry: 0,
-        purge_mark: None,
-        codec: Codec::None,
-        map_shape: MapShape::Tree,
     }
 }
 
@@ -135,43 +78,43 @@ const fn shaped(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> Colu
 
 /// Families a tape store addresses, with `track_data` declared as asked
 ///
-/// Identifiers are positions in `ALL_COLUMN_FAMILIES` plus one, so zero stays
-/// free and the mapping is stable as long as that list does not reorder. The
-/// column-set test holds it to that list.
+/// Every identifier is written out beside the family it belongs to and never
+/// derived from a position, because the id is stamped into every record header:
+/// a family leaving the set has to leave its number behind rather than hand it
+/// to whichever family moved up. Zero stays free. The column-set test holds the
+/// names to `ALL_COLUMN_FAMILIES` and the numbers to being distinct.
 const fn tape_columns(track_data_codec: Codec) -> [ColumnSpec; ALL_COLUMN_FAMILIES.len()] {
     [
-    plain(1, ALL_COLUMN_FAMILIES[0]),   // meta
-    plain(2, ALL_COLUMN_FAMILIES[1]),   // tape
-    shaped(3, ALL_COLUMN_FAMILIES[2], ADDRESS_LEN, 1), // track
-    plain(4, ALL_COLUMN_FAMILIES[3]),   // track_lookup
-    open(5, ALL_COLUMN_FAMILIES[4], ADDRESS_LEN, 1, track_data_codec), // track_data
-    plain(6, ALL_COLUMN_FAMILIES[5]),   // object_info
-    plain(7, ALL_COLUMN_FAMILIES[6]),   // object_metadata
-    plain(8, ALL_COLUMN_FAMILIES[7]),   // object_list
-    plain(9, ALL_COLUMN_FAMILIES[8]),   // sync_cursor
-    plain(10, ALL_COLUMN_FAMILIES[9]),  // gc
-    plain(11, ALL_COLUMN_FAMILIES[10]), // spool_status
-    shaped(12, ALL_COLUMN_FAMILIES[11], SLICE_KEY_LEN, 2), // spool_pending_repair
-    shaped(13, ALL_COLUMN_FAMILIES[12], SLICE_KEY_LEN, 2), // spool_pending_recovery
-    ranged(14, ALL_COLUMN_FAMILIES[13], SLICE_KEY_LEN, 2), // slice
-    shaped(15, ALL_COLUMN_FAMILIES[14], SLICE_KEY_LEN, 2), // slice_size
-    shaped(16, ALL_COLUMN_FAMILIES[15], SLICE_KEY_LEN, 2), // slice_sidecar
-    plain(17, ALL_COLUMN_FAMILIES[16]), // challenge_record
-    plain(18, ALL_COLUMN_FAMILIES[17]), // challenge_round
-    plain(19, ALL_COLUMN_FAMILIES[18]), // track_sample
-    plain(20, ALL_COLUMN_FAMILIES[19]), // spool_sync_cursor
-    plain(21, ALL_COLUMN_FAMILIES[20]), // event_log
-    plain(22, ALL_COLUMN_FAMILIES[21]), // vote_sig
-    shaped(23, ALL_COLUMN_FAMILIES[22], SNAPSHOT_KEY_LEN, 0), // snapshot_artifact
-    plain(24, ALL_COLUMN_FAMILIES[23]), // credential
-    plain(25, ALL_COLUMN_FAMILIES[24]), // policy_rule
-    plain(26, ALL_COLUMN_FAMILIES[25]), // auth_state
-    plain(27, ALL_COLUMN_FAMILIES[26]), // audit_log
-    plain(28, ALL_COLUMN_FAMILIES[27]), // ledger
-    plain(29, ALL_COLUMN_FAMILIES[28]), // ledger_reservation
-    plain(30, ALL_COLUMN_FAMILIES[29]), // s3_multipart_upload
-    plain(31, ALL_COLUMN_FAMILIES[30]), // s3_multipart_part
-    plain(32, ALL_COLUMN_FAMILIES[31]), // s3_multipart_part_data
+    plain(1, "meta"),
+    plain(2, "tape"),
+    shaped(3, "track", ADDRESS_LEN, 1),
+    plain(4, "track_lookup"),
+    open(5, "track_data", ADDRESS_LEN, 1, track_data_codec),
+    plain(6, "object_info"),
+    plain(7, "object_metadata"),
+    plain(8, "object_list"),
+    plain(9, "sync_cursor"),
+    plain(10, "gc"),
+    plain(11, "spool_status"),
+    shaped(12, "spool_pending_repair", SLICE_KEY_LEN, 2),
+    shaped(13, "spool_pending_recovery", SLICE_KEY_LEN, 2),
+    shaped(14, "slice", SLICE_KEY_LEN, 2),
+    plain(17, "challenge_record"),
+    plain(18, "challenge_round"),
+    plain(19, "track_sample"),
+    plain(20, "spool_sync_cursor"),
+    plain(21, "event_log"),
+    plain(22, "vote_sig"),
+    shaped(23, "snapshot_artifact", SNAPSHOT_KEY_LEN, 0),
+    plain(24, "credential"),
+    plain(25, "policy_rule"),
+    plain(26, "auth_state"),
+    plain(27, "audit_log"),
+    plain(28, "ledger"),
+    plain(29, "ledger_reservation"),
+    plain(30, "s3_multipart_upload"),
+    plain(31, "s3_multipart_part"),
+    plain(32, "s3_multipart_part_data"),
     ]
 }
 
@@ -210,7 +153,7 @@ mod tests {
     #[test]
     fn the_codec_is_the_only_difference() {
         for (coded, raw) in TAPE_COLUMNS.iter().zip(RAW_TRACK_DATA_COLUMNS) {
-            if coded.name == ALL_COLUMN_FAMILIES[4] {
+            if coded.name == "track_data" {
                 assert_eq!(coded.codec, Codec::Lz4);
                 assert_eq!(raw.codec, Codec::None);
             } else {
