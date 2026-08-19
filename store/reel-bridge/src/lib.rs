@@ -1,10 +1,12 @@
-//! The internal store trait served by the public reel engine, for benches
+//! The internal store trait served by the public reel engine
 //!
-//! The internal workspace benches the `store::Store` trait; the public reel at
-//! `tape-public/reel` implements a vendored copy of that trait, `reel_core::Store`,
-//! which has since moved on. This crate is the bench-scoped adapter between the
-//! two, so a `TapeStore` built on the internal trait can run its workload against
-//! the reel that shipped rather than against the internal fork of it.
+//! The internal workspace is written against the `store::Store` trait; the
+//! public reel at `tape-public/reel` implements a vendored copy of that trait,
+//! `reel_core::Store`, which has since moved on. This crate is the adapter
+//! between the two, so a `TapeStore` built on the internal trait runs on the
+//! reel that shipped rather than on the internal fork of it. A node opens
+//! through `open_node_store` and an offline tool through
+//! `open_node_store_read_only`; the benches open through the rest.
 //!
 //! Three divergences are bridged here and nowhere else:
 //!
