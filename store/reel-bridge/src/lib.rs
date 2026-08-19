@@ -232,8 +232,11 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
     // Printed rather than assumed: a bench that cannot say which config it
     // opened with cannot tell a real result from a stale binary.
     eprintln!(
-        "bench_config segment={segment_bytes} alloc_chunk={} map_above={:?} shapes={:?}",
-        alloc_chunk_bytes().min(segment_bytes), MAP_EVERYTHING, ShardShapes::Declared,
+        "bench_config segment={segment_bytes} alloc_chunk={} sync={:?} map_above={:?} shapes={:?}",
+        alloc_chunk_bytes().min(segment_bytes),
+        sync_policy(),
+        MAP_EVERYTHING,
+        ShardShapes::Declared,
     );
     ReelConfig {
         segment_bytes: ByteCount::from_bytes(segment_bytes),
@@ -243,7 +246,7 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
         // what it holds.
         alloc_chunk: ByteCount::from_bytes(alloc_chunk_bytes().min(segment_bytes)),
         preallocate: Preallocate::Chunk,
-        sync: SyncPolicy::Never,
+        sync: sync_policy(),
         // Without this the engine drops every open-shard request a column makes
         // and hands back a tree, so a run measuring the shape would measure the
         // default and never say so.
@@ -262,6 +265,25 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
 
 /// Environment variable naming the allocation chunk in MiB
 pub const ALLOC_MIB_VAR: &str = "TAPE_BENCH_ALLOC_MIB";
+
+/// Environment variable naming the sync policy: `never`, `everyput`, or bytes
+pub const SYNC_VAR: &str = "TAPE_BENCH_SYNC";
+
+/// The durability a bench arm runs under, `Never` unless asked
+///
+/// `Never` is a control column, not an operating mode: it says what the write
+/// path costs with the syncs taken out, and every figure taken under it owes a
+/// durable one beside it before anything is concluded about a node.
+fn sync_policy() -> SyncPolicy {
+    match std::env::var(SYNC_VAR).ok().as_deref() {
+        None | Some("never") => SyncPolicy::Never,
+        Some("everyput") => SyncPolicy::EveryPut,
+        Some(bytes) => match bytes.parse::<u64>() {
+            Ok(bytes) => SyncPolicy::Bytes(ByteCount::from_bytes(bytes)),
+            Err(_) => panic!("{SYNC_VAR} is `never`, `everyput`, or a byte count"),
+        },
+    }
+}
 
 /// The allocation chunk a bench arm reserves ahead in, the shipped one unless asked
 fn alloc_chunk_bytes() -> u64 {
