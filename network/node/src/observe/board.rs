@@ -19,7 +19,7 @@ use tape_core::system::NodeStatus;
 use tape_crypto::Address;
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
-use tape_store::ops::{ChallengeOps, SliceOps, SpoolOps};
+use tape_store::ops::{ChallengeOps, SliceOps};
 use tape_observe_api::{
     phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
     ChallengeRounds, DecodeStats, EpochInfo,
