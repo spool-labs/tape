@@ -11,7 +11,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use store_memory::MemoryStore;
+use reel_bridge::ReelBridge;
 use tape_core::bls::BlsPrivateKey;
 use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
@@ -22,16 +22,16 @@ use tape_node::config::node::NodeConfig;
 use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::core::error::NodeError;
-use tape_store::TapeStore;
+use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tracing::Instrument;
 
 use crate::tls;
 
-type TestGatewayContext = Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>;
+type TestGatewayContext = Arc<NodeContext<ReelBridge, HttpApi, LiteSvmRpc>>;
 
-/// One simulated read gateway with in-memory storage and a public HTTP server.
+/// One simulated read gateway on its own reel volume, with a public HTTP server.
 pub struct TestGateway {
     id: usize,
     public_host: IpAddr,
@@ -46,6 +46,9 @@ pub struct TestGateway {
     admission: Option<Arc<dyn Admission>>,
     context: Option<TestGatewayContext>,
     runtime: Option<JoinHandle<Result<(), NodeError>>>,
+
+    // The volume outlives every context built over it.
+    store_dir: TempDir,
 }
 
 impl TestGateway {
@@ -75,6 +78,7 @@ impl TestGateway {
             admission: None,
             context: None,
             runtime: None,
+            store_dir: TempDir::new().context("gateway store dir")?,
         })
     }
 
@@ -328,7 +332,8 @@ impl TestGateway {
     }
 
     async fn build_context(&self) -> Result<TestGatewayContext> {
-        let store = TapeStore::new(MemoryStore::new());
+        let store = reel_bridge::open_harness_store(self.store_dir.path())
+            .context("open gateway store")?;
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());
         let tls_identity = Arc::new(clone_ed25519_keypair(&self.tls_keypair));
@@ -352,7 +357,7 @@ impl TestGateway {
                 .context("build gateway HttpApi")?,
         );
 
-        let context = NodeContextBuilder::<MemoryStore, HttpApi, LiteSvmRpc>::new(
+        let context = NodeContextBuilder::<ReelBridge, HttpApi, LiteSvmRpc>::new(
             self.app_config.clone(),
             clone_keypair(&self.keypair),
             self.bls_keypair,

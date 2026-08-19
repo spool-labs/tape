@@ -10,7 +10,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use store_memory::MemoryStore;
+use reel_bridge::ReelBridge;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -19,13 +19,13 @@ use tape_node::config::node::NodeConfig;
 use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
-use tape_store::TapeStore;
+use tempfile::TempDir;
 use tokio::time::Duration;
 use tracing::Instrument;
 
 use crate::config::NodeRuntimeMode;
 
-type TestNodeContext = Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>;
+type TestNodeContext = Arc<NodeContext<ReelBridge, HttpApi, LiteSvmRpc>>;
 
 struct TestConfig {
     mode: NodeRuntimeMode,
@@ -41,7 +41,7 @@ impl TestConfig {
     }
 }
 
-/// One simulated node with in-memory storage and optional runtime handles.
+/// One simulated node on its own reel volume, with optional runtime handles.
 pub struct TestNode {
     id: usize,
     name: String,
@@ -56,6 +56,10 @@ pub struct TestNode {
     context: Option<TestNodeContext>,
     test_config: TestConfig,
     runtime: Option<NodeRuntimeHandle>,
+
+    // The volume outlives every context built over it, so a node stopped and
+    // started again comes back to the bytes it wrote.
+    store_dir: TempDir,
 }
 
 impl TestNode {
@@ -91,6 +95,7 @@ impl TestNode {
             context: None,
             test_config: TestConfig::new(mode, stop_timeout),
             runtime: None,
+            store_dir: TempDir::new().context("node store dir")?,
         })
     }
 
@@ -213,7 +218,8 @@ impl TestNode {
     }
 
     async fn build_context(&self) -> Result<TestNodeContext> {
-        let store = TapeStore::new(MemoryStore::new());
+        let store = reel_bridge::open_harness_store(self.store_dir.path())
+            .context("open node store")?;
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());
 
@@ -238,7 +244,7 @@ impl TestNode {
                 .context("build HttpApi")?,
         );
 
-        let context = NodeContextBuilder::<MemoryStore, HttpApi, LiteSvmRpc>::new(
+        let context = NodeContextBuilder::<ReelBridge, HttpApi, LiteSvmRpc>::new(
             self.app_config.clone(),
             clone_keypair(&self.keypair),
             self.bls_keypair,

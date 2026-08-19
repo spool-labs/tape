@@ -40,7 +40,7 @@ use std::path::Path;
 
 use reel::{
     ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, ReelConfig, ReelStore,
-    ShardShapes, SyncPolicy,
+    ShardShapes, SyncPolicy, ThreadBudget,
     MAP_EVERYTHING,
 };
 use reel_core::Store as ReelStoreTrait;
@@ -279,6 +279,37 @@ pub fn open_node_store(
         compaction_mbps,
         sync_bytes,
         backend,
+    )?))
+}
+
+/// Bytes a harness volume seals a segment at
+const HARNESS_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Bytes a harness volume reserves ahead of its write head
+const HARNESS_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
+
+/// The node's own policy at a size a throwaway volume can afford
+///
+/// Every knob the fleet ships, at a segment an e2e node can fill: the shipped
+/// segment is preallocated whole, and twenty-five nodes reserving a gibibyte
+/// each is the size of the run rather than the size of its data. One tail for
+/// the same reason, since a tail costs a reserved segment.
+pub fn harness_config() -> ReelConfig {
+    ReelConfig {
+        segment_bytes: ByteCount::from_bytes(HARNESS_SEGMENT_BYTES),
+        alloc_chunk: ByteCount::from_bytes(HARNESS_ALLOC_CHUNK),
+        preallocate: Preallocate::Chunk,
+        active_tails: ThreadBudget::threads(1),
+        ..node_config(0, DEFAULT_SYNC_BYTES, default_backend())
+    }
+}
+
+/// A tape store on a harness volume, every family the node addresses
+pub fn open_harness_store(root: impl AsRef<Path>) -> StoreResult<TapeStore<ReelBridge>> {
+    Ok(TapeStore::new(ReelBridge::open(
+        root,
+        harness_config(),
+        TAPE_COLUMNS,
     )?))
 }
 
