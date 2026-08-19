@@ -23,3 +23,7 @@ tape-core.workspace = true
 tape-crypto.workspace = true
 tempfile = "3.10"
 libc = "0.2"
+# The downgrade to posix is announced and nowhere else recorded, so a test
+# that wants the outcome has to listen for it.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }

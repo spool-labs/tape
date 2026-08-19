@@ -5919,6 +5919,8 @@ dependencies = [
  "tape-crypto",
  "tape-store",
  "tempfile",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
