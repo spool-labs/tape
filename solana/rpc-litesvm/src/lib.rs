@@ -129,23 +129,22 @@ impl LiteSvmRpc {
         Ok(())
     }
 
-    /// Advance the SVM slot **and** `confirmed_tip` to `slot`.
-    ///
-    /// This is the explicit "harness drives time" path, blocks recorded
-    /// at slots <= `slot` become immediately visible via `get_block`.
+    /// Advance the SVM slot **and** `confirmed_tip` to `slot`, clamped to the
+    /// pending slot: the harness drives time forward only. A close behind the
+    /// last recorded block would mint an entry whose parent is newer than
+    /// itself, which every node reads as a broken chain.
     pub fn warp_to_slot(&self, slot: u64) -> Result<(), RpcError> {
         let mut inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let slot = slot.max(inner.pending_slot);
         inner.svm.warp_to_slot(slot);
         Self::close_slot_locked(&mut inner, slot);
         if slot > inner.confirmed_tip {
             inner.confirmed_tip = slot;
         }
-        if inner.pending_slot <= slot {
-            inner.pending_slot = slot + 1;
-        }
+        inner.pending_slot = slot + 1;
         Ok(())
     }
 
