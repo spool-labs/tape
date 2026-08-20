@@ -84,20 +84,23 @@ fn sweep<A: BenchArm>() {
     }
 }
 
+// what a keys-only count saves rocks against reading values
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_count_rocks() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn key_count_rocks() {
     sweep::<SplitStore>();
 }
 
+// what a keys-only count saves the reel against reading values
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_count_reel() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn key_count_reel() {
     sweep::<ReelStore>();
 }
 
+// what a keys-only count saves the split arm against reading values
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_count_split() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn key_count_split() {
     sweep::<MetaBulkStore>();
 }

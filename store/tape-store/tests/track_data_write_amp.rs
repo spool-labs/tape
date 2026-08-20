@@ -1,34 +1,16 @@
-//! Bytes an engine writes, and holds, for the bytes the `track_data` workload hands it.
+//! Bytes an engine writes, and holds, for what the `track_data` workload hands it
 //!
-//! Two write counters, `wchar` and `write_bytes`, taken from `/proc/self/io`.
-//! Logical bytes are key plus payload, the only figure the caller asked to store.
+//! `wchar` and `write_bytes` are the write counters. Beside them `live`, the
+//! engine's own answer and the one a codec moves, and `actual`, the file bytes
+//! with reservations included. A reservation is not an amplified byte, it is a
+//! file larger than what it holds.
 //!
-//! Two size counters beside them, because what an engine wrote and what it is
-//! left holding are different numbers. `live` is what the engine says it holds,
-//! which is the one a codec moves; `actual` is the file bytes on disk, which
-//! includes whatever was reserved ahead of writing. An engine that reserves file
-//! space moves no data doing so and neither write counter sees it, correctly: a
-//! reservation is not an amplified byte, it is a file larger than what it holds.
+//! Codec rows use a markdown fill and random is the control, which a codec
+//! declines. The codec is taken from `TAPE_BENCH_TRACK_DATA_CODEC` and every row
+//! prints which it opened with.
 //!
-//! Codec rows use a markdown-shaped fill, since the product stores `.md` pages
-//! and a codec's answer is entirely a property of the bytes. The random fill is
-//! the control: `admit` keeps a compression only when it shrinks the payload by
-//! an eighth, which random bytes never do, so a coded random row has to land on
-//! the uncoded one. The 128 B shape is out of the codec comparison altogether,
-//! because `admit` does not attempt a payload below its 256 B floor.
-//!
-//! `/proc/self/io` is process-wide, so an arm that shares a process with another
-//! reports the sum of both. Every row here is its own test and every row has to
-//! be run in its own process:
-//!   cargo test -p tape-store --test track_data_write_amp --release \
-//!     -- --ignored --nocapture --test-threads 1 --exact write_amp_rocks_small
-//!
-//! Both arms take their codec from `TAPE_BENCH_TRACK_DATA_CODEC`, `lz4` or
-//! `none`, and every row prints which it opened with. The reel declares it on
-//! the column; the rocks arm sets the matching RocksDB compression, which its
-//! bench configuration otherwise leaves off.
-//!
-//! Linux only, since no other kernel keeps these counters.
+//! Linux only, and one row per process since the counters are process-wide. Run
+//! with `--ignored --nocapture --test-threads 1 --exact <row>`.
 
 #![cfg(target_os = "linux")]
 
@@ -216,62 +198,72 @@ fn sweep<Arm: BenchArm>(shape: &Shape, fill: Fill) {
     row(Arm::NAME, codec, fill, shape, count, "closed", logical, &closed, None, on_disk(&root));
 }
 
+// bytes rocks writes for a small record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn write_amp_rocks_small() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn rocks_small() {
     sweep::<SplitStore>(&SMALL, Fill::Random);
 }
 
+// bytes the reel writes for a small record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn write_amp_reel_small() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn reel_small() {
     sweep::<ReelStore>(&SMALL, Fill::Random);
 }
 
+// bytes rocks writes for a mid-size record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn write_amp_rocks_medium() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn rocks_medium() {
     sweep::<SplitStore>(&MEDIUM, Fill::Random);
 }
 
+// bytes the reel writes for a mid-size record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn write_amp_reel_medium() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn reel_medium() {
     sweep::<ReelStore>(&MEDIUM, Fill::Random);
 }
 
+// bytes rocks writes for a large record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn write_amp_rocks_large() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn rocks_large() {
     sweep::<SplitStore>(&LARGE, Fill::Random);
 }
 
+// bytes the reel writes for a large record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn write_amp_reel_large() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn reel_large() {
     sweep::<ReelStore>(&LARGE, Fill::Random);
 }
 
+// what the codec buys rocks on a mid-size record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn codec_rocks_medium() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn codec_rocks_mid() {
     sweep::<SplitStore>(&MEDIUM, Fill::Markdown);
 }
 
+// what the codec buys the reel on a mid-size record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn codec_reel_medium() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn codec_reel_mid() {
     sweep::<ReelStore>(&MEDIUM, Fill::Markdown);
 }
 
+// what the codec buys rocks on a large record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn codec_rocks_large() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn codec_rocks_big() {
     sweep::<SplitStore>(&LARGE, Fill::Markdown);
 }
 
+// what the codec buys the reel on a large record
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn codec_reel_large() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn codec_reel_big() {
     sweep::<ReelStore>(&LARGE, Fill::Markdown);
 }

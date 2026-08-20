@@ -1,25 +1,25 @@
 //! Which of the two write doors a large payload is charged for
 //!
-//! The slice write sweep reports a single put of a 10 MiB payload costing several
-//! times what a batch carrying the same payload costs, on the bench box only. The
-//! two doors plan and place the same record, so the split has to be either the
-//! door or the buffer the borrowed-value trait forces the door to take. These four
-//! variants separate them: the trait put and the raw per-record put both copy, the
-//! owned per-record put and the batch both hand the buffer over.
+//! Both doors plan and place the same record, so a split between them is either
+//! the door or the buffer the borrowed-value trait forces it to take. Four
+//! variants separate the two: the trait put and the raw per-record put copy, the
+//! owned per-record put and the batch hand the buffer over.
 //!
-//! Ignored by default. Run with:
-//!   cargo test -p reel-store --test put_doors --release -- --ignored --nocapture
+//! Ignored by default. Run with `--ignored --nocapture` on a release build.
 
 use std::time::{Duration, Instant};
 
 use reel::{ColumnId, KeyBytes, RecordKey, SEGMENT_SUFFIX};
 use reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
-use store::{Store, WriteBatch};
-use tape_store::columns::ALL_COLUMN_FAMILIES;
+use store::{Column, Store, WriteBatch};
+use tape_store::columns::SliceCol;
 use tempfile::TempDir;
 
-/// The slice family, whose identifier is its position in the declared set plus one
+/// The slice family, as the reel's own column set numbers it
 const SLICE_COLUMN: ColumnId = ColumnId(14);
+
+/// Bytes a slice key occupies: the spool big endian, then the track address
+const SLICE_KEY_LEN: usize = 34;
 
 /// Payload sizes, straddling the 4 MiB row that is fine and the 10 MiB row that is not
 const SIZES: &[usize] = &[1024 * 1024, 4 * 1024 * 1024, 10 * 1024 * 1024];
@@ -30,8 +30,10 @@ const COUNT: usize = 12;
 /// Rounds, whose order rotates so no variant permanently runs first
 const ROUNDS: usize = 6;
 
+/// Write doors weighed against each other
 const VARIANTS: usize = 4;
 
+/// What a reported row calls each door
 const NAMES: [&str; VARIANTS] = ["trait put", "raw put", "put_owned", "batch"];
 
 /// Segment size the sweep opens with, matching the write bench
@@ -46,13 +48,15 @@ fn encode(payload: &[u8]) -> Vec<u8> {
 }
 
 fn slice_key(at: usize) -> Vec<u8> {
-    let mut key = vec![0u8; 34];
-    key[26..34].copy_from_slice(&(at as u64).to_be_bytes());
+    let mut key = vec![0u8; SLICE_KEY_LEN];
+    key[SLICE_KEY_LEN - 8..].copy_from_slice(&(at as u64).to_be_bytes());
     key
 }
 
 /// Minor page faults this process has taken, the gauge on freshly mapped buffers
 fn minor_faults() -> u64 {
+    // SAFETY: rusage is plain data, and getrusage only writes the struct handed
+    // to it.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
         return 0;
@@ -72,7 +76,7 @@ fn run_variant(variant: usize, size: usize) -> Round {
     let dir = TempDir::new().expect("tempdir");
     let root = dir.path().join("db");
     let store = ReelStore::open(&root, bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open reel");
-    let cf = ALL_COLUMN_FAMILIES[13];
+    let cf = SliceCol::CF_NAME;
 
     let payload = vec![0xABu8; size];
     let mut elapsed = Duration::ZERO;
@@ -137,9 +141,10 @@ fn run_variant(variant: usize, size: usize) -> Round {
     }
 }
 
+// what each write door charges for the same payload
 #[test]
-#[ignore = "diagnostic; run with --ignored --nocapture"]
-fn put_door_split() {
+#[ignore = "diagnostic, run with --ignored --nocapture"]
+fn door_split() {
     println!(
         "{:>9}  {:>10}  {:>11}  {:>11}  {:>9}  {:>6}  {:>5}  {:>4}",
         "size", "variant", "per op", "slowest", "faults/op", "MB/s", "syncs", "segs"

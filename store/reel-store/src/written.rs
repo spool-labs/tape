@@ -1,13 +1,10 @@
 //! What the process wrote, as the kernel counted it
 //!
-//! Two counters, because they answer different questions. `wchar` is what the
-//! process passed to write syscalls, so it is the engine's own decision about how
-//! much to put down. `write_bytes` is what the kernel attributed to the process on
-//! its way to storage, accounted a page at a time, so a record smaller than a page
-//! that lands on its own page still costs a page.
+//! `wchar` is what the process handed to write syscalls, the engine's own
+//! decision about how much to put down. `write_bytes` is what the kernel
+//! attributed on the way to storage, accounted a page at a time.
 //!
-//! `/proc/self/io` is process-wide, so an arm that shares a process with another
-//! reports the sum of both: every row has to be run in its own process.
+//! The counters are process-wide, so every arm has to run in its own process.
 
 /// The write counters `/proc/self/io` keeps for the whole process
 pub struct Written {

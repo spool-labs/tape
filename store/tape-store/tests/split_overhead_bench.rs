@@ -1,14 +1,14 @@
-//! Store layout benchmark: one RocksDB instance holding every column family, the
-//! split meta/bulk RocksDB layout on the same disk, the public reel serving every
-//! family, and RocksDB metadata beside a reel holding the bulk families. Measures
-//! open time, bulk slice write and read throughput, and metadata operation latency
-//! on an idle store and while slice writes are in flight.
+//! What a store layout costs, over four of them
+//!
+//! One rocks instance holding everything, the split meta/bulk rocks layout, the
+//! reel serving every family, and rocks metadata beside a reel holding the bulk
+//! families. Measures open time, slice write and read throughput, and metadata
+//! latency both idle and under slice writes.
 //!
 //! The last arm is the shape a node would run the reel in, so its metadata rows
 //! should track the split-rocks arm and only its slice rows should move.
 //!
-//! Ignored by default. Run with:
-//!   cargo test -p tape-store --test split_overhead_bench --release -- --ignored --nocapture
+//! Ignored by default. Run with `--ignored --nocapture` on a release build.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -202,9 +202,10 @@ where
     println!("  loaded bulk  {}", throughput(slice_count, bulk));
 }
 
+// what each store layout costs on open, slices and metadata
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn store_layout_overhead() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn layout_overhead() {
     let payload = random_payload(SLICE_SIZE);
 
     {

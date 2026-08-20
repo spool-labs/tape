@@ -327,10 +327,8 @@ pub struct SyncSlicesRequest {
     pub spool_index: SpoolIndex,
     /// Where the last page left off, or nothing to start from the beginning.
     ///
-    /// Opaque: the server mints it and the client only ever hands it back. A
-    /// mark the server did not mint, or one from a different opening of its
-    /// volume, restarts the scan rather than resuming into a layout that is not
-    /// there.
+    /// Opaque: the server mints it and the client only hands it back. A mark
+    /// this server did not mint restarts the scan.
     pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }
@@ -341,9 +339,8 @@ pub struct SyncSlicesResponse {
     pub entries: Vec<SyncSliceEntry>,
     /// Where to resume, or nothing when the scan is done.
     ///
-    /// A page boundary rather than a row: a client resuming from it may be
-    /// handed slices it already holds, which is safe because a slice it already
-    /// has is skipped rather than rewritten.
+    /// A page boundary rather than a row, so a client resuming may be handed
+    /// slices it already holds. It skips those rather than rewriting them.
     pub next_cursor: Option<Vec<u8>>,
 }
 
@@ -361,10 +358,8 @@ pub struct SyncTracksRequest {
     pub spool_index: SpoolIndex,
     /// Where the last page left off, or nothing to start from the beginning.
     ///
-    /// Opaque: the server mints it and the client only ever hands it back. A
-    /// mark the server did not mint, or one from a different opening of its
-    /// volume, restarts the scan rather than resuming into a layout that is not
-    /// there.
+    /// Opaque: the server mints it and the client only hands it back. A mark
+    /// this server did not mint restarts the scan.
     pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }
@@ -375,9 +370,8 @@ pub struct SyncTracksResponse {
     pub entries: Vec<SyncTrackEntry>,
     /// Where to resume, or nothing when the scan is done.
     ///
-    /// A page boundary rather than a row: a client resuming from it can be
-    /// handed rows it already has, which is safe because taking a track twice
-    /// is taking it once.
+    /// A page boundary rather than a row, so a client resuming may be handed
+    /// rows it already has. Taking a track twice is taking it once.
     pub next_cursor: Option<Vec<u8>>,
 }
 

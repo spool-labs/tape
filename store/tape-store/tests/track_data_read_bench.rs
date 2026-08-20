@@ -1,17 +1,12 @@
-//! Point reads over `track_data`, one at a time against asked in batches.
+//! Point reads over `track_data`, one at a time against asked in batches
 //!
-//! Warm throughout: every row is written, settled and then read back in the same
-//! process, so nothing here says what a cold volume costs.
+//! Warm throughout: every row is written, settled and read back in one process,
+//! so nothing here says what a cold volume costs. The one-at-a-time column is
+//! what the node did before the sweeps were batched, and the shape an engine
+//! with submission depth is worst at. Payloads stay small so the row weighs the
+//! read path and not the device.
 //!
-//! The one-at-a-time column is what the node did everywhere before the sweeps
-//! were batched, and it is the shape an engine with submission depth is worst
-//! at: nothing is ever in flight but the read being waited on. The batched
-//! column is the same rows through `get_many`, which is the whole point of the
-//! wider store trait. Payloads stay small so the row weighs the read path and
-//! not the device.
-//!
-//! Ignored by default. Run with:
-//!   cargo test -p tape-store --test track_data_read_bench --release -- --ignored --nocapture
+//! Ignored by default. Run with `--ignored --nocapture` on a release build.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -115,11 +110,10 @@ fn sweep<A: BenchArm>() {
         }
         A::settle(&store);
 
-        // Two figures, because they answer different questions. Files on disk
-        // include whatever an engine reserved ahead of writing, so an engine
-        // that preallocates looks enormous beside one that does not. Live bytes
-        // are what each engine says it is actually holding, which is the one to
-        // compare a codec on.
+        // Files on disk include whatever an engine reserved ahead of writing,
+        // so one that preallocates looks enormous beside one that does not. Live
+        // bytes are the engine's own answer, which is what to compare a codec
+        // on.
         let files = store.inner().inner().actual_size_bytes().unwrap_or(0);
         let live = store
             .inner()
@@ -144,8 +138,7 @@ fn sweep<A: BenchArm>() {
                     let mut found = 0;
                     match batch {
                         // The engine serves one key and many keys down separate
-                        // paths, and only the single one has the mapped read. A
-                        // batch of one through `get_many` measures neither.
+                        // paths, and only the single one has the mapped read.
                         1 => {
                             for address in &asked {
                                 if store.get_track_data(*address).unwrap().is_some() {
@@ -182,14 +175,16 @@ fn sweep<A: BenchArm>() {
     }
 }
 
+// what a point read costs rocks, singly and in batches
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn track_data_point_reads_rocks() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn point_reads_rocks() {
     sweep::<SplitStore>();
 }
 
+// what a point read costs the reel, singly and in batches
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn track_data_point_reads_reel() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn point_reads_reel() {
     sweep::<ReelStore>();
 }

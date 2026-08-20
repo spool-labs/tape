@@ -1,19 +1,14 @@
-//! The column set the public reel is opened with to serve a tape store
+//! The column set the reel is opened with to serve a tape store
 //!
-//! The reel serves the families it was opened with and refuses every other, so a
-//! `TapeStore` on top of it needs every family tape-store declares. The bulk
-//! families carry the shapes the node runs in production, taken from the internal
-//! engine's own declaration; the rest are declared variable-width and unsharded,
-//! since nothing measures their key layout and a wrong fixed width is a runtime
-//! refusal rather than a compile error.
+//! The reel refuses any family it was not opened with, so this has to carry
+//! every one tape-store declares. The bulk families carry the shapes the node
+//! runs in production. The rest are variable-width and unsharded, since nothing
+//! measures their key layout and a wrong fixed width is a runtime refusal rather
+//! than a compile error.
 //!
-//! Columns declare lz4, which is what the RocksDB store they replace sets for
-//! the whole database. A codec is attempted at admission and not promised, so a
-//! payload that does not shrink is stored verbatim, which is what a parity slice
-//! does: the same declaration handles data and parity per record with nothing to
-//! configure. `slice` is declared with the rest of them, since a coded column
-//! answers a window by decoding the record whole, and at the sizes the product
-//! stores that is the read the challenge was doing anyway.
+//! Every column declares lz4. A codec is attempted at admission and not
+//! promised, so a payload that does not shrink, a parity slice for one, is
+//! stored verbatim with nothing to configure.
 
 use reel::{Codec, ColumnId, ColumnSet, ColumnSpec, KeyWidth, MapShape};
 use tape_store::columns::ALL_COLUMN_FAMILIES;
@@ -30,8 +25,7 @@ const SNAPSHOT_KEY_LEN: u16 = 24;
 /// A column whose keys are all one width, held in an open-addressed shard
 ///
 /// Point reads first: the shard has no order, so a walk gathers and sorts. Only
-/// for a column nothing walks. The codec is a parameter because `track_data` is
-/// the one column a bench opens both ways, to say what the codec bought.
+/// for a column nothing walks.
 const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8, codec: Codec) -> ColumnSpec {
     ColumnSpec {
         id: ColumnId(id),
@@ -78,11 +72,10 @@ const fn shaped(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> Colu
 
 /// Families a tape store addresses, with `track_data` declared as asked
 ///
-/// Every identifier is written out beside the family it belongs to and never
-/// derived from a position, because the id is stamped into every record header:
-/// a family leaving the set has to leave its number behind rather than hand it
-/// to whichever family moved up. Zero stays free. The column-set test holds the
-/// names to `ALL_COLUMN_FAMILIES` and the numbers to being distinct.
+/// Every identifier is written out rather than derived from a position, because
+/// the id is stamped into every record header: a family leaving the set has to
+/// leave its number behind rather than hand it to whichever family moved up.
+/// Zero stays free.
 const fn tape_columns(track_data_codec: Codec) -> [ColumnSpec; ALL_COLUMN_FAMILIES.len()] {
     [
     plain(1, "meta"),
@@ -128,17 +121,15 @@ const RAW_TRACK_DATA: [ColumnSpec; ALL_COLUMN_FAMILIES.len()] = tape_columns(Cod
 pub const TAPE_COLUMNS: ColumnSet = &CODED_TRACK_DATA;
 
 /// The same families with `track_data` uncoded, for a run weighing the codec
-///
-/// The only difference between the two sets is one column's declaration, so a
-/// pair of runs over them differs by the codec and by nothing else.
 pub const RAW_TRACK_DATA_COLUMNS: ColumnSet = &RAW_TRACK_DATA;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // the declared set is tape-store's own family list, with distinct ids
     #[test]
-    fn every_family_is_declared_once() {
+    fn declared_once() {
         assert_eq!(TAPE_COLUMNS.len(), ALL_COLUMN_FAMILIES.len());
         for (spec, name) in TAPE_COLUMNS.iter().zip(ALL_COLUMN_FAMILIES) {
             assert_eq!(spec.name, *name);
@@ -150,8 +141,9 @@ mod tests {
         assert!(!ids.contains(&0));
     }
 
+    // the two sets differ in track_data's codec and in nothing else
     #[test]
-    fn the_codec_is_the_only_difference() {
+    fn codec_only() {
         for (coded, raw) in TAPE_COLUMNS.iter().zip(RAW_TRACK_DATA_COLUMNS) {
             if coded.name == "track_data" {
                 assert_eq!(coded.codec, Codec::Lz4);

@@ -50,12 +50,11 @@ fn keep_volumes() -> bool {
 
 /// A fresh reel volume for one node or gateway, deleted when its owner drops
 ///
-/// Under the workspace target rather than the system temp dir: a run that dies
-/// mid-test leaves its volume behind, and there it is swept by `rm -rf target`
-/// or `cargo clean` instead of sitting somewhere nobody thinks to look.
+/// Under the workspace target rather than the system temp dir, so a volume left
+/// behind by a run that died mid-test is swept by `cargo clean`.
 ///
 /// `SIMNET_KEEP_VOLUMES=1` keeps every volume instead, which is the only way to
-/// open the bytes a node wrote after the test that wrote them has finished.
+/// open what a node wrote after the test that wrote it has finished.
 pub(crate) fn node_volume(label: &str) -> Result<TempDir> {
     let workspace = ChainFixture::workspace_root_from_manifest(Path::new(env!(
         "CARGO_MANIFEST_DIR"

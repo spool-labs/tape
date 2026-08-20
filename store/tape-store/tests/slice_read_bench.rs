@@ -1,17 +1,12 @@
-//! Read-path microbenchmark: keys-only scan vs value-reading scan over the
-//! `slice` column family, swept across slice sizes. This is what
-//! `count_slices_by_spool` / `iter_slice_keys_by_spool` do under the hood, so it
-//! measures the win from `iter_keys_prefix` not materializing (and, for a store
-//! that indirects large values, not dereferencing) them.
+//! Keys-only scan against a value-reading scan over the `slice` column family
 //!
-//! Three arms, one store layout each: RocksDB's split meta/bulk layout, the
-//! public reel serving every family, and the layout a node would run the reel in,
-//! RocksDB metadata beside a reel holding the bulk families.
+//! What `count_slices_by_spool` and `iter_slice_keys_by_spool` do underneath, so
+//! it measures what a keys-only walk saves by never materializing the payloads.
+//! Swept across slice sizes, three arms, one store layout each.
 //!
-//! Caches are warm on all three (data was just written and settled), so this
-//! reflects the memory-resident case; a node under memory pressure would see a
-//! larger gap on the value-reading path. Ignored by default. Run with:
-//!   cargo test -p tape-store --test slice_read_bench --release -- --ignored --nocapture
+//! Caches are warm on all three, so this is the memory-resident case and a node
+//! under memory pressure would see a larger gap. Ignored by default. Run with
+//! `--ignored --nocapture` on a release build.
 
 use std::time::{Duration, Instant};
 
@@ -118,20 +113,23 @@ fn sweep<A: BenchArm>() {
     }
 }
 
+// what a keys-only scan saves rocks against reading values
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_scan_rocks() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn key_scan_rocks() {
     sweep::<SplitStore>();
 }
 
+// what a keys-only scan saves the reel against reading values
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_scan_reel() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn key_scan_reel() {
     sweep::<ReelStore>();
 }
 
+// what a keys-only scan saves the split arm against reading values
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn keys_only_vs_value_reading_scan_split() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn key_scan_split() {
     sweep::<MetaBulkStore>();
 }

@@ -1,12 +1,13 @@
 //! The reel's wider reads, held against the naive defaults they replace
 //!
 //! Every method this crate overrides has a default on the store trait that says
-//! the same thing one key at a time. A backend is free to be faster; it is not
-//! free to answer differently, so each case asks both and compares.
+//! the same thing one key at a time. A backend is free to be faster, not free
+//! to answer differently, so each case asks both and compares.
 
 use reel::sync::tension::block_on;
 use reel_store::{bench_config, MetaBulkStore, ReelStore, TAPE_COLUMNS};
 use store::{Store, Value};
+use tempfile::TempDir;
 
 /// Values as plain vectors, so an expectation can be written as bytes
 fn owned(values: Vec<Option<Value>>) -> Vec<Option<Vec<u8>>> {
@@ -15,7 +16,6 @@ fn owned(values: Vec<Option<Value>>) -> Vec<Option<Vec<u8>>> {
         .map(|held| held.map(Value::into_vec))
         .collect()
 }
-use tempfile::TempDir;
 
 /// A bulk family, whose keys the reel is told are 34 bytes wide
 const BULK_CF: &str = "slice";
@@ -110,7 +110,7 @@ fn agrees(store: &impl Store, cf: &str, keys: &[Vec<u8>], prefix: &[u8]) {
 
     // A backend that cannot weigh a prefix without reading it says nothing. One
     // that can reports stored bytes, which a coded column leaves under what the
-    // walk hands back and an uncoded one matches exactly.
+    // walk hands back.
     let walked: u64 = store
         .iter_prefix(cf, prefix)
         .expect("prefix")
@@ -155,9 +155,9 @@ fn key_of_missing(cf: &str) -> Vec<u8> {
     }
 }
 
-// the reel store answers its wider reads the same as one get at a time
+// the reel answers its wider reads the same as one get at a time
 #[test]
-fn reel_store_agrees() {
+fn reel_agrees() {
     let dir = TempDir::new().expect("dir");
     let store = ReelStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
@@ -219,7 +219,7 @@ fn swept(store: &impl Store, cf: &str, page: usize) -> Vec<Vec<u8>> {
     }
 }
 
-// a sweep covers the family whatever page it is asked for, on either backend
+// a sweep covers the family whatever page size it is asked for
 #[test]
 fn sweep_covers() {
     let dir = TempDir::new().expect("dir");
@@ -237,7 +237,7 @@ fn sweep_covers() {
 
 // a mark from nowhere starts the sweep over rather than answering nonsense
 #[test]
-fn sweep_refuses_foreign() {
+fn foreign_mark() {
     let dir = TempDir::new().expect("dir");
     let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
     let keys = fill(&store, BULK_CF, bulk_key);

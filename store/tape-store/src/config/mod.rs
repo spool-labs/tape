@@ -19,11 +19,8 @@ pub const BULK_SUBDIR: &str = "bulk";
 
 /// Column families that hold bulk payloads and live on the bulk volume
 ///
-/// The slice and snapshot families use key-value separation; track data is
-/// stored inline but can be large. Everything else is small metadata that
-/// stays on the fast volume. The slice size index is small, but it rides along
-/// on the bulk volume because a write batch cannot span the two databases.
-/// A slice, its recorded length and its sidecar are written in one batch, so
-/// they have to share a volume: a cross-volume batch is not atomic.
+/// The slice and snapshot families use key-value separation, and track data is
+/// stored inline but can be large. Everything else is small metadata that stays
+/// on the fast volume.
 pub const BULK_COLUMN_FAMILIES: &[&str] =
     &["track_data", "slice", "snapshot_artifact"];

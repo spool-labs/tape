@@ -98,20 +98,23 @@ fn sweep<A: BenchArm>() {
     }
 }
 
+// a range tombstone against per-key deletes on rocks
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn range_tombstone_vs_per_key_delete_rocks() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn range_delete_rocks() {
     sweep::<SplitStore>();
 }
 
+// a range tombstone against per-key deletes on the reel
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn range_tombstone_vs_per_key_delete_reel() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn range_delete_reel() {
     sweep::<ReelStore>();
 }
 
+// a range tombstone against per-key deletes on the split arm
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn range_tombstone_vs_per_key_delete_split() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn range_delete_split() {
     sweep::<MetaBulkStore>();
 }

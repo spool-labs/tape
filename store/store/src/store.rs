@@ -68,7 +68,7 @@ pub trait Store: Send + Sync {
 
     /// Get several values from one column family, answered in the order asked.
     ///
-    /// The default asks one at a time; a backend overrides to put them all in
+    /// The default asks one at a time. A backend overrides to put them all in
     /// front of its device at once.
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Value>>> {
         let mut values = Vec::with_capacity(keys.len());
@@ -193,19 +193,17 @@ pub trait Store: Send + Sync {
     ///
     /// Promises only that a full sweep hands out every live key at least once,
     /// in whatever order the backend keeps. `None` back means the family is
-    /// done. The default walks in key order and marks with the last key handed
-    /// out; a backend whose keys have no order overrides it and marks in its own
-    /// terms. A mark is the backend's to read: hand back whatever the last page
-    /// answered and nothing else.
+    /// done. A mark is the backend's to read, so hand back whatever the last
+    /// page answered and nothing else.
     fn sweep(
         &self,
         cf: &str,
         from: Option<&[u8]>,
         limit: usize,
     ) -> Result<(Vec<KeyValue>, Option<Vec<u8>>)> {
-        // The mark is where to resume, inclusive, so it is the first key this
-        // page did not return and the next page starts on it. Skipping it here
-        // would drop one key per page boundary.
+        // The mark is inclusive: it is the first key this page did not return,
+        // so the next page starts on it. Skipping it would drop one key per page
+        // boundary.
         let start = from.unwrap_or(&[]);
         let mut rows = Vec::with_capacity(limit);
         let mut next = None;
@@ -219,12 +217,12 @@ pub trait Store: Send + Sync {
         Ok((rows, next))
     }
 
-    /// One page of the keys under a prefix, resumable by an opaque mark.
+    /// One page of the rows under a prefix, resumable by an opaque mark.
     ///
     /// Same promise as `sweep`, narrowed to a prefix. A backend whose keys have
-    /// no order can serve this only where the prefix selects a whole shard of
-    /// its own, and answers nothing where it does not, so a caller cannot turn a
-    /// prefix walk into a scan of the family by accident.
+    /// no order serves this only where the prefix selects a whole shard of its
+    /// own, so a caller cannot turn a prefix walk into a family scan by
+    /// accident.
     fn sweep_prefix(
         &self,
         cf: &str,
@@ -252,8 +250,8 @@ pub trait Store: Send + Sync {
     /// One page of the keys under a prefix, resumable by an opaque mark.
     ///
     /// Same promise as `sweep_prefix` for a caller that wants the keys and none of
-    /// the values. The default takes the values and drops them; a backend that can
-    /// page keys on their own overrides it.
+    /// the values. The default takes the values and drops them. A backend that
+    /// can page keys on their own overrides it.
     fn sweep_keys_prefix(
         &self,
         cf: &str,
@@ -265,21 +263,21 @@ pub trait Store: Send + Sync {
         Ok((rows.into_iter().map(|(key, _)| key).collect(), next))
     }
 
-    /// Exact count of the keys under `prefix`, WITHOUT materializing them.
+    /// Exact count of the keys under `prefix`, without materializing them.
     ///
-    /// The default collects the keys and takes the length; backends override to
+    /// The default collects the keys and takes the length. Backends override to
     /// count in place.
     fn count_prefix(&self, cf: &str, prefix: &[u8]) -> Result<u64> {
         Ok(self.iter_keys_prefix(cf, prefix)?.len() as u64)
     }
 
-    /// Stored value bytes under `prefix`, WITHOUT reading any of them.
+    /// Stored value bytes under `prefix`, without reading any of them.
     ///
-    /// The byte twin of `count_prefix`, and stored bytes rather than anything the
-    /// caller put in: whatever the backend holds under those keys, its own framing
-    /// included or not as it accounts for it. Nothing comes back from a backend
-    /// that could only answer by reading the payloads. Has no default, so a
-    /// delegating store cannot inherit a no-answer silently.
+    /// Stored bytes rather than what the caller put in: whatever the backend
+    /// holds under those keys, however it accounts for its own framing. Nothing
+    /// comes back from a backend that could only answer by reading the payloads.
+    /// Has no default, so a delegating store cannot inherit a no-answer
+    /// silently.
     fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>>;
 
     /// Iterate from the start key (inclusive) in the specified direction.

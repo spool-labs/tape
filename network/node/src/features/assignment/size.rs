@@ -133,7 +133,7 @@ pub fn group_weights<Db: Store>(
 /// One track's contribution to a group's weight, or nothing where it makes none
 ///
 /// The object info is handed in, since the page read the whole batch's in one
-/// call; what is still read here is the parent tape and the footprint.
+/// call. What is still read here is the parent tape and the footprint.
 fn active_track_footprint<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,

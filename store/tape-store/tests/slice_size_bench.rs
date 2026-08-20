@@ -1,20 +1,13 @@
 //! Does a bigger track cost more per byte to read back out of the store?
 //!
-//! Slices land in the `slice` column family, so a track of size T at Clay k=7
-//! becomes 20 slices of about T/7 each. This sweeps that slice size across the
-//! track sizes under discussion and reports per-byte read throughput, so a flat
-//! MB/s column means track size is neutral to the store.
+//! A track of size T at Clay k=7 becomes 20 slices of about T/7. This sweeps the
+//! slice size across the track sizes under discussion and reports per-byte read
+//! throughput, so a flat MB/s column means track size is neutral to the store.
+//! Every case writes the same total volume, so a slower per-byte number is the
+//! value size and not the dataset.
 //!
-//! Each case writes the same total volume, so a slower per-byte number is the
-//! value size and not the dataset. Payload is pseudorandom because a repeating
-//! fill compresses to nothing and would measure nothing.
-//!
-//! Three arms, one store layout each: RocksDB's split meta/bulk layout, the
-//! public reel serving every family, and the layout a node would run the reel in,
-//! RocksDB metadata beside a reel holding the bulk families.
-//!
-//! Caches are warm on all three. Ignored by default. Run with:
-//!   cargo test -p tape-store --test slice_size_bench --release -- --ignored --nocapture
+//! Three arms, one store layout each, caches warm on all of them. Ignored by
+//! default. Run with `--ignored --nocapture` on a release build.
 
 use std::time::Instant;
 
@@ -25,10 +18,10 @@ use tape_crypto::address::Address;
 use tape_store::ops::SliceOps;
 use tempfile::TempDir;
 
-/// Slice sizes for a Clay k=7 track, measured off a real 64 MiB encode and
-/// scaled, so the 64 MiB row is the value a node holds today. Nothing larger
-/// fits: SLICE_BYTES_LIMIT caps a slice at 10 MiB and the 64 MiB row is already
-/// 9.27 of it, so a 128 MiB track cannot be read back at all.
+/// Slice sizes for a Clay k=7 track, scaled off a real 64 MiB encode
+///
+/// Nothing larger fits: the slice byte limit caps a slice at 10 MiB and the
+/// 64 MiB row is already most of it.
 const CASES: &[(&str, usize)] = &[
     ("16 MiB track", 9_724_048 / 4),
     ("32 MiB track", 9_724_048 / 2),
@@ -108,20 +101,23 @@ fn sweep<A: BenchArm>() {
     }
 }
 
+// what a slice read costs rocks as the slice grows
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn read_cost_by_slice_size_rocks() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn slice_size_rocks() {
     sweep::<SplitStore>();
 }
 
+// what a slice read costs the reel as the slice grows
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn read_cost_by_slice_size_reel() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn slice_size_reel() {
     sweep::<ReelStore>();
 }
 
+// what a slice read costs the split arm as the slice grows
 #[test]
-#[ignore = "performance benchmark; run with --ignored --nocapture"]
-fn read_cost_by_slice_size_split() {
+#[ignore = "performance benchmark, run with --ignored --nocapture"]
+fn slice_size_split() {
     sweep::<MetaBulkStore>();
 }

@@ -1,8 +1,8 @@
 //! The engines a tape-shaped bench runs its workload against
 //!
 //! A bench body is written once over `BenchArm` and instantiated per engine, so
-//! the rocks row and the reel row are the same code over the same `TapeStore`
-//! and differ only in what is underneath it.
+//! two rows are the same code over the same `TapeStore` and differ only in what
+//! is underneath it.
 
 use std::path::Path;
 
@@ -25,9 +25,8 @@ pub const SCALE_VAR: &str = "TAPE_BENCH_SCALE";
 
 /// A campaign figure cut down by whatever the environment asked for
 ///
-/// One at campaign size, which is the default; larger on a machine that only has
-/// to prove the plumbing runs. Never returns zero, so a scaled-down sweep still
-/// writes something.
+/// One at campaign size, larger on a machine that only has to prove the plumbing
+/// runs. Never zero, so a scaled-down sweep still writes something.
 pub fn scaled(figure: usize) -> usize {
     let divisor = std::env::var(SCALE_VAR)
         .ok()
@@ -41,10 +40,6 @@ pub fn scaled(figure: usize) -> usize {
 pub const TRACK_DATA_CODEC_VAR: &str = "TAPE_BENCH_TRACK_DATA_CODEC";
 
 /// What `track_data` is declared with, the shipped codec unless the run asked otherwise
-///
-/// A knob rather than a second arm type because `/proc` accounting already puts
-/// every arm in its own process, so a run names the codec the same way it names
-/// the segment size.
 pub fn track_data_codec() -> &'static str {
     match std::env::var(TRACK_DATA_CODEC_VAR).ok().as_deref() {
         None | Some("lz4") => "lz4",
@@ -79,10 +74,6 @@ pub trait BenchArm: Store + Sized + 'static {
     fn open_bench(root: &Path) -> TapeStore<Self>;
 
     /// Settle everything written so far, so a read phase measures itself
-    ///
-    /// A flush for rocks, which would otherwise read its memtables back; the
-    /// same call for the reel, which drives its buffered appends to the
-    /// filesystem.
     fn settle(store: &TapeStore<Self>);
 }
 

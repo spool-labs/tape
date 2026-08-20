@@ -1,33 +1,12 @@
-//! The node's store: tapedrive's columns on the reel engine
+//! Tapedrive's columns on the reel engine
 //!
-//! Every family a tape store addresses, declared here and served by one reel
-//! volume. A node opens through `open_node_store`, an offline tool through
-//! `open_node_store_read_only`, an e2e harness through `open_harness_store`;
-//! the benches open through the rest.
+//! Every family a tape store addresses, served by one reel volume. A node opens
+//! through `open_node_store`, an offline tool through `open_node_store_read_only`,
+//! a harness through `open_harness_store`, and the benches through the rest.
 //!
-//! The reel implements `reel_core::Store`, a vendored copy of the internal
-//! `store::Store` that has since moved on, so three divergences cross here and
-//! nowhere else:
-//!
-//! - A read answers `reel_core::Value`, a handle over the buffer the read used,
-//!   and the internal trait now answers the same one, so a read crosses without
-//!   a copy at all: the store crate re-exports `reel_core::Value` rather than
-//!   keeping a second value type beside it.
-//! - A batch names its family by `Cow<'static, str>` rather than `String`, and
-//!   is consumed rather than iterated by reference. The internal `WriteBatch`
-//!   grew an `IntoIterator` so a staged payload moves across instead of being
-//!   cloned; a clone there would put a memcpy of every slice on the write path.
-//! - The two `Error`, `CfDiskUsage`, `DiskVolume` and `StoreVolume` types are
-//!   structurally identical and nominally distinct, so each crosses by hand.
-//!
-//! What does not cross: the reel's `walk_from` and `maintain` have no caller on
-//! the internal trait.
-//!
-//! The rocks arm's configuration lives here too, in `rocks`. The fleet's is
-//! sized for spinning disks behind small memory, and a baseline opened under
-//! those ceilings would report the ceilings rather than the engine, so the arm
-//! opens with sizing fit for the bench box and with every knob that has an
-//! opposite number on the reel side set to match it.
+//! The reel implements a vendored copy of the store trait. Batches and values
+//! move across without a copy. The error, usage and volume types are structurally
+//! identical and nominally distinct, so each crosses by hand.
 
 #[cfg(feature = "rocks")]
 mod arm;
@@ -52,15 +31,15 @@ use serde::Deserialize;
 use tape_store::TapeStore;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
-    StoreIter, StoreVolume, WriteBatch, Value};
+    StoreIter, StoreVolume, Value, WriteBatch,
+};
 
 #[cfg(feature = "rocks")]
 pub use arm::{
     scaled, track_data_codec, BenchArm, SCALE_VAR, SEGMENT_MIB_VAR, TRACK_DATA_CODEC_VAR,
 };
 pub use columns::{RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS};
-// Re-exported so a tool opening a node's volume needs this crate and not the
-// engine behind it.
+// So a tool opening a node's volume needs this crate and not the engine behind it.
 pub use reel::IndexResidency;
 #[cfg(feature = "rocks")]
 pub use rocks::{
@@ -100,10 +79,6 @@ pub struct IndexReport {
 }
 
 impl ReelStore {
-    /// Open a reel under this directory serving the given tape column families
-    ///
-    /// The set is a parameter rather than a constant because a run weighing a
-    /// codec opens the same families twice and declares one of them both ways.
     /// Open the volume a node runs on, under the node's own config
     ///
     /// The one entry point that is not bench scoped. Everything else in this
@@ -122,6 +97,10 @@ impl ReelStore {
         )
     }
 
+    /// Open a reel under this directory serving the given column families
+    ///
+    /// The set is a parameter rather than a constant because a run weighing a
+    /// codec opens the same families twice and declares one of them both ways.
     pub fn open(
         root: impl AsRef<Path>,
         config: ReelConfig,
@@ -135,9 +114,8 @@ impl ReelStore {
 
     /// Open an existing volume read-only, leaving its ownership lock alone
     ///
-    /// No directory is created: a path with no volume under it is a mistyped
-    /// path, and answering it with an empty store would report a node holding
-    /// nothing.
+    /// Creates no directory: a path with no volume under it is a mistyped path,
+    /// and an empty store would read as a node holding nothing.
     pub fn open_read_only(
         root: impl AsRef<Path>,
         config: ReelConfig,
@@ -156,18 +134,17 @@ impl ReelStore {
 
     /// The backend actually serving this volume
     ///
-    /// A configured ring downgrades to posix where the kernel will not give
-    /// one, so the config states a request and this states the outcome. Ask
-    /// this rather than the config wherever it matters which one is running.
+    /// A configured ring downgrades to posix where the kernel will not give one,
+    /// so the config states a request and this states the outcome.
     pub fn serving_backend(&self) -> ServingBackend {
         self.inner.serving_backend()
     }
 
     /// The shape each column's index actually took, beside the one it declared
     ///
-    /// A declaration is a request the engine may decline, and a declined open
-    /// shard is a tree that looks like one in the source and nowhere else. A run
-    /// reporting a shape number says which it got rather than which it asked for.
+    /// A declaration is a request the engine may decline, and it declines
+    /// silently, so a run reports the shape it got rather than the one it asked
+    /// for.
     pub fn shapes(&self) -> Vec<(&'static str, MapShape, MapShape)> {
         let index = self.inner.index();
         let mut shapes = Vec::with_capacity(TAPE_COLUMNS.len());
@@ -193,10 +170,8 @@ impl ReelStore {
 
     /// What the engine's index holds, column by column
     ///
-    /// The engine's own report layer, for a bench weighing what a column costs in
-    /// memory rather than on disk. A paged open counts only the keys it holds, so
-    /// the record and byte cells go unanswered there rather than reporting a
-    /// fraction of the column as the whole.
+    /// A paged open counts only the keys it holds, so the record and byte cells
+    /// go unanswered there rather than reporting a fraction as the whole.
     pub fn index_report(&self) -> IndexReport {
         let index = self.inner.index();
         let keys = index.lead_tie_rates();
@@ -220,8 +195,8 @@ impl ReelStore {
 
     /// Drive every buffered append out to the filesystem
     ///
-    /// The reel's answer to a RocksDB flush: what a bench calls between its write
-    /// phase and its read phase so neither measures the other.
+    /// What a bench calls between its write phase and its read phase, so neither
+    /// measures the other.
     pub fn flush(&self) -> StoreResult<()> {
         self.inner.flush().map_err(engine)
     }
@@ -229,18 +204,15 @@ impl ReelStore {
 
 /// Bytes a node writes between durability syncs
 ///
-/// The HDD battery's answer: syncing every 16 MiB costs 1.09-1.46x the latency
-/// of never syncing and writes zero extra bytes, where a sync per put costs
-/// 16-67x. A node writing slices in batches wants one sync per drain, and what a
-/// crash risks is the tail.
+/// A node writes slices in batches and wants one sync per drain. What a crash
+/// risks is the tail.
 pub const DEFAULT_SYNC_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The file backend a node opens its volume with
 ///
-/// A ring wherever one can exist. `select_backend` downgrades to posix with a
-/// warning where the ring cannot be set up, so naming it here costs nothing on a
-/// kernel that has none, and `get_many` depth is worth 3.25x on the ring against
-/// flat on posix.
+/// A ring wherever one can exist. The engine downgrades to posix with a warning
+/// where the kernel will not give one, so naming it costs nothing on a kernel
+/// that has none.
 pub const fn default_backend() -> IoBackend {
     match cfg!(target_os = "linux") {
         true => IoBackend::Uring,
@@ -251,8 +223,7 @@ pub const fn default_backend() -> IoBackend {
 /// What a fresh volume claims before it holds a byte
 ///
 /// A tail costs a reserved segment and the shipped shape pre-writes each one
-/// whole, so an eight-core box reserves eight gibibytes before the first slice
-/// lands. That is the right trade on a fleet disk and the wrong one wherever the
+/// whole. That is the right trade on a fleet disk and the wrong one wherever the
 /// reservation is a large share of the volume, or twenty nodes share a laptop.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -273,13 +244,9 @@ const SMALL_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
 
 /// The config a node opens its volume with
 ///
-/// The bench config's siblings, minus everything that only makes sense when a
-/// run is about to be thrown away: durability is a real policy rather than
-/// `Never`, and the segment is the shipped size rather than one small enough
-/// that a short run still rolls.
-///
-/// The knobs that are not the engine default are the ones the HDD battery
-/// settled, each with its own line below.
+/// The bench config minus everything that only makes sense when a run is about
+/// to be thrown away: durability is a real policy rather than `Never`, and the
+/// segment is the shipped size.
 pub fn node_config(
     compaction_mbps: u64,
     sync_bytes: u64,
@@ -295,14 +262,10 @@ pub fn node_config(
             0 => CompactRate::Auto,
             capped => CompactRate::Mbps(capped),
         },
-        // No mapping. It is worth 3.3x on a warm blocking single read, and it
-        // turns a bad sector into SIGBUS and a dead process where the door
-        // returns an error the node can act on. A mapped cold read also pulls 5x
-        // the device bytes a door read pulls, against a spindle answering in
-        // ~7.8 ms. Warm blocking singles are a thin slice of an io-bound
-        // workload on 64 TB against 64 GB of cache, so the latency is the
-        // cheaper thing to give up. The mapped path stays a bench and tooling
-        // knob.
+        // No mapping. It buys latency on a warm single read and costs a cold
+        // read extra device bytes, and a bad sector under a mapping is SIGBUS
+        // and a dead process where the door returns an error the node can act
+        // on. The mapped path stays a bench and tooling knob.
         map_above: None,
         point_reads: probe_for(backend),
         io_backend: backend,
@@ -327,11 +290,9 @@ pub fn node_config(
 
 /// Whether to ask the page cache before queueing a read, which only a ring wants
 ///
-/// A ring read is a submit and a wait, and the probe recovers that: 2.60 us down
-/// to 1.91 on a warm blocking single. A posix read is already answered inline by
-/// `submit_inline`, so there is no round trip to skip and the probe is one
-/// wasted `preadv2` per read. Coupled here so the pairing is one line rather
-/// than something to re-learn.
+/// A ring read is a submit and a wait, and the probe skips that round trip. A
+/// posix read is answered inline already, so there the probe is one wasted
+/// syscall per read. Coupled here so the pairing is not something to re-learn.
 fn probe_for(backend: IoBackend) -> PointReads {
     match backend {
         IoBackend::Uring => PointReads::Probed,
@@ -341,9 +302,8 @@ fn probe_for(backend: IoBackend) -> PointReads {
 
 /// The store a node runs, every tape family on one reel volume
 ///
-/// This lives here rather than beside the other `TapeStore` constructors
-/// because this crate sits above `tape-store` in the graph: it needs the tape
-/// column declarations, so `tape-store` cannot name it back.
+/// Lives here rather than beside the other `TapeStore` constructors because this
+/// crate sits above `tape-store` in the graph and needs the column declarations.
 pub fn open_node_store(
     root: impl AsRef<Path>,
     compaction_mbps: u64,
@@ -355,10 +315,9 @@ pub fn open_node_store(
     std::fs::create_dir_all(root)?;
     let volume = ReelStore::open_node(root, compaction_mbps, sync_bytes, backend, reserve)?;
 
-    // The request beside the outcome, on one line, because they are two facts
-    // and a volume that asked for the ring can be served by posix. Said here
-    // rather than left to the engine's own warning, which only fires on the
-    // downgrade and so cannot tell a ring from a log nobody configured.
+    // The request beside the outcome, since a volume that asked for the ring can
+    // be served by posix. The engine's own warning only fires on the downgrade,
+    // so it cannot tell a ring from a log nobody configured.
     tracing::info!(
         requested = ?backend,
         serving = %volume.serving_backend(),
@@ -371,19 +330,16 @@ pub fn open_node_store(
 
 /// The config an offline tool reads a node's volume under
 ///
-/// The node's own shape declarations, because a column read under a different
-/// declaration is a column the engine refuses to serve. Durability and the
-/// compaction ceiling are the node's and irrelevant here: nothing writes.
-/// Residency is the caller's, since it is the one thing a reader trades:
-/// resident answers what a column holds, paged answers which sealed segments
-/// stand over it and fits a volume larger than the memory reading it.
+/// The node's own shape declarations, since a column read under a different one
+/// is a column the engine refuses to serve. Residency is the caller's: resident
+/// answers what a column holds, paged answers which sealed segments stand over
+/// it and fits a volume larger than the memory reading it.
 pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
     ReelConfig {
         index: residency,
-        // The engine refuses an open shard under a paged walk, and `track_data`
-        // declares one, so a paged read takes every column as a tree instead.
-        // The shape is how this open builds its index, not how the volume was
-        // written, so nothing on disk cares which one was asked for.
+        // The engine refuses an open shard under a paged walk, so a paged read
+        // takes every column as a tree. The shape is how this open builds its
+        // index, not how the volume was written.
         shard_shapes: match residency {
             IndexResidency::Resident => ShardShapes::Declared,
             _ => ShardShapes::Tree,
@@ -394,7 +350,7 @@ pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
 
 /// A tape store over a node's volume, read-only and without its lock
 ///
-/// What every offline tool opens: it reads beside a running node rather than
+/// What every offline tool opens, so it reads beside a running node rather than
 /// waiting for one to stop.
 pub fn open_node_store_read_only(
     root: impl AsRef<Path>,
@@ -409,9 +365,8 @@ pub fn open_node_store_read_only(
 
 /// The node's own policy at a size a throwaway volume can afford
 ///
-/// Every knob the fleet ships, at a reservation the size of the run rather than
-/// the size of the disk. The same shape an operator asks for with
-/// `store.reserve: small`.
+/// Every knob the fleet ships, at a reservation the size of the run. The same
+/// shape an operator asks for with `store.reserve: small`.
 pub fn harness_config() -> ReelConfig {
     node_config(0, DEFAULT_SYNC_BYTES, default_backend(), Reserve::Small)
 }
@@ -427,11 +382,10 @@ pub fn open_harness_store(root: impl AsRef<Path>) -> StoreResult<TapeStore<ReelS
 
 /// A config sized for a bench rather than for a node
 ///
-/// Segments are small enough that a bench writing a few GiB still seals and
-/// reopens several of them, and space is reserved a chunk ahead rather than a
-/// whole segment at a time, so a case that writes little is not charged for a
-/// segment it never fills. Syncing is left to the caller's flush, matching a
-/// RocksDB arm that does not fsync per write either.
+/// Segments are small enough that a bench writing a few GiB still seals several
+/// of them, and space is reserved a chunk ahead so a case that writes little is
+/// not charged for a segment it never fills. Syncing is left to the caller's
+/// flush, matching a rocks arm that does not fsync per write either.
 pub fn bench_config(segment_bytes: u64) -> ReelConfig {
     // Printed rather than assumed: a bench that cannot say which config it
     // opened with cannot tell a real result from a stale binary.
@@ -445,9 +399,7 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
     ReelConfig {
         segment_bytes: ByteCount::from_bytes(segment_bytes),
         // A small segment cannot reserve a chunk larger than itself, and a run
-        // sweeping segment sizes has no reason to know that. Overridable, since
-        // the reservation is the difference between a segment's file size and
-        // what it holds.
+        // sweeping segment sizes has no reason to know that.
         alloc_chunk: ByteCount::from_bytes(alloc_chunk_bytes().min(segment_bytes)),
         preallocate: Preallocate::Chunk,
         sync: sync_policy(),
@@ -458,10 +410,8 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
         // The mapped read path is gated on this and the default forbids it, so
         // every warm read pays a door round trip it does not need.
         map_above: MAP_EVERYTHING,
-        // Ask the page cache before queueing a read. Worthless on a direct
-        // plane, which has no cache to ask, and nearly free where it loses on a
-        // buffered one: a cold probe costs one nowait syscall against a seek,
-        // and a warm one skips the door entirely.
+        // Ask the page cache before queueing a read: a cold probe costs one
+        // nowait syscall against a seek, and a warm one skips the door.
         point_reads: PointReads::Probed,
         ..ReelConfig::default()
     }
@@ -475,9 +425,8 @@ pub const SYNC_VAR: &str = "TAPE_BENCH_SYNC";
 
 /// The durability a bench arm runs under, `Never` unless asked
 ///
-/// `Never` is a control column, not an operating mode: it says what the write
-/// path costs with the syncs taken out, and every figure taken under it owes a
-/// durable one beside it before anything is concluded about a node.
+/// `Never` is a control column, not an operating mode: every figure taken under
+/// it owes a durable one beside it before anything is concluded about a node.
 fn sync_policy() -> SyncPolicy {
     match std::env::var(SYNC_VAR).ok().as_deref() {
         None | Some("never") => SyncPolicy::Never,
@@ -569,12 +518,9 @@ fn rows(iter: reel_core::StoreIter<'_>) -> StoreIter<'_> {
     Box::new(iter.map(|(key, value)| (key, value.into_vec())))
 }
 
-
 impl Store for ReelStore {
     fn get(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get(&self.inner, cf, key)
-            
-            .map_err(crossed)
+        EngineStoreTrait::get(&self.inner, cf, key).map_err(crossed)
     }
 
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
@@ -584,7 +530,6 @@ impl Store for ReelStore {
     async fn get_wait(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
         EngineStoreTrait::get_wait(&self.inner, cf, key)
             .await
-            
             .map_err(crossed)
     }
 
@@ -601,9 +546,7 @@ impl Store for ReelStore {
         offset: u64,
         len: usize,
     ) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get_range(&self.inner, cf, key, offset, len)
-            
-            .map_err(crossed)
+        EngineStoreTrait::get_range(&self.inner, cf, key, offset, len).map_err(crossed)
     }
 
     async fn get_range_wait(
@@ -615,7 +558,6 @@ impl Store for ReelStore {
     ) -> StoreResult<Option<Value>> {
         EngineStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
             .await
-            
             .map_err(crossed)
     }
 

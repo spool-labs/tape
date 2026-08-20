@@ -272,8 +272,8 @@ async fn sweep_orphan_slices<Db: Store>(
                 .sweep_slice_keys_by_spool(spool_id, cursor.as_deref(), slice_batch(config))
                 .map_err(store_error)?;
             // Both reads the decision needs, once each for the page. The object
-            // read was conditional per row and is unconditional per batch, which
-            // trades a few small values read for a round trip a row.
+            // read is unconditional per batch rather than conditional per row,
+            // which trades a few small values for a round trip a row.
             let in_store = store.get_tracks(&addresses).map_err(store_error)?;
             let objects = store.get_object_infos(&addresses).map_err(store_error)?;
 
@@ -330,7 +330,7 @@ async fn sweep_stale_recoveries<Db: Store>(
 
 /// Whether one slice has outlived the track it belongs to
 ///
-/// Reads nothing: the page it belongs to read the track and its object info in
+/// Reads nothing. The page it belongs to read the track and its object info in
 /// one call apiece, so the decision is arithmetic on what came back.
 fn should_delete_slice(
     pending: &PendingTracks,

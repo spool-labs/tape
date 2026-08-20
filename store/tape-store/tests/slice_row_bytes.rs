@@ -1,34 +1,17 @@
-//! Bytes a slice costs an engine, per family, at the payload sizes the product holds.
-//!
-//! The workload is `put_slice` at md-regime sizes: a few hundred MiB of pages per
-//! shape, so a per-record figure is not rounding. Most numbers are byte counts.
-//! The `timing` line is the exception and only means anything on a dedicated
-//! device: it separates the put loop from the settle that follows it, so a sync
-//! policy's cost shows up as the gap between `put_us/op` and `durable_us/op`.
+//! Bytes a slice costs an engine, per family, at the payload sizes the product holds
 //!
 //! Four figures per row. Logical is key plus payload, the only bytes the caller
 //! asked to store. `live` is what the engine says it holds and `actual` is the
-//! file bytes under the root, which includes anything reserved ahead of writing.
-//! `wchar` and `write_bytes` come from `/proc/self/io`: what went to write
-//! syscalls, and what the kernel attributed to the process a page at a time.
+//! file bytes under the root, reservations included. `wchar` and `write_bytes`
+//! are what went to write syscalls and what the kernel attributed a page at a
+//! time. Beside them, what each slice family is left holding.
 //!
-//! Beside them, what the store is left holding per family: the key count and the
-//! on-disk bytes of every `slice`-prefixed column, and, on the reel, what its
-//! index holds resident for each.
+//! `TAPE_BENCH_SLICE_FILL` picks the bytes, `md` or `random`, and every row
+//! prints which it wrote. Point `TAPE_BENCH_KEEP` at a real filesystem: on tmpfs
+//! `write_bytes` reads zero and `actual` measures RAM.
 //!
-//! `TAPE_BENCH_SLICE_FILL` picks the bytes: `md` for the markdown-shaped pages a
-//! data slice of a systematic code carries, `random` for the parity-shaped
-//! control a codec cannot shrink. Every row prints which it wrote.
-//!
-//! `/proc/self/io` is process-wide, so every row runs in its own process:
-//!   cargo test -p tape-store --test slice_row_bytes --release \
-//!     -- --ignored --nocapture --test-threads 1 --exact slice_bytes_reel_small
-//!
-//! Point `TAPE_BENCH_KEEP` at a directory on a real filesystem. A container's
-//! `/tmp` is usually tmpfs, where `write_bytes` reads zero and `actual` measures
-//! RAM.
-//!
-//! Linux only, since no other kernel keeps these counters.
+//! Linux only, and one row per process since the counters are process-wide. Run
+//! with `--ignored --nocapture --test-threads 1 --exact <row>`.
 
 #![cfg(target_os = "linux")]
 
@@ -313,38 +296,44 @@ fn sweep<Arm: SliceArm>(shape: &Shape) {
     );
 }
 
+// what a small slice costs rocks, per family
 #[test]
-#[ignore = "byte-count benchmark; run with --ignored --nocapture"]
-fn slice_bytes_rocks_small() {
+#[ignore = "byte-count benchmark, run with --ignored --nocapture"]
+fn rocks_small() {
     sweep::<SplitStore>(&SMALL);
 }
 
+// what a small slice costs the reel, per family
 #[test]
-#[ignore = "byte-count benchmark; run with --ignored --nocapture"]
-fn slice_bytes_reel_small() {
+#[ignore = "byte-count benchmark, run with --ignored --nocapture"]
+fn reel_small() {
     sweep::<ReelStore>(&SMALL);
 }
 
+// what a mid-size slice costs rocks, per family
 #[test]
-#[ignore = "byte-count benchmark; run with --ignored --nocapture"]
-fn slice_bytes_rocks_medium() {
+#[ignore = "byte-count benchmark, run with --ignored --nocapture"]
+fn rocks_medium() {
     sweep::<SplitStore>(&MEDIUM);
 }
 
+// what a mid-size slice costs the reel, per family
 #[test]
-#[ignore = "byte-count benchmark; run with --ignored --nocapture"]
-fn slice_bytes_reel_medium() {
+#[ignore = "byte-count benchmark, run with --ignored --nocapture"]
+fn reel_medium() {
     sweep::<ReelStore>(&MEDIUM);
 }
 
+// what a large slice costs rocks, per family
 #[test]
-#[ignore = "byte-count benchmark; run with --ignored --nocapture"]
-fn slice_bytes_rocks_large() {
+#[ignore = "byte-count benchmark, run with --ignored --nocapture"]
+fn rocks_large() {
     sweep::<SplitStore>(&LARGE);
 }
 
+// what a large slice costs the reel, per family
 #[test]
-#[ignore = "byte-count benchmark; run with --ignored --nocapture"]
-fn slice_bytes_reel_large() {
+#[ignore = "byte-count benchmark, run with --ignored --nocapture"]
+fn reel_large() {
     sweep::<ReelStore>(&LARGE);
 }

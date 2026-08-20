@@ -1,15 +1,14 @@
-//! Metadata on RocksDB, bulk on the public reel, behind one store trait
+//! Metadata on RocksDB, bulk on the reel, behind one store trait
 //!
-//! The layout a node would actually run the reel in: the reel serves the bulk
-//! families and nothing else, and the small hot metadata stays on RocksDB where
-//! it is today. Routing is by column family, mirroring `store_rocks::SplitStore`,
-//! so the only difference between this and the all-rocks split arm is which
-//! engine holds the slices.
+//! Routing is by column family, so the only difference between this and the
+//! all-rocks split arm is which engine holds the slices.
 
 use std::path::Path;
 
 use store::{
-    BatchOp, CfDiskUsage, Direction, DiskVolume, Result, Store, StoreIter, StoreVolume, WriteBatch, Value};
+    BatchOp, CfDiskUsage, Direction, DiskVolume, Result, Store, StoreIter, StoreVolume, Value,
+    WriteBatch,
+};
 use store_rocks::RocksStore;
 use tape_store::config::{BULK_COLUMN_FAMILIES, META_SUBDIR};
 
@@ -34,8 +33,6 @@ impl MetaBulkStore {
         let meta_dir = root.join(META_SUBDIR);
         std::fs::create_dir_all(&meta_dir)?;
 
-        // The same tuned rocks the all-rocks arm opens, so the only difference
-        // between the two arms is which engine holds the slices.
         let cache = bench_cache();
         let meta = RocksStore::open_with_cf_config(
             &meta_dir,
@@ -186,8 +183,7 @@ impl Store for MetaBulkStore {
     }
 
     // The awaited calls cannot go through `route`, whose answer is a `dyn Store`
-    // and so carries none of them. One family names one half, so the branch is
-    // the same routing written out.
+    // and carries none of them, so each writes the same routing out by hand.
     async fn get_wait(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         match self.is_bulk(cf) {
             true => self.bulk.get_wait(cf, key).await,

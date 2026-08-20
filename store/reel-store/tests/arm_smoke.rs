@@ -1,8 +1,8 @@
 //! The plumbing every tape bench runs through, exercised once per engine
 //!
-//! Not a measurement: this is what proves a `TapeStore` on the public reel takes
-//! the same slice and track traffic the rocks arm does, so a bench that reports a
-//! reel row reported it off a store that actually served the workload.
+//! Not a measurement. This proves a `TapeStore` on the reel takes the same slice
+//! and track traffic the rocks arm does, so a reel row comes off a store that
+//! actually served the workload.
 
 use reel_store::{BenchArm, MetaBulkStore, ReelStore};
 use store_rocks::SplitStore;
@@ -103,9 +103,6 @@ fn slice_and_track_traffic<A: BenchArm>() {
 }
 
 /// A slice big enough to hold several sample windows, in bytes a codec shrinks
-///
-/// Markdown-shaped, because that is what a data slice of a systematic code
-/// carries and what makes the column's codec admit anything at all.
 fn windowed_slice() -> Vec<u8> {
     reel_store::fill::markdown(3, 3 * SAMPLE_WINDOW_BYTES + 777)
 }
@@ -144,32 +141,38 @@ fn windows_are_logical<A: BenchArm>() {
     }
 }
 
+// a challenge window reads the same bytes off rocks
 #[test]
-fn rocks_answers_logical_windows() {
+fn rocks_windows() {
     windows_are_logical::<SplitStore>();
 }
 
+// a challenge window reads the same bytes off the reel
 #[test]
-fn reel_answers_logical_windows() {
+fn reel_windows() {
     windows_are_logical::<ReelStore>();
 }
 
+// a challenge window reads the same bytes off the split arm
 #[test]
-fn rocks_meta_plus_reel_bulk_answers_logical_windows() {
+fn split_windows() {
     windows_are_logical::<MetaBulkStore>();
 }
 
+// rocks serves the whole tape workload
 #[test]
-fn rocks_serves_the_tape_workload() {
+fn rocks_traffic() {
     slice_and_track_traffic::<SplitStore>();
 }
 
+// the reel serves the whole tape workload
 #[test]
-fn reel_serves_the_tape_workload() {
+fn reel_traffic() {
     slice_and_track_traffic::<ReelStore>();
 }
 
+// the split arm serves the whole tape workload
 #[test]
-fn rocks_meta_plus_reel_bulk_serves_the_tape_workload() {
+fn split_traffic() {
     slice_and_track_traffic::<MetaBulkStore>();
 }

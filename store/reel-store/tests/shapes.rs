@@ -1,8 +1,7 @@
 //! The shape each column's index took, against the one it declared
 //!
-//! A declaration is a request the engine may decline, and it declines silently:
-//! `ShardShapes::Tree` drops every open-shard request and hands back a tree. A
-//! measurement taken through a declined declaration reports the default under
+//! A declaration is a request the engine may decline, and it declines silently.
+//! A measurement taken through a declined declaration reports the default under
 //! the name of the shape it asked for, which is worse than no number at all.
 
 use reel::MapShape;
@@ -11,6 +10,10 @@ use tempfile::TempDir;
 
 /// The segment size a bench arm opens with
 const SEGMENT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Bytes a filesystem block occupies, as `stat` reports them
+#[cfg(unix)]
+const BLOCK_BYTES: u64 = 512;
 
 // every column's index takes the shape its declaration asked for
 #[test]
@@ -40,9 +43,9 @@ fn track_data_is_open() {
     }
 }
 
-// the node's own config opens, with durability on and the measured knobs set
+// the node's own config opens, with durability on and the shipped knobs set
 #[test]
-fn node_config_opens() {
+fn node_opens() {
     let dir = TempDir::new().expect("dir");
     let store = reel_store::open_node_store(
         dir.path().join("volume"),
@@ -53,12 +56,10 @@ fn node_config_opens() {
     )
     .expect("open the node store");
 
-    // The knobs this campaign measured have to be the ones a node gets, not
-    // just the ones a bench got.
+    // The shipped knobs have to be the ones a node gets, not just the ones a
+    // bench got.
     let volume = store.inner().inner();
     let config = volume.engine().config();
-    // No mapping: the fleet gives up the warm read rather than take SIGBUS on a
-    // bad sector, and a posix volume has no ring overhead for the probe to undo.
     assert!(config.map_above.is_none());
     assert_eq!(config.point_reads, reel::PointReads::Queued);
     assert_ne!(
@@ -72,7 +73,7 @@ fn node_config_opens() {
     );
 }
 
-// the three knobs the HDD battery settled are what a node gets unasked
+// a node gets the shipped sync, backend and mapping knobs unasked
 #[test]
 fn shipped_defaults() {
     let config = reel_store::node_config(
@@ -82,8 +83,6 @@ fn shipped_defaults() {
         reel_store::Reserve::Fleet,
     );
 
-    // Sixteen mebibytes between syncs: 1.09-1.46x the latency of never syncing,
-    // and no extra bytes written. A sync per put was 16-67x.
     assert_eq!(
         config.sync,
         reel::SyncPolicy::Bytes(reel::ByteCount::from_bytes(16 * 1024 * 1024)),
@@ -101,14 +100,14 @@ fn shipped_defaults() {
         assert_eq!(config.point_reads, reel::PointReads::Queued);
     }
 
-    // A cold mapped read pulls 5x the device bytes against a ~7.8 ms spindle,
-    // and a bad sector under a mapping is SIGBUS rather than an error.
+    // A bad sector under a mapping is SIGBUS rather than an error the node can
+    // act on.
     assert!(config.map_above.is_none());
 }
 
 // the probe is coupled to the backend, since only a ring has overhead to undo
 #[test]
-fn probe_follows_the_backend() {
+fn probe_follows() {
     for (backend, wanted) in [
         (reel::IoBackend::Posix, reel::PointReads::Queued),
         (reel::IoBackend::Uring, reel::PointReads::Probed),
@@ -123,7 +122,7 @@ fn probe_follows_the_backend() {
 // a small reservation moves all four knobs, since three of them alone still
 // leave a gibibyte on disk before the first slice
 #[test]
-fn small_sizes_the_reservation_to_the_run() {
+fn small_reservation() {
     let backend = reel_store::default_backend();
     let fleet = reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Fleet);
     let small = reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Small);
@@ -140,7 +139,7 @@ fn small_sizes_the_reservation_to_the_run() {
     };
     assert!(idle(&small) * 32 < idle(&fleet), "small={} fleet={}", idle(&small), idle(&fleet));
 
-    // Everything the HDD battery settled survives the smaller reservation.
+    // Every other shipped knob survives the smaller reservation.
     assert_eq!(small.sync, fleet.sync);
     assert_eq!(small.io_backend, fleet.io_backend);
     assert_eq!(small.point_reads, fleet.point_reads);
@@ -148,10 +147,11 @@ fn small_sizes_the_reservation_to_the_run() {
     assert_eq!(small.map_above, fleet.map_above);
 }
 
-// what a fresh small volume actually claims from the filesystem, since the
-// knobs are only worth having if the blocks follow them
+// a fresh small volume claims little from the filesystem, since the knobs are
+// only worth having if the blocks follow them
+#[cfg(unix)]
 #[test]
-fn a_small_volume_claims_little_before_it_holds_anything() {
+fn small_claims_little() {
     use std::os::unix::fs::MetadataExt;
 
     let dir = TempDir::new().expect("dir");
@@ -169,12 +169,12 @@ fn a_small_volume_claims_little_before_it_holds_anything() {
                 true => stack.push(entry.path()),
                 // Blocks rather than length: preallocation is the reservation,
                 // and a sparse extend would show a length it never took.
-                false => claimed += meta.blocks() * 512,
+                false => claimed += meta.blocks() * BLOCK_BYTES,
             }
         }
     }
 
-    // One tail reserving a 4 MiB step, against the gibibyte per tail the shipped
+    // One tail reserving one chunk, against the gibibyte per tail the shipped
     // shape would have claimed here.
     assert!(
         claimed < 64 * 1024 * 1024,

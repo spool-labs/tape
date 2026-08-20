@@ -1,11 +1,9 @@
 //! The backend a node's volume actually opened on, not the one it asked for
 //!
-//! `select_backend` downgrades a configured ring to posix with one warning and
-//! serves the volume anyway, so a node can ask for the ring and run its whole
-//! life on the fallback. Neither the config nor a shape assertion notices, since
-//! both of those restate the request. Until the engine reports the backend it
-//! took, that warning is the only place the outcome is stated, so this test
-//! holds a run to it.
+//! The engine downgrades a configured ring to posix with one warning and serves
+//! the volume anyway, so a node can ask for the ring and run its whole life on
+//! the fallback. The config restates the request, so only the volume's own
+//! answer and that warning say what happened.
 
 use std::sync::{Arc, Mutex};
 
@@ -53,21 +51,13 @@ impl Visit for Message<'_> {
 
 // a node that ships with the ring opens on one, rather than on the fallback
 //
-// Asked of the volume itself and cross-checked against what it logged, because
-// those are two independent statements of the same fact: the engine's own answer
-// and the line an operator reads. A disagreement between them is worth failing
-// over on its own, since every claim made about a fleet node's backend rests on
-// one or the other.
-//
-// Linux only: everywhere else there is no ring to be had and the downgrade is
-// the right answer, so asserting it elsewhere would be a platform check wearing
-// a correctness test's name. A red here on linux means this machine would not
-// give the node the backend it ships with, which is worth failing over: a
-// container needs `--security-opt seccomp=unconfined` before it can, and a
-// kernel with `io_uring_disabled` set never will.
+// The volume's own answer and the line an operator reads are two statements of
+// the same fact, so both are checked. Linux only: elsewhere there is no ring to
+// be had. A red here means this machine will not give a node the backend it
+// ships with, which a container needs seccomp=unconfined for.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_ring_is_not_silently_downgraded() {
+fn ring_holds() {
     let dir = tempfile::TempDir::new().expect("dir");
     let warnings = Warnings::default();
 
@@ -99,10 +89,10 @@ fn the_ring_is_not_silently_downgraded() {
     );
 }
 
-// the capture itself catches a warning, so a silent run means silence and not a
+// the capture catches a warning, so a silent run means silence and not a
 // subscriber that was never listening
 #[test]
-fn the_capture_hears_a_warning() {
+fn capture_hears() {
     let warnings = Warnings::default();
 
     with_default(tracing_subscriber::registry().with(warnings.clone()), || {

@@ -314,9 +314,8 @@ fn store_io_stats(families: &[MetricFamily]) -> StoreIo {
 /// Slices held and the bytes they occupy, from the slice column's own totals.
 ///
 /// A backend that cannot weigh the column without reading it answers no bytes,
-/// which is reported as zero rather than as the volume's whole footprint.
-/// Cached either way: a backend that has to walk the column to answer makes
-/// this a full key scan, and the board polls hot.
+/// reported as zero rather than as the volume's whole footprint. Cached either
+/// way, since the board polls hot.
 fn stored_slices<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> (u64, u64)
@@ -375,9 +374,9 @@ where
     let metrics = context.metrics.snapshot();
     let volumes = backend.disk_volumes().unwrap_or_default();
     let store_disk_bytes = volumes.iter().map(|v| v.used_bytes).sum();
-    // Slice bytes come from the slice column, not from the volume holding it:
-    // the reel presents one volume tagged Bulk, so reading that volume's usage
-    // as the slice payload counts every other family as slices too.
+    // Slice bytes come from the slice column, not from the volume holding it.
+    // The reel presents one volume tagged Bulk, so reading that volume's usage
+    // as the slice payload would count every other family as slices too.
     let (slices_stored, slice_payload_bytes) = stored_slices(context);
 
     NodeStats {

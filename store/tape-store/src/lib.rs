@@ -99,7 +99,7 @@ fn split_store(meta: RocksStore, bulk: RocksStore) -> SplitStore {
 
 // Split-store constructors: a metadata store on the fast volume and a bulk
 // store on the large volume, split by column family. The bench arm and the
-// offline tools open these; a node opens the reel.
+// offline tools open these, a node opens the reel.
 #[cfg(feature = "rocks")]
 impl TapeStore<SplitStore> {
     /// Open a primary store under a single root directory

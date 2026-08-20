@@ -499,8 +499,6 @@ mod tests {
         }
     }
 
-    use super::*;
-
     #[test]
     fn new_empty() {
         let store = MemoryStore::new();

@@ -1,9 +1,8 @@
 //! The bytes a bench hands an engine, since a codec's answer is a property of them
 //!
-//! Two fills. Markdown-shaped prose is the sub-256 KiB content the product holds,
-//! repetitive the way real English is, so what lz4 finds here is the kind of
-//! structure it would find in a real page. Pseudorandom bytes are the control: a
-//! codec declines them, so a coded row over them has to land on the uncoded one.
+//! Markdown-shaped prose is the content the product actually holds, repetitive
+//! the way English is. Pseudorandom bytes are the control: a codec declines
+//! them, so a coded row over them has to land on the uncoded one.
 
 /// Pseudorandom bytes, which lz4 declines and stores verbatim
 pub fn random(seed: usize, len: usize) -> Vec<u8> {
@@ -21,8 +20,7 @@ pub fn random(seed: usize, len: usize) -> Vec<u8> {
 
 /// The pool a generated page draws its prose from
 ///
-/// Small enough that lz4 finds the repetition prose really has, and made of
-/// whole words rather than runs of one byte, which any codec would flatter.
+/// Whole words rather than runs of one byte, which any codec would flatter.
 const WORDS: &[&str] = &[
     "storage", "node", "committee", "epoch", "slice", "spool", "tape", "track", "record",
     "segment", "engine", "payload", "commitment", "challenge", "operator", "network", "cluster",
@@ -38,9 +36,6 @@ const HEADINGS: &[&str] = &[
 ];
 
 /// A markdown-shaped page of about `len` bytes, deterministic in `seed`
-///
-/// Headings, paragraphs of sentences drawn from a word pool, and the odd bulleted
-/// list, which is the shape of the `.md` files the product stores.
 pub fn markdown(seed: usize, len: usize) -> Vec<u8> {
     let mut state = 0x2545_F491_4F6C_DD1Du64 ^ (seed as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let mut next = move || {
@@ -97,9 +92,9 @@ pub fn markdown(seed: usize, len: usize) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// The generated page has to be prose-shaped, not a run of one byte
+    // the generated page is prose-shaped, not a run of one byte
     #[test]
-    fn markdown_is_compressible_but_not_trivial() {
+    fn prose_shaped() {
         let page = markdown(7, 16 * 1024);
         assert_eq!(page.len(), 16 * 1024);
 
@@ -111,9 +106,9 @@ mod tests {
         assert!(distinct > 20, "a page of {distinct} distinct bytes is not text");
     }
 
-    /// Random bytes have to defeat the codec, which is what makes them the control
+    // random bytes defeat the codec, which is what makes them the control
     #[test]
-    fn random_defeats_the_codec() {
+    fn random_control() {
         let bytes = random(7, 16 * 1024);
         let shrunk = lz4_flex::block::compress(&bytes).len();
         assert!(shrunk > bytes.len() - bytes.len() / 8, "random shrank by an eighth: {shrunk}");

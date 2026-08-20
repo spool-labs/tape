@@ -40,7 +40,7 @@ pub trait TrackOps {
     /// One page of tracks in no promised order, resumed by an opaque mark.
     ///
     /// What a maintenance pass wants: complete, resumable coverage without the
-    /// key order it never reads. The mark is the backend's; hand back whatever
+    /// key order it never reads. The mark is the backend's, so hand back whatever
     /// the last page answered and nothing to start.
     fn sweep_tracks(
         &self,
