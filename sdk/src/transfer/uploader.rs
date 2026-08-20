@@ -20,7 +20,7 @@ use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::bootstrap::Reputation;
 use crate::codec::encoder::SliceMerkleProof;
@@ -363,6 +363,25 @@ fn should_retry_put_slice(error: &ApiError) -> bool {
     matches!(error, ApiError::NotFound) || error.is_retryable()
 }
 
+/// Retry cadence for a slice a node has not accepted yet.
+///
+/// The eager push lands milliseconds after the register confirms, before any
+/// owner has ingested the block, so the first attempt reliably returns
+/// `not found` and the retry decides the phase. A one second base oversleeps
+/// it: measured, five slices drew 522-887 ms of backoff to wait out a node
+/// ingest tip poll of 400 ms, and quorum completed on the fourth-shortest draw
+/// at 856 ms, which was the entire `store` phase.
+///
+/// Ramping from 60 ms catches the ingest as soon as it happens and still
+/// settles to a polite cadence if a node is genuinely down rather than behind.
+fn slice_retry_config() -> RetryConfig {
+    RetryConfig {
+        base_delay: Duration::from_millis(60),
+        max_delay: Duration::from_secs(2),
+        max_retries: Some(10),
+    }
+}
+
 async fn upload_slice_with_retry<P: Api>(
     peer_client: &P,
     node: Address,
@@ -372,11 +391,26 @@ async fn upload_slice_with_retry<P: Api>(
     mut quorum: watch::Receiver<bool>,
 ) -> Result<CertifyRes, ApiError> {
     let started = Instant::now();
-    let mut backoff = Backoff::new(RetryConfig::ten());
+    let mut backoff = Backoff::new(slice_retry_config());
 
     loop {
+        let attempt_started = Instant::now();
         match peer_client.put_slice(node, &req).await {
-            Ok(response) => return Ok(response.receipt),
+            Ok(response) => {
+                // The successful push was never timed, only the failures, so a
+                // slow store phase could not be told apart from a waiting one.
+                debug!(
+                    track = %track,
+                    node = %node,
+                    slice = %req.spool,
+                    bytes = payload_bytes,
+                    push_ms = attempt_started.elapsed().as_millis() as u64,
+                    total_ms = started.elapsed().as_millis() as u64,
+                    attempts = backoff.attempt() + 1,
+                    "slice accepted"
+                );
+                return Ok(response.receipt);
+            }
             Err(error) => {
                 if !should_retry_put_slice(&error) {
                     warn!(
