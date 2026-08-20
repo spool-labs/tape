@@ -263,14 +263,6 @@ impl Api for GatewayApi {
         Err(unsupported("sync_slices"))
     }
 
-    async fn sync_tracks(
-        &self,
-        _node: Address,
-        _req: &SyncTracksReq,
-    ) -> Result<SyncTracksRes, ApiError> {
-        Err(unsupported("sync_tracks"))
-    }
-
     async fn repair(&self, _node: Address, _req: &RepairReq) -> Result<RepairRes, ApiError> {
         Err(unsupported("repair"))
     }

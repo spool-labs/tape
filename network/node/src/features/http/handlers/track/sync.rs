@@ -11,10 +11,9 @@ use tape_core::system::BlacklistEntry;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{
-    BINARY_CONTENT, SyncSliceEntry, SyncSlicesRequest, SyncSlicesResponse, SyncTrackEntry,
-    SyncTracksRequest, SyncTracksResponse,
+    BINARY_CONTENT, SyncSliceEntry, SyncSlicesRequest, SyncSlicesResponse,
 };
-use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 
 use crate::features::blacklist::blacklist_entries_for_node;
 use crate::features::http::auth::ActivePeer;
@@ -91,94 +90,6 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let bytes = wincode::serialize(&response)
         .map_err(|error| RouteError::Internal(format!("serialize sync response: {error}")))?;
-
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, BINARY_CONTENT)],
-        bytes,
-    ))
-}
-
-pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    State(state): State<AppState<Db, Cluster, Blockchain>>,
-    _active_peer: ActivePeer,
-    body: Bytes,
-) -> Result<impl IntoResponse, RouteError> {
-    let request: SyncTracksRequest = wincode::deserialize(&body)
-        .map_err(|error| RouteError::BadRequest(format!("sync tracks request: {error}")))?;
-    state
-        .context
-        .store
-        .get_spool_state(request.spool_index)
-        .map_err(store_error)?
-        .ok_or(RouteError::NotResponsible)?;
-
-    let limit = (request.limit as usize).clamp(1, MAX_SYNC_BATCH);
-    let mut scan_cursor = request.cursor;
-    let mut entries = Vec::with_capacity(limit);
-    let current_epoch = state.context.state().epoch();
-
-    // One read of the blacklist for the whole scan rather than one per track.
-    let refused = blacklist_entries_for_node(
-        state.context.store.as_ref(),
-        state.context.node_address(),
-        current_epoch,
-    )
-    .map_err(store_error)?;
-
-    let next_cursor = loop {
-        // Only the room left in the batch, since the mark names a page boundary
-        // and not a row: stopping part way through a page and answering the mark
-        // past it would drop every track the page had left.
-        let room = limit - entries.len();
-        let (tracks, next) = state
-            .context
-            .store
-            .sweep_tracks(scan_cursor.as_deref(), room)
-            .map_err(store_error)?;
-
-        for (track_address, track) in tracks.iter() {
-            if !track.group.contains(request.spool_index) {
-                continue;
-            }
-
-            if refused.contains(&BlacklistEntry::track(*track_address))
-                || refused.contains(&BlacklistEntry::tape(track.tape))
-            {
-                continue;
-            }
-
-            let Some(data) = state
-                .context
-                .store
-                .get_track_data(*track_address)
-                .map_err(store_error)?
-            else {
-                continue;
-            };
-
-            entries.push(SyncTrackEntry {
-                track_address: track_address.to_bytes(),
-                data,
-            });
-        }
-
-        // A peer resuming from the answered mark may be handed rows it already
-        // took. Taking a track twice is taking it once.
-        match next {
-            None => break None,
-            Some(mark) if entries.len() == limit => break Some(mark),
-            Some(mark) => scan_cursor = Some(mark),
-        }
-    };
-
-    let response = SyncTracksResponse {
-        entries,
-        next_cursor,
-    };
-
-    let bytes = wincode::serialize(&response)
-        .map_err(|error| RouteError::Internal(format!("serialize sync tracks response: {error}")))?;
 
     Ok((
         StatusCode::OK,

@@ -10,7 +10,7 @@ use tape_crypto::prelude::{Address, Hash};
 
 use crate::api::types::{
     InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
-    SyncTrackEntry, VoteCandidate, ObjectListItem,
+    VoteCandidate, ObjectListItem,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -144,19 +144,6 @@ pub struct SyncSlicesRes {
 }
 
 #[derive(Clone, Debug)]
-pub struct SyncTracksReq {
-    pub spool_index: SpoolIndex,
-    pub cursor: Option<Vec<u8>>,
-    pub limit: u32,
-}
-
-#[derive(Clone, Debug)]
-pub struct SyncTracksRes {
-    pub entries: Vec<SyncTrackEntry>,
-    pub next_cursor: Option<Vec<u8>>,
-}
-
-#[derive(Clone, Debug)]
 pub struct RepairReq {
     pub track: Address,
     pub helper_spool: SpoolIndex,
@@ -254,7 +241,6 @@ pub enum PeerReq {
     GetTrackData(GetTrackDataReq),
     GetTrackProof(GetTrackProofReq),
     SyncSlices(SyncSlicesReq),
-    SyncTracks(SyncTracksReq),
     Repair(RepairReq),
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
@@ -276,7 +262,6 @@ pub enum PeerRes {
     GetTrackData(Result<GetTrackDataRes, ApiError>),
     GetTrackProof(Result<GetTrackProofRes, ApiError>),
     SyncSlices(Result<SyncSlicesRes, ApiError>),
-    SyncTracks(Result<SyncTracksRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),

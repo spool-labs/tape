@@ -479,46 +479,6 @@ impl Api for HttpApi {
         })
     }
 
-    async fn sync_tracks(
-        &self,
-        node: Address,
-        req: &SyncTracksReq,
-    ) -> Result<SyncTracksRes, ApiError> {
-        let (client, base) = self.resolve(node)?;
-        let url = format!("{base}{}", SYNC_TRACKS_PATH);
-        let wire_req = SyncTracksRequest {
-            spool_index: req.spool_index,
-            cursor: req.cursor.clone(),
-            limit: req.limit,
-        };
-        let body =
-            wincode::serialize(&wire_req)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        let bytes_sent = body.len() as u64;
-        let start = Instant::now();
-        let resp = client
-            .post(&url)
-            .header("content-type", BINARY_CONTENT)
-            .body(body)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record(node, "sync_tracks", &resp, start, bytes_sent);
-        let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx(node, "sync_tracks", bytes.len() as u64);
-        let wire_res: SyncTracksResponse =
-            wincode::deserialize(&bytes)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
-        Ok(SyncTracksRes {
-            entries: wire_res.entries,
-            next_cursor: wire_res.next_cursor,
-        })
-    }
-
     async fn repair(&self, node: Address, req: &RepairReq) -> Result<RepairRes, ApiError> {
         let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();

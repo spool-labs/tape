@@ -352,36 +352,6 @@ pub struct SyncSliceEntry {
     pub slice_data: Vec<u8>,
 }
 
-/// Request for track-data synchronization.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SyncTracksRequest {
-    pub spool_index: SpoolIndex,
-    /// Where the last page left off, or nothing to start from the beginning.
-    ///
-    /// Opaque: the server mints it and the client only hands it back. A mark
-    /// this server did not mint restarts the scan.
-    pub cursor: Option<Vec<u8>>,
-    pub limit: u32,
-}
-
-/// Response from track-data synchronization.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SyncTracksResponse {
-    pub entries: Vec<SyncTrackEntry>,
-    /// Where to resume, or nothing when the scan is done.
-    ///
-    /// A page boundary rather than a row, so a client resuming may be handed
-    /// rows it already has. Taking a track twice is taking it once.
-    pub next_cursor: Option<Vec<u8>>,
-}
-
-/// A single track-data entry in a sync response.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SyncTrackEntry {
-    pub track_address: [u8; 32],
-    pub data: BlobData,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct TrackResponse {
     pub track: PackedTrack,
@@ -734,20 +704,6 @@ mod tests {
         };
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: SyncSlicesResponse = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(resp, decoded);
-    }
-
-    #[test]
-    fn sync_tracks_response() {
-        let resp = SyncTracksResponse {
-            entries: vec![SyncTrackEntry {
-                track_address: [0x11; 32],
-                data: BlobData::Inline(vec![1, 2, 3]),
-            }],
-            next_cursor: Some(vec![0x11; 32]),
-        };
-        let bytes = wincode::serialize(&resp).unwrap();
-        let decoded: SyncTracksResponse = wincode::deserialize(&bytes).unwrap();
         assert_eq!(resp, decoded);
     }
 

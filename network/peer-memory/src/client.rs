@@ -8,7 +8,7 @@ use tape_protocol::api::{
     GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListObjectsReq,
     ListObjectsRes, ListTracksByTapeReq, ListTracksByTapeRes, PeerReq, PeerRes, ProofOfAccessReq,
     ProofOfAccessRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes,
-    SyncTracksReq, SyncTracksRes, VoteReq, VoteRes,
+    VoteReq, VoteRes,
 };
 use tape_crypto::Address;
 
@@ -36,7 +36,6 @@ impl MemoryApi {
             PeerReq::GetTrackData(_) => PeerRes::GetTrackData(Err(not_impl())),
             PeerReq::GetTrackProof(_) => PeerRes::GetTrackProof(Err(not_impl())),
             PeerReq::SyncSlices(_) => PeerRes::SyncSlices(Err(not_impl())),
-            PeerReq::SyncTracks(_) => PeerRes::SyncTracks(Err(not_impl())),
             PeerReq::Repair(_) => PeerRes::Repair(Err(not_impl())),
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
@@ -118,10 +117,6 @@ impl Api for MemoryApi {
 
     async fn sync_slices(&self, node: Address, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
         dispatch!(self, node, SyncSlicesReq { spool_index: req.spool_index, cursor: req.cursor.clone(), limit: req.limit }, SyncSlices)
-    }
-
-    async fn sync_tracks(&self, node: Address, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError> {
-        dispatch!(self, node, SyncTracksReq { spool_index: req.spool_index, cursor: req.cursor.clone(), limit: req.limit }, SyncTracks)
     }
 
     async fn repair(&self, node: Address, req: &RepairReq) -> Result<RepairRes, ApiError> {

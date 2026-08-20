@@ -34,7 +34,6 @@ pub trait Api: Send + Sync + 'static {
     async fn get_track_data(&self, node: Address, req: &GetTrackDataReq) -> Result<GetTrackDataRes, ApiError>;
     async fn get_track_proof(&self, node: Address, req: &GetTrackProofReq) -> Result<GetTrackProofRes, ApiError>;
     async fn sync_slices(&self, node: Address, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError>;
-    async fn sync_tracks(&self, node: Address, req: &SyncTracksReq) -> Result<SyncTracksRes, ApiError>;
     async fn repair(&self, node: Address, req: &RepairReq) -> Result<RepairRes, ApiError>;
     async fn certify(&self, node: Address, req: &CertifyReq) -> Result<CertifyRes, ApiError>;
     async fn invalidate(&self, node: Address, req: &InvalidateReq) -> Result<InvalidateRes, ApiError>;
