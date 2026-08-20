@@ -19,6 +19,8 @@ Environment, all optional:
     LOCALNET_BOOT_TIMEOUT   seconds to wait for the api, default 900
     LOCALNET_UPLOADS        uploads to start during the run, default 1
     LOCALNET_UPLOAD_EVERY   seconds between uploads, default 60
+    LOCALNET_UPLOAD_SIZES   comma separated byte sizes to draw from, read by
+                            the orchestrator; unset keeps the random spread
     LOCALNET_LOG_DIR        where the pty capture and snapshots land,
                             default target/localnet-run
 

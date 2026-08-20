@@ -227,14 +227,43 @@ async fn run_delete(
     Ok(())
 }
 
+/// Environment variable naming the sizes a run cycles through, in bytes
+///
+/// Comma separated, and taken in order rather than at random, so a run of N
+/// uploads covers each size the same number of times. Unset keeps the random
+/// spread, which is what an unattended fleet run wants.
+const SIZES_VAR: &str = "LOCALNET_UPLOAD_SIZES";
+
+/// The sizes a run was asked to cycle through, empty unless it named any
+fn asked_sizes() -> Vec<usize> {
+    let Ok(raw) = std::env::var(SIZES_VAR) else {
+        return Vec::new();
+    };
+    let mut sizes = Vec::new();
+    for field in raw.split(',') {
+        match field.trim().parse::<usize>() {
+            Ok(size) if size > 0 => sizes.push(size),
+            _ => continue,
+        }
+    }
+    sizes
+}
+
 fn random_blob(force_raw: bool) -> Vec<u8> {
     let mut rng = rand::thread_rng();
-    let size = if force_raw {
-        let span = MAX_RAW_UPLOAD_BYTES - MIN_RAW_UPLOAD_BYTES + 1;
-        (rng.next_u32() as usize % span) + MIN_RAW_UPLOAD_BYTES
-    } else {
-        let span = MAX_BLOB_UPLOAD_BYTES - MIN_BLOB_UPLOAD_BYTES + 1;
-        (rng.next_u32() as usize % span) + MIN_BLOB_UPLOAD_BYTES
+    let size = {
+        let asked = asked_sizes();
+        match asked.is_empty() {
+            false => asked[(rng.next_u32() as usize) % asked.len()],
+            true if force_raw => {
+                let span = MAX_RAW_UPLOAD_BYTES - MIN_RAW_UPLOAD_BYTES + 1;
+                (rng.next_u32() as usize % span) + MIN_RAW_UPLOAD_BYTES
+            }
+            true => {
+                let span = MAX_BLOB_UPLOAD_BYTES - MIN_BLOB_UPLOAD_BYTES + 1;
+                (rng.next_u32() as usize % span) + MIN_BLOB_UPLOAD_BYTES
+            }
+        }
     };
     let mut data = vec![0u8; size];
     rng.fill_bytes(&mut data);
