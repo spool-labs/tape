@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -52,8 +52,19 @@ pub const SDK_INLINE_RAW_MAX_BYTES: usize = 825;
 /// Poll cadence for visibility and certification waits.
 const POLL_INTERVAL_MS: u64 = 400;
 
-/// Visibility poll attempts before giving up.
-const VISIBILITY_POLL_LIMIT: usize = 30;
+/// How long to wait for a track to become visible before giving up.
+///
+/// A duration rather than an attempt count, because what is being waited on is
+/// chain-side: nodes serve a track once their protocol state advances, and how
+/// long that takes has nothing to do with how often the client asks. Counting
+/// attempts couples the budget to `POLL_INTERVAL_MS`, so tightening the poll
+/// for responsiveness silently divides the timeout by the same factor.
+///
+/// Sized for the worst case rather than the common one. A single self-voting
+/// validator roots 31 slots behind head, so a cold localnet can hold a track
+/// invisible for ~15 s; a live cluster clears it in a slot or two. This bounds
+/// a pathology, it does not pace a write.
+const VISIBILITY_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub const UNNAMED_TRACK: &[u8] = b"";
 pub const UNTYPED_TRACK: ContentType = ContentType::Unknown;
@@ -841,6 +852,8 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     let target = peers.len();
 
     let mut attempt = 0usize;
+    let started = std::time::Instant::now();
+    let mut first_seen: HashMap<Address, u64> = HashMap::new();
 
     loop {
         // Probe every peer concurrently: a round costs one round-trip
@@ -848,39 +861,65 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
         let probes = peers.iter().map(|node_id| async move {
             let req = GetTrackDataReq { track: track_address };
             match client.api.get_track_data(*node_id, &req).await {
-                Ok(_) => true,
+                Ok(_) => (*node_id, true),
                 Err(error) => {
                     debug!(
                         node = %node_id,
                         error = %error,
                         "track metadata not yet visible on node"
                     );
-                    false
+                    (*node_id, false)
                 }
             }
         });
-        let visible = futures::future::join_all(probes)
-            .await
-            .into_iter()
-            .filter(|visible| *visible)
-            .count();
+        let answers = futures::future::join_all(probes).await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
 
-        if visible >= required {
-            if visible < target {
-                info!(
-                    visible,
-                    target,
-                    required,
-                    "track metadata reached quorum"
+        // Whether owners flip together or on their own schedules is the
+        // difference between one gate opening and each node catching up, and
+        // only the per-node arrival time distinguishes them.
+        for (node, is_visible) in &answers {
+            if *is_visible && !first_seen.contains_key(node) {
+                first_seen.insert(*node, elapsed_ms);
+                debug!(
+                    node = %node,
+                    at_ms = elapsed_ms,
+                    attempt,
+                    "track became visible on node"
                 );
             }
+        }
+
+        let visible = answers.iter().filter(|(_, seen)| *seen).count();
+        debug!(
+            attempt,
+            visible,
+            required,
+            target,
+            elapsed_ms,
+            "visibility round"
+        );
+
+        if visible >= required {
+            info!(
+                visible,
+                target,
+                required,
+                attempts = attempt + 1,
+                elapsed_ms,
+                spread_ms = first_seen.values().max().copied().unwrap_or(0)
+                    - first_seen.values().min().copied().unwrap_or(0),
+                "track metadata visible"
+            );
             return Ok(());
         }
 
         attempt += 1;
-        if attempt > VISIBILITY_POLL_LIMIT {
+        if started.elapsed() >= VISIBILITY_TIMEOUT {
             return Err(TapedriveError::Upload(UploadError::Network(format!(
-                "track metadata visible on {visible}/{target} nodes, need {required}"
+                "track metadata visible on {visible}/{target} nodes, need {required} \
+                 after {:.1}s",
+                started.elapsed().as_secs_f64()
             ))));
         }
 
