@@ -208,6 +208,27 @@ impl CertificationCollector {
         let mut epoch_buckets: HashMap<u64, SignatureBucket> = HashMap::new();
         bank_receipts(&mut epoch_buckets, &mut signature_requests, banked, state.epoch());
 
+        // The bank often already carries the answer. The uploader takes a receipt
+        // from every node that accepts a slice and stops sending once a
+        // supermajority has one, so what is left to ask is exactly the set it
+        // wrote off: nodes with no track data, each costing its full retry budget
+        // to say so. Checking here rather than only on a fresh response is the
+        // difference between returning now and waiting out that budget.
+        if self.config.early_exit {
+            if let Some(epoch_key) = select_supermajority_epoch(&epoch_buckets, group_total_weight)
+            {
+                let bucket = &epoch_buckets[&epoch_key];
+                tracing::info!(
+                    signatures = bucket.responses.len(),
+                    weight = bucket.weight,
+                    group_size = GROUP_SIZE,
+                    unasked = signature_requests.len(),
+                    "Spool group supermajority already banked, asking no one"
+                );
+                return settle(bucket, epoch_key, Vec::new());
+            }
+        }
+
         let mut remaining_node_weight = signature_requests
             .iter()
             .map(|request| request.weight)
@@ -237,7 +258,6 @@ impl CertificationCollector {
 
         // Collect results, potentially exiting early
         let mut failures: Vec<(Address, NodeSignError)> = Vec::new();
-        let mut early_exit_triggered = false;
 
         while let Some(node_result) = requests.next().await {
             let remaining_after = remaining_node_weight.saturating_sub(node_result.weight);
@@ -266,8 +286,6 @@ impl CertificationCollector {
                     if self.config.early_exit
                         && is_supermajority(bucket.weight, group_total_weight)
                     {
-                        let bitmap = SpoolBitmap::from_indices(&bucket.positions);
-                        let responses = bucket.responses.clone();
                         tracing::info!(
                             signatures = bucket.responses.len(),
                             weight = bucket.weight,
@@ -275,20 +293,7 @@ impl CertificationCollector {
                             remaining_weight = remaining_node_weight,
                             "Spool group supermajority reached, exiting early"
                         );
-                        early_exit_triggered = true;
-
-                        let aggregated_signature = BlsSignature::aggregate(&bucket.signatures)
-                            .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
-                        return Ok(CollectedSignatures {
-                            aggregated_signature,
-                            bitmap,
-                            signature_count: responses.len(),
-                            spool_count: GROUP_SIZE,
-                            epoch: epoch_key,
-                            responses,
-                            failures,
-                            early_exit: early_exit_triggered,
-                        });
+                        return settle(bucket, epoch_key, failures);
                     }
                 }
                 Err(e) => {
@@ -357,7 +362,7 @@ impl CertificationCollector {
             epoch: selected_epoch,
             responses,
             failures,
-            early_exit: early_exit_triggered,
+            early_exit: false,
         })
     }
 
@@ -486,6 +491,27 @@ fn can_reach_supermajority(
         || epoch_buckets
             .values()
             .any(|bucket| is_supermajority(bucket.weight + remaining_node_weight, group_total_weight))
+}
+
+/// Build the collected result from a bucket that already holds a supermajority.
+fn settle(
+    bucket: &SignatureBucket,
+    epoch_key: u64,
+    failures: Vec<(Address, NodeSignError)>,
+) -> Result<CollectedSignatures, CertificationError> {
+    let aggregated_signature = BlsSignature::aggregate(&bucket.signatures)
+        .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
+
+    Ok(CollectedSignatures {
+        aggregated_signature,
+        bitmap: SpoolBitmap::from_indices(&bucket.positions),
+        signature_count: bucket.responses.len(),
+        spool_count: GROUP_SIZE,
+        epoch: epoch_key,
+        responses: bucket.responses.clone(),
+        failures,
+        early_exit: true,
+    })
 }
 
 fn select_supermajority_epoch(
