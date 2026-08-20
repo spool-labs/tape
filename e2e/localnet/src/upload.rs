@@ -22,7 +22,9 @@ use tracing::{error, info, warn};
 
 use crate::view::UploadView;
 
-const MAX_UPLOAD_HISTORY: usize = 16;
+/// Uploads kept for reporting. A soak run wants every row it started, not a
+/// window of the last few.
+const MAX_UPLOAD_HISTORY: usize = 4096;
 const DEFAULT_UPLOAD_EPOCHS: u64 = 100;
 const MAX_RAW_UPLOAD_BYTES: usize = 825;
 const MIN_RAW_UPLOAD_BYTES: usize = 64;
@@ -80,6 +82,8 @@ impl UploadManager {
             tape_address: tape_address.clone(),
             track_address: None,
             last_error: None,
+            started_ms: now_ms(),
+            settled_ms: None,
         };
 
         let evicted = {
@@ -322,6 +326,14 @@ async fn run_upload(
     })
 }
 
+/// Unix milliseconds now
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn update_upload_status(
     uploads: &Arc<Mutex<VecDeque<UploadView>>>,
     tape_address: &str,
@@ -340,6 +352,12 @@ fn update_upload_status(
             upload.track_address = Some(track_address);
         }
         upload.last_error = last_error;
+
+        // Timed once, at the first terminal answer, so a later status write does
+        // not restate the elapsed time as something longer.
+        if upload.settled_ms.is_none() && matches!(cert_status, "yes" | "no") {
+            upload.settled_ms = Some(now_ms().saturating_sub(upload.started_ms));
+        }
     }
 }
 

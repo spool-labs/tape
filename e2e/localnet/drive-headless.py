@@ -18,6 +18,7 @@ Environment, all optional:
     LOCALNET_RUN_SECONDS    seconds to hold the fleet up, default 600
     LOCALNET_BOOT_TIMEOUT   seconds to wait for the api, default 900
     LOCALNET_UPLOADS        uploads to start during the run, default 1
+    LOCALNET_UPLOAD_EVERY   seconds between uploads, default 60
     LOCALNET_LOG_DIR        where the pty capture and snapshots land,
                             default target/localnet-run
 
@@ -45,6 +46,7 @@ NODES = int(os.environ.get("LOCALNET_NODES", "20"))
 RUN_SECONDS = int(os.environ.get("LOCALNET_RUN_SECONDS", "600"))
 BOOT_TIMEOUT = int(os.environ.get("LOCALNET_BOOT_TIMEOUT", "900"))
 UPLOADS = int(os.environ.get("LOCALNET_UPLOADS", "1"))
+UPLOAD_EVERY = float(os.environ.get("LOCALNET_UPLOAD_EVERY", "60"))
 LOG_DIR = os.environ.get("LOCALNET_LOG_DIR", os.path.join(ROOT, "target/localnet-run"))
 
 
@@ -126,6 +128,7 @@ def main():
     next_snapshot = 0.0
     next_upload = time.time() + 30
     uploads_started = 0
+    last_uploads = []
     while time.time() < deadline:
         pump()
         if child.poll() is not None:
@@ -137,7 +140,7 @@ def main():
                 upload = post("/api/uploads")
                 uploads_started += 1
                 say(f"upload started: {upload['size_bytes']} bytes to {upload['tape_address']}")
-                next_upload = now + 60
+                next_upload = now + UPLOAD_EVERY
             except Exception as error:
                 say(f"upload request failed: {error}")
                 next_upload = now + 30
@@ -152,6 +155,7 @@ def main():
             healthy = sum(1 for node in snapshot["nodes"] if node["healthy"])
             snaps.write(json.dumps({"at": now, **snapshot}) + "\n")
             snaps.flush()
+            last_uploads = snapshot["uploads"]
             say(
                 f"epoch {cluster['epoch']} phase {cluster['phase']} slot {cluster['slot']} "
                 f"committee {cluster['committee_size']} healthy {healthy}/{len(snapshot['nodes'])} "
@@ -174,7 +178,58 @@ def main():
     say(f"localnet exit code {child.returncode}, shutdown took {time.time() - stopped:.0f}s")
     raw.close()
     snaps.close()
+    report(last_uploads, uploads_started)
     return 0
+
+
+# Size buckets a row is reported under, by upper bound in bytes.
+BUCKETS = [
+    ("<=1 KiB", 1024),
+    ("<=1 MiB", 1024 * 1024),
+    ("<=16 MiB", 16 * 1024 * 1024),
+    ("<=64 MiB", 64 * 1024 * 1024),
+    ("stream", float("inf")),
+]
+
+
+def bucket_of(size):
+    for name, ceiling in BUCKETS:
+        if size <= ceiling:
+            return name
+    return BUCKETS[-1][0]
+
+
+def report(uploads, started):
+    """What the run uploaded, how long each size took, and what went wrong."""
+    path = os.path.join(LOG_DIR, "uploads.json")
+    with open(path, "w") as handle:
+        json.dump(uploads, handle, indent=2)
+
+    settled = [u for u in uploads if u.get("settled_ms") is not None]
+    certified = [u for u in settled if u["cert_status"] == "yes"]
+    refused = [u for u in settled if u["cert_status"] != "yes"]
+    pending = [u for u in uploads if u.get("settled_ms") is None]
+
+    say(f"uploads started {started}, seen {len(uploads)}, "
+        f"certified {len(certified)}, refused {len(refused)}, pending {len(pending)}")
+
+    by_bucket = {}
+    for upload in certified:
+        by_bucket.setdefault(bucket_of(upload["size_bytes"]), []).append(upload["settled_ms"])
+    for name, _ in BUCKETS:
+        times = sorted(by_bucket.get(name, []))
+        if not times:
+            continue
+        say(f"  {name:>9}  n={len(times):<4} "
+            f"min={times[0] / 1000:.1f}s  "
+            f"median={times[len(times) // 2] / 1000:.1f}s  "
+            f"max={times[-1] / 1000:.1f}s")
+
+    faults = len(refused) + len(pending)
+    for upload in refused + pending:
+        say(f"  FAULT {upload['size_bytes']}B {upload['cert_status']} "
+            f"{upload.get('last_error') or ''}")
+    say(f"faults: {faults}")
 
 
 if __name__ == "__main__":

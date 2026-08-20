@@ -51,6 +51,12 @@ pub struct UploadView {
     pub tape_address: String,
     pub track_address: Option<String>,
     pub last_error: Option<String>,
+
+    /// Unix milliseconds the upload was started at
+    pub started_ms: u64,
+
+    /// Milliseconds from start to a certified or refused answer, absent while pending
+    pub settled_ms: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
