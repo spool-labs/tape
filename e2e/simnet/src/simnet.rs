@@ -255,9 +255,10 @@ impl SimnetHarness {
 
     fn ensure_block_producer(&mut self) {
         if self.block_producer.is_none() {
-            self.block_producer = Some(
-                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL),
-            );
+            self.block_producer = Some(self.chain.rpc().start_block_producer(
+                BLOCK_PRODUCTION_INTERVAL,
+                tape_core::challenge::schedule::SLOT_MS,
+            ));
         }
     }
 }

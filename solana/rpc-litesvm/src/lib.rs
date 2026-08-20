@@ -151,10 +151,16 @@ impl LiteSvmRpc {
 
     /// Closes the current block (making it visible via get_slot/get_block)
     /// and opens a new slot, every `interval`.
-    pub fn start_block_producer(&self, interval: Duration) -> JoinHandle<()> {
+    /// Slot numbers advance `interval / slot_millis` per tick on a fixed
+    /// lattice, so a slot spans `slot_millis` of chain time no matter how
+    /// coarse the tick. The numbers a tick jumps over are ordinary skipped
+    /// slots; chain time still advances by the tick.
+    pub fn start_block_producer(&self, interval: Duration, slot_millis: u64) -> JoinHandle<()> {
         let rpc = self.clone();
         tokio::spawn(async move {
             let tick_seconds = interval.as_secs() as i64;
+            let interval_ms = interval.as_millis() as u64;
+            let mut ticks: u64 = 0;
             loop {
                 tokio::time::sleep(interval).await;
                 let mut inner = rpc.inner.lock().expect("mutex poisoned");
@@ -162,7 +168,9 @@ impl LiteSvmRpc {
                 inner.svm.warp_to_slot(slot);
                 Self::close_slot_locked(&mut inner, slot);
                 inner.confirmed_tip = slot;
-                inner.pending_slot = inner.confirmed_tip + 1;
+                ticks += 1;
+                let next_on_lattice = (ticks + 1) * interval_ms / slot_millis;
+                inner.pending_slot = next_on_lattice.max(slot + 1);
 
                 let mut clock = inner.svm.get_sysvar::<SvmClock>();
                 clock.unix_timestamp = clock.unix_timestamp.saturating_add(tick_seconds);
