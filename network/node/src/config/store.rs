@@ -6,7 +6,12 @@ use serde::Deserialize;
 
 use super::helpers::deserialize_pathbuf;
 
-/// Local reel store settings.
+/// Local store settings.
+///
+/// A node built with the `rocks` feature serves the same root on RocksDB
+/// instead, in a meta and a bulk subdirectory. It reads the path, the compaction
+/// ceiling and the free-space floor, and ignores the rest, which name knobs only
+/// the reel has.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct StoreConfig {
     /// Filesystem path for the store root. One reel volume holds every column
@@ -18,8 +23,8 @@ pub struct StoreConfig {
     #[serde(default)]
     pub compaction_mb_per_sec: u64,
 
-    /// Bytes written between durability syncs. 0 syncs on every put, which the
-    /// HDD battery measured at 16-67x the latency of never syncing.
+    /// Bytes written between durability syncs. 0 syncs on every put, which costs
+    /// far more latency than it is worth.
     #[serde(default = "default_sync_bytes")]
     pub sync_bytes: u64,
 
@@ -122,7 +127,7 @@ fn default_reclaim_min_deleted_slices() -> usize {
 mod tests {
     use super::*;
 
-    // unspecified keys fall back to the measured fleet defaults
+    // unspecified keys fall back to the shipped fleet defaults
     #[test]
     fn yaml_defaults() {
         let config: StoreConfig = serde_yaml::from_str("path: /data/tape").unwrap();
@@ -135,7 +140,7 @@ mod tests {
 
     // a volume that cannot afford the shipped reservation says so in one word
     #[test]
-    fn yaml_names_a_small_reservation() {
+    fn yaml_reserve() {
         let config: StoreConfig =
             serde_yaml::from_str("path: /data/tape\nreserve: small").unwrap();
         assert_eq!(config.reserve, Reserve::Small);
@@ -143,7 +148,7 @@ mod tests {
 
     // an operator naming a backend gets that backend
     #[test]
-    fn yaml_names_the_backend() {
+    fn yaml_backend() {
         let config: StoreConfig =
             serde_yaml::from_str("path: /data/tape\nio_backend: posix").unwrap();
         assert_eq!(config.io_backend, IoBackend::Posix);
@@ -152,7 +157,7 @@ mod tests {
     // the ring is what a linux node opens with, since the fallback is automatic
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_defaults_to_the_ring() {
+    fn linux_ring() {
         assert_eq!(StoreConfig::default().io_backend, IoBackend::Uring);
     }
 }

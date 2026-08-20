@@ -4,7 +4,6 @@ use std::time::Instant;
 
 use peer_http::HttpApi;
 use peer_manager::PeerManager;
-use reel_store::ReelStore;
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use rpc_solana::{RpcConfig, SolanaRpc};
@@ -22,11 +21,12 @@ use tracing::{info, warn};
 use crate::chain::register_node::submit_register_node;
 use crate::chain::set_network_tls::submit_set_network_tls;
 use crate::config::node::NodeConfig;
-use crate::context::{AppContext, NodeContextBuilder};
+use crate::context::{AppContext, NodeContextBuilder, NodeStore};
 use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
 
-pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelStore>, NodeError> {
+#[cfg(not(feature = "rocks"))]
+pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, NodeError> {
     let root = &config.store.path;
 
     // The first open replays the tail of every unsealed segment and rebuilds the
@@ -54,13 +54,51 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<ReelStore>, N
         ))
     })?;
 
-    // The backend that took the volume, not the one the config asked for: the
+    // The backend that took the volume beside the one the config asked for. The
     // two differ whenever a ring was configured and the kernel would not give
     // one, and this line is where an operator finds out.
     info!(
         elapsed_ms = opened_at.elapsed().as_millis() as u64,
         requested = ?config.store.io_backend,
         serving = %store.inner().inner().serving_backend(),
+        "store opened",
+    );
+
+    Ok(store)
+}
+
+/// The same store on RocksDB, two volumes under the one configured root
+///
+/// The reel's own knobs have no opposite number here and are ignored. Compaction
+/// is paced the same on both volumes, since one root means one device.
+#[cfg(feature = "rocks")]
+pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, NodeError> {
+    let root = &config.store.path;
+    let meta_dir = root.join(tape_store::config::META_SUBDIR);
+    let bulk_dir = root.join(tape_store::config::BULK_SUBDIR);
+
+    info!(
+        root = %root.display(),
+        compaction_mb_per_sec = config.store.compaction_mb_per_sec,
+        "opening store",
+    );
+    let opened_at = Instant::now();
+
+    let store = TapeStore::open_primary_split(
+        &meta_dir,
+        &bulk_dir,
+        config.store.compaction_mb_per_sec,
+        config.store.compaction_mb_per_sec,
+    )
+    .map_err(|error| {
+        NodeError::Store(format!(
+            "failed to open storage (root={}): {error}",
+            root.display()
+        ))
+    })?;
+
+    info!(
+        elapsed_ms = opened_at.elapsed().as_millis() as u64,
         "store opened",
     );
 
@@ -383,8 +421,9 @@ mod tests {
     }
 
     // the node's own store opens on the reel, under the shipped defaults
+    #[cfg(not(feature = "rocks"))]
     #[test]
-    fn opens_the_node_store() {
+    fn opens_store() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = NodeConfig::default();
         config.store.path = dir.path().join("volume");
@@ -397,6 +436,20 @@ mod tests {
             opened.sync,
             reel::SyncPolicy::Bytes(reel::ByteCount::from_bytes(16 * 1024 * 1024)),
         );
+    }
+
+    // a rocks build puts its two volumes under the one configured root
+    #[cfg(feature = "rocks")]
+    #[test]
+    fn opens_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = NodeConfig::default();
+        config.store.path = dir.path().join("volume");
+
+        super::open_primary_store(&config).expect("open the node store");
+
+        assert!(config.store.path.join(tape_store::config::META_SUBDIR).is_dir());
+        assert!(config.store.path.join(tape_store::config::BULK_SUBDIR).is_dir());
     }
 
     // -- resolve_network_address tests --

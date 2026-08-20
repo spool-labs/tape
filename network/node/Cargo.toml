@@ -18,6 +18,7 @@ tape-store = { workspace = true }
 tape-blocks = { workspace = true }
 tape-spooler = { workspace = true }
 store = { workspace = true }
+store-rocks = { workspace = true, optional = true }
 reel = { workspace = true }
 reel-store = { workspace = true }
 tape-protocol = { workspace = true }
@@ -79,6 +80,12 @@ tape-chain-harness = { workspace = true }
 
 [features]
 default = []
+
+# Serve the node's store on RocksDB rather than the reel. A build-time choice,
+# since the node is generic over its store and picking at runtime would carry
+# both engines in every binary.
+rocks = ["dep:store-rocks", "tape-store/rocks"]
+
 metrics = [
     "tape-metrics/metrics",
     "dep:memory-stats",

@@ -10,8 +10,11 @@ use peer_http::HttpApi;
 use rpc::Rpc;
 use rpc_client::RpcClient;
 use rpc_solana::SolanaRpc;
+#[cfg(not(feature = "rocks"))]
 use reel_store::ReelStore;
 use store::{DiskVolume, Store};
+#[cfg(feature = "rocks")]
+use store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
@@ -35,7 +38,14 @@ use crate::features::challenge::counters::ChallengeCounters;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
 
-pub type AppContext = Arc<NodeContext<ReelStore, HttpApi, SolanaRpc>>;
+/// The store the node was built against, the reel unless `rocks` was asked for
+#[cfg(not(feature = "rocks"))]
+pub type NodeStore = ReelStore;
+
+#[cfg(feature = "rocks")]
+pub type NodeStore = SplitStore;
+
+pub type AppContext = Arc<NodeContext<NodeStore, HttpApi, SolanaRpc>>;
 
 pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub config: Arc<NodeConfig>,
@@ -340,7 +350,7 @@ mod tests {
         DiskVolume { volume: role, used_bytes: 0, free_bytes: free }
     }
 
-    // a volume below the floor throttles; zero floor or unknown free never does
+    // a volume below the floor throttles, zero floor or unknown free never does
     #[test]
     fn throttle_thresholds() {
         let volumes = vec![volume(StoreVolume::Bulk, Some(500))];
