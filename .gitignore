@@ -28,3 +28,6 @@
 
 /.cargo/config.toml
 !/.cargo/config.toml.example
+
+/box-logs/
+__pycache__/
