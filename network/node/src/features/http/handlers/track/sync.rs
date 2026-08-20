@@ -22,7 +22,6 @@ use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
 const MAX_SYNC_BATCH: usize = 1000;
-const MIN_SCAN_BATCH: usize = 64;
 
 pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -40,7 +39,7 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let limit = (request.limit as usize).clamp(1, MAX_SYNC_BATCH);
     // A page boundary rather than a row, so a peer resuming may be handed
-    // slices it already holds; it skips what it has rather than rewriting it.
+    // slices it already holds. It skips those rather than rewriting them.
     let (slices, next_cursor) = state
         .context
         .store
@@ -115,10 +114,8 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or(RouteError::NotResponsible)?;
 
     let limit = (request.limit as usize).clamp(1, MAX_SYNC_BATCH);
-    let scan_batch = limit.max(MIN_SCAN_BATCH);
     let mut scan_cursor = request.cursor;
     let mut entries = Vec::with_capacity(limit);
-    let mut next_cursor = None;
     let current_epoch = state.context.state().epoch();
 
     // One read of the blacklist for the whole scan rather than one per track.
@@ -129,16 +126,16 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     )
     .map_err(store_error)?;
 
-    loop {
-        // A page boundary rather than a row: the mark the sweep answers names
-        // where the next page starts, so a peer resuming from it may be handed
-        // rows it already took. Taking a track twice is taking it once.
+    let next_cursor = loop {
+        // Only the room left in the batch, since the mark names a page boundary
+        // and not a row: stopping part way through a page and answering the mark
+        // past it would drop every track the page had left.
+        let room = limit - entries.len();
         let (tracks, next) = state
             .context
             .store
-            .sweep_tracks(scan_cursor.as_deref(), scan_batch)
+            .sweep_tracks(scan_cursor.as_deref(), room)
             .map_err(store_error)?;
-        next_cursor = next.clone();
 
         for (track_address, track) in tracks.iter() {
             if !track.group.contains(request.spool_index) {
@@ -164,30 +161,16 @@ pub async fn sync_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 track_address: track_address.to_bytes(),
                 data,
             });
-
-            if entries.len() == limit {
-                let response = SyncTracksResponse {
-                    entries,
-                    next_cursor,
-                };
-
-                let bytes = wincode::serialize(&response).map_err(|error| {
-                    RouteError::Internal(format!("serialize sync tracks response: {error}"))
-                })?;
-
-                return Ok((
-                    StatusCode::OK,
-                    [(header::CONTENT_TYPE, BINARY_CONTENT)],
-                    bytes,
-                ));
-            }
         }
 
+        // A peer resuming from the answered mark may be handed rows it already
+        // took. Taking a track twice is taking it once.
         match next {
-            Some(next) => scan_cursor = Some(next),
-            None => break,
+            None => break None,
+            Some(mark) if entries.len() == limit => break Some(mark),
+            Some(mark) => scan_cursor = Some(mark),
         }
-    }
+    };
 
     let response = SyncTracksResponse {
         entries,
