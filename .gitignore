@@ -26,4 +26,5 @@
 
 /tape-linux-*
 
-/reel-checkout
+/.cargo/config.toml
+!/.cargo/config.toml.example

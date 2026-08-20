@@ -1,10 +1,5 @@
 [workspace]
 resolver = "2"
-# The reel checkout is a workspace of its own, reached through the symlink
-# below. Without this, cargo attaches its crates to this workspace, since
-# the link sits inside the tree, and their inherited dependencies then look
-# for a root that does not declare them.
-exclude = ["reel-checkout"]
 members = [
   "explorer",
   "solana/api",
@@ -132,15 +127,17 @@ store-memory = { version = "0.4.0", path = "./store/store-memory" }
 store-rocks = { version = "0.4.0", path = "./store/store-rocks" }
 reel-store = { version = "0.4.0", path = "./store/reel-store" }
 
-# The public reel checkout, benched from here rather than vendored. `reel-checkout`
-# is a symlink to it, made per checkout and ignored, because a path relative to
-# this file resolves differently from the repo root than from a worktree under
-# .claude/worktrees and no single literal serves both:
+# The reel engine, tracking its own main. Cargo.lock holds whichever commit that
+# was when it last resolved, and `cargo update -p reel` moves it on. To work
+# against a local checkout instead, patch it in .cargo/config.toml, which is
+# ignored:
 #
-#   ln -s /path/to/reel reel-checkout
+#   [patch."https://github.com/spool-labs/reel.git"]
+#   reel = { path = "/abs/path/to/reel/crates/reel" }
+#   reel-core = { path = "/abs/path/to/reel/crates/reel-core" }
 #
-reel = { path = "reel-checkout/crates/reel", features = ["serde"] }
-reel-core = { path = "reel-checkout/crates/reel-core" }
+reel = { git = "https://github.com/spool-labs/reel.git", branch = "main", features = ["serde"] }
+reel-core = { git = "https://github.com/spool-labs/reel.git", branch = "main" }
 tape-sdk = { version = "0.4.0", path = "./sdk" }
 tape-test = { version = "0.4.0", path = "./test" }
 tape-chain-harness = { version = "0.4.0", path = "./test/harness" }
