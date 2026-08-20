@@ -201,6 +201,14 @@ def bucket_of(size):
     return BUCKETS[-1][0]
 
 
+def median(sorted_times):
+    """The middle time, averaging the two middle ones on an even count."""
+    middle = len(sorted_times) // 2
+    if len(sorted_times) % 2:
+        return sorted_times[middle]
+    return (sorted_times[middle - 1] + sorted_times[middle]) / 2
+
+
 def report(uploads, started):
     """What the run uploaded, how long each size took, and what went wrong."""
     path = os.path.join(LOG_DIR, "uploads.json")
@@ -224,7 +232,7 @@ def report(uploads, started):
             continue
         say(f"  {name:>9}  n={len(times):<4} "
             f"min={times[0] / 1000:.1f}s  "
-            f"median={times[len(times) // 2] / 1000:.1f}s  "
+            f"median={median(times) / 1000:.1f}s  "
             f"max={times[-1] / 1000:.1f}s")
 
     faults = len(refused) + len(pending)
