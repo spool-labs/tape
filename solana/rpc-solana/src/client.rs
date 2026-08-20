@@ -496,6 +496,12 @@ async fn send_and_poll(
     commitment: CommitmentLevel,
     skip_preflight: bool,
 ) -> Result<Signature, ClientError> {
+    // Probes before the steady cadence, aligned so the grid still lands on
+    // 200 ms. A chain that confirms in single-digit milliseconds is caught by
+    // the second probe instead of waiting out a full interval; a slot-paced
+    // chain is caught at 200 and 400 exactly as before, so the slow case pays
+    // four extra status calls and no extra latency.
+    const CONFIRM_RAMP_MS: [u64; 4] = [5, 15, 50, 130];
     const CONFIRM_POLL_MS: u64 = 200;
 
     let commitment = CommitmentConfig { commitment };
@@ -511,6 +517,7 @@ async fn send_and_poll(
         )
         .await?;
 
+    let mut probe = 0usize;
     loop {
         if let Some(status) = client
             .get_signature_status_with_commitment(&signature, commitment)
@@ -519,7 +526,10 @@ async fn send_and_poll(
             status?;
             return Ok(signature);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(CONFIRM_POLL_MS)).await;
+
+        let delay = CONFIRM_RAMP_MS.get(probe).copied().unwrap_or(CONFIRM_POLL_MS);
+        probe += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
 }
 
