@@ -145,7 +145,6 @@ impl BlsPubkey {
 
 fn write_sig_base58(f: &mut fmt::Formatter<'_>, sig: &BlsSignature) -> fmt::Result {
     const SIG_BYTES: usize = 32; // G1 compressed
-    const SIG_MAX_BASE58: usize = 44;
 
     let sig_bytes = sig.0.0;
     if sig_bytes.len() != 32 {
@@ -154,15 +153,14 @@ fn write_sig_base58(f: &mut fmt::Formatter<'_>, sig: &BlsSignature) -> fmt::Resu
     let mut in32 = [0u8; SIG_BYTES];
     in32.copy_from_slice(&sig_bytes);
 
-    let mut out = [0u8; SIG_MAX_BASE58];
-    let len = five8::encode_32(&in32, &mut out) as usize;
+    let mut out = [0u8; tape_base58::MAX_ENCODED_32];
+    let len = tape_base58::encode_32(&in32, &mut out);
     let s = unsafe { from_utf8_unchecked(&out[..len]) };
     f.write_str(s)
 }
 
 fn write_pubkey_base58(f: &mut fmt::Formatter<'_>, pk: &BlsPubkey) -> fmt::Result {
     const PK_BYTES: usize = 64;  // G2 compressed
-    const PK_MAX_BASE58: usize = 88;
 
     match G2CompressedPoint::try_from(&pk.0) {
         Ok(comp) => {
@@ -173,8 +171,8 @@ fn write_pubkey_base58(f: &mut fmt::Formatter<'_>, pk: &BlsPubkey) -> fmt::Resul
             let mut in64 = [0u8; PK_BYTES];
             in64.copy_from_slice(&pk_bytes);
 
-            let mut out = [0u8; PK_MAX_BASE58];
-            let len = five8::encode_64(&in64, &mut out) as usize;
+            let mut out = [0u8; tape_base58::MAX_ENCODED_64];
+            let len = tape_base58::encode_64(&in64, &mut out);
             let s = unsafe { from_utf8_unchecked(&out[..len]) };
             f.write_str(s)
         }
@@ -209,6 +207,30 @@ impl fmt::Display for BlsSignature {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base58_encoding_vectors_are_stable() {
+        let mut encoded_32 = [0u8; tape_base58::MAX_ENCODED_32];
+        let len_32 = tape_base58::encode_32(&[0u8; 32], &mut encoded_32);
+        assert_eq!(&encoded_32[..len_32], b"11111111111111111111111111111111");
+        let len_32 = tape_base58::encode_32(&[0xff; 32], &mut encoded_32);
+        assert_eq!(
+            &encoded_32[..len_32],
+            b"JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG"
+        );
+
+        let mut encoded_64 = [0u8; tape_base58::MAX_ENCODED_64];
+        let len_64 = tape_base58::encode_64(&[0u8; 64], &mut encoded_64);
+        assert_eq!(
+            &encoded_64[..len_64],
+            b"1111111111111111111111111111111111111111111111111111111111111111"
+        );
+        let len_64 = tape_base58::encode_64(&[0xff; 64], &mut encoded_64);
+        assert_eq!(
+            &encoded_64[..len_64],
+            b"67rpwLCuS5DGA8KGZXKsVQ7dnPb9goRLoKfgGbLfQg9WoLUgNY77E2jT11fem3coV9nAkguBACzrU1iyZM4B8roQ"
+        );
+    }
 
     #[test]
     fn pop_roundtrip_valid() {

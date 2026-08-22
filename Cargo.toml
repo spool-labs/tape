@@ -220,7 +220,7 @@ moka = { version = "0.12", features = ["future"] }
 chrono = "0.4"
 rand = { version = "0.8", features = ["small_rng"] }
 thiserror = "2.0.12"
-five8 = "1.0.0"
+tape-base58 = "0.1.0"
 hex = "0.4"
 uuid = { version = "1.11", features = ["v4"] }
 

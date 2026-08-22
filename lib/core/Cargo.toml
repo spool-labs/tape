@@ -15,7 +15,7 @@ documentation = "https://docs.rs/tape-core"
 tape-crypto.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true
-five8.workspace = true
+tape-base58.workspace = true
 serde.workspace = true
 wincode = { workspace = true, optional = true }
 wincode-derive = { workspace = true, optional = true }

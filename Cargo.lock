@@ -5884,6 +5884,7 @@ dependencies = [
 [[package]]
 name = "reel"
 version = "0.1.0"
+source = "git+https://github.com/spool-labs/reel.git?branch=main#1bbc470c74a4d8236f994da597cb8dccf640cf82"
 dependencies = [
  "crc-fast",
  "io-uring",
@@ -5899,6 +5900,7 @@ dependencies = [
 [[package]]
 name = "reel-core"
 version = "0.1.0"
+source = "git+https://github.com/spool-labs/reel.git?branch=main#1bbc470c74a4d8236f994da597cb8dccf640cf82"
 dependencies = [
  "thiserror 2.0.18",
  "wincode 0.1.2",
@@ -9756,6 +9758,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-base58"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9b3fce14bc6ba0c53705bc2cd9afa08e11d102a94c9bf65f03751b394f4af24"
+
+[[package]]
 name = "tape-blocks"
 version = "0.4.0"
 dependencies = [
@@ -9854,10 +9862,10 @@ name = "tape-core"
 version = "0.4.0"
 dependencies = [
  "bytemuck",
- "five8",
  "num_enum",
  "serde",
  "solana-keypair",
+ "tape-base58",
  "tape-crypto",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
@@ -10094,9 +10102,9 @@ name = "tape-grind"
 version = "0.4.0"
 dependencies = [
  "clap",
- "five8",
  "solana-pubkey 4.1.0",
  "tape-api",
+ "tape-base58",
 ]
 
 [[package]]
