@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
+    #[cfg(all(not(miri), feature = "rocks"))]
     fn test_read_only_tape_store() {
         use tempfile::tempdir;
 
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
+    #[cfg(all(not(miri), feature = "rocks"))]
     fn test_secondary_tape_store() {
         use tempfile::tempdir;
 
@@ -443,6 +443,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocks")]
     fn certified_track(tape: Address, number: u64) -> CompressedTrack {
         CompressedTrack {
             tape,
@@ -460,7 +461,7 @@ mod tests {
     /// every open mode. Regression test for the PlainTable configuration
     /// that silently dropped flushed rows from `iter_from`
     #[test]
-    #[cfg(not(miri))]
+    #[cfg(all(not(miri), feature = "rocks"))]
     fn flushed_iteration() {
         use tempfile::tempdir;
 
@@ -536,7 +537,7 @@ mod tests {
     }
 
     // Count files with the given extension anywhere under the directory
-    #[cfg(not(miri))]
+    #[cfg(all(not(miri), feature = "rocks"))]
     fn count_files_with_ext(dir: &std::path::Path, ext: &str) -> usize {
         let mut total = 0;
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -591,7 +592,7 @@ mod tests {
     /// The RocksDB backend must observe the same results as MemoryStore,
     /// the reference implementation of the `Store` iteration contract.
     #[test]
-    #[cfg(not(miri))]
+    #[cfg(all(not(miri), feature = "rocks"))]
     fn differential_memory_rocks() {
         use std::collections::HashMap;
         use tempfile::tempdir;

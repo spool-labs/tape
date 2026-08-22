@@ -5,7 +5,7 @@
 //! to answer differently, so each case asks both and compares.
 
 use reel::sync::tension::block_on;
-use reel_store::{bench_config, MetaBulkStore, ReelStore, TAPE_COLUMNS};
+use reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
 use store::{Store, Value};
 use tempfile::TempDir;
 
@@ -22,9 +22,6 @@ const BULK_CF: &str = "slice";
 
 /// Bytes a key of that family occupies
 const BULK_KEY_LEN: usize = 34;
-
-/// A metadata family, which declares no key width
-const META_CF: &str = "tape";
 
 /// Records written before anything is asked, enough that a batch is a batch
 const RECORDS: usize = 24;
@@ -165,44 +162,6 @@ fn reel_agrees() {
     agrees(&store, BULK_CF, &keys, &7u16.to_be_bytes());
 }
 
-// the split store routes its wider reads to the half that holds the family
-#[test]
-fn split_routes() {
-    let dir = TempDir::new().expect("dir");
-    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
-
-    let bulk = fill(&store, BULK_CF, bulk_key);
-    agrees(&store, BULK_CF, &bulk, &7u16.to_be_bytes());
-
-    let meta = fill(&store, META_CF, meta_key);
-    agrees(&store, META_CF, &meta, b"tape-");
-}
-
-// an awaited write lands where the blocking one does
-#[test]
-fn awaited_writes() {
-    let dir = TempDir::new().expect("dir");
-    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
-
-    let key = bulk_key(1);
-    block_on(store.put_wait(BULK_CF, &key, &payload(1))).expect("put_wait");
-    assert_eq!(store.get(BULK_CF, &key).expect("get").map(Value::into_vec), Some(payload(1)));
-
-    let mut batch = store::WriteBatch::new();
-    let second = bulk_key(2);
-    batch.put(BULK_CF, &second, &payload(2));
-    batch.put(META_CF, &meta_key(2), &payload(2));
-    block_on(store.write_batch_wait(batch)).expect("write_batch_wait");
-    assert_eq!(
-        store.get(BULK_CF, &second).expect("get").map(Value::into_vec),
-        Some(payload(2)),
-    );
-    assert_eq!(
-        store.get(META_CF, &meta_key(2)).expect("get").map(Value::into_vec),
-        Some(payload(2)),
-    );
-}
-
 /// Every key a sweep hands out, paged until the mark comes back empty
 fn swept(store: &impl Store, cf: &str, page: usize) -> Vec<Vec<u8>> {
     let mut seen = Vec::new();
@@ -235,15 +194,68 @@ fn sweep_covers() {
     }
 }
 
-// a mark from nowhere starts the sweep over rather than answering nonsense
-#[test]
-fn foreign_mark() {
-    let dir = TempDir::new().expect("dir");
-    let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
-    let keys = fill(&store, BULK_CF, bulk_key);
+#[cfg(feature = "rocks")]
+mod rocks {
+    use super::*;
+    use reel_store::MetaBulkStore;
 
-    let (rows, _) = store
-        .sweep(BULK_CF, Some(b"not a mark this store minted"), RECORDS * 2)
-        .expect("sweep");
-    assert_eq!(rows.len(), keys.len(), "a foreign mark should start over");
+    /// A metadata family, which declares no key width
+    const META_CF: &str = "tape";
+
+    // The split store routes its wider reads to the half that holds the family.
+    #[test]
+    fn split_routes() {
+        let dir = TempDir::new().expect("dir");
+        let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS)
+            .expect("open");
+
+        let bulk = fill(&store, BULK_CF, bulk_key);
+        agrees(&store, BULK_CF, &bulk, &7u16.to_be_bytes());
+
+        let meta = fill(&store, META_CF, meta_key);
+        agrees(&store, META_CF, &meta, b"tape-");
+    }
+
+    // An awaited write lands where the blocking one does.
+    #[test]
+    fn awaited_writes() {
+        let dir = TempDir::new().expect("dir");
+        let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS)
+            .expect("open");
+
+        let key = bulk_key(1);
+        block_on(store.put_wait(BULK_CF, &key, &payload(1))).expect("put_wait");
+        assert_eq!(
+            store.get(BULK_CF, &key).expect("get").map(Value::into_vec),
+            Some(payload(1)),
+        );
+
+        let mut batch = store::WriteBatch::new();
+        let second = bulk_key(2);
+        batch.put(BULK_CF, &second, &payload(2));
+        batch.put(META_CF, &meta_key(2), &payload(2));
+        block_on(store.write_batch_wait(batch)).expect("write_batch_wait");
+        assert_eq!(
+            store.get(BULK_CF, &second).expect("get").map(Value::into_vec),
+            Some(payload(2)),
+        );
+        assert_eq!(
+            store.get(META_CF, &meta_key(2)).expect("get").map(Value::into_vec),
+            Some(payload(2)),
+        );
+    }
+
+    // A mark from nowhere starts the sweep over rather than answering nonsense.
+    #[test]
+    fn foreign_mark() {
+        let dir = TempDir::new().expect("dir");
+        let store = MetaBulkStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS)
+            .expect("open");
+        let keys = fill(&store, BULK_CF, bulk_key);
+
+        let (rows, _) = store
+            .sweep(BULK_CF, Some(b"not a mark this store minted"), RECORDS * 2)
+            .expect("sweep");
+        assert_eq!(rows.len(), keys.len(), "a foreign mark should start over");
+    }
 }

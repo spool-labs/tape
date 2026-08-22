@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Bytes an engine writes, and holds, for what the `track_data` workload hands it
 //!
 //! `wchar` and `write_bytes` are the write counters. Beside them `live`, the

@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Delete-path microbenchmark: one native range tombstone
 //! (`delete_all_slices_for_spool` → `Store::delete_range`) vs the old
 //! scan-and-delete-every-key loop, swept by slice count. Measures the
@@ -9,7 +11,7 @@
 //! RocksDB metadata beside a reel holding the bulk families.
 //!
 //! Ignored by default. Run with:
-//!   cargo test -p tape-store --test slice_delete_bench --release -- --ignored --nocapture
+//!   cargo test -p tape-store --features rocks --test slice_delete_bench --release -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 

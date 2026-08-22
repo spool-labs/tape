@@ -1,6 +1,6 @@
 //! Atomic operations example using operation traits
 //!
-//! Run with: cargo run --example atomic_operations
+//! Run with: cargo run -p tape-store --features rocks --example atomic_operations
 
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{SpoolState, SpoolStatus};

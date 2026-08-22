@@ -1,6 +1,6 @@
 //! Basic usage example for TapeStore
 //!
-//! Run with: cargo run --example basic_usage
+//! Run with: cargo run -p tape-store --features rocks --example basic_usage
 
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{SpoolState, SpoolStatus};

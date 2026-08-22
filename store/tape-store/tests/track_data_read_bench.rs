@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Point reads over `track_data`, one at a time against asked in batches
 //!
 //! Warm throughout: every row is written, settled and read back in one process,

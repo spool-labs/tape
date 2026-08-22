@@ -16,12 +16,11 @@ tracing = "0.1"
 [features]
 # The RocksDB arm the reel is measured against, which only a bench opens.
 # A node that wants RocksDB builds tape-node with its own `rocks` feature and
-# never touches this one.
+# never touches this one. Tests opt in with
+# `cargo test -p reel-store --features rocks`.
 rocks = ["dep:store-rocks", "tape-store/rocks"]
 
 [dev-dependencies]
-# The arm is bench-scoped, so the benches ask for it and a node never does.
-reel-store = { path = ".", features = ["rocks"] }
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 tape-core.workspace = true
 tape-crypto.workspace = true

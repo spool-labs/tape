@@ -226,29 +226,6 @@ fn ratio(numerator: u64, denominator: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{SliceOps, TrackOps};
-    use crate::TapeStore;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
-    use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
-    use tape_crypto::address::Address;
-    use tape_crypto::Hash;
-    use tempfile::TempDir;
-
-    // slice payload above the 256 KiB BlobDB threshold, so it lands in blob files
-    const SLICE_SIZE: usize = 512 * 1024;
-
-    fn certified_track(tape: Address) -> CompressedTrack {
-        CompressedTrack {
-            tape,
-            key: Hash::new_unique(),
-            track_number: TrackNumber(0),
-            kind: TrackKind::Coded as u64,
-            state: TrackState::Certified as u64,
-            size: StorageUnits::from_bytes(SLICE_SIZE as u64),
-            group: GroupIndex(0),
-            value_hash: Hash::new_unique(),
-        }
-    }
 
     #[test]
     fn classify_by_column_family() {
@@ -259,42 +236,68 @@ mod tests {
         assert_eq!(classify(TapeCol::CF_NAME), ColumnClass::Metadata);
     }
 
-    // a split store attributes slice payload to the bulk volume and tracks to
-    // metadata, and reports both physical volumes
-    #[test]
-    fn collect_splits_metadata_from_slices() {
-        let dir = TempDir::new().unwrap();
-        let store = TapeStore::open_primary(dir.path().join("db")).unwrap();
+    #[cfg(feature = "rocks")]
+    mod rocks {
+        use super::*;
+        use crate::ops::{SliceOps, TrackOps};
+        use crate::TapeStore;
+        use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+        use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
+        use tape_crypto::address::Address;
+        use tape_crypto::Hash;
+        use tempfile::TempDir;
 
-        let spool = SpoolIndex(0);
-        for _ in 0..4 {
-            let address = Address::new_unique();
-            store.put_track(address, certified_track(Address::new_unique())).unwrap();
-            store.put_slice(spool, address, vec![7u8; SLICE_SIZE]).unwrap();
+        // Above the 256 KiB BlobDB threshold, so payload lands in blob files.
+        const SLICE_SIZE: usize = 512 * 1024;
+
+        fn certified_track(tape: Address) -> CompressedTrack {
+            CompressedTrack {
+                tape,
+                key: Hash::new_unique(),
+                track_number: TrackNumber(0),
+                kind: TrackKind::Coded as u64,
+                state: TrackState::Certified as u64,
+                size: StorageUnits::from_bytes(SLICE_SIZE as u64),
+                group: GroupIndex(0),
+                value_hash: Hash::new_unique(),
+            }
         }
-        store.inner().inner().flush().unwrap();
 
-        let stats = collect(store.inner().inner()).unwrap();
+        // A split store attributes slice payload to the bulk volume and tracks
+        // to metadata, and reports both physical volumes.
+        #[test]
+        fn collect_splits_metadata_from_slices() {
+            let dir = TempDir::new().unwrap();
+            let store = TapeStore::open_primary(dir.path().join("db")).unwrap();
 
-        // Two volumes for a split store.
-        assert_eq!(stats.volumes.len(), 2);
+            let spool = SpoolIndex(0);
+            for _ in 0..4 {
+                let address = Address::new_unique();
+                store.put_track(address, certified_track(Address::new_unique())).unwrap();
+                store.put_slice(spool, address, vec![7u8; SLICE_SIZE]).unwrap();
+            }
+            store.inner().inner().flush().unwrap();
 
-        // The slice column family is bulk payload; the track column is metadata.
-        let slice = stats.columns.iter().find(|c| c.cf == SliceCol::CF_NAME).unwrap();
-        assert_eq!(slice.class, ColumnClass::Slice);
-        assert_eq!(slice.volume, Volume::Bulk);
-        assert!(slice.blob_bytes > 0, "slice payload should occupy blob files");
+            let stats = collect(store.inner().inner()).unwrap();
 
-        let track = stats.columns.iter().find(|c| c.cf == TrackCol::CF_NAME).unwrap();
-        assert_eq!(track.class, ColumnClass::Metadata);
-        assert_eq!(track.volume, Volume::Primary);
+            assert_eq!(stats.volumes.len(), 2);
 
-        // Counts come from the same column scan, not a second probe.
-        assert_eq!(stats.counts.slices, 4);
-        assert_eq!(stats.counts.tracks, 4);
+            let slice = stats.columns.iter().find(|c| c.cf == SliceCol::CF_NAME).unwrap();
+            assert_eq!(slice.class, ColumnClass::Slice);
+            assert_eq!(slice.volume, Volume::Bulk);
+            assert!(slice.blob_bytes > 0, "slice payload should occupy blob files");
 
-        assert!(stats.slice_bytes > 0);
-        assert!(stats.slice_bytes > stats.metadata_bytes);
-        assert!(stats.metadata_overhead() > 0.0);
+            let track = stats.columns.iter().find(|c| c.cf == TrackCol::CF_NAME).unwrap();
+            assert_eq!(track.class, ColumnClass::Metadata);
+            assert_eq!(track.volume, Volume::Primary);
+
+            // Counts come from the same column scan, not a second probe.
+            assert_eq!(stats.counts.slices, 4);
+            assert_eq!(stats.counts.tracks, 4);
+
+            assert!(stats.slice_bytes > 0);
+            assert!(stats.slice_bytes > stats.metadata_bytes);
+            assert!(stats.metadata_overhead() > 0.0);
+        }
     }
 }

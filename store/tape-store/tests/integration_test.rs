@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Integration tests for TapeStore with RocksDB backend
 
 use tape_core::system::{SpoolState, SpoolStatus};

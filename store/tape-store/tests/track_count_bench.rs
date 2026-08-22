@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Count-path microbenchmark for `count_tracks`: keys-only scan
 //! (`iter_keys_prefix`) vs the old value-reading scan (`iter_from(..).count()`)
 //! over the BlockBased `track` CF. Both the node's and gateway's `/v1/stats`
@@ -10,7 +12,7 @@
 //! if it did.
 //!
 //! Ignored by default. Run with:
-//!   cargo test -p tape-store --test track_count_bench --release -- --ignored --nocapture
+//!   cargo test -p tape-store --features rocks --test track_count_bench --release -- --ignored --nocapture
 
 use std::time::{Duration, Instant};
 

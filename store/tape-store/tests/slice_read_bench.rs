@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Keys-only scan against a value-reading scan over the `slice` column family
 //!
 //! What `count_slices_by_spool` and `iter_slice_keys_by_spool` do underneath, so

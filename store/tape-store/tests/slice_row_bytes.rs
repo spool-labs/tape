@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Bytes a slice costs an engine, per family, at the payload sizes the product holds
 //!
 //! Four figures per row. Logical is key plus payload, the only bytes the caller

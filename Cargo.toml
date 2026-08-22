@@ -71,7 +71,6 @@ default-members = [
   "lib/snapshot",
   "store/store",
   "store/store-memory",
-  "store/store-rocks",
   "store/reel-store",
   "store/tape-store",
   "lib/metrics",

@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! Does a bigger track cost more per byte to read back out of the store?
 //!
 //! A track of size T at Clay k=7 becomes 20 slices of about T/7. This sweeps the

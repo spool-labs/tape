@@ -4,6 +4,18 @@ version.workspace = true
 edition.workspace = true
 description = "Application-specific storage layer for distributed tape storage nodes"
 
+[[example]]
+name = "atomic_operations"
+required-features = ["rocks"]
+
+[[example]]
+name = "basic_usage"
+required-features = ["rocks"]
+
+[[example]]
+name = "read_replica"
+required-features = ["rocks"]
+
 [dependencies]
 tape-api = { workspace = true, features = ["wincode"] }
 tape-core = { workspace = true, features = ["wincode"] }
@@ -19,12 +31,10 @@ thiserror.workspace = true
 
 [dev-dependencies]
 bytemuck.workspace = true
-reel-store = { workspace = true, features = ["rocks"] }
-store-rocks.workspace = true
+reel-store.workspace = true
 tempfile = "3.10"
-# The rocks arm is a bench control, so the benches ask for it and nothing else does.
-tape-store = { path = ".", features = ["rocks"] }
 
 [features]
-# RocksDB constructors, for the bench arm the reel is measured against
-rocks = ["dep:store-rocks", "dep:rocksdb"]
+# RocksDB constructors and comparison tests. Opt in explicitly with
+# `cargo test -p tape-store --features rocks`.
+rocks = ["dep:store-rocks", "dep:rocksdb", "reel-store/rocks"]

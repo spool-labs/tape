@@ -1,8 +1,12 @@
+#![cfg(feature = "rocks")]
+
 //! The plumbing every tape bench runs through, exercised once per engine
 //!
 //! Not a measurement. This proves a `TapeStore` on the reel takes the same slice
 //! and track traffic the rocks arm does, so a reel row comes off a store that
 //! actually served the workload.
+//!
+//! Run with: `cargo test -p reel-store --features rocks --test arm_smoke`.
 
 use reel_store::{BenchArm, MetaBulkStore, ReelStore};
 use store_rocks::SplitStore;

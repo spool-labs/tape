@@ -1,6 +1,6 @@
 //! Read replica example demonstrating secondary database patterns
 //!
-//! Run with: cargo run --example read_replica
+//! Run with: cargo run -p tape-store --features rocks --example read_replica
 
 use std::sync::Arc;
 use std::thread;

@@ -1,3 +1,5 @@
+#![cfg(feature = "rocks")]
+
 //! What a store layout costs, over four of them
 //!
 //! One rocks instance holding everything, the split meta/bulk rocks layout, the
