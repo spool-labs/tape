@@ -21,6 +21,7 @@ async fn late_join_inner() {
         .node_count(INITIAL_NODES)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
+        .eviction(false)
         .build()
         .expect("build harness");
 

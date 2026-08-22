@@ -764,7 +764,12 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> ChallengeGrid {
     // A record only matters to an operator once it has turned into an action,
     // so the row says whether this node is already pushing to evict the peer.
-    let queued = context.eviction_queue.snapshot();
+    let queued: Vec<_> = context
+        .eviction_queue
+        .snapshot()
+        .into_iter()
+        .map(|(node, _)| node)
+        .collect();
     // Only the spools their owners still answer for. A record outlives a handoff,
     // and showing one against the peer that gave the spool up reads as a failure
     // on data it is no longer asked about.

@@ -5,4 +5,4 @@ pub mod queue;
 pub mod submit;
 pub mod vote;
 
-pub use queue::EvictionQueue;
+pub use queue::{EvictionQueue, Opened};

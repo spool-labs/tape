@@ -72,6 +72,7 @@ impl TestNode {
         bind_addr: SocketAddr,
         public_port: u16,
         stop_timeout: Duration,
+        eviction: bool,
     ) -> Result<Self> {
         let keypair = Keypair::new();
         let bls_keypair = BlsPrivateKey::from_random();
@@ -81,7 +82,7 @@ impl TestNode {
         };
         let name = format!("sim-node-{id}");
         let public_host = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let app_config = test_app_config(bind_addr)?;
+        let app_config = test_app_config(bind_addr, eviction)?;
 
         Ok(Self {
             id,
@@ -265,8 +266,9 @@ impl TestNode {
     }
 }
 
-fn test_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
+fn test_app_config(bind_addr: SocketAddr, eviction: bool) -> Result<NodeConfig> {
     let mut config = NodeConfig::default();
+    config.eviction.enabled = eviction;
     config.node.node_keypair = PathBuf::from("/dev/null");
     config.node.bls_keypair = PathBuf::from("/dev/null");
     config.solana.rpc = vec!["http://127.0.0.1:8899".into()];
