@@ -325,10 +325,6 @@ impl SlicePayload {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesRequest {
     pub spool_index: SpoolIndex,
-    /// Where the last page left off, or nothing to start from the beginning.
-    ///
-    /// Opaque: the server mints it and the client only hands it back. A mark
-    /// this server did not mint restarts the scan.
     pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }
@@ -337,10 +333,6 @@ pub struct SyncSlicesRequest {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesResponse {
     pub entries: Vec<SyncSliceEntry>,
-    /// Where to resume, or nothing when the scan is done.
-    ///
-    /// A page boundary rather than a row, so a client resuming may be handed
-    /// slices it already holds. It skips those rather than rewriting them.
     pub next_cursor: Option<Vec<u8>>,
 }
 
