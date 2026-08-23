@@ -24,7 +24,7 @@ use tape_observe_api::{
 };
 use tape_protocol::Api;
 
-use super::board;
+use super::{bandwidth, board};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
@@ -294,6 +294,10 @@ where
             select! {
                 _ = self.cancel.cancelled() => return Ok(()),
                 _ = ticker.tick() => {
+                    // The minute history is what a dashboard opens on, so it is
+                    // kept whether or not anyone is watching now.
+                    bandwidth::sample();
+
                     // An idle node does no work here. The dropped baseline means
                     // the first tick after a connect establishes it.
                     // Sampling continues unwatched only as long as the backfill

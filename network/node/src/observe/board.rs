@@ -798,6 +798,7 @@ where
             evicted: m.cache_evicted_total.get(),
         },
         spool,
+        bandwidth: super::bandwidth::history(),
         last_epoch: super::last_epoch(),
         current_epoch: current_epoch.clone(),
         lifetime: super::epoch::lifetime_including(&current_epoch),
@@ -961,6 +962,7 @@ mod tests {
 
     use super::*;
     use crate::harness::{NodeHarness, TestContext};
+    use crate::observe::bandwidth;
 
     async fn test_context() -> TestContext {
         NodeHarness::builder()
@@ -1032,6 +1034,21 @@ mod tests {
             .expect("local node stats");
         assert!(local.repair_bytes >= 4_096);
         assert!(local.upload_bytes >= 512);
+    }
+
+    // the board carries the node's own minutes, so a dashboard opens on the
+    // hour behind it rather than on the window it has watched
+    #[tokio::test]
+    async fn bandwidth_travels() {
+        let context = test_context().await;
+        bandwidth::sample();
+
+        context.metrics.add_uploaded(4_096);
+        bandwidth::sample();
+
+        let board = build(&context);
+        let uploaded: u64 = board.bandwidth.iter().map(|minute| minute.upload).sum();
+        assert!(uploaded >= 4_096);
     }
 
     // a peer reachable only over public stats still charts every transfer path

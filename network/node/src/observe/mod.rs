@@ -4,6 +4,7 @@ pub mod stream;
 
 mod aggregator;
 mod balance;
+mod bandwidth;
 mod cache;
 mod collectors;
 mod epoch;

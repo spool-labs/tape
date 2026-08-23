@@ -790,6 +790,24 @@ pub struct LastEpoch {
     pub synced_groups: u64,
 }
 
+/// Minutes of transfer history a board carries.
+pub const BANDWIDTH_MINUTES: usize = 60;
+
+/// Bytes moved on each transfer path during one wall-clock minute
+///
+/// The counters a board carries are cumulative, so a dashboard can only chart
+/// what it has watched. This is the node's own reading of the minutes before
+/// that, oldest first and contiguous, with the last one still filling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct BandwidthMinute {
+    /// Unix minute the bucket covers
+    pub minute: u64,
+    pub sync: u64,
+    pub repair: u64,
+    pub recover: u64,
+    pub upload: u64,
+}
+
 /// Everything one node reports for its board in a single poll.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Board {
@@ -815,6 +833,8 @@ pub struct Board {
     pub decode: DecodeStats,
     pub cache: CacheStats,
     pub spool: Vec<SpoolStat>,
+    #[serde(default)]
+    pub bandwidth: Vec<BandwidthMinute>,
     pub last_epoch: LastEpoch,
     #[serde(default)]
     pub current_epoch: LastEpoch,
