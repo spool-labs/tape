@@ -42,6 +42,10 @@ pub const TICK_PERIOD_MS: u64 = 250;
 /// How often the node repeats the full board; faster movers ride the tick
 pub const BOARD_PERIOD_MS: u64 = 5_000;
 
+/// How often the node repeats the topology; peer stats ride in it, and a
+/// change in committee shape resends it sooner
+pub const TOPOLOGY_PERIOD_MS: u64 = 10_000;
+
 /// How much recent history a connecting client is sent, and how coarsely
 pub const BACKFILL_SPAN_MS: u64 = 90_000;
 pub const BACKFILL_STEP_MS: u64 = 1_000;

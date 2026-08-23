@@ -20,6 +20,7 @@ use tape_metrics::prometheus::proto::MetricFamily;
 use tape_observe_api::{
     Counters, Gauges, Hello, Tick, BACKFILL_SPAN_MS, BACKFILL_STEP_MS, BOARD_PERIOD_MS,
     EVENT_BACKFILL, EVENT_BOARD, EVENT_HELLO, EVENT_TICK, EVENT_TOPOLOGY, SPOOL_OPS,
+    TOPOLOGY_PERIOD_MS,
     STREAM_PROTOCOL, TICK_PERIOD_MS,
 };
 use tape_protocol::Api;
@@ -285,6 +286,7 @@ where
         // differenced against.
         let mut history: std::collections::VecDeque<Sample> = std::collections::VecDeque::new();
         let mut since_board = Duration::ZERO;
+        let mut since_topology = Duration::ZERO;
         let mut idle = Duration::ZERO;
         // epoch and committee size are what actually move topology, and both
         // are in memory; the full build is far too expensive to run per board
@@ -350,7 +352,9 @@ where
                         if let Some(frame) = Frame::new(EVENT_BOARD, &board::build(&self.context)) {
                             hub.publish(frame);
                         }
-                        // Topology moves at an epoch boundary, so it goes on change
+                        // The shape moves at an epoch boundary, but the peer
+                        // stats inside the frame move with every aggregator
+                        // probe, so the topology also repeats on its own clock.
                         let state = self.context.state();
                         let shape = (
                             state.epoch().0,
@@ -358,8 +362,12 @@ where
                             state.current.groups.len(),
                         );
                         drop(state);
-                        if last_shape != Some(shape) {
+                        since_topology += Duration::from_millis(BOARD_PERIOD_MS);
+                        if last_shape != Some(shape)
+                            || since_topology >= Duration::from_millis(TOPOLOGY_PERIOD_MS)
+                        {
                             last_shape = Some(shape);
+                            since_topology = Duration::ZERO;
                             if let Some(frame) =
                                 Frame::new(EVENT_TOPOLOGY, &board::build_network(&self.context))
                             {
