@@ -125,6 +125,8 @@ pub struct NodeStats {
     #[serde(default)]
     pub store_disk_bytes: u64,
     #[serde(default)]
+    pub store_data_bytes: u64,
+    #[serde(default)]
     pub free_disk_bytes: Option<u64>,
     #[serde(default)]
     pub disk_volumes: Vec<VolumeStats>,
@@ -176,6 +178,7 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             slices_stored: s.slices_stored,
             slice_payload_bytes: s.slice_payload_bytes,
             store_disk_bytes: s.store_disk_bytes,
+            store_data_bytes: s.store_data_bytes,
             free_disk_bytes: s.free_disk_bytes.unwrap_or(0),
             current_epoch: s.current_epoch,
             ingest_state: s.ingest_state.clone(),

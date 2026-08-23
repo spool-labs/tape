@@ -61,6 +61,11 @@ where
     if context.config.metrics.enabled {
         tape_node::observe::mark_gateway_boards();
         tape_node::observe::register_block_channels(&senders, &store_tx);
+
+        supervisor.spawn(
+            ServiceName::ObserveStream,
+            tape_node::observe::StreamPublisher::new(context.clone(), cancel.clone()).run(),
+        );
     }
 
     supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));

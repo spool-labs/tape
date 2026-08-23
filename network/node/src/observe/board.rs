@@ -121,6 +121,19 @@ pub fn family_counter(families: &[MetricFamily], name: &str) -> u64 {
     families.iter().filter(|family| family.get_name() == name).map(counter_sum).sum()
 }
 
+/// Sum of one named counter family at full precision
+///
+/// The integer sum truncates, which turns a sub-second CPU delta into zero.
+#[allow(deprecated)] // prometheus proto getters are deprecated but stable
+pub fn family_counter_f64(families: &[MetricFamily], name: &str) -> f64 {
+    families
+        .iter()
+        .filter(|family| family.get_name() == name)
+        .flat_map(|family| family.get_metric())
+        .map(|metric| metric.get_counter().value())
+        .sum()
+}
+
 /// Largest gauge of one named family, zero when absent.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
 pub fn family_gauge(families: &[MetricFamily], name: &str) -> u64 {
@@ -136,6 +149,7 @@ fn request_stats(
     status_label: &str,
     route_label: Option<&str>,
     bytes_family: &str,
+    request_bytes_family: &str,
 ) -> HttpStats {
     let mut les: Vec<f64> = Vec::new();
     let mut sums: Vec<u64> = Vec::new();
@@ -170,23 +184,76 @@ fn request_stats(
         by_route: by_route.into_iter().map(|(label, value)| Labeled { label, value }).collect(),
         total,
         response_bytes: family_counter(families, bytes_family),
+        request_bytes: family_counter(families, request_bytes_family),
     }
 }
 
+/// Serving totals only, skipping the per-route breakdown a tick never reads
+pub(super) fn serving_totals(families: &[MetricFamily]) -> HttpStats {
+    request_stats(
+        families,
+        "tape_http_request_duration_seconds",
+        "status_class",
+        None,
+        "tape_http_response_bytes_total",
+        "tape_http_request_bytes_total",
+    )
+}
+
+/// Peer-client totals, already free of a route breakdown
+pub(super) fn peer_totals(families: &[MetricFamily]) -> HttpStats {
+    peer_stats(families)
+}
+
+/// Chain counters only, skipping the latency histograms a tick never reads
+pub(super) fn chain_totals(families: &[MetricFamily]) -> ChainStats {
+    let mut c = ChainStats::default();
+    for family in families {
+        match family.get_name() {
+            "rpc_requests_total" => c.rpc_total += counter_sum(family),
+            "rpc_errors_total" => {
+                let (rpc, tx) = split_rpc_errors(family);
+                c.rpc_errors += rpc;
+                c.tx_errors += tx;
+            }
+            "tape_client_transactions_total" => c.tx_total += counter_sum(family),
+            _ => {}
+        }
+    }
+    c
+}
+
+/// Store totals only, skipping the per-operation breakdown a tick never reads
+pub(super) fn store_io_totals(families: &[MetricFamily]) -> (u64, u64, u64) {
+    let mut ops = 0;
+    let mut read = 0;
+    let mut written = 0;
+    for family in families {
+        match family.get_name() {
+            "tape_store_operations_total" => ops += counter_sum(family),
+            "tape_store_bytes_read_total" => read += counter_sum(family),
+            "tape_store_bytes_written_total" => written += counter_sum(family),
+            _ => {}
+        }
+    }
+    (ops, read, written)
+}
+
 /// This node's own serving stats.
-fn http_stats(families: &[MetricFamily]) -> HttpStats {
+pub(super) fn http_stats(families: &[MetricFamily]) -> HttpStats {
     request_stats(
         families,
         "tape_http_request_duration_seconds",
         "status_class",
         Some("route"),
         "tape_http_response_bytes_total",
+        "tape_http_request_bytes_total",
     )
 }
 
 /// Aggregate Solana RPC and transaction-submission metrics into chain health.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-fn chain_stats(families: &[MetricFamily]) -> ChainStats {
+pub(super) fn chain_stats(families: &[MetricFamily]) -> ChainStats {
     let mut c = ChainStats::default();
     for family in families {
         match family.get_name() {
@@ -221,7 +288,7 @@ fn resource_extras(families: &[MetricFamily]) -> (f64, u64, Vec<Labeled>) {
     for fam in families {
         match fam.get_name() {
             "process_cpu_seconds_total" => {
-                cpu = fam.get_metric().iter().map(|m| m.get_counter().value()).sum();
+                cpu = family_counter_f64(std::slice::from_ref(fam), "process_cpu_seconds_total");
             }
             "process_open_fds" => {
                 fds = fam.get_metric().iter().map(|m| m.get_gauge().value() as u64).sum();
@@ -246,25 +313,27 @@ fn resource_extras(families: &[MetricFamily]) -> (f64, u64, Vec<Labeled>) {
 
 /// Aggregate the object-decode duration histogram into cumulative buckets and a
 /// total, for decode-latency quantiles.
-fn decode_latency(families: &[MetricFamily]) -> (Vec<Bucket>, u64) {
+pub(super) fn decode_latency(families: &[MetricFamily]) -> (Vec<Bucket>, u64) {
     histogram_snapshot(families, "tape_gw_decode_duration_seconds")
 }
 
 /// This node's outbound calls to other nodes, as inter-node latency.
-fn peer_stats(families: &[MetricFamily]) -> HttpStats {
+pub(super) fn peer_stats(families: &[MetricFamily]) -> HttpStats {
     request_stats(
         families,
         "peer_client_request_duration_seconds",
         "status",
         None,
         "peer_client_bytes_received_total",
+        // what this node pushed to peers, which is outbound
+        "peer_client_bytes_sent_total",
     )
 }
 
 /// Aggregate the store metrics from the gathered registry into store-engine
 /// I/O figures.
 #[allow(deprecated)] // prometheus proto getters are deprecated but stable
-fn store_io_stats(families: &[MetricFamily]) -> StoreIo {
+pub(super) fn store_io_stats(families: &[MetricFamily]) -> StoreIo {
     let mut ops: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     let mut io = StoreIo::default();
     let (mut get_sum, mut get_cnt, mut put_sum, mut put_cnt) = (0.0_f64, 0u64, 0.0_f64, 0u64);
@@ -386,6 +455,7 @@ where
         slices_stored,
         slice_payload_bytes,
         store_disk_bytes,
+        store_data_bytes: backend.live_data_size_bytes().ok().flatten().unwrap_or(0),
         free_disk_bytes: backend.available_disk_bytes().ok().flatten().unwrap_or(0),
         current_epoch: context.state().epoch().0,
         ingest_state: context.ingest_state().label().to_string(),
@@ -448,6 +518,7 @@ pub fn lite_board(address: String, stats: &NodeStats) -> Board {
             disk_free_bytes: stats.free_disk_bytes,
             owned_spools: stats.owned_spools,
             volumes: Vec::new(),
+            data_bytes: stats.store_data_bytes,
         },
         contents: StorageContents {
             tracks: stats.tracks_stored,
@@ -664,8 +735,14 @@ where
             target_slot: bootstrap.target_slot,
         },
         storage: StorageInfo {
-            disk_used_bytes: backend.live_data_size_bytes().ok().flatten().unwrap_or(0),
+            disk_used_bytes: backend
+                .disk_volumes()
+                .unwrap_or_default()
+                .iter()
+                .map(|v| v.used_bytes)
+                .sum(),
             disk_free_bytes: backend.available_disk_bytes().ok().flatten().unwrap_or(0),
+            data_bytes: backend.live_data_size_bytes().ok().flatten().unwrap_or(0),
             owned_spools: owned_spool_count,
             volumes: backend
                 .disk_volumes()

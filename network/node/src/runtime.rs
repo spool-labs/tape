@@ -300,6 +300,11 @@ where
             ServiceName::BalanceMonitor,
             BalanceMonitor::new(context.clone(), cancel.clone()).run(),
         );
+
+        supervisor.spawn(
+            ServiceName::ObserveStream,
+            crate::observe::StreamPublisher::new(context.clone(), cancel.clone()).run(),
+        );
     }
 
     #[cfg(feature = "metrics")]
