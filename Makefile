@@ -187,6 +187,7 @@ docker build -q --platform $(DOCKER_PLATFORM) -t tape-linux-builder -f deploy/Do
 docker run --rm --platform $(DOCKER_PLATFORM) \
 	-v $(CURDIR):/src -w /src/$(1) \
 	-v tape-cargo-registry:/usr/local/cargo/registry \
+	-v $(HOME)/.cargo/git:/usr/local/cargo/git \
 	-e CARGO_TARGET_DIR=/src/$(1)/target/linux \
 	-e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
 	-e CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
