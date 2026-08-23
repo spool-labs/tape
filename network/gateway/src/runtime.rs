@@ -23,7 +23,7 @@ use tape_protocol::Api;
 use tape_store::ops::AuditOps;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
+use tracing::{info, warn, Instrument};
 
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
@@ -170,7 +170,14 @@ where
         drain_block_channel(snapshot, cancel.clone(), ChannelName::SnapshotManager),
     );
 
-    supervisor.supervise().await
+    let outcome = supervisor.supervise().await;
+    // The gateway writes the same store a node does, and the store settles its
+    // tails only when something closes it after every writer has stopped.
+    info!("closing store");
+    if let Err(error) = context.store.inner().inner().close() {
+        warn!(error = %error, "store close failed on shutdown");
+    }
+    outcome
 }
 
 pub async fn run_with_context<Db, Cluster, Blockchain>(

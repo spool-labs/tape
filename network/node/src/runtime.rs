@@ -480,12 +480,23 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start_slot, http_server) = bootstrap_with_status_listener(
+    let (start_slot, http_server) = match bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
     )
-    .await?;
+    .await
+    {
+        Ok(ready) => ready,
+        Err(error) => {
+            // Bootstrap already replayed blocks into the store; the close is
+            // what settles them before the process reports the failure.
+            if let Err(close_error) = context.store.inner().inner().close() {
+                warn!(error = %close_error, "store close failed after bootstrap error");
+            }
+            return Err(error);
+        }
+    };
     supervise_with_context(context, config, start_slot, cancel, http_server).await
 }
 
@@ -500,12 +511,23 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start_slot, http_server) = bootstrap_with_status_listener(
+    let (start_slot, http_server) = match bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
     )
-    .await?;
+    .await
+    {
+        Ok(ready) => ready,
+        Err(error) => {
+            // Bootstrap already replayed blocks into the store; the close is
+            // what settles them before the process reports the failure.
+            if let Err(close_error) = context.store.inner().inner().close() {
+                warn!(error = %close_error, "store close failed after bootstrap error");
+            }
+            return Err(error);
+        }
+    };
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();
     let task_cancel = cancel.clone();
