@@ -39,9 +39,8 @@ pub const EVENT_BACKFILL: &str = "backfill";
 /// How often the node samples counters into a tick
 pub const TICK_PERIOD_MS: u64 = 250;
 
-/// How often the node repeats the full board. The panels render from the board,
-/// so this is the rate the dashboard moves at; ticks only feed the series on top.
-pub const BOARD_PERIOD_MS: u64 = 1_000;
+/// How often the node repeats the full board; faster movers ride the tick
+pub const BOARD_PERIOD_MS: u64 = 5_000;
 
 /// How much recent history a connecting client is sent, and how coarsely
 pub const BACKFILL_SPAN_MS: u64 = 90_000;
