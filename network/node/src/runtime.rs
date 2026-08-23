@@ -448,6 +448,7 @@ where
         ).run(),
     );
 
+    let store = Arc::clone(&context.store);
     supervisor.spawn(
         ServiceName::GcManager,
         GcManager::new(
@@ -457,7 +458,15 @@ where
         ).run(),
     );
 
-    supervisor.supervise().await
+    let outcome = supervisor.supervise().await;
+    // The store seals its tails only when something closes it. A process exit
+    // never runs the drop, and an unsealed tail reads as a crash to the next
+    // open, so the close happens here, after every writer has stopped.
+    info!("closing store");
+    if let Err(error) = store.inner().inner().close() {
+        warn!(error = %error, "store close failed on shutdown");
+    }
+    outcome
 }
 
 pub async fn run_with_context<Db, Cluster, Blockchain>(

@@ -772,4 +772,8 @@ impl Store for ReelStore {
             .map(|volumes| volumes.into_iter().map(disk_volume).collect())
             .map_err(crossed)
     }
+
+    fn close(&self) -> StoreResult<()> {
+        self.inner.close().map_err(engine)
+    }
 }
