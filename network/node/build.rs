@@ -13,6 +13,9 @@ fn main() {
     }
 
     let sha = run_git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    // Refresh the stat cache first: on a bind-mounted tree (the linux builder)
+    // every entry is stat-dirty and diff-index would report a clean tree dirty.
+    let _ = Command::new("git").args(["update-index", "-q", "--refresh"]).status();
     let dirty = match Command::new("git")
         .args(["diff-index", "--quiet", "HEAD", "--"])
         .status()
