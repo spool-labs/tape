@@ -962,6 +962,16 @@ mod tests {
     use super::*;
     use crate::harness::{NodeHarness, TestContext};
 
+    async fn test_context() -> TestContext {
+        NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0)
+    }
+
     // the chain's counter never reaches replayed state, so the board counts the
     // groups that crossed quorum from the bitmaps that do
     #[tokio::test]
@@ -988,26 +998,6 @@ mod tests {
 
         state.current.groups[0].synced.set(7);
         assert_eq!(synced_groups(&state), 1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tape_observe_api::{
-        NodeStats, SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGE_FETCHED,
-    };
-
-    use super::{build, build_network, lite_board};
-    use crate::harness::{NodeHarness, TestContext};
-
-    async fn test_context() -> TestContext {
-        NodeHarness::builder()
-            .nodes(25)
-            .no_prev_snapshot_tape()
-            .build()
-            .await
-            .expect("build harness")
-            .ctx_for(0)
     }
 
     // the network view carries the clock the charts bucket by
