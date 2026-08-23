@@ -533,6 +533,35 @@ fn direction(direction: Direction) -> reel_core::Direction {
 ///
 /// Consuming rather than borrowing, so a staged payload moves into the reel's
 /// batch rather than being copied into it.
+/// Bytes the found values weigh, for the read counters
+fn values_len(result: &StoreResult<Vec<Option<Value>>>) -> usize {
+    match result {
+        Ok(values) => values
+            .iter()
+            .flatten()
+            .map(|value| value.len())
+            .sum(),
+        Err(_) => 0,
+    }
+}
+
+/// The batch's payload bytes and the cf that stands for it in the counters,
+/// the last one seen, the way the rocks backend reports a batch
+fn batch_weight(staged: &WriteBatch) -> (String, usize) {
+    let mut cf: Option<&str> = None;
+    let mut written = 0usize;
+    for op in staged.iter() {
+        match op {
+            store::BatchOp::Put { cf: name, key, value } => {
+                cf = Some(name);
+                written += key.len() + value.len();
+            }
+            store::BatchOp::Delete { cf: name, .. } => cf = Some(name),
+        }
+    }
+    (cf.unwrap_or("default").to_string(), written)
+}
+
 fn batch(batch: WriteBatch) -> reel_core::WriteBatch {
     let mut crossed = reel_core::WriteBatch::new();
     for op in batch {
@@ -590,19 +619,34 @@ impl Store for ReelStore {
     }
 
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
-        EngineStoreTrait::get_many(&self.inner, cf, keys).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_many(&self.inner, cf, keys).map_err(crossed);
+        let read = values_len(&result);
+        record(cf, "get_many", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     async fn get_wait(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get_wait(&self.inner, cf, key)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_wait(&self.inner, cf, key)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        let read = match &result {
+            Ok(Some(value)) => value.len(),
+            _ => 0,
+        };
+        record(cf, "get", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
-        EngineStoreTrait::get_many_wait(&self.inner, cf, keys)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_many_wait(&self.inner, cf, keys)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        let read = values_len(&result);
+        record(cf, "get_many", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     fn get_range(
@@ -612,7 +656,15 @@ impl Store for ReelStore {
         offset: u64,
         len: usize,
     ) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get_range(&self.inner, cf, key, offset, len).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result =
+            EngineStoreTrait::get_range(&self.inner, cf, key, offset, len).map_err(crossed);
+        let read = match &result {
+            Ok(Some(value)) => value.len(),
+            _ => 0,
+        };
+        record(cf, "get_range", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     async fn get_range_wait(
@@ -622,9 +674,16 @@ impl Store for ReelStore {
         offset: u64,
         len: usize,
     ) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        let read = match &result {
+            Ok(Some(value)) => value.len(),
+            _ => 0,
+        };
+        record(cf, "get_range", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
@@ -635,9 +694,12 @@ impl Store for ReelStore {
     }
 
     async fn put_wait(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::put_wait(&self.inner, cf, key, value)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::put_wait(&self.inner, cf, key, value)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        record(cf, "put", result.is_ok(), timer.elapsed().as_secs_f64(), 0, value.len());
+        result
     }
 
     fn delete(&self, cf: &str, key: &[u8]) -> StoreResult<()> {
@@ -652,17 +714,29 @@ impl Store for ReelStore {
     }
 
     fn write_batch(&self, staged: WriteBatch) -> StoreResult<()> {
-        EngineStoreTrait::write_batch(&self.inner, batch(staged)).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let (cf, written) = batch_weight(&staged);
+        let result = EngineStoreTrait::write_batch(&self.inner, batch(staged)).map_err(crossed);
+        record(&cf, "write_batch", result.is_ok(), timer.elapsed().as_secs_f64(), 0, written);
+        result
     }
 
     async fn write_batch_wait(&self, staged: WriteBatch) -> StoreResult<()> {
-        EngineStoreTrait::write_batch_wait(&self.inner, batch(staged))
+        let timer = std::time::Instant::now();
+        let (cf, written) = batch_weight(&staged);
+        let result = EngineStoreTrait::write_batch_wait(&self.inner, batch(staged))
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        record(&cf, "write_batch", result.is_ok(), timer.elapsed().as_secs_f64(), 0, written);
+        result
     }
 
     fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::delete_range(&self.inner, cf, start, end).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result =
+            EngineStoreTrait::delete_range(&self.inner, cf, start, end).map_err(crossed);
+        record(cf, "delete_range", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
+        result
     }
 
     fn iter(&self, cf: &str) -> StoreResult<StoreIter<'_>> {
