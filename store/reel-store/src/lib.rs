@@ -85,18 +85,8 @@ impl ReelStore {
     ///
     /// The one entry point that is not bench scoped. Everything else in this
     /// crate opens with `bench_config`, which turns durability off.
-    pub fn open_node(
-        root: impl AsRef<Path>,
-        compaction_mbps: u64,
-        sync_bytes: u64,
-        backend: IoBackend,
-        reserve: Reserve,
-    ) -> StoreResult<ReelStore> {
-        ReelStore::open(
-            root,
-            node_config(compaction_mbps, sync_bytes, backend, reserve),
-            TAPE_COLUMNS,
-        )
+    pub fn open_node(root: impl AsRef<Path>, options: NodeStoreOptions) -> StoreResult<ReelStore> {
+        ReelStore::open(root, node_config(options), TAPE_COLUMNS)
     }
 
     /// Open a reel under this directory serving the given column families
@@ -238,6 +228,36 @@ pub enum Reserve {
     Small,
 }
 
+/// The knobs a node opens its volume with, straight off the node's store config
+#[derive(Debug, Clone, Copy)]
+pub struct NodeStoreOptions {
+    /// Compaction rate cap in MB/s. 0 lets the engine pace itself.
+    pub compaction_mbps: u64,
+    /// Bytes written between durability syncs. 0 syncs on every put.
+    pub sync_bytes: u64,
+    /// File backend the volume opens with.
+    pub backend: IoBackend,
+    /// The reservation preset the rest of the knobs start from.
+    pub reserve: Reserve,
+    /// Bytes one segment spans. 0 keeps the preset's size.
+    pub segment_bytes: u64,
+    /// How a segment claims its space. Unset keeps the preset's choice.
+    pub preallocate: Option<Preallocate>,
+}
+
+impl Default for NodeStoreOptions {
+    fn default() -> Self {
+        NodeStoreOptions {
+            compaction_mbps: 0,
+            sync_bytes: DEFAULT_SYNC_BYTES,
+            backend: default_backend(),
+            reserve: Reserve::default(),
+            segment_bytes: 0,
+            preallocate: None,
+        }
+    }
+}
+
 /// Bytes a small volume seals a segment at
 const SMALL_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -249,18 +269,13 @@ const SMALL_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
 /// The bench config minus everything that only makes sense when a run is about
 /// to be thrown away: durability is a real policy rather than `Never`, and the
 /// segment is the shipped size.
-pub fn node_config(
-    compaction_mbps: u64,
-    sync_bytes: u64,
-    backend: IoBackend,
-    reserve: Reserve,
-) -> ReelConfig {
+pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
     let config = ReelConfig {
-        sync: match sync_bytes {
+        sync: match options.sync_bytes {
             0 => SyncPolicy::EveryPut,
             bytes => SyncPolicy::Bytes(ByteCount::from_bytes(bytes)),
         },
-        compact_mbps: match compaction_mbps {
+        compact_mbps: match options.compaction_mbps {
             0 => CompactRate::Auto,
             capped => CompactRate::Mbps(capped),
         },
@@ -269,13 +284,13 @@ pub fn node_config(
         // and a dead process where the door returns an error the node can act
         // on. The mapped path stays a bench and tooling knob.
         map_above: None,
-        point_reads: probe_for(backend),
-        io_backend: backend,
+        point_reads: probe_for(options.backend),
+        io_backend: options.backend,
         shard_shapes: ShardShapes::Declared,
         ..ReelConfig::default()
     };
 
-    match reserve {
+    let mut config = match options.reserve {
         Reserve::Fleet => config,
         // Four knobs rather than one: dropping the tail count alone still
         // reserves a gibibyte, and shrinking the segment alone still pre-writes
@@ -287,7 +302,20 @@ pub fn node_config(
             active_tails: ThreadBudget::threads(1),
             ..config
         },
+    };
+
+    // The explicit knobs override whichever preset was picked. The chunk step
+    // rides down with a shrunken segment, since the engine refuses a step wider
+    // than the segment it feeds.
+    if options.segment_bytes != 0 {
+        config.segment_bytes = ByteCount::from_bytes(options.segment_bytes);
+        let chunk = config.alloc_chunk.to_bytes().min(options.segment_bytes);
+        config.alloc_chunk = ByteCount::from_bytes(chunk);
     }
+    if let Some(preallocate) = options.preallocate {
+        config.preallocate = preallocate;
+    }
+    config
 }
 
 /// Whether to ask the page cache before queueing a read, which only a ring wants
@@ -308,20 +336,18 @@ fn probe_for(backend: IoBackend) -> PointReads {
 /// crate sits above `tape-store` in the graph and needs the column declarations.
 pub fn open_node_store(
     root: impl AsRef<Path>,
-    compaction_mbps: u64,
-    sync_bytes: u64,
-    backend: IoBackend,
-    reserve: Reserve,
+    options: NodeStoreOptions,
 ) -> StoreResult<TapeStore<ReelStore>> {
     let root = root.as_ref();
     std::fs::create_dir_all(root)?;
-    let volume = ReelStore::open_node(root, compaction_mbps, sync_bytes, backend, reserve)?;
+    let requested = options.backend;
+    let volume = ReelStore::open_node(root, options)?;
 
     // The request beside the outcome, since a volume that asked for the ring can
     // be served by posix. The engine's own warning only fires on the downgrade,
     // so it cannot tell a ring from a log nobody configured.
     tracing::info!(
-        requested = ?backend,
+        requested = ?requested,
         serving = %volume.serving_backend(),
         root = %root.display(),
         "opened the node volume",
@@ -346,7 +372,7 @@ pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
             IndexResidency::Resident => ShardShapes::Declared,
             _ => ShardShapes::Tree,
         },
-        ..node_config(0, DEFAULT_SYNC_BYTES, default_backend(), Reserve::Fleet)
+        ..node_config(NodeStoreOptions::default())
     }
 }
 
@@ -370,7 +396,10 @@ pub fn open_node_store_read_only(
 /// Every knob the fleet ships, at a reservation the size of the run. The same
 /// shape an operator asks for with `store.reserve: small`.
 pub fn harness_config() -> ReelConfig {
-    node_config(0, DEFAULT_SYNC_BYTES, default_backend(), Reserve::Small)
+    node_config(NodeStoreOptions {
+        reserve: Reserve::Small,
+        ..NodeStoreOptions::default()
+    })
 }
 
 /// A tape store on a harness volume, every family the node addresses
