@@ -51,10 +51,10 @@ test: $(PROGRAMS)
 local:
 	solana-test-validator \
 		--limit-ledger-size $(LEDGER_SHREDS) \
-		--bpf-program G6AkymswvHccufk2aTM88XUFo4bPiViHV15WzBnC8FLc $(ROOT_TARGET_DEPLOY)/tapedrive.so \
-		--bpf-program GMy3JJFf6pTeVNUqPfAqGAzDU45JJHVQggDnAPdPsVJv $(ROOT_TARGET_DEPLOY)/token.so \
-		--bpf-program G9VgocgUd3CK3C421cU7NYKxMxUpjGztjMDM7BwWjSbN $(ROOT_TARGET_DEPLOY)/exchange.so \
-		--bpf-program EuaP4i2uasdzgAsqFKQ6xfHnPg4g4yFaWQ81twyx1AHj $(ROOT_TARGET_DEPLOY)/staking.so \
+		--bpf-program 4iG5wyAy1u4gCqHm5jYJNU1hsYw7PtQ1N6dC8rZQKmPB $(ROOT_TARGET_DEPLOY)/tapedrive.so \
+		--bpf-program 5TSWmdgb3r3R7c9Uu5HxgyePhmJa31FCEDBDjkvTmvJE $(ROOT_TARGET_DEPLOY)/token.so \
+		--bpf-program 82S3gYouhLQi2T9cJ9C9NcdYJuSy5MUCivicr2R8Mb4z $(ROOT_TARGET_DEPLOY)/exchange.so \
+		--bpf-program 7MrYjvGuuwjTc8mUUPfcUDbVxBEhnWCS2fFWrbsAV2ZK $(ROOT_TARGET_DEPLOY)/staking.so \
 		--bpf-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s $(ROOT_TEST_ELFS)/mpl_token_metadata.so
 
 .PHONY: reset-ledger
