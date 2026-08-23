@@ -5919,6 +5919,7 @@ dependencies = [
  "store-rocks",
  "tape-core",
  "tape-crypto",
+ "tape-metrics",
  "tape-store",
  "tempfile",
  "tracing",

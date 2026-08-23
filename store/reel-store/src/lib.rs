@@ -29,6 +29,8 @@ use reel::{
 use reel_core::Store as EngineStoreTrait;
 use serde::Deserialize;
 use tape_store::TapeStore;
+#[cfg(feature = "metrics")]
+use store::get_metrics;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
     StoreIter, StoreVolume, Value, WriteBatch,
@@ -518,9 +520,44 @@ fn rows(iter: reel_core::StoreIter<'_>) -> StoreIter<'_> {
     Box::new(iter.map(|(key, value)| (key, value.into_vec())))
 }
 
+
+/// Record one store operation against the shared counters, so the board's store
+/// panel reads the reel the same way it read rocks
+#[cfg(not(feature = "metrics"))]
+fn record(_: &str, _: &str, _: bool, _: f64, _: usize, _: usize) {}
+
+#[cfg(feature = "metrics")]
+fn record(cf: &str, op: &str, ok: bool, elapsed: f64, read: usize, written: usize) {
+    let Some(m) = get_metrics() else { return };
+    let status = if ok { "ok" } else { "error" };
+    m.operations_total.with_label_values(&[cf, op, status]).inc();
+    if read > 0 {
+        m.bytes_read_total.with_label_values(&[cf]).inc_by(read as u64);
+    }
+    if written > 0 {
+        m.bytes_written_total.with_label_values(&[cf]).inc_by(written as u64);
+    }
+    if !ok {
+        m.errors_total.with_label_values(&[cf, op, "engine"]).inc();
+    }
+    match op {
+        "get" => m.get_duration.with_label_values(&[cf, &ok.to_string()]).observe(elapsed),
+        "put" => m.put_duration.with_label_values(&[cf]).observe(elapsed),
+        "delete" => m.delete_duration.with_label_values(&[cf]).observe(elapsed),
+        _ => {}
+    }
+}
+
 impl Store for ReelStore {
     fn get(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get(&self.inner, cf, key).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get(&self.inner, cf, key).map_err(crossed);
+        let read = match &result {
+            Ok(Some(v)) => v.len(),
+            _ => 0,
+        };
+        record(cf, "get", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
@@ -562,7 +599,10 @@ impl Store for ReelStore {
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::put(&self.inner, cf, key, value).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::put(&self.inner, cf, key, value).map_err(crossed);
+        record(cf, "put", result.is_ok(), timer.elapsed().as_secs_f64(), 0, value.len());
+        result
     }
 
     async fn put_wait(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
@@ -572,7 +612,10 @@ impl Store for ReelStore {
     }
 
     fn delete(&self, cf: &str, key: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::delete(&self.inner, cf, key).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::delete(&self.inner, cf, key).map_err(crossed);
+        record(cf, "delete", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
+        result
     }
 
     fn contains(&self, cf: &str, key: &[u8]) -> StoreResult<bool> {
