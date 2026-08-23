@@ -734,30 +734,28 @@ where
             current_slot: bootstrap.current_slot,
             target_slot: bootstrap.target_slot,
         },
-        storage: StorageInfo {
-            disk_used_bytes: backend
-                .disk_volumes()
-                .unwrap_or_default()
-                .iter()
-                .map(|v| v.used_bytes)
-                .sum(),
-            disk_free_bytes: backend.available_disk_bytes().ok().flatten().unwrap_or(0),
-            data_bytes: backend.live_data_size_bytes().ok().flatten().unwrap_or(0),
-            owned_spools: owned_spool_count,
-            volumes: backend
-                .disk_volumes()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|v| StorageVolume {
-                    name: match v.volume {
-                        StoreVolume::Primary => "meta",
-                        StoreVolume::Bulk => "bulk",
-                    }
-                    .to_string(),
-                    used_bytes: v.used_bytes,
-                    free_bytes: v.free_bytes.unwrap_or(0),
-                })
-                .collect(),
+        storage: {
+            // One walk of the store root serves both readings; the sum and the
+            // per-volume rows come from the same call.
+            let volumes = backend.disk_volumes().unwrap_or_default();
+            StorageInfo {
+                disk_used_bytes: volumes.iter().map(|v| v.used_bytes).sum(),
+                disk_free_bytes: backend.available_disk_bytes().ok().flatten().unwrap_or(0),
+                data_bytes: backend.live_data_size_bytes().ok().flatten().unwrap_or(0),
+                owned_spools: owned_spool_count,
+                volumes: volumes
+                    .into_iter()
+                    .map(|v| StorageVolume {
+                        name: match v.volume {
+                            StoreVolume::Primary => "meta",
+                            StoreVolume::Bulk => "bulk",
+                        }
+                        .to_string(),
+                        used_bytes: v.used_bytes,
+                        free_bytes: v.free_bytes.unwrap_or(0),
+                    })
+                    .collect(),
+            }
         },
         contents: StorageContents {
             tapes: backend.key_count_estimate(TapeCol::CF_NAME).ok().flatten().unwrap_or(0),
