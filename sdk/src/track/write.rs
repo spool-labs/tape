@@ -355,7 +355,14 @@ pub struct ContentEtag {
 /// unchanged content before paying for a write. A caller that then writes can
 /// hand the returned plan back rather than encoding twice.
 pub async fn content_etag(data: &[u8]) -> Result<ContentEtag, TapedriveError> {
-    if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
+    content_etag_named(b"", data).await
+}
+
+/// `content_etag` for a named write: the object trailer shares the inline
+/// budget with the payload, so a name can push a payload that would be inline
+/// unnamed onto the coded path, and the etag must follow that decision.
+pub async fn content_etag_named(name: &[u8], data: &[u8]) -> Result<ContentEtag, TapedriveError> {
+    if inline_write_fits(name, data.len()) {
         return Ok(ContentEtag {
             etag: hash(data),
             plan: None,
@@ -1205,7 +1212,7 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         .timer(Operation::WriteTrack, Phase::Total)
         .bytes(data.len() as u64);
     let result = async {
-        if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
+        if inline_write_fits(name, data.len()) {
             let written = submit_raw(
                 client,
                 tape_key,
@@ -1366,7 +1373,7 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
     // Recover the expected identity the register path produces (via
     // BlobDataSlice::meta), plus the coded upload plan needed to finish. Inline
     // tracks certify at register, so a matching inline track is already complete.
-    let (expected_key, expected_value_hash, coded_plan) = if data.len() <= SDK_INLINE_RAW_MAX_BYTES {
+    let (expected_key, expected_value_hash, coded_plan) = if inline_write_fits(name, data.len()) {
         let slice = BlobDataSlice::Inline(data);
         let meta = slice
             .meta()
@@ -1680,7 +1687,8 @@ mod tests {
     use crate::error::TapedriveError;
 
     use super::{
-        content_etag, hash, inline_write_fits, prepare_plan, should_retry_certification,
+        content_etag, content_etag_named, hash, inline_write_fits, prepare_plan,
+        should_retry_certification,
         SDK_INLINE_RAW_MAX_BYTES,
     };
     use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
@@ -1721,6 +1729,22 @@ mod tests {
     fn sdk_inline_raw_limit_is_below_program_limit() {
         assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 825);
         assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
+    }
+
+    // A payload that is inline unnamed but not with its name must take the
+    // coded path, and its etag must be the coded commitment.
+    #[tokio::test]
+    async fn named_etag_follows_the_trailer_budget() {
+        let name = b"obj-23-4643.txt";
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES);
+        assert!(!inline_write_fits(name, data.len()));
+
+        let unnamed = content_etag(&data).await.expect("etag");
+        assert!(unnamed.plan.is_none());
+
+        let named = content_etag_named(name, &data).await.expect("etag");
+        let plan = named.plan.expect("coded plan");
+        assert_eq!(named.etag, plan.commitment_hash);
     }
 
     #[test]
