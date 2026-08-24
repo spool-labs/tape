@@ -5919,7 +5919,6 @@ dependencies = [
  "store-rocks",
  "tape-core",
  "tape-crypto",
- "tape-metrics",
  "tape-store",
  "tempfile",
  "tracing",
@@ -9927,13 +9926,12 @@ dependencies = [
 
 [[package]]
 name = "tape-dashboard"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "dioxus",
  "gloo-net",
  "gloo-timers",
  "serde",
- "serde_json",
  "tape-observe-api",
  "wasm-bindgen",
  "web-sys",
@@ -10250,7 +10248,6 @@ name = "tape-observe-api"
 version = "0.4.0"
 dependencies = [
  "serde",
- "serde_json",
 ]
 
 [[package]]

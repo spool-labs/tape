@@ -341,14 +341,6 @@ pub trait Store: Send + Sync {
             free_bytes: self.available_disk_bytes()?,
         }])
     }
-
-    /// Settle everything the backend holds open, before a clean exit.
-    ///
-    /// The reel seals its tails here, which is what tells its next open from a
-    /// crash. Backends that settle on drop no-op.
-    fn close(&self) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// The window of a value a ranged read asks for, clamped rather than refused
