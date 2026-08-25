@@ -10,7 +10,7 @@ use store::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{
     ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SLOT_MS, SPAN_SLOTS,
-    round_width_slots,
+    Schedule, round_width_slots,
 };
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::bitmap::BitmapRead;
@@ -866,8 +866,11 @@ fn challenge_timeline<Db: Store, Cluster: Api, Blockchain: Rpc>(
             // Every held round is seeded, but only the newest carries its
             // individual messages: those are what the arcs and the per-message
             // notes need, and they are most of the bytes.
+            // A round still in flight keeps them however far back it sits:
+            // its shape is unfinished, so folding leaves a band with nothing.
             let behind = newest.1.as_u64().saturating_sub(trace.round.as_u64());
-            let detailed = trace.epoch == newest.0 && behind < DETAILED_ROUNDS;
+            let newest_rounds = trace.epoch == newest.0 && behind < DETAILED_ROUNDS;
+            let detailed = newest_rounds || trace.close == TraceClose::Open;
             wire_trace_with(trace, detailed)
         })
         .collect()
@@ -987,29 +990,50 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
             rule_fired: record.eviction_fires(),
             queued: queued.contains(&node),
             recent: record.recent_rounds(),
+            rounds: recent_round_ids(context, node, spool, record.recent_rounds().len()),
         })
+        // one read per row, reused for the axis below rather than re-fetched
         .collect();
 
     rows.sort_by(|a, b| {
         (a.success_rate_bps, &a.node, a.spool).cmp(&(b.success_rate_bps, &b.node, b.spool))
     });
 
+    let schedule = challenge_schedule(&context.state());
+    let slot_ms = observed_slot_ms(&state, schedule.as_ref());
+
     ChallengeGrid {
         recent_capacity: RECENT_ROUNDS as u64,
         min_opportunities: MIN_OPPORTUNITIES,
         rate_floor_bps: RATE_FLOOR.0,
         max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
-        round_span_ms: (round_width_slots() - SPAN_SLOTS) * SLOT_MS,
-        proof_deadline_ms: PROOF_DEADLINE_SLOTS * SLOT_MS,
-        attest_deadline_ms: (CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS) * SLOT_MS,
-        round_cadence_ms: challenge_schedule(&context.state())
-            .map(|schedule| schedule.interval_slots * SLOT_MS)
+        round_span_ms: (round_width_slots() - SPAN_SLOTS) * slot_ms,
+        proof_deadline_ms: PROOF_DEADLINE_SLOTS * slot_ms,
+        attest_deadline_ms: (CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS) * slot_ms,
+        round_cadence_ms: schedule
+            .as_ref()
+            .map(|schedule| schedule.interval_slots * slot_ms)
             .unwrap_or_default(),
         quorum: agreement_threshold(GROUP_SIZE) as u64,
-        axis: round_axis(context, &rows),
+        axis: round_axis(&rows),
         owners: owner_rows(context, &state, &queued),
         rows,
     }
+}
+
+/// Milliseconds a slot actually takes on this cluster.
+///
+/// The voted duration over the span the grid covers. `SLOT_MS` is a nominal 400
+/// and a cluster nearer 165 would have every figure here read high by that
+/// ratio, so the deadlines a reader sees would not be the ones owners run
+/// against. Falls back to the constant before an epoch has realized a span.
+fn observed_slot_ms(state: &ProtocolState, schedule: Option<&Schedule>) -> u64 {
+    let seconds = state.current.epoch.preferences.epoch_duration.0;
+    schedule
+        .map(|schedule| schedule.epoch_slots)
+        .filter(|slots| *slots > 0 && seconds > 0)
+        .map(|slots| (seconds * 1_000 / slots).max(1))
+        .unwrap_or(SLOT_MS)
 }
 
 fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -1050,36 +1074,36 @@ fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 /// Returns the grid's round axis in oldest-to-newest order.
-fn round_axis<Db: Store, Cluster: Api, Blockchain: Rpc>(
+/// The rounds a peer's strip entries belong to, newest `len` of them.
+///
+/// The record counts judgements without saying which rounds they were, so the
+/// ids come from the round log beside it and are trimmed to the same tail.
+fn recent_round_ids<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    rows: &[ChallengeRow],
+    peer: Address,
+    spool: SpoolIndex,
+    len: usize,
 ) -> Vec<RoundId> {
-    let span = rows.iter().map(|row| row.recent.len()).max().unwrap_or_default();
-    if span == 0 {
+    if len == 0 {
         return Vec::new();
     }
-
-    let Some((widest, spool)) = rows
-        .iter()
-        .max_by_key(|row| row.recent.len())
-        .and_then(|row| row.node.parse::<Address>().ok().map(|node| (node, row.spool)))
-    else {
-        return Vec::new();
-    };
-
-    let rounds = context
-        .store
-        .peer_rounds(widest, SpoolIndex(spool))
-        .unwrap_or_default();
-    let tail = rounds.len().saturating_sub(span);
+    let rounds = context.store.peer_rounds(peer, spool).unwrap_or_default();
+    let tail = rounds.len().saturating_sub(len);
     rounds[tail..]
         .iter()
-        .map(|(epoch, round, _)| RoundId {
-            epoch: epoch.0,
-            round: round.0,
-        })
+        .map(|(epoch, round, _)| RoundId { epoch: epoch.0, round: round.0 })
         .collect()
 }
+
+/// The axis every strip is read against: the widest row's rounds, which the
+/// rows already carry.
+fn round_axis(rows: &[ChallengeRow]) -> Vec<RoundId> {
+    rows.iter()
+        .max_by_key(|row| row.rounds.len())
+        .map(|row| row.rounds.clone())
+        .unwrap_or_default()
+}
+
 
 #[cfg(test)]
 mod tests {

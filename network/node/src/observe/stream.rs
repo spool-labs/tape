@@ -258,7 +258,18 @@ where
     Blockchain: Rpc,
 {
     let (tip_slot, dispatched_slot, lag_slots) = context.ingest.progress().tip_and_lag();
+    let counters = &context.challenge_counters;
     Gauges {
+        challenge: tape_observe_api::ChallengeRounds {
+            opened: counters.opened.load(std::sync::atomic::Ordering::Relaxed),
+            settled_certified: counters.settled_certified.load(std::sync::atomic::Ordering::Relaxed),
+            settled_missed: counters.settled_missed.load(std::sync::atomic::Ordering::Relaxed),
+            answers_refused: counters.answers_refused.load(std::sync::atomic::Ordering::Relaxed),
+            voided: counters.voided.load(std::sync::atomic::Ordering::Relaxed),
+            discarded: counters.discarded.load(std::sync::atomic::Ordering::Relaxed),
+            own_certified: counters.own_certified.load(std::sync::atomic::Ordering::Relaxed),
+            own_missed: counters.own_missed.load(std::sync::atomic::Ordering::Relaxed),
+        },
         lag_slots: if context.bootstrap.is_ready() {
             lag_slots
         } else {

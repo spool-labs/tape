@@ -120,6 +120,11 @@ pub struct Tick {
     pub decode_per_s: f32,
     pub decode_p95_ms: f32,
     pub cache_hit_pct: f32,
+
+    /// Challenge totals. On the tick rather than the board because a round now
+    /// takes seconds, and on the board they arrive already stale.
+    #[serde(default)]
+    pub challenge: ChallengeRounds,
 }
 
 /// One peer call that moved payload bytes, from the serving node's view.
@@ -531,6 +536,14 @@ pub struct ChallengeRow {
     pub queued: bool,
     /// The recent strip, oldest first, true for a success.
     pub recent: Vec<bool>,
+    /// Which round each entry in `recent` belongs to, same order and length.
+    ///
+    /// Rows cover different rounds: peers join at different times and are asked
+    /// at different rates, so a strip cannot be placed by its length. Without
+    /// these a reader can only right-align, which puts a row's cells under
+    /// another row's round numbers and slides settled history as rows grow.
+    #[serde(default)]
+    pub rounds: Vec<RoundId>,
 }
 
 /// The challenge record this node keeps, one row per peer.
@@ -633,7 +646,7 @@ pub struct RoundId {
 }
 
 /// Lifetime challenge round counters for this node.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChallengeRounds {
     /// Rounds this node opened and answered for its own spool.
     pub opened: u64,
@@ -1050,6 +1063,7 @@ pub struct Gauges {
     pub dispatched_slot: u64,
     pub rss_bytes: u64,
     pub queue_depth: u64,
+    pub challenge: ChallengeRounds,
 }
 
 impl Counters {
@@ -1091,6 +1105,7 @@ impl Gauges {
             },
             tip_slot: board.ingest.tip_slot,
             dispatched_slot: board.ingest.dispatched_slot,
+            challenge: board.challenge_rounds,
             rss_bytes: board.resources.rss_bytes,
             queue_depth: board.resources.queues.iter().map(|q| q.value).max().unwrap_or(0),
         }
@@ -1191,6 +1206,8 @@ pub fn diff(before: &Counters, now: &Counters, gauges: Gauges, at_ms: u64, inter
         } else {
             now.cache_hits.saturating_sub(before.cache_hits) as f32 / lookups as f32 * 100.0
         },
+
+        challenge: gauges.challenge,
     }
 }
 
