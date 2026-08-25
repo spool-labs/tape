@@ -91,4 +91,5 @@ metrics = [
     "dep:memory-stats",
     "rpc-client/metrics",
     "store/metrics",
+    "reel-store/metrics",
 ]
