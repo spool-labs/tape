@@ -8,7 +8,6 @@ description = "The node's store: tapedrive's columns on the reel engine"
 store.workspace = true
 store-rocks = { workspace = true, optional = true }
 tape-store.workspace = true
-tape-metrics = { workspace = true, optional = true }
 reel.workspace = true
 reel-core.workspace = true
 serde.workspace = true
@@ -20,10 +19,6 @@ tracing = "0.1"
 # never touches this one. Tests opt in with
 # `cargo test -p reel-store --features rocks`.
 rocks = ["dep:store-rocks", "tape-store/rocks"]
-
-# Emit the shared store counters the node's board reads. Off by default so a
-# bench or a test opens the reel without a metrics registry behind it.
-metrics = ["dep:tape-metrics", "store/metrics"]
 
 [dev-dependencies]
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }

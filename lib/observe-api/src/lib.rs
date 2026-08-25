@@ -24,104 +24,6 @@ pub const PEER_BOARD_PATH: &str = "/v1/observe/peer/{addr}/board";
 /// collector. Gated to configured observer identities over mTLS.
 pub const ATLAS_PATH: &str = "/v1/observe/atlas";
 
-/// Path the node streams live board updates from, as server-sent events
-pub const STREAM_PATH: &str = "/v1/observe/stream";
-
-/// Event names on the stream, so a client dispatches on the event name rather
-/// than sniffing the body
-pub const EVENT_HELLO: &str = "hello";
-pub const EVENT_TICK: &str = "tick";
-pub const EVENT_BOARD: &str = "board";
-pub const EVENT_TOPOLOGY: &str = "topology";
-/// One frame of recent history, so a chart opens full
-pub const EVENT_BACKFILL: &str = "backfill";
-
-/// One round trace, pushed as its evidence arrives rather than waiting for
-/// the next whole board: a round is over in a few slots.
-pub const EVENT_ROUND: &str = "round";
-
-/// How often the node samples counters into a tick
-pub const TICK_PERIOD_MS: u64 = 250;
-
-/// How often the node repeats the full board; faster movers ride the tick
-pub const BOARD_PERIOD_MS: u64 = 5_000;
-
-/// How often the node repeats the topology; peer stats ride in it, and a
-/// change in committee shape resends it sooner
-pub const TOPOLOGY_PERIOD_MS: u64 = 10_000;
-
-/// How much recent history a connecting client is sent, and how coarsely
-pub const BACKFILL_SPAN_MS: u64 = 90_000;
-pub const BACKFILL_STEP_MS: u64 = 1_000;
-
-/// Bumped when a frame changes shape in a way an older client cannot read
-pub const STREAM_PROTOCOL: u32 = 1;
-
-/// Opening frame, so a client can size its interpolation window from the
-/// producer's own cadences rather than hardcoding them
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Hello {
-    pub protocol: u32,
-    pub tick_ms: u64,
-    pub address: String,
-}
-
-/// Per-second rates and fast-moving gauges, sampled by the node
-///
-/// The node owns the differencing because it knows the exact interval between
-/// samples. Rates are per second whatever the sampling period.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Tick {
-    /// Node wall clock in milliseconds, the x axis for every series
-    pub at_ms: u64,
-    /// Interval this frame's rates were measured over
-    pub interval_secs: f32,
-
-    pub req_per_s: f32,
-    pub egress_per_s: f32,
-    /// Upload bytes received by the serving path
-    pub ingress_per_s: f32,
-    pub err_per_s: f32,
-    pub serving_p50_ms: f32,
-    pub serving_p95_ms: f32,
-    pub serving_p99_ms: f32,
-
-    pub peer_req_per_s: f32,
-    pub peer_ingress_per_s: f32,
-    /// Bytes pushed to peers, the outbound half of peer traffic
-    pub peer_egress_per_s: f32,
-    pub peer_err_per_s: f32,
-    pub peer_p50_ms: f32,
-    pub peer_p95_ms: f32,
-    pub peer_p99_ms: f32,
-
-    pub store_ops_per_s: f32,
-    pub store_read_per_s: f32,
-    pub store_write_per_s: f32,
-
-    pub rpc_per_s: f32,
-    pub rpc_err_per_s: f32,
-    pub tx_per_s: f32,
-    pub tx_err_per_s: f32,
-
-    pub blocks_per_s: f32,
-    pub replay_per_s: f32,
-    pub lag_slots: u64,
-    pub tip_slot: u64,
-    pub dispatched_slot: u64,
-
-    pub cpu_pct: f32,
-    pub rss_bytes: u64,
-    pub queue_depth: u64,
-
-    /// Bytes per second persisted and fetched, in spool op order
-    pub spool_persisted_per_s: Vec<f32>,
-
-    pub decode_per_s: f32,
-    pub decode_p95_ms: f32,
-    pub cache_hit_pct: f32,
-}
-
 /// One peer call that moved payload bytes, from the serving node's view.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AtlasTransfer {
@@ -206,7 +108,6 @@ pub struct NodeStats {
     #[serde(default)] pub slices_stored: u64,
     #[serde(default)] pub slice_payload_bytes: u64,
     #[serde(default)] pub store_disk_bytes: u64,
-    #[serde(default)] pub store_data_bytes: u64,
     #[serde(default)] pub free_disk_bytes: u64,
     #[serde(default)] pub current_epoch: u64,
     #[serde(default)] pub ingest_state: String,
@@ -425,8 +326,6 @@ pub struct StorageInfo {
     pub owned_spools: u64,
     #[serde(default)]
     pub volumes: Vec<StorageVolume>,
-    #[serde(default)]
-    pub data_bytes: u64,
 }
 
 /// Process resource usage.
@@ -547,24 +446,6 @@ pub struct ChallengeGrid {
     /// Consecutive misses the fast arm fires at.
     #[serde(default)]
     pub max_consecutive_misses: u64,
-    /// Milliseconds from the entropy block to its certificate having gossiped,
-    /// which is the width a timeline draws one round in. The slots a round
-    /// spends searching for that block are behind it, so they are not counted.
-    #[serde(default)]
-    pub round_span_ms: u64,
-    /// Milliseconds after the block by which a proof must arrive.
-    #[serde(default)]
-    pub proof_deadline_ms: u64,
-    /// Milliseconds after the block by which attestations must be signed.
-    #[serde(default)]
-    pub attest_deadline_ms: u64,
-    /// Milliseconds between one round opening and the next, so a reader can say
-    /// how long the quiet between them still has to run.
-    #[serde(default)]
-    pub round_cadence_ms: u64,
-    /// Votes a spool's round needs before it certifies.
-    #[serde(default)]
-    pub quorum: u64,
     /// One row per peer, worst first so an outlier is the top row.
     pub rows: Vec<ChallengeRow>,
     /// One row per owner, judged by this node's own rule.
@@ -658,122 +539,6 @@ pub struct ChallengeRounds {
     pub own_missed: u64,
 }
 
-/// One round as this node watched it happen.
-///
-/// The grid says which rounds a spool answered. This says when the evidence
-/// arrived inside one of them, which is what a timeline draws. Every stamp is an
-/// arrival at this node: no peer's send time is observable from one vantage, so
-/// none is reported.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct RoundTrace {
-    pub epoch: u64,
-    pub round: u64,
-    /// The spool group, since groups open their rounds independently.
-    pub group: u64,
-    /// The slot the entropy block was produced in.
-    pub anchor_slot: u64,
-    /// Entropy blockhash, base58.
-    pub block: String,
-    /// When the round opened here, unix milliseconds.
-    pub opened_at: u64,
-    pub close: TraceClose,
-    /// What each spool did, folded to the shapes a timeline draws.
-    ///
-    /// Every round carries these; only the newest carries the individual marks
-    /// behind them. Twenty votes fold to one window and a count, which is what
-    /// gets drawn anyway, and it is a twentieth of the bytes.
-    #[serde(default)]
-    pub shapes: Vec<SpoolShape>,
-    /// The individual messages, for the rounds recent enough to trace in detail.
-    #[serde(default)]
-    pub marks: Vec<TraceMark>,
-    /// How each spool's round ended, decided when the round settles.
-    ///
-    /// Separate from the marks because a verdict is not a moment: settlement
-    /// runs when the next round opens, a whole cadence later, so placing it on
-    /// this round's clock would put it well past the round's own end.
-    #[serde(default)]
-    pub outcomes: Vec<SpoolOutcome>,
-}
-
-/// One spool's round, folded.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SpoolShape {
-    pub spool: u64,
-    /// When a peer's proof reached this node, milliseconds after the round opened.
-    #[serde(default)]
-    pub proof_in: Option<u64>,
-    #[serde(default)]
-    pub proof_out: Option<u64>,
-    #[serde(default)]
-    pub refused: Option<u64>,
-    /// The voting window: first signature to last.
-    #[serde(default)]
-    pub vote_from: Option<u64>,
-    #[serde(default)]
-    pub vote_to: u64,
-    #[serde(default)]
-    pub votes: u32,
-    #[serde(default)]
-    pub vote_out: Option<u64>,
-    #[serde(default)]
-    pub cert: Option<u64>,
-}
-
-/// What one spool's round settled to.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SpoolOutcome {
-    pub spool: u64,
-    /// The owner this round was judged against, base58.
-    pub node: String,
-    pub certified: bool,
-}
-
-/// How a round ended.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TraceClose {
-    /// Still collecting evidence.
-    #[default]
-    Open,
-    /// Settled against every spool in the group.
-    Settled,
-    /// Charged to nobody: the entropy block never finalized.
-    Unfinalized,
-    /// Charged to nobody: the group had nothing to be asked about.
-    Nothing,
-}
-
-/// One thing that happened to one spool inside a round.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TraceMark {
-    pub spool: u64,
-    /// The answering owner, or the signer for an attestation. Base58, empty when
-    /// this node could not resolve one.
-    pub node: String,
-    pub kind: MarkKind,
-    /// Milliseconds after the round opened, so a mark is placed without the
-    /// reader having to reconcile two clocks.
-    pub at_ms: u64,
-}
-
-/// What a mark records.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MarkKind {
-    /// This node built and broadcast its own answer.
-    AnswerOut,
-    /// A peer's answer arrived and verified.
-    #[default]
-    AnswerIn,
-    /// An answer was turned away at the door.
-    AnswerRefused,
-    /// This node signed an attestation.
-    AttestOut,
-    /// A peer's attestation arrived.
-    AttestIn,
-    /// A certificate assembled for the spool.
-    Certified,
-}
-
 /// One cumulative histogram bucket.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Bucket {
@@ -796,9 +561,6 @@ pub struct HttpStats {
     pub total: u64,
     /// Response body bytes served.
     pub response_bytes: u64,
-    /// Request body bytes: uploads received when serving, bytes sent when a client
-    #[serde(default)]
-    pub request_bytes: u64,
 }
 
 /// Solana RPC and transaction-submission health.
@@ -817,35 +579,6 @@ pub struct ChainStats {
 }
 
 impl HttpStats {
-    /// Quantile in milliseconds over the samples between two cumulative readings
-    ///
-    /// A window with nothing in it has no percentile to report and reads as zero.
-    pub fn quantile_ms(newer: &[Bucket], older: &[Bucket], count: u64, q: f64) -> f32 {
-        if count == 0 {
-            return 0.0;
-        }
-        let delta = Self::bucket_delta(newer, older);
-        (Self::quantile(&delta, count, q) * 1000.0) as f32
-    }
-
-    /// Requests whose status class counts as a serving error
-    pub fn error_total(&self) -> u64 {
-        self.by_status
-            .iter()
-            .filter(|l| l.label == "4xx" || l.label == "5xx")
-            .map(|l| l.value)
-            .sum()
-    }
-
-    /// Peer-client responses of 400 and above
-    pub fn peer_error_total(&self) -> u64 {
-        self.by_status
-            .iter()
-            .filter(|l| l.label.parse::<u16>().map(|c| c >= 400).unwrap_or(false))
-            .map(|l| l.value)
-            .sum()
-    }
-
     /// The counts accumulated between two cumulative snapshots of the same
     /// histogram, for windowed quantiles.
     pub fn bucket_delta(newer: &[Bucket], older: &[Bucket]) -> Vec<Bucket> {
@@ -932,24 +665,6 @@ pub struct LastEpoch {
     pub synced_groups: u64,
 }
 
-/// Minutes of transfer history a board carries.
-pub const BANDWIDTH_MINUTES: usize = 60;
-
-/// Bytes moved on each transfer path during one wall-clock minute
-///
-/// The counters a board carries are cumulative, so a dashboard can only chart
-/// what it has watched. This is the node's own reading of the minutes before
-/// that, oldest first and contiguous, with the last one still filling.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-pub struct BandwidthMinute {
-    /// Unix minute the bucket covers
-    pub minute: u64,
-    pub sync: u64,
-    pub repair: u64,
-    pub recover: u64,
-    pub upload: u64,
-}
-
 /// Everything one node reports for its board in a single poll.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Board {
@@ -975,8 +690,6 @@ pub struct Board {
     pub decode: DecodeStats,
     pub cache: CacheStats,
     pub spool: Vec<SpoolStat>,
-    #[serde(default)]
-    pub bandwidth: Vec<BandwidthMinute>,
     pub last_epoch: LastEpoch,
     #[serde(default)]
     pub current_epoch: LastEpoch,
@@ -986,20 +699,12 @@ pub struct Board {
     pub challenge: ChallengeGrid,
     #[serde(default)]
     pub challenge_rounds: ChallengeRounds,
-    /// Recent rounds in the order they opened, for the live timeline.
-    #[serde(default)]
-    pub challenge_timeline: Vec<RoundTrace>,
 }
 
 impl Board {
     /// Sum of every decode result counter.
     pub fn decode_total(&self) -> u64 {
         self.decode.results.iter().map(|l| l.value).sum()
-    }
-
-    /// Sum of the decode result counters that count as failures
-    pub fn decode_failures(&self) -> u64 {
-        DECODE_FAILURES.iter().map(|f| Self::lookup(&self.decode.results, f)).sum()
     }
 
     /// Look up a labeled value, defaulting to 0.
@@ -1017,183 +722,6 @@ impl Board {
     }
 }
 
-/// Everything a tick is derived from, as cumulative totals
-///
-/// Both producers fill this and hand it to `diff`, so the streamed tick and the
-/// one derived from two polled boards cannot drift apart.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Counters {
-    pub http: HttpStats,
-    pub peers: HttpStats,
-    pub chain: ChainStats,
-    pub store_ops: u64,
-    pub store_read: u64,
-    pub store_written: u64,
-    pub decode_buckets: Vec<Bucket>,
-    pub decode_latency_total: u64,
-    pub decode_ok: u64,
-    pub decode_failed: u64,
-    pub cache_hits: u64,
-    pub cache_lookups: u64,
-    pub blocks: u64,
-    pub replay_events: u64,
-    pub spool_persisted: Vec<u64>,
-    pub spool_fetched: Vec<u64>,
-    pub cpu_seconds: f64,
-}
-
-/// Gauges read at the instant of a tick rather than differenced
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Gauges {
-    pub lag_slots: u64,
-    pub tip_slot: u64,
-    pub dispatched_slot: u64,
-    pub rss_bytes: u64,
-    pub queue_depth: u64,
-}
-
-impl Counters {
-    /// The cumulative totals a board already carries
-    pub fn from_board(board: &Board) -> Self {
-        Self {
-            http: board.http.clone(),
-            peers: board.peers.clone(),
-            chain: board.chain.clone(),
-            store_ops: board.store_io.total_ops,
-            store_read: board.store_io.bytes_read,
-            store_written: board.store_io.bytes_written,
-            decode_buckets: board.decode.latency_buckets.clone(),
-            decode_latency_total: board.decode.latency_total,
-            decode_ok: Board::lookup(&board.decode.results, "ok"),
-            decode_failed: board.decode_failures(),
-            cache_hits: Board::lookup(&board.cache.results, "hit"),
-            cache_lookups: CACHE_RESULTS
-                .iter()
-                .map(|r| Board::lookup(&board.cache.results, r))
-                .sum(),
-            blocks: board.throughput.blocks_processed,
-            replay_events: board.throughput.replay_events,
-            spool_persisted: spool_bytes(board, "persisted"),
-            spool_fetched: spool_bytes(board, "fetched"),
-            cpu_seconds: board.resources.cpu_seconds,
-        }
-    }
-}
-
-impl Gauges {
-    /// The instantaneous figures a board already carries
-    pub fn from_board(board: &Board) -> Self {
-        Self {
-            lag_slots: if board.bootstrap.ready {
-                board.ingest.lag_slots
-            } else {
-                board.bootstrap.behind_slots()
-            },
-            tip_slot: board.ingest.tip_slot,
-            dispatched_slot: board.ingest.dispatched_slot,
-            rss_bytes: board.resources.rss_bytes,
-            queue_depth: board.resources.queues.iter().map(|q| q.value).max().unwrap_or(0),
-        }
-    }
-}
-
-/// Spool pipeline bytes for one stage, in spool op order
-fn spool_bytes(board: &Board, stage: &str) -> Vec<u64> {
-    SPOOL_OPS
-        .iter()
-        .map(|op| {
-            board
-                .spool
-                .iter()
-                .find(|s| s.op == *op && s.stage == stage)
-                .map(|s| s.bytes)
-                .unwrap_or(0)
-        })
-        .collect()
-}
-
-/// Per-second rate between two cumulative readings
-fn rate(now: u64, before: u64, interval: f32) -> f32 {
-    now.saturating_sub(before) as f32 / interval
-}
-
-/// Per-second rates for each entry of two equal-length readings
-fn rates(now: &[u64], before: &[u64], interval: f32) -> Vec<f32> {
-    now.iter().zip(before).map(|(n, b)| rate(*n, *b, interval)).collect()
-}
-
-/// Difference two readings into the frame a dashboard plots
-///
-/// The interval is the time between the readings, which the caller knows more
-/// precisely than either reading does.
-pub fn diff(before: &Counters, now: &Counters, gauges: Gauges, at_ms: u64, interval: f32) -> Tick {
-    let interval = interval.max(1e-3);
-    let http_count = now.http.total.saturating_sub(before.http.total);
-    let peer_count = now.peers.total.saturating_sub(before.peers.total);
-    let decode_count = now.decode_latency_total.saturating_sub(before.decode_latency_total);
-    let lookups = now.cache_lookups.saturating_sub(before.cache_lookups);
-
-    Tick {
-        at_ms,
-        interval_secs: interval,
-
-        req_per_s: rate(now.http.total, before.http.total, interval),
-        egress_per_s: rate(now.http.response_bytes, before.http.response_bytes, interval),
-        ingress_per_s: rate(now.http.request_bytes, before.http.request_bytes, interval),
-        err_per_s: rate(now.http.error_total(), before.http.error_total(), interval),
-        serving_p50_ms: HttpStats::quantile_ms(&now.http.buckets, &before.http.buckets, http_count, 0.50),
-        serving_p95_ms: HttpStats::quantile_ms(&now.http.buckets, &before.http.buckets, http_count, 0.95),
-        serving_p99_ms: HttpStats::quantile_ms(&now.http.buckets, &before.http.buckets, http_count, 0.99),
-
-        peer_req_per_s: rate(now.peers.total, before.peers.total, interval),
-        peer_ingress_per_s: rate(now.peers.response_bytes, before.peers.response_bytes, interval),
-        peer_egress_per_s: rate(now.peers.request_bytes, before.peers.request_bytes, interval),
-        peer_err_per_s: rate(now.peers.peer_error_total(), before.peers.peer_error_total(), interval),
-        peer_p50_ms: HttpStats::quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.50),
-        peer_p95_ms: HttpStats::quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.95),
-        peer_p99_ms: HttpStats::quantile_ms(&now.peers.buckets, &before.peers.buckets, peer_count, 0.99),
-
-        store_ops_per_s: rate(now.store_ops, before.store_ops, interval),
-        store_read_per_s: rate(now.store_read, before.store_read, interval),
-        store_write_per_s: rate(now.store_written, before.store_written, interval),
-
-        rpc_per_s: rate(now.chain.rpc_total, before.chain.rpc_total, interval),
-        rpc_err_per_s: rate(now.chain.rpc_errors, before.chain.rpc_errors, interval),
-        tx_per_s: rate(now.chain.tx_total, before.chain.tx_total, interval),
-        tx_err_per_s: rate(now.chain.tx_errors, before.chain.tx_errors, interval),
-
-        blocks_per_s: rate(now.blocks, before.blocks, interval),
-        replay_per_s: rate(now.replay_events, before.replay_events, interval),
-        lag_slots: gauges.lag_slots,
-        tip_slot: gauges.tip_slot,
-        dispatched_slot: gauges.dispatched_slot,
-
-        // per-core-second, so the rate is a core fraction
-        cpu_pct: ((now.cpu_seconds - before.cpu_seconds) / interval as f64 * 100.0).max(0.0) as f32,
-        rss_bytes: gauges.rss_bytes,
-        queue_depth: gauges.queue_depth,
-
-        spool_persisted_per_s: rates(&now.spool_persisted, &before.spool_persisted, interval),
-
-        decode_per_s: rate(
-            now.decode_ok + now.decode_failed,
-            before.decode_ok + before.decode_failed,
-            interval,
-        ),
-        decode_p95_ms: HttpStats::quantile_ms(
-            &now.decode_buckets,
-            &before.decode_buckets,
-            decode_count,
-            0.95,
-        ),
-        cache_hit_pct: if lookups == 0 {
-            0.0
-        } else {
-            now.cache_hits.saturating_sub(before.cache_hits) as f32 / lookups as f32 * 100.0
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1203,62 +731,6 @@ mod tests {
     fn peer_board_path_matches_prefix() {
         assert!(PEER_BOARD_PATH.starts_with(PEER_BOARD_PREFIX));
         assert!(PEER_BOARD_PATH.ends_with("/board"));
-    }
-
-    // the backfill thins ticks to its step, and must still cover its span
-    #[test]
-    fn backfill_shape() {
-        assert!(BACKFILL_STEP_MS >= TICK_PERIOD_MS);
-        assert_eq!(BACKFILL_SPAN_MS % BACKFILL_STEP_MS, 0);
-        let frames = BACKFILL_SPAN_MS / BACKFILL_STEP_MS;
-        assert_eq!(frames * BACKFILL_STEP_MS, BACKFILL_SPAN_MS);
-    }
-
-    // a renamed tick field would leave the client silently reading zeros
-    #[test]
-    fn tick_roundtrip() {
-        let tick = Tick {
-            at_ms: 1_760_000_000_000,
-            interval_secs: 0.25,
-            req_per_s: 142.5,
-            egress_per_s: 8_900_000.0,
-            lag_slots: 4,
-            tip_slot: 312_456_789,
-            spool_persisted_per_s: vec![1.0, 2.0, 3.0],
-            ..Default::default()
-        };
-        let text = serde_json::to_string(&tick).unwrap();
-        assert_eq!(serde_json::from_str::<Tick>(&text).unwrap(), tick);
-    }
-
-    // rates divide by the interval, so a two-second window halves a per-second figure
-    #[test]
-    fn diff_rates() {
-        let before = Counters {
-            http: HttpStats { total: 100, response_bytes: 1_000, ..Default::default() },
-            blocks: 10,
-            ..Default::default()
-        };
-        let now = Counters {
-            http: HttpStats { total: 140, response_bytes: 9_000, ..Default::default() },
-            blocks: 15,
-            ..Default::default()
-        };
-        let tick = diff(&before, &now, Gauges::default(), 0, 2.0);
-        assert_eq!(tick.req_per_s, 20.0);
-        assert_eq!(tick.egress_per_s, 4_000.0);
-        assert_eq!(tick.blocks_per_s, 2.5);
-    }
-
-    // a counter that goes backwards across a restart reads as zero, not as a spike
-    #[test]
-    fn diff_survives_reset() {
-        let before = Counters {
-            http: HttpStats { total: 900, ..Default::default() },
-            ..Default::default()
-        };
-        let now = Counters { http: HttpStats { total: 5, ..Default::default() }, ..Default::default() };
-        assert_eq!(diff(&before, &now, Gauges::default(), 0, 1.0).req_per_s, 0.0);
     }
 
     // ready clears the replay distance; replaying reports remaining slots

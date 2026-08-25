@@ -16,7 +16,6 @@ use crate::features::challenge::audit::{
 };
 use crate::features::challenge::fold::fold_outcome;
 use crate::features::challenge::rounds::RoundKey;
-use crate::features::challenge::trace::MarkKind;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
@@ -63,17 +62,6 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
             .challenge_counters
             .answers_refused
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // No owner named: the payload was refused because it did not verify, so
-        // this node has no evidence about who sent it. Attributing it to the
-        // spool's on-chain owner would be a guess wearing an observation's face.
-        state.context.round_traces.mark(
-            round.epoch,
-            round.round,
-            round.group,
-            key.spool,
-            MarkKind::AnswerRefused,
-            None,
-        );
         return Err(RouteError::BadRequest("proof of access refused".into()));
     }
 
@@ -81,7 +69,6 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
         return Ok(StatusCode::OK);
     }
 
-    mark(&state, &protocol, &round, key, MarkKind::AnswerIn);
     trace!(spool = %answer.spool, round = answer.round.0, "challenge: answer accepted");
     spawn_relay_and_attest(&state.context, &protocol, &answer);
     certify_if_ready(&state, &protocol, &round, key);
@@ -123,22 +110,10 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("attestation does not verify".into()));
     }
 
-    // Only a signature this node had not already counted, so a peer replaying
-    // one leaves a single mark on the timeline rather than a row of them.
-    if state
+    state
         .context
         .round_buffer
-        .accept_attestation(key, payload.signer, payload.signature)
-    {
-        state.context.round_traces.mark(
-            round.epoch,
-            round.round,
-            round.group,
-            payload.spool,
-            MarkKind::AttestIn,
-            Some(payload.signer),
-        );
-    }
+        .accept_attestation(key, payload.signer, payload.signature);
     certify_if_ready(&state, &protocol, &round, key);
 
     Ok(StatusCode::OK)
@@ -196,32 +171,6 @@ fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // evicts. `settle_previous` refuses to charge a miss for a round that never
     // finalized, which is the half that has teeth.
     fold_outcome(&state.context.store, owner, key.spool, round.epoch, round.round, true);
-    state.context.round_traces.mark(
-        round.epoch,
-        round.round,
-        round.group,
-        key.spool,
-        MarkKind::Certified,
-        Some(owner),
-    );
-}
-
-/// Marks an accepted answer against the spool's owner, who owed it.
-fn mark<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    protocol: &ProtocolState,
-    round: &Round,
-    key: RoundKey,
-    kind: MarkKind,
-) {
-    state.context.round_traces.mark(
-        round.epoch,
-        round.round,
-        round.group,
-        key.spool,
-        kind,
-        protocol.spool_owner(key.spool),
-    );
 }
 
 /// Signatures a certificate needs, given how many positions the group holds.

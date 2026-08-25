@@ -300,11 +300,6 @@ where
             ServiceName::BalanceMonitor,
             BalanceMonitor::new(context.clone(), cancel.clone()).run(),
         );
-
-        supervisor.spawn(
-            ServiceName::ObserveStream,
-            crate::observe::StreamPublisher::new(context.clone(), cancel.clone()).run(),
-        );
     }
 
     #[cfg(feature = "metrics")]
@@ -448,7 +443,6 @@ where
         ).run(),
     );
 
-    let store = Arc::clone(&context.store);
     supervisor.spawn(
         ServiceName::GcManager,
         GcManager::new(
@@ -458,15 +452,7 @@ where
         ).run(),
     );
 
-    let outcome = supervisor.supervise().await;
-    // The store seals its tails only when something closes it. A process exit
-    // never runs the drop, and an unsealed tail reads as a crash to the next
-    // open, so the close happens here, after every writer has stopped.
-    info!("closing store");
-    if let Err(error) = store.inner().inner().close() {
-        warn!(error = %error, "store close failed on shutdown");
-    }
-    outcome
+    supervisor.supervise().await
 }
 
 pub async fn run_with_context<Db, Cluster, Blockchain>(
@@ -480,23 +466,12 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start_slot, http_server) = match bootstrap_with_status_listener(
+    let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
     )
-    .await
-    {
-        Ok(ready) => ready,
-        Err(error) => {
-            // Bootstrap already replayed blocks into the store; the close is
-            // what settles them before the process reports the failure.
-            if let Err(close_error) = context.store.inner().inner().close() {
-                warn!(error = %close_error, "store close failed after bootstrap error");
-            }
-            return Err(error);
-        }
-    };
+    .await?;
     supervise_with_context(context, config, start_slot, cancel, http_server).await
 }
 
@@ -511,23 +486,12 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start_slot, http_server) = match bootstrap_with_status_listener(
+    let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
     )
-    .await
-    {
-        Ok(ready) => ready,
-        Err(error) => {
-            // Bootstrap already replayed blocks into the store; the close is
-            // what settles them before the process reports the failure.
-            if let Err(close_error) = context.store.inner().inner().close() {
-                warn!(error = %close_error, "store close failed after bootstrap error");
-            }
-            return Err(error);
-        }
-    };
+    .await?;
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();
     let task_cancel = cancel.clone();

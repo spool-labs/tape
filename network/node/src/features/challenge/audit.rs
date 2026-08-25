@@ -25,7 +25,6 @@ use tracing::{debug, trace};
 use crate::context::NodeContext;
 use crate::features::challenge::manager::schedule_for;
 use crate::features::challenge::rounds::RoundKey;
-use crate::features::challenge::trace::MarkKind;
 
 // Reach peers the owner skipped without amplifying every accepted answer to the
 // entire group again.
@@ -260,14 +259,6 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     context
         .round_buffer
         .accept_attestation(round.key(answer.spool), me, signature);
-    context.round_traces.mark(
-        round.epoch,
-        round.round,
-        round.group,
-        answer.spool,
-        MarkKind::AttestOut,
-        Some(me),
-    );
 
     let peers: Vec<Address> = group_members(state, answer.group)
         .into_iter()
