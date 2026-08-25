@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use crate::features::challenge::attest_queue::{BatchKey, FLUSH_MS};
+
+use tape_store::ops::MetaOps;
+
 use futures::future::{join, join_all};
 use rpc::Rpc;
 use store::Store;
@@ -15,8 +19,8 @@ use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
-use tape_crypto::hash::Hash;
-use tape_protocol::api::{AttestReq, ProofOfAccessReq};
+use tape_crypto::hash::{hashv, Hash};
+use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
 use tape_protocol::{Api, ProtocolState};
 use tape_store::types::TrackSample;
 use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
@@ -67,11 +71,45 @@ pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
     sample_space(&set_entries(context, state, round).1) > 0
 }
 
+/// The sample set for one round, shared by every answer drawn against it.
+pub type SampleSet = (Vec<(Address, TrackSample)>, Vec<SampleEntry>);
+
+/// One round's sample set, built once and reused.
+///
+/// Every answer in a round draws from the same set, and the set is a scan of
+/// the group's rows. Deriving it per answer meant a receiver walked the group
+/// once for each of the twenty answers it verified, which at a round a second
+/// across five groups is the same scan run thousands of times a second for one
+/// unchanging result.
+///
+/// Safe to hold because the set cannot move once the round exists. It is the
+/// rows registered before a cutoff a finality window behind the round, and a
+/// node only takes part while at tip, so it has applied past that cutoff
+/// already: a later write carries a slot far above it and a later deletion
+/// records one too. A store edited behind the ingest path can outrun this, and
+/// says so with `invalidate`.
 fn set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     state: &ProtocolState,
     round: &Round,
-) -> (Vec<(Address, TrackSample)>, Vec<SampleEntry>) {
+) -> Arc<SampleSet> {
+    let key = (round.epoch, round.round, round.group);
+    if let Some(held) = context.sample_sets.get(&key) {
+        return held;
+    }
+    // Read before the store is, so a backdated row landing mid-build is not
+    // stamped as though the set already held it.
+    let built_at = context.sample_sets.generation();
+    let built = Arc::new(build_set_entries(context, state, round));
+    context.sample_sets.put(key, built_at, built.clone());
+    built
+}
+
+fn build_set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    round: &Round,
+) -> SampleSet {
     let Some(schedule) = schedule_for(state, round.epoch) else {
         return (Vec::new(), Vec::new());
     };
@@ -107,7 +145,8 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<(Sample, Hash)> {
-    let (rows, entries) = set_entries(context, state, round);
+    let held = set_entries(context, state, round);
+    let (rows, entries) = (&held.0, &held.1);
 
     let seed = challenge::round_seed(&round.block, round.epoch, round.group, round.round, spool);
     let sample = challenge::draw(&seed, &entries)?;
@@ -269,50 +308,115 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         Some(me),
     );
 
-    let peers: Vec<Address> = group_members(state, answer.group)
-        .into_iter()
-        .filter(|peer| *peer != me)
-        .collect();
-    let attestation = AttestReq {
+    let members = group_members(state, answer.group);
+    // Where this node sits in the group, which is what spreads the relay copies.
+    let at = members.iter().position(|peer| *peer == me).unwrap_or_default();
+    let peers: Vec<Address> = members.into_iter().filter(|peer| *peer != me).collect();
+
+    // One round's signatures ride together. This one joins the batch; the first
+    // of a round arms the flush that will carry all of them.
+    let batch = BatchKey {
         epoch: round.epoch,
         group: round.group,
         round: round.round,
-        spool: answer.spool,
         block: round.block,
-        signer: me,
-        signature,
     };
+    let arm = context.attest_queue.push(batch, answer.spool, signature);
+
     let context = context.clone();
     let answer = answer.clone();
 
-    tokio::spawn(async move {
-        // Relay to a few, attest to all. An attestation is a hundred bytes and
-        // every peer needs a quorum of them to certify. The answer is kilobytes
-        // and only the skipped need another copy.
-        let fanout = if relay { RELAY_FANOUT } else { 0 };
-        let relays = peers
-            .iter()
-            .take(fanout)
-            .map(|peer| relay_answer(&context, *peer, answer.clone()));
-        let attestations = peers
-            .iter()
-            .map(|peer| send_attestation(&context, *peer, &attestation));
+    // Relays go on their own task. Nothing correct waits on them, and gating the
+    // round's signatures behind three kilobyte round-trips put every peer's
+    // attestations behind the slowest relay target.
+    if relay {
+        let context = context.clone();
+        let answer = answer.clone();
+        let targets = relay_targets(&peers, at, RELAY_FANOUT);
+        tokio::spawn(async move {
+            let relays = targets
+                .into_iter()
+                .map(|peer| relay_answer(&context, peer, answer.clone()));
+            join_all(relays).await;
+        });
+    }
 
-        join(join_all(relays), join_all(attestations)).await;
+    if !arm {
+        return;
+    }
+
+    tokio::spawn(async move {
+        // Drains on its own clock rather than once. Answers arrive across the
+        // round, and a one-shot take left every later signature to arm a fresh
+        // flush of its own.
+        let mut quiet = 0;
+        while quiet < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(FLUSH_MS)).await;
+            let attests: Vec<SpoolAttestation> = context
+                .attest_queue
+                .take(&batch)
+                .into_iter()
+                .map(|(spool, signature)| SpoolAttestation { spool, signature })
+                .collect();
+            if attests.is_empty() {
+                quiet += 1;
+                continue;
+            }
+            quiet = 0;
+            let attestation = AttestReq {
+                epoch: batch.epoch,
+                group: batch.group,
+                round: batch.round,
+                block: batch.block,
+                signer: me,
+                attests,
+            };
+            let sends = peers
+                .iter()
+                .map(|peer| send_attestation(&context, *peer, &attestation));
+            join_all(sends).await;
+        }
     });
 }
+
+/// Which peers this relayer forwards an answer to.
+///
+/// Taking the first few in group order gave every relayer the same targets, so
+/// the copies piled onto members one to three and an owner withholding from
+/// anyone else was never healed. Starting at the relayer's own place in the
+/// group covers every member exactly `fanout` times over, which is the property
+/// the relay exists for.
+pub(crate) fn relay_targets(peers: &[Address], at: usize, fanout: usize) -> Vec<Address> {
+    if peers.is_empty() || fanout == 0 {
+        return Vec::new();
+    }
+    (0..fanout.min(peers.len()))
+        .map(|step| peers[(at + step) % peers.len()])
+        .collect()
+}
+
+/// Longest a challenge-path post is worth waiting on.
+///
+/// The client default is thirty seconds, which outlives the round many times
+/// over. Sized against settlement rather than the round: a post that lands late
+/// still counts if it beats the block rooting, and cutting at the round's own
+/// length turned slow-but-certifying spools into misses.
+const POST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 async fn relay_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     peer: Address,
     answer: ProofOfAccess,
 ) {
-    if let Err(error) = context
-        .api
-        .proof_of_access(peer, &ProofOfAccessReq { answer })
-        .await
-    {
-        trace!(node = %peer, %error, "challenge: relay failed");
+    let sent = tokio::time::timeout(
+        POST_TIMEOUT,
+        context.api.proof_of_access(peer, &ProofOfAccessReq { answer }),
+    )
+    .await;
+    match sent {
+        Ok(Err(error)) => trace!(node = %peer, %error, "challenge: relay failed"),
+        Err(_) => trace!(node = %peer, "challenge: relay timed out"),
+        Ok(Ok(_)) => {}
     }
 }
 
@@ -321,8 +425,10 @@ async fn send_attestation<Db: Store, Cluster: Api, Blockchain: Rpc>(
     peer: Address,
     attestation: &AttestReq,
 ) {
-    if let Err(error) = context.api.attest(peer, attestation).await {
-        trace!(node = %peer, %error, "challenge: attestation not delivered");
+    match tokio::time::timeout(POST_TIMEOUT, context.api.attest(peer, attestation)).await {
+        Ok(Err(error)) => trace!(node = %peer, %error, "challenge: attestation not delivered"),
+        Err(_) => trace!(node = %peer, "challenge: attestation timed out"),
+        Ok(Ok(_)) => {}
     }
 }
 

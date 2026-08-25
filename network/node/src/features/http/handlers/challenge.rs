@@ -8,6 +8,7 @@ use store::Store;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_core::erasure::group_for_spool;
 use tape_protocol::{Api, ProtocolState};
+use crate::features::http::auth::ActivePeer;
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace};
 
@@ -91,6 +92,7 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
 
 pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
+    caller: Option<axum::Extension<ActivePeer>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     if !state.context.config.challenge.enabled {
@@ -107,39 +109,50 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         round: payload.round,
         block: payload.block,
     };
-    let key = round.key(payload.spool);
-
     let Some(peer) = protocol.peer(payload.signer) else {
         return Err(RouteError::BadRequest("unknown signer".into()));
     };
-    if payload
-        .signature
-        .verify_aggregate(
-            attest_message(&round, payload.spool).to_bytes(),
-            core::slice::from_ref(&peer.bls_pubkey),
-        )
-        .is_err()
-    {
-        return Err(RouteError::BadRequest("attestation does not verify".into()));
-    }
 
-    // Only a signature this node had not already counted, so a peer replaying
-    // one leaves a single mark on the timeline rather than a row of them.
-    if state
-        .context
-        .round_buffer
-        .accept_attestation(key, payload.signer, payload.signature)
-    {
-        state.context.round_traces.mark(
-            round.epoch,
-            round.round,
-            round.group,
-            payload.spool,
-            MarkKind::AttestIn,
-            Some(payload.signer),
-        );
+    // The connection already proves who is speaking when its identity matches
+    // the signer, and a signer can only ever poison its own entries. Anything
+    // else — simnet, an epoch boundary, a stranger — takes the signature check
+    // as before, so this only ever removes work.
+    let bound = caller.is_some_and(|caller| caller.node == payload.signer);
+
+    // One round's signatures arrive together. Each still stands for its own
+    // spool, so each is checked against the message that spool's attesters sign.
+    for attest in &payload.attests {
+        let key = round.key(attest.spool);
+        if !bound
+            && attest
+                .signature
+                .verify_aggregate(
+                    attest_message(&round, attest.spool).to_bytes(),
+                    core::slice::from_ref(&peer.bls_pubkey),
+                )
+                .is_err()
+        {
+            return Err(RouteError::BadRequest("attestation does not verify".into()));
+        }
+
+        // Only a signature this node had not already counted, so a peer
+        // replaying one leaves a single mark on the timeline rather than a row.
+        if state
+            .context
+            .round_buffer
+            .accept_attestation(key, payload.signer, attest.signature)
+        {
+            state.context.round_traces.mark(
+                round.epoch,
+                round.round,
+                round.group,
+                attest.spool,
+                MarkKind::AttestIn,
+                Some(payload.signer),
+            );
+            certify_if_ready(&state, &protocol, &round, key);
+        }
     }
-    certify_if_ready(&state, &protocol, &round, key);
 
     Ok(StatusCode::OK)
 }

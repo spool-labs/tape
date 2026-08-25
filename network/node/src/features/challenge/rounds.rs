@@ -369,6 +369,9 @@ mod protocol_tests {
         // The harness epoch carries no duration, and the schedule the sample cut
         // derives from refuses an epoch too short to hold a round.
         state.current.epoch.preferences.epoch_duration = EpochDuration(100);
+        // Where a live epoch sits: the sample cut is a lookback, and one near
+        // slot zero saturates to zero and holds nothing.
+        state.current.epoch.start_slot = SlotNumber(10_000);
         let mine = state
             .member_spools(ctx.node_address())
             .first()
@@ -407,6 +410,11 @@ mod protocol_tests {
             slices,
             keys,
         }
+    }
+
+    /// Writing a row under a live round's cutoff is what makes a held set stale.
+    fn bump_cursor(ctx: &TestContext) {
+        ctx.sample_sets.backdated_write();
     }
 
     fn put_sample(
@@ -690,6 +698,34 @@ mod protocol_tests {
     // the set is cut at the round window's base slot, so a write finalizing inside
     // the round leaves the draw where it was, and observers that ingested it at
     // different moments still derive the same question
+    // Every member has to be reachable by someone, or an owner withholding from
+    // the uncovered ones is never healed.
+    #[test]
+    fn relay_targets_cover_the_group() {
+        use crate::features::challenge::audit::relay_targets;
+
+        let peers: Vec<Address> = (0..19).map(|_| Address::new_unique()).collect();
+        let mut covered = std::collections::BTreeSet::new();
+        let mut counts = std::collections::BTreeMap::new();
+        for at in 0..peers.len() {
+            let picked = relay_targets(&peers, at, 3);
+            assert_eq!(picked.len(), 3, "every relayer forwards its full fanout");
+            assert_eq!(
+                picked.iter().collect::<std::collections::BTreeSet<_>>().len(),
+                3,
+                "a relayer must not send the same peer two copies"
+            );
+            for peer in picked {
+                covered.insert(peer);
+                *counts.entry(peer).or_insert(0usize) += 1;
+            }
+        }
+
+        assert_eq!(covered.len(), peers.len(), "every member is somebody's target");
+        let worst = counts.values().copied().max().unwrap_or_default();
+        assert_eq!(worst, 3, "every member carries the same share of the relays");
+    }
+
     #[tokio::test]
     async fn mid_round_write() {
         let fixture = fixture().await;
@@ -702,6 +738,10 @@ mod protocol_tests {
             .sample_cutoff(round.round);
         let late = Address::new_unique();
         put_sample(&fixture.ctx, fixture.group, late, 4 * SUB_LEAF_BYTES, cutoff);
+        // A row landing in production comes with the cursor that applied it, and
+        // the held sample sets are versioned by that cursor. Writing straight to
+        // the store skips it, so the cursor is moved by hand here.
+        bump_cursor(&fixture.ctx);
 
         let (after, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
@@ -717,6 +757,7 @@ mod protocol_tests {
             4 * SUB_LEAF_BYTES,
             SlotNumber(cutoff.as_u64() - 1),
         );
+        bump_cursor(&fixture.ctx);
         let (inside, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
         assert_ne!(

@@ -293,15 +293,25 @@ impl From<ProofOfAccessPayload> for ProofOfAccess {
     }
 }
 
-/// Wire representation of an observer's attestation for a round.
+/// One signer's attestations for a round, as one message.
+///
+/// Batched per round rather than sent per spool: a signer verifies every answer
+/// in its group and the round's fields repeat across all of them, so twenty
+/// separate posts to each of twenty peers is four hundred where twenty will do.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct AttestationPayload {
     pub epoch: EpochNumber,
     pub group: GroupIndex,
     pub round: RoundNumber,
-    pub spool: SpoolIndex,
     pub block: Hash,
     pub signer: Address,
+    pub attests: Vec<SpoolAttestation>,
+}
+
+/// One spool's signature inside a round's attestation.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SpoolAttestation {
+    pub spool: SpoolIndex,
     pub signature: BlsSignature,
 }
 

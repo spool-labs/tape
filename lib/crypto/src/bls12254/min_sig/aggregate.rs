@@ -79,6 +79,14 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     // Hash message to G1 once
     let h_g1 = hash_to_curve(message.as_ref())?.0;
 
+    // Every signer pairs H(m) against its own key because the on-chain syscall
+    // set has no G2 addition, so a quorum costs k+1 Miller loops. Off chain
+    // there is addition, and one summed key needs two.
+    #[cfg(not(target_os = "solana"))]
+    let signer_pubkeys = &[sum_pubkeys(signer_pubkeys)?];
+    #[cfg(not(target_os = "solana"))]
+    let k = 1;
+
     // Build input for pairing:
     // For each signer: pair (H(m), PK_i)
     // Final pair: (S_sum, -G2).
@@ -101,6 +109,17 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     } else {
         Err(BLSError::BLSVerificationError)
     }
+}
+
+/// Sums the signers' keys so a quorum verifies in one pairing product.
+#[cfg(not(target_os = "solana"))]
+fn sum_pubkeys(pubkeys: &[G2Point]) -> Result<G2Point, BLSError> {
+    use num::CheckedAdd;
+    let mut acc = pubkeys[0];
+    for pubkey in &pubkeys[1..] {
+        acc = acc.checked_add(pubkey).ok_or(BLSError::AltBN128AddError)?;
+    }
+    Ok(acc)
 }
 
 fn check_pubkeys(pubkeys: &[G2Point]) -> bool {

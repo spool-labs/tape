@@ -158,10 +158,9 @@ impl Api for MemoryApi {
             epoch: req.epoch,
             group: req.group,
             round: req.round,
-            spool: req.spool,
             block: req.block,
             signer: req.signer,
-            signature: req.signature,
+            attests: req.attests.clone(),
         }, Attest)
     }
 

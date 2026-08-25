@@ -394,8 +394,8 @@ mod tests {
     fn closing_marks_the_round() {
         let ring = TraceRing::default();
         opened(&ring, 1, 0);
-        ring.close(EpochNumber(1), RoundNumber(1), GroupIndex(0), TraceClose::Void);
+        ring.close(EpochNumber(1), RoundNumber(1), GroupIndex(0), TraceClose::Unfinalized);
 
-        assert_eq!(ring.snapshot()[0].close, TraceClose::Void);
+        assert_eq!(ring.snapshot()[0].close, TraceClose::Unfinalized);
     }
 }
