@@ -42,10 +42,14 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
 
     let store = reel_store::open_node_store(
         root,
-        config.store.compaction_mb_per_sec,
-        config.store.sync_bytes,
-        config.store.io_backend,
-        config.store.reserve,
+        reel_store::NodeStoreOptions {
+            compaction_mbps: config.store.compaction_mb_per_sec,
+            sync_bytes: config.store.sync_bytes,
+            backend: config.store.io_backend,
+            reserve: config.store.reserve,
+            segment_bytes: config.store.segment_bytes,
+            preallocate: config.store.preallocate,
+        },
     )
     .map_err(|error| {
         NodeError::Store(format!(

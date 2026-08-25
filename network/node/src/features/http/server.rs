@@ -116,6 +116,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 .route(
                     api_routes::OBSERVE_PEER_PATH,
                     get(observe_peer::<Db, Cluster, Blockchain>),
+                )
+                .route(
+                    api_routes::OBSERVE_STREAM_PATH,
+                    get(crate::observe::stream::sse),
                 );
         }
 
