@@ -24,6 +24,7 @@ use crate::features::challenge::audit::{
     Round, build_answer, group_members, has_sample_set, spawn_attest,
 };
 use crate::features::challenge::fold::fold_outcome;
+use crate::features::challenge::trace::{MarkKind, TraceClose};
 use crate::features::eviction::queue::Opened;
 
 // Capture settlement inputs when the round opens because settlement may cross
@@ -150,6 +151,13 @@ where
                 .challenge_counters
                 .opened
                 .fetch_add(1, Ordering::Relaxed);
+            self.context.round_traces.open(
+                epoch,
+                number,
+                group,
+                block.slot,
+                block.blockhash,
+            );
 
             self.answer_and_broadcast(&state, &round, spool).await;
         }
@@ -187,6 +195,7 @@ where
                 .challenge_counters
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
+            self.close_trace(&open.round, TraceClose::Unfinalized);
             debug!(group = group.0, "challenge: round voided, entropy block never finalized");
             return;
         }
@@ -199,6 +208,7 @@ where
                 .challenge_counters
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
+            self.close_trace(&open.round, TraceClose::Nothing);
             debug!(group = group.0, "challenge: round voided, group had an empty sample set");
             return;
         }
@@ -222,6 +232,7 @@ where
                 } else {
                     counters.own_missed.fetch_add(1, Ordering::Relaxed);
                 }
+                self.settle_trace(round, *spool, owner, certified);
                 continue;
             }
 
@@ -235,6 +246,7 @@ where
             } else {
                 counters.settled_missed.fetch_add(1, Ordering::Relaxed);
             }
+            self.settle_trace(round, *spool, owner, stands);
             debug!(
                 spool = %spool,
                 round = round.round.0,
@@ -242,6 +254,36 @@ where
                 "challenge: settling"
             );
         }
+
+        self.close_trace(round, TraceClose::Settled);
+    }
+
+    /// Records one mark against the round's trace.
+    fn mark_trace(&self, round: &Round, spool: SpoolIndex, kind: MarkKind, peer: Option<Address>) {
+        self.context.round_traces.mark(
+            round.epoch,
+            round.round,
+            round.group,
+            spool,
+            kind,
+            peer,
+        );
+    }
+
+    /// Records how one spool's round settled.
+    fn settle_trace(&self, round: &Round, spool: SpoolIndex, owner: Address, certified: bool) {
+        self.context.round_traces.settle(
+            round.epoch,
+            round.round,
+            round.group,
+            spool,
+            owner,
+            certified,
+        );
+    }
+
+    fn close_trace(&self, round: &Round, close: TraceClose) {
+        self.context.round_traces.close(round.epoch, round.round, round.group, close);
     }
 
     fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {
@@ -285,6 +327,7 @@ where
         // Hold our own answer, so a peer relaying it back is a duplicate rather
         // than something to verify again.
         self.context.round_buffer.accept_answer(round.key(mine), answer.clone());
+        self.mark_trace(round, mine, MarkKind::AnswerOut, Some(self.context.node_address()));
 
         // Attest to it as well. The threshold counts this node among the
         // group's members, so leaving its own signature out costs a position

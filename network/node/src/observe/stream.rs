@@ -19,7 +19,8 @@ use tokio_util::sync::CancellationToken;
 use tape_metrics::prometheus::proto::MetricFamily;
 use tape_observe_api::{
     Counters, Gauges, Hello, Tick, BACKFILL_SPAN_MS, BACKFILL_STEP_MS, BOARD_PERIOD_MS,
-    EVENT_BACKFILL, EVENT_BOARD, EVENT_HELLO, EVENT_TICK, EVENT_TOPOLOGY, SPOOL_OPS,
+    EVENT_BACKFILL, EVENT_BOARD, EVENT_HELLO, EVENT_ROUND, EVENT_TICK, EVENT_TOPOLOGY,
+    RoundTrace, SPOOL_OPS,
     TOPOLOGY_PERIOD_MS,
     STREAM_PROTOCOL, TICK_PERIOD_MS,
 };
@@ -151,6 +152,21 @@ static HUB: OnceLock<Arc<StreamHub>> = OnceLock::new();
 /// The process-wide stream hub
 pub fn hub() -> &'static Arc<StreamHub> {
     HUB.get_or_init(|| Arc::new(StreamHub::new()))
+}
+
+/// Whether anyone is watching, so an unwatched node builds no frames
+pub fn watching() -> bool {
+    hub().has_subscribers()
+}
+
+/// Send one round trace out as it changes
+///
+/// A round's evidence all arrives within a few slots, well inside the board
+/// period, so waiting for the next whole board would land it in one lump.
+pub fn push_round(trace: &RoundTrace) {
+    if let Some(frame) = Frame::new(EVENT_ROUND, trace) {
+        hub().publish(frame);
+    }
 }
 
 /// Serve the live stream

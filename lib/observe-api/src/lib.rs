@@ -36,6 +36,10 @@ pub const EVENT_TOPOLOGY: &str = "topology";
 /// One frame of recent history, so a chart opens full
 pub const EVENT_BACKFILL: &str = "backfill";
 
+/// One round trace, pushed as its evidence arrives rather than waiting for
+/// the next whole board: a round is over in a few slots.
+pub const EVENT_ROUND: &str = "round";
+
 /// How often the node samples counters into a tick
 pub const TICK_PERIOD_MS: u64 = 250;
 
@@ -543,6 +547,24 @@ pub struct ChallengeGrid {
     /// Consecutive misses the fast arm fires at.
     #[serde(default)]
     pub max_consecutive_misses: u64,
+    /// Milliseconds from the entropy block to its certificate having gossiped,
+    /// which is the width a timeline draws one round in. The slots a round
+    /// spends searching for that block are behind it, so they are not counted.
+    #[serde(default)]
+    pub round_span_ms: u64,
+    /// Milliseconds after the block by which a proof must arrive.
+    #[serde(default)]
+    pub proof_deadline_ms: u64,
+    /// Milliseconds after the block by which attestations must be signed.
+    #[serde(default)]
+    pub attest_deadline_ms: u64,
+    /// Milliseconds between one round opening and the next, so a reader can say
+    /// how long the quiet between them still has to run.
+    #[serde(default)]
+    pub round_cadence_ms: u64,
+    /// Votes a spool's round needs before it certifies.
+    #[serde(default)]
+    pub quorum: u64,
     /// One row per peer, worst first so an outlier is the top row.
     pub rows: Vec<ChallengeRow>,
     /// One row per owner, judged by this node's own rule.
@@ -634,6 +656,122 @@ pub struct ChallengeRounds {
     /// group-mates each recorded as a miss against it.
     #[serde(default)]
     pub own_missed: u64,
+}
+
+/// One round as this node watched it happen.
+///
+/// The grid says which rounds a spool answered. This says when the evidence
+/// arrived inside one of them, which is what a timeline draws. Every stamp is an
+/// arrival at this node: no peer's send time is observable from one vantage, so
+/// none is reported.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RoundTrace {
+    pub epoch: u64,
+    pub round: u64,
+    /// The spool group, since groups open their rounds independently.
+    pub group: u64,
+    /// The slot the entropy block was produced in.
+    pub anchor_slot: u64,
+    /// Entropy blockhash, base58.
+    pub block: String,
+    /// When the round opened here, unix milliseconds.
+    pub opened_at: u64,
+    pub close: TraceClose,
+    /// What each spool did, folded to the shapes a timeline draws.
+    ///
+    /// Every round carries these; only the newest carries the individual marks
+    /// behind them. Twenty votes fold to one window and a count, which is what
+    /// gets drawn anyway, and it is a twentieth of the bytes.
+    #[serde(default)]
+    pub shapes: Vec<SpoolShape>,
+    /// The individual messages, for the rounds recent enough to trace in detail.
+    #[serde(default)]
+    pub marks: Vec<TraceMark>,
+    /// How each spool's round ended, decided when the round settles.
+    ///
+    /// Separate from the marks because a verdict is not a moment: settlement
+    /// runs when the next round opens, a whole cadence later, so placing it on
+    /// this round's clock would put it well past the round's own end.
+    #[serde(default)]
+    pub outcomes: Vec<SpoolOutcome>,
+}
+
+/// One spool's round, folded.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpoolShape {
+    pub spool: u64,
+    /// When a peer's proof reached this node, milliseconds after the round opened.
+    #[serde(default)]
+    pub proof_in: Option<u64>,
+    #[serde(default)]
+    pub proof_out: Option<u64>,
+    #[serde(default)]
+    pub refused: Option<u64>,
+    /// The voting window: first signature to last.
+    #[serde(default)]
+    pub vote_from: Option<u64>,
+    #[serde(default)]
+    pub vote_to: u64,
+    #[serde(default)]
+    pub votes: u32,
+    #[serde(default)]
+    pub vote_out: Option<u64>,
+    #[serde(default)]
+    pub cert: Option<u64>,
+}
+
+/// What one spool's round settled to.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpoolOutcome {
+    pub spool: u64,
+    /// The owner this round was judged against, base58.
+    pub node: String,
+    pub certified: bool,
+}
+
+/// How a round ended.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TraceClose {
+    /// Still collecting evidence.
+    #[default]
+    Open,
+    /// Settled against every spool in the group.
+    Settled,
+    /// Charged to nobody: the entropy block never finalized.
+    Unfinalized,
+    /// Charged to nobody: the group had nothing to be asked about.
+    Nothing,
+}
+
+/// One thing that happened to one spool inside a round.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraceMark {
+    pub spool: u64,
+    /// The answering owner, or the signer for an attestation. Base58, empty when
+    /// this node could not resolve one.
+    pub node: String,
+    pub kind: MarkKind,
+    /// Milliseconds after the round opened, so a mark is placed without the
+    /// reader having to reconcile two clocks.
+    pub at_ms: u64,
+}
+
+/// What a mark records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MarkKind {
+    /// This node built and broadcast its own answer.
+    AnswerOut,
+    /// A peer's answer arrived and verified.
+    #[default]
+    AnswerIn,
+    /// An answer was turned away at the door.
+    AnswerRefused,
+    /// This node signed an attestation.
+    AttestOut,
+    /// A peer's attestation arrived.
+    AttestIn,
+    /// A certificate assembled for the spool.
+    Certified,
 }
 
 /// One cumulative histogram bucket.
@@ -848,6 +986,9 @@ pub struct Board {
     pub challenge: ChallengeGrid,
     #[serde(default)]
     pub challenge_rounds: ChallengeRounds,
+    /// Recent rounds in the order they opened, for the live timeline.
+    #[serde(default)]
+    pub challenge_timeline: Vec<RoundTrace>,
 }
 
 impl Board {

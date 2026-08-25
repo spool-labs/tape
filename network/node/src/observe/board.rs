@@ -8,6 +8,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rpc::Rpc;
 use store::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
+use tape_core::challenge::schedule::{
+    ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SLOT_MS, SPAN_SLOTS,
+    round_width_slots,
+};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::bitmap::BitmapRead;
 use tape_core::types::SpoolIndex;
@@ -16,13 +20,18 @@ use tape_core::challenge::record::{
     MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
 };
 use tape_core::system::NodeStatus;
+use crate::features::challenge::manager::challenge_schedule;
+use crate::features::http::handlers::challenge::agreement_threshold;
 use tape_crypto::Address;
+use crate::features::challenge::trace::{MarkKind, RoundTrace as TracedRound, TraceClose};
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
 use tape_store::ops::{ChallengeOps, SliceOps};
 use tape_observe_api::{
     phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
-    ChallengeRounds, DecodeStats, EpochInfo,
+    ChallengeRounds, DecodeStats, EpochInfo, MarkKind as WireMark, RoundTrace, SpoolOutcome,
+    SpoolShape,
+    TraceClose as WireClose, TraceMark,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
     ChallengeOwner, NodeStats, OwnerVerdict, ResourceInfo, RoundId, SpoolStat, StatsSource, StorageContents, StorageInfo,
     StorageVolume,
@@ -802,6 +811,7 @@ where
         lifetime: super::epoch::lifetime_including(&current_epoch),
         challenge: challenge_grid(context),
         challenge_rounds: challenge_rounds(context),
+        challenge_timeline: challenge_timeline(context),
     }
 }
 
@@ -835,6 +845,117 @@ fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 /// Builds this node's local challenge observations, worst row first.
+/// Rounds still worth seeding a fresh page with, oldest first.
+///
+/// The stream carries every round as it happens, so the board only has to give
+/// a page that just opened something to draw. Sending the whole ring instead
+/// put a couple of megabytes of already-delivered marks into every board frame,
+/// which is most of the board and all of the cost.
+fn challenge_timeline<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> Vec<RoundTrace> {
+    let traces = context.round_traces.snapshot();
+    let newest = traces
+        .iter()
+        .map(|trace| (trace.epoch, trace.round))
+        .max()
+        .unwrap_or_default();
+    traces
+        .iter()
+        .map(|trace| {
+            // Every held round is seeded, but only the newest carries its
+            // individual messages: those are what the arcs and the per-message
+            // notes need, and they are most of the bytes.
+            let behind = newest.1.as_u64().saturating_sub(trace.round.as_u64());
+            let detailed = trace.epoch == newest.0 && behind < DETAILED_ROUNDS;
+            wire_trace_with(trace, detailed)
+        })
+        .collect()
+}
+
+/// Rounds the board seeds with their individual messages, not just their shape.
+const DETAILED_ROUNDS: u64 = 2;
+
+/// One trace on the wire. Mark times become offsets from the round opening, so
+/// a reader places them without reconciling its clock against the node's.
+/// One round's marks folded per spool, which is what a timeline draws.
+fn fold_shapes(trace: &TracedRound) -> Vec<SpoolShape> {
+    let mut by_spool: BTreeMap<SpoolIndex, SpoolShape> = BTreeMap::new();
+    for mark in &trace.marks {
+        let at = mark.at_ms.saturating_sub(trace.opened_ms);
+        let shape = by_spool.entry(mark.spool).or_insert_with(|| SpoolShape {
+            spool: mark.spool.as_u64(),
+            ..SpoolShape::default()
+        });
+        match mark.kind {
+            MarkKind::AnswerIn => shape.proof_in.get_or_insert(at),
+            MarkKind::AnswerOut => shape.proof_out.insert(at),
+            MarkKind::AnswerRefused => shape.refused.insert(at),
+            MarkKind::AttestOut => shape.vote_out.insert(at),
+            MarkKind::Certified => shape.cert.insert(at),
+            MarkKind::AttestIn => {
+                shape.votes += 1;
+                shape.vote_to = shape.vote_to.max(at);
+                shape.vote_from.get_or_insert(at)
+            }
+        };
+        if mark.kind == MarkKind::AttestIn {
+            shape.vote_from = Some(shape.vote_from.unwrap_or(at).min(at));
+        }
+    }
+    by_spool.into_values().collect()
+}
+
+pub fn wire_trace(trace: &TracedRound) -> RoundTrace {
+    wire_trace_with(trace, true)
+}
+
+/// One trace on the wire, with or without the individual messages behind it.
+pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
+    RoundTrace {
+        epoch: trace.epoch.as_u64(),
+        round: trace.round.as_u64(),
+        group: trace.group.0,
+        anchor_slot: trace.anchor_slot.as_u64(),
+        block: trace.block.to_string(),
+        opened_at: trace.opened_ms,
+        close: match trace.close {
+            TraceClose::Open => WireClose::Open,
+            TraceClose::Settled => WireClose::Settled,
+            TraceClose::Unfinalized => WireClose::Unfinalized,
+            TraceClose::Nothing => WireClose::Nothing,
+        },
+        shapes: fold_shapes(trace),
+        marks: trace
+            .marks
+            .iter()
+            .filter(|_| detailed)
+            .map(|mark| TraceMark {
+                spool: mark.spool.as_u64(),
+                node: mark.peer.map(|peer| peer.to_string()).unwrap_or_default(),
+                kind: match mark.kind {
+                    MarkKind::AnswerOut => WireMark::AnswerOut,
+                    MarkKind::AnswerIn => WireMark::AnswerIn,
+                    MarkKind::AnswerRefused => WireMark::AnswerRefused,
+                    MarkKind::AttestOut => WireMark::AttestOut,
+                    MarkKind::AttestIn => WireMark::AttestIn,
+                    MarkKind::Certified => WireMark::Certified,
+                },
+                at_ms: mark.at_ms.saturating_sub(trace.opened_ms),
+            })
+            .collect(),
+        outcomes: trace
+            .outcomes
+            .iter()
+            .map(|outcome| SpoolOutcome {
+                spool: outcome.spool.as_u64(),
+                node: outcome.owner.to_string(),
+                certified: outcome.certified,
+            })
+            .collect(),
+    }
+}
+
 fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> ChallengeGrid {
@@ -878,6 +999,13 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         min_opportunities: MIN_OPPORTUNITIES,
         rate_floor_bps: RATE_FLOOR.0,
         max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
+        round_span_ms: (round_width_slots() - SPAN_SLOTS) * SLOT_MS,
+        proof_deadline_ms: PROOF_DEADLINE_SLOTS * SLOT_MS,
+        attest_deadline_ms: (CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS) * SLOT_MS,
+        round_cadence_ms: challenge_schedule(&context.state())
+            .map(|schedule| schedule.interval_slots * SLOT_MS)
+            .unwrap_or_default(),
+        quorum: agreement_threshold(GROUP_SIZE) as u64,
         axis: round_axis(context, &rows),
         owners: owner_rows(context, &state, &queued),
         rows,
