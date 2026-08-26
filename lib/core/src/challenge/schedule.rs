@@ -84,18 +84,13 @@ pub const HANDOVER_GRACE_ROUNDS: u64 = 8;
 /// Rounds an epoch needs before the eviction rule can engage inside it.
 pub const TARGET_ROUNDS_PER_EPOCH: u64 = 4;
 
-/// Slots from a round opening to its certificate having gossiped.
-///
-/// A round is not instantaneous: it searches for an entropy block, waits out the
-/// response deadline, holds a signing window that cannot open before confirmation,
-/// and lets the certificate travel. The interval has to clear this or a round's
-/// certificate is still moving when its successor opens.
+/// Slots from a round opening to its certificate having gossiped; no slot for
+/// confirmation since nothing in the signing leg waits on it
 pub const fn round_width_slots() -> u64 {
-    let signing = CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS;
-    let tail = if PROOF_DEADLINE_SLOTS > signing {
+    let tail = if PROOF_DEADLINE_SLOTS > ATTESTATION_WINDOW_SLOTS {
         PROOF_DEADLINE_SLOTS
     } else {
-        signing
+        ATTESTATION_WINDOW_SLOTS
     };
     SPAN_SLOTS + tail + CERTIFICATE_GOSSIP_SLOTS
 }
@@ -285,15 +280,15 @@ mod tests {
 
     #[test]
     fn round_width() {
-        assert_eq!(round_width_slots(), 6);
+        assert_eq!(round_width_slots(), 5);
     }
 
     #[test]
     fn preset_cadence() {
         let expected = [
             (MAINNET, 7u64, 216_000u64),
-            (DEVNET, 7, 1_285),
-            (LOCALNET, 7, 35),
+            (DEVNET, 7, 1_286),
+            (LOCALNET, 7, 36),
             (SIMNET, 7, 7),
         ];
 
@@ -309,20 +304,20 @@ mod tests {
 
     #[test]
     fn shortest_epoch() {
-        let schedule = Schedule::for_epoch(SlotNumber(0), epoch_slots(10), &nonce(0));
+        let schedule = Schedule::for_epoch(SlotNumber(0), epoch_slots(5), &nonce(0));
         assert_eq!(schedule.interval_slots, round_width_slots());
-        assert_eq!(schedule.rounds(), 4);
+        assert_eq!(schedule.rounds(), 2);
         assert!(schedule.validate().is_ok());
     }
 
     #[test]
     fn epoch_too_short() {
-        let schedule = Schedule::for_epoch(SlotNumber(0), 5, &nonce(0));
+        let schedule = Schedule::for_epoch(SlotNumber(0), 4, &nonce(0));
         assert_eq!(schedule.rounds(), 0);
         assert_eq!(
             schedule.validate(),
             Err(ScheduleError::EpochTooShort {
-                epoch_slots: 5,
+                epoch_slots: 4,
                 width: round_width_slots(),
             })
         );
@@ -376,7 +371,9 @@ mod tests {
 
     #[test]
     fn nonce_moves_grid() {
-        let slots = epoch_slots(DEVNET);
+        // An epoch whose rounds do not divide it exactly. One that does leaves
+        // no slack, and the grid then sits in the same place whatever the nonce.
+        let slots = epoch_slots(MAINNET);
         let offsets: Vec<u64> = (0..8u8)
             .map(|byte| Schedule::for_epoch(SlotNumber(0), slots, &nonce(byte)).grid_offset)
             .collect();
