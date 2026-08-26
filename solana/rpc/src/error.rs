@@ -192,6 +192,7 @@ fn is_retriable_message(msg: &str) -> bool {
     msg.contains("blockhash not found")
         || msg.contains("node is behind")
         || msg.contains("block not available")
+        || msg.contains("not yet available for slot")
         || msg.contains("timeout")
         || msg.contains("timed out")
         || msg.contains("too many requests")
@@ -241,6 +242,12 @@ pub fn looks_like_transaction_error(msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_status_race_is_retriable() {
+        let err = RpcError::Request("Block status not yet available for slot 6549".into());
+        assert!(err.is_retriable(), "a slot the validator has not committed yet is a retry");
+    }
 
     #[test]
     fn test_error_categories() {
