@@ -7,6 +7,8 @@ license = "Apache-2.0"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+wincode = { workspace = true }
+wincode-derive = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

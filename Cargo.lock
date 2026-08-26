@@ -10317,6 +10317,7 @@ dependencies = [
 name = "tape-dashboard"
 version = "0.4.0"
 dependencies = [
+ "base64 0.13.1",
  "dioxus",
  "gloo-net",
  "gloo-timers",
@@ -10325,6 +10326,7 @@ dependencies = [
  "tape-observe-api",
  "wasm-bindgen",
  "web-sys",
+ "wincode 0.1.2",
 ]
 
 [[package]]
@@ -10574,6 +10576,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-server",
+ "base64 0.13.1",
  "bytemuck",
  "clap",
  "dirs 5.0.1",
@@ -10639,6 +10642,8 @@ version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
+ "wincode 0.1.2",
+ "wincode-derive 0.1.1",
 ]
 
 [[package]]

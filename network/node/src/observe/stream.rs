@@ -57,8 +57,16 @@ pub struct Frame {
 }
 
 impl Frame {
-    fn new<T: serde::Serialize>(event: &'static str, value: &T) -> Option<Self> {
-        serde_json::to_string(value).ok().map(|data| Frame { event, data })
+    /// Wincode, then base64 because an event field is text.
+    ///
+    /// The base64 gives a third of the bytes back, and the point is the other
+    /// end: a wasm reader spent more on parsing json than on drawing.
+    fn new<T>(event: &'static str, value: &T) -> Option<Self>
+    where
+        T: wincode::SchemaWrite<Src = T>,
+    {
+        let bytes = wincode::serialize(value).ok()?;
+        Some(Frame { event, data: base64::encode(bytes) })
     }
 
     /// The frame as one named event, handing over the JSON it already holds
