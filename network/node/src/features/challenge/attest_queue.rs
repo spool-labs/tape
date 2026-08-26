@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::GroupIndex;
@@ -24,10 +24,12 @@ pub struct BatchKey {
     pub block: Hash,
 }
 
-/// Signatures waiting to be sent, and the handle that wakes their sender.
+/// Signatures gathered for a round, held rather than drained so every per-peer
+/// sender reads them at its own cursor
 struct Batch {
     held: Vec<(SpoolIndex, BlsSignature)>,
-    wake: Arc<Notify>,
+    /// Watched count; a notify would wake one of a round's many senders
+    gathered: watch::Sender<usize>,
 }
 
 #[derive(Default)]
@@ -45,14 +47,14 @@ pub struct AttestQueue {
 }
 
 impl AttestQueue {
-    /// Adds one signature, returning the waker when it opened the batch.
-    /// An open batch wakes its existing sender, so a round has exactly one.
+    /// Adds one signature, returning a watch on the count when it opened the
+    /// batch. An open batch wakes the senders already carrying it.
     pub fn push(
         &self,
         key: BatchKey,
         spool: SpoolIndex,
         signature: BlsSignature,
-    ) -> Option<Arc<Notify>> {
+    ) -> Option<watch::Receiver<usize>> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
@@ -64,29 +66,30 @@ impl AttestQueue {
             Entry::Occupied(mut batch) => {
                 let batch = batch.get_mut();
                 batch.held.push((spool, signature));
-                batch.wake.notify_one();
+                batch.gathered.send_replace(batch.held.len());
                 None
             }
             Entry::Vacant(slot) => {
-                let batch = slot.insert(Batch {
+                let (gathered, watch) = watch::channel(1);
+                slot.insert(Batch {
                     held: vec![(spool, signature)],
-                    wake: Arc::new(Notify::new()),
+                    gathered,
                 });
-                Some(batch.wake.clone())
+                Some(watch)
             }
         }
     }
 
-    /// Takes what has gathered, leaving the batch open so later signatures
-    /// join the sender already running.
-    pub fn take(&self, key: &BatchKey) -> Vec<(SpoolIndex, BlsSignature)> {
-        let Ok(mut state) = self.state.lock() else {
+    /// The signatures gathered past a sender's cursor.
+    pub fn since(&self, key: &BatchKey, from: usize) -> Vec<(SpoolIndex, BlsSignature)> {
+        let Ok(state) = self.state.lock() else {
             return Vec::new();
         };
         state
             .batches
-            .get_mut(key)
-            .map(|batch| core::mem::take(&mut batch.held))
+            .get(key)
+            .and_then(|batch| batch.held.get(from..))
+            .map(<[_]>::to_vec)
             .unwrap_or_default()
     }
 
@@ -103,13 +106,8 @@ impl AttestQueue {
             return;
         };
         state.floor = Some((epoch, round));
-        state.batches.retain(|key, batch| {
-            if (key.epoch, key.round) >= (epoch, round) {
-                return true;
-            }
-            batch.wake.notify_one();
-            false
-        });
+        // Dropping the batch drops the watch, which ends every sender carrying it.
+        state.batches.retain(|key, _| (key.epoch, key.round) >= (epoch, round));
     }
 
     /// Ends the senders for rounds seeded by a block that lost its fork.
@@ -117,13 +115,7 @@ impl AttestQueue {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        state.batches.retain(|key, batch| {
-            if key.block != block {
-                return true;
-            }
-            batch.wake.notify_one();
-            false
-        });
+        state.batches.retain(|key, _| key.block != block);
     }
 }
 
@@ -153,17 +145,19 @@ mod tests {
         assert!(queue.push(key(2), SpoolIndex(0), signature()).is_some());
     }
 
-    // draining leaves the batch open, so the next signature rides the sender
-    // that is already running rather than starting one of its own
+    // reading leaves the batch in place, so a later signature reaches the
+    // senders already running rather than starting more of its own
     #[test]
-    fn draining_does_not_reopen() {
+    fn reading_does_not_reopen() {
         let queue = AttestQueue::default();
         queue.push(key(1), SpoolIndex(0), signature());
 
-        assert_eq!(queue.take(&key(1)).len(), 1);
+        assert_eq!(queue.since(&key(1), 0).len(), 1);
         assert!(queue.is_open(&key(1)));
         assert!(queue.push(key(1), SpoolIndex(1), signature()).is_none());
-        assert_eq!(queue.take(&key(1)).len(), 1);
+        assert_eq!(queue.since(&key(1), 1).len(), 1);
+        // Every sender reads the same signatures, each from its own cursor.
+        assert_eq!(queue.since(&key(1), 0).len(), 2);
     }
 
     #[test]

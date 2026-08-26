@@ -341,47 +341,50 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         });
     }
 
-    let Some(wake) = opened else {
+    let Some(gathered) = opened else {
         return;
     };
 
-    tokio::spawn(async move {
-        loop {
-            // Posts before waiting: the signature that opened the batch is
-            // already in it, so the first pass costs no delay of its own.
-            let attests: Vec<SpoolAttestation> = context
-                .attest_queue
-                .take(&batch)
-                .into_iter()
-                .map(|(spool, signature)| SpoolAttestation { spool, signature })
-                .collect();
+    // One sender per peer: a shared barrier let the slowest response gate every
+    // peer's next batch, so signatures left in waves
+    for peer in peers {
+        let context = context.clone();
+        let mut gathered = gathered.clone();
+        tokio::spawn(async move {
+            let mut sent = 0usize;
+            loop {
+                // Posts before waiting: the signature that opened the batch is
+                // already in it, so the first pass costs no delay of its own.
+                let fresh = context.attest_queue.since(&batch, sent);
+                if !fresh.is_empty() {
+                    sent += fresh.len();
+                    let attestation = AttestReq {
+                        epoch: batch.epoch,
+                        group: batch.group,
+                        round: batch.round,
+                        block: batch.block,
+                        signer: me,
+                        attests: fresh
+                            .into_iter()
+                            .map(|(spool, signature)| SpoolAttestation { spool, signature })
+                            .collect(),
+                    };
+                    send_attestation(&context, peer, &attestation).await;
+                }
 
-            if !attests.is_empty() {
-                let attestation = AttestReq {
-                    epoch: batch.epoch,
-                    group: batch.group,
-                    round: batch.round,
-                    block: batch.block,
-                    signer: me,
-                    attests,
-                };
-                let sends = peers
-                    .iter()
-                    .map(|peer| send_attestation(&context, *peer, &attestation));
-                join_all(sends).await;
-            }
+                if !context.attest_queue.is_open(&batch) {
+                    return;
+                }
 
-            if !context.attest_queue.is_open(&batch) {
-                return;
+                // A signature landing mid-post moved the count, so this returns
+                // at once; an error is the batch retiring
+                match timeout(SENDER_IDLE, gathered.changed()).await {
+                    Ok(Ok(())) => {}
+                    _ => return,
+                }
             }
-
-            // Signatures landing during a post rang the waker, so this returns
-            // at once: a batch coalesces one post's worth of arrivals.
-            if timeout(SENDER_IDLE, wake.notified()).await.is_err() {
-                return;
-            }
-        }
-    });
+        });
+    }
 }
 
 /// Which peers this relayer forwards an answer to.

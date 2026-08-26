@@ -69,6 +69,8 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// Attestations gathered per round, so a signer posts once to each peer
     /// rather than once per spool it verified.
     pub attest_queue: Arc<AttestQueue>,
+    /// How many certificates this node aggregates at once.
+    pub certify_slots: Arc<tokio::sync::Semaphore>,
     pub challenge_counters: ChallengeCounters,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
@@ -84,6 +86,10 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
 
 /// Sentinel for a balance the monitor has not sampled yet
 const UNSAMPLED_BALANCE: u64 = u64::MAX;
+
+/// Certificates aggregated at once; unbounded pairings starve the proof
+/// verifies (last vote 286ms -> 553ms without this)
+const CERTIFY_SLOTS: usize = 4;
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
     pub fn node_id(&self) -> NodeId {
@@ -330,6 +336,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             round_traces: Arc::new(TraceRing::default()),
             sample_sets: Arc::new(SampleSets::default()),
             attest_queue: Arc::new(AttestQueue::default()),
+            certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
             challenge_counters: ChallengeCounters::default(),
             metrics: NodeMetrics,
             atlas: self.atlas,

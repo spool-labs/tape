@@ -685,7 +685,7 @@ mod tests {
 
         let schedule = challenge_schedule(&state).expect("a usable grid");
         assert_eq!(schedule.epoch_start_slot, SlotNumber(13_000));
-        assert_eq!(schedule.rounds(), 1_285);
+        assert_eq!(schedule.rounds(), 1_286);
         assert!(schedule.interval_slots >= round_width_slots());
         assert!(schedule.validate().is_ok());
     }

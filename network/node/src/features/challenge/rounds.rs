@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use tape_core::bls::BlsSignature;
@@ -24,7 +24,9 @@ pub struct RoundBuffer {
 #[derive(Default)]
 struct RoundEntry {
     answer: Option<ProofOfAccess>,
-    attestations: HashMap<Address, BlsSignature>,
+    /// Ordered, so what comes back out is in a fixed order whatever order it
+    /// arrived in, which is what the aggregate's bytes depend on.
+    attestations: BTreeMap<Address, BlsSignature>,
     certified: bool,
 }
 
