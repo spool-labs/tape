@@ -570,14 +570,15 @@ pub struct ChallengeRow {
     pub queued: bool,
     /// The recent strip, oldest first, true for a success.
     pub recent: Vec<bool>,
-    /// Which round each entry in `recent` belongs to, same order and length.
+    /// Which round each entry in `recent` belongs to, as indices into the
+    /// grid's `round_ids`, same order and length.
     ///
     /// Rows cover different rounds: peers join at different times and are asked
-    /// at different rates, so a strip cannot be placed by its length. Without
-    /// these a reader can only right-align, which puts a row's cells under
-    /// another row's round numbers and slides settled history as rows grow.
+    /// at different rates, so a strip cannot be placed by its length. Naming
+    /// each round in full per row repeated the same handful of them across
+    /// every row of every group.
     #[serde(default)]
-    pub rounds: Vec<RoundId>,
+    pub rounds: Vec<u32>,
 }
 
 /// The challenge record this node keeps, one row per peer.
@@ -636,6 +637,9 @@ pub struct ChallengeGrid {
     /// One row per owner, judged by this node's own rule.
     #[serde(default)]
     pub owners: Vec<ChallengeOwner>,
+    /// Rounds the rows index into, in no particular order.
+    #[serde(default)]
+    pub round_ids: Vec<RoundId>,
     /// Which rounds the strip's columns stand for, right-aligned with them.
     ///
     /// Every member of a group is judged in the same rounds, so one axis labels
@@ -753,10 +757,13 @@ pub struct RoundTrace {
     /// The individual messages, for the rounds recent enough to trace in detail.
     #[serde(default)]
     pub marks: Vec<TraceMark>,
-    /// Addresses the marks index into, base58. Sent whole on every push, since
-    /// a group's worth of them is smaller than one mark carrying its own.
+    /// Addresses the marks index into, base58.
     #[serde(default)]
     pub nodes: Vec<String>,
+    /// Index `nodes` starts at, so a live round sends only addresses it has not
+    /// sent before. The table only ever grows, so an index stays valid.
+    #[serde(default)]
+    pub node_base: u32,
     /// Index `marks` starts at, so a live round sends only what is new.
     ///
     /// Zero carries the whole list and replaces what a reader holds; anything

@@ -920,12 +920,17 @@ pub fn wire_trace(trace: &TracedRound) -> RoundTrace {
     wire_trace_with(trace, true)
 }
 
-/// One trace carrying only the marks added since `from`.
-pub fn wire_trace_from(trace: &TracedRound, from: usize) -> RoundTrace {
+/// One trace carrying only the marks added since `from`, and only the
+/// addresses those marks needed that were not sent with an earlier push.
+pub fn wire_trace_from(trace: &TracedRound, from: usize, nodes_from: usize) -> RoundTrace {
     let mut wire = wire_trace_with(trace, true);
     let from = from.min(wire.marks.len());
     wire.marks.drain(..from);
     wire.mark_base = from as u32;
+
+    let nodes_from = nodes_from.min(wire.nodes.len());
+    wire.nodes.drain(..nodes_from);
+    wire.node_base = nodes_from as u32;
     // A reader folds its own shapes from the marks and overwrites whatever
     // arrived beside them, so a delta carrying both sends one of them twice.
     // The first push of a round still carries shapes, which is what a page
@@ -998,6 +1003,7 @@ pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
         outcomes,
         // Whole by default; `wire_trace_from` is what trims to a delta.
         mark_base: 0,
+        node_base: 0,
     }
 }
 
@@ -1016,23 +1022,39 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // and showing one against the peer that gave the spool up reads as a failure
     // on data it is no longer asked about.
     let state = context.state();
+    // Rows name the same handful of rounds over and over, so each keeps its own
+    // sequence as indices into one table rather than spelling them out.
+    let mut round_ids: Vec<RoundId> = Vec::new();
     let mut rows: Vec<ChallengeRow> = context
         .store
         .iter_peer_records()
         .unwrap_or_default()
         .into_iter()
         .filter(|((node, spool), _)| holds_spool(&state, *node, *spool))
-        .map(|((node, spool), record)| ChallengeRow {
-            node: node.to_string(),
-            spool: spool.as_u64(),
-            opportunities: record.opportunities,
-            successes: record.successes,
-            consecutive_misses: record.consecutive_misses,
-            success_rate_bps: record.success_rate().0,
-            rule_fired: record.eviction_fires(),
-            queued: queued.contains(&node),
-            recent: record.recent_rounds(),
-            rounds: recent_round_ids(context, node, spool, record.recent_rounds().len()),
+        .map(|((node, spool), record)| {
+            let recent = record.recent_rounds();
+            let rounds = recent_round_ids(context, node, spool, recent.len())
+                .into_iter()
+                .map(|id| match round_ids.iter().position(|held| *held == id) {
+                    Some(at) => at as u32,
+                    None => {
+                        round_ids.push(id);
+                        (round_ids.len() - 1) as u32
+                    }
+                })
+                .collect();
+            ChallengeRow {
+                node: node.to_string(),
+                spool: spool.as_u64(),
+                opportunities: record.opportunities,
+                successes: record.successes,
+                consecutive_misses: record.consecutive_misses,
+                success_rate_bps: record.success_rate().0,
+                rule_fired: record.eviction_fires(),
+                queued: queued.contains(&node),
+                recent,
+                rounds,
+            }
         })
         // one read per row, reused for the axis below rather than re-fetched
         .collect();
@@ -1063,7 +1085,8 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         cadence_slots: schedule.as_ref().map(|s| s.interval_slots).unwrap_or_default(),
         settle_deadline_slots: SETTLE_DEADLINE_SLOTS,
         sample_lookback_slots: SAMPLE_LOOKBACK_SLOTS,
-        axis: round_axis(&rows),
+        round_ids: round_ids.clone(),
+        axis: round_axis(&rows, &round_ids),
         owners: owner_rows(context, &state, &queued),
         rows,
     }
@@ -1140,7 +1163,7 @@ fn recent_round_ids<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if len == 0 {
         return Vec::new();
     }
-    let rounds = context.store.peer_rounds(peer, spool).unwrap_or_default();
+    let rounds = context.store.peer_rounds_tail(peer, spool, len).unwrap_or_default();
     let tail = rounds.len().saturating_sub(len);
     rounds[tail..]
         .iter()
@@ -1150,10 +1173,15 @@ fn recent_round_ids<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// The axis every strip is read against: the widest row's rounds, which the
 /// rows already carry.
-fn round_axis(rows: &[ChallengeRow]) -> Vec<RoundId> {
+fn round_axis(rows: &[ChallengeRow], ids: &[RoundId]) -> Vec<RoundId> {
     rows.iter()
         .max_by_key(|row| row.rounds.len())
-        .map(|row| row.rounds.clone())
+        .map(|row| {
+            row.rounds
+                .iter()
+                .filter_map(|at| ids.get(*at as usize).copied())
+                .collect()
+        })
         .unwrap_or_default()
 }
 

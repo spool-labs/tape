@@ -104,6 +104,8 @@ pub struct RoundTrace {
     pushed_ms: u64,
     /// Marks already sent, so a push carries only what came after them.
     pushed_marks: usize,
+    /// Addresses already sent, counted the same way.
+    pushed_nodes: usize,
 }
 
 impl RoundTrace {
@@ -145,9 +147,10 @@ impl TraceRing {
             outcomes: Vec::new(),
             pushed_ms: 0,
             pushed_marks: 0,
+            pushed_nodes: 0,
         });
         retire(&mut traces);
-        push(traces.back(), 0);
+        push(traces.back(), 0, 0);
     }
 
     /// Records one mark against an open round, ignoring one this node never saw
@@ -196,8 +199,10 @@ impl TraceRing {
         if at_ms.saturating_sub(trace.pushed_ms) >= interval {
             trace.pushed_ms = at_ms;
             let from = trace.pushed_marks;
+            let nodes_from = trace.pushed_nodes;
             trace.pushed_marks = trace.marks.len();
-            push(Some(&*trace), from);
+            trace.pushed_nodes = distinct_peers(&trace.marks);
+            push(Some(&*trace), from, nodes_from);
         }
     }
 
@@ -236,9 +241,10 @@ impl TraceRing {
             trace.close = close;
             trace.pushed_ms = now_ms();
             trace.pushed_marks = trace.marks.len();
+            trace.pushed_nodes = distinct_peers(&trace.marks);
             // Whole, once, at the end: a reader that joined mid-round or lost a
             // push holds a partial trace, and this is where it is made good.
-            push(Some(&*trace), 0);
+            push(Some(&*trace), 0, 0);
         }
     }
 
@@ -267,18 +273,31 @@ fn retire(traces: &mut VecDeque<RoundTrace>) {
 
 /// Sends the trace to any dashboard watching, and builds nothing when none is.
 #[cfg(feature = "metrics")]
-fn push(trace: Option<&RoundTrace>, from: usize) {
+fn push(trace: Option<&RoundTrace>, from: usize, nodes_from: usize) {
     if !stream::watching() {
         return;
     }
     if let Some(trace) = trace {
-        stream::push_round(&board::wire_trace_from(trace, from));
+        stream::push_round(&board::wire_trace_from(trace, from, nodes_from));
     }
 }
 
 /// Without the observe surface there is nobody to send a trace to.
 #[cfg(not(feature = "metrics"))]
-fn push(_trace: Option<&RoundTrace>, _from: usize) {}
+fn push(_trace: Option<&RoundTrace>, _from: usize, _nodes_from: usize) {}
+
+/// Distinct peers the marks name, which is what the wire table holds.
+fn distinct_peers(marks: &[TraceMark]) -> usize {
+    let mut seen: Vec<Address> = Vec::new();
+    for mark in marks {
+        if let Some(peer) = mark.peer {
+            if !seen.contains(&peer) {
+                seen.push(peer);
+            }
+        }
+    }
+    seen.len()
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
