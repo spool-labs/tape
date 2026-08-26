@@ -596,6 +596,18 @@ impl Rpc for SolanaRpc {
         .await
     }
 
+    async fn get_confirmed_slot(&self) -> Result<u64, RpcError> {
+        let commitment = CommitmentConfig::confirmed();
+
+        self.with_retry("getSlot:confirmed", move |client| async move {
+            client
+                .get_slot_with_commitment(commitment)
+                .await
+                .map_err(|error| Self::convert_error(error, None))
+        })
+        .await
+    }
+
     async fn get_first_available_block(&self) -> Result<u64, RpcError> {
         self.with_retry("getFirstAvailableBlock", |client| async move {
             client
