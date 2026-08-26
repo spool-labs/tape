@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::features::challenge::attest_queue::{BatchKey, FLUSH_MS};
+use crate::features::challenge::attest_queue::BatchKey;
 
 
 use futures::future::join_all;
@@ -11,6 +11,7 @@ use tape_core::challenge::{self, ProofOfAccess, SampleEntry};
 use tape_core::challenge::proof::{Registered, SampleProof};
 use tape_core::challenge::sample::SampleLeaf;
 use tape_core::challenge::sample::{Sample, sample_space};
+use tape_core::challenge::schedule::{SETTLE_DEADLINE_SLOTS, SLOT_MS};
 use tape_core::erasure::{
     SAMPLE_WINDOW_LEAVES, SUB_LEAF_BYTES, prove_sub_leaf_windowed, sample_window_range,
 };
@@ -23,6 +24,7 @@ use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
 use tape_protocol::{Api, ProtocolState};
 use tape_store::types::TrackSample;
 use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
+use tokio::time::timeout;
 use tracing::{debug, trace};
 
 use crate::context::NodeContext;
@@ -313,17 +315,16 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     let peers: Vec<Address> = members.into_iter().filter(|peer| *peer != me).collect();
 
     // One round's signatures ride together. This one joins the batch; the first
-    // of a round arms the flush that will carry all of them.
+    // of a round opens it and owns the sender that carries all of them.
     let batch = BatchKey {
         epoch: round.epoch,
         group: round.group,
         round: round.round,
         block: round.block,
     };
-    let arm = context.attest_queue.push(batch, answer.spool, signature);
+    let opened = context.attest_queue.push(batch, answer.spool, signature);
 
     let context = context.clone();
-    let answer = answer.clone();
 
     // Relays go on their own task. Nothing correct waits on them, and gating the
     // round's signatures behind three kilobyte round-trips put every peer's
@@ -340,40 +341,45 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         });
     }
 
-    if !arm {
+    let Some(wake) = opened else {
         return;
-    }
+    };
 
     tokio::spawn(async move {
-        // Drains on its own clock rather than once. Answers arrive across the
-        // round, and a one-shot take left every later signature to arm a fresh
-        // flush of its own.
-        let mut quiet = 0;
-        while quiet < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(FLUSH_MS)).await;
+        loop {
+            // Posts before waiting: the signature that opened the batch is
+            // already in it, so the first pass costs no delay of its own.
             let attests: Vec<SpoolAttestation> = context
                 .attest_queue
                 .take(&batch)
                 .into_iter()
                 .map(|(spool, signature)| SpoolAttestation { spool, signature })
                 .collect();
-            if attests.is_empty() {
-                quiet += 1;
-                continue;
+
+            if !attests.is_empty() {
+                let attestation = AttestReq {
+                    epoch: batch.epoch,
+                    group: batch.group,
+                    round: batch.round,
+                    block: batch.block,
+                    signer: me,
+                    attests,
+                };
+                let sends = peers
+                    .iter()
+                    .map(|peer| send_attestation(&context, *peer, &attestation));
+                join_all(sends).await;
             }
-            quiet = 0;
-            let attestation = AttestReq {
-                epoch: batch.epoch,
-                group: batch.group,
-                round: batch.round,
-                block: batch.block,
-                signer: me,
-                attests,
-            };
-            let sends = peers
-                .iter()
-                .map(|peer| send_attestation(&context, *peer, &attestation));
-            join_all(sends).await;
+
+            if !context.attest_queue.is_open(&batch) {
+                return;
+            }
+
+            // Signatures landing during a post rang the waker, so this returns
+            // at once: a batch coalesces one post's worth of arrivals.
+            if timeout(SENDER_IDLE, wake.notified()).await.is_err() {
+                return;
+            }
         }
     });
 }
@@ -401,6 +407,11 @@ pub(crate) fn relay_targets(peers: &[Address], at: usize, fanout: usize) -> Vec<
 /// still counts if it beats the block rooting, and cutting at the round's own
 /// length turned slow-but-certifying spools into misses.
 const POST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Longest a round's sender waits before giving up. Retirement normally ends
+/// it; this bounds the senders left parked by a node that leaves every group.
+const SENDER_IDLE: std::time::Duration =
+    std::time::Duration::from_millis(SETTLE_DEADLINE_SLOTS * SLOT_MS);
 
 async fn relay_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,

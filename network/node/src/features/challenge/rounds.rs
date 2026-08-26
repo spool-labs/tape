@@ -58,6 +58,14 @@ impl RoundBuffer {
         entry.attestations.insert(signer, signature).is_none()
     }
 
+    /// Drops one signer's attestation, for a signature the aggregate rejected.
+    pub fn drop_attestation(&self, key: RoundKey, signer: Address) -> bool {
+        let mut entries = self.entries.lock().expect("round buffer");
+        entries
+            .get_mut(&key)
+            .is_some_and(|entry| entry.attestations.remove(&signer).is_some())
+    }
+
     pub fn signers(&self, key: RoundKey) -> Vec<Address> {
         let entries = self.entries.lock().expect("round buffer");
         let Some(entry) = entries.get(&key) else {

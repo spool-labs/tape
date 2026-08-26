@@ -7,8 +7,10 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::bls::BlsPubkey;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_core::erasure::{GROUP_SIZE, group_for_spool};
+use tape_crypto::Address;
 use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace};
@@ -59,7 +61,16 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     // has not certified by the time the next round opens is settled a miss
     // whenever it arrived, and no schedulable sub-round deadline separates an
     // adversary worth the honest nodes it evicts (see docs/whirlwind.md).
-    if !accept_answer(&state.context, &protocol, &answer, true) {
+    // Off the executor: a pairing plus the store reads it checks against.
+    let accepted = {
+        let context = state.context.clone();
+        let protocol = protocol.clone();
+        let answer = answer.clone();
+        tokio::task::spawn_blocking(move || accept_answer(&context, &protocol, &answer, true))
+            .await
+            .unwrap_or(false)
+    };
+    if !accepted {
         state
             .context
             .challenge_counters
@@ -86,12 +97,12 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     mark(&state, &protocol, &round, key, MarkKind::AnswerIn);
     trace!(spool = %answer.spool, round = answer.round.0, "challenge: answer accepted");
     spawn_relay_and_attest(&state.context, &protocol, &answer);
-    certify_if_ready(&state, &protocol, &round, key);
+    certify_if_ready(&state, &protocol, &round, key).await;
 
     Ok(StatusCode::OK)
 }
 
-pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -109,9 +120,11 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         round: payload.round,
         block: payload.block,
     };
-    let Some(peer) = protocol.peer(payload.signer) else {
+    // The key itself is read at certification; this only turns away a signer the
+    // node has never heard of.
+    if protocol.peer(payload.signer).is_none() {
         return Err(RouteError::BadRequest("unknown signer".into()));
-    };
+    }
 
     // A round has one signature per spool in the group, so anything longer is
     // not a batch this node asked for, and a spool twice is not a retry.
@@ -123,23 +136,14 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("attestation batch repeats a spool".into()));
     }
 
-    // One round's signatures arrive together. Each still stands for its own
-    // spool, so each is checked against the message that spool's attesters sign.
-    // Every one is verified: entries feed a shared aggregate, so a single
-    // unchecked signature fails the whole round and charges the answering node.
+    // Signatures are taken on arrival and settled by the quorum aggregate in
+    // `certify_if_ready`, which pairs once for a whole certificate. Checking
+    // each on arrival paired every signature twice, once alone and again inside
+    // the aggregate, which is a pairing per signature per peer per group every
+    // round. A forged one still cannot certify: it fails the aggregate, and the
+    // scan behind that failure is what names the signer.
     for attest in &payload.attests {
         let key = round.key(attest.spool);
-        if attest
-            .signature
-            .verify_aggregate(
-                attest_message(&round, attest.spool).to_bytes(),
-                core::slice::from_ref(&peer.bls_pubkey),
-            )
-            .is_err()
-        {
-            return Err(RouteError::BadRequest("attestation does not verify".into()));
-        }
-
         // Only a signature this node had not already counted, so a peer
         // replaying one leaves a single mark on the timeline rather than a row.
         if state
@@ -155,14 +159,18 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 MarkKind::AttestIn,
                 Some(payload.signer),
             );
-            certify_if_ready(&state, &protocol, &round, key);
+            certify_if_ready(&state, &protocol, &round, key).await;
         }
     }
 
     Ok(StatusCode::OK)
 }
 
-fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
+async fn certify_if_ready<
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+>(
     state: &AppState<Db, Cluster, Blockchain>,
     protocol: &ProtocolState,
     round: &Round,
@@ -180,40 +188,76 @@ fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return;
     }
 
-    // Aggregate and check before recording anything. A quorum of accepted
-    // attestations should always combine, so a failure here means our own view
-    // is inconsistent and the round is put back rather than recorded.
+    // Aggregate and check before recording anything. This is the only pairing
+    // an honest round pays, so a failure means a signature this node took on
+    // trust does not stand, and the scan below is what names the signer.
+    //
+    // Off the executor: a quorum verify is a pairing product and the fold
+    // behind it writes to the store.
     let attestations = state.context.round_buffer.attestations(key);
-    let certificate = SuccessCertificate::aggregate(
-        round.epoch,
-        round.group,
-        round.round,
-        key.spool,
-        round.block,
-        attestations,
-    );
-    let stands = certificate.as_ref().is_some_and(|certificate| {
-        certificate
-            .verify(threshold, owner, |signer| {
-                protocol.peer(signer).map(|peer| peer.bls_pubkey)
-            })
-            .inspect_err(|rejection| {
-                debug!(spool = %key.spool, ?rejection, "challenge: certificate refused");
-            })
-            .is_ok()
-    });
+    let signers: Vec<(Address, BlsPubkey)> = attestations
+        .iter()
+        .filter_map(|(signer, _)| Some((*signer, protocol.peer(*signer)?.bls_pubkey)))
+        .collect();
+
+    let context = state.context.clone();
+    let round = *round;
+    let stands = tokio::task::spawn_blocking(move || {
+        let certificate = SuccessCertificate::aggregate(
+            round.epoch,
+            round.group,
+            round.round,
+            key.spool,
+            round.block,
+            attestations.clone(),
+        );
+        let stands = certificate.as_ref().is_some_and(|certificate| {
+            certificate
+                .verify(threshold, owner, |signer| {
+                    signers
+                        .iter()
+                        .find(|(held, _)| *held == signer)
+                        .map(|(_, pubkey)| *pubkey)
+                })
+                .inspect_err(|rejection| {
+                    debug!(spool = %key.spool, ?rejection, "challenge: certificate refused");
+                })
+                .is_ok()
+        });
+        if !stands {
+            // One bad signature fails the whole aggregate, so the quorum is
+            // rebuilt without whoever sent it rather than the round being lost.
+            let message = attest_message(&round, key.spool).to_bytes();
+            for (signer, signature) in &attestations {
+                let Some((_, pubkey)) = signers.iter().find(|(held, _)| held == signer) else {
+                    continue;
+                };
+                if signature
+                    .verify_aggregate(&message, core::slice::from_ref(pubkey))
+                    .is_err()
+                {
+                    context.round_buffer.drop_attestation(key, *signer);
+                    debug!(spool = %key.spool, node = %signer, "challenge: attestation dropped");
+                }
+            }
+            context.round_buffer.release_certificate(key);
+            return false;
+        }
+
+        // Folded now rather than waiting for the block to finalize. A
+        // certificate under a candidate that loses records a success the owner
+        // may not have earned, which is the harmless direction. Waiting instead
+        // would lose the late certificate that replaces a recorded miss, and a
+        // miss is what evicts. `settle_previous` refuses to charge a miss for a
+        // round that never finalized, which is the half that has teeth.
+        fold_outcome(&context.store, owner, key.spool, round.epoch, round.round, true);
+        true
+    })
+    .await
+    .unwrap_or(false);
     if !stands {
-        state.context.round_buffer.release_certificate(key);
         return;
     }
-
-    // Folded now rather than waiting for the block to finalize. A certificate
-    // under a candidate that loses records a success the owner may not have
-    // earned, which is the harmless direction. Waiting instead would lose the
-    // late certificate that replaces a recorded miss, and a miss is what
-    // evicts. `settle_previous` refuses to charge a miss for a round that never
-    // finalized, which is the half that has teeth.
-    fold_outcome(&state.context.store, owner, key.spool, round.epoch, round.round, true);
     state.context.round_traces.mark(
         round.epoch,
         round.round,

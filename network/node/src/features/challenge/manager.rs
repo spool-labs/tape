@@ -248,6 +248,9 @@ where
             .min()
         {
             self.context.round_buffer.retire_before(epoch, round);
+            // Ends the senders gathering for those rounds too: their signatures
+            // no longer have evidence to join.
+            self.context.attest_queue.retire_before(epoch, round);
         }
 
         Ok(())
@@ -396,6 +399,7 @@ where
     fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {
         for hash in hashes {
             self.context.round_buffer.discard_block(*hash);
+            self.context.attest_queue.discard_block(*hash);
         }
 
         // Count the rounds dropped, not the blocks rolled. A window is four
