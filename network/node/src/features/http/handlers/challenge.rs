@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use axum::extract::State;
 use axum::body::Bytes;
 use axum::http::StatusCode;
@@ -6,9 +8,8 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
-use tape_core::erasure::group_for_spool;
+use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_protocol::{Api, ProtocolState};
-use crate::features::http::auth::ActivePeer;
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace};
 
@@ -92,7 +93,6 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
 
 pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    caller: Option<axum::Extension<ActivePeer>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     if !state.context.config.challenge.enabled {
@@ -113,24 +113,29 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("unknown signer".into()));
     };
 
-    // The connection already proves who is speaking when its identity matches
-    // the signer, and a signer can only ever poison its own entries. Anything
-    // else — simnet, an epoch boundary, a stranger — takes the signature check
-    // as before, so this only ever removes work.
-    let bound = caller.is_some_and(|caller| caller.node == payload.signer);
+    // A round has one signature per spool in the group, so anything longer is
+    // not a batch this node asked for, and a spool twice is not a retry.
+    if payload.attests.len() > GROUP_SIZE {
+        return Err(RouteError::BadRequest("attestation batch too large".into()));
+    }
+    let mut seen = BTreeSet::new();
+    if !payload.attests.iter().all(|attest| seen.insert(attest.spool)) {
+        return Err(RouteError::BadRequest("attestation batch repeats a spool".into()));
+    }
 
     // One round's signatures arrive together. Each still stands for its own
     // spool, so each is checked against the message that spool's attesters sign.
+    // Every one is verified: entries feed a shared aggregate, so a single
+    // unchecked signature fails the whole round and charges the answering node.
     for attest in &payload.attests {
         let key = round.key(attest.spool);
-        if !bound
-            && attest
-                .signature
-                .verify_aggregate(
-                    attest_message(&round, attest.spool).to_bytes(),
-                    core::slice::from_ref(&peer.bls_pubkey),
-                )
-                .is_err()
+        if attest
+            .signature
+            .verify_aggregate(
+                attest_message(&round, attest.spool).to_bytes(),
+                core::slice::from_ref(&peer.bls_pubkey),
+            )
+            .is_err()
         {
             return Err(RouteError::BadRequest("attestation does not verify".into()));
         }
