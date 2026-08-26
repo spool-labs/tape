@@ -164,6 +164,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     }
 
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
+        // sub-minute test epochs judge runs on the short threshold
+        tape_core::challenge::record::set_run_threshold(
+            state.current.epoch.preferences.epoch_duration.0,
+        );
         self.state.publish(state)
     }
 
