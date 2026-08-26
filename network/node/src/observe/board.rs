@@ -883,8 +883,9 @@ fn challenge_timeline<Db: Store, Cluster: Api, Blockchain: Rpc>(
 /// Rounds the board seeds with their individual messages, not just their shape.
 const DETAILED_ROUNDS: u64 = 2;
 
-/// How far back a round still open keeps its messages on the board.
-const OPEN_DETAILED_ROUNDS: u64 = 4;
+/// How far back a round still open keeps its messages on the board; a round
+/// stays open until its block roots, so narrower leaves live bands empty
+const OPEN_DETAILED_ROUNDS: u64 = SETTLE_DEADLINE_SLOTS / round_width_slots() + 2;
 
 /// One trace on the wire. Mark times become offsets from the round opening, so
 /// a reader places them without reconciling its clock against the node's.

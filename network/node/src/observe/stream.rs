@@ -69,7 +69,7 @@ impl Frame {
         Some(Frame { event, data: base64::encode(bytes) })
     }
 
-    /// The frame as one named event, handing over the JSON it already holds
+    /// The frame as one named event, handing over the payload it already holds
     fn into_event(self) -> Event {
         Event::default().event(self.event).data(self.data)
     }
@@ -83,7 +83,8 @@ const BACKFILL_LEN: usize = (BACKFILL_SPAN_MS / BACKFILL_STEP_MS) as usize;
 struct Replay {
     hello: Option<Frame>,
     topology: Option<Frame>,
-    board: Option<Frame>,
+    /// Held whole: encoding it every board period stalled the tick beside it
+    board: Option<std::sync::Arc<tape_observe_api::Board>>,
     history: std::collections::VecDeque<Tick>,
 }
 
@@ -121,7 +122,6 @@ impl StreamHub {
             match frame.event {
                 EVENT_HELLO => replay.hello = Some(frame.clone()),
                 EVENT_TOPOLOGY => replay.topology = Some(frame.clone()),
-                EVENT_BOARD => replay.board = Some(frame.clone()),
                 _ => {}
             }
         }
@@ -134,7 +134,7 @@ impl StreamHub {
     /// A viewer already streaming has the round marks from the pushes that
     /// carried them, so repeating the whole timeline every board period is
     /// bytes only a page joining now has any use for.
-    fn publish_kept(&self, live: Frame, kept: Frame) {
+    fn publish_kept(&self, live: Frame, kept: std::sync::Arc<tape_observe_api::Board>) {
         if let Ok(mut replay) = self.replay.lock() {
             replay.board = Some(kept);
         }
@@ -151,7 +151,12 @@ impl StreamHub {
         if let Ok(replay) = self.replay.lock() {
             frames.extend(replay.hello.clone());
             frames.extend(replay.topology.clone());
-            frames.extend(replay.board.clone());
+            frames.extend(
+                replay
+                    .board
+                    .as_ref()
+                    .and_then(|board| Frame::new(EVENT_BOARD, board.as_ref())),
+            );
             // Sampling stops once nobody has watched for a while, so anything
             // older than the span would draw as if it were current
             let now_ms = SystemTime::now()
@@ -437,7 +442,7 @@ where
                     if since_board >= Duration::from_millis(BOARD_PERIOD_MS) {
                         since_board = Duration::ZERO;
                         let board = board::build(&self.context);
-                        let kept = Frame::new(EVENT_BOARD, &board);
+                        let kept = std::sync::Arc::new(board.clone());
                         let mut live = board;
                         // A viewer already streaming has the timeline from the
                         // round pushes, so this carries only enough of it to
@@ -454,13 +459,10 @@ where
                             trace.epoch == newest.0
                                 && newest.1.saturating_sub(trace.round) < LIVE_BOARD_ROUNDS
                         });
-                        for trace in &mut live.challenge_timeline {
-                            trace.marks.clear();
-                            trace.nodes.clear();
-                        }
-                        if let (Some(live), Some(kept)) =
-                            (Frame::new(EVENT_BOARD, &live), kept)
-                        {
+                        // Marks stay: this board is what repairs a viewer that
+                        // missed a round opening, and stripping them left those
+                        // rounds blank
+                        if let Some(live) = Frame::new(EVENT_BOARD, &live) {
                             hub.publish_kept(live, kept);
                         }
                         // The shape moves at an epoch boundary, but the peer
