@@ -144,7 +144,7 @@ where
 
         // Before the phase gate: an epoch that left Active still owes a
         // verdict on every round it opened.
-        self.settle_finalized(&state, block.slot);
+        self.settle_finalized(block.slot);
 
         if state.phase() != EpochPhase::Active {
             return Ok(());
@@ -196,7 +196,7 @@ where
                 .then(|| pending.pop_front())
                 .flatten();
             if let Some(stale) = stale {
-                self.settle_round(&state, &stale);
+                self.settle_round(&stale);
             }
 
             self.open_rounds.entry(group).or_default().push_back(OpenRound {
@@ -258,7 +258,7 @@ where
 
     /// Judges rounds whose block rooted, voids those that waited too long.
     /// Oldest first, so it stops at the first round still waiting.
-    fn settle_finalized(&mut self, state: &ProtocolState, now: SlotNumber) {
+    fn settle_finalized(&mut self, now: SlotNumber) {
         let mut ready = Vec::new();
         for pending in self.open_rounds.values_mut() {
             while pending.front().is_some_and(|open| open.settles_at(now)) {
@@ -269,12 +269,12 @@ where
         }
         self.open_rounds.retain(|_, pending| !pending.is_empty());
         for open in &ready {
-            self.settle_round(state, open);
+            self.settle_round(open);
         }
     }
 
     /// Judges one round: what the group made of every spool it was asked about.
-    fn settle_round(&mut self, state: &ProtocolState, open: &OpenRound) {
+    fn settle_round(&mut self, open: &OpenRound) {
 
         // A round whose entropy block never finalized is void. Nobody owed an
         // answer on a branch that lost, so nobody is charged for one.
