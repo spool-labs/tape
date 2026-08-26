@@ -5,9 +5,11 @@
 //! The board and the topology go out on their own slower clocks.
 
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::{Stream, StreamExt};
 use rpc::Rpc;
@@ -174,13 +176,19 @@ pub fn push_round(trace: &RoundTrace) {
 /// The hub is process-global, so the node and the gateway mount the same
 /// handler. A reverse proxy in front of this must not buffer the response, or
 /// frames arrive in batches.
-pub async fn sse() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+pub async fn sse() -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    // Admission rate-limits requests, which does not bound a response that
+    // stays open, so the streams count themselves.
+    let Some(slot) = StreamSlot::open() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
     let (replay, rx) = hub().subscribe();
     let opening = futures::stream::iter(replay.into_iter().map(|f| Ok(f.into_event())));
-    let live = futures::stream::unfold(rx, |mut rx| async move {
+    // The slot rides the stream so it is released when the viewer goes away.
+    let live = futures::stream::unfold((rx, slot), |(mut rx, slot)| async move {
         loop {
             match rx.recv().await {
-                Ok(frame) => return Some((Ok(frame.into_event()), rx)),
+                Ok(frame) => return Some((Ok(frame.into_event()), (rx, slot))),
                 // A viewer whose socket stalled misses frames rather than
                 // holding the sampler up; the next tick puts it back in step.
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -188,7 +196,32 @@ pub async fn sse() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
             }
         }
     });
-    Sse::new(opening.chain(live)).keep_alive(KeepAlive::default())
+    Ok(Sse::new(opening.chain(live)).keep_alive(KeepAlive::default()))
+}
+
+/// Viewers a node serves at once, past which a new one is turned away.
+const MAX_STREAMS: usize = 256;
+
+static OPEN_STREAMS: AtomicUsize = AtomicUsize::new(0);
+
+/// One viewer's place in the stream count, given up when the stream drops.
+struct StreamSlot;
+
+impl StreamSlot {
+    fn open() -> Option<Self> {
+        OPEN_STREAMS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |open| {
+                (open < MAX_STREAMS).then_some(open + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for StreamSlot {
+    fn drop(&mut self) {
+        OPEN_STREAMS.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// One reading of every cumulative counter a tick is derived from

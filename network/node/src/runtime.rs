@@ -463,10 +463,19 @@ where
     // never runs the drop, and an unsealed tail reads as a crash to the next
     // open, so the close happens here, after every writer has stopped.
     info!("closing store");
-    if let Err(error) = store.inner().inner().close() {
-        warn!(error = %error, "store close failed on shutdown");
+    match (outcome, store.inner().inner().close()) {
+        // A supervision failure is the root cause and stays the reported one.
+        (Err(outcome), Err(error)) => {
+            warn!(error = %error, "store close failed on shutdown");
+            Err(outcome)
+        }
+        // Nothing else went wrong, so an unsealed store is what this run means.
+        (Ok(()), Err(error)) => {
+            warn!(error = %error, "store close failed on shutdown");
+            Err(NodeError::Store(format!("close on shutdown: {error}")))
+        }
+        (outcome, Ok(())) => outcome,
     }
-    outcome
 }
 
 pub async fn run_with_context<Db, Cluster, Blockchain>(
