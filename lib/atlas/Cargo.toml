@@ -6,7 +6,4 @@ description = "Tapedrive Atlas: shared wire types for the live network globe (st
 license = "Apache-2.0"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
-bincode = "1"
+wincode = { version = "0.5", features = ["derive"] }

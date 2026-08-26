@@ -512,6 +512,7 @@ mod tests {
             recent_blockhash: SolanaHash::new_unique().to_string(),
             instructions,
             address_table_lookups: None,
+            transaction_config: None,
         }
     }
 

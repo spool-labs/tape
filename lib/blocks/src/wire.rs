@@ -13,14 +13,13 @@
 //! The transaction arrives as one base64 blob, not a tree of strings to parse
 //! and base58-decode. Meta keeps its json shape, so the event path is unchanged.
 
-use bincode::Options as _;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use tape_crypto::address::Address;
 
 /// Ceiling on one decoded transaction, above what solana accepts today so a
 /// larger limit upstream does not silently start failing here.
-const MAX_TRANSACTION_BYTES: u64 = 5 * 1024;
+const MAX_TRANSACTION_BYTES: usize = 5 * 1024;
 
 /// A confirmed block, carrying only what the parser consumes.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -105,19 +104,14 @@ impl<'de> Deserialize<'de> for TransactionBody {
         }
         let raw = base64::decode(payload)
             .map_err(|_| D::Error::custom("transaction is not base64"))?;
-        // bincode, not wincode: solana ships both and they are byte-identical
-        // here, but its own crates resolve three wincode versions and the
-        // message derive lands on a different one than Address implements.
-        // The options spell out what bincode::deserialize does by default, since
-        // bincode::options() would switch to varint and decode nothing. The
-        // limit is what keeps a length prefix from asking for an allocation.
-        let tx: solana_transaction::versioned::VersionedTransaction =
-            bincode::DefaultOptions::new()
-                .with_fixint_encoding()
-                .allow_trailing_bytes()
-                .with_limit(MAX_TRANSACTION_BYTES)
-                .deserialize(&raw)
-                .map_err(|_| D::Error::custom("transaction did not decode"))?;
+        // The limit is what keeps a length prefix from asking for an allocation;
+        // wincode's own default ceiling is 4 MiB.
+        let tx: solana_transaction::versioned::VersionedTransaction = wincode::config::deserialize(
+            &raw,
+            wincode::config::Configuration::default()
+                .with_preallocation_size_limit::<MAX_TRANSACTION_BYTES>(),
+        )
+        .map_err(|_| D::Error::custom("transaction did not decode"))?;
 
         Ok(Self {
             signatures: tx.signatures.iter().filter_map(|sig| sig.as_ref().try_into().ok()).collect(),
@@ -337,7 +331,7 @@ mod tests {
             signatures: vec![solana_transaction::Signature::from([5u8; 64])],
             message: solana_message::VersionedMessage::Legacy(message),
         };
-        let raw = bincode::serialize(&tx).expect("encode");
+        let raw = wincode::serialize(&tx).expect("encode");
         (base64::encode(raw), account, program)
     }
 
