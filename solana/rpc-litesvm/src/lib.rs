@@ -420,7 +420,10 @@ impl Rpc for LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        Ok(inner.confirmed_tip_override.unwrap_or(inner.confirmed_tip))
+        // one slot behind the producer, as a cluster's confirmed commitment is
+        Ok(inner
+            .confirmed_tip_override
+            .unwrap_or_else(|| inner.confirmed_tip.saturating_sub(1)))
     }
 
     async fn get_first_available_block(&self) -> Result<u64, RpcError> {
