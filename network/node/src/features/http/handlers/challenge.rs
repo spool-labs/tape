@@ -219,34 +219,24 @@ fn claim_certificate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Some(Claimed { key, owner, threshold, attestations, signers })
 }
 
-/// Certifies everything one batch claimed, in one trip through the executor.
-///
-/// Certification is off the request because handler time is the sender's cycle
-/// time, and batched because the trip itself is the cost: a pairing is three
-/// milliseconds against eighty-six for an uncontended crossing, and each spool
-/// queued behind another adds thirteen more.
+/// Certifies everything one batch claimed, on the certify stage rather than
+/// the request: handler time is the sender's cycle time
 fn spawn_certify_batch<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     state: &AppState<Db, Cluster, Blockchain>,
     round: &Round,
     claimed: Vec<Claimed>,
 ) {
+    let stage = state.context.clone();
     let state = state.clone();
     let round = *round;
-    tokio::spawn(async move {
-        let Ok(_slot) = state.context.certify_slots.clone().acquire_owned().await else {
-            return;
-        };
-
-        let context = state.context.clone();
-        let stood = tokio::task::spawn_blocking(move || {
-            claimed
-                .into_iter()
-                .filter(|claim| verify_one(&context, &round, claim))
-                .map(|claim| (claim.key, claim.owner))
-                .collect::<Vec<_>>()
-        })
-        .await
-        .unwrap_or_default();
+    // folds still ride the blocking pool, and the worker is not a runtime thread
+    let runtime = tokio::runtime::Handle::current();
+    let job = Box::new(move || {
+        let stood: Vec<_> = claimed
+            .into_iter()
+            .filter(|claim| verify_one(&state.context, &round, claim))
+            .map(|claim| (claim.key, claim.owner))
+            .collect();
 
         for (key, owner) in stood {
             // The certificate exists once the quorum verifies, so the round is
@@ -270,11 +260,12 @@ fn spawn_certify_batch<Db: Store + 'static, Cluster: Api + 'static, Blockchain: 
             // refuses to charge a miss for a round that never finalized, which
             // is the half that has teeth.
             let context = state.context.clone();
-            tokio::task::spawn_blocking(move || {
+            runtime.spawn_blocking(move || {
                 fold_outcome(&context.store, owner, key.spool, round.epoch, round.round, true);
             });
         }
     });
+    let _ = stage.certify_stage().send(job);
 }
 
 /// Aggregates and checks one spool's quorum. This is the only pairing an honest
@@ -294,16 +285,25 @@ fn verify_one<Db: Store, Cluster: Api, Blockchain: Rpc>(
         round.block,
         claim.attestations.clone(),
     );
-    let stands = certificate.as_ref().is_some_and(|certificate| {
-        certificate
-            .verify(claim.threshold, claim.owner, |signer| {
-                claim.signers.get(&signer).copied()
-            })
-            .inspect_err(|rejection| {
-                debug!(spool = %key.spool, ?rejection, "challenge: certificate refused");
-            })
-            .is_ok()
+    // the summed path skips re-adding the same quorum's keys for every spool;
+    // any failure falls through to the full verify, so the cache cannot refuse
+    // what the slow path would accept
+    let summed = quorum_key(claim).is_some_and(|quorum| {
+        certificate.as_ref().is_some_and(|certificate| {
+            certificate.verify_summed(claim.threshold, claim.owner, &quorum).is_ok()
+        })
     });
+    let stands = summed
+        || certificate.as_ref().is_some_and(|certificate| {
+            certificate
+                .verify(claim.threshold, claim.owner, |signer| {
+                    claim.signers.get(&signer).copied()
+                })
+                .inspect_err(|rejection| {
+                    debug!(spool = %key.spool, ?rejection, "challenge: certificate refused");
+                })
+                .is_ok()
+        });
     if stands {
         return true;
     }
@@ -322,6 +322,39 @@ fn verify_one<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
     context.round_buffer.release_certificate(key);
     false
+}
+
+/// The quorum's summed key, cached per signer set since every spool a round
+/// certifies shares one.
+fn quorum_key(claim: &Claimed) -> Option<tape_core::bls::BlsQuorumKey> {
+    use std::hash::{Hash, Hasher};
+    thread_local! {
+        static SUMS: std::cell::RefCell<std::collections::HashMap<u64, tape_core::bls::BlsQuorumKey>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (signer, _) in &claim.attestations {
+        signer.hash(&mut hasher);
+    }
+    let set = hasher.finish();
+
+    SUMS.with(|sums| {
+        let mut sums = sums.borrow_mut();
+        if let Some(quorum) = sums.get(&set) {
+            return Some(*quorum);
+        }
+        let keys: Option<Vec<_>> = claim
+            .attestations
+            .iter()
+            .map(|(signer, _)| claim.signers.get(signer).copied())
+            .collect();
+        let quorum = tape_core::bls::BlsQuorumKey::sum(&keys?).ok()?;
+        if sums.len() > 64 {
+            sums.clear();
+        }
+        sums.insert(set, quorum);
+        Some(quorum)
+    })
 }
 
 /// Marks an accepted answer against the spool's owner, who owed it.

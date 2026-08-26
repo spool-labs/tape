@@ -63,14 +63,10 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub eviction_queue: Arc<EvictionQueue>,
     pub round_buffer: Arc<RoundBuffer>,
     pub round_traces: Arc<TraceRing>,
-    /// One sample set per round in flight, so every answer verified against a
-    /// round costs one scan of the group rather than one each.
     pub sample_sets: Arc<SampleSets<crate::features::challenge::audit::SampleSet>>,
-    /// Attestations gathered per round, so a signer posts once to each peer
-    /// rather than once per spool it verified.
     pub attest_queue: Arc<AttestQueue>,
-    /// How many certificates this node aggregates at once.
     pub certify_slots: Arc<tokio::sync::Semaphore>,
+    certify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<CertifyJob>>,
     pub challenge_counters: ChallengeCounters,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
@@ -91,7 +87,38 @@ const UNSAMPLED_BALANCE: u64 = u64::MAX;
 /// verifies (last vote 286ms -> 553ms without this)
 const CERTIFY_SLOTS: usize = 4;
 
+/// A self-contained certify task, its context captured at the call site.
+pub type CertifyJob = Box<dyn FnOnce() + Send>;
+
+/// Certify worker threads; two clear a round inside one cadence
+const CERTIFY_WORKERS: usize = 2;
+
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
+    /// The certify stage's intake, its workers spawned on first use
+    pub fn certify_stage(&self) -> &std::sync::mpsc::Sender<CertifyJob> {
+        self.certify_stage.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<CertifyJob>();
+            let rx = Arc::new(std::sync::Mutex::new(rx));
+            for n in 0..CERTIFY_WORKERS {
+                let rx = rx.clone();
+                let _ = std::thread::Builder::new()
+                    .name(format!("certify-{n}"))
+                    .spawn(move || loop {
+                        // recv under the lock hands each job to whichever worker is free
+                        let job = match rx.lock() {
+                            Ok(guard) => guard.recv(),
+                            Err(_) => return,
+                        };
+                        match job {
+                            Ok(job) => job(),
+                            Err(_) => return,
+                        }
+                    });
+            }
+            tx
+        })
+    }
+
     pub fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -337,6 +364,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             sample_sets: Arc::new(SampleSets::default()),
             attest_queue: Arc::new(AttestQueue::default()),
             certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
+            certify_stage: std::sync::OnceLock::new(),
             challenge_counters: ChallengeCounters::default(),
             metrics: NodeMetrics,
             atlas: self.atlas,

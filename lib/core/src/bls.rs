@@ -91,6 +91,17 @@ impl BlsSignature {
     }
 
     /// Verify an aggregated signature against exact list of signers
+    /// Verifies against a quorum key summed once and reused across spools.
+    #[cfg(not(target_os = "solana"))]
+    pub fn verify_quorum<M: AsRef<[u8]>>(
+        &self,
+        message: M,
+        quorum: &BlsQuorumKey,
+    ) -> Result<(), BLSError> {
+        let decompressed_sig = G1Point::try_from(&self.0)?;
+        verify_aggregate_summed(message, &quorum.0, &decompressed_sig)
+    }
+
     pub fn verify_aggregate<M: AsRef<[u8]>>(
         &self,
         message: M,
@@ -120,6 +131,29 @@ impl BlsSignature {
 #[derive(Clone, Copy, PartialEq, Eq, Pod, Zeroable, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct BlsPubkey(pub G2Point); // using the uncompressed form to reduce CU
+
+/// A quorum's keys summed once, reused across every spool the set certifies.
+#[cfg(not(target_os = "solana"))]
+#[derive(Clone, Copy)]
+pub struct BlsQuorumKey(G2Point);
+
+#[cfg(not(target_os = "solana"))]
+impl BlsQuorumKey {
+    /// Sums distinct, non-zero keys; the caller guarantees the set matches the
+    /// certificate's signers.
+    pub fn sum(keys: &[BlsPubkey]) -> Result<Self, BLSError> {
+        if keys.is_empty() {
+            return Err(BLSError::SerializationError);
+        }
+        for (i, key) in keys.iter().enumerate() {
+            if key.0.0 == [0u8; 128] || keys[..i].iter().any(|held| held.0.0 == key.0.0) {
+                return Err(BLSError::SerializationError);
+            }
+        }
+        let points: Vec<G2Point> = keys.iter().map(|key| key.0).collect();
+        Ok(Self(sum_pubkeys(&points)?))
+    }
+}
 
 impl BlsPubkey {
     #[cfg(not(target_os = "solana"))]

@@ -111,9 +111,33 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     }
 }
 
+/// Verifies against a key already summed over the quorum, for callers that
+/// certify many spools under one signer set.
+#[cfg(not(target_os = "solana"))]
+pub fn verify_aggregate_summed<M: AsRef<[u8]>>(
+    message: M,
+    summed: &G2Point,
+    s_sum: &G1Point,
+) -> Result<(), BLSError> {
+    if s_sum.0 == [0u8; 64] || summed.0 == [0u8; 128] {
+        return Err(BLSError::SerializationError);
+    }
+    let h_g1 = hash_to_curve(message.as_ref())?.0;
+
+    let mut input = [0u8; 384];
+    input[..64].copy_from_slice(&h_g1);
+    input[64..192].copy_from_slice(&summed.0);
+    input[192..256].copy_from_slice(&s_sum.0);
+    input[256..384].copy_from_slice(&G2_MINUS_ONE);
+
+    let r = alt_bn128_pairing(&input).map_err(|_| BLSError::AltBN128PairingError)?;
+    let ok = r.iter().take(31).all(|&b| b == 0) && r[31] == 1;
+    if ok { Ok(()) } else { Err(BLSError::BLSVerificationError) }
+}
+
 /// Sums the signers' keys so a quorum verifies in one pairing product.
 #[cfg(not(target_os = "solana"))]
-fn sum_pubkeys(pubkeys: &[G2Point]) -> Result<G2Point, BLSError> {
+pub fn sum_pubkeys(pubkeys: &[G2Point]) -> Result<G2Point, BLSError> {
     use num::CheckedAdd;
     let mut acc = pubkeys[0];
     for pubkey in &pubkeys[1..] {
