@@ -23,9 +23,9 @@ pub const TRACED_ROUNDS: usize = 16;
 /// Traces held at once, bounding a node that holds spools in many groups.
 const MAX_TRACES: usize = 128;
 
-/// Marks one trace collects before it stops taking them, so a peer replaying
-/// attestations cannot grow the ring without bound.
-const MAX_MARKS: usize = 512;
+/// Marks one trace collects before it stops taking them; a full round runs
+/// ~550 with relays and refusals, so honest rounds never reach this
+const MAX_MARKS: usize = 2048;
 
 /// How often a round in flight is sent out.
 ///
@@ -169,20 +169,10 @@ impl TraceRing {
         else {
             return;
         };
-        // At the cap, the oldest vote gives way rather than the newest mark being
-        // refused: a round's tail is its certificate, which is the evidence a
-        // reader is waiting on, and its middle is one attestation among twenty.
+        // Refused at the cap, never evicted: the push deltas index into this
+        // list, so removing a mark desyncs every connected reader for the round
         if trace.marks.len() >= MAX_MARKS {
-            let oldest = trace
-                .marks
-                .iter()
-                .position(|mark| mark.kind == MarkKind::AttestIn);
-            match oldest {
-                Some(index) => {
-                    trace.marks.remove(index);
-                }
-                None => return,
-            }
+            return;
         }
 
         let at_ms = now_ms();
@@ -415,6 +405,36 @@ mod tests {
         }
 
         assert_eq!(ring.snapshot()[0].marks.len(), MAX_MARKS);
+    }
+
+    // a full trace refuses new marks rather than evicting old ones, since the
+    // push deltas index into the list and a removal desyncs every reader
+    #[test]
+    fn the_cap_never_evicts() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        ring.mark(
+            EpochNumber(1),
+            RoundNumber(1),
+            GroupIndex(0),
+            SpoolIndex(7),
+            MarkKind::AnswerIn,
+            None,
+        );
+        for _ in 0..MAX_MARKS {
+            ring.mark(
+                EpochNumber(1),
+                RoundNumber(1),
+                GroupIndex(0),
+                SpoolIndex(0),
+                MarkKind::AttestIn,
+                None,
+            );
+        }
+
+        let marks = &ring.snapshot()[0].marks;
+        assert_eq!(marks.len(), MAX_MARKS);
+        assert_eq!(marks[0].kind, MarkKind::AnswerIn, "the first mark must survive the cap");
     }
 
     #[test]
