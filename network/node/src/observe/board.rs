@@ -926,11 +926,59 @@ pub fn wire_trace_from(trace: &TracedRound, from: usize) -> RoundTrace {
     let from = from.min(wire.marks.len());
     wire.marks.drain(..from);
     wire.mark_base = from as u32;
+    // A reader folds its own shapes from the marks and overwrites whatever
+    // arrived beside them, so a delta carrying both sends one of them twice.
+    // The first push of a round still carries shapes, which is what a page
+    // joining partway paints from.
+    if wire.mark_base > 0 {
+        wire.shapes.clear();
+    }
     wire
 }
 
 /// One trace on the wire, with or without the individual messages behind it.
 pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
+    let mut nodes: Vec<String> = Vec::new();
+    let mut index_of = |peer: Option<tape_crypto::Address>| -> u32 {
+        let Some(peer) = peer else { return u32::MAX };
+        let name = peer.to_string();
+        match nodes.iter().position(|held| *held == name) {
+            Some(at) => at as u32,
+            None => {
+                nodes.push(name);
+                (nodes.len() - 1) as u32
+            }
+        }
+    };
+    let marks: Vec<TraceMark> = trace
+        .marks
+        .iter()
+        .filter(|_| detailed)
+        .map(|mark| TraceMark {
+            spool: mark.spool.as_u64(),
+            node: index_of(mark.peer),
+            kind: match mark.kind {
+                MarkKind::AnswerOut => WireMark::AnswerOut,
+                MarkKind::AnswerIn => WireMark::AnswerIn,
+                MarkKind::AnswerRefused => WireMark::AnswerRefused,
+                MarkKind::AttestOut => WireMark::AttestOut,
+                MarkKind::AttestIn => WireMark::AttestIn,
+                MarkKind::Certified => WireMark::Certified,
+            },
+            at_ms: mark.at_ms.saturating_sub(trace.opened_ms),
+        })
+        .collect();
+
+    let outcomes: Vec<SpoolOutcome> = trace
+        .outcomes
+        .iter()
+        .map(|outcome| SpoolOutcome {
+            spool: outcome.spool.as_u64(),
+            node: index_of(Some(outcome.owner)),
+            certified: outcome.certified,
+        })
+        .collect();
+
     RoundTrace {
         epoch: trace.epoch.as_u64(),
         round: trace.round.as_u64(),
@@ -945,33 +993,9 @@ pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
             TraceClose::Nothing => WireClose::Nothing,
         },
         shapes: fold_shapes(trace),
-        marks: trace
-            .marks
-            .iter()
-            .filter(|_| detailed)
-            .map(|mark| TraceMark {
-                spool: mark.spool.as_u64(),
-                node: mark.peer.map(|peer| peer.to_string()).unwrap_or_default(),
-                kind: match mark.kind {
-                    MarkKind::AnswerOut => WireMark::AnswerOut,
-                    MarkKind::AnswerIn => WireMark::AnswerIn,
-                    MarkKind::AnswerRefused => WireMark::AnswerRefused,
-                    MarkKind::AttestOut => WireMark::AttestOut,
-                    MarkKind::AttestIn => WireMark::AttestIn,
-                    MarkKind::Certified => WireMark::Certified,
-                },
-                at_ms: mark.at_ms.saturating_sub(trace.opened_ms),
-            })
-            .collect(),
-        outcomes: trace
-            .outcomes
-            .iter()
-            .map(|outcome| SpoolOutcome {
-                spool: outcome.spool.as_u64(),
-                node: outcome.owner.to_string(),
-                certified: outcome.certified,
-            })
-            .collect(),
+        marks,
+        nodes,
+        outcomes,
         // Whole by default; `wire_trace_from` is what trims to a delta.
         mark_base: 0,
     }

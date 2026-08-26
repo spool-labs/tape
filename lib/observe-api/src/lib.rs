@@ -719,6 +719,10 @@ pub struct RoundTrace {
     /// The individual messages, for the rounds recent enough to trace in detail.
     #[serde(default)]
     pub marks: Vec<TraceMark>,
+    /// Addresses the marks index into, base58. Sent whole on every push, since
+    /// a group's worth of them is smaller than one mark carrying its own.
+    #[serde(default)]
+    pub nodes: Vec<String>,
     /// Index `marks` starts at, so a live round sends only what is new.
     ///
     /// Zero carries the whole list and replaces what a reader holds; anything
@@ -763,8 +767,8 @@ pub struct SpoolShape {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpoolOutcome {
     pub spool: u64,
-    /// The owner this round was judged against, base58.
-    pub node: String,
+    /// Index into the trace's `nodes`, or `u32::MAX` when unresolved.
+    pub node: u32,
     pub certified: bool,
 }
 
@@ -786,9 +790,11 @@ pub enum TraceClose {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraceMark {
     pub spool: u64,
-    /// The answering owner, or the signer for an attestation. Base58, empty when
-    /// this node could not resolve one.
-    pub node: String,
+    /// Index into the trace's `nodes`, or `u32::MAX` when unresolved.
+    ///
+    /// A round carries hundreds of marks and only a group's worth of distinct
+    /// addresses, so the address itself is held once beside them.
+    pub node: u32,
     pub kind: MarkKind,
     /// Milliseconds after the round opened, so a mark is placed without the
     /// reader having to reconcile two clocks.

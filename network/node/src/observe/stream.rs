@@ -35,6 +35,13 @@ use crate::core::error::NodeError;
 /// Frames retained for a subscriber that falls behind before it is dropped
 const BACKLOG: usize = 64;
 
+/// Rounds of timeline a recurring board carries.
+///
+/// Wide enough to cover the rounds that open between two boards, which is what
+/// a viewer needs to repair a push it missed. A fresh connection replays the
+/// whole timeline instead.
+const LIVE_BOARD_ROUNDS: u64 = 8;
+
 /// Window each tick's rates are averaged over
 ///
 /// Differencing a single sampling interval aliases at low rates: one request a
@@ -112,6 +119,18 @@ impl StreamHub {
         }
         // send only fails with no subscribers, which is the normal idle case
         let _ = self.tx.send(frame);
+    }
+
+    /// Fan out one frame while replaying a fuller one to a fresh connection.
+    ///
+    /// A viewer already streaming has the round marks from the pushes that
+    /// carried them, so repeating the whole timeline every board period is
+    /// bytes only a page joining now has any use for.
+    fn publish_kept(&self, live: Frame, kept: Frame) {
+        if let Ok(mut replay) = self.replay.lock() {
+            replay.board = Some(kept);
+        }
+        let _ = self.tx.send(live);
     }
 
     /// The replay frames plus a receiver for everything after
@@ -409,8 +428,32 @@ where
 
                     if since_board >= Duration::from_millis(BOARD_PERIOD_MS) {
                         since_board = Duration::ZERO;
-                        if let Some(frame) = Frame::new(EVENT_BOARD, &board::build(&self.context)) {
-                            hub.publish(frame);
+                        let board = board::build(&self.context);
+                        let kept = Frame::new(EVENT_BOARD, &board);
+                        let mut live = board;
+                        // A viewer already streaming has the timeline from the
+                        // round pushes, so this carries only enough of it to
+                        // repair a push it missed between boards. Every group
+                        // holds a round, so the whole timeline is the group
+                        // count times over.
+                        let newest = live
+                            .challenge_timeline
+                            .iter()
+                            .map(|trace| (trace.epoch, trace.round))
+                            .max()
+                            .unwrap_or_default();
+                        live.challenge_timeline.retain(|trace| {
+                            trace.epoch == newest.0
+                                && newest.1.saturating_sub(trace.round) < LIVE_BOARD_ROUNDS
+                        });
+                        for trace in &mut live.challenge_timeline {
+                            trace.marks.clear();
+                            trace.nodes.clear();
+                        }
+                        if let (Some(live), Some(kept)) =
+                            (Frame::new(EVENT_BOARD, &live), kept)
+                        {
+                            hub.publish_kept(live, kept);
                         }
                         // The shape moves at an epoch boundary, but the peer
                         // stats inside the frame move with every aggregator
