@@ -29,6 +29,10 @@ pub const ATLAS_PATH: &str = "/v1/observe/atlas";
 /// Path the node streams live board updates from, as server-sent events
 pub const STREAM_PATH: &str = "/v1/observe/stream";
 
+/// How often a live round pushes its new marks, at most; a reader replaying
+/// marks lags by about one interval so a round assembles rather than appears
+pub const PUSH_INTERVAL_MS: u64 = 250;
+
 /// Event names on the stream, so a client dispatches on the event name rather
 /// than sniffing the body
 pub const EVENT_HELLO: &str = "hello";

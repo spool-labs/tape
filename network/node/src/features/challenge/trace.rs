@@ -13,6 +13,8 @@ use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIn
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 
+use tape_observe_api::PUSH_INTERVAL_MS;
+
 #[cfg(feature = "metrics")]
 use crate::observe::{board, stream};
 
@@ -27,13 +29,9 @@ const MAX_TRACES: usize = 128;
 /// ~550 with relays and refusals, so honest rounds never reach this
 const MAX_MARKS: usize = 2048;
 
-/// How often a round in flight is sent out.
-///
-/// Every mark carries the whole trace, and a full group's round is hundreds of
-/// them, so pushing each one would send the round's own size squared. Coalescing
-/// costs nothing a reader can see: a quarter second is under one slot, and an
-/// outcome goes out the moment it lands whatever the interval says.
-const PUSH_INTERVAL_MS: u64 = 250;
+// Pushing every mark would send the round's own size squared; coalescing on
+// the shared interval costs nothing a reader can see, and an outcome still
+// goes out the moment it lands.
 
 /// What one mark records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
