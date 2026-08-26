@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use crate::features::challenge::attest_queue::{BatchKey, FLUSH_MS};
 
-use tape_store::ops::MetaOps;
 
-use futures::future::{join, join_all};
+use futures::future::join_all;
 use rpc::Rpc;
 use store::Store;
 use tape_core::cert::challenge::{ChallengeAttestMessage, ChallengeRespondMessage};
@@ -19,7 +18,7 @@ use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
-use tape_crypto::hash::{hashv, Hash};
+use tape_crypto::hash::Hash;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
 use tape_protocol::{Api, ProtocolState};
 use tape_store::types::TrackSample;

@@ -8,7 +8,6 @@ use tape_api::event::{
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
-use bs58::decode as bs58_decode;
 use tape_core::spooler::GroupIndex;
 use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::staking::RateSpan;

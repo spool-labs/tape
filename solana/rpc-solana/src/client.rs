@@ -970,7 +970,7 @@ mod tests {
 
         assert_eq!(request["method"], "getBlock");
         assert_eq!(params[0], 77);
-        assert_eq!(params[1]["encoding"], "json");
+        assert_eq!(params[1]["encoding"], "base64");
         assert_eq!(params[1]["transactionDetails"], "full");
         assert_eq!(params[1]["rewards"], false);
         assert_eq!(params[1]["maxSupportedTransactionVersion"], 0);
@@ -1015,9 +1015,7 @@ mod tests {
             "blockhash":"abc","previousBlockhash":"def","parentSlot":41,"blockTime":1700,
             "rewards":[],
             "transactions":[{
-              "transaction":{"signatures":["sig"],"message":{
-                 "accountKeys":["k0","k1"],
-                 "instructions":[{"programIdIndex":1,"accounts":[0],"data":"d"}]}},
+              "transaction":["AQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUBAAECBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAAMBAgM=","base64"],
               "meta":{"err":null,"preBalances":[1],"postBalances":[2],
                  "logMessages":["Program k1 invoke [1]"]}
             }]}}"#;
@@ -1028,7 +1026,10 @@ mod tests {
         assert_eq!(block.parent_slot, 41);
         let txs = block.transactions.expect("transactions");
         assert!(!txs[0].is_failed());
-        assert_eq!(txs[0].transaction.message.account_keys, ["k0", "k1"]);
+        // Two keys: the fee payer, which is also the only account, and the
+        // program the one instruction calls.
+        assert_eq!(txs[0].transaction.message.account_keys.len(), 2);
+        assert_eq!(txs[0].transaction.message.instructions.len(), 1);
     }
 
     #[test]
