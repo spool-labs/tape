@@ -9,7 +9,8 @@ use rpc::Rpc;
 use store::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{
-    ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SLOT_MS, SPAN_SLOTS,
+    ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS,
+    SETTLE_DEADLINE_SLOTS, SLOT_MS, SPAN_SLOTS,
     Schedule, round_width_slots,
 };
 use tape_core::erasure::GROUP_SIZE;
@@ -866,11 +867,14 @@ fn challenge_timeline<Db: Store, Cluster: Api, Blockchain: Rpc>(
             // Every held round is seeded, but only the newest carries its
             // individual messages: those are what the arcs and the per-message
             // notes need, and they are most of the bytes.
-            // A round still in flight keeps them however far back it sits:
-            // its shape is unfinished, so folding leaves a band with nothing.
+            // A round still in flight keeps them for a while longer, since its
+            // shape is unfinished and folding leaves a band with nothing. Only
+            // for a while: every group holds a round open at once, so carrying
+            // them all made the board grow with the group count.
             let behind = newest.1.as_u64().saturating_sub(trace.round.as_u64());
             let newest_rounds = trace.epoch == newest.0 && behind < DETAILED_ROUNDS;
-            let detailed = newest_rounds || trace.close == TraceClose::Open;
+            let live = trace.close == TraceClose::Open && behind < OPEN_DETAILED_ROUNDS;
+            let detailed = newest_rounds || live;
             wire_trace_with(trace, detailed)
         })
         .collect()
@@ -878,6 +882,9 @@ fn challenge_timeline<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// Rounds the board seeds with their individual messages, not just their shape.
 const DETAILED_ROUNDS: u64 = 2;
+
+/// How far back a round still open keeps its messages on the board.
+const OPEN_DETAILED_ROUNDS: u64 = 4;
 
 /// One trace on the wire. Mark times become offsets from the round opening, so
 /// a reader places them without reconciling its clock against the node's.
@@ -911,6 +918,15 @@ fn fold_shapes(trace: &TracedRound) -> Vec<SpoolShape> {
 
 pub fn wire_trace(trace: &TracedRound) -> RoundTrace {
     wire_trace_with(trace, true)
+}
+
+/// One trace carrying only the marks added since `from`.
+pub fn wire_trace_from(trace: &TracedRound, from: usize) -> RoundTrace {
+    let mut wire = wire_trace_with(trace, true);
+    let from = from.min(wire.marks.len());
+    wire.marks.drain(..from);
+    wire.mark_base = from as u32;
+    wire
 }
 
 /// One trace on the wire, with or without the individual messages behind it.
@@ -956,6 +972,8 @@ pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
                 certified: outcome.certified,
             })
             .collect(),
+        // Whole by default; `wire_trace_from` is what trims to a delta.
+        mark_base: 0,
     }
 }
 
@@ -1000,7 +1018,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
     });
 
     let schedule = challenge_schedule(&context.state());
-    let slot_ms = observed_slot_ms(&state, schedule.as_ref());
+    let slot_ms = observed_slot_ms(context, &state, schedule.as_ref());
 
     ChallengeGrid {
         recent_capacity: RECENT_ROUNDS as u64,
@@ -1015,19 +1033,30 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .map(|schedule| schedule.interval_slots * slot_ms)
             .unwrap_or_default(),
         quorum: agreement_threshold(GROUP_SIZE) as u64,
+        slot_ms,
+        span_slots: SPAN_SLOTS,
+        round_width_slots: round_width_slots(),
+        cadence_slots: schedule.as_ref().map(|s| s.interval_slots).unwrap_or_default(),
+        settle_deadline_slots: SETTLE_DEADLINE_SLOTS,
+        sample_lookback_slots: SAMPLE_LOOKBACK_SLOTS,
         axis: round_axis(&rows),
         owners: owner_rows(context, &state, &queued),
         rows,
     }
 }
 
-/// Milliseconds a slot actually takes on this cluster.
+/// Milliseconds a slot actually takes, measured from the chain's own clock.
 ///
-/// The voted duration over the span the grid covers. `SLOT_MS` is a nominal 400
-/// and a cluster nearer 165 would have every figure here read high by that
-/// ratio, so the deadlines a reader sees would not be the ones owners run
-/// against. Falls back to the constant before an epoch has realized a span.
-fn observed_slot_ms(state: &ProtocolState, schedule: Option<&Schedule>) -> u64 {
+/// The epoch-span quotient below is only the fallback until enough blocks land:
+/// a young chain's span is a bootstrap artifact rather than a rate.
+fn observed_slot_ms<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    schedule: Option<&Schedule>,
+) -> u64 {
+    if let Some(measured) = context.ingest.progress().slot_ms() {
+        return measured;
+    }
     let seconds = state.current.epoch.preferences.epoch_duration.0;
     schedule
         .map(|schedule| schedule.epoch_slots)

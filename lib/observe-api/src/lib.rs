@@ -578,6 +578,25 @@ pub struct ChallengeGrid {
     /// Votes a spool's round needs before it certifies.
     #[serde(default)]
     pub quorum: u64,
+    /// Measured slot time. Every millisecond field above is this times a slot count.
+    #[serde(default)]
+    pub slot_ms: u64,
+    /// Slots a round searches for its entropy block.
+    #[serde(default)]
+    pub span_slots: u64,
+    /// Slots from a round opening to its certificate having gossiped.
+    #[serde(default)]
+    pub round_width_slots: u64,
+    /// Slots between one round opening and the next.
+    #[serde(default)]
+    pub cadence_slots: u64,
+    /// Slots a round waits on its entropy block before it is void.
+    #[serde(default)]
+    pub settle_deadline_slots: u64,
+    /// Slots the sample set is cut behind a round. Covers the spread between
+    /// owners' frontiers, which is wall-clock, so fast slots shrink it.
+    #[serde(default)]
+    pub sample_lookback_slots: u64,
     /// One row per peer, worst first so an outlier is the top row.
     pub rows: Vec<ChallengeRow>,
     /// One row per owner, judged by this node's own rule.
@@ -700,6 +719,13 @@ pub struct RoundTrace {
     /// The individual messages, for the rounds recent enough to trace in detail.
     #[serde(default)]
     pub marks: Vec<TraceMark>,
+    /// Index `marks` starts at, so a live round sends only what is new.
+    ///
+    /// Zero carries the whole list and replaces what a reader holds; anything
+    /// higher appends. A round fills with hundreds of marks, and resending all
+    /// of them every push made a round cost its own length squared.
+    #[serde(default)]
+    pub mark_base: u32,
     /// How each spool's round ended, decided when the round settles.
     ///
     /// Separate from the marks because a verdict is not a moment: settlement

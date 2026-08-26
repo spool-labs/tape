@@ -102,6 +102,8 @@ pub struct RoundTrace {
     pub outcomes: Vec<SpoolOutcome>,
     /// When this trace was last sent out, for the push interval.
     pushed_ms: u64,
+    /// Marks already sent, so a push carries only what came after them.
+    pushed_marks: usize,
 }
 
 impl RoundTrace {
@@ -142,9 +144,10 @@ impl TraceRing {
             marks: Vec::new(),
             outcomes: Vec::new(),
             pushed_ms: 0,
+            pushed_marks: 0,
         });
         retire(&mut traces);
-        push(traces.back());
+        push(traces.back(), 0);
     }
 
     /// Records one mark against an open round, ignoring one this node never saw
@@ -192,7 +195,9 @@ impl TraceRing {
         };
         if at_ms.saturating_sub(trace.pushed_ms) >= interval {
             trace.pushed_ms = at_ms;
-            push(Some(&*trace));
+            let from = trace.pushed_marks;
+            trace.pushed_marks = trace.marks.len();
+            push(Some(&*trace), from);
         }
     }
 
@@ -230,7 +235,10 @@ impl TraceRing {
         if let Some(trace) = traces.iter_mut().find(|trace| trace.matches(epoch, round, group)) {
             trace.close = close;
             trace.pushed_ms = now_ms();
-            push(Some(&*trace));
+            trace.pushed_marks = trace.marks.len();
+            // Whole, once, at the end: a reader that joined mid-round or lost a
+            // push holds a partial trace, and this is where it is made good.
+            push(Some(&*trace), 0);
         }
     }
 
@@ -259,18 +267,18 @@ fn retire(traces: &mut VecDeque<RoundTrace>) {
 
 /// Sends the trace to any dashboard watching, and builds nothing when none is.
 #[cfg(feature = "metrics")]
-fn push(trace: Option<&RoundTrace>) {
+fn push(trace: Option<&RoundTrace>, from: usize) {
     if !stream::watching() {
         return;
     }
     if let Some(trace) = trace {
-        stream::push_round(&board::wire_trace(trace));
+        stream::push_round(&board::wire_trace_from(trace, from));
     }
 }
 
 /// Without the observe surface there is nobody to send a trace to.
 #[cfg(not(feature = "metrics"))]
-fn push(_trace: Option<&RoundTrace>) {}
+fn push(_trace: Option<&RoundTrace>, _from: usize) {}
 
 fn now_ms() -> u64 {
     SystemTime::now()
