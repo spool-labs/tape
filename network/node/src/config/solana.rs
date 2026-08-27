@@ -27,6 +27,17 @@ pub struct SolanaConfig {
     /// for surgery or testing.
     #[serde(default)]
     pub start_slot: Option<SlotNumber>,
+
+    /// Tip polls per slot while caught up.
+    ///
+    /// Two owners start the same round as far apart as their poll phases, so
+    /// this sets the floor under that spread: a slot divided this many ways.
+    #[serde(default = "default_tip_polls_per_slot")]
+    pub tip_polls_per_slot: u64,
+}
+
+fn default_tip_polls_per_slot() -> u64 {
+    8
 }
 
 impl SolanaConfig {
@@ -47,6 +58,7 @@ impl Default for SolanaConfig {
             rpc: default_rpc(),
             rpc_strategy: EndpointStrategy::default(),
             start_slot: None,
+            tip_polls_per_slot: default_tip_polls_per_slot(),
         }
     }
 }

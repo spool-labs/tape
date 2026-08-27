@@ -23,10 +23,6 @@ use crate::features::block::fetch::{
 };
 use crate::features::block::pending_blocks::{AppendOutcome, PendingBlocks};
 
-/// Tip polls per slot while caught up; the poll phase spread is how far apart
-/// two owners start the same round
-const TIP_POLLS_PER_SLOT: u64 = 4;
-
 /// Bounds on the poll wait, so a measured slot time cannot spin or stall it
 const TIP_POLL_MIN_MS: u64 = 25;
 const TIP_POLL_MAX_MS: u64 = 400;
@@ -158,7 +154,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             .progress()
             .slot_ms()
             .unwrap_or(SLOT_MS);
-        let wait = (slot_ms / TIP_POLLS_PER_SLOT).clamp(TIP_POLL_MIN_MS, TIP_POLL_MAX_MS);
+        let polls = self.context.config.solana.tip_polls_per_slot.max(1);
+        let wait = (slot_ms / polls).clamp(TIP_POLL_MIN_MS, TIP_POLL_MAX_MS);
         Duration::from_millis(wait)
     }
 
