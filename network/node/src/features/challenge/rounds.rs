@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use tape_core::bls::BlsSignature;
 use tape_core::challenge::ProofOfAccess;
@@ -19,6 +19,21 @@ pub struct RoundKey {
 #[derive(Default)]
 pub struct RoundBuffer {
     entries: Mutex<HashMap<RoundKey, RoundEntry>>,
+    verifying: Mutex<HashSet<RoundKey>>,
+}
+
+/// Holds a key's verify slot until dropped
+pub struct VerifyGuard {
+    buffer: Arc<RoundBuffer>,
+    key: RoundKey,
+}
+
+impl Drop for VerifyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut verifying) = self.buffer.verifying.lock() {
+            verifying.remove(&self.key);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -41,6 +56,14 @@ impl RoundBuffer {
 
         entry.answer = Some(answer);
         true
+    }
+
+    /// Claims the verify slot for a key, or nothing if another task holds it
+    pub fn begin_verify(self: &Arc<Self>, key: RoundKey) -> Option<VerifyGuard> {
+        let mut verifying = self.verifying.lock().expect("round buffer");
+        verifying
+            .insert(key)
+            .then(|| VerifyGuard { buffer: self.clone(), key })
     }
 
     pub fn answer(&self, key: RoundKey) -> Option<ProofOfAccess> {
@@ -176,6 +199,24 @@ mod tests {
     /// no verification, which the handlers do before anything reaches it.
     fn signature() -> BlsSignature {
         BlsPrivateKey::from_random().sign(b"round buffer").expect("sign")
+    }
+
+    // one verifier at a time per key, so relayed copies skip the pairing
+    #[test]
+    fn one_verifier() {
+        let buffer = Arc::new(RoundBuffer::default());
+        let key = key(1, 4);
+
+        let held = buffer.begin_verify(key).expect("free");
+        assert!(buffer.begin_verify(key).is_none());
+        assert!(buffer.begin_verify(key_other()).is_some(), "a different key is unaffected");
+
+        drop(held);
+        assert!(buffer.begin_verify(key).is_some(), "the slot frees when the guard drops");
+    }
+
+    fn key_other() -> RoundKey {
+        RoundKey { spool: SpoolIndex(9), ..key(1, 4) }
     }
 
     // a second answer is a relay duplicate or an owner answering twice, and

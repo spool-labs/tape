@@ -58,6 +58,11 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
         return Err(RouteError::NotResponsible);
     }
 
+    // Relayed copies land before the first is stored; only one pays the pairing.
+    let Some(_verifying) = state.context.round_buffer.begin_verify(key) else {
+        return Ok(StatusCode::OK);
+    };
+
     // Timeliness is left to the round, not judged per response: an answer that
     // has not certified by the time the next round opens is settled a miss
     // whenever it arrived, and no schedulable sub-round deadline separates an
