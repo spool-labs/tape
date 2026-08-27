@@ -96,7 +96,6 @@ pub struct VerifyRequest {
     pub answer: tape_core::challenge::ProofOfAccess,
     pub protocol: Arc<ProtocolState>,
     pub reply: tokio::sync::oneshot::Sender<bool>,
-    pub queued_at: std::time::Instant,
 }
 
 /// Certify worker threads; two clear a round inside one cadence
@@ -130,9 +129,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     /// The proof verify stage's intake, its workers spawned on first use
     ///
-    /// A worker takes everything queued behind the proof that woke it and
-    /// checks the batch's signatures in one pairing product. Rounds open
-    /// together, so the clump is the shape the arrivals already have.
+    /// A worker takes everything queued behind the proof that woke it, so a
+    /// round's answers check their signatures in one pairing product.
     pub fn verify_stage(self: &Arc<Self>) -> &std::sync::mpsc::Sender<VerifyRequest>
     where
         Db: 'static,
@@ -156,7 +154,13 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
                                 clump.extend(guard.try_iter());
                                 clump
                             };
-                            context.verify_clump(clump);
+                            // A panic here would otherwise end the only worker
+                            // and leave every later proof refused in silence,
+                            // which reads as dishonesty rather than a fault.
+                            let guarded = std::panic::AssertUnwindSafe(|| context.verify_clump(clump));
+                            if std::panic::catch_unwind(guarded).is_err() {
+                                tracing::error!("challenge: verify worker panicked, clump refused");
+                            }
                         }
                     });
             }
@@ -164,8 +168,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         })
     }
 
-    /// Checks one drained clump: the cheap per answer work each, then every
-    /// surviving signature together.
+    /// Checks one clump: the per answer work each, then the signatures together.
     fn verify_clump(&self, clump: Vec<VerifyRequest>) {
         use crate::features::challenge::audit::answer_signer;
 

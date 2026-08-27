@@ -75,7 +75,6 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
             answer: answer.clone(),
             protocol: protocol.clone(),
             reply,
-            queued_at,
         };
         if state.context.verify_stage().send(request).is_err() {
             return Err(RouteError::Internal("verify stage closed".into()));

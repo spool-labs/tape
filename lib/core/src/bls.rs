@@ -133,8 +133,7 @@ impl BlsSignature {
 
     /// Checks many single signer signatures under one final exponentiation.
     ///
-    /// Says only that some member is bad, never which, so a caller that needs
-    /// the culprit rechecks the batch one at a time.
+    /// Names no member on failure, so a caller that needs one rechecks singly.
     #[cfg(not(target_os = "solana"))]
     pub fn verify_batch(items: &[(&[u8], BlsPubkey, BlsSignature)]) -> Result<(), BLSError> {
         use tape_crypto::bls12254::min_sig::native;

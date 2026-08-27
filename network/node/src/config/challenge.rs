@@ -13,8 +13,7 @@ pub struct ChallengeConfig {
     /// Threads that verify incoming proofs, off the shared blocking pool.
     #[serde(default = "default_verify_workers")]
     pub verify_workers: usize,
-    /// Wait a proof may spend reaching a verify thread before it has missed its
-    /// slot. Anything longer is logged; shrink it as slot times do.
+    /// Wait a proof may spend reaching a verify thread before it has missed its slot.
     #[serde(default = "default_ingress_wait_budget_ms")]
     pub ingress_wait_budget_ms: u64,
 }
@@ -33,12 +32,12 @@ fn default_enabled() -> bool {
     true
 }
 
-/// One drains the queue it wakes on; more threads only oversubscribe the box.
+/// One drains the queue it wakes on, so more threads only contend.
 fn default_verify_workers() -> usize {
     1
 }
 
-/// Devnet runs a 160ms slot today and the grid keeps shrinking.
+/// Sized to a slot, so it shrinks as the grid does.
 fn default_ingress_wait_budget_ms() -> u64 {
     160
 }

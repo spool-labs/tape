@@ -1,8 +1,7 @@
 //! Off-chain verification against pubkeys parsed once
 //!
-//! The byte API reparses and subgroup-checks every pubkey on every call, and
-//! pairs H(m) with each signer separately. Here a committee is parsed once and
-//! kept in curve form, so a verify is two Miller loops over borrowed points.
+//! The byte API reparses every pubkey per call and pairs H(m) with each signer
+//! separately. Here the keys stay in curve form and a verify is two pairings.
 
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::pairing::Pairing;
@@ -193,9 +192,8 @@ pub struct BatchItem<'a> {
 
 /// Checks many single signer signatures under one final exponentiation.
 ///
-/// Each item is blinded by a random scalar so a batch cannot pass by having its
-/// errors cancel. A failure says only that some item is bad, so callers that
-/// need the culprit fall back to checking one at a time.
+/// Each item carries a random blinding scalar, without which two bad signatures
+/// can cancel and pass together. A failure names no member.
 pub fn verify_batch_with<R: rand::Rng>(items: &[BatchItem<'_>], rng: &mut R) -> Result<(), BLSError> {
     if items.is_empty() {
         return Err(BLSError::SerializationError);
