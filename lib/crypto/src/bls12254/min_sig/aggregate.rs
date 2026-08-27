@@ -44,7 +44,7 @@ use super::g2::G2Point;
 use super::hash::hash_to_curve;
 
 use solana_bn254::prelude::{
-    alt_bn128_addition, alt_bn128_pairing,
+    alt_bn128_g1_addition_be, alt_bn128_pairing_be,
 };
 
 pub fn aggregate_partials(partials: &[G1Point]) -> Result<G1Point, BLSError> {
@@ -57,7 +57,7 @@ pub fn aggregate_partials(partials: &[G1Point]) -> Result<G1Point, BLSError> {
         let mut inbuf = [0u8; 128];
         inbuf[..64].copy_from_slice(&acc);
         inbuf[64..].copy_from_slice(&s.0);
-        let out = alt_bn128_addition(&inbuf).map_err(|_| BLSError::AltBN128AddError)?;
+        let out = alt_bn128_g1_addition_be(&inbuf).map_err(|_| BLSError::AltBN128AddError)?;
         acc.copy_from_slice(&out[..64]);
     }
     Ok(G1Point(acc))
@@ -102,7 +102,7 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     input[off..off + 64].copy_from_slice(&s_sum.0);
     input[off + 64..off + 192].copy_from_slice(&G2_MINUS_ONE);
 
-    let r = alt_bn128_pairing(&input).map_err(|_| BLSError::AltBN128PairingError)?;
+    let r = alt_bn128_pairing_be(&input).map_err(|_| BLSError::AltBN128PairingError)?;
     let ok = r.iter().take(31).all(|&b| b == 0) && r[31] == 1;
     if ok {
         Ok(())
@@ -130,7 +130,7 @@ pub fn verify_aggregate_summed<M: AsRef<[u8]>>(
     input[192..256].copy_from_slice(&s_sum.0);
     input[256..384].copy_from_slice(&G2_MINUS_ONE);
 
-    let r = alt_bn128_pairing(&input).map_err(|_| BLSError::AltBN128PairingError)?;
+    let r = alt_bn128_pairing_be(&input).map_err(|_| BLSError::AltBN128PairingError)?;
     let ok = r.iter().take(31).all(|&b| b == 0) && r[31] == 1;
     if ok { Ok(()) } else { Err(BLSError::BLSVerificationError) }
 }

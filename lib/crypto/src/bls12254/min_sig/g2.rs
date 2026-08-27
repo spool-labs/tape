@@ -8,8 +8,8 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use num::CheckedAdd;
 
 use solana_bn254::{
-    compression::prelude::{alt_bn128_g2_compress, alt_bn128_g2_decompress},
-    prelude::alt_bn128_pairing,
+    compression::prelude::{alt_bn128_g2_compress_be, alt_bn128_g2_decompress_be},
+    prelude::alt_bn128_pairing_be,
 };
 
 use crate::bls12254::G2_MINUS_ONE;
@@ -102,7 +102,7 @@ impl G2Point {
         input[256..].clone_from_slice(&G2_MINUS_ONE);
 
         // Calculate result
-        if let Ok(r) = alt_bn128_pairing(&input) {
+        if let Ok(r) = alt_bn128_pairing_be(&input) {
             if r.eq(&[
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -146,7 +146,7 @@ impl G2CompressedPoint {
         input[256..].clone_from_slice(&G2_MINUS_ONE);
 
         // Calculate result
-        if let Ok(r) = alt_bn128_pairing(&input) {
+        if let Ok(r) = alt_bn128_pairing_be(&input) {
             if r.eq(&[
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -233,7 +233,7 @@ impl TryFrom<&super::privkey::PrivKey> for G2Point {
 
     fn try_from(value: &super::privkey::PrivKey) -> Result<G2Point, Self::Error> {
         Ok(G2Point(
-            alt_bn128_g2_decompress(&G2CompressedPoint::try_from(value)?.0)
+            alt_bn128_g2_decompress_be(&G2CompressedPoint::try_from(value)?.0)
                 .map_err(|_| BLSError::G2PointDecompressionError)?,
         ))
     }
@@ -244,7 +244,7 @@ impl TryFrom<&G2Point> for G2CompressedPoint {
 
     fn try_from(value: &G2Point) -> Result<Self, Self::Error> {
         Ok(G2CompressedPoint(
-            alt_bn128_g2_compress(&value.0).map_err(|_| BLSError::G2PointCompressionError)?,
+            alt_bn128_g2_compress_be(&value.0).map_err(|_| BLSError::G2PointCompressionError)?,
         ))
     }
 }
@@ -254,7 +254,7 @@ impl TryFrom<G2CompressedPoint> for G2Point {
 
     fn try_from(value: G2CompressedPoint) -> Result<Self, Self::Error> {
         Ok(G2Point(
-            alt_bn128_g2_decompress(&value.0).map_err(|_| BLSError::G2PointDecompressionError)?,
+            alt_bn128_g2_decompress_be(&value.0).map_err(|_| BLSError::G2PointDecompressionError)?,
         ))
     }
 }

@@ -84,7 +84,11 @@ impl BlsSignature {
             .map(|s| G1Point::try_from(&s.0))
             .collect();
 
-        let agg = aggregate_partials(&decompressed?)?;
+        let decompressed = decompressed?;
+        #[cfg(not(target_os = "solana"))]
+        let agg = tape_crypto::bls12254::min_sig::native::aggregate_partials(&decompressed)?;
+        #[cfg(target_os = "solana")]
+        let agg = aggregate_partials(&decompressed)?;
         let compressed = G1CompressedPoint::try_from(agg)?;
 
         Ok(BlsSignature(compressed))
@@ -99,7 +103,7 @@ impl BlsSignature {
         quorum: &BlsQuorumKey,
     ) -> Result<(), BLSError> {
         let decompressed_sig = G1Point::try_from(&self.0)?;
-        verify_aggregate_summed(message, &quorum.0, &decompressed_sig)
+        tape_crypto::bls12254::min_sig::native::verify_summed(message, &quorum.0, &decompressed_sig)
     }
 
     pub fn verify_aggregate<M: AsRef<[u8]>>(
@@ -117,6 +121,13 @@ impl BlsSignature {
             .map(|pk| Ok(pk.0))
             .collect::<Result<Vec<_>, _>>()?;
 
+        #[cfg(not(target_os = "solana"))]
+        return tape_crypto::bls12254::min_sig::native::verify_signers(
+            message,
+            &g2_points,
+            &decompressed_sig,
+        );
+        #[cfg(target_os = "solana")]
         verify_aggregate(message, &g2_points, &decompressed_sig)
     }
 
