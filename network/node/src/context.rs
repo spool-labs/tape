@@ -67,6 +67,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub attest_queue: Arc<AttestQueue>,
     pub certify_slots: Arc<tokio::sync::Semaphore>,
     certify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<CertifyJob>>,
+    verify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<VerifyRequest>>,
     pub challenge_counters: ChallengeCounters,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
@@ -89,6 +90,14 @@ const CERTIFY_SLOTS: usize = 4;
 
 /// A self-contained certify task, its context captured at the call site.
 pub type CertifyJob = Box<dyn FnOnce() + Send>;
+
+/// One proof waiting to be checked, and where its verdict goes.
+pub struct VerifyRequest {
+    pub answer: tape_core::challenge::ProofOfAccess,
+    pub protocol: Arc<ProtocolState>,
+    pub reply: tokio::sync::oneshot::Sender<bool>,
+    pub queued_at: std::time::Instant,
+}
 
 /// Certify worker threads; two clear a round inside one cadence
 const CERTIFY_WORKERS: usize = 2;
@@ -117,6 +126,79 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
             }
             tx
         })
+    }
+
+    /// The proof verify stage's intake, its workers spawned on first use
+    ///
+    /// A worker takes everything queued behind the proof that woke it and
+    /// checks the batch's signatures in one pairing product. Rounds open
+    /// together, so the clump is the shape the arrivals already have.
+    pub fn verify_stage(self: &Arc<Self>) -> &std::sync::mpsc::Sender<VerifyRequest>
+    where
+        Db: 'static,
+        Cluster: 'static,
+        Blockchain: 'static,
+    {
+        self.verify_stage.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<VerifyRequest>();
+            let rx = Arc::new(std::sync::Mutex::new(rx));
+            for n in 0..self.config.challenge.verify_workers.max(1) {
+                let rx = rx.clone();
+                let context = self.clone();
+                let _ = std::thread::Builder::new()
+                    .name(format!("verify-{n}"))
+                    .spawn(move || {
+                        loop {
+                            let clump = {
+                                let Ok(guard) = rx.lock() else { return };
+                                let Ok(first) = guard.recv() else { return };
+                                let mut clump = vec![first];
+                                clump.extend(guard.try_iter());
+                                clump
+                            };
+                            context.verify_clump(clump);
+                        }
+                    });
+            }
+            tx
+        })
+    }
+
+    /// Checks one drained clump: the cheap per answer work each, then every
+    /// surviving signature together.
+    fn verify_clump(&self, clump: Vec<VerifyRequest>) {
+        use crate::features::challenge::audit::answer_signer;
+
+        let mut verdict = vec![false; clump.len()];
+        let mut batch = Vec::with_capacity(clump.len());
+        for (index, request) in clump.iter().enumerate() {
+            if let Some(pubkey) = answer_signer(self, &request.protocol, &request.answer, true) {
+                batch.push((index, request.answer.message().to_bytes(), pubkey, request.answer.signature));
+            }
+        }
+
+        if !batch.is_empty() {
+            let items: Vec<(&[u8], BlsPubkey, BlsSignature)> = batch
+                .iter()
+                .map(|(_, message, pubkey, signature)| (&message[..], *pubkey, *signature))
+                .collect();
+            if BlsSignature::verify_batch(&items).is_ok() {
+                for (index, ..) in &batch {
+                    verdict[*index] = true;
+                }
+            } else {
+                // The batch names no member, so the culprit is found by hand.
+                for (index, message, pubkey, signature) in &batch {
+                    verdict[*index] = signature
+                        .verify_aggregate(message, core::slice::from_ref(pubkey))
+                        .is_ok();
+                }
+            }
+        }
+
+        for (request, ok) in clump.into_iter().zip(verdict) {
+            let _ = request.reply.send(ok);
+        }
     }
 
     pub fn node_id(&self) -> NodeId {
@@ -369,6 +451,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             attest_queue: Arc::new(AttestQueue::default()),
             certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
             certify_stage: std::sync::OnceLock::new(),
+            verify_stage: std::sync::OnceLock::new(),
             challenge_counters: ChallengeCounters::default(),
             metrics: NodeMetrics,
             atlas: self.atlas,

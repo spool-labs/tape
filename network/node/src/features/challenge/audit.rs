@@ -7,6 +7,7 @@ use futures::future::join_all;
 use rpc::Rpc;
 use store::Store;
 use tape_core::cert::challenge::{ChallengeAttestMessage, ChallengeRespondMessage};
+use tape_core::bls::BlsPubkey;
 use tape_core::challenge::{self, ProofOfAccess, SampleEntry};
 use tape_core::challenge::proof::{Registered, SampleProof};
 use tape_core::challenge::sample::SampleLeaf;
@@ -271,6 +272,36 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
             false
         }
     }
+}
+
+/// Everything `accept_answer` checks except the signature, plus the key that
+/// signature has to stand against.
+///
+/// Lets a caller holding a round's worth of answers check their signatures in
+/// one pairing product instead of one each.
+pub fn answer_signer<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    answer: &ProofOfAccess,
+    in_time: bool,
+) -> Option<BlsPubkey> {
+    let (expected, value_hash) = expected_sample(context, state, &round_of(answer), answer.spool)?;
+    let coded = context.store.get_track_data(expected.track).ok().flatten();
+    let registered = match (expected.leaf, &coded) {
+        (SampleLeaf::Coded { .. }, Some(BlobData::Coded(encoding))) => Registered::Coded(encoding),
+        (SampleLeaf::Inline, _) => Registered::Inline(value_hash),
+        _ => return None,
+    };
+
+    let owner = state.spool_owner(answer.spool)?;
+    let peer = state.peer(owner)?;
+    answer
+        .verify_shape(&expected, registered, in_time)
+        .inspect_err(|rejection| {
+            debug!(node = %owner, spool = %answer.spool, ?rejection, "challenge: answer refused");
+        })
+        .ok()?;
+    Some(peer.bls_pubkey)
 }
 
 pub fn spawn_relay_and_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(

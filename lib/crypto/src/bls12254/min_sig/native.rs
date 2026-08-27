@@ -196,7 +196,7 @@ pub struct BatchItem<'a> {
 /// Each item is blinded by a random scalar so a batch cannot pass by having its
 /// errors cancel. A failure says only that some item is bad, so callers that
 /// need the culprit fall back to checking one at a time.
-pub fn verify_batch<R: rand::Rng>(items: &[BatchItem<'_>], rng: &mut R) -> Result<(), BLSError> {
+pub fn verify_batch_with<R: rand::Rng>(items: &[BatchItem<'_>], rng: &mut R) -> Result<(), BLSError> {
     if items.is_empty() {
         return Err(BLSError::SerializationError);
     }
@@ -218,6 +218,11 @@ pub fn verify_batch<R: rand::Rng>(items: &[BatchItem<'_>], rng: &mut R) -> Resul
     g2.push(minus_one);
 
     pairing_holds(&g1, &g2)
+}
+
+/// Checks a batch against the thread's own randomness.
+pub fn verify_batch(items: &[BatchItem<'_>]) -> Result<(), BLSError> {
+    verify_batch_with(items, &mut rand::thread_rng())
 }
 
 /// Sums partial signatures without leaving curve form between adds.
@@ -288,12 +293,11 @@ mod tests {
         let (secrets, pubkeys) = committee(8);
         let parsed = Committee::parse(&pubkeys).unwrap();
         let signatures: Vec<G1Point> = secrets.iter().map(|k| k.sign(msg).unwrap()).collect();
-        let mut rng = rand::thread_rng();
 
         let items: Vec<BatchItem<'_>> = (0..8)
             .map(|i| BatchItem { message: msg, signer: parsed.key(i).unwrap(), signature: &signatures[i] })
             .collect();
-        verify_batch(&items, &mut rng).unwrap();
+        verify_batch(&items).unwrap();
 
         // one signer swapped for another's signature fails the whole batch
         let mut swapped = signatures.clone();
@@ -301,7 +305,7 @@ mod tests {
         let bad: Vec<BatchItem<'_>> = (0..8)
             .map(|i| BatchItem { message: msg, signer: parsed.key(i).unwrap(), signature: &swapped[i] })
             .collect();
-        assert!(verify_batch(&bad, &mut rng).is_err());
+        assert!(verify_batch(&bad).is_err());
     }
 
     // two signatures whose errors cancel must not pass together: this is what the
@@ -327,12 +331,11 @@ mod tests {
         let summed = aggregate_partials(&[bad_a, bad_b]).unwrap();
         assert_eq!(summed.0, aggregate_partials(&good).unwrap().0);
 
-        let mut rng = rand::thread_rng();
         let items = vec![
             BatchItem { message: msg, signer: parsed.key(0).unwrap(), signature: &bad_a },
             BatchItem { message: msg, signer: parsed.key(1).unwrap(), signature: &bad_b },
         ];
-        assert!(verify_batch(&items, &mut rng).is_err(), "blinding must break the cancellation");
+        assert!(verify_batch(&items).is_err(), "blinding must break the cancellation");
     }
 
     // a duplicated key is a rogue key attempt, and an empty set signs nothing

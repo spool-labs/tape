@@ -65,13 +65,12 @@ fn levers() {
     let items: Vec<BatchItem<'_>> = (0..20)
         .map(|i| BatchItem { message: msg, signer: parsed.key(i).unwrap(), signature: &sigs[i] })
         .collect();
-    let mut rng = rand::thread_rng();
     let serial = bench("  20x one at a time (parsed)", 5, || {
         for i in 0..20 {
             parsed.verify_one(msg, parsed.key(i).unwrap(), &sigs[i]).unwrap();
         }
     });
-    let batched = bench("  20 in one batch", 5, || verify_batch(&items, &mut rng).unwrap());
+    let batched = bench("  20 in one batch", 5, || verify_batch(&items).unwrap());
     println!("  speedup {:.2}x, per signature {:.1}us\n", serial / batched, batched / 20.0);
 
     println!("aggregate_partials, 20 partials");

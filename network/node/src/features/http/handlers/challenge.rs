@@ -16,7 +16,7 @@ use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace};
 
 use crate::features::challenge::audit::{
-    Round, accept_answer, attest_message, group_members, round_of, spawn_relay_and_attest,
+    Round, attest_message, group_members, round_of, spawn_relay_and_attest,
 };
 use crate::features::challenge::fold::fold_outcome;
 use crate::features::challenge::rounds::RoundKey;
@@ -69,12 +69,23 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     // adversary worth the honest nodes it evicts.
     // Off the executor: a pairing plus the store reads it checks against.
     let accepted = {
-        let context = state.context.clone();
-        let protocol = protocol.clone();
-        let answer = answer.clone();
-        tokio::task::spawn_blocking(move || accept_answer(&context, &protocol, &answer, true))
-            .await
-            .unwrap_or(false)
+        let queued_at = std::time::Instant::now();
+        let (reply, verdict) = tokio::sync::oneshot::channel();
+        let request = crate::context::VerifyRequest {
+            answer: answer.clone(),
+            protocol: protocol.clone(),
+            reply,
+            queued_at,
+        };
+        if state.context.verify_stage().send(request).is_err() {
+            return Err(RouteError::Internal("verify stage closed".into()));
+        }
+        let accepted = verdict.await.unwrap_or(false);
+        let waited = queued_at.elapsed();
+        if waited.as_millis() as u64 > state.context.config.challenge.ingress_wait_budget_ms {
+            debug!(spool = %answer.spool, waited_ms = waited.as_millis(), "challenge: proof past its slot before verifying");
+        }
+        accepted
     };
     if !accepted {
         state

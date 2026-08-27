@@ -131,6 +131,38 @@ impl BlsSignature {
         verify_aggregate(message, &g2_points, &decompressed_sig)
     }
 
+    /// Checks many single signer signatures under one final exponentiation.
+    ///
+    /// Says only that some member is bad, never which, so a caller that needs
+    /// the culprit rechecks the batch one at a time.
+    #[cfg(not(target_os = "solana"))]
+    pub fn verify_batch(items: &[(&[u8], BlsPubkey, BlsSignature)]) -> Result<(), BLSError> {
+        use tape_crypto::bls12254::min_sig::native;
+
+        if items.is_empty() {
+            return Err(BLSError::SerializationError);
+        }
+        let signers = items
+            .iter()
+            .map(|(_, pubkey, _)| native::g2_from_bytes(&pubkey.0))
+            .collect::<Result<Vec<_>, _>>()?;
+        let signatures = items
+            .iter()
+            .map(|(_, _, signature)| G1Point::try_from(&signature.0))
+            .collect::<Result<Vec<_>, _>>()?;
+        let batch: Vec<native::BatchItem<'_>> = items
+            .iter()
+            .zip(signers.iter())
+            .zip(signatures.iter())
+            .map(|(((message, _, _), signer), signature)| native::BatchItem {
+                message,
+                signer,
+                signature,
+            })
+            .collect();
+        native::verify_batch(&batch)
+    }
+
     /// Size of the compressed signature in bytes
     pub const fn size() -> usize {
         32 // G1 compressed
