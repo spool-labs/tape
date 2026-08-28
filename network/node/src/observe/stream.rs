@@ -50,10 +50,13 @@ const LIVE_BOARD_ROUNDS: u64 = 8;
 const RATE_WINDOW_MS: u64 = 2_000;
 
 /// One encoded event, ready to write to any number of sockets
+///
+/// Shared rather than copied: the broadcast clones the frame once per viewer,
+/// and a board frame is hundreds of kilobytes.
 #[derive(Clone)]
 pub struct Frame {
     pub event: &'static str,
-    pub data: String,
+    pub data: Arc<str>,
 }
 
 impl Frame {
@@ -66,7 +69,7 @@ impl Frame {
         T: wincode::SchemaWrite<Src = T>,
     {
         let bytes = wincode::serialize(value).ok()?;
-        Some(Frame { event, data: base64::encode(bytes) })
+        Some(Frame { event, data: base64::encode(bytes).into() })
     }
 
     /// The frame as one named event, handing over the payload it already holds
@@ -85,6 +88,9 @@ struct Replay {
     topology: Option<Frame>,
     /// Held whole: encoding it every board period stalled the tick beside it
     board: Option<std::sync::Arc<tape_observe_api::Board>>,
+    /// The same board encoded, kept from the first connect after it landed so
+    /// the next viewer is handed it rather than paying for it again.
+    board_frame: Option<Frame>,
     history: std::collections::VecDeque<Tick>,
 }
 
@@ -137,6 +143,7 @@ impl StreamHub {
     fn publish_kept(&self, live: Frame, kept: std::sync::Arc<tape_observe_api::Board>) {
         if let Ok(mut replay) = self.replay.lock() {
             replay.board = Some(kept);
+            replay.board_frame = None;
         }
         let _ = self.tx.send(live);
     }
@@ -148,15 +155,17 @@ impl StreamHub {
     pub fn subscribe(&self) -> (Vec<Frame>, broadcast::Receiver<Frame>) {
         let rx = self.tx.subscribe();
         let mut frames = Vec::new();
-        if let Ok(replay) = self.replay.lock() {
+        if let Ok(mut replay) = self.replay.lock() {
             frames.extend(replay.hello.clone());
             frames.extend(replay.topology.clone());
-            frames.extend(
-                replay
+            if replay.board_frame.is_none() {
+                let encoded = replay
                     .board
                     .as_ref()
-                    .and_then(|board| Frame::new(EVENT_BOARD, board.as_ref())),
-            );
+                    .and_then(|board| Frame::new(EVENT_BOARD, board.as_ref()));
+                replay.board_frame = encoded;
+            }
+            frames.extend(replay.board_frame.clone());
             // Sampling stops once nobody has watched for a while, so anything
             // older than the span would draw as if it were current
             let now_ms = SystemTime::now()
