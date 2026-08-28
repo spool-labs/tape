@@ -59,6 +59,15 @@ pub const CERTIFICATE_GOSSIP_SLOTS: u64 = 1;
 /// Finality does not bound this; settlement lags by `SETTLE_DEADLINE_SLOTS`.
 pub const MAINNET_CADENCE_SLOTS: u64 = 7;
 
+/// Epoch length below which the cap gives way to the round width.
+///
+/// The cap is there to hold the cost of rounds down across an epoch that runs
+/// for hours, where a tighter cadence buys detection latency nobody is waiting
+/// on. An epoch measured in minutes is a harness: it ends before the saving is
+/// worth anything, and the rounds are the thing being watched. Set well clear
+/// of the shortest deployed epoch, which is an hour.
+pub const SHORT_EPOCH_SLOTS: u64 = 1_800;
+
 /// Slots a round waits before calling its block lost.
 ///
 /// Sized off TowerBFT rooting, measured at 31 here. It is a timeout for the
@@ -97,13 +106,19 @@ pub const fn round_width_slots() -> u64 {
 
 /// Slots between rounds for an epoch of the given length.
 ///
-/// The cap holds detection latency steady on long epochs, the divide fits enough
-/// rounds into short ones, and the floor keeps rounds from overlapping. Derived
-/// rather than tabulated, so an operator voting the epoch duration gets a correct
-/// cadence without anyone editing a table.
+/// The cap holds detection latency steady on long epochs and gives way on the
+/// short ones, the divide fits enough rounds into an epoch shorter still, and
+/// the floor keeps rounds from overlapping. Derived rather than tabulated, so an
+/// operator voting the epoch duration gets a correct cadence without anyone
+/// editing a table.
 pub fn cadence_for_epoch(epoch_slots: u64) -> u64 {
     let fitted = epoch_slots / TARGET_ROUNDS_PER_EPOCH;
-    MAINNET_CADENCE_SLOTS.min(fitted).max(round_width_slots())
+    let cap = if epoch_slots < SHORT_EPOCH_SLOTS {
+        round_width_slots()
+    } else {
+        MAINNET_CADENCE_SLOTS
+    };
+    cap.min(fitted).max(round_width_slots())
 }
 
 /// Rounds an epoch of this length holds at this cadence, before any shift.
@@ -283,13 +298,15 @@ mod tests {
         assert_eq!(round_width_slots(), 5);
     }
 
+    /// The deployed presets keep the cap; the harnesses run at the round width,
+    /// which is as tight as a grid can be laid without rounds overlapping.
     #[test]
     fn preset_cadence() {
         let expected = [
             (MAINNET, 7u64, 216_000u64),
             (DEVNET, 7, 1_286),
-            (LOCALNET, 7, 36),
-            (SIMNET, 7, 7),
+            (LOCALNET, 5, 50),
+            (SIMNET, 5, 10),
         ];
 
         for (seconds, interval, rounds) in expected {
