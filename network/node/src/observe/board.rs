@@ -1014,46 +1014,64 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // and showing one against the peer that gave the spool up reads as a failure
     // on data it is no longer asked about.
     let state = context.state();
-    // Rows name the same handful of rounds over and over, so each keeps its own
-    // sequence as indices into one table rather than spelling them out.
-    let mut round_ids: Vec<RoundId> = Vec::new();
-    let mut rows: Vec<ChallengeRow> = context
+    // Rows name the same handful of rounds over and over, so each is placed
+    // against one shared axis rather than spelling its own out.
+    let mut rows: Vec<(ChallengeRow, Vec<(RoundId, bool)>)> = context
         .store
         .iter_peer_records()
         .unwrap_or_default()
         .into_iter()
         .filter(|((node, spool), _)| holds_spool(&state, *node, *spool))
         .map(|((node, spool), record)| {
-            let recent = record.recent_rounds();
-            let rounds = recent_round_ids(context, node, spool, recent.len())
+            let strip = record.recent_rounds();
+            // one read per row, reused for the axis below rather than re-fetched
+            let judged = recent_round_ids(context, node, spool, strip.len())
                 .into_iter()
-                .map(|id| match round_ids.iter().position(|held| *held == id) {
-                    Some(at) => at as u32,
-                    None => {
-                        round_ids.push(id);
-                        (round_ids.len() - 1) as u32
-                    }
-                })
+                .zip(strip.iter().copied())
                 .collect();
-            ChallengeRow {
-                node: node.to_string(),
-                spool: spool.as_u64(),
-                opportunities: record.opportunities,
-                successes: record.successes,
-                consecutive_misses: record.consecutive_misses,
-                success_rate_bps: record.success_rate().0,
-                rule_fired: record.eviction_fires(),
-                queued: queued.contains(&node),
-                recent,
-                rounds,
-            }
+            (
+                ChallengeRow {
+                    node: node.to_string(),
+                    spool: spool.as_u64(),
+                    opportunities: record.opportunities,
+                    successes: record.successes,
+                    consecutive_misses: record.consecutive_misses,
+                    success_rate_bps: record.success_rate().0,
+                    rule_fired: record.eviction_fires(),
+                    queued: queued.contains(&node),
+                    judged: 0,
+                    recent: 0,
+                    recent_len: strip.len() as u32,
+                },
+                judged,
+            )
         })
-        // one read per row, reused for the axis below rather than re-fetched
         .collect();
 
-    rows.sort_by(|a, b| {
+    rows.sort_by(|(a, _), (b, _)| {
         (a.success_rate_bps, &a.node, a.spool).cmp(&(b.success_rate_bps, &b.node, b.spool))
     });
+
+    // The widest row's rounds are the axis every strip is read against, and a
+    // strip is a u64, so the axis is never wider than one.
+    let axis: Vec<RoundId> = rows
+        .iter()
+        .max_by_key(|(_, judged)| judged.len())
+        .map(|(_, judged)| judged.iter().map(|(id, _)| *id).collect())
+        .unwrap_or_default();
+    let rows: Vec<ChallengeRow> = rows
+        .into_iter()
+        .map(|(mut row, judged)| {
+            for (id, proved) in judged {
+                let Some(at) = axis.iter().position(|other| *other == id) else { continue };
+                row.judged |= 1 << at;
+                if proved {
+                    row.recent |= 1 << at;
+                }
+            }
+            row
+        })
+        .collect();
 
     let schedule = challenge_schedule(&context.state());
     let slot_ms = observed_slot_ms(context, &state, schedule.as_ref());
@@ -1077,8 +1095,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         cadence_slots: schedule.as_ref().map(|s| s.interval_slots).unwrap_or_default(),
         settle_deadline_slots: SETTLE_DEADLINE_SLOTS,
         sample_lookback_slots: SAMPLE_LOOKBACK_SLOTS,
-        round_ids: round_ids.clone(),
-        axis: round_axis(&rows, &round_ids),
+        axis,
         owners: owner_rows(context, &state, &queued),
         rows,
     }
@@ -1141,7 +1158,6 @@ fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
     owners
 }
 
-/// Returns the grid's round axis in oldest-to-newest order.
 /// The rounds a peer's strip entries belong to, newest `len` of them.
 ///
 /// The record counts judgements without saying which rounds they were, so the
@@ -1161,20 +1177,6 @@ fn recent_round_ids<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .iter()
         .map(|(epoch, round, _)| RoundId { epoch: epoch.0, round: round.0 })
         .collect()
-}
-
-/// The axis every strip is read against: the widest row's rounds, which the
-/// rows already carry.
-fn round_axis(rows: &[ChallengeRow], ids: &[RoundId]) -> Vec<RoundId> {
-    rows.iter()
-        .max_by_key(|row| row.rounds.len())
-        .map(|row| {
-            row.rounds
-                .iter()
-                .filter_map(|at| ids.get(*at as usize).copied())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 

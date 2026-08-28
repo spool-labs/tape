@@ -545,9 +545,9 @@ pub struct SpoolStat {
 
 /// One row of the challenge record: what this node has seen from one peer.
 ///
-/// Rounds across, peers down. `recent` is oldest-first, one entry per round this
-/// peer was judged in, so a void round leaves no mark against anyone and a peer
-/// only just seen reads as a short row rather than a wall of misses.
+/// Rounds across, peers down. The strip is read against the grid's `axis`, so a
+/// void round leaves no mark against anyone and a peer only just seen reads as a
+/// short row rather than a wall of misses.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChallengeRow {
     /// Peer address, base58.
@@ -572,17 +572,24 @@ pub struct ChallengeRow {
     /// Whether this node currently has the peer queued for eviction.
     #[serde(default)]
     pub queued: bool,
-    /// The recent strip, oldest first, true for a success.
-    pub recent: Vec<bool>,
-    /// Which round each entry in `recent` belongs to, as indices into the
-    /// grid's `round_ids`, same order and length.
+    /// The rounds of the grid's `axis` this peer was judged in, one bit per
+    /// column, oldest in the low bit.
     ///
     /// Rows cover different rounds: peers join at different times and are asked
-    /// at different rates, so a strip cannot be placed by its length. Naming
-    /// each round in full per row repeated the same handful of them across
-    /// every row of every group.
+    /// at different rates, so a strip cannot be placed by its length. Placing it
+    /// against the shared axis costs a word, where a round id per entry per row
+    /// repeated the same handful of them across every row of every group.
     #[serde(default)]
-    pub rounds: Vec<u32>,
+    pub judged: u64,
+    /// Of those columns, the ones it answered.
+    pub recent: u64,
+    /// Entries in the peer's own strip, which is what the grid is sized by.
+    ///
+    /// Longer than the columns set in `judged` when the round store has been
+    /// swept behind the record: those rounds are still counted, they just have
+    /// nothing left to name them.
+    #[serde(default)]
+    pub recent_len: u32,
 }
 
 /// The challenge record this node keeps, one row per peer.
@@ -641,9 +648,6 @@ pub struct ChallengeGrid {
     /// One row per owner, judged by this node's own rule.
     #[serde(default)]
     pub owners: Vec<ChallengeOwner>,
-    /// Rounds the rows index into, in no particular order.
-    #[serde(default)]
-    pub round_ids: Vec<RoundId>,
     /// Which rounds the strip's columns stand for, right-aligned with them.
     ///
     /// Every member of a group is judged in the same rounds, so one axis labels
