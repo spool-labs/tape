@@ -50,14 +50,22 @@ pub enum MarkKind {
     Certified,
 }
 
+/// Index a mark carries when it names no peer.
+pub const NO_NODE: u32 = u32::MAX;
+
 /// One thing that happened to one spool in one round.
-#[derive(Clone, Debug)]
+///
+/// A round runs hundreds of marks against a group's worth of addresses, so the
+/// address is held once in the trace's table and the mark carries its index.
+#[derive(Clone, Copy, Debug)]
 pub struct TraceMark {
     pub spool: SpoolIndex,
-    /// The answering owner, or the signer for an attestation.
-    pub peer: Option<Address>,
+    /// The answering owner, or the signer for an attestation, as an index into
+    /// the trace's `nodes`; `NO_NODE` when the mark names nobody.
+    pub node: u32,
     pub kind: MarkKind,
-    pub at_ms: u64,
+    /// Milliseconds after the trace opened.
+    pub at_ms: u32,
 }
 
 /// How one spool's round settled.
@@ -65,10 +73,11 @@ pub struct TraceMark {
 /// Kept apart from the marks: settlement runs when the next round opens, a
 /// whole cadence after this round ended, so it is a verdict rather than a
 /// moment on this round's clock.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SpoolOutcome {
     pub spool: SpoolIndex,
-    pub owner: Address,
+    /// The owner judged, as an index into the trace's `nodes`.
+    pub owner: u32,
     pub certified: bool,
 }
 
@@ -96,6 +105,8 @@ pub struct RoundTrace {
     pub block: Hash,
     pub opened_ms: u64,
     pub close: TraceClose,
+    /// Addresses the marks and outcomes index into, first seen first.
+    pub nodes: Vec<Address>,
     pub marks: Vec<TraceMark>,
     pub outcomes: Vec<SpoolOutcome>,
     /// When this trace was last sent out, for the push interval.
@@ -109,6 +120,20 @@ pub struct RoundTrace {
 impl RoundTrace {
     fn matches(&self, epoch: EpochNumber, round: RoundNumber, group: GroupIndex) -> bool {
         self.epoch == epoch && self.round == round && self.group == group
+    }
+
+    /// The address's place in the table, adding it if this is its first mark.
+    ///
+    /// A scan rather than a map: a round names the members of one group, so the
+    /// table is twenty entries however many marks point into it.
+    fn intern(&mut self, peer: Address) -> u32 {
+        match self.nodes.iter().position(|held| *held == peer) {
+            Some(at) => at as u32,
+            None => {
+                self.nodes.push(peer);
+                (self.nodes.len() - 1) as u32
+            }
+        }
     }
 }
 
@@ -141,6 +166,7 @@ impl TraceRing {
             block,
             opened_ms: now_ms(),
             close: TraceClose::Open,
+            nodes: Vec::new(),
             marks: Vec::new(),
             outcomes: Vec::new(),
             pushed_ms: 0,
@@ -173,8 +199,10 @@ impl TraceRing {
             return;
         }
 
-        let at_ms = now_ms();
-        trace.marks.push(TraceMark { spool, peer, kind, at_ms });
+        let now = now_ms();
+        let at_ms = now.saturating_sub(trace.opened_ms).min(u32::MAX as u64) as u32;
+        let node = peer.map(|peer| trace.intern(peer)).unwrap_or(NO_NODE);
+        trace.marks.push(TraceMark { spool, node, kind, at_ms });
 
         // A certificate is worth sending promptly, but a group settling fires
         // twenty of them at once and each carries the whole trace, so they share
@@ -184,12 +212,12 @@ impl TraceRing {
         } else {
             PUSH_INTERVAL_MS
         };
-        if at_ms.saturating_sub(trace.pushed_ms) >= interval {
-            trace.pushed_ms = at_ms;
+        if now.saturating_sub(trace.pushed_ms) >= interval {
+            trace.pushed_ms = now;
             let from = trace.pushed_marks;
             let nodes_from = trace.pushed_nodes;
             trace.pushed_marks = trace.marks.len();
-            trace.pushed_nodes = distinct_peers(&trace.marks);
+            trace.pushed_nodes = trace.nodes.len();
             push(Some(&*trace), from, nodes_from);
         }
     }
@@ -213,6 +241,7 @@ impl TraceRing {
             return;
         }
 
+        let owner = trace.intern(owner);
         trace.outcomes.push(SpoolOutcome { spool, owner, certified });
     }
 
@@ -229,7 +258,7 @@ impl TraceRing {
             trace.close = close;
             trace.pushed_ms = now_ms();
             trace.pushed_marks = trace.marks.len();
-            trace.pushed_nodes = distinct_peers(&trace.marks);
+            trace.pushed_nodes = trace.nodes.len();
             // Whole, once, at the end: a reader that joined mid-round or lost a
             // push holds a partial trace, and this is where it is made good.
             push(Some(&*trace), 0, 0);
@@ -274,19 +303,6 @@ fn push(trace: Option<&RoundTrace>, from: usize, nodes_from: usize) {
 #[cfg(not(feature = "metrics"))]
 fn push(_trace: Option<&RoundTrace>, _from: usize, _nodes_from: usize) {}
 
-/// Distinct peers the marks name, which is what the wire table holds.
-fn distinct_peers(marks: &[TraceMark]) -> usize {
-    let mut seen: Vec<Address> = Vec::new();
-    for mark in marks {
-        if let Some(peer) = mark.peer {
-            if !seen.contains(&peer) {
-                seen.push(peer);
-            }
-        }
-    }
-    seen.len()
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -325,6 +341,48 @@ mod tests {
         assert_eq!(traces.len(), 1);
         assert_eq!(traces[0].marks.len(), 1);
         assert_eq!(traces[0].marks[0].spool, SpoolIndex(3));
+    }
+
+    // one entry per address however many marks name it, since the table is what
+    // the wire carries and a round names the same twenty peers all round
+    #[test]
+    fn marks_share_one_entry_per_address() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        let peer = Address::new_unique();
+        let other = Address::new_unique();
+        for kind in [MarkKind::AnswerIn, MarkKind::AttestIn, MarkKind::Certified] {
+            for peer in [Some(peer), Some(other), None] {
+                ring.mark(EpochNumber(1), RoundNumber(1), GroupIndex(0), SpoolIndex(3), kind, peer);
+            }
+        }
+
+        let traces = ring.snapshot();
+        assert_eq!(traces[0].nodes, vec![peer, other]);
+        assert_eq!(traces[0].marks[0].node, 0);
+        assert_eq!(traces[0].marks[1].node, 1);
+        assert_eq!(traces[0].marks[2].node, NO_NODE);
+    }
+
+    // outcomes index the same table, so a settlement adds no second copy
+    #[test]
+    fn an_outcome_reuses_the_address_table() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        let owner = Address::new_unique();
+        ring.mark(
+            EpochNumber(1),
+            RoundNumber(1),
+            GroupIndex(0),
+            SpoolIndex(3),
+            MarkKind::AnswerIn,
+            Some(owner),
+        );
+        ring.settle(EpochNumber(1), RoundNumber(1), GroupIndex(0), SpoolIndex(3), owner, true);
+
+        let traces = ring.snapshot();
+        assert_eq!(traces[0].nodes.len(), 1);
+        assert_eq!(traces[0].outcomes[0].owner, 0);
     }
 
     #[test]

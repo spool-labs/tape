@@ -893,7 +893,7 @@ const OPEN_DETAILED_ROUNDS: u64 = SETTLE_DEADLINE_SLOTS / round_width_slots() + 
 fn fold_shapes(trace: &TracedRound) -> Vec<SpoolShape> {
     let mut by_spool: BTreeMap<SpoolIndex, SpoolShape> = BTreeMap::new();
     for mark in &trace.marks {
-        let at = mark.at_ms.saturating_sub(trace.opened_ms);
+        let at = mark.at_ms as u64;
         let shape = by_spool.entry(mark.spool).or_insert_with(|| SpoolShape {
             spool: mark.spool.as_u64(),
             ..SpoolShape::default()
@@ -944,25 +944,16 @@ pub fn wire_trace_from(trace: &TracedRound, from: usize, nodes_from: usize) -> R
 
 /// One trace on the wire, with or without the individual messages behind it.
 pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
-    let mut nodes: Vec<String> = Vec::new();
-    let mut index_of = |peer: Option<tape_crypto::Address>| -> u32 {
-        let Some(peer) = peer else { return u32::MAX };
-        let name = peer.to_string();
-        match nodes.iter().position(|held| *held == name) {
-            Some(at) => at as u32,
-            None => {
-                nodes.push(name);
-                (nodes.len() - 1) as u32
-            }
-        }
-    };
+    // The trace interns its own addresses, so the table travels as it is held
+    // and each one is encoded once rather than once per mark that names it.
+    let nodes: Vec<String> = trace.nodes.iter().map(|peer| peer.to_string()).collect();
     let marks: Vec<TraceMark> = trace
         .marks
         .iter()
         .filter(|_| detailed)
         .map(|mark| TraceMark {
             spool: mark.spool.as_u64(),
-            node: index_of(mark.peer),
+            node: mark.node,
             kind: match mark.kind {
                 MarkKind::AnswerOut => WireMark::AnswerOut,
                 MarkKind::AnswerIn => WireMark::AnswerIn,
@@ -971,7 +962,7 @@ pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
                 MarkKind::AttestIn => WireMark::AttestIn,
                 MarkKind::Certified => WireMark::Certified,
             },
-            at_ms: mark.at_ms.saturating_sub(trace.opened_ms),
+            at_ms: mark.at_ms as u64,
         })
         .collect();
 
@@ -980,7 +971,7 @@ pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
         .iter()
         .map(|outcome| SpoolOutcome {
             spool: outcome.spool.as_u64(),
-            node: index_of(Some(outcome.owner)),
+            node: outcome.owner,
             certified: outcome.certified,
         })
         .collect();
