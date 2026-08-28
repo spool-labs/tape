@@ -49,10 +49,7 @@ const LIVE_BOARD_ROUNDS: u64 = 8;
 /// window also sets the resolution of a whole-number counter.
 const RATE_WINDOW_MS: u64 = 2_000;
 
-/// One encoded event, ready to write to any number of sockets
-///
-/// Shared rather than copied: the broadcast clones the frame once per viewer,
-/// and a board frame is hundreds of kilobytes.
+/// One encoded event, shared rather than copied to any number of sockets
 #[derive(Clone)]
 pub struct Frame {
     pub event: &'static str,
@@ -88,8 +85,7 @@ struct Replay {
     topology: Option<Frame>,
     /// Held whole: encoding it every board period stalled the tick beside it
     board: Option<std::sync::Arc<tape_observe_api::Board>>,
-    /// The same board encoded, kept from the first connect after it landed so
-    /// the next viewer is handed it rather than paying for it again.
+    /// The board encoded once, handed to every later connect
     board_frame: Option<Frame>,
     history: std::collections::VecDeque<Tick>,
 }

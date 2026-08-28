@@ -54,15 +54,13 @@ pub enum MarkKind {
 pub const NO_NODE: u32 = u32::MAX;
 
 /// One thing that happened to one spool in one round.
-///
-/// A round runs hundreds of marks against a group's worth of addresses, so the
-/// address is held once in the trace's table and the mark carries its index.
 #[derive(Clone, Copy, Debug)]
 pub struct TraceMark {
+    /// The spool the mark is about.
     pub spool: SpoolIndex,
-    /// The answering owner, or the signer for an attestation, as an index into
-    /// the trace's `nodes`; `NO_NODE` when the mark names nobody.
+    /// The peer named, as an index into the trace's nodes; NO_NODE for none.
     pub node: u32,
+    /// What the message was.
     pub kind: MarkKind,
     /// Milliseconds after the trace opened.
     pub at_ms: u32,
@@ -75,9 +73,11 @@ pub struct TraceMark {
 /// moment on this round's clock.
 #[derive(Clone, Copy, Debug)]
 pub struct SpoolOutcome {
+    /// The spool judged.
     pub spool: SpoolIndex,
-    /// The owner judged, as an index into the trace's `nodes`.
+    /// The owner judged, as an index into the trace's nodes.
     pub owner: u32,
+    /// Whether a certificate assembled for it.
     pub certified: bool,
 }
 
@@ -105,7 +105,6 @@ pub struct RoundTrace {
     pub block: Hash,
     pub opened_ms: u64,
     pub close: TraceClose,
-    /// Addresses the marks and outcomes index into, first seen first.
     pub nodes: Vec<Address>,
     pub marks: Vec<TraceMark>,
     pub outcomes: Vec<SpoolOutcome>,
@@ -122,10 +121,8 @@ impl RoundTrace {
         self.epoch == epoch && self.round == round && self.group == group
     }
 
-    /// The address's place in the table, adding it if this is its first mark.
-    ///
-    /// A scan rather than a map: a round names the members of one group, so the
-    /// table is twenty entries however many marks point into it.
+    /// The address's place in the table, adding it on first sight; a scan
+    /// because the table never outgrows one group.
     fn intern(&mut self, peer: Address) -> u32 {
         match self.nodes.iter().position(|held| *held == peer) {
             Some(at) => at as u32,
@@ -343,8 +340,7 @@ mod tests {
         assert_eq!(traces[0].marks[0].spool, SpoolIndex(3));
     }
 
-    // one entry per address however many marks name it, since the table is what
-    // the wire carries and a round names the same twenty peers all round
+    // one entry per address however many marks name it
     #[test]
     fn marks_share_one_entry_per_address() {
         let ring = TraceRing::default();

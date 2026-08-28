@@ -572,22 +572,13 @@ pub struct ChallengeRow {
     /// Whether this node currently has the peer queued for eviction.
     #[serde(default)]
     pub queued: bool,
-    /// The rounds of the grid's `axis` this peer was judged in, one bit per
-    /// column, oldest in the low bit.
-    ///
-    /// Rows cover different rounds: peers join at different times and are asked
-    /// at different rates, so a strip cannot be placed by its length. Placing it
-    /// against the shared axis costs a word, where a round id per entry per row
-    /// repeated the same handful of them across every row of every group.
+    /// The axis columns this peer was judged in, one bit each, oldest lowest.
     #[serde(default)]
     pub judged: u64,
     /// Of those columns, the ones it answered.
     pub recent: u64,
-    /// Entries in the peer's own strip, which is what the grid is sized by.
-    ///
-    /// Longer than the columns set in `judged` when the round store has been
-    /// swept behind the record: those rounds are still counted, they just have
-    /// nothing left to name them.
+    /// Entries in the peer's own strip; exceeds the judged bits once the round
+    /// store is swept behind the record.
     #[serde(default)]
     pub recent_len: u32,
 }

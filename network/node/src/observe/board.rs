@@ -944,8 +944,7 @@ pub fn wire_trace_from(trace: &TracedRound, from: usize, nodes_from: usize) -> R
 
 /// One trace on the wire, with or without the individual messages behind it.
 pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
-    // The trace interns its own addresses, so the table travels as it is held
-    // and each one is encoded once rather than once per mark that names it.
+    // The trace already interned these, so each address encodes once.
     let nodes: Vec<String> = trace.nodes.iter().map(|peer| peer.to_string()).collect();
     let marks: Vec<TraceMark> = trace
         .marks
@@ -1052,8 +1051,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         (a.success_rate_bps, &a.node, a.spool).cmp(&(b.success_rate_bps, &b.node, b.spool))
     });
 
-    // The widest row's rounds are the axis every strip is read against, and a
-    // strip is a u64, so the axis is never wider than one.
+    // The widest row sets the axis; a strip is a u64, so 64 columns at most.
     let axis: Vec<RoundId> = rows
         .iter()
         .max_by_key(|(_, judged)| judged.len())
