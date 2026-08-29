@@ -400,6 +400,8 @@ pub struct NodeInfo {
     pub status: String,
     pub version: String,
     pub uptime_secs: u64,
+    /// Lifetime process starts, zero from a producer that does not keep the tally.
+    pub restarts: u64,
 }
 
 /// The current committee epoch and its membership.

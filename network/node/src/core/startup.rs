@@ -24,6 +24,7 @@ use crate::config::node::NodeConfig;
 use crate::context::{AppContext, NodeContextBuilder, NodeStore};
 use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
+use crate::core::restarts;
 
 #[cfg(not(feature = "rocks"))]
 pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, NodeError> {
@@ -178,6 +179,9 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
     init_metrics(config);
 
     let store = open_primary_store(config)?;
+    // After the open, which is what creates the root the tally sits in.
+    restarts::record(&config.store.path);
+
     let rpc = build_rpc_client(config)?;
 
     ensure_registered(config, &rpc, &keypair, &bls_keypair, &tls_keypair).await?;
