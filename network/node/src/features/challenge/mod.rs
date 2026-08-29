@@ -5,6 +5,7 @@ pub mod fold;
 pub mod manager;
 pub mod rounds;
 pub mod sample_cache;
+pub mod schedules;
 pub mod trace;
 
 pub use manager::ChallengeManager;

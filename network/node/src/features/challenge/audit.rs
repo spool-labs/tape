@@ -29,7 +29,6 @@ use tokio::time::timeout;
 use tracing::{debug, trace};
 
 use crate::context::NodeContext;
-use crate::features::challenge::manager::schedule_for;
 use crate::features::challenge::rounds::RoundKey;
 use crate::features::challenge::trace::MarkKind;
 
@@ -67,10 +66,9 @@ impl Round {
 /// miss.
 pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
     round: &Round,
 ) -> bool {
-    sample_space(&set_entries(context, state, round).1) > 0
+    sample_space(&set_entries(context, round).1) > 0
 }
 
 /// The sample set for one round, shared by every answer drawn against it.
@@ -92,7 +90,6 @@ pub type SampleSet = (Vec<(Address, TrackSample)>, Vec<SampleEntry>);
 /// says so with `invalidate`.
 fn set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
     round: &Round,
 ) -> Arc<SampleSet> {
     let key = (round.epoch, round.round, round.group);
@@ -102,17 +99,18 @@ fn set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // Read before the store is, so a backdated row landing mid-build is not
     // stamped as though the set already held it.
     let built_at = context.sample_sets.generation();
-    let built = Arc::new(build_set_entries(context, state, round));
+    let built = Arc::new(build_set_entries(context, round));
     context.sample_sets.put(key, built_at, built.clone());
     built
 }
 
 fn build_set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
     round: &Round,
 ) -> SampleSet {
-    let Some(schedule) = schedule_for(state, round.epoch) else {
+    // Nothing for an epoch this node never laid a grid for, so it asks no
+    // question of that epoch's rounds and answers none of them either.
+    let Some(schedule) = context.schedules.get(round.epoch) else {
         return (Vec::new(), Vec::new());
     };
     let cutoff = schedule.sample_cutoff(round.round);
@@ -143,11 +141,10 @@ fn build_set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
 /// epoch boundary.
 pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<(Sample, Hash)> {
-    let held = set_entries(context, state, round);
+    let held = set_entries(context, round);
     let (rows, entries) = (&held.0, &held.1);
 
     let seed = challenge::round_seed(&round.block, round.epoch, round.group, round.round, spool);
@@ -164,11 +161,10 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<ProofOfAccess> {
-    let (sample, _) = expected_sample(context, state, round, spool)?;
+    let (sample, _) = expected_sample(context, round, spool)?;
     let proof = match sample.leaf {
         SampleLeaf::Coded { sub_leaf } => {
             // One window of the slice and the sidecar above it, which is every
@@ -236,7 +232,7 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> bool {
     // Every refusal below costs the answering owner a miss it may not have
     // earned, so each one says which of them it was.
-    let Some((expected, value_hash)) = expected_sample(context, state, &round_of(answer), answer.spool)
+    let Some((expected, value_hash)) = expected_sample(context, &round_of(answer), answer.spool)
     else {
         debug!(spool = %answer.spool, "challenge: no question of our own to check against");
         return false;
@@ -285,7 +281,7 @@ pub fn answer_signer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     answer: &ProofOfAccess,
     in_time: bool,
 ) -> Option<BlsPubkey> {
-    let (expected, value_hash) = expected_sample(context, state, &round_of(answer), answer.spool)?;
+    let (expected, value_hash) = expected_sample(context, &round_of(answer), answer.spool)?;
     let coded = context.store.get_track_data(expected.track).ok().flatten();
     let registered = match (expected.leaf, &coded) {
         (SampleLeaf::Coded { .. }, Some(BlobData::Coded(encoding))) => Registered::Coded(encoding),

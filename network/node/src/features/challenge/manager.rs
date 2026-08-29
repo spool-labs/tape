@@ -6,8 +6,7 @@ use futures::StreamExt;
 use rpc::Rpc;
 use store::Store;
 use tape_core::challenge::schedule::{
-    HANDOVER_GRACE_ROUNDS, MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, Schedule,
-    round_width_slots,
+    HANDOVER_GRACE_ROUNDS, MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, round_width_slots,
 };
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
@@ -142,6 +141,12 @@ where
 
         let state = self.context.state();
 
+        // Before the phase gate too: the grid is laid the first time this node
+        // sees the epoch and kept, so a round that spans the turn is judged
+        // against the grid it was asked with rather than one derived again off
+        // the epoch's own span afterwards.
+        self.context.schedules.observe(&state, block.slot);
+
         // Before the phase gate: an epoch that left Active still owes a
         // verdict on every round it opened.
         self.settle_finalized(block.slot);
@@ -150,7 +155,7 @@ where
             return Ok(());
         }
 
-        let Some(schedule) = challenge_schedule(&state) else {
+        let Some(schedule) = self.context.schedules.get(state.epoch()) else {
             return Ok(());
         };
         let Some(number) = schedule.round_at(block.slot) else {
@@ -211,7 +216,7 @@ where
                     .collect(),
                 opened_slot: block.slot,
                 finalized: false,
-                askable: has_sample_set(&self.context, &state, &round),
+                askable: has_sample_set(&self.context, &round),
             });
             self.first_round.entry(epoch).or_insert(number);
             // Two epochs is everything a settling round can reach back to.
@@ -433,7 +438,7 @@ where
         round: &Round,
         mine: SpoolIndex,
     ) {
-        let Some(answer) = build_answer(&self.context, state, round, mine) else {
+        let Some(answer) = build_answer(&self.context, round, mine) else {
             debug!(spool = %mine, round = round.round.0, "challenge: no answer to give");
             return;
         };
@@ -510,59 +515,6 @@ where
     }
 }
 
-pub fn challenge_schedule(state: &ProtocolState) -> Option<Schedule> {
-    schedule_for(state, state.epoch())
-}
-
-/// Returns the schedule for the current or immediately preceding epoch.
-///
-/// The previous schedule remains available for rounds that settle across an
-/// epoch boundary.
-pub fn schedule_for(state: &ProtocolState, epoch: EpochNumber) -> Option<Schedule> {
-    let bundle = if state.current.epoch.id == epoch {
-        &state.current.epoch
-    } else {
-        let previous = state.previous.as_ref()?;
-        if previous.epoch.id != epoch {
-            return None;
-        }
-        &previous.epoch
-    };
-
-    let span = epoch_span_slots(state)?;
-    let schedule = Schedule::for_epoch(bundle.start_slot, span, &bundle.nonce);
-    schedule.validate().ok().map(|()| schedule)
-}
-
-/// Slots to lay the grid over: the last epoch's realized span.
-///
-/// Both epochs on hand are sized by it. The previous one's span is exactly what
-/// elapsed between the two starts, and the current one has not ended, so what
-/// the cluster just did is the best guess at what it will do.
-///
-/// Read off two on-chain start slots, so every node computes the same number and
-/// the grid stays something they agree on without measuring anything locally. A
-/// cluster running at a different slot time than `SLOT_MS` self-corrects within
-/// an epoch, where converting the voted seconds stays wrong by that ratio for
-/// good.
-///
-/// Nothing when there is no previous epoch to have realized anything. Converting
-/// the voted seconds instead would size one node's grid off a different
-/// measurement than its peers': the two disagree by whatever the cluster's slot
-/// time is not, and the cadence, the slack and the offset all move with it. That
-/// node would challenge on slots nobody answers and judge its group on rounds
-/// they never opened. A node without an epoch behind it waits for one.
-fn epoch_span_slots(state: &ProtocolState) -> Option<u64> {
-    let previous = state.previous.as_ref()?;
-    state
-        .current
-        .epoch
-        .start_slot
-        .as_u64()
-        .checked_sub(previous.epoch.start_slot.as_u64())
-        .filter(|span| *span > 0)
-}
-
 pub fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
     state
         .spools_in_group(group)
@@ -586,9 +538,7 @@ pub fn group_mates(state: &ProtocolState, me: Address) -> Vec<Address> {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::challenge::schedule::round_width_slots;
     use tape_core::erasure::GROUP_SIZE;
-    use tape_core::types::{EpochDuration, SlotNumber};
 
     use super::*;
     use crate::harness::{NodeHarness, TestContext};
@@ -670,86 +620,5 @@ mod tests {
             }
         }
         assert!(mates.iter().all(|peer| !state.member_spools(*peer).is_empty()));
-    }
-
-    /// A state whose current epoch starts at `start` and whose previous one
-    /// realized `span` slots before it.
-    fn realized(state: &mut ProtocolState, start: u64, span: u64) {
-        state.current.epoch.start_slot = SlotNumber(start);
-        let mut previous = state.current.clone();
-        previous.epoch.id = EpochNumber(state.current.epoch.id.as_u64().saturating_sub(1));
-        previous.epoch.start_slot = SlotNumber(start - span);
-        state.previous = Some(previous);
-    }
-
-    // the grid starts at the epoch's own start slot and covers the span the
-    // epoch before it realized
-    #[tokio::test]
-    async fn schedule_from_chain() {
-        let harness = harness().await;
-        let ctx: TestContext = harness.ctx_for(0);
-        let mut state = (*ctx.state()).clone();
-        state.current.epoch.preferences.epoch_duration = EpochDuration(3_600);
-        // The 9,000 slots an hour of 400ms slots comes to.
-        realized(&mut state, 13_000, 9_000);
-
-        let schedule = challenge_schedule(&state).expect("a usable grid");
-        assert_eq!(schedule.epoch_start_slot, SlotNumber(13_000));
-        assert_eq!(schedule.rounds(), 1_286);
-        assert!(schedule.interval_slots >= round_width_slots());
-        assert!(schedule.validate().is_ok());
-    }
-
-    // a cluster whose slots are faster than the nominal 400ms realizes more
-    // slots per epoch, and the grid has to cover them rather than the count the
-    // voted duration converts to
-    #[tokio::test]
-    async fn grid_follows_the_realized_span() {
-        let harness = harness().await;
-        let ctx: TestContext = harness.ctx_for(0);
-        let mut state = (*ctx.state()).clone();
-        state.current.epoch.preferences.epoch_duration = EpochDuration(3_600);
-
-        realized(&mut state, 30_000, 9_000);
-        let nominal = challenge_schedule(&state).expect("a usable grid").rounds();
-
-        // The last epoch ran 21,800 slots for those same 3,600 seconds, which is
-        // the ~165ms slot devnet actually produces rather than the nominal 400.
-        realized(&mut state, 30_000, 21_800);
-        let realized = challenge_schedule(&state).expect("a usable grid");
-        assert_eq!(realized.epoch_slots, 21_800, "the span is what elapsed");
-        assert!(
-            realized.rounds() > nominal * 2,
-            "a grid sized off 400ms slots covers under half a 165ms epoch: \
-             {} rounds against {nominal}",
-            realized.rounds(),
-        );
-    }
-
-    // nothing has been realized before the first epoch boundary, and a grid
-    // guessed from the voted seconds would be one no peer is laying
-    #[tokio::test]
-    async fn no_epoch_behind_it_no_grid() {
-        let harness = harness().await;
-        let ctx: TestContext = harness.ctx_for(0);
-        let mut state = (*ctx.state()).clone();
-        state.current.epoch.start_slot = SlotNumber(13_000);
-        state.current.epoch.preferences.epoch_duration = EpochDuration(3_600);
-        state.previous = None;
-
-        assert!(challenge_schedule(&state).is_none());
-    }
-
-    // a span too short to hold a round has no grid, whatever was voted for it:
-    // one derived from it would challenge on every block
-    #[tokio::test]
-    async fn a_span_too_short_has_no_grid() {
-        let harness = harness().await;
-        let ctx: TestContext = harness.ctx_for(0);
-        let mut state = (*ctx.state()).clone();
-        state.current.epoch.preferences.epoch_duration = EpochDuration(3_600);
-        realized(&mut state, 10_000, 2);
-
-        assert!(challenge_schedule(&state).is_none());
     }
 }

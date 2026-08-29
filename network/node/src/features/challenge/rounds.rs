@@ -369,6 +369,7 @@ mod protocol_tests {
     use tape_core::cert::challenge::ChallengeRespondMessage;
     use tape_core::challenge::{ProofOfAccess, Sample, SuccessCertificate};
     use tape_core::challenge::certificate::CertificateRejection;
+    use tape_core::challenge::schedule::Schedule;
     use tape_core::erasure::{
         GROUP_SIZE, SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
         sample_window, slice_sidecar, sub_leaf_count,
@@ -391,7 +392,6 @@ mod protocol_tests {
     use crate::features::challenge::audit::{
         Round, accept_answer, attest_message, expected_sample,
     };
-    use crate::features::challenge::manager::challenge_schedule;
     use crate::features::http::handlers::challenge::agreement_threshold;
     use crate::harness::{NodeHarness, TestContext, coded_track};
 
@@ -441,6 +441,10 @@ mod protocol_tests {
             }
             keys.insert(spool, key);
         }
+
+        // Lay the epoch's grid, as the challenge manager does on the first
+        // block it sees at tip. Nothing answers or judges without one.
+        ctx.schedules.observe(&state, state.current.epoch.start_slot);
 
         // One coded track, with this node holding its own slice of it.
         let (slices, encoding) = coded_track(PAYLOAD_BYTES, 0x1234_5678_9ABC_DEF0);
@@ -553,7 +557,7 @@ mod protocol_tests {
         let round = fixture.round();
         let spool = fixture.mine;
 
-        let asked = expected_sample(&fixture.ctx, &fixture.state, &round, spool)
+        let asked = expected_sample(&fixture.ctx, &round, spool)
             .expect("a sample while the epoch is current");
 
         // The epoch turns, carrying the one that just closed into `previous`, which
@@ -562,13 +566,18 @@ mod protocol_tests {
         fixture.state.previous = Some(closing);
         fixture.state.current.epoch.id = EpochNumber(fixture.state.epoch().as_u64() + 1);
 
-        let after = expected_sample(&fixture.ctx, &fixture.state, &round, spool)
+        let after = expected_sample(&fixture.ctx, &round, spool)
             .expect("the same sample once the epoch has turned");
         assert_eq!(asked.0, after.0, "the question changed under the boundary");
         assert_eq!(asked.1, after.1);
     }
 
     impl Fixture {
+        /// The grid the node laid for the fixture's epoch.
+        fn schedule(&self) -> Schedule {
+            self.ctx.schedules.get(self.state.epoch()).expect("a grid")
+        }
+
         fn round(&self) -> Round {
             Round {
                 epoch: self.state.epoch(),
@@ -587,7 +596,7 @@ mod protocol_tests {
         fn answer_from_leaf(&self, spool: SpoolIndex, leaf: Option<usize>) -> ProofOfAccess {
             let round = self.round();
             let (asked, _) =
-                expected_sample(&self.ctx, &self.state, &round, spool).expect("a sample");
+                expected_sample(&self.ctx, &round, spool).expect("a sample");
             let SampleLeaf::Coded { sub_leaf: drawn } = asked.leaf else {
                 panic!("the fixture holds coded tracks only");
             };
@@ -706,7 +715,7 @@ mod protocol_tests {
         let leaves: Vec<usize> = group_spools(&fixture.state, fixture.group)
             .into_iter()
             .filter_map(|spool| {
-                expected_sample(&fixture.ctx, &fixture.state, &round, spool)
+                expected_sample(&fixture.ctx, &round, spool)
             })
             .map(|(sample, _)| asked_leaf(&sample))
             .collect();
@@ -722,7 +731,7 @@ mod protocol_tests {
     async fn easier_leaf() {
         let fixture = fixture().await;
         let target = fixture.other();
-        let (asked, _) = expected_sample(&fixture.ctx, &fixture.state, &fixture.round(), target)
+        let (asked, _) = expected_sample(&fixture.ctx, &fixture.round(), target)
             .expect("sample");
 
         // Wrap, so a draw that lands on the last leaf still names a real neighbour.
@@ -781,12 +790,10 @@ mod protocol_tests {
     async fn mid_round_write() {
         let fixture = fixture().await;
         let round = fixture.round();
-        let (before, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+        let (before, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
 
-        let cutoff = challenge_schedule(&fixture.state)
-            .expect("schedule")
-            .sample_cutoff(round.round);
+        let cutoff = fixture.schedule().sample_cutoff(round.round);
         let late = Address::new_unique();
         put_sample(&fixture.ctx, fixture.group, late, 4 * SUB_LEAF_BYTES, cutoff);
         // A row landing in production comes with the cursor that applied it, and
@@ -794,7 +801,7 @@ mod protocol_tests {
         // the store skips it, so the cursor is moved by hand here.
         bump_cursor(&fixture.ctx);
 
-        let (after, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+        let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
         assert_eq!(after.track, before.track, "a mid-round write shifted the draw");
         assert_eq!(asked_leaf(&after), asked_leaf(&before));
@@ -809,7 +816,7 @@ mod protocol_tests {
             SlotNumber(cutoff.as_u64() - 1),
         );
         bump_cursor(&fixture.ctx);
-        let (inside, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+        let (inside, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
         assert_ne!(
             (inside.track, asked_leaf(&inside)),
@@ -825,13 +832,11 @@ mod protocol_tests {
     async fn mid_round_delete() {
         let fixture = fixture().await;
         let round = fixture.round();
-        let cutoff = challenge_schedule(&fixture.state)
-            .expect("schedule")
-            .sample_cutoff(round.round);
+        let cutoff = fixture.schedule().sample_cutoff(round.round);
 
         let extra = Address::new_unique();
         put_sample(&fixture.ctx, fixture.group, extra, 4 * SUB_LEAF_BYTES, SlotNumber(0));
-        let (before, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+        let (before, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
 
         fixture
@@ -840,7 +845,7 @@ mod protocol_tests {
             .mark_track_sample_deleted(fixture.group, extra, cutoff)
             .expect("delete at the cut");
 
-        let (after, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+        let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
         assert_eq!(after.track, before.track, "a mid-round deletion shifted the draw");
         assert_eq!(asked_leaf(&after), asked_leaf(&before));
@@ -852,7 +857,7 @@ mod protocol_tests {
             .store
             .mark_track_sample_deleted(fixture.group, extra, SlotNumber(cutoff.as_u64() - 1))
             .expect("delete before the cut");
-        let (out, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
+        let (out, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
         assert_ne!(out.track, extra, "a pre-window deletion stayed in the set");
     }
@@ -900,7 +905,7 @@ mod protocol_tests {
             )
             .expect("inline row");
 
-        let (asked, _) = expected_sample(&fixture.ctx, &fixture.state, &round, target)
+        let (asked, _) = expected_sample(&fixture.ctx, &round, target)
             .expect("a sample");
         assert_eq!(asked.track, track);
         assert_eq!(asked.leaf, SampleLeaf::Inline);

@@ -21,7 +21,6 @@ use tape_core::challenge::record::{
     MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
 };
 use tape_core::system::NodeStatus;
-use crate::features::challenge::manager::challenge_schedule;
 use crate::features::http::handlers::challenge::agreement_threshold;
 use tape_crypto::Address;
 use crate::features::challenge::trace::{MarkKind, RoundTrace as TracedRound, TraceClose};
@@ -1071,7 +1070,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         })
         .collect();
 
-    let schedule = challenge_schedule(&context.state());
+    let schedule = context.schedules.get(state.epoch());
     let slot_ms = observed_slot_ms(context, &state, schedule.as_ref());
 
     ChallengeGrid {

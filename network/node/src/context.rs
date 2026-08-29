@@ -35,6 +35,7 @@ use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::challenge::attest_queue::AttestQueue;
 use crate::features::challenge::sample_cache::SampleSets;
+use crate::features::challenge::schedules::Schedules;
 use crate::features::challenge::{RoundBuffer, TraceRing};
 use crate::features::challenge::counters::ChallengeCounters;
 use crate::features::eviction::EvictionQueue;
@@ -64,6 +65,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub round_buffer: Arc<RoundBuffer>,
     pub round_traces: Arc<TraceRing>,
     pub sample_sets: Arc<SampleSets<crate::features::challenge::audit::SampleSet>>,
+    pub schedules: Schedules,
     pub attest_queue: Arc<AttestQueue>,
     pub certify_slots: Arc<tokio::sync::Semaphore>,
     certify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<CertifyJob>>,
@@ -451,6 +453,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             round_buffer: Arc::new(RoundBuffer::default()),
             round_traces: Arc::new(TraceRing::default()),
             sample_sets: Arc::new(SampleSets::default()),
+            schedules: Schedules::default(),
             attest_queue: Arc::new(AttestQueue::default()),
             certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
             certify_stage: std::sync::OnceLock::new(),
