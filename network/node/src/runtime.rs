@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 use crate::config::node::NodeConfig;
 use crate::config::logs::{LoggingConfig, LoggingFormat};
 use crate::context::NodeContext;
-use crate::core::startup::build_context;
+use crate::core::startup::{build_context, checkpoint_primary_store};
 use crate::core::channels::{downstream_channels, drain_block_channel, store_channel};
 use crate::core::error::NodeError;
 use crate::core::types::{ChannelName, ServiceName};
@@ -562,5 +562,13 @@ where
 
 pub async fn run_application(config: NodeConfig) -> Result<(), NodeError> {
     let context = build_context(&config).await?;
-    run_with_context(context, config).await
+    let store = context.store.clone();
+    let result = run_with_context(context, config).await;
+
+    // Every service has joined here, so the volume is idle and this is the last
+    // thing asked of it. Run it however the supervisor ended: a node that exits
+    // on a failed service still restarts, and still pays for the sweep.
+    checkpoint_primary_store(&store);
+
+    result
 }
