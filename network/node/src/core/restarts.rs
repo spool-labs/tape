@@ -10,7 +10,7 @@ use tracing::debug;
 /// One decimal integer, in the store root the node already owns.
 const FILE_NAME: &str = "restarts";
 
-static COUNT: OnceLock<u64> = OnceLock::new();
+static STARTS: OnceLock<u64> = OnceLock::new();
 
 /// Bump the persisted count for this start and return it.
 ///
@@ -24,12 +24,15 @@ pub fn record(root: &Path) -> u64 {
         debug!(path = %path.display(), %error, "could not persist the start count");
     }
 
-    *COUNT.get_or_init(|| count)
+    *STARTS.get_or_init(|| count)
 }
 
-/// The count recorded at startup, zero until it is.
+/// Restarts behind this process, the reading every view takes.
+///
+/// The file counts starts and the first one is not a restart, so the subtraction
+/// lives here rather than at each call site, where the two could disagree.
 pub fn count() -> u64 {
-    COUNT.get().copied().unwrap_or(0)
+    STARTS.get().copied().unwrap_or(0).saturating_sub(1)
 }
 
 fn read(path: &Path) -> Option<u64> {
@@ -46,12 +49,13 @@ fn write(path: &Path, count: u64) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    // an empty root starts the tally at one and leaves it on disk
+    // an empty root starts the tally at one, and one start is no restarts yet
     #[test]
     fn first_start_writes_one() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(record(dir.path()), 1);
         assert_eq!(read(&dir.path().join(FILE_NAME)), Some(1));
+        assert_eq!(count(), 0);
     }
 
     // the file is the tally, so a later boot picks up where the last one left off

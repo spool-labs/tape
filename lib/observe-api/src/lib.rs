@@ -260,6 +260,7 @@ pub struct NodeStats {
     #[serde(default)] pub repair_bytes: u64,
     #[serde(default)] pub recover_bytes: u64,
     #[serde(default)] pub upload_bytes: u64,
+    #[serde(default)] pub restarts: u64,
 }
 
 /// One committee member, as seen on-chain and optionally enriched with liveness

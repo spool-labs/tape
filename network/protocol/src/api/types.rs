@@ -166,6 +166,9 @@ pub struct NodeStats {
     pub bootstrap_target_slot: u64,
     #[serde(default)]
     pub fee_payer_lamports: Option<u64>,
+    /// Zero from a peer too old to keep the tally, the same as never restarted.
+    #[serde(default)]
+    pub restarts: u64,
 }
 
 /// Project the wire stats onto the dashboard's per-node stats.
@@ -196,6 +199,7 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             repair_bytes: s.repair_bytes_fetched,
             recover_bytes: s.recover_bytes_fetched,
             upload_bytes: s.bytes_uploaded,
+            restarts: s.restarts,
         }
     }
 }

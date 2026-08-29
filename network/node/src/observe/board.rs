@@ -483,6 +483,7 @@ where
         repair_bytes: metrics.repair_bytes_fetched,
         recover_bytes: metrics.recover_bytes_fetched,
         upload_bytes: metrics.bytes_uploaded,
+        restarts: restarts::count(),
     }
 }
 
@@ -506,7 +507,7 @@ pub fn lite_board(address: String, stats: &NodeStats) -> Board {
             status: "active".to_string(),
             version: stats.version.clone(),
             uptime_secs: 0,
-            restarts: 0,
+            restarts: stats.restarts,
         },
         epoch: EpochInfo {
             number: stats.current_epoch,
@@ -718,8 +719,7 @@ where
             status: node_status_label(&context.node_status()).to_string(),
             version: crate::VERSION.to_string(),
             uptime_secs: STARTED.get().map(|s| s.elapsed().as_secs()).unwrap_or(0),
-            // The file counts boots, the label says restarts: a first boot is zero.
-            restarts: restarts::count().saturating_sub(1),
+            restarts: restarts::count(),
         },
         epoch: EpochInfo {
             number: state.epoch().0,

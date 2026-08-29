@@ -186,6 +186,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         bootstrap_current_slot: bootstrap.current_slot,
         bootstrap_target_slot: bootstrap.target_slot,
         fee_payer_lamports: state.context.fee_payer_balance().map(|b| b.0),
+        restarts: crate::core::restarts::count(),
     };
 
     debug!(
