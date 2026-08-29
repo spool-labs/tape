@@ -561,6 +561,10 @@ where
 }
 
 pub async fn run_application(config: NodeConfig) -> Result<(), NodeError> {
+    // Before anything else, so "how long until this node is back" counts from
+    // process start rather than from whenever the first metrics scrape lands.
+    #[cfg(feature = "metrics")]
+    crate::observe::collectors::mark_process_start();
     let context = build_context(&config).await?;
     let store = context.store.clone();
     let result = run_with_context(context, config).await;

@@ -6,7 +6,7 @@ mod aggregator;
 mod balance;
 mod bandwidth;
 mod cache;
-mod collectors;
+pub mod collectors;
 mod epoch;
 mod peers;
 
