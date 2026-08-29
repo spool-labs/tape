@@ -857,6 +857,10 @@ impl Store for ReelStore {
         EngineStoreTrait::reclaim_space(&self.inner).map_err(crossed)
     }
 
+    fn maintain(&self) -> StoreResult<()> {
+        EngineStoreTrait::maintain(&self.inner).map_err(crossed)
+    }
+
     fn disk_volumes(&self) -> StoreResult<Vec<DiskVolume>> {
         EngineStoreTrait::disk_volumes(&self.inner)
             .map(|volumes| volumes.into_iter().map(disk_volume).collect())

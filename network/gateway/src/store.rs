@@ -10,6 +10,9 @@ use tape_node::core::error::NodeError;
 use tape_node::core::types::ChannelName;
 use tape_node::features::replay::types::{RawTrack, ReplayBatch};
 use tape_node::features::store::apply::apply_slot;
+use tape_node::features::store::manager::{
+    maintenance_ticker, settle_maintenance, tick_maintenance, MaintenancePass,
+};
 use tape_protocol::Api;
 use tape_store::ops::{MetaOps, TrackDataOps};
 use tape_store::TapeStore;
@@ -22,7 +25,7 @@ pub struct GatewayStoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     cancel: CancellationToken,
 }
 
-impl<Db: Store, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db, Cluster, Blockchain> {
+impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         rx: mpsc::Receiver<ReplayBatch>,
@@ -36,6 +39,18 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db, Cluster, 
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
+        let mut pass = None;
+        let result = self.drive(&mut pass).await;
+        settle_maintenance(pass).await;
+        result
+    }
+
+    async fn drive(&mut self, pass: &mut Option<MaintenancePass>) -> Result<(), NodeError> {
+        // The same read-write volume a node opens, through the same
+        // `build_context` and ingesting the same blocks. The gateway runs no GC
+        // manager, so without this nothing here drives maintenance at all.
+        let mut ticker = maintenance_ticker();
+
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
@@ -53,6 +68,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db, Cluster, 
 
                     self.context.pending.drop_slot(batch.slot);
                 }
+
+                _ = ticker.tick() => tick_maintenance(&self.context.store, pass).await,
             }
         }
     }
