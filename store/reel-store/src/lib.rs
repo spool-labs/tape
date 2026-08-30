@@ -197,10 +197,10 @@ impl ReelStore {
     ///
     /// Takes its own cue and seals every open tail, which is why nothing but a
     /// shutdown calls it. `None` where there is no resident index to write down,
-    /// which is a volume opened unarmed or one paging its keys out to the footers.
+    /// which is a volume paging its keys out to the footers.
     pub fn checkpoint_index(&self) -> StoreResult<Option<IndexCheckpoint>> {
         let config = self.inner.config();
-        if !config.index_checkpoint || config.index.pages() {
+        if config.index.pages() {
             return Ok(None);
         }
         self.inner.checkpoint_index().map(Some).map_err(engine)
@@ -300,9 +300,6 @@ pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
         point_reads: probe_for(options.backend),
         io_backend: options.backend,
         shard_shapes: ShardShapes::Declared,
-        // Armed both ways: a clean shutdown writes the index down, and the next
-        // open reads it back instead of sweeping every sealed segment's footer.
-        index_checkpoint: true,
         ..ReelConfig::default()
     };
 
