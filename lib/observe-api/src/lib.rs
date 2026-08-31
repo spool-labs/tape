@@ -537,6 +537,12 @@ pub struct ChallengeRounds {
     /// group-mates each recorded as a miss against it.
     #[serde(default)]
     pub own_missed: u64,
+    /// Times this node suspended judging and re-read protocol state.
+    #[serde(default)]
+    pub realigns: u64,
+    /// Realigns that gave up without an answer from the chain.
+    #[serde(default)]
+    pub realign_failures: u64,
 }
 
 /// One cumulative histogram bucket.

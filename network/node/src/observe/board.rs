@@ -755,6 +755,8 @@ fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
         discarded: counters.discarded.load(Ordering::Relaxed),
         own_certified: counters.own_certified.load(Ordering::Relaxed),
         own_missed: counters.own_missed.load(Ordering::Relaxed),
+        realigns: counters.realigns.load(Ordering::Relaxed),
+        realign_failures: counters.realign_failures.load(Ordering::Relaxed),
     }
 }
 
