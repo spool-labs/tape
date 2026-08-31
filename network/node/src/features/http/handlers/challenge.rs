@@ -7,9 +7,6 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_core::erasure::group_for_spool;
-use tape_core::types::EpochNumber;
-use tape_crypto::Address;
-use tape_crypto::hash::Hash;
 use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace, warn};
@@ -135,7 +132,7 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         .context
         .round_buffer
         .accept_attestation(key, payload.signer, payload.signature);
-    watch_digest(&state, &protocol, payload.signer, payload.epoch, payload.digest);
+    watch_digest(&state, &protocol, &payload);
 
     // An attestation only ever adds to a quorum, so it is safe to bank while
     // suspended, and banking it is what lets this node's own round certify. What
@@ -155,18 +152,23 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
 fn watch_digest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     state: &AppState<Db, Cluster, Blockchain>,
     protocol: &ProtocolState,
-    signer: Address,
-    epoch: EpochNumber,
-    digest: Hash,
+    payload: &AttestationPayload,
 ) {
-    if !state.context.epoch_digest.observe(protocol, signer, epoch, digest) {
+    let diverged = state.context.epoch_digest.observe(
+        protocol,
+        payload.signer,
+        payload.epoch,
+        payload.digest,
+        payload.digest_signature,
+    );
+    if !diverged {
         return;
     }
     let Some(delay) = state.context.challenge_tripwire.trip() else {
         return;
     };
 
-    warn!(epoch = epoch.0, "challenge: group holds a different view of the epoch");
+    warn!(epoch = payload.epoch.0, "challenge: group holds a different view of the epoch");
     spawn_realign(&state.context, delay, RealignCause::Divergence);
 }
 

@@ -132,6 +132,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     }
 
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
+        // The digest is cached under the epoch, and a join or an eviction
+        // rewrites what it covers without moving the epoch.
+        self.epoch_digest.invalidate();
         self.state.publish(state)
     }
 

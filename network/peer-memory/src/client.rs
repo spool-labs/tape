@@ -163,6 +163,7 @@ impl Api for MemoryApi {
             signer: req.signer,
             signature: req.signature,
             digest: req.digest,
+            digest_signature: req.digest_signature,
         }, Attest)
     }
 

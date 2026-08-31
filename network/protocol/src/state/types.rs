@@ -129,6 +129,16 @@ impl ProtocolState {
         let mut bytes = Vec::new();
 
         bytes.extend_from_slice(&self.current.epoch.id.0.to_le_bytes());
+
+        // The grid the questions are drawn on, not just who answers them. Two
+        // nodes that agree on the committee and disagree on the nonce, the start
+        // slot or the duration derive different rounds from the same block, and
+        // each reads the other's honest answer as an answer to nothing.
+        bytes.extend_from_slice(self.current.epoch.nonce.as_ref());
+        bytes.extend_from_slice(&self.current.epoch.start_slot.0.to_le_bytes());
+        bytes.extend_from_slice(&self.current.epoch.preferences.epoch_duration.0.to_le_bytes());
+        bytes.extend_from_slice(&self.current.epoch.total_groups.to_le_bytes());
+
         bytes.extend_from_slice(&(self.current.committee.len() as u64).to_le_bytes());
         for member in &self.current.committee {
             bytes.extend_from_slice(member.node.as_ref());

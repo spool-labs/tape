@@ -300,8 +300,9 @@ impl From<ProofOfAccessPayload> for ProofOfAccess {
 /// Wire representation of an observer's attestation for a round.
 ///
 /// `digest` rides along as the signer's view of the settled epoch, zero while
-/// its epoch is still in transition. It sits outside the signed message, so it
-/// is only ever read in aggregate.
+/// its epoch is still in transition. It carries its own signature rather than
+/// joining the attestation's: attestations aggregate across a group and only do
+/// so while every signer signs identical bytes.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct AttestationPayload {
     pub epoch: EpochNumber,
@@ -312,6 +313,7 @@ pub struct AttestationPayload {
     pub signer: Address,
     pub signature: BlsSignature,
     pub digest: Hash,
+    pub digest_signature: BlsSignature,
 }
 
 /// Payload for slice upload requests.
