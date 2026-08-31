@@ -3,11 +3,7 @@ use std::sync::Arc;
 use futures::future::{join, join_all};
 use rpc::Rpc;
 use store::Store;
-use bytemuck::Zeroable;
-use tape_core::bls::BlsSignature;
-use tape_core::cert::challenge::{
-    ChallengeAttestMessage, ChallengeDigestMessage, ChallengeRespondMessage,
-};
+use tape_core::cert::challenge::{ChallengeAttestMessage, ChallengeRespondMessage};
 use tape_core::challenge::{self, ProofOfAccess, SampleEntry};
 use tape_core::challenge::proof::{Registered, SampleProof};
 use tape_core::challenge::sample::SampleLeaf;
@@ -249,7 +245,9 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     let Ok(signature) = context.bls_sign(&attest_message(&round, answer.spool).to_bytes()) else {
         return;
     };
-    let (digest, digest_signature) = signed_digest(context, state, me, round.epoch);
+    let (digest, digest_signature) = context
+        .epoch_digest
+        .signed(state, me, |message| context.bls_sign(message).ok());
     context
         .round_buffer
         .accept_attestation(round.key(answer.spool), me, signature);
@@ -310,26 +308,6 @@ async fn send_attestation<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) {
     if let Err(error) = context.api.attest(peer, attestation).await {
         trace!(node = %peer, %error, "challenge: attestation not delivered");
-    }
-}
-
-/// This node's view of the settled epoch, signed so a peer can attribute it.
-///
-/// A zero digest with a zero signature is the honest answer while the epoch is
-/// still in transition, and receivers read it as no claim at all.
-fn signed_digest<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
-    me: Address,
-    epoch: EpochNumber,
-) -> (Hash, BlsSignature) {
-    let Some(digest) = context.epoch_digest.own(state) else {
-        return (Hash::default(), BlsSignature::zeroed());
-    };
-    let message = ChallengeDigestMessage::new(me, epoch, digest);
-    match context.bls_sign(&message.to_bytes()) {
-        Ok(signature) => (digest, signature),
-        Err(_) => (Hash::default(), BlsSignature::zeroed()),
     }
 }
 

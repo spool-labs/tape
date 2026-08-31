@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
@@ -127,9 +125,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         bootstrap_current_slot: bootstrap.current_slot,
         bootstrap_target_slot: bootstrap.target_slot,
         fee_payer_lamports: state.context.fee_payer_balance().map(|b| b.0),
-        challenge_refusals: BTreeMap::new(),
-        challenge_realigns: 0,
-        challenge_realign_failures: 0,
+        // Node-only counters: the gateway runs no challenge.
+        ..Default::default()
     }))
 }
 

@@ -44,7 +44,6 @@ struct TripwireState {
     blank_rounds: HashMap<GroupIndex, u64>,
     is_realigning: bool,
     rounds: Arm,
-    divergence: Arm,
 }
 
 /// How urgent the next realign from one source is.
@@ -86,7 +85,6 @@ impl Tripwire {
                 blank_rounds: HashMap::new(),
                 is_realigning: false,
                 rounds: Arm::new(),
-                divergence: Arm::new(),
             }),
         }
     }
@@ -111,14 +109,13 @@ impl Tripwire {
         if !judgement.is_blank() {
             inner.blank_rounds.remove(&group);
             inner.rounds.reset();
-            inner.divergence.reset();
             return None;
         }
 
         let run = inner.blank_rounds.entry(group).or_default();
         *run += 1;
-        let reached = *run >= self.threshold;
-        if inner.is_realigning || !reached {
+        let is_at_threshold = *run >= self.threshold;
+        if inner.is_realigning || !is_at_threshold {
             return None;
         }
 
@@ -127,12 +124,10 @@ impl Tripwire {
         Some(inner.rounds.fire())
     }
 
-    /// Trips on evidence from outside the round path
+    /// Trips without a run of blank rounds behind it, for tests and operators
     ///
-    /// Returns nothing when a realign is already running, so a burst of reports
-    /// costs one read of the chain rather than one each. It keeps its own
-    /// backoff: a disagreement the chain does not resolve would otherwise fire
-    /// a fresh scan the moment the last one released.
+    /// Returns nothing when a realign is already running, so a burst costs one
+    /// read of the chain rather than one each.
     pub fn trip(&self) -> Option<Duration> {
         let mut inner = self.lock();
         if inner.is_realigning {
@@ -141,7 +136,7 @@ impl Tripwire {
 
         inner.blank_rounds.clear();
         inner.is_realigning = true;
-        Some(inner.divergence.fire())
+        Some(inner.rounds.fire())
     }
 
     /// The realign finished, whatever it found; judging resumes
@@ -304,10 +299,10 @@ mod tests {
         assert!(tripwire.is_realigning());
     }
 
-    // a disagreement the chain does not settle would otherwise fire a fresh
-    // scan the instant the last one released
+    // a trip that did not fix it escalates the same way a run of blank rounds
+    // does, rather than firing a fresh scan the instant the last one released
     #[test]
-    fn divergence_backs_off_on_its_own() {
+    fn direct_trips_back_off() {
         let tripwire = Tripwire::new(8);
 
         assert_eq!(tripwire.trip(), Some(Duration::ZERO));
@@ -319,18 +314,5 @@ mod tests {
 
         let third = tripwire.trip().expect("third trip");
         assert!(third > Duration::ZERO);
-    }
-
-    // the two sources escalate separately, so blank rounds do not spend the
-    // divergence backoff and leave a real disagreement waiting five minutes
-    #[test]
-    fn the_two_arms_are_independent() {
-        let tripwire = Tripwire::new(2);
-
-        tripwire.record_round(ONE, blank());
-        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
-        tripwire.settled();
-
-        assert_eq!(tripwire.trip(), Some(Duration::ZERO));
     }
 }

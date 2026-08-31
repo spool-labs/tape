@@ -191,6 +191,12 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .challenge_counters
             .realign_failures
             .load(Ordering::Relaxed),
+        challenge_divergence_observed: state
+            .context
+            .challenge_counters
+            .divergence_observed
+            .load(Ordering::Relaxed),
+        challenge_divergence_signers: state.context.epoch_digest.disagreeing() as u64,
     };
 
     debug!(

@@ -33,9 +33,13 @@ impl EvictionQueue {
         self.lock().remove(node);
     }
 
-    /// Drop every target, for when the view they were judged against is withdrawn.
-    pub fn clear(&self) {
-        self.lock().clear();
+    /// Drop the targets this node opened itself.
+    ///
+    /// Only its own judgements: a target opened by a proposal already on chain
+    /// is somebody else's evidence and this node's pending vote on it, and
+    /// dropping that would abandon the vote rather than withdraw an accusation.
+    pub fn clear_records(&self) {
+        self.lock().retain(|_, (_, opened)| *opened != Opened::Record);
     }
 
     /// Drop every target whose voting epoch has passed.

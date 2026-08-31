@@ -171,6 +171,10 @@ pub struct NodeStats {
     pub challenge_realigns: u64,
     #[serde(default)]
     pub challenge_realign_failures: u64,
+    #[serde(default)]
+    pub challenge_divergence_observed: u64,
+    #[serde(default)]
+    pub challenge_divergence_signers: u64,
 }
 
 /// Project the wire stats onto the dashboard's per-node stats.

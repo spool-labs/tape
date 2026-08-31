@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::state::events::{apply_eviction_event, apply_join_committee_event};
-use crate::features::state::realign::refetch_state;
+use crate::features::state::realign::{EpochFloor, refetch_state};
 use crate::features::vote::all_vote_groups_signed;
 
 pub struct ProtocolStateHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -55,7 +55,7 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         refetch_state(
             &self.context,
             Some(&self.cancel),
-            Some(epoch),
+            EpochFloor::Fixed(epoch),
             RetryConfig::infinite(),
         )
         .await?;

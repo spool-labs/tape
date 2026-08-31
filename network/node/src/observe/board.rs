@@ -757,6 +757,8 @@ fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
         own_missed: counters.own_missed.load(Ordering::Relaxed),
         realigns: counters.realigns.load(Ordering::Relaxed),
         realign_failures: counters.realign_failures.load(Ordering::Relaxed),
+        divergence_observed: counters.divergence_observed.load(Ordering::Relaxed),
+        divergence_signers: context.epoch_digest.disagreeing() as u64,
     }
 }
 

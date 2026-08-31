@@ -543,6 +543,12 @@ pub struct ChallengeRounds {
     /// Realigns that gave up without an answer from the chain.
     #[serde(default)]
     pub realign_failures: u64,
+    /// Signed peer reports of a view of the epoch that is not this node's.
+    #[serde(default)]
+    pub divergence_observed: u64,
+    /// Distinct peers behind one such view right now.
+    #[serde(default)]
+    pub divergence_signers: u64,
 }
 
 /// One cumulative histogram bucket.

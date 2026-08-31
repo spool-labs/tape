@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch::Receiver;
@@ -67,10 +67,9 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub challenge_tripwire: Arc<Tripwire>,
     pub epoch_digest: Arc<DigestWatch>,
 
-    /// Cancelled when the node shuts down. The runtime adopts this as its own
-    /// supervisor token, so work started off a request path can be wound up with
-    /// everything else rather than outliving it.
-    pub shutdown: CancellationToken,
+    // The token of the run currently under way. Work started off a request path
+    // takes a clone, so shutdown winds it up with everything else.
+    shutdown: Mutex<CancellationToken>,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -129,6 +128,26 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn phase(&self) -> EpochPhase {
         self.state().phase()
+    }
+
+    /// The current run's shutdown token.
+    pub fn shutdown(&self) -> CancellationToken {
+        self.lock_shutdown().clone()
+    }
+
+    /// Hands out a fresh token for a run that is starting.
+    ///
+    /// A cancelled token cannot be un-cancelled, so a context that is stopped
+    /// and started again needs a new one rather than the one its last run left
+    /// behind.
+    pub fn rearm_shutdown(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self.lock_shutdown() = token.clone();
+        token
+    }
+
+    fn lock_shutdown(&self) -> MutexGuard<'_, CancellationToken> {
+        self.shutdown.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
@@ -337,7 +356,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             challenge_counters: ChallengeCounters::default(),
             challenge_tripwire,
             epoch_digest: Arc::new(DigestWatch::default()),
-            shutdown: CancellationToken::new(),
+            shutdown: Mutex::new(CancellationToken::new()),
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),
@@ -378,6 +397,32 @@ mod tests {
         assert!(volume_below_threshold(&volumes, 1_000));
         assert!(!volume_below_threshold(&volumes, 400));
         assert!(!volume_below_threshold(&[volume(StoreVolume::Bulk, None)], 1_000));
+    }
+
+    // a cancelled token cannot be un-cancelled, so a context that is stopped and
+    // started again has to be handed a new one or the second run shuts itself
+    // down before it begins
+    #[tokio::test]
+    async fn shutdown_rearms_between_runs() {
+        let ctx = crate::harness::NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0);
+
+        let first = ctx.rearm_shutdown();
+        assert!(!first.is_cancelled());
+        first.cancel();
+        assert!(ctx.shutdown().is_cancelled(), "the run's token is the context's");
+
+        let second = ctx.rearm_shutdown();
+        assert!(!second.is_cancelled(), "the second run started already cancelled");
+        assert!(!ctx.shutdown().is_cancelled());
+
+        // And the old handle stays cancelled, so work from the first run winds up.
+        assert!(first.is_cancelled());
     }
 
     #[tokio::test]

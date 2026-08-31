@@ -9,6 +9,7 @@ use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
+use tape_crypto::hash::Hash;
 use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
 use tokio::sync::mpsc;
@@ -36,6 +37,9 @@ struct OpenRound {
     spools: Vec<SpoolIndex>,
     finalized: bool,
     askable: bool,
+    // Opened while the node was re-reading its view, so its evidence was
+    // gathered against a view the node had already stopped trusting.
+    is_suspect: bool,
 }
 
 pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -111,12 +115,6 @@ where
             return Ok(());
         }
 
-        // A node re-reading its view judges nobody: every verdict it would reach
-        // comes out of the view under suspicion. It still answers for its own
-        // spools, because a spool that goes quiet earns the misses that evict
-        // it, and that is the harm the suspension exists to avoid.
-        let is_suspended = self.context.challenge_tripwire.is_realigning();
-
         // A spool this node no longer holds is one it can no longer judge, so
         // its group's pending round is dropped rather than settled.
         let held: Vec<GroupIndex> = mine.iter().map(|spool| group_for_spool(*spool)).collect();
@@ -144,6 +142,17 @@ where
                 continue;
             }
 
+            // Re-read per group rather than once for the loop: a trip in an
+            // earlier group has already cleared the eviction queue, and a later
+            // group judging on afterwards would fill it straight back up from
+            // the same view.
+            //
+            // A node re-reading its view judges nobody: every verdict it would
+            // reach comes out of the view under suspicion. It still answers for
+            // its own spools, because a spool that goes quiet earns the misses
+            // that evict it, and that is the harm the suspension exists to
+            // avoid.
+            let is_suspended = self.context.challenge_tripwire.is_realigning();
             if !is_suspended {
                 let judgement = self.settle_previous(&state, group);
                 self.check_tripwire(group, judgement);
@@ -156,6 +165,7 @@ where
                     spools: group_spools(&state, group),
                     finalized: false,
                     askable: has_sample_set(&self.context, &state, &round),
+                    is_suspect: self.context.challenge_tripwire.is_realigning(),
                 },
             );
             self.context
@@ -163,7 +173,7 @@ where
                 .opened
                 .fetch_add(1, Ordering::Relaxed);
 
-            self.answer_and_broadcast(&state, &round, spool, is_suspended).await;
+            self.answer_and_broadcast(&state, &round, spool).await;
         }
 
         // Retire behind the oldest round any group still has open, not behind
@@ -202,6 +212,19 @@ where
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
             debug!(group = group.0, "challenge: round voided, entropy block never finalized");
+            return judgement;
+        }
+
+        // A round opened while the node was re-reading its view was judged with
+        // the view it was replacing, and the answers to it were refused by the
+        // half of the node that had already stopped trusting itself. Nobody is
+        // charged for it.
+        if open.is_suspect {
+            self.context
+                .challenge_counters
+                .voided
+                .fetch_add(1, Ordering::Relaxed);
+            debug!(group = group.0, "challenge: round voided, opened while realigning");
             return judgement;
         }
 
@@ -285,11 +308,11 @@ where
         // suspicion, and the run arm fires at three misses while this fires
         // later. Drop them rather than propose an eviction off a view the node
         // has already stopped trusting.
-        self.context.eviction_queue.clear();
+        self.context.eviction_queue.clear_records();
         spawn_realign(&self.context, delay, RealignCause::Tripwire);
     }
 
-    fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {
+    fn on_rolled(&mut self, hashes: &[Hash]) {
         for hash in hashes {
             self.context.round_buffer.discard_block(*hash);
         }
@@ -308,7 +331,7 @@ where
         }
     }
 
-    fn on_finalized(&mut self, hash: tape_crypto::hash::Hash) {
+    fn on_finalized(&mut self, hash: Hash) {
         for open in self.open_rounds.values_mut() {
             if open.round.block == hash {
                 open.finalized = true;
@@ -321,7 +344,6 @@ where
         state: &ProtocolState,
         round: &Round,
         mine: SpoolIndex,
-        is_suspended: bool,
     ) {
         let Some(answer) = build_answer(&self.context, state, round, mine) else {
             debug!(spool = %mine, round = round.round.0, "challenge: no answer to give");
@@ -332,14 +354,13 @@ where
         // than something to verify again.
         self.context.round_buffer.accept_answer(round.key(mine), answer.clone());
 
-        // Attest to it as well. The threshold counts this node among the
-        // group's members, so leaving its own signature out costs a position
-        // the quorum cannot spare. No relaying: the broadcast below reaches
-        // everyone already. A suspended node signs nothing: an attestation is a
-        // verdict, and its verdicts are what it has stopped trusting.
-        if !is_suspended {
-            spawn_attest(&self.context, state, &answer, false);
-        }
+        // Attest to it as well, suspended or not. The threshold counts this node
+        // among the group's members, so leaving its own signature out costs a
+        // position the quorum cannot spare, and the position it costs is in its
+        // own round. The message names the round and nothing about the
+        // committee, so it stands whatever the view turns out to be. No
+        // relaying: the broadcast below reaches everyone already.
+        spawn_attest(&self.context, state, &answer, false);
 
         let members = group_members(state, round.group);
         trace!(round = round.round.0, peers = members.len(), "challenge: broadcasting");
@@ -493,7 +514,16 @@ mod tests {
         let schedule = challenge_schedule(&ctx.state()).expect("a usable grid");
         Arc::new(ParsedBlock {
             slot: schedule.first_slot(),
-            blockhash: tape_crypto::hash::Hash([0x11; 32]),
+            blockhash: Hash([0x11; 32]),
+            ..ParsedBlock::default()
+        })
+    }
+
+    fn second_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
+        let schedule = challenge_schedule(&ctx.state()).expect("a usable grid");
+        Arc::new(ParsedBlock {
+            slot: SlotNumber(schedule.first_slot().0 + schedule.interval_slots),
+            blockhash: Hash([0x22; 32]),
             ..ParsedBlock::default()
         })
     }
@@ -502,7 +532,7 @@ mod tests {
     // own spools. Going quiet would earn it the consecutive misses that evict
     // it, which is the harm the suspension exists to prevent.
     #[tokio::test]
-    async fn suspended_node_still_opens_its_own_rounds() {
+    async fn suspended_node_still_answers() {
         let ctx = ready_context().await;
         let mut manager = manager_for(&ctx);
 
@@ -520,10 +550,66 @@ mod tests {
         assert_eq!(ctx.challenge_counters.settled_certified.load(Ordering::Relaxed), 0);
     }
 
+    // a round opened while suspended was judged against the view under
+    // suspicion, so the first settle after the suspension lifts charges nobody
+    #[tokio::test]
+    async fn suspect_rounds_settle_void() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+        for open in manager.open_rounds.values_mut() {
+            open.finalized = true;
+            open.askable = true;
+        }
+
+        // Suspension lifts, and the round opened under it settles.
+        ctx.challenge_tripwire.settled();
+        let group = manager.open_rounds.keys().copied().next().expect("an open round");
+        let judgement = manager.settle_previous(&ctx.state(), group);
+
+        assert_eq!(judgement, Judgement::default(), "a suspect round judged somebody");
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert!(ctx.challenge_counters.voided.load(Ordering::Relaxed) > 0);
+    }
+
+    // suspension is re-read per group: a trip in one group has already emptied
+    // the eviction queue, and a later group judging on would refill it
+    #[tokio::test]
+    async fn suspension_is_read_per_group() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+        let opened = ctx.challenge_counters.opened.load(Ordering::Relaxed);
+
+        // Tripped between blocks, as a trip in an earlier group would be.
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        for open in manager.open_rounds.values_mut() {
+            open.finalized = true;
+            open.askable = true;
+        }
+        manager
+            .on_produced(second_round_block(&ctx))
+            .await
+            .expect("produced");
+
+        assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > opened);
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert_eq!(ctx.challenge_counters.settled_certified.load(Ordering::Relaxed), 0);
+    }
+
     // and an unsuspended one opens them the same way, so the assertion above is
     // about the suspension rather than about the grid
     #[tokio::test]
-    async fn healthy_node_opens_its_own_rounds() {
+    async fn healthy_node_opens_rounds() {
         let ctx = ready_context().await;
         let mut manager = manager_for(&ctx);
 

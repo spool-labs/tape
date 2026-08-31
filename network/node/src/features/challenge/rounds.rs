@@ -117,6 +117,12 @@ impl RoundBuffer {
         entries.retain(|key, _| (key.epoch, key.round) >= (epoch, round));
     }
 
+    /// Every round still held, for a sweep that no arrival drives.
+    pub fn keys(&self) -> Vec<RoundKey> {
+        let entries = self.entries.lock().expect("round buffer");
+        entries.keys().copied().collect()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.lock().expect("round buffer").len()
     }
@@ -342,7 +348,7 @@ mod protocol_tests {
     };
     use crate::features::challenge::manager::challenge_schedule;
     use crate::features::challenge::refusal::RefusalReason;
-    use crate::features::http::handlers::challenge::agreement_threshold;
+    use crate::features::challenge::certify::agreement_threshold;
     use crate::harness::{NodeHarness, TestContext, coded_track};
 
     const PAYLOAD_BYTES: usize = 300_000;
