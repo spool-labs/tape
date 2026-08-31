@@ -165,21 +165,30 @@ fn watch_digest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         payload.digest,
         payload.digest_signature,
     );
-    let Report::Disagrees { signers } = report else {
-        return;
-    };
-
-    state
-        .context
-        .challenge_counters
-        .divergence_observed
-        .fetch_add(1, Ordering::Relaxed);
-    warn!(
-        epoch = payload.epoch.0,
-        signers,
-        node = %payload.signer,
-        "challenge: a peer holds a different view of the epoch"
-    );
+    match report {
+        // Nothing to say: not settled at one end, not this epoch, or unsigned.
+        Report::Ignored => {}
+        // Traced rather than counted. It is the ordinary case, and an operator
+        // reading zero disagreements needs to know the comparison ran at all.
+        Report::Agrees => trace!(
+            epoch = payload.epoch.0,
+            node = %payload.signer,
+            "challenge: peer view agrees"
+        ),
+        Report::Disagrees { signers } => {
+            state
+                .context
+                .challenge_counters
+                .divergence_observed
+                .fetch_add(1, Ordering::Relaxed);
+            warn!(
+                epoch = payload.epoch.0,
+                signers,
+                node = %payload.signer,
+                "challenge: a peer holds a different view of the epoch"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
