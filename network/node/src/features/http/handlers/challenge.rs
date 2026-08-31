@@ -28,6 +28,10 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     if !state.context.config.challenge.enabled {
         return Err(RouteError::Forbidden("challenge disabled on this node".into()));
     }
+    // A node re-reading its view judges nothing until it has one it trusts.
+    if state.context.challenge_tripwire.is_realigning() {
+        return Err(RouteError::Unavailable("realigning protocol state".into()));
+    }
 
     let payload: ProofOfAccessPayload = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("decode proof: {error}")))?;
@@ -95,6 +99,10 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<impl IntoResponse, RouteError> {
     if !state.context.config.challenge.enabled {
         return Err(RouteError::Forbidden("challenge disabled on this node".into()));
+    }
+    // A node re-reading its view judges nothing until it has one it trusts.
+    if state.context.challenge_tripwire.is_realigning() {
+        return Err(RouteError::Unavailable("realigning protocol state".into()));
     }
 
     let payload: AttestationPayload = wincode::deserialize(&body)
@@ -199,6 +207,9 @@ mod tests {
     use super::*;
     use tape_core::erasure::GROUP_SIZE;
 
+    use crate::features::challenge::tripwire::Judgement;
+    use crate::harness::{NodeHarness, TestContext};
+
     // at a full group the threshold is the mechanism's q, and it never drops to
     // a simple majority where two Byzantine signers could carry a round
     #[test]
@@ -210,5 +221,32 @@ mod tests {
         assert_eq!(agreement_threshold(3), 3);
         assert_eq!(agreement_threshold(1), 1);
         assert_eq!(agreement_threshold(0), 1);
+    }
+
+    // a node re-reading its view answers no proof and no attestation, because
+    // both would be weighed against the view under suspicion
+    #[tokio::test]
+    async fn realigning_node_takes_nothing() {
+        let ctx: TestContext = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0);
+
+        let blank = Judgement { peers: GROUP_SIZE as u64, certified: 0 };
+        let rounds = ctx.config.challenge.realign_after_blank_rounds;
+        for _ in 0..rounds {
+            ctx.challenge_tripwire.record_round(blank);
+        }
+        assert!(ctx.challenge_tripwire.is_realigning());
+
+        let state = AppState { context: ctx.clone() };
+        let proof = proof_of_access(State(state.clone()), Bytes::new()).await;
+        let attestation = attest(State(state), Bytes::new()).await;
+
+        assert!(matches!(proof.err(), Some(RouteError::Unavailable(_))));
+        assert!(matches!(attestation.err(), Some(RouteError::Unavailable(_))));
     }
 }

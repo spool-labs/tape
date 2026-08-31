@@ -13,7 +13,7 @@ use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -24,7 +24,9 @@ use crate::features::challenge::audit::{
     Round, build_answer, group_members, has_sample_set, spawn_attest,
 };
 use crate::features::challenge::fold::fold_outcome;
+use crate::features::challenge::tripwire::Judgement;
 use crate::features::eviction::queue::Opened;
+use crate::features::state::realign::{RealignCause, spawn_realign};
 
 // Capture settlement inputs when the round opens because settlement may cross
 // an epoch boundary. Unfinalized or unaskable rounds are void rather than
@@ -91,6 +93,13 @@ where
             return Ok(());
         }
 
+        // A node re-reading its view judges nothing: every answer it would
+        // weigh comes out of the view under suspicion.
+        if self.context.challenge_tripwire.is_realigning() {
+            self.open_rounds.clear();
+            return Ok(());
+        }
+
         let state = self.context.state();
         if state.phase() != EpochPhase::Active {
             return Ok(());
@@ -136,7 +145,11 @@ where
                 continue;
             }
 
-            self.settle_previous(&state, group);
+            let judgement = self.settle_previous(&state, group);
+            if self.check_tripwire(judgement) {
+                return Ok(());
+            }
+
             self.open_rounds.insert(
                 group,
                 OpenRound {
@@ -175,9 +188,11 @@ where
 
     /// Settles the previous round when the next opens, leaving the full interval
     /// available for a late certificate to replace a miss.
-    fn settle_previous(&self, state: &ProtocolState, group: GroupIndex) {
+    fn settle_previous(&self, state: &ProtocolState, group: GroupIndex) -> Judgement {
+        let mut judgement = Judgement::default();
+
         let Some(open) = self.open_rounds.get(&group) else {
-            return;
+            return judgement;
         };
 
         // A round whose entropy block never finalized is void. Nobody owed an
@@ -188,7 +203,7 @@ where
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
             debug!(group = group.0, "challenge: round voided, entropy block never finalized");
-            return;
+            return judgement;
         }
 
         // Nor did anyone owe an answer to a question the group had no data to
@@ -200,7 +215,7 @@ where
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
             debug!(group = group.0, "challenge: round voided, group had an empty sample set");
-            return;
+            return judgement;
         }
 
         let round = &open.round;
@@ -230,8 +245,10 @@ where
             // by the time its round settles, and counting the buffer's silence
             // reports a miss against a peer this node already accepted.
             let stands = self.record(owner, *spool, round.epoch, round.round, certified);
+            judgement.peers += 1;
             if stands {
                 counters.settled_certified.fetch_add(1, Ordering::Relaxed);
+                judgement.certified += 1;
             } else {
                 counters.settled_missed.fetch_add(1, Ordering::Relaxed);
             }
@@ -242,6 +259,30 @@ where
                 "challenge: settling"
             );
         }
+
+        judgement
+    }
+
+    /// Feeds a settled round to the tripwire, returning whether it tripped.
+    ///
+    /// A void round and a group whose whole set of positions is ours judge
+    /// nobody, and a round that judged nobody is no evidence either way.
+    fn check_tripwire(&mut self, judgement: Judgement) -> bool {
+        if judgement.peers == 0 {
+            return false;
+        }
+
+        let Some(delay) = self.context.challenge_tripwire.record_round(judgement) else {
+            return false;
+        };
+
+        warn!(
+            peers = judgement.peers,
+            "challenge: nothing stood for a run of rounds, realigning"
+        );
+        self.open_rounds.clear();
+        spawn_realign(&self.context, &self.cancel, delay, RealignCause::Tripwire);
+        true
     }
 
     fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {

@@ -167,6 +167,8 @@ pub struct NodeStats {
     pub fee_payer_lamports: Option<u64>,
     #[serde(default)]
     pub challenge_refusals: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub challenge_realigns: u64,
 }
 
 /// Project the wire stats onto the dashboard's per-node stats.

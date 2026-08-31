@@ -13,6 +13,7 @@ pub struct ChallengeCounters {
     pub discarded: AtomicU64,
     pub own_certified: AtomicU64,
     pub own_missed: AtomicU64,
+    pub realigns: AtomicU64,
 }
 
 /// Refused answers, split by why they were refused.

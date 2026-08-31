@@ -35,6 +35,7 @@ use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::challenge::RoundBuffer;
 use crate::features::challenge::counters::ChallengeCounters;
+use crate::features::challenge::tripwire::Tripwire;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
 
@@ -61,6 +62,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub eviction_queue: Arc<EvictionQueue>,
     pub round_buffer: Arc<RoundBuffer>,
     pub challenge_counters: ChallengeCounters,
+    pub challenge_tripwire: Arc<Tripwire>,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -291,6 +293,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         let (node_address, _) = node_pda(self.keypair.address());
         let admission = Arc::new(AdmissionLimiter::new(self.config.http.admission.clone()));
+        let challenge_tripwire = Arc::new(Tripwire::new(
+            self.config.challenge.realign_after_blank_rounds,
+        ));
 
         self.store
             .set_node_id(node_id)
@@ -319,6 +324,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             eviction_queue: Arc::new(EvictionQueue::default()),
             round_buffer: Arc::new(RoundBuffer::default()),
             challenge_counters: ChallengeCounters::default(),
+            challenge_tripwire,
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),

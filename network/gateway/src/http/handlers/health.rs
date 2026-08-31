@@ -128,6 +128,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         bootstrap_target_slot: bootstrap.target_slot,
         fee_payer_lamports: state.context.fee_payer_balance().map(|b| b.0),
         challenge_refusals: BTreeMap::new(),
+        challenge_realigns: 0,
     }))
 }
 

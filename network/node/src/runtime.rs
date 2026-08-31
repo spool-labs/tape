@@ -5,13 +5,11 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::types::SlotNumber;
-use tape_protocol::fetch::fetch_state;
 use tape_protocol::Api;
-use tape_retry::{retry_if, RetryConfig};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn, Instrument, info};
+use tracing::{debug, Instrument, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::node::NodeConfig;
@@ -35,6 +33,7 @@ use crate::features::snapshot::manager::SnapshotManager;
 use crate::features::spool::manager::SpoolManager;
 use crate::features::store::manager::StoreManager;
 use crate::features::state::manager::StateManager;
+use crate::features::state::realign::refetch_state;
 #[cfg(feature = "metrics")]
 use crate::observe::{register_block_channels, register_core_collectors, BalanceMonitor};
 use crate::supervisor::Supervisor;
@@ -178,14 +177,7 @@ where
     Blockchain: Rpc,
 {
 
-    let state = retry_if(
-        RetryConfig::infinite(),
-        Some(cancel),
-        || fetch_state(&context.rpc),
-        |error| error.is_retriable() && !error.is_skipped_slot(),
-    )
-    .await
-    .map_err(NodeError::from)?;
+    let state = refetch_state(context, Some(cancel), None).await?;
 
     debug!(
         epoch = state.epoch().0,
@@ -193,12 +185,6 @@ where
         committee_size = state.current.committee.len(),
         "loaded protocol state from RPC"
     );
-
-    context.set_state(state)?;
-
-    if let Err(error) = context.refresh_peers().await {
-        warn!(error = %error, "peer resolution failed during startup");
-    }
 
     Ok(())
 }

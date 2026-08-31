@@ -10,6 +10,7 @@ pub enum RouteError {
     BlacklistedObject,
     NotInCommittee,
     InvalidSignature,
+    Unavailable(String),
     Internal(String),
 }
 
@@ -26,6 +27,9 @@ impl IntoResponse for RouteError {
             Self::NotInCommittee => (StatusCode::FORBIDDEN, "not in committee").into_response(),
             Self::InvalidSignature => {
                 (StatusCode::UNAUTHORIZED, "invalid signature").into_response()
+            }
+            Self::Unavailable(message) => {
+                (StatusCode::SERVICE_UNAVAILABLE, message).into_response()
             }
             Self::Internal(message) => {
                 tracing::error!("http internal error: {message}");
