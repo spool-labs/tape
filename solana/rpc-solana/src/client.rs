@@ -17,7 +17,7 @@ use solana_transaction_status::{
     UiTransactionEncoding,
 };
 use std::future::Future;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use rpc::{Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
 use tape_blocks::wire::Block;
@@ -411,8 +411,7 @@ fn block_request(slot: u64, commitment: CommitmentLevel) -> Result<serde_json::V
 /// Serialises to exactly the params `block_request` sends; commitment is
 /// filled in per call from the configured level.
 const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
-    // Base64: the transaction arrives as bytes, not a tree of strings to walk.
-    encoding: Some(UiTransactionEncoding::Base64),
+    encoding: Some(UiTransactionEncoding::Json),
     transaction_details: Some(TransactionDetails::Full),
     rewards: Some(false),
     commitment: None,
@@ -491,37 +490,6 @@ struct JsonRpcError {
 /// Send a transaction and poll its signature status at a short fixed cadence.
 /// The library confirm loop polls every 500ms, which adds up to half a slot of
 /// pure sleep per transaction on top of confirmation itself.
-/// Confirmation probe schedule: the ramp, then the steady cadence it settles to.
-///
-/// Overridable for cadence sweeps against a chain whose slot time has changed:
-/// `TAPE_CONFIRM_RAMP_MS=5,15,50,130` and `TAPE_CONFIRM_POLL_MS=200` reproduce
-/// the defaults. Parsed once; a malformed value falls back to the default
-/// rather than failing the send.
-fn confirm_cadence() -> (&'static [u64], u64) {
-    static CADENCE: OnceLock<(Vec<u64>, u64)> = OnceLock::new();
-    const DEFAULT_RAMP: [u64; 4] = [5, 15, 50, 130];
-    const DEFAULT_POLL: u64 = 200;
-
-    let (ramp, steady) = CADENCE.get_or_init(|| {
-        let ramp = std::env::var("TAPE_CONFIRM_RAMP_MS")
-            .ok()
-            .and_then(|raw| {
-                raw.split(',')
-                    .map(|part| part.trim().parse::<u64>().ok())
-                    .collect::<Option<Vec<_>>>()
-            })
-            .filter(|parsed: &Vec<u64>| !parsed.is_empty())
-            .unwrap_or_else(|| DEFAULT_RAMP.to_vec());
-        let steady = std::env::var("TAPE_CONFIRM_POLL_MS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .filter(|ms| *ms > 0)
-            .unwrap_or(DEFAULT_POLL);
-        (ramp, steady)
-    });
-    (ramp.as_slice(), *steady)
-}
-
 async fn send_and_poll(
     client: &RpcClient,
     transaction: &Transaction,
@@ -533,7 +501,8 @@ async fn send_and_poll(
     // the second probe instead of waiting out a full interval; a slot-paced
     // chain is caught at 200 and 400 exactly as before, so the slow case pays
     // four extra status calls and no extra latency.
-    let (ramp, steady) = confirm_cadence();
+    const CONFIRM_RAMP_MS: [u64; 4] = [5, 15, 50, 130];
+    const CONFIRM_POLL_MS: u64 = 200;
 
     let commitment = CommitmentConfig { commitment };
     let signature = client
@@ -558,7 +527,7 @@ async fn send_and_poll(
             return Ok(signature);
         }
 
-        let delay = ramp.get(probe).copied().unwrap_or(steady);
+        let delay = CONFIRM_RAMP_MS.get(probe).copied().unwrap_or(CONFIRM_POLL_MS);
         probe += 1;
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
@@ -588,18 +557,6 @@ impl Rpc for SolanaRpc {
         let commitment = CommitmentConfig::finalized();
 
         self.with_retry("getSlot:finalized", move |client| async move {
-            client
-                .get_slot_with_commitment(commitment)
-                .await
-                .map_err(|error| Self::convert_error(error, None))
-        })
-        .await
-    }
-
-    async fn get_confirmed_slot(&self) -> Result<u64, RpcError> {
-        let commitment = CommitmentConfig::confirmed();
-
-        self.with_retry("getSlot:confirmed", move |client| async move {
             client
                 .get_slot_with_commitment(commitment)
                 .await
@@ -982,7 +939,7 @@ mod tests {
 
         assert_eq!(request["method"], "getBlock");
         assert_eq!(params[0], 77);
-        assert_eq!(params[1]["encoding"], "base64");
+        assert_eq!(params[1]["encoding"], "json");
         assert_eq!(params[1]["transactionDetails"], "full");
         assert_eq!(params[1]["rewards"], false);
         assert_eq!(params[1]["maxSupportedTransactionVersion"], 0);
@@ -1027,7 +984,9 @@ mod tests {
             "blockhash":"abc","previousBlockhash":"def","parentSlot":41,"blockTime":1700,
             "rewards":[],
             "transactions":[{
-              "transaction":["AQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUBAAECBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAAMBAgM=","base64"],
+              "transaction":{"signatures":["sig"],"message":{
+                 "accountKeys":["k0","k1"],
+                 "instructions":[{"programIdIndex":1,"accounts":[0],"data":"d"}]}},
               "meta":{"err":null,"preBalances":[1],"postBalances":[2],
                  "logMessages":["Program k1 invoke [1]"]}
             }]}}"#;
@@ -1038,10 +997,7 @@ mod tests {
         assert_eq!(block.parent_slot, 41);
         let txs = block.transactions.expect("transactions");
         assert!(!txs[0].is_failed());
-        // Two keys: the fee payer, which is also the only account, and the
-        // program the one instruction calls.
-        assert_eq!(txs[0].transaction.message.account_keys.len(), 2);
-        assert_eq!(txs[0].transaction.message.instructions.len(), 1);
+        assert_eq!(txs[0].transaction.message.account_keys, ["k0", "k1"]);
     }
 
     #[test]

@@ -134,7 +134,6 @@ mod tests {
                         stack_height: None,
                     }],
                     address_table_lookups: None,
-                    transaction_config: None,
                 }),
             }),
             meta: Some(UiTransactionStatusMeta {

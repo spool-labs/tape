@@ -1,6 +1,7 @@
 //! Protocol request/response types for the node API.
 
 use core::mem::size_of;
+use std::collections::BTreeMap;
 
 use tape_core::{
     bls::BlsSignature,
@@ -125,8 +126,6 @@ pub struct NodeStats {
     #[serde(default)]
     pub store_disk_bytes: u64,
     #[serde(default)]
-    pub store_data_bytes: u64,
-    #[serde(default)]
     pub free_disk_bytes: Option<u64>,
     #[serde(default)]
     pub disk_volumes: Vec<VolumeStats>,
@@ -166,9 +165,8 @@ pub struct NodeStats {
     pub bootstrap_target_slot: u64,
     #[serde(default)]
     pub fee_payer_lamports: Option<u64>,
-    /// Zero from a peer too old to keep the tally, the same as never restarted.
     #[serde(default)]
-    pub restarts: u64,
+    pub challenge_refusals: BTreeMap<String, u64>,
 }
 
 /// Project the wire stats onto the dashboard's per-node stats.
@@ -181,7 +179,6 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             slices_stored: s.slices_stored,
             slice_payload_bytes: s.slice_payload_bytes,
             store_disk_bytes: s.store_disk_bytes,
-            store_data_bytes: s.store_data_bytes,
             free_disk_bytes: s.free_disk_bytes.unwrap_or(0),
             current_epoch: s.current_epoch,
             ingest_state: s.ingest_state.clone(),
@@ -199,7 +196,6 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             repair_bytes: s.repair_bytes_fetched,
             recover_bytes: s.recover_bytes_fetched,
             upload_bytes: s.bytes_uploaded,
-            restarts: s.restarts,
         }
     }
 }
@@ -297,25 +293,15 @@ impl From<ProofOfAccessPayload> for ProofOfAccess {
     }
 }
 
-/// One signer's attestations for a round, as one message.
-///
-/// Batched per round rather than sent per spool: a signer verifies every answer
-/// in its group and the round's fields repeat across all of them, so twenty
-/// separate posts to each of twenty peers is four hundred where twenty will do.
+/// Wire representation of an observer's attestation for a round.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct AttestationPayload {
     pub epoch: EpochNumber,
     pub group: GroupIndex,
     pub round: RoundNumber,
+    pub spool: SpoolIndex,
     pub block: Hash,
     pub signer: Address,
-    pub attests: Vec<SpoolAttestation>,
-}
-
-/// One spool's signature inside a round's attestation.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SpoolAttestation {
-    pub spool: SpoolIndex,
     pub signature: BlsSignature,
 }
 

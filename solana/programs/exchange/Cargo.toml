@@ -41,9 +41,10 @@ half = "=2.4.1"
 [dev-dependencies]
 tape-test.workspace = true
 
+bincode = "1.3"
 solana-account.workspace = true
-mollusk-svm = "0.15.0"
-mollusk-svm-programs-token = "0.15.0"
+mollusk-svm = "0.13.4"
+mollusk-svm-programs-token = "0.13.4"
 pretty-hex = "0.4.1"
 rand = "0.8.5"
 solana-client.workspace = true

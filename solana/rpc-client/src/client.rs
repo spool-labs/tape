@@ -87,11 +87,6 @@ impl<R: Rpc> RpcClient<R> {
         self.rpc.get_finalized_slot().await
     }
 
-    /// Get the most recent slot a supermajority has voted on.
-    pub async fn get_confirmed_slot(&self) -> Result<u64, RpcError> {
-        self.rpc.get_confirmed_slot().await
-    }
-
     /// Get block by slot number.
     pub async fn get_block(&self, slot: u64) -> Result<Block, RpcError> {
         self.rpc.get_block(slot).await

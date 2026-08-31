@@ -116,10 +116,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 .route(
                     api_routes::OBSERVE_PEER_PATH,
                     get(observe_peer::<Db, Cluster, Blockchain>),
-                )
-                .route(
-                    api_routes::OBSERVE_STREAM_PATH,
-                    get(crate::observe::stream::sse),
                 );
         }
 
@@ -363,9 +359,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .in_current_span(),
         );
 
-        let mut https_server = axum_server::bind(https_listen);
-        tune_h2(&mut https_server);
-        let result = https_server
+        let result = axum_server::bind(https_listen)
             .acceptor(acceptor)
             .handle(https_handle)
             .serve(https_router.into_make_service_with_connect_info::<SocketAddr>())
@@ -402,24 +396,6 @@ async fn handle_http_error(error: BoxError) -> StatusCode {
 }
 
 /// Service routes 503 until bootstrap catch-up completes; status routes are
-/// Streams a peer may have open at once, and resets it may leave pending.
-///
-/// Hyper's defaults are sized against hostile traffic: twenty pending resets
-/// tears the connection down, taking every in-flight request with it. A group's
-/// worth of challenge posts trips that on a busy node, and cancelling on
-/// timeout is what leaves the resets behind.
-const H2_MAX_CONCURRENT_STREAMS: u32 = 1024;
-const H2_MAX_PENDING_ACCEPT_RESET_STREAMS: usize = 1024;
-
-/// Raises the HTTP/2 limits a trusted mesh runs into.
-fn tune_h2<A>(server: &mut axum_server::Server<A>) {
-    server
-        .http_builder()
-        .http2()
-        .max_concurrent_streams(H2_MAX_CONCURRENT_STREAMS)
-        .max_pending_accept_reset_streams(H2_MAX_PENDING_ACCEPT_RESET_STREAMS);
-}
-
 /// registered outside this layer and serve throughout.
 async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
