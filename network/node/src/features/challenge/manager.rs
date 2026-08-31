@@ -93,13 +93,6 @@ where
             return Ok(());
         }
 
-        // A node re-reading its view judges nothing: every answer it would
-        // weigh comes out of the view under suspicion.
-        if self.context.challenge_tripwire.is_realigning() {
-            self.open_rounds.clear();
-            return Ok(());
-        }
-
         let state = self.context.state();
         if state.phase() != EpochPhase::Active {
             return Ok(());
@@ -117,6 +110,12 @@ where
         if mine.is_empty() {
             return Ok(());
         }
+
+        // A node re-reading its view judges nobody: every verdict it would reach
+        // comes out of the view under suspicion. It still answers for its own
+        // spools, because a spool that goes quiet earns the misses that evict
+        // it, and that is the harm the suspension exists to avoid.
+        let is_suspended = self.context.challenge_tripwire.is_realigning();
 
         // A spool this node no longer holds is one it can no longer judge, so
         // its group's pending round is dropped rather than settled.
@@ -145,9 +144,9 @@ where
                 continue;
             }
 
-            let judgement = self.settle_previous(&state, group);
-            if self.check_tripwire(judgement) {
-                return Ok(());
+            if !is_suspended {
+                let judgement = self.settle_previous(&state, group);
+                self.check_tripwire(group, judgement);
             }
 
             self.open_rounds.insert(
@@ -164,7 +163,7 @@ where
                 .opened
                 .fetch_add(1, Ordering::Relaxed);
 
-            self.answer_and_broadcast(&state, &round, spool).await;
+            self.answer_and_broadcast(&state, &round, spool, is_suspended).await;
         }
 
         // Retire behind the oldest round any group still has open, not behind
@@ -263,26 +262,31 @@ where
         judgement
     }
 
-    /// Feeds a settled round to the tripwire, returning whether it tripped.
+    /// Feeds one group's settled round to the tripwire.
     ///
     /// A void round and a group whose whole set of positions is ours judge
     /// nobody, and a round that judged nobody is no evidence either way.
-    fn check_tripwire(&mut self, judgement: Judgement) -> bool {
+    fn check_tripwire(&mut self, group: GroupIndex, judgement: Judgement) {
         if judgement.peers == 0 {
-            return false;
+            return;
         }
 
-        let Some(delay) = self.context.challenge_tripwire.record_round(judgement) else {
-            return false;
+        let Some(delay) = self.context.challenge_tripwire.record_round(group, judgement) else {
+            return;
         };
 
         warn!(
+            group = group.0,
             peers = judgement.peers,
             "challenge: nothing stood for a run of rounds, realigning"
         );
-        self.open_rounds.clear();
-        spawn_realign(&self.context, &self.cancel, delay, RealignCause::Tripwire);
-        true
+
+        // Every target queued so far was judged against the view now under
+        // suspicion, and the run arm fires at three misses while this fires
+        // later. Drop them rather than propose an eviction off a view the node
+        // has already stopped trusting.
+        self.context.eviction_queue.clear();
+        spawn_realign(&self.context, delay, RealignCause::Tripwire);
     }
 
     fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {
@@ -317,6 +321,7 @@ where
         state: &ProtocolState,
         round: &Round,
         mine: SpoolIndex,
+        is_suspended: bool,
     ) {
         let Some(answer) = build_answer(&self.context, state, round, mine) else {
             debug!(spool = %mine, round = round.round.0, "challenge: no answer to give");
@@ -330,8 +335,11 @@ where
         // Attest to it as well. The threshold counts this node among the
         // group's members, so leaving its own signature out costs a position
         // the quorum cannot spare. No relaying: the broadcast below reaches
-        // everyone already.
-        spawn_attest(&self.context, state, &answer, false);
+        // everyone already. A suspended node signs nothing: an attestation is a
+        // verdict, and its verdicts are what it has stopped trusting.
+        if !is_suspended {
+            spawn_attest(&self.context, state, &answer, false);
+        }
 
         let members = group_members(state, round.group);
         trace!(round = round.round.0, peers = members.len(), "challenge: broadcasting");
@@ -441,6 +449,8 @@ mod tests {
     use tape_core::types::{EpochDuration, SlotNumber};
 
     use super::*;
+    use crate::core::ingest::IngestState;
+    use crate::features::block::ingestor::ParsedBlock;
     use crate::harness::{NodeHarness, TestContext};
 
     async fn harness() -> NodeHarness {
@@ -454,6 +464,76 @@ mod tests {
 
     fn address_of(harness: &NodeHarness, index: usize) -> Address {
         Address::from(harness.node(index).node_address.to_bytes())
+    }
+
+    /// A context at the tip, in an active epoch, on a grid that holds rounds.
+    async fn ready_context() -> TestContext {
+        let harness = harness().await;
+        let ctx: TestContext = harness.ctx_for(0);
+
+        let mut state = (*ctx.state()).clone();
+        state.current.epoch.preferences.epoch_duration = EpochDuration(3_600);
+        state.current.epoch.state.phase = EpochPhase::Active as u64;
+        ctx.set_state(state).expect("publish");
+        ctx.ingest.publish(IngestState::AtTip);
+
+        ctx
+    }
+
+    fn manager_for(ctx: &TestContext) -> ChallengeManager<
+        store_memory::MemoryStore,
+        peer_memory::MemoryApi,
+        rpc_litesvm::LiteSvmRpc,
+    > {
+        let (_tx, rx) = mpsc::channel(4);
+        ChallengeManager::new(ctx.clone(), rx, CancellationToken::new())
+    }
+
+    fn first_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
+        let schedule = challenge_schedule(&ctx.state()).expect("a usable grid");
+        Arc::new(ParsedBlock {
+            slot: schedule.first_slot(),
+            blockhash: tape_crypto::hash::Hash([0x11; 32]),
+            ..ParsedBlock::default()
+        })
+    }
+
+    // a suspended node stops judging its peers, and goes on answering for its
+    // own spools. Going quiet would earn it the consecutive misses that evict
+    // it, which is the harm the suspension exists to prevent.
+    #[tokio::test]
+    async fn suspended_node_still_opens_its_own_rounds() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        assert!(ctx.challenge_tripwire.is_realigning());
+
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+
+        assert!(!manager.open_rounds.is_empty(), "a suspended node stopped answering");
+        assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > 0);
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert_eq!(ctx.challenge_counters.settled_certified.load(Ordering::Relaxed), 0);
+    }
+
+    // and an unsuspended one opens them the same way, so the assertion above is
+    // about the suspension rather than about the grid
+    #[tokio::test]
+    async fn healthy_node_opens_its_own_rounds() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+
+        assert!(!manager.open_rounds.is_empty());
+        assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > 0);
     }
 
     // a node challenges everyone else holding a position in its group, once

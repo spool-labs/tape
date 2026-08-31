@@ -19,6 +19,7 @@ use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::Api;
+use tape_retry::RetryConfig;
 #[cfg(feature = "metrics")]
 use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
@@ -51,7 +52,13 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     pub async fn handle_advance_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
         let previous_epoch = self.context.state().epoch();
 
-        refetch_state(&self.context, Some(&self.cancel), Some(epoch)).await?;
+        refetch_state(
+            &self.context,
+            Some(&self.cancel),
+            Some(epoch),
+            RetryConfig::infinite(),
+        )
+        .await?;
 
         if epoch > previous_epoch {
             self.context.metrics.inc_epoch_transitions();

@@ -12,7 +12,6 @@ use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use crate::features::challenge::audit::{
@@ -105,10 +104,6 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     if !state.context.config.challenge.enabled {
         return Err(RouteError::Forbidden("challenge disabled on this node".into()));
     }
-    // A node re-reading its view judges nothing until it has one it trusts.
-    if state.context.challenge_tripwire.is_realigning() {
-        return Err(RouteError::Unavailable("realigning protocol state".into()));
-    }
 
     let payload: AttestationPayload = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("decode attestation: {error}")))?;
@@ -141,7 +136,14 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         .round_buffer
         .accept_attestation(key, payload.signer, payload.signature);
     watch_digest(&state, &protocol, payload.signer, payload.epoch, payload.digest);
-    certify_if_ready(&state, &protocol, &round, key);
+
+    // An attestation only ever adds to a quorum, so it is safe to bank while
+    // suspended, and banking it is what lets this node's own round certify. What
+    // a suspended node must not do is fold an outcome, which writes a record
+    // against an owner the suspect view named.
+    if !state.context.challenge_tripwire.is_realigning() {
+        certify_if_ready(&state, &protocol, &round, key);
+    }
 
     Ok(StatusCode::OK)
 }
@@ -165,12 +167,7 @@ fn watch_digest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + '
     };
 
     warn!(epoch = epoch.0, "challenge: group holds a different view of the epoch");
-    spawn_realign(
-        &state.context,
-        &CancellationToken::new(),
-        delay,
-        RealignCause::Divergence,
-    );
+    spawn_realign(&state.context, delay, RealignCause::Divergence);
 }
 
 fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -240,6 +237,8 @@ mod tests {
     use super::*;
     use tape_core::erasure::GROUP_SIZE;
 
+    use tape_core::spooler::GroupIndex;
+
     use crate::features::challenge::tripwire::Judgement;
     use crate::harness::{NodeHarness, TestContext};
 
@@ -271,15 +270,39 @@ mod tests {
         let blank = Judgement { peers: GROUP_SIZE as u64, certified: 0 };
         let rounds = ctx.config.challenge.realign_after_blank_rounds;
         for _ in 0..rounds {
-            ctx.challenge_tripwire.record_round(blank);
+            ctx.challenge_tripwire.record_round(GroupIndex(0), blank);
         }
         assert!(ctx.challenge_tripwire.is_realigning());
 
         let state = AppState { context: ctx.clone() };
         let proof = proof_of_access(State(state.clone()), Bytes::new()).await;
-        let attestation = attest(State(state), Bytes::new()).await;
 
         assert!(matches!(proof.err(), Some(RouteError::Unavailable(_))));
-        assert!(matches!(attestation.err(), Some(RouteError::Unavailable(_))));
+    }
+
+    // but it keeps taking attestations, because they only ever add to a quorum
+    // and its own round needs them to certify while it re-reads
+    #[tokio::test]
+    async fn realigning_node_still_banks_attestations() {
+        let ctx: TestContext = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0);
+
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        assert!(ctx.challenge_tripwire.is_realigning());
+
+        let state = AppState { context: ctx.clone() };
+        let attestation = attest(State(state), Bytes::new()).await;
+
+        // Refused on the body it was handed, not on the suspension.
+        let message = match attestation.err() {
+            Some(RouteError::BadRequest(message)) => message,
+            other => panic!("unexpected refusal while realigning: {other:?}"),
+        };
+        assert!(message.contains("decode attestation"), "{message}");
     }
 }

@@ -186,6 +186,11 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .challenge_counters
             .realigns
             .load(Ordering::Relaxed),
+        challenge_realign_failures: state
+            .context
+            .challenge_counters
+            .realign_failures
+            .load(Ordering::Relaxed),
     };
 
     debug!(

@@ -6,6 +6,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::types::SlotNumber;
 use tape_protocol::Api;
+use tape_retry::RetryConfig;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
@@ -177,7 +178,7 @@ where
     Blockchain: Rpc,
 {
 
-    let state = refetch_state(context, Some(cancel), None).await?;
+    let state = refetch_state(context, Some(cancel), None, RetryConfig::infinite()).await?;
 
     debug!(
         epoch = state.epoch().0,
@@ -450,7 +451,9 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let cancel = CancellationToken::new();
+    // The context's own token, so a realign started from a request path is wound
+    // up by the same shutdown that stops the managers.
+    let cancel = context.shutdown.clone();
     let http_server = spawn_http_server(&context, &config, &cancel);
     let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
@@ -470,7 +473,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let cancel = CancellationToken::new();
+    let cancel = context.shutdown.clone();
     let http_server = spawn_http_server(&context, &config, &cancel);
     let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),

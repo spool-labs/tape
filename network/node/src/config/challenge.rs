@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use tape_core::challenge::record::MAX_CONSECUTIVE_MISSES;
 
 /// Controls storage challenge participation.
 ///
@@ -28,6 +29,8 @@ fn default_enabled() -> bool {
     true
 }
 
+/// `MAX_CONSECUTIVE_MISSES` rounds, so the tripwire fires on the same round the
+/// run arm would first condemn a peer rather than seven rounds after it.
 fn default_realign_after_blank_rounds() -> u64 {
-    8
+    MAX_CONSECUTIVE_MISSES
 }

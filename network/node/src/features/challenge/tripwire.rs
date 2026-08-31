@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use tape_core::spooler::GroupIndex;
 use tape_retry::{Backoff, RetryConfig};
 
 /// Delay before a repeat realign, so a node whose group really has gone quiet
@@ -37,10 +39,43 @@ pub struct Tripwire {
 }
 
 struct TripwireState {
-    blank_rounds: u64,
+    // Counted per group. A node seated in several groups settles a round in each
+    // of them, and one healthy group must not clear another group's run.
+    blank_rounds: HashMap<GroupIndex, u64>,
     is_realigning: bool,
+    rounds: Arm,
+    divergence: Arm,
+}
+
+/// How urgent the next realign from one source is.
+struct Arm {
     has_tripped: bool,
     backoff: Backoff,
+}
+
+impl Arm {
+    fn new() -> Self {
+        Self {
+            has_tripped: false,
+            backoff: Backoff::new(REPEAT_BACKOFF),
+        }
+    }
+
+    /// First trip is immediate, a repeat waits out a jittered backoff.
+    fn fire(&mut self) -> Duration {
+        match self.has_tripped {
+            false => {
+                self.has_tripped = true;
+                Duration::ZERO
+            }
+            true => self.backoff.next_delay().unwrap_or(REPEAT_BACKOFF.max_delay),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.has_tripped = false;
+        self.backoff.reset();
+    }
 }
 
 impl Tripwire {
@@ -48,10 +83,10 @@ impl Tripwire {
         Self {
             threshold: threshold.max(1),
             inner: Mutex::new(TripwireState {
-                blank_rounds: 0,
+                blank_rounds: HashMap::new(),
                 is_realigning: false,
-                has_tripped: false,
-                backoff: Backoff::new(REPEAT_BACKOFF),
+                rounds: Arm::new(),
+                divergence: Arm::new(),
             }),
         }
     }
@@ -61,50 +96,59 @@ impl Tripwire {
         self.lock().is_realigning
     }
 
-    pub fn blank_rounds(&self) -> u64 {
-        self.lock().blank_rounds
+    pub fn blank_rounds(&self, group: GroupIndex) -> u64 {
+        self.lock().blank_rounds.get(&group).copied().unwrap_or_default()
     }
 
-    /// Feeds one settled round, returning the delay to realign after if it trips
+    /// Feeds one group's settled round, returning the delay to realign after
     ///
-    /// The first trip is immediate; a repeat waits out a jittered backoff. A
-    /// clean round clears both the run and the backoff.
-    pub fn record_round(&self, judgement: Judgement) -> Option<Duration> {
+    /// A clean round clears that group's run and makes the next trip from any
+    /// source urgent again: a node judging successfully is not the node whose
+    /// view is under suspicion.
+    pub fn record_round(&self, group: GroupIndex, judgement: Judgement) -> Option<Duration> {
         let mut inner = self.lock();
 
         if !judgement.is_blank() {
-            inner.blank_rounds = 0;
-            inner.has_tripped = false;
-            inner.backoff.reset();
+            inner.blank_rounds.remove(&group);
+            inner.rounds.reset();
+            inner.divergence.reset();
             return None;
         }
 
-        inner.blank_rounds += 1;
-        if inner.is_realigning || inner.blank_rounds < self.threshold {
+        let run = inner.blank_rounds.entry(group).or_default();
+        *run += 1;
+        let reached = *run >= self.threshold;
+        if inner.is_realigning || !reached {
             return None;
         }
 
-        Some(arm(&mut inner))
+        inner.blank_rounds.clear();
+        inner.is_realigning = true;
+        Some(inner.rounds.fire())
     }
 
     /// Trips on evidence from outside the round path
     ///
     /// Returns nothing when a realign is already running, so a burst of reports
-    /// costs one read of the chain rather than one each.
+    /// costs one read of the chain rather than one each. It keeps its own
+    /// backoff: a disagreement the chain does not resolve would otherwise fire
+    /// a fresh scan the moment the last one released.
     pub fn trip(&self) -> Option<Duration> {
         let mut inner = self.lock();
         if inner.is_realigning {
             return None;
         }
 
-        Some(arm(&mut inner))
+        inner.blank_rounds.clear();
+        inner.is_realigning = true;
+        Some(inner.divergence.fire())
     }
 
     /// The realign finished, whatever it found; judging resumes
     pub fn settled(&self) {
         let mut inner = self.lock();
         inner.is_realigning = false;
-        inner.blank_rounds = 0;
+        inner.blank_rounds.clear();
     }
 
     fn lock(&self) -> MutexGuard<'_, TripwireState> {
@@ -112,22 +156,12 @@ impl Tripwire {
     }
 }
 
-/// Suspends judging and returns how long to wait before re-reading state.
-fn arm(inner: &mut TripwireState) -> Duration {
-    inner.blank_rounds = 0;
-    inner.is_realigning = true;
-    match inner.has_tripped {
-        false => {
-            inner.has_tripped = true;
-            Duration::ZERO
-        }
-        true => inner.backoff.next_delay().unwrap_or(REPEAT_BACKOFF.max_delay),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ONE: GroupIndex = GroupIndex(1);
+    const TWO: GroupIndex = GroupIndex(2);
 
     fn blank() -> Judgement {
         Judgement { peers: 19, certified: 0 }
@@ -152,27 +186,58 @@ mod tests {
     fn trips_at_threshold() {
         let tripwire = Tripwire::new(3);
 
-        assert_eq!(tripwire.record_round(blank()), None);
-        assert_eq!(tripwire.record_round(blank()), None);
-        assert_eq!(tripwire.blank_rounds(), 2);
-        assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+        assert_eq!(tripwire.record_round(ONE, blank()), None);
+        assert_eq!(tripwire.record_round(ONE, blank()), None);
+        assert_eq!(tripwire.blank_rounds(ONE), 2);
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
         assert!(tripwire.is_realigning());
     }
 
-    // one round where a peer stood clears the run, so a bad patch does not
-    // accumulate across an epoch
+    // a node seated in two groups settles a round in each, and a run counted
+    // across both would trip at half the threshold
+    #[test]
+    fn runs_are_per_group() {
+        let tripwire = Tripwire::new(3);
+
+        for _ in 0..2 {
+            assert_eq!(tripwire.record_round(ONE, blank()), None);
+            assert_eq!(tripwire.record_round(TWO, blank()), None);
+        }
+
+        assert_eq!(tripwire.blank_rounds(ONE), 2);
+        assert_eq!(tripwire.blank_rounds(TWO), 2);
+        assert!(!tripwire.is_realigning());
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
+    }
+
+    // and one group still certifying must not clear another group's run, or a
+    // node seated in several groups never trips at all
+    #[test]
+    fn a_healthy_group_does_not_mask_a_blank_one() {
+        let tripwire = Tripwire::new(3);
+
+        for _ in 0..2 {
+            tripwire.record_round(ONE, blank());
+            assert_eq!(tripwire.record_round(TWO, clean()), None);
+        }
+
+        assert_eq!(tripwire.blank_rounds(ONE), 2);
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
+    }
+
+    // one round where a peer stood clears that group's run
     #[test]
     fn clean_round_resets() {
         let tripwire = Tripwire::new(3);
 
-        tripwire.record_round(blank());
-        tripwire.record_round(blank());
-        assert_eq!(tripwire.record_round(clean()), None);
-        assert_eq!(tripwire.blank_rounds(), 0);
+        tripwire.record_round(ONE, blank());
+        tripwire.record_round(ONE, blank());
+        assert_eq!(tripwire.record_round(ONE, clean()), None);
+        assert_eq!(tripwire.blank_rounds(ONE), 0);
 
-        assert_eq!(tripwire.record_round(blank()), None);
-        assert_eq!(tripwire.record_round(blank()), None);
-        assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+        assert_eq!(tripwire.record_round(ONE, blank()), None);
+        assert_eq!(tripwire.record_round(ONE, blank()), None);
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
     }
 
     // nothing trips again while a realign is still running
@@ -180,12 +245,13 @@ mod tests {
     fn holds_while_realigning() {
         let tripwire = Tripwire::new(2);
 
-        tripwire.record_round(blank());
-        assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+        tripwire.record_round(ONE, blank());
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
 
         for _ in 0..5 {
-            assert_eq!(tripwire.record_round(blank()), None);
+            assert_eq!(tripwire.record_round(ONE, blank()), None);
         }
+        assert_eq!(tripwire.trip(), None);
         assert!(tripwire.is_realigning());
     }
 
@@ -195,13 +261,13 @@ mod tests {
     fn repeat_backs_off() {
         let tripwire = Tripwire::new(2);
 
-        tripwire.record_round(blank());
-        assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+        tripwire.record_round(ONE, blank());
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
         tripwire.settled();
         assert!(!tripwire.is_realigning());
 
-        tripwire.record_round(blank());
-        let delay = tripwire.record_round(blank()).expect("second trip");
+        tripwire.record_round(ONE, blank());
+        let delay = tripwire.record_round(ONE, blank()).expect("second trip");
         assert!(delay > Duration::ZERO);
         assert!(delay <= REPEAT_BACKOFF.max_delay);
     }
@@ -211,20 +277,20 @@ mod tests {
     fn clean_round_clears_the_backoff() {
         let tripwire = Tripwire::new(2);
 
-        tripwire.record_round(blank());
-        assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+        tripwire.record_round(ONE, blank());
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
         tripwire.settled();
 
-        assert_eq!(tripwire.record_round(clean()), None);
-        tripwire.record_round(blank());
-        assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+        assert_eq!(tripwire.record_round(ONE, clean()), None);
+        tripwire.record_round(ONE, blank());
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
     }
 
     // a zero threshold would realign on the first blank round of every epoch
     #[test]
     fn threshold_has_a_floor() {
         let tripwire = Tripwire::new(0);
-        assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
     }
 
     // evidence off the round path arms the same suspension, and a burst of it
@@ -236,8 +302,35 @@ mod tests {
         assert_eq!(tripwire.trip(), Some(Duration::ZERO));
         assert_eq!(tripwire.trip(), None);
         assert!(tripwire.is_realigning());
+    }
 
+    // a disagreement the chain does not settle would otherwise fire a fresh
+    // scan the instant the last one released
+    #[test]
+    fn divergence_backs_off_on_its_own() {
+        let tripwire = Tripwire::new(8);
+
+        assert_eq!(tripwire.trip(), Some(Duration::ZERO));
         tripwire.settled();
-        assert!(tripwire.trip().is_some_and(|delay| delay > Duration::ZERO));
+
+        let second = tripwire.trip().expect("second trip");
+        assert!(second > Duration::ZERO);
+        tripwire.settled();
+
+        let third = tripwire.trip().expect("third trip");
+        assert!(third > Duration::ZERO);
+    }
+
+    // the two sources escalate separately, so blank rounds do not spend the
+    // divergence backoff and leave a real disagreement waiting five minutes
+    #[test]
+    fn the_two_arms_are_independent() {
+        let tripwire = Tripwire::new(2);
+
+        tripwire.record_round(ONE, blank());
+        assert_eq!(tripwire.record_round(ONE, blank()), Some(Duration::ZERO));
+        tripwire.settled();
+
+        assert_eq!(tripwire.trip(), Some(Duration::ZERO));
     }
 }

@@ -33,6 +33,11 @@ impl EvictionQueue {
         self.lock().remove(node);
     }
 
+    /// Drop every target, for when the view they were judged against is withdrawn.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
     /// Drop every target whose voting epoch has passed.
     pub fn retain_epoch(&self, epoch: EpochNumber) {
         self.lock().retain(|_, (opened, _)| *opened >= epoch);

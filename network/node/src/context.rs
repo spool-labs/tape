@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch::Receiver;
+use tokio_util::sync::CancellationToken;
 
 use peer_manager::{PeerManager, PeerManagerError};
 use peer_http::HttpApi;
@@ -65,6 +66,11 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub challenge_counters: ChallengeCounters,
     pub challenge_tripwire: Arc<Tripwire>,
     pub epoch_digest: Arc<DigestWatch>,
+
+    /// Cancelled when the node shuts down. The runtime adopts this as its own
+    /// supervisor token, so work started off a request path can be wound up with
+    /// everything else rather than outliving it.
+    pub shutdown: CancellationToken,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -328,6 +334,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             challenge_counters: ChallengeCounters::default(),
             challenge_tripwire,
             epoch_digest: Arc::new(DigestWatch::default()),
+            shutdown: CancellationToken::new(),
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),
