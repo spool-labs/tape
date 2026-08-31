@@ -84,15 +84,20 @@ impl Tripwire {
             return None;
         }
 
-        inner.blank_rounds = 0;
-        inner.is_realigning = true;
-        match inner.has_tripped {
-            false => {
-                inner.has_tripped = true;
-                Some(Duration::ZERO)
-            }
-            true => Some(inner.backoff.next_delay().unwrap_or(REPEAT_BACKOFF.max_delay)),
+        Some(arm(&mut inner))
+    }
+
+    /// Trips on evidence from outside the round path
+    ///
+    /// Returns nothing when a realign is already running, so a burst of reports
+    /// costs one read of the chain rather than one each.
+    pub fn trip(&self) -> Option<Duration> {
+        let mut inner = self.lock();
+        if inner.is_realigning {
+            return None;
         }
+
+        Some(arm(&mut inner))
     }
 
     /// The realign finished, whatever it found; judging resumes
@@ -104,6 +109,19 @@ impl Tripwire {
 
     fn lock(&self) -> MutexGuard<'_, TripwireState> {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Suspends judging and returns how long to wait before re-reading state.
+fn arm(inner: &mut TripwireState) -> Duration {
+    inner.blank_rounds = 0;
+    inner.is_realigning = true;
+    match inner.has_tripped {
+        false => {
+            inner.has_tripped = true;
+            Duration::ZERO
+        }
+        true => inner.backoff.next_delay().unwrap_or(REPEAT_BACKOFF.max_delay),
     }
 }
 
@@ -207,5 +225,19 @@ mod tests {
     fn threshold_has_a_floor() {
         let tripwire = Tripwire::new(0);
         assert_eq!(tripwire.record_round(blank()), Some(Duration::ZERO));
+    }
+
+    // evidence off the round path arms the same suspension, and a burst of it
+    // costs one read rather than one each
+    #[test]
+    fn trips_from_outside() {
+        let tripwire = Tripwire::new(8);
+
+        assert_eq!(tripwire.trip(), Some(Duration::ZERO));
+        assert_eq!(tripwire.trip(), None);
+        assert!(tripwire.is_realigning());
+
+        tripwire.settled();
+        assert!(tripwire.trip().is_some_and(|delay| delay > Duration::ZERO));
     }
 }

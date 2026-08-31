@@ -644,6 +644,7 @@ impl Api for HttpApi {
             block: req.block,
             signer: req.signer,
             signature: req.signature,
+            digest: req.digest,
         };
         let body =
             wincode::serialize(&wire).map_err(|e| ApiError::Serialization(e.to_string()))?;

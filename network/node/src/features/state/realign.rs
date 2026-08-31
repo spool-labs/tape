@@ -18,12 +18,15 @@ use crate::core::error::NodeError;
 pub enum RealignCause {
     /// Consecutive rounds in which nothing this node judged stood.
     Tripwire,
+    /// The group agreed on a view of the epoch that was not this node's.
+    Divergence,
 }
 
 impl RealignCause {
     pub fn label(self) -> &'static str {
         match self {
             RealignCause::Tripwire => "tripwire",
+            RealignCause::Divergence => "divergence",
         }
     }
 }
@@ -120,6 +123,7 @@ pub fn spawn_realign<Db, Cluster, Blockchain>(
             Err(error) => warn!(cause = cause.label(), %error, "protocol state realign failed"),
         }
 
+        context.epoch_digest.invalidate();
         context.challenge_tripwire.settled();
     });
 }

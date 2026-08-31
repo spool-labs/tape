@@ -7,8 +7,12 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_core::erasure::group_for_spool;
+use tape_core::types::EpochNumber;
+use tape_crypto::Address;
+use tape_crypto::hash::Hash;
 use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use crate::features::challenge::audit::{
@@ -19,6 +23,7 @@ use crate::features::challenge::refusal::RefusalReason;
 use crate::features::challenge::rounds::RoundKey;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
+use crate::features::state::realign::{RealignCause, spawn_realign};
 
 pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -93,7 +98,7 @@ fn refuse<Db: Store, Cluster: Api, Blockchain: Rpc>(
     RouteError::BadRequest(format!("proof of access refused: {}", reason.label()))
 }
 
-pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
@@ -135,9 +140,37 @@ pub async fn attest<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .context
         .round_buffer
         .accept_attestation(key, payload.signer, payload.signature);
+    watch_digest(&state, &protocol, payload.signer, payload.epoch, payload.digest);
     certify_if_ready(&state, &protocol, &round, key);
 
     Ok(StatusCode::OK)
+}
+
+/// Realigns when the group settles on a view of the epoch that is not ours.
+///
+/// Read only after the signature stands, so a report costs a group member's key
+/// rather than a reachable port.
+fn watch_digest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    protocol: &ProtocolState,
+    signer: Address,
+    epoch: EpochNumber,
+    digest: Hash,
+) {
+    if !state.context.epoch_digest.observe(protocol, signer, epoch, digest) {
+        return;
+    }
+    let Some(delay) = state.context.challenge_tripwire.trip() else {
+        return;
+    };
+
+    warn!(epoch = epoch.0, "challenge: group holds a different view of the epoch");
+    spawn_realign(
+        &state.context,
+        &CancellationToken::new(),
+        delay,
+        RealignCause::Divergence,
+    );
 }
 
 fn certify_if_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(

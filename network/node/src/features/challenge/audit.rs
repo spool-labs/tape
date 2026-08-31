@@ -261,6 +261,7 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         block: round.block,
         signer: me,
         signature,
+        digest: context.epoch_digest.own(state).unwrap_or_default(),
     };
     let context = context.clone();
     let answer = answer.clone();

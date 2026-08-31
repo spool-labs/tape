@@ -38,6 +38,7 @@ use crate::features::challenge::counters::ChallengeCounters;
 use crate::features::challenge::tripwire::Tripwire;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
+use crate::features::state::digest::DigestWatch;
 
 /// The store the node was built against, the reel unless `rocks` was asked for
 #[cfg(not(feature = "rocks"))]
@@ -63,6 +64,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub round_buffer: Arc<RoundBuffer>,
     pub challenge_counters: ChallengeCounters,
     pub challenge_tripwire: Arc<Tripwire>,
+    pub epoch_digest: Arc<DigestWatch>,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -325,6 +327,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             round_buffer: Arc::new(RoundBuffer::default()),
             challenge_counters: ChallengeCounters::default(),
             challenge_tripwire,
+            epoch_digest: Arc::new(DigestWatch::default()),
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),
