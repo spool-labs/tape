@@ -81,6 +81,12 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .actual_size_bytes()
         .map_err(store_error)?;
+    let store_data_bytes = store
+        .inner()
+        .inner()
+        .live_data_size_bytes()
+        .map_err(store_error)?
+        .unwrap_or(0);
     let free_disk_bytes = store
         .inner()
         .inner()
@@ -105,6 +111,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         tracks_stored: store.count_tracks().map_err(store_error)? as u64,
         slice_payload_bytes,
         store_disk_bytes,
+        store_data_bytes,
         free_disk_bytes,
         disk_volumes,
         reclaim_pending: state.context.is_reclaim_pending(),
@@ -125,8 +132,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         bootstrap_current_slot: bootstrap.current_slot,
         bootstrap_target_slot: bootstrap.target_slot,
         fee_payer_lamports: state.context.fee_payer_balance().map(|b| b.0),
-        // Node-only counters: the gateway runs no challenge.
-        ..Default::default()
+        restarts: tape_node::core::restarts::count(),
     }))
 }
 

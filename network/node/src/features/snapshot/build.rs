@@ -206,6 +206,7 @@ where
         ctx.store
             .put_track_data(track_address, BlobData::Coded(track.blob))
             .map_err(store_err("put_track_data"))?;
+        ctx.sample_sets.backdated_write();
         put_sample(
             &ctx.store,
             track.track.group,

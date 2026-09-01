@@ -77,17 +77,30 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
+    let began = std::time::Instant::now();
     let checkpoint = fetch_protocol_checkpoint(context, cancel).await?;
     publish_protocol_checkpoint(context, &checkpoint).await?;
+    let checkpoint_ms = began.elapsed().as_millis();
+    debug!(node_id = context.node_id().0, checkpoint_ms, "bootstrap: checkpoint fetched");
 
+    let replay_began = std::time::Instant::now();
     let start_slot = run_replay_phases(context, config, &checkpoint, cancel, persist).await?;
+    let replay_ms = replay_began.elapsed().as_millis();
+    debug!(node_id = context.node_id().0, replay_ms, "bootstrap: replay done");
+
+    let validate_began = std::time::Instant::now();
     validate::validate_bootstrap_store(context.store.as_ref())?;
+    let validate_ms = validate_began.elapsed().as_millis();
     context.bootstrap.mark_ready();
 
     info!(
         node_id = context.node_id().0,
         checkpoint_slot = checkpoint.slot.0,
         start_slot = start_slot.0,
+        checkpoint_ms,
+        replay_ms,
+        validate_ms,
+        total_ms = began.elapsed().as_millis(),
         "bootstrap: complete, handing start slot to ingestor"
     );
 

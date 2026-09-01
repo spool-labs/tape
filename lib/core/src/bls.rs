@@ -84,13 +84,28 @@ impl BlsSignature {
             .map(|s| G1Point::try_from(&s.0))
             .collect();
 
-        let agg = aggregate_partials(&decompressed?)?;
+        let decompressed = decompressed?;
+        #[cfg(not(target_os = "solana"))]
+        let agg = tape_crypto::bls12254::min_sig::native::aggregate_partials(&decompressed)?;
+        #[cfg(target_os = "solana")]
+        let agg = aggregate_partials(&decompressed)?;
         let compressed = G1CompressedPoint::try_from(agg)?;
 
         Ok(BlsSignature(compressed))
     }
 
     /// Verify an aggregated signature against exact list of signers
+    /// Verifies against a quorum key summed once and reused across spools.
+    #[cfg(not(target_os = "solana"))]
+    pub fn verify_quorum<M: AsRef<[u8]>>(
+        &self,
+        message: M,
+        quorum: &BlsQuorumKey,
+    ) -> Result<(), BLSError> {
+        let decompressed_sig = G1Point::try_from(&self.0)?;
+        tape_crypto::bls12254::min_sig::native::verify_summed(message, &quorum.0, &decompressed_sig)
+    }
+
     pub fn verify_aggregate<M: AsRef<[u8]>>(
         &self,
         message: M,
@@ -106,7 +121,45 @@ impl BlsSignature {
             .map(|pk| Ok(pk.0))
             .collect::<Result<Vec<_>, _>>()?;
 
+        #[cfg(not(target_os = "solana"))]
+        return tape_crypto::bls12254::min_sig::native::verify_signers(
+            message,
+            &g2_points,
+            &decompressed_sig,
+        );
+        #[cfg(target_os = "solana")]
         verify_aggregate(message, &g2_points, &decompressed_sig)
+    }
+
+    /// Checks many single signer signatures under one final exponentiation.
+    ///
+    /// Names no member on failure, so a caller that needs one rechecks singly.
+    #[cfg(not(target_os = "solana"))]
+    pub fn verify_batch(items: &[(&[u8], BlsPubkey, BlsSignature)]) -> Result<(), BLSError> {
+        use tape_crypto::bls12254::min_sig::native;
+
+        if items.is_empty() {
+            return Err(BLSError::SerializationError);
+        }
+        let signers = items
+            .iter()
+            .map(|(_, pubkey, _)| native::g2_from_bytes(&pubkey.0))
+            .collect::<Result<Vec<_>, _>>()?;
+        let signatures = items
+            .iter()
+            .map(|(_, _, signature)| G1Point::try_from(&signature.0))
+            .collect::<Result<Vec<_>, _>>()?;
+        let batch: Vec<native::BatchItem<'_>> = items
+            .iter()
+            .zip(signers.iter())
+            .zip(signatures.iter())
+            .map(|(((message, _, _), signer), signature)| native::BatchItem {
+                message,
+                signer,
+                signature,
+            })
+            .collect();
+        native::verify_batch(&batch)
     }
 
     /// Size of the compressed signature in bytes
@@ -120,6 +173,29 @@ impl BlsSignature {
 #[derive(Clone, Copy, PartialEq, Eq, Pod, Zeroable, Serialize, Deserialize)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct BlsPubkey(pub G2Point); // using the uncompressed form to reduce CU
+
+/// A quorum's keys summed once, reused across every spool the set certifies.
+#[cfg(not(target_os = "solana"))]
+#[derive(Clone, Copy)]
+pub struct BlsQuorumKey(G2Point);
+
+#[cfg(not(target_os = "solana"))]
+impl BlsQuorumKey {
+    /// Sums distinct, non-zero keys; the caller guarantees the set matches the
+    /// certificate's signers.
+    pub fn sum(keys: &[BlsPubkey]) -> Result<Self, BLSError> {
+        if keys.is_empty() {
+            return Err(BLSError::SerializationError);
+        }
+        for (i, key) in keys.iter().enumerate() {
+            if key.0.0 == [0u8; 128] || keys[..i].iter().any(|held| held.0.0 == key.0.0) {
+                return Err(BLSError::SerializationError);
+            }
+        }
+        let points: Vec<G2Point> = keys.iter().map(|key| key.0).collect();
+        Ok(Self(sum_pubkeys(&points)?))
+    }
+}
 
 impl BlsPubkey {
     #[cfg(not(target_os = "solana"))]

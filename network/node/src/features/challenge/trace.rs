@@ -1,0 +1,500 @@
+//! When each round's evidence reached this node.
+//!
+//! The peer record says whether a round certified. This says when: when the
+//! round opened on its entropy block, when each answer and attestation arrived,
+//! and when a certificate assembled. Every stamp is an arrival here, never a
+//! peer's send, which is the only claim one vantage can make honestly.
+
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
+use tape_crypto::Address;
+use tape_crypto::hash::Hash;
+
+use tape_observe_api::PUSH_INTERVAL_MS;
+
+#[cfg(feature = "metrics")]
+use crate::observe::{board, stream};
+
+/// Rounds the ring keeps, counting distinct rounds rather than entries so a
+/// node in several groups holds the same span of time as one in a single group.
+pub const TRACED_ROUNDS: usize = 16;
+
+/// Traces held at once, bounding a node that holds spools in many groups.
+const MAX_TRACES: usize = 128;
+
+/// Marks one trace collects before it stops taking them; a full round runs
+/// ~550 with relays and refusals, so honest rounds never reach this
+const MAX_MARKS: usize = 2048;
+
+// Pushing every mark would send the round's own size squared; coalescing on
+// the shared interval costs nothing a reader can see, and an outcome still
+// goes out the moment it lands.
+
+/// What one mark records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    /// This node built and broadcast its own answer.
+    AnswerOut,
+    /// A peer's answer arrived and verified.
+    AnswerIn,
+    /// An answer was turned away at the door.
+    AnswerRefused,
+    /// This node signed an attestation.
+    AttestOut,
+    /// A peer's attestation arrived.
+    AttestIn,
+    /// A certificate assembled or arrived for the spool.
+    Certified,
+}
+
+/// Index a mark carries when it names no peer.
+pub const NO_NODE: u32 = u32::MAX;
+
+/// One thing that happened to one spool in one round.
+#[derive(Clone, Copy, Debug)]
+pub struct TraceMark {
+    /// The spool the mark is about.
+    pub spool: SpoolIndex,
+    /// The peer named, as an index into the trace's nodes; NO_NODE for none.
+    pub node: u32,
+    /// What the message was.
+    pub kind: MarkKind,
+    /// Milliseconds after the trace opened.
+    pub at_ms: u32,
+}
+
+/// How one spool's round settled.
+///
+/// Kept apart from the marks: settlement runs when the next round opens, a
+/// whole cadence after this round ended, so it is a verdict rather than a
+/// moment on this round's clock.
+#[derive(Clone, Copy, Debug)]
+pub struct SpoolOutcome {
+    /// The spool judged.
+    pub spool: SpoolIndex,
+    /// The owner judged, as an index into the trace's nodes.
+    pub owner: u32,
+    /// Whether a certificate assembled for it.
+    pub certified: bool,
+}
+
+/// How a round ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TraceClose {
+    /// Still taking marks.
+    #[default]
+    Open,
+    /// Settled against every spool in the group.
+    Settled,
+    /// Charged to nobody: the entropy block never finalized.
+    Unfinalized,
+    /// Charged to nobody: the group had nothing to be asked about.
+    Nothing,
+}
+
+/// One group's round, as this node saw it unfold.
+#[derive(Clone, Debug)]
+pub struct RoundTrace {
+    pub epoch: EpochNumber,
+    pub round: RoundNumber,
+    pub group: GroupIndex,
+    pub anchor_slot: SlotNumber,
+    pub block: Hash,
+    pub opened_ms: u64,
+    pub close: TraceClose,
+    pub nodes: Vec<Address>,
+    pub marks: Vec<TraceMark>,
+    pub outcomes: Vec<SpoolOutcome>,
+    /// When this trace was last sent out, for the push interval.
+    pushed_ms: u64,
+    /// Marks already sent, so a push carries only what came after them.
+    pushed_marks: usize,
+    /// Addresses already sent, counted the same way.
+    pushed_nodes: usize,
+}
+
+impl RoundTrace {
+    fn matches(&self, epoch: EpochNumber, round: RoundNumber, group: GroupIndex) -> bool {
+        self.epoch == epoch && self.round == round && self.group == group
+    }
+
+    /// The address's place in the table, adding it on first sight; a scan
+    /// because the table never outgrows one group.
+    fn intern(&mut self, peer: Address) -> u32 {
+        match self.nodes.iter().position(|held| *held == peer) {
+            Some(at) => at as u32,
+            None => {
+                self.nodes.push(peer);
+                (self.nodes.len() - 1) as u32
+            }
+        }
+    }
+}
+
+/// The ring of recent traces, newest last.
+#[derive(Default)]
+pub struct TraceRing {
+    traces: Mutex<VecDeque<RoundTrace>>,
+}
+
+impl TraceRing {
+    /// Starts a trace for a round this node just opened.
+    pub fn open(
+        &self,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        group: GroupIndex,
+        anchor_slot: SlotNumber,
+        block: Hash,
+    ) {
+        let mut traces = self.traces.lock().expect("trace ring");
+        if traces.iter().any(|trace| trace.matches(epoch, round, group)) {
+            return;
+        }
+
+        traces.push_back(RoundTrace {
+            epoch,
+            round,
+            group,
+            anchor_slot,
+            block,
+            opened_ms: now_ms(),
+            close: TraceClose::Open,
+            nodes: Vec::new(),
+            marks: Vec::new(),
+            outcomes: Vec::new(),
+            pushed_ms: 0,
+            pushed_marks: 0,
+            pushed_nodes: 0,
+        });
+        retire(&mut traces);
+        push(traces.back(), 0, 0);
+    }
+
+    /// Records one mark against an open round, ignoring one this node never saw
+    /// open: a mark with no round to hang on has no place on the timeline.
+    pub fn mark(
+        &self,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        group: GroupIndex,
+        spool: SpoolIndex,
+        kind: MarkKind,
+        peer: Option<Address>,
+    ) {
+        let mut traces = self.traces.lock().expect("trace ring");
+        let Some(trace) = traces.iter_mut().find(|trace| trace.matches(epoch, round, group))
+        else {
+            return;
+        };
+        // Refused at the cap, never evicted: the push deltas index into this
+        // list, so removing a mark desyncs every connected reader for the round
+        if trace.marks.len() >= MAX_MARKS {
+            return;
+        }
+
+        let now = now_ms();
+        let at_ms = now.saturating_sub(trace.opened_ms).min(u32::MAX as u64) as u32;
+        let node = peer.map(|peer| trace.intern(peer)).unwrap_or(NO_NODE);
+        trace.marks.push(TraceMark { spool, node, kind, at_ms });
+
+        // A certificate is worth sending promptly, but a group settling fires
+        // twenty of them at once and each carries the whole trace, so they share
+        // a shorter interval rather than bypassing it and flooding the backlog.
+        let interval = if kind == MarkKind::Certified {
+            PUSH_INTERVAL_MS / 4
+        } else {
+            PUSH_INTERVAL_MS
+        };
+        if now.saturating_sub(trace.pushed_ms) >= interval {
+            trace.pushed_ms = now;
+            let from = trace.pushed_marks;
+            let nodes_from = trace.pushed_nodes;
+            trace.pushed_marks = trace.marks.len();
+            trace.pushed_nodes = trace.nodes.len();
+            push(Some(&*trace), from, nodes_from);
+        }
+    }
+
+    /// Records how one spool's round settled.
+    pub fn settle(
+        &self,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        group: GroupIndex,
+        spool: SpoolIndex,
+        owner: Address,
+        certified: bool,
+    ) {
+        let mut traces = self.traces.lock().expect("trace ring");
+        let Some(trace) = traces.iter_mut().find(|trace| trace.matches(epoch, round, group))
+        else {
+            return;
+        };
+        if trace.outcomes.iter().any(|outcome| outcome.spool == spool) {
+            return;
+        }
+
+        let owner = trace.intern(owner);
+        trace.outcomes.push(SpoolOutcome { spool, owner, certified });
+    }
+
+    /// Closes a round, which is what stops the dashboard drawing it as live.
+    pub fn close(
+        &self,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        group: GroupIndex,
+        close: TraceClose,
+    ) {
+        let mut traces = self.traces.lock().expect("trace ring");
+        if let Some(trace) = traces.iter_mut().find(|trace| trace.matches(epoch, round, group)) {
+            trace.close = close;
+            trace.pushed_ms = now_ms();
+            trace.pushed_marks = trace.marks.len();
+            trace.pushed_nodes = trace.nodes.len();
+            // Whole, once, at the end: a reader that joined mid-round or lost a
+            // push holds a partial trace, and this is where it is made good.
+            push(Some(&*trace), 0, 0);
+        }
+    }
+
+    /// Every trace held, oldest first.
+    pub fn snapshot(&self) -> Vec<RoundTrace> {
+        let traces = self.traces.lock().expect("trace ring");
+        traces.iter().cloned().collect()
+    }
+
+}
+
+/// Drops traces behind the newest rounds, then behind the entry cap.
+fn retire(traces: &mut VecDeque<RoundTrace>) {
+    let mut rounds: Vec<(EpochNumber, RoundNumber)> =
+        traces.iter().map(|trace| (trace.epoch, trace.round)).collect();
+    rounds.sort_unstable();
+    rounds.dedup();
+    if rounds.len() > TRACED_ROUNDS {
+        let cutoff = rounds[rounds.len() - TRACED_ROUNDS];
+        traces.retain(|trace| (trace.epoch, trace.round) >= cutoff);
+    }
+    while traces.len() > MAX_TRACES {
+        traces.pop_front();
+    }
+}
+
+/// Sends the trace to any dashboard watching, and builds nothing when none is.
+#[cfg(feature = "metrics")]
+fn push(trace: Option<&RoundTrace>, from: usize, nodes_from: usize) {
+    if !stream::watching() {
+        return;
+    }
+    if let Some(trace) = trace {
+        stream::push_round(&board::wire_trace_from(trace, from, nodes_from));
+    }
+}
+
+/// Without the observe surface there is nobody to send a trace to.
+#[cfg(not(feature = "metrics"))]
+fn push(_trace: Option<&RoundTrace>, _from: usize, _nodes_from: usize) {}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opened(ring: &TraceRing, round: u64, group: u64) {
+        ring.open(
+            EpochNumber(1),
+            RoundNumber(round),
+            GroupIndex(group),
+            SlotNumber(round * 150),
+            Hash::default(),
+        );
+    }
+
+    #[test]
+    fn marks_land_on_their_round() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        ring.mark(
+            EpochNumber(1),
+            RoundNumber(1),
+            GroupIndex(0),
+            SpoolIndex(3),
+            MarkKind::AnswerIn,
+            None,
+        );
+
+        let traces = ring.snapshot();
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].marks.len(), 1);
+        assert_eq!(traces[0].marks[0].spool, SpoolIndex(3));
+    }
+
+    // one entry per address however many marks name it
+    #[test]
+    fn marks_share_one_entry_per_address() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        let peer = Address::new_unique();
+        let other = Address::new_unique();
+        for kind in [MarkKind::AnswerIn, MarkKind::AttestIn, MarkKind::Certified] {
+            for peer in [Some(peer), Some(other), None] {
+                ring.mark(EpochNumber(1), RoundNumber(1), GroupIndex(0), SpoolIndex(3), kind, peer);
+            }
+        }
+
+        let traces = ring.snapshot();
+        assert_eq!(traces[0].nodes, vec![peer, other]);
+        assert_eq!(traces[0].marks[0].node, 0);
+        assert_eq!(traces[0].marks[1].node, 1);
+        assert_eq!(traces[0].marks[2].node, NO_NODE);
+    }
+
+    // outcomes index the same table, so a settlement adds no second copy
+    #[test]
+    fn an_outcome_reuses_the_address_table() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        let owner = Address::new_unique();
+        ring.mark(
+            EpochNumber(1),
+            RoundNumber(1),
+            GroupIndex(0),
+            SpoolIndex(3),
+            MarkKind::AnswerIn,
+            Some(owner),
+        );
+        ring.settle(EpochNumber(1), RoundNumber(1), GroupIndex(0), SpoolIndex(3), owner, true);
+
+        let traces = ring.snapshot();
+        assert_eq!(traces[0].nodes.len(), 1);
+        assert_eq!(traces[0].outcomes[0].owner, 0);
+    }
+
+    #[test]
+    fn a_mark_without_a_round_is_dropped() {
+        let ring = TraceRing::default();
+        ring.mark(
+            EpochNumber(1),
+            RoundNumber(9),
+            GroupIndex(0),
+            SpoolIndex(3),
+            MarkKind::AnswerIn,
+            None,
+        );
+
+        assert!(ring.snapshot().is_empty());
+    }
+
+    #[test]
+    fn opening_twice_keeps_the_first_trace() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        ring.mark(
+            EpochNumber(1),
+            RoundNumber(1),
+            GroupIndex(0),
+            SpoolIndex(3),
+            MarkKind::AnswerOut,
+            None,
+        );
+        opened(&ring, 1, 0);
+
+        let traces = ring.snapshot();
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].marks.len(), 1);
+    }
+
+    #[test]
+    fn groups_of_one_round_retire_together() {
+        let ring = TraceRing::default();
+        for round in 0..(TRACED_ROUNDS as u64 + 4) {
+            opened(&ring, round, 0);
+            opened(&ring, round, 1);
+        }
+
+        let traces = ring.snapshot();
+        let rounds: std::collections::BTreeSet<u64> =
+            traces.iter().map(|trace| trace.round.0).collect();
+        assert_eq!(rounds.len(), TRACED_ROUNDS);
+        assert_eq!(traces.len(), TRACED_ROUNDS * 2);
+        assert_eq!(*rounds.iter().next().expect("oldest"), 4);
+    }
+
+    #[test]
+    fn the_entry_cap_holds() {
+        let ring = TraceRing::default();
+        for group in 0..(MAX_TRACES as u64 + 8) {
+            opened(&ring, 1, group);
+        }
+
+        assert_eq!(ring.snapshot().len(), MAX_TRACES);
+    }
+
+    #[test]
+    fn marks_stop_at_the_cap() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        for _ in 0..(MAX_MARKS + 10) {
+            ring.mark(
+                EpochNumber(1),
+                RoundNumber(1),
+                GroupIndex(0),
+                SpoolIndex(0),
+                MarkKind::AttestIn,
+                None,
+            );
+        }
+
+        assert_eq!(ring.snapshot()[0].marks.len(), MAX_MARKS);
+    }
+
+    // a full trace refuses new marks rather than evicting old ones, since the
+    // push deltas index into the list and a removal desyncs every reader
+    #[test]
+    fn the_cap_never_evicts() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        ring.mark(
+            EpochNumber(1),
+            RoundNumber(1),
+            GroupIndex(0),
+            SpoolIndex(7),
+            MarkKind::AnswerIn,
+            None,
+        );
+        for _ in 0..MAX_MARKS {
+            ring.mark(
+                EpochNumber(1),
+                RoundNumber(1),
+                GroupIndex(0),
+                SpoolIndex(0),
+                MarkKind::AttestIn,
+                None,
+            );
+        }
+
+        let marks = &ring.snapshot()[0].marks;
+        assert_eq!(marks.len(), MAX_MARKS);
+        assert_eq!(marks[0].kind, MarkKind::AnswerIn, "the first mark must survive the cap");
+    }
+
+    #[test]
+    fn closing_marks_the_round() {
+        let ring = TraceRing::default();
+        opened(&ring, 1, 0);
+        ring.close(EpochNumber(1), RoundNumber(1), GroupIndex(0), TraceClose::Unfinalized);
+
+        assert_eq!(ring.snapshot()[0].close, TraceClose::Unfinalized);
+    }
+}

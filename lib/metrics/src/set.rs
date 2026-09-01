@@ -18,6 +18,7 @@ const DECODE_BUCKETS: &[f64] = &[0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0
 /// reflect live external state are emitted by pull collectors instead.
 pub struct Metrics {
     pub http_request_duration: HistogramVec,
+    pub http_request_bytes_total: IntCounterVec,
     pub http_response_bytes_total: IntCounterVec,
 
     pub blocks_processed_total: IntCounter,
@@ -52,6 +53,13 @@ impl Metrics {
                 registry
             )
             .expect("register tape_http_request_duration_seconds"),
+            http_request_bytes_total: register_int_counter_vec_with_registry!(
+                "tape_http_request_bytes_total",
+                "HTTP request body bytes received",
+                &["route"],
+                registry
+            )
+            .expect("register tape_http_request_bytes_total"),
             http_response_bytes_total: register_int_counter_vec_with_registry!(
                 "tape_http_response_bytes_total",
                 "HTTP response body bytes served",

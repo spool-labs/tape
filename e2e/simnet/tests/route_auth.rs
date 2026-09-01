@@ -6,10 +6,11 @@ use std::time::Duration;
 use rand::thread_rng;
 use reqwest::StatusCode;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::types::BasisPoints;
+use tape_core::types::{BasisPoints, EpochNumber, GroupIndex, RoundNumber};
 use tape_crypto::ed25519::Keypair as EdKeypair;
+use tape_crypto::hash::Hash;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
-use tape_protocol::api::VOTE_PATH;
+use tape_protocol::api::{AttestationPayload, CHALLENGE_ATTEST_PATH, VOTE_PATH};
 
 const NODE_COUNT: usize = GROUP_SIZE;
 
@@ -112,6 +113,19 @@ async fn peer_only_routes_reject_non_peers_inner() {
         "anonymous client must be rejected from peer-only {VOTE_PATH}"
     );
 
+    let attest = anon
+        .post(format!("{base}{CHALLENGE_ATTEST_PATH}"))
+        .body(Vec::<u8>::new())
+        .send()
+        .await
+        .expect("anon attest");
+
+    assert_eq!(
+        attest.status(),
+        StatusCode::FORBIDDEN,
+        "anonymous client must be rejected from peer-only {CHALLENGE_ATTEST_PATH}"
+    );
+
     // Impostor: valid Ed25519 client cert, but key is not on-chain
     let impostor_key = EdKeypair::new(&mut thread_rng());
     let impostor = {
@@ -132,6 +146,19 @@ async fn peer_only_routes_reject_non_peers_inner() {
         impostor_vote.status(),
         StatusCode::FORBIDDEN,
         "client with unregistered TLS key must be rejected from peer-only routes"
+    );
+
+    let impostor_attest = impostor
+        .post(format!("{base}{CHALLENGE_ATTEST_PATH}"))
+        .body(Vec::<u8>::new())
+        .send()
+        .await
+        .expect("impostor attest");
+
+    assert_eq!(
+        impostor_attest.status(),
+        StatusCode::FORBIDDEN,
+        "client with unregistered TLS key must be rejected from {CHALLENGE_ATTEST_PATH}"
     );
 
     // Sanity: impostor can still hit public routes.
@@ -176,6 +203,44 @@ async fn peer_only_routes_reject_non_peers_inner() {
         peer_vote.status(),
         StatusCode::BAD_REQUEST,
         "registered committee peer should pass auth and fail only on malformed vote body"
+    );
+
+    // Nothing verifies an attestation on arrival, so a peer naming somebody else
+    // as the signer would seat a signature that spoils the round's aggregate.
+    let forged = AttestationPayload {
+        epoch: EpochNumber(0),
+        group: GroupIndex(0),
+        round: RoundNumber(0),
+        block: Hash([0; 32]),
+        signer: target.context().node_address(),
+        attests: Vec::new(),
+    };
+    let peer_attest = peer
+        .post(format!("{base}{CHALLENGE_ATTEST_PATH}"))
+        .body(wincode::serialize(&forged).expect("serialize attestation"))
+        .send()
+        .await
+        .expect("peer attest");
+    assert_eq!(
+        peer_attest.status(),
+        StatusCode::FORBIDDEN,
+        "a peer must not post an attestation it claims another node signed"
+    );
+
+    let own = AttestationPayload {
+        signer: source.context().node_address(),
+        ..forged
+    };
+    let peer_own_attest = peer
+        .post(format!("{base}{CHALLENGE_ATTEST_PATH}"))
+        .body(wincode::serialize(&own).expect("serialize attestation"))
+        .send()
+        .await
+        .expect("peer own attest");
+    assert_eq!(
+        peer_own_attest.status(),
+        StatusCode::OK,
+        "a peer signing under its own identity should pass auth"
     );
 
     harness.stop_all().await.expect("stop runtimes");

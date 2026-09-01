@@ -435,6 +435,14 @@ https:
   listen: "0.0.0.0:{port}"
   identity_keypair: "{tls}"
 
+challenge:
+  enabled: true
+
+# Off on the harness: rounds and records still run, but the rig should not
+# condemn its own nodes.
+eviction:
+  enabled: false
+
 store:
   path: "{store}"
   # Twenty nodes on one laptop: the shipped shape would reserve a gibibyte per
