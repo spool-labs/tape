@@ -6,7 +6,7 @@
 //! a fork and gets dropped.
 //!
 //! Purely structural: appending and rolling back. Promotion is decided by
-//! the block ingestor (and, in the confirmation-gated path, the confirmed tip
+//! the block ingestor (and, in the finality-gated path, the finalized tip
 //! poller).
 
 use std::collections::VecDeque;
@@ -34,9 +34,9 @@ pub enum AppendOutcome {
 #[derive(Debug)]
 struct PendingEntry {
     block: Arc<ParsedBlock>,
-    /// Fetched at a slot already behind the confirmed tip, so it cannot
+    /// Fetched at a slot already behind the finalized tip, so it cannot
     /// have been on a fork.
-    confirmed_when_fetched: bool,
+    finalized_when_fetched: bool,
 }
 
 #[derive(Debug, Default)]
@@ -50,13 +50,13 @@ impl PendingBlocks {
     }
 
     /// Append `block` if it chains. See `AppendOutcome` for the cases.
-    pub fn append(&mut self, block: Arc<ParsedBlock>, confirmed_when_fetched: bool) -> AppendOutcome {
+    pub fn append(&mut self, block: Arc<ParsedBlock>, finalized_when_fetched: bool) -> AppendOutcome {
         if self.entries.is_empty() {
             // First block since startup or since the queue was last cleared.
             // We do not persist the most-recently-applied blockhash, so the
             // first block has nothing to chain against and is trusted on the
-            // basis that promotion only releases confirmed blocks.
-            self.entries.push_back(PendingEntry { block, confirmed_when_fetched });
+            // basis that promotion only releases finalized blocks.
+            self.entries.push_back(PendingEntry { block, finalized_when_fetched });
             return AppendOutcome::Appended;
         }
 
@@ -67,7 +67,7 @@ impl PendingBlocks {
 
         match parent {
             Some(pos) if pos == self.entries.len() - 1 => {
-                self.entries.push_back(PendingEntry { block, confirmed_when_fetched });
+                self.entries.push_back(PendingEntry { block, finalized_when_fetched });
                 AppendOutcome::Appended
             }
             Some(pos) => {
@@ -76,7 +76,7 @@ impl PendingBlocks {
                     .drain((pos + 1)..)
                     .map(|entry| entry.block)
                     .collect();
-                self.entries.push_back(PendingEntry { block, confirmed_when_fetched });
+                self.entries.push_back(PendingEntry { block, finalized_when_fetched });
                 AppendOutcome::Forked { dropped }
             }
             None => AppendOutcome::ChainBroken,
@@ -109,25 +109,25 @@ impl PendingBlocks {
         self.entries.is_empty()
     }
 
-    /// A head that was already behind the confirmed tip when fetched is
-    /// always safe to promote: the RPC can only return the confirmed block
+    /// A head that was already behind the finalized tip when fetched is
+    /// always safe to promote: the RPC can only return the finalized block
     /// at such slots.
     ///
     /// A head fetched ahead of finality may have been on a fork. It is safe
-    /// to promote once the confirmed tip has passed its slot AND a later
-    /// block is queued past the confirmed tip: the queue chains by
+    /// to promote once the finalized tip has passed its slot AND a later
+    /// block is queued past the finalized tip: the queue chains by
     /// blockhash, so that later block proves the head's chain survived
     /// finalization.
     ///
-    /// `confirmed_tip` is the most recently observed confirmed slot.
-    pub fn front_promotable(&self, confirmed_tip: SlotNumber) -> bool {
+    /// `finalized_tip` is the most recently observed finalized slot.
+    pub fn front_promotable(&self, finalized_tip: SlotNumber) -> bool {
         let (Some(head), Some(tail)) = (self.entries.front(), self.entries.back()) else {
             return false;
         };
-        if head.confirmed_when_fetched {
+        if head.finalized_when_fetched {
             return true;
         }
-        head.block.slot <= confirmed_tip && tail.block.slot > confirmed_tip
+        head.block.slot <= finalized_tip && tail.block.slot > finalized_tip
     }
 }
 
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn single_entry_waits_for_later_block() {
-        // One block in queue, confirmed has reached its slot, but no later
+        // One block in queue, finalized has reached its slot, but no later
         // block queued past finalization → not promotable.
         let mut queue = PendingBlocks::new();
         let h = Hash::new_unique();
@@ -263,23 +263,23 @@ mod tests {
         let h1 = Hash::new_unique();
         queue.append_confirmed(block(10, h0, Hash::new_unique()));
         queue.append_confirmed(block(11, h1, h0));
-        // confirmed_tip = 10, a later block is queued at slot 11.
+        // finalized_tip = 10, a later block is queued at slot 11.
         assert!(queue.front_promotable(SlotNumber(10)));
     }
 
     #[test]
-    fn head_above_confirmed_not_promotable() {
+    fn head_above_finalized_not_promotable() {
         let mut queue = PendingBlocks::new();
         let h0 = Hash::new_unique();
         let h1 = Hash::new_unique();
         queue.append_confirmed(block(10, h0, Hash::new_unique()));
         queue.append_confirmed(block(11, h1, h0));
-        // confirmed_tip = 9, head at 10 not yet confirmed.
+        // finalized_tip = 9, head at 10 not yet finalized.
         assert!(!queue.front_promotable(SlotNumber(9)));
     }
 
     #[test]
-    fn already_confirmed_head_promotes_alone() {
+    fn already_finalized_head_promotes_alone() {
         let mut queue = PendingBlocks::new();
         let h = Hash::new_unique();
         queue.append(block(10, h, Hash::new_unique()), true);
@@ -287,14 +287,14 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_when_fetched_applies_per_entry() {
+    fn finalized_when_fetched_applies_per_entry() {
         let mut queue = PendingBlocks::new();
         let h0 = Hash::new_unique();
         let h1 = Hash::new_unique();
         queue.append(block(10, h0, Hash::new_unique()), true);
         queue.append(block(11, h1, h0), false);
 
-        // The already-confirmed head promotes; the successor was fetched
+        // The already-finalized head promotes; the successor was fetched
         // ahead of finality and must wait for a later block again.
         assert!(queue.front_promotable(SlotNumber(50)));
         queue.pop_front();

@@ -1,8 +1,8 @@
 use core::ops::Add;
 use num::CheckedAdd;
 use solana_bn254::{
-    compression::prelude::{alt_bn128_g1_compress_be, alt_bn128_g1_decompress_be},
-    prelude::{alt_bn128_g1_addition_be, alt_bn128_g1_multiplication_be},
+    compression::prelude::{alt_bn128_g1_compress, alt_bn128_g1_decompress},
+    prelude::{alt_bn128_addition, alt_bn128_multiplication},
 };
 
 use crate::bls12254::errors::BLSError;
@@ -40,7 +40,7 @@ impl CheckedAdd for G1Point {
 
         let result = (|| -> Result<Self, BLSError> {
             let result =
-                alt_bn128_g1_addition_be(&combined_input).map_err(|_| BLSError::AltBN128AddError)?;
+                alt_bn128_addition(&combined_input).map_err(|_| BLSError::AltBN128AddError)?;
             Ok(G1Point(
                 result.try_into().map_err(|_| BLSError::AltBN128AddError)?,
             ))
@@ -69,10 +69,10 @@ impl TryFrom<PrivKey> for G1CompressedPoint {
 
         let mut g1_sol_uncompressed = [0; 64];
         g1_sol_uncompressed.clone_from_slice(
-            &alt_bn128_g1_multiplication_be(&input).map_err(|_| BLSError::AltBN128MulError)?,
+            &alt_bn128_multiplication(&input).map_err(|_| BLSError::AltBN128MulError)?,
         );
         let compressed =
-            alt_bn128_g1_compress_be(&g1_sol_uncompressed).map_err(|_| BLSError::SecretKeyError)?;
+            alt_bn128_g1_compress(&g1_sol_uncompressed).map_err(|_| BLSError::SecretKeyError)?;
         Ok(G1CompressedPoint(compressed))
     }
 }
@@ -96,7 +96,7 @@ impl TryFrom<PrivKey> for G1Point {
 
         let mut g1_sol_uncompressed = [0; 64];
         g1_sol_uncompressed.clone_from_slice(
-            &alt_bn128_g1_multiplication_be(&input).map_err(|_| BLSError::SecretKeyError)?,
+            &alt_bn128_multiplication(&input).map_err(|_| BLSError::SecretKeyError)?,
         );
         Ok(G1Point(g1_sol_uncompressed))
     }
@@ -107,7 +107,7 @@ impl TryFrom<G1Point> for G1CompressedPoint {
 
     fn try_from(value: G1Point) -> Result<Self, Self::Error> {
         Ok(G1CompressedPoint(
-            alt_bn128_g1_compress_be(&value.0).map_err(|_| BLSError::G1PointCompressionError)?,
+            alt_bn128_g1_compress(&value.0).map_err(|_| BLSError::G1PointCompressionError)?,
         ))
     }
 }
@@ -120,7 +120,7 @@ impl TryFrom<&G1CompressedPoint> for G1Point {
             return Err(BLSError::G1PointDecompressionError);
         }
 
-        let point = alt_bn128_g1_decompress_be(&value.0)
+        let point = alt_bn128_g1_decompress(&value.0)
             .map_err(|_| BLSError::G1PointDecompressionError)?;
         if point == [0u8; 64] {
             return Err(BLSError::G1PointDecompressionError);

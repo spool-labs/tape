@@ -149,7 +149,7 @@ fn write_node_yaml(
     tls: &Path,
 ) -> Result<(), KeygenError> {
     let contents = format!(
-        "node:\n  name: \"{name}\"\n  node_keypair: \"{identity}\"\n  bls_keypair: \"{bls}\"\n  commission: 0\nsolana:\n  rpc:\n    - \"http://127.0.0.1:8899\"\nhttps:\n  identity_keypair: \"{tls}\"\n",
+        "node:\n  name: \"{name}\"\n  node_keypair: \"{identity}\"\n  bls_keypair: \"{bls}\"\n  commission: 0\nsolana:\n  rpc:\n    - \"http://127.0.0.1:8899\"\ntls:\n  identity_keypair: \"{tls}\"\n",
         name = name,
         identity = identity.display(),
         bls = bls.display(),

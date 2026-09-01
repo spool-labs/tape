@@ -48,9 +48,6 @@ pub struct IngestProgress {
     last_known_tip: AtomicU64,
     last_fetch_slot: AtomicU64,
     chain_time: AtomicI64,
-    /// Slot and chain timestamp the measured slot rate is counted from.
-    rate_base_slot: AtomicU64,
-    rate_base_time: AtomicI64,
     queue_len: AtomicU64,
     started: Instant,
 }
@@ -58,12 +55,6 @@ pub struct IngestProgress {
 /// Held until a block carrying a timestamp is dispatched. No real block time is
 /// ever this, so "not yet known" stays distinct from "earlier than everything".
 const CHAIN_TIME_UNSET: i64 = i64::MIN;
-
-/// Slots the measured rate averages over before its baseline rolls forward.
-const RATE_WINDOW_SLOTS: u64 = 512;
-
-/// Slots the baseline must span before a rate is reported.
-const RATE_MIN_SLOTS: u64 = 64;
 
 impl IngestProgress {
     fn new() -> Self {
@@ -73,8 +64,6 @@ impl IngestProgress {
             last_known_tip: AtomicU64::new(u64::MAX),
             last_fetch_slot: AtomicU64::new(0),
             chain_time: AtomicI64::new(CHAIN_TIME_UNSET),
-            rate_base_slot: AtomicU64::new(0),
-            rate_base_time: AtomicI64::new(CHAIN_TIME_UNSET),
             queue_len: AtomicU64::new(0),
             started: Instant::now(),
         }
@@ -107,40 +96,14 @@ impl IngestProgress {
     }
 
     /// Record a dispatched block's timestamp, which is the chain's own clock.
-    /// Rolls the slot-rate baseline once it falls too far behind.
     pub fn record_chain_time(&self, unix_seconds: i64) {
         self.chain_time.store(unix_seconds, Ordering::Relaxed);
-
-        let slot = self.last_dispatched_slot();
-        let base_slot = self.rate_base_slot.load(Ordering::Relaxed);
-        let unset = self.rate_base_time.load(Ordering::Relaxed) == CHAIN_TIME_UNSET;
-        if unset || slot < base_slot || slot.saturating_sub(base_slot) > RATE_WINDOW_SLOTS {
-            self.rate_base_slot.store(slot, Ordering::Relaxed);
-            self.rate_base_time.store(unix_seconds, Ordering::Relaxed);
-        }
     }
 
     /// Timestamp of the latest dispatched block, or None before one arrives.
     pub fn chain_time(&self) -> Option<i64> {
         let time = self.chain_time.load(Ordering::Relaxed);
         (time != CHAIN_TIME_UNSET).then_some(time)
-    }
-
-    /// Measured slot time from the chain's own clock. None until the baseline
-    /// spans enough slots to outrun a block timestamp's one-second granularity.
-    pub fn slot_ms(&self) -> Option<u64> {
-        let base_slot = self.rate_base_slot.load(Ordering::Relaxed);
-        let base_time = self.rate_base_time.load(Ordering::Relaxed);
-        let now_time = self.chain_time.load(Ordering::Relaxed);
-        if base_time == CHAIN_TIME_UNSET || now_time == CHAIN_TIME_UNSET {
-            return None;
-        }
-        let slots = self.last_dispatched_slot().checked_sub(base_slot)?;
-        let seconds = now_time.checked_sub(base_time)?;
-        if slots < RATE_MIN_SLOTS || seconds <= 0 {
-            return None;
-        }
-        Some((seconds as u64 * 1_000 / slots).max(1))
     }
 
     pub fn last_attempt_ms(&self) -> u64 {
