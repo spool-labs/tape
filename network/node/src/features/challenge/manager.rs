@@ -25,7 +25,6 @@ use crate::features::challenge::audit::{
     Round, build_answer, group_members, has_sample_set, spawn_attest,
 };
 use crate::features::challenge::fold::fold_outcome;
-use crate::features::challenge::tripwire::Judgement;
 use crate::features::eviction::queue::Opened;
 use crate::features::state::realign::{RealignCause, spawn_realign};
 
@@ -115,7 +114,7 @@ where
             return Ok(());
         }
 
-        // A spool this node no longer holds is one it can no longer judge, so
+        // A spool this node no longer holds is one it can no longer settle, so
         // its group's pending round is dropped rather than settled.
         let held: Vec<GroupIndex> = mine.iter().map(|spool| group_for_spool(*spool)).collect();
         self.open_rounds.retain(|group, _| held.contains(group));
@@ -144,18 +143,21 @@ where
 
             // Re-read per group rather than once for the loop: a trip in an
             // earlier group has already cleared the eviction queue, and a later
-            // group judging on afterwards would fill it straight back up from
+            // group settling on afterwards would fill it straight back up from
             // the same view.
             //
-            // A node re-reading its view judges nobody: every verdict it would
+            // A node re-reading its view weighs nobody: every outcome it would
             // reach comes out of the view under suspicion. It still answers for
             // its own spools, because a spool that goes quiet earns the misses
             // that evict it, and that is the harm the suspension exists to
             // avoid.
             let is_suspended = self.context.challenge_tripwire.is_realigning();
             if !is_suspended {
-                let judgement = self.settle_previous(&state, group);
-                self.check_tripwire(group, judgement);
+                match self.settle_previous(&state, group) {
+                    None => {}
+                    Some(true) => self.context.challenge_tripwire.record_clean_round(group),
+                    Some(false) => self.on_blank_round(group),
+                }
             }
 
             self.open_rounds.insert(
@@ -197,11 +199,13 @@ where
 
     /// Settles the previous round when the next opens, leaving the full interval
     /// available for a late certificate to replace a miss.
-    fn settle_previous(&self, state: &ProtocolState, group: GroupIndex) -> Judgement {
-        let mut judgement = Judgement::default();
-
+    ///
+    /// Reports whether any owner's answer stood, or nothing at all when the
+    /// round weighed nobody: a void round, or a group whose every position is
+    /// this node's own.
+    fn settle_previous(&self, state: &ProtocolState, group: GroupIndex) -> Option<bool> {
         let Some(open) = self.open_rounds.get(&group) else {
-            return judgement;
+            return None;
         };
 
         // A round whose entropy block never finalized is void. Nobody owed an
@@ -212,10 +216,10 @@ where
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
             debug!(group = group.0, "challenge: round voided, entropy block never finalized");
-            return judgement;
+            return None;
         }
 
-        // A round opened while the node was re-reading its view was judged with
+        // A round opened while the node was re-reading its view was weighed against
         // the view it was replacing, and the answers to it were refused by the
         // half of the node that had already stopped trusting itself. Nobody is
         // charged for it.
@@ -225,7 +229,7 @@ where
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
             debug!(group = group.0, "challenge: round voided, opened while realigning");
-            return judgement;
+            return None;
         }
 
         // Nor did anyone owe an answer to a question the group had no data to
@@ -237,10 +241,12 @@ where
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
             debug!(group = group.0, "challenge: round voided, group had an empty sample set");
-            return judgement;
+            return None;
         }
 
         let round = &open.round;
+        let mut weighed = 0u64;
+        let mut stood = 0u64;
 
         for spool in &open.spools {
             let Some(owner) = state.spool_owner(*spool) else {
@@ -267,10 +273,10 @@ where
             // by the time its round settles, and counting the buffer's silence
             // reports a miss against a peer this node already accepted.
             let stands = self.record(owner, *spool, round.epoch, round.round, certified);
-            judgement.peers += 1;
+            weighed += 1;
             if stands {
                 counters.settled_certified.fetch_add(1, Ordering::Relaxed);
-                judgement.certified += 1;
+                stood += 1;
             } else {
                 counters.settled_missed.fetch_add(1, Ordering::Relaxed);
             }
@@ -282,29 +288,19 @@ where
             );
         }
 
-        judgement
+        (weighed > 0).then_some(stood > 0)
     }
 
-    /// Feeds one group's settled round to the tripwire.
-    ///
-    /// A void round and a group whose whole set of positions is ours judge
-    /// nobody, and a round that judged nobody is no evidence either way.
-    fn check_tripwire(&mut self, group: GroupIndex, judgement: Judgement) {
-        if judgement.peers == 0 {
-            return;
-        }
-
-        let Some(delay) = self.context.challenge_tripwire.record_round(group, judgement) else {
+    /// Suspends and re-reads state once a group's run of blank rounds is long
+    /// enough to say the view is wrong rather than the group.
+    fn on_blank_round(&mut self, group: GroupIndex) {
+        let Some(delay) = self.context.challenge_tripwire.record_blank_round(group) else {
             return;
         };
 
-        warn!(
-            group = group.0,
-            peers = judgement.peers,
-            "challenge: nothing stood for a run of rounds, realigning"
-        );
+        warn!(group = group.0, "challenge: nothing stood for a run of rounds, realigning");
 
-        // Every target queued so far was judged against the view now under
+        // Every target queued so far was weighed against the view now under
         // suspicion, and the run arm fires at three misses while this fires
         // later. Drop them rather than propose an eviction off a view the node
         // has already stopped trusting.
@@ -528,7 +524,7 @@ mod tests {
         })
     }
 
-    // a suspended node stops judging its peers, and goes on answering for its
+    // a suspended node stops weighing its peers, and goes on answering for its
     // own spools. Going quiet would earn it the consecutive misses that evict
     // it, which is the harm the suspension exists to prevent.
     #[tokio::test]
@@ -550,7 +546,7 @@ mod tests {
         assert_eq!(ctx.challenge_counters.settled_certified.load(Ordering::Relaxed), 0);
     }
 
-    // a round opened while suspended was judged against the view under
+    // a round opened while suspended was weighed against the view under
     // suspicion, so the first settle after the suspension lifts charges nobody
     #[tokio::test]
     async fn suspect_rounds_settle_void() {
@@ -570,15 +566,15 @@ mod tests {
         // Suspension lifts, and the round opened under it settles.
         ctx.challenge_tripwire.settled();
         let group = manager.open_rounds.keys().copied().next().expect("an open round");
-        let judgement = manager.settle_previous(&ctx.state(), group);
+        let settled = manager.settle_previous(&ctx.state(), group);
 
-        assert_eq!(judgement, Judgement::default(), "a suspect round judged somebody");
+        assert_eq!(settled, None, "a suspect round weighed somebody");
         assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
         assert!(ctx.challenge_counters.voided.load(Ordering::Relaxed) > 0);
     }
 
     // suspension is re-read per group: a trip in one group has already emptied
-    // the eviction queue, and a later group judging on would refill it
+    // the eviction queue, and a later group settling on would refill it
     #[tokio::test]
     async fn suspension_is_read_per_group() {
         let ctx = ready_context().await;

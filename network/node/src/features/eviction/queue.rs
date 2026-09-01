@@ -35,7 +35,7 @@ impl EvictionQueue {
 
     /// Drop the targets this node opened itself.
     ///
-    /// Only its own judgements: a target opened by a proposal already on chain
+    /// Only the targets it decided itself: one opened by a proposal already on chain
     /// is somebody else's evidence and this node's pending vote on it, and
     /// dropping that would abandon the vote rather than withdraw an accusation.
     pub fn clear_records(&self) {

@@ -46,7 +46,7 @@ pub enum EpochFloor {
 /// What sent the node back to the chain for a fresh view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RealignCause {
-    /// Consecutive rounds in which nothing this node judged stood.
+    /// Consecutive rounds in which nothing this node weighed stood.
     Tripwire,
 }
 
@@ -138,9 +138,9 @@ impl Drop for Suspension {
     }
 }
 
-/// Re-reads state off the round path, then lets judging resume.
+/// Re-reads state off the round path, then lets settlement resume.
 ///
-/// The tripwire holds judging suspended until this finishes, so the node stops
+/// The tripwire holds settlement suspended until this finishes, so the node stops
 /// charging misses it derived from the view under suspicion. It answers for its
 /// own spools throughout: a suspended node that went quiet would earn the misses
 /// it suspended itself to avoid handing out.
@@ -197,7 +197,7 @@ pub fn spawn_realign<Db, Cluster, Blockchain>(
         }
 
         // Certification is edge-triggered on the arriving attestation, so a
-        // quorum that filled while judging was off is claimed by nothing else.
+        // quorum that filled while settlement was off is claimed by nothing else.
         // Swept before the suspension lifts, so the round path finds the record
         // already written rather than settling a miss over it.
         certify_banked(&context);

@@ -193,11 +193,9 @@ fn watch_digest<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
-    use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
 
     use super::*;
-    use crate::features::challenge::tripwire::Judgement;
     use crate::harness::{NodeHarness, TestContext};
 
     // a node re-reading its view answers no proof and no attestation, because
@@ -212,10 +210,9 @@ mod tests {
             .expect("build harness")
             .ctx_for(0);
 
-        let blank = Judgement { peers: GROUP_SIZE as u64, certified: 0 };
         let rounds = ctx.config.challenge.realign_after_blank_rounds;
         for _ in 0..rounds {
-            ctx.challenge_tripwire.record_round(GroupIndex(0), blank);
+            ctx.challenge_tripwire.record_blank_round(GroupIndex(0));
         }
         assert!(ctx.challenge_tripwire.is_realigning());
 
